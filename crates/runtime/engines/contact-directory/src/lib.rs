@@ -1,4 +1,4 @@
-//! The person's contact directory, as its own library in the runtime bundle
+//! The workspace's contact directory, as its own library in the runtime bundle
 //! (`libtilo_contact_directory_engine.so`).
 //!
 //! Like `runtime-dylib` it re-exports what it provides, which records it

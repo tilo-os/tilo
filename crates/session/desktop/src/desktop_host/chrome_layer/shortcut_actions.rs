@@ -2,10 +2,10 @@
 //! through the verb its menu row, its palette row and an agent's invocation name, and the rest
 //! handed to the session.
 
-use tilo_desktop_surface::navigation::{
+use tilo_desktop_surface::surface::window_menu;
+use tilo_session_core::desktop::navigation::{
     ActivityView, ChromeEffect, Destination, LayoutEffect, Route,
 };
-use tilo_desktop_surface::surface::window_menu;
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 
 use super::DesktopChrome;
@@ -214,7 +214,7 @@ impl DesktopChrome {
     fn step_tab(&self, steps: isize) {
         let next = self.handle.read(|tree| {
             let workspace = tree.active_workspace()?;
-            let strip_id = tree.active_strip.get(&workspace.id()).copied()?;
+            let strip_id = tree.active_strip_for(workspace)?;
             let strip = workspace.strips.iter().find(|strip| strip.id == strip_id)?;
             let focused = tree.active_group_for(strip.id)?;
             let group = strip

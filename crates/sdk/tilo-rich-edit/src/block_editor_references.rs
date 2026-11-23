@@ -12,6 +12,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use super::BlockEditor;
 use crate::block_editor::{ImageInserter, PictureIn};
 use crate::block_editor_body::BodyBinding;
+use crate::slash_menu::SlashHostCommand;
 use ui::component::{Bound, Component, Described, Event, Link, Value};
 use ui::theme::Theme;
 use ui::widget::marks::{MentionColors, MentionPaint};
@@ -57,6 +58,18 @@ pub struct BlockEditorProps {
     /// would for a button it placed.
     #[component(event(value = String))]
     pub command: Event,
+    /// The commands only an editor can carry out that its slash menu offers besides the block
+    /// kinds: `image` puts a picture the person chooses in the document, `page` makes a page inside
+    /// this one, titled with the block's words. A view offers only the ones it answers.
+    pub slash: Vec<String>,
+    /// The person chose a picture from the slash menu: the view chooses the file and puts it in the
+    /// document, as its own Insert image does.
+    #[component(event)]
+    pub slash_image: Event,
+    /// The person chose a page from the slash menu, in the block the words are: the view makes the
+    /// page, titled with those words.
+    #[component(event(value = String))]
+    pub slash_page: Event,
     /// The document's headings, in the order they stand, each time they change: their words, and
     /// how deep each stands (1 for `#`). A heading reads as its words, never as the `#`s a writer
     /// typed, so a view draws one as it says.
@@ -67,11 +80,20 @@ pub struct BlockEditorProps {
     /// document shows — an export writing each beside the note — records of one.
     #[component(event(value = Vec<String>))]
     pub image: Event,
+    /// The formatting a view asks for, as a toolbar beside the document asks it: `bold`,
+    /// `italic`, `underline`, `strike`, `bullets`, `numbers`, `heading:<level>` or
+    /// `link:<address>`, then a count the view changes each time it asks (`bold:1`, `bold:2`),
+    /// so the same command asked twice is two commands. Formatting a message is a command of the
+    /// shared editor's, never a control of the app's own.
+    #[component(state)]
+    pub format: Option<String>,
     /// The heading the document shows, asked by the view that places an outline beside it: the
     /// place of the heading among the document's headings (`headings` reports them in that
     /// order), then a count the view changes every time it asks (`3:1`), so asking for a heading
     /// already shown shows it again. The editor puts the caret at the heading's start and keeps it
-    /// in view.
+    /// in view. A block named by its place in the document instead (`¶5:2`, the sixth block from
+    /// the top, counted from 0) is shown the same way: what the window asks for when a search hit
+    /// on a paragraph opens the document.
     #[component(state)]
     pub reveal: Option<String>,
 }
@@ -97,6 +119,10 @@ pub(super) struct References {
     reported: Option<(Vec<String>, Vec<i64>)>,
     links_open: Event,
     links_query: Event,
+    /// The view's answers to the slash menu's picture and page commands: which it waits for, and
+    /// which it answers at all.
+    slash_image: Event,
+    slash_page: Event,
     /// What the picker last told the view, which it hears again only when that changes: whether it was
     /// open, and the text it held.
     picker: Option<(bool, String)>,
@@ -344,11 +370,15 @@ impl Described for BlockEditor {
             links_query,
             commands,
             command,
+            slash,
+            slash_image,
+            slash_page,
             headings,
             image,
-            // A view opened with a block asked for is just opened: the ask is answered on the
+            // A view opened with a formatting ask is just opened: the ask is answered on the
             // change that follows, never on the editor a note is first shown in.
-            reveal: _,
+            format: _,
+            reveal,
         } = props;
         let editing = BodyBinding::bound(&rich, &markdown);
         let mut editor = if editing {
@@ -375,6 +405,7 @@ impl Described for BlockEditor {
             headings,
             Some(open_reference),
         );
+        editor.offer_slash(&slash, slash_image, slash_page);
         editor.set_image_store(Some(ui::pictures::Pictures::window().store().clone()));
         if editing {
             editor.set_image_inserter(Some(picture_inserter()));
@@ -387,6 +418,9 @@ impl Described for BlockEditor {
             editor.show_rich_text(&value.unwrap_or_default());
         }
         editor.publish_headings();
+        // A view opened with a heading asked for, of the note shown before, is just opened; a
+        // block asked for by its place is shown.
+        editor.reveal_opened(reveal);
         editor
     }
 
@@ -402,8 +436,12 @@ impl Described for BlockEditor {
             links_query,
             commands,
             command,
+            slash,
+            slash_image,
+            slash_page,
             headings,
             image,
+            format,
             reveal,
         } = props;
         let editing = BodyBinding::bound(&rich, &markdown);
@@ -420,6 +458,7 @@ impl Described for BlockEditor {
             headings,
             Some(open_reference),
         );
+        self.offer_slash(&slash, slash_image, slash_page);
         self.set_find_replace_enabled(!showing);
         if !showing {
             // The view that bound the document hears of each picture that goes into it.
@@ -435,8 +474,10 @@ impl Described for BlockEditor {
         // A view that asks for a heading again changes its count, so the same heading is shown
         // again rather than read as the ask it already answered.
         self.reveal_asked(reveal);
+        // A formatting ask is one command: the same ask twice is the command it already ran.
+        let formatted = self.format_asked(format);
         self.publish_headings();
-        rebound
+        rebound || formatted
     }
 }
 
@@ -479,6 +520,43 @@ impl BlockEditor {
             });
         }
         self.references.headings = headings;
+    }
+
+    /// The commands the editor itself carries out that the view offers it: a picture and a page,
+    /// each asked of the view, which is the one that can choose a file or make a page.
+    fn offer_slash(&mut self, slash: &[String], slash_image: Event, slash_page: Event) {
+        let host: Vec<SlashHostCommand> = slash
+            .iter()
+            .filter_map(|word| match word.as_str() {
+                "image" => Some(SlashHostCommand::Image),
+                "page" => Some(SlashHostCommand::Page),
+                _ => None,
+            })
+            .collect();
+        self.set_slash_host(&host);
+        self.references.slash_image = slash_image;
+        self.references.slash_page = slash_page;
+    }
+
+    /// Report the command only the view can carry out that a person chose in the slash menu: a
+    /// picture, or a page inside this one. The view's own commands go as `command`, from the
+    /// editor's own callback.
+    pub(super) fn publish_slash_request(&mut self) {
+        if self.references.slash_image.is_none() && self.references.slash_page.is_none() {
+            return;
+        }
+        let Some(request) = self.take_slash_request() else {
+            return;
+        };
+        match request.command {
+            SlashHostCommand::Image => self.references.slash_image.fire(None),
+            // The page a block makes is titled with the words that stood in it.
+            SlashHostCommand::Page => self
+                .references
+                .slash_page
+                .fire(Some(Value::Text(request.text))),
+            SlashHostCommand::Named(_) => {}
+        }
     }
 
     pub(super) fn publish_link_query(&mut self) {

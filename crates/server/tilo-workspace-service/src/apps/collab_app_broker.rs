@@ -19,8 +19,8 @@ mod socket;
 pub(super) use directory::*;
 mod authority;
 mod catalogue;
-mod held_elsewhere;
 mod routing;
+mod shown_actions;
 use tilo_actions::remote::argument_digest;
 use tilo_app_id::apps::FILE_EXPLORER as NEARBY_TRANSFER_APP_ID;
 use tilo_app_id::apps::SETTINGS as SPEAKER_APP_ID;
@@ -191,6 +191,19 @@ pub(crate) fn app_node(workspace: &tilo_desktop_model::Workspace, app: &str) -> 
     workspace.node().app(app)
 }
 
+/// What an invocation of `descriptor` would run with, as the person reviews it: the draft the
+/// sheet shows them, `None` when it takes no field.
+fn rendered_draft(
+    descriptor: &tilo_actions::ActionDescriptor,
+    argument: &tilo_actions::remote::InvokeArgument,
+) -> Option<tilo_actions::Draft> {
+    let tilo_actions::remote::InvokeArgument::Json(arguments) = argument else {
+        return None;
+    };
+    Some(tilo_actions::Draft::render(descriptor, arguments))
+        .filter(|draft| !draft.fields.is_empty())
+}
+
 /// One inert operation published by a live application connection: the one
 /// exported-action shape `runtime-collab` decodes off the wire, typed.
 /// The broker's actor, its published actions and their admission: every host's.
@@ -250,6 +263,8 @@ mod agent_connection;
 mod agent_tests;
 mod app_consent;
 mod app_open_api;
+#[cfg(test)]
+mod cancel_tests;
 mod foreign_ask;
 mod host_action_admission;
 mod host_steps;
@@ -259,6 +274,8 @@ mod live_views;
 mod local_action_provider;
 mod remaining_workspace_actions;
 mod turns;
+#[cfg(all(test, feature = "agents"))]
+mod web_search_tests;
 pub use agent_connection::AgentConnection;
 mod approval;
 mod person_answer;
@@ -345,7 +362,7 @@ struct IntentInputs<'a> {
     argument: Option<&'a str>,
     revision: Option<&'a str>,
     original_request: Option<&'a tilo_actions::remote::InvokeRequest>,
-    local_report: Option<&'a crate::apps::local_document_action::Request>,
+    local_report: Option<&'a runtime_collab::LocalDocumentActionReport>,
     typed_local_arguments: Option<&'a serde_json::Map<String, serde_json::Value>>,
     receipt_context: &'a tilo_actions::ActionContext,
 }
@@ -362,9 +379,9 @@ pub struct AppBrokerState {
     /// `channel_id`: a write fanned out on a channel's route changes what
     /// its read answers, and wakes them ([`Self::wake_committed_reads`]).
     committed_waits: Mutex<HashMap<String, Vec<committed_document::LandedWake>>>,
-    /// Each window's records held in other workspaces, decided again on every policy change
-    /// ([`held_elsewhere`]).
-    held_elsewhere: Mutex<Vec<held_elsewhere::HeldSubscription>>,
+    /// Each window's shown actions, decided again on every policy change
+    /// ([`shown_actions`]).
+    shown_actions: Mutex<Vec<shown_actions::ShownSubscription>>,
     /// `Weak` so broker teardown isn't blocked by an outliving connection.
     fanout: Weak<FanoutState>,
     /// Durable validation, audit, redaction, and scrollback state.
@@ -460,6 +477,9 @@ pub struct AppBrokerState {
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
     /// Host steps whose result stays current, while they are open.
     live_views: live_views::LiveViews,
+    /// The host steps that declared themselves cancellable and have not ended, by job: the flag
+    /// that stops one when its caller cancels it.
+    host_step_stops: Mutex<HashMap<u64, Arc<AtomicBool>>>,
     /// Jobs whose action's contract declares untrusted content, so every
     /// observation of them says so. They share the completed invocation
     /// cache's bounded lifetime.

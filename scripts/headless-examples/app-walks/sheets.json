@@ -1,0 +1,162 @@
+{
+  "app": "sheets",
+  "said": "Sheets",
+  "family": "apps",
+  "live": "rust",
+  "rust": {
+    "id": "so.tilo.sheets",
+    "native": "sheets"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Sheets on a new workbook",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "must": [
+            "Name box",
+            "Formula bar",
+            "Start a formula",
+            "Sheet1",
+            "Bold"
+          ]
+        },
+        {
+          "focused": "sheets"
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    },
+    {
+      "id": "values",
+      "said": "Type two numbers into the first column",
+      "ops": [
+        {
+          "type": "3"
+        },
+        {
+          "key": "Enter"
+        },
+        {
+          "type": "4"
+        },
+        {
+          "key": "Enter"
+        },
+        {
+          "read": {
+            "app": "so.tilo.sheets",
+            "operation": "read-cells",
+            "args": {
+              "sheet": "Sheet1",
+              "range": "A1:B2",
+              "shown": true
+            },
+            "is": {
+              "shown.0.0": "3",
+              "shown.1.0": "4"
+            }
+          }
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "formula",
+      "said": "Put a formula beside them, and its value is what the sheet shows",
+      "ops": [
+        {
+          "click": "Name box"
+        },
+        {
+          "chord": [
+            "Control",
+            "a"
+          ]
+        },
+        {
+          "type": "B1"
+        },
+        {
+          "key": "Enter"
+        },
+        {
+          "type": "=SUM(A1:A2)"
+        },
+        {
+          "key": "Enter"
+        },
+        {
+          "read": {
+            "app": "so.tilo.sheets",
+            "operation": "read-cells",
+            "args": {
+              "sheet": "Sheet1",
+              "range": "A1:B2",
+              "shown": true
+            },
+            "is": {
+              "shown.0.1": "7"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "formula-kept",
+      "said": "The sheet keeps the formula as typed, not only its result",
+      "ops": [
+        {
+          "read": {
+            "app": "so.tilo.sheets",
+            "operation": "read-cells",
+            "args": {
+              "sheet": "Sheet1",
+              "range": "B1"
+            },
+            "is": {
+              "formulas.B1": "=SUM(A1:A2)"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dark",
+      "said": "The same sheet in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        },
+        {
+          "read": {
+            "app": "so.tilo.sheets",
+            "operation": "read-cells",
+            "args": {
+              "sheet": "Sheet1",
+              "range": "A1:B2",
+              "shown": true
+            }
+          }
+        }
+      ],
+      "dark": true
+    }
+  ]
+}

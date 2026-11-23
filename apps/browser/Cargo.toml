@@ -105,7 +105,7 @@ hex.workspace = true
 # The import tests write the Chromium and Firefox databases they read.
 rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 
 [lints]
 workspace = true

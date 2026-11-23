@@ -4,7 +4,7 @@
 //! A window takes the temperature of the workspace it is shown in, the
 //! colour of the person at this machine, the shell's theme, and where its
 //! workspace stands with its peers. The shell works that out
-//! ([`tilo_desktop_surface::warmth::WindowWarmth`]), this follows the
+//! ([`tilo_session_core::desktop::warmth::WindowWarmth`]), this follows the
 //! settings it comes from, and [`AppTabs::publish_window_warmth`] sends it
 //! to each open window when it differs from what that window was told.
 //!
@@ -21,7 +21,7 @@ use serde_json::{Map, Value};
 use tilo_desktop_model::Layout;
 use tilo_desktop_model::ids::WorkspaceId;
 use tilo_desktop_surface::DesktopHandle;
-use tilo_desktop_surface::warmth::WindowWarmth;
+use tilo_session_core::desktop::warmth::WindowWarmth;
 use ui::Theme;
 use ui::floating_surface::HostNetworkStatus;
 use ui::tokens::PresenceHue;

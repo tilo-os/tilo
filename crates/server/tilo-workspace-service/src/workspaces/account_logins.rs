@@ -11,7 +11,7 @@
 //! ([`Workspaces::using_vault`]). A password leaves the vault only to sign in at
 //! the places its entry names, and each release is written down in the entry's uses first.
 
-use accounts::person::PersonAccounts;
+use accounts::person::AccountList;
 use accounts::vault_items::{ItemId, ItemKind, NewItem, Place, Released, UsedFor};
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::person_vault::ItemRef;
@@ -88,7 +88,7 @@ fn accounts_route(workspace: &str) -> tilo_peer_state::document_frame::DocumentR
 /// for the workspace's accounts.
 #[must_use]
 pub fn accounts_document() -> String {
-    collab_types::workspace_document_id(PersonAccounts::KIND)
+    collab_types::workspace_document_id(AccountList::KIND)
 }
 
 impl Workspaces {
@@ -220,15 +220,14 @@ impl Workspaces {
     ) -> Result<Released, String> {
         self.using_vault(workspace, by, Some(app), false).await?;
         let held = self.workspace_accounts(workspace).await?;
-        let store = held.store();
-        let account = store
+        let account = held
             .all()
-            .iter()
+            .into_iter()
             .find(|account| {
                 account.enabled && kept_sign_ins::sign_in_of(&account.config).as_ref() == Some(item)
             })
             .ok_or(NOT_NAMED)?;
-        let places = kept_sign_ins::places_of(account)?;
+        let places = kept_sign_ins::places_of(&account)?;
         let id = kept_sign_ins::id_of(item)?;
         // An agent is named; a person's own use is theirs, as every other release writes it.
         let who = by
@@ -263,7 +262,7 @@ impl Workspaces {
         super::person_settings::oauth_grant::signs_in_with(
             self.vault_at(workspace),
             &self.workspace_root(workspace),
-            account,
+            &account,
             released,
         )
         .await
@@ -281,11 +280,11 @@ impl Workspaces {
     ///
     /// # Errors
     /// This device holds no such workspace, may not read the record, or it does not read.
-    pub async fn workspace_accounts(&self, workspace: &str) -> Result<PersonAccounts, String> {
+    pub async fn workspace_accounts(&self, workspace: &str) -> Result<AccountList, String> {
         let Some(bytes) = self.accounts_document(workspace).await? else {
-            return Ok(PersonAccounts::default());
+            return Ok(AccountList::default());
         };
-        Replica::<PersonAccounts>::load(&bytes)
+        Replica::<AccountList>::load(&bytes)
             .and_then(|replica| replica.state())
             .map_err(|error| error.to_string())
     }
@@ -332,11 +331,10 @@ impl Workspaces {
             };
             held.extend(
                 accounts
-                    .store()
                     .all()
-                    .iter()
+                    .into_iter()
                     .filter(|account| keep(account))
-                    .map(|account| (workspace.clone(), account.clone())),
+                    .map(|account| (workspace.clone(), account)),
             );
         }
         held
@@ -364,7 +362,7 @@ impl Workspaces {
             accounts::email::set_password_item(&mut kept.config, Some(&item.to_string()));
             Ok((
                 (kept.config != before)
-                    .then(|| PersonAccounts::saving(&kept))
+                    .then(|| AccountList::saving(&kept))
                     .into_iter()
                     .collect(),
                 (),
@@ -384,7 +382,7 @@ impl Workspaces {
     ) -> Result<(), String> {
         self.change_workspace_accounts(workspace, |held| {
             let edit = (held.account(account.id.as_str()).as_ref() != Some(account))
-                .then(|| PersonAccounts::saving(account));
+                .then(|| AccountList::saving(account));
             Ok((edit.into_iter().collect(), ()))
         })
         .await
@@ -402,7 +400,7 @@ impl Workspaces {
         self.change_workspace_accounts(workspace, |held| {
             let kept = held.account(id).is_some();
             let edit = kept.then(|| {
-                PersonAccounts::REMOVE_ACCOUNT.with(tilo_resource::Id::from_raw(id.to_owned()))
+                AccountList::REMOVE_ACCOUNT.with(tilo_resource::Id::from_raw(id.to_owned()))
             });
             Ok((edit.into_iter().collect(), kept))
         })
@@ -421,15 +419,15 @@ impl Workspaces {
         &self,
         workspace: &str,
         change: impl FnOnce(
-            &PersonAccounts,
-        ) -> Result<(Vec<tilo_resource::Invoke<PersonAccounts>>, T), String>,
+            &AccountList,
+        ) -> Result<(Vec<tilo_resource::Invoke<AccountList>>, T), String>,
     ) -> Result<T, String> {
         let bytes = self.accounts_document(workspace).await?;
         let founding = bytes.is_none();
         let (changes, answer) = {
             let mut replica = match &bytes {
                 Some(bytes) => {
-                    Replica::<PersonAccounts>::load(bytes).map_err(|error| error.to_string())?
+                    Replica::<AccountList>::load(bytes).map_err(|error| error.to_string())?
                 }
                 None => Replica::from_doc(founding_accounts(workspace)?),
             }
@@ -489,13 +487,13 @@ impl Workspaces {
 fn founding_accounts(workspace: &str) -> Result<automerge::AutoCommit, String> {
     let id = collab_types::document::DocumentId::parse(&accounts_document())
         .ok_or("the accounts record's id is no document's")?;
-    let kind = collab_types::document::ResourceType::new(PersonAccounts::KIND);
+    let kind = collab_types::document::ResourceType::new(AccountList::KIND);
     let mut doc = automerge::AutoCommit::new();
     collaboration::resource::genesis(
         &mut doc,
         &collab_types::document::DocumentCheckout::new(id, kind),
         workspace,
-        |doc| PersonAccounts::initialize(doc).map_err(|error| error.to_string()),
+        |doc| AccountList::initialize(doc).map_err(|error| error.to_string()),
     )
     .map_err(|error| error.to_string())?;
     Ok(doc)

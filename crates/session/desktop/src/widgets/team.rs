@@ -155,7 +155,10 @@ pub fn place_of(desktop: &Layout, member_id: &str) -> Option<Place> {
             .flat_map(|group| &group.tabs)
             .find(|tab| tab.id == tab_id)?;
         let place = Place {
-            strip: Some(tilo_desktop_surface::names::strip_named(&strip.name, at)),
+            strip: Some(tilo_session_core::desktop::names::strip_named(
+                &strip.name,
+                at,
+            )),
             window: Some(tilo_desktop_surface::window_name(tab))
                 .filter(|title| !title.trim().is_empty()),
         };

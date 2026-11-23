@@ -40,7 +40,12 @@ async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     let server = &hosted.server;
 
     let lounge = server.workspaces().unwrap().create("Lounge").await.unwrap();
-    crate::call::enter(server, &alice_laptop.cert, &lounge.workspace).await;
+    server
+        .workspaces()
+        .unwrap()
+        .enter(&lounge.workspace, &alice_laptop.cert)
+        .await
+        .unwrap();
     let lounge_id = tilo_server::WorkspaceId::parse(&lounge.workspace).unwrap();
     let welcome = DocumentRoute {
         app_id: "so.tilo.notes".into(),

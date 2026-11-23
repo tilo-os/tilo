@@ -86,6 +86,15 @@ fn field_of_sentence(name: &str) -> String {
     })
 }
 
+/// One field a change wrote, as history reads it: the field itself, what it held before and
+/// after as its type shows them, and for a rich text the words that changed.
+type ChangedField<'a> = (
+    &'a crate::registry::FieldInfo,
+    Value,
+    Value,
+    Option<(String, String)>,
+);
+
 /// The label an action is shown with: as the compiler derived it, else its name in sentence
 /// case.
 #[must_use]
@@ -842,12 +851,14 @@ impl Core {
         // words its type gives it while untitled, as the field's placeholder stands, dimmed.
         let named = info.name_field().map(|field| field.id.as_str());
         let untitled = self.untitled_words(of);
-        let mut held: Vec<(&crate::registry::FieldInfo, Value, Value)> =
-            Vec::with_capacity(written.len());
+        // Each field the change wrote, with what it held before and after, and for a rich text
+        // the words that changed rather than the whole text either side of them.
+        let mut held: Vec<ChangedField<'_>> = Vec::with_capacity(written.len());
         for (id, before, after) in written {
             let Some(field) = info.field(&id) else {
                 continue;
             };
+            let words = Self::rich_words(field, &before, &after, named);
             let side = |held: crate::store::FieldValue| -> HResult<Value> {
                 let value = self
                     .field_value(of, field, held, None)
@@ -863,14 +874,15 @@ impl Core {
                 }
                 self.change_shown(&field.ty, &value, viewer)
             };
-            held.push((field, side(before)?, side(after)?));
+            held.push((field, side(before)?, side(after)?, words));
         }
         let mut out = Vec::with_capacity(held.len());
         let mut first = true;
-        for (field, before, after) in &held {
+        for (field, before, after, changed) in &held {
             let said = crate::did::renamed(info, &field.id).unwrap_or_else(|| {
                 crate::did::said(field, &field_of_sentence(&field.name), before, after)
             });
+            let (before, after) = self.change_sides(changed.as_ref(), before, after, viewer)?;
             let args: Vec<(String, String)> = said
                 .field
                 .iter()
@@ -899,6 +911,53 @@ impl Core {
             ]));
         }
         Ok(out)
+    }
+
+    /// The words a change of the rich text `field` took away and put there; `None` for a field
+    /// of another kind, and for the field that names the resource, whose empty value reads as
+    /// its placeholder rather than as a change of text.
+    fn rich_words(
+        field: &crate::registry::FieldInfo,
+        before: &crate::store::FieldValue,
+        after: &crate::store::FieldValue,
+        named: Option<&str>,
+    ) -> Option<(String, String)> {
+        match (before, after) {
+            (crate::store::FieldValue::Rich(was), crate::store::FieldValue::Rich(now))
+                if field.kind == crate::meta::FieldKind::RichText
+                    && named != Some(field.id.as_str()) =>
+            {
+                Some(now.changed_words(was))
+            }
+            _ => None,
+        }
+    }
+
+    /// What one field of a change shows as either side of its arrow: a rich text as the words
+    /// that changed (`words`), so a long body reads as what a person did to it and not as the
+    /// body; any other field as its type shows it.
+    fn change_sides(
+        &self,
+        words: Option<&(String, String)>,
+        before: &Value,
+        after: &Value,
+        viewer: Option<&Actor>,
+    ) -> HResult<(Value, Value)> {
+        match words {
+            Some((removed, added)) => Ok((
+                self.change_shown(
+                    &tilolang::types::Ty::Text,
+                    &Value::text(removed.as_str()),
+                    viewer,
+                )?,
+                self.change_shown(
+                    &tilolang::types::Ty::Text,
+                    &Value::text(added.as_str()),
+                    viewer,
+                )?,
+            )),
+            None => Ok((before.clone(), after.clone())),
+        }
     }
 
     /// The platform's words for `key`, in the reader's language; `source` where no catalogue
@@ -1980,6 +2039,11 @@ impl Core {
             .and_then(|pkg| pkg.action(id).map(label_of))
         {
             return found;
+        }
+        // A bound control's edit is the platform's, and no package declares it: it reads as
+        // what it did, never as the id a change is stamped with.
+        if id == crate::store::EDIT_TEXT_ACTION || id == crate::store::EDIT_FLAG_ACTION {
+            return self.word("tilolang-did-edited", "edited it");
         }
         sentence(id.trim_start_matches('$'))
     }

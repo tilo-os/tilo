@@ -782,6 +782,11 @@ impl AppBrokerState {
         if let Some(cancelled) = self.live_views.cancel(id, Some(owner)) {
             return cancelled.map(|()| invocation_journal::Durable::settled());
         }
+        // A host step that declared itself cancellable stops on its own flag, and answers as
+        // cancelled when it does. Such a step keeps no pending invocation of its own.
+        if self.stop_host_step(id) {
+            return Ok(invocation_journal::Durable::settled());
+        }
         let mut pending = self
             .pending_invocations
             .lock()

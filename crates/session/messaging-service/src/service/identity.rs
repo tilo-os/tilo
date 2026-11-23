@@ -56,9 +56,9 @@ impl Ownership {
     ) -> Result<Self, String> {
         let mut person = [0; 32];
         hex::decode_to_slice(actor, &mut person).map_err(|e| e.to_string())?;
-        let room = collab_types::personal_cluster(&person).to_string();
+        let room = collab_types::person_workspace(&person).to_string();
         let workspace = collab_types::WorkspaceId::parse(&room)
-            .ok_or_else(|| "a person's cluster is not a workspace id".to_string())?;
+            .ok_or_else(|| "a person's own workspace is not a workspace id".to_string())?;
         Ok(Self {
             host,
             actor: actor.into(),

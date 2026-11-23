@@ -5,8 +5,9 @@
 //! clear. Removed, it stops arriving with the next command; an item the vault does not hold stops
 //! the command in plain words; whoever may not read the vault is refused it; and a terminal the
 //! person opens in the machine starts its programs with it too.
+use super::agent_mcp::tool;
 use super::*;
-use serde_json::{Value, json};
+use serde_json::json;
 use tilo_actions::remote::person_vault;
 use tilo_environment::machine_secrets::{DOCUMENT, MachineSecrets};
 use tilo_mcp::McpServer;
@@ -22,31 +23,6 @@ const TOKEN: &str = "sk-ant-oat01-only-a-program-in-the-machine-may-read-this";
 const VARIABLE: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 /// The account the machine is paid from.
 const ACCOUNT: &str = "acct-1";
-
-/// What a tool call answers, and whether it failed.
-async fn tool(server: &McpServer<SessionActions>, name: &str, arguments: Value) -> (String, bool) {
-    let answer = server
-        .handle(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                       "params": {"name": name, "arguments": arguments}}))
-        .await
-        .expect("a call is answered");
-    let result = &answer["result"];
-    let text = result["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|block| block["text"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    (
-        if text.is_empty() {
-            answer.to_string()
-        } else {
-            text
-        },
-        result["isError"] == true || answer.get("error").is_some(),
-    )
-}
 
 /// The workspace's machine secrets document.
 fn secrets_route() -> DocumentRoute {

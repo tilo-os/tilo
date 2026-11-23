@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.agent@77c9c58421aeb9b1";
+export const SURFACE = "so.tilo.agent@4925ad3921e038bc";
 
 /** Where an ask stands. The workspace's agent engine moves it on, except that its asker withdraws it and a person stops a turn that is working. One of "waiting", "working", "done", "failed", "stopped", "withdrawn", "cannot_read". */
 export type AskState = "waiting" | "working" | "done" | "failed" | "stopped" | "withdrawn" | "cannot_read";
@@ -74,6 +74,9 @@ export interface ShowArgs {
 /** The arguments of `finish`. */
 export interface FinishArgs {
   state: AskState;
+  provider?: string;
+  model?: string;
+  cost?: number;
 }
 
 /** The arguments of `supersede`. */
@@ -170,6 +173,9 @@ export interface Reply extends tilo.Resource {
   e36wbuu7: Array<tilo.Entry<Step>>;  // steps
   bnlsdtf6: Array<tilo.Entry<SentView>>;  // views
   mwwrjl52: Array<tilo.Entry<Shown>>;  // shown
+  vbzsd5lu: string;  // provider
+  "5xeeayip": string;  // model
+  "4xymfj5v": number;  // cost
   eyh6zmbf: boolean;  // superseded
   /** The agent writes `more` at the end of its answer. */
   say(args: {
@@ -204,9 +210,12 @@ export interface Reply extends tilo.Resource {
   }): Promise<void>;
   /** Runs `show` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   showMany(items: ShowArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** The agent's turn ended as `state`: done, failed, or stopped when a person stopped it. */
+  /** The agent's turn ended as `state`: done, failed, or stopped when a person stopped it. `model` of `provider` answered it, where a model did, its calls costing `cost` millionths of the workspace's currency; a turn that ended before its model answered says nothing of one. */
   finish(args: {
     state: AskState;
+    provider?: string;
+    model?: string;
+    cost?: number;
   }): Promise<void>;
   /** Runs `finish` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   finishMany(items: FinishArgs[]): Promise<tilo.ActionAnswer[]>;

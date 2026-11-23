@@ -11,8 +11,8 @@
 //!
 //! Each key works in a run of its own, which the device's broker admits as it
 //! admits an agent at the device's MCP server ([`Sessions::open`]). Before every
-//! message the key is checked against the person's own store of their devices
-//! ([`PersonalDevices::admit`]: theirs, current, not revoked) and its grant's
+//! message the key is checked against the person's devices, as their own workspace
+//! lists them ([`PersonalDevices::admit`]: theirs, current, not revoked), and its grant's
 //! scope against the workspace; a key that no longer holds loses its run.
 
 use std::collections::HashMap;

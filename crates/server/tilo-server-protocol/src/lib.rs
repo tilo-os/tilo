@@ -60,7 +60,6 @@ pub mod public_avatars;
 pub mod refusal;
 pub mod servers;
 pub mod transport;
-pub mod voice;
 pub mod web;
 pub mod work;
 pub mod workspaces;

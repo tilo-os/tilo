@@ -76,7 +76,7 @@ tilo-engine-loader = { version = "0.1.0", path = "../../runtime/engine-loader", 
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", optional = true }
 
 [dev-dependencies]
-tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
+tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env" }
 # The temporary engine instances and profiles a test stands up.
 tempfile.workspace = true
 # Scoped monotonic readings for the private text protocol's deadline tests.

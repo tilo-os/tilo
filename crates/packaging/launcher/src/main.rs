@@ -619,7 +619,7 @@ fn dispatch_command(
     }
 }
 
-/// Run the tilolang host the session started, on the socket it handed over at descriptor 3.
+/// Run the tilolang host the session started, on the socket it handed over as this process's stdin.
 fn tilolang_process(
     runtime: String,
     app_runtime: String,
@@ -627,11 +627,12 @@ fn tilolang_process(
     earlier: Option<launcher::run::tilolang_process::Earlier>,
 ) -> ExitCode {
     use launcher::run::tilolang_process::{ProcessLaunch, launch_tilolang_process};
-    // SAFETY: the session hands the socket at this descriptor and nothing else owns it in this process.
-    let socket = unsafe {
-        <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(
-            runtime_portal::process_link::CHILD_FD,
-        )
+    let socket = match take_stdin() {
+        Ok(socket) => socket,
+        Err(error) => {
+            eprintln!("tilo-launcher: the tilolang host's socket: {error}");
+            return ExitCode::FAILURE;
+        }
     };
     let launch = ProcessLaunch {
         runtime,
@@ -646,6 +647,20 @@ fn tilolang_process(
             ExitCode::FAILURE
         }
     }
+}
+
+/// What the session handed over as this process's stdin, moved off it: stdin is `/dev/null` from
+/// here on, so nothing this process starts inherits it.
+fn take_stdin() -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::{AsFd as _, AsRawFd as _};
+    let taken = std::io::stdin().as_fd().try_clone_to_owned()?;
+    let null = std::fs::File::open("/dev/null")?;
+    // SAFETY: both are descriptors this process owns; replacing descriptor 0 closes the handed
+    // one there in one step.
+    if unsafe { libc::dup2(null.as_raw_fd(), 0) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(taken)
 }
 
 /// The arguments of a `run` command; `None` for any other command.
@@ -1035,6 +1050,15 @@ fn report_launch_result(
                     "tilo-launcher: {} ended: {status}",
                     app_id.unwrap_or("the app")
                 );
+                // A sandbox this computer cannot make ends every app the same way: said by its
+                // own exit code, so whoever started the app names the cause.
+                if matches!(launcher::user_namespaces::allowed(), Ok(false)) {
+                    eprintln!(
+                        "tilo-launcher: this computer allows no user namespaces, which every app's \
+                         sandbox is made in"
+                    );
+                    return exit_code(launcher::user_namespaces::EXIT_NO_USER_NAMESPACES);
+                }
             }
             if let Some(code) = status.code() {
                 exit_code(code)

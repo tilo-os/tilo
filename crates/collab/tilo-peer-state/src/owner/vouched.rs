@@ -3,10 +3,11 @@
 //! each subscription with the workspace's membership answer
 //! ([`tilo_server_protocol::Envelope::WorkspaceBootstrap`]) over the session the
 //! page authenticated to it. The page holds the workspace from that answer as a
-//! native device holds a workspace it enrolled in; the workspace's governance arrives
-//! with the replay that follows and is admitted like any other.
+//! native device holds a workspace it enrolled in, the workspace's governance
+//! carried with it and admitted like any other; what the host says of the
+//! workspace after that is admitted the same way.
 use crate::StatePeer;
-use crate::join::JoinTransportResponse;
+use crate::join::{JoinTransportResponse, Role};
 use crate::owner::stored::{StoredVouch, StoredWorkspace};
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, publication};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
@@ -14,17 +15,19 @@ use tilo_user_identity::{DeviceCert, RevocationEntry};
 use web_time::SystemTime;
 
 /// What a membership answer says: the device it answers, the workspace and its
-/// workspace, the host that answered, roster and revocations.
+/// workspace, the host that answered, roster, revocations, and the workspace's
+/// governance as the messages that carry it.
 struct Membership {
     device: DeviceCert,
     workspace: WorkspaceId,
     host: DeviceCert,
     roster: Vec<DeviceCert>,
     revocations: Vec<RevocationEntry>,
+    governance: Vec<Vec<u8>>,
 }
 
 fn membership(bytes: &[u8]) -> Result<Membership, String> {
-    let (device, workspace, host, roster, revocations) =
+    let (device, workspace, host, roster, revocations, governance) =
         match postcard::from_bytes(bytes).map_err(|error| error.to_string())? {
             JoinTransportResponse::MembershipComplete(answer) => (
                 answer.device_cert,
@@ -32,6 +35,7 @@ fn membership(bytes: &[u8]) -> Result<Membership, String> {
                 answer.host,
                 answer.certified_roster,
                 answer.revocations,
+                answer.governance_messages,
             ),
             JoinTransportResponse::OwnerMembershipComplete(answer) => (
                 answer.device_cert,
@@ -39,6 +43,7 @@ fn membership(bytes: &[u8]) -> Result<Membership, String> {
                 answer.host,
                 answer.certified_roster,
                 answer.revocations,
+                answer.governance_messages,
             ),
             _ => return Err("the workspace's bootstrap is no membership answer".into()),
         };
@@ -48,6 +53,7 @@ fn membership(bytes: &[u8]) -> Result<Membership, String> {
         host,
         roster,
         revocations,
+        governance,
     })
 }
 
@@ -100,29 +106,49 @@ impl NativeWorkspaceOwner {
         let workspace = answer.workspace;
         let _turn = self.0.mutation.lock();
         if let Some(held) = self.0.authority.read().workspaces.get(&workspace) {
-            // An enrollment of another device is the one this machine was
-            // copied from: never this device's to act with, so the membership
-            // its host answered for this device takes its place.
+            // The same host keeps what it admitted for this device, its enrollment
+            // included: the session is another connection of the device that already
+            // holds the workspace here, not a page.
             let this_device = held.device.device_public_key == device.device_public_key;
-            if held.enrollment.is_some() && this_device {
-                return Err("the workspace is held through an enrollment".into());
-            }
-            // The same host keeps what it admitted for this device; a record
-            // another device held is replaced whatever its host.
             if this_device
                 && held.workspace_host == answer.host
                 && held.workspace == answer.workspace
             {
                 return Ok(false);
             }
+            // An enrollment of another device is the one this machine was
+            // copied from: never this device's to act with, so the membership
+            // its host answered for this device takes its place.
+            if held.enrollment.is_some() && this_device {
+                return Err("the workspace is held through an enrollment".into());
+            }
         }
-        let peer = StatePeer::from_join(
+        let mut peer = StatePeer::from_join(
             &answer.workspace.to_string(),
             answer.host.clone(),
             answer.roster,
             &answer.revocations,
             now,
         )?;
+        // The workspace's governance arrives with the answer: what the records the page
+        // reads and writes are decided against, and who holds the keys of each of them.
+        if !answer.governance.is_empty() {
+            let governance = crate::join::JoinBootstrap {
+                version: 1,
+                invite_id: [0; 32],
+                device_cert: answer.device.clone(),
+                role: Role::Viewer,
+                workspace_id: answer.workspace,
+                host: answer.host.clone(),
+                certified_roster: Vec::new(),
+                revocations: Vec::new(),
+                records: Vec::new(),
+                governance_messages: answer.governance,
+                generation: 1,
+            };
+            crate::owner::enrollment::install_governance(&mut peer, &governance, now)
+                .map_err(|error| error.to_string())?;
+        }
         let record = StoredWorkspace {
             version: crate::owner::stored::WORKSPACE_VERSION,
             workspace,

@@ -1,0 +1,167 @@
+{
+  "app": "browser",
+  "said": "Browser",
+  "family": "apps",
+  "live": "rust",
+  "rust": {
+    "id": "so.tilo.browser",
+    "native": "browser"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Browser on its first page",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "must": [
+            "Address and search"
+          ]
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    },
+    {
+      "id": "local-page",
+      "said": "Give the page a local address, and the page it names renders",
+      "ops": [
+        {
+          "serve": {
+            "pages": {
+              "dir": "apps/browser/test-pages",
+              "page": "links.html"
+            }
+          }
+        },
+        {
+          "act": {
+            "do": [
+              "browser.page",
+              "navigate",
+              {
+                "url": {
+                  "served": "pages"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "read": {
+            "app": "so.tilo.browser",
+            "operation": "read-page",
+            "contains": "First section"
+          }
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "follow-link",
+      "said": "Follow the page's link",
+      "ops": [
+        {
+          "act": {
+            "do": [
+              "browser.page",
+              "find-page-element",
+              {
+                "role": "link",
+                "name": "Second section"
+              }
+            ],
+            "as": "link"
+          }
+        },
+        {
+          "act": {
+            "do": [
+              "browser.page",
+              "click-page",
+              {
+                "element": {
+                  "served": "link.element"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "read": {
+            "app": "so.tilo.browser",
+            "operation": "read-page",
+            "contains": "Followed."
+          }
+        }
+      ]
+    },
+    {
+      "id": "back",
+      "said": "Go back to the page the link was on",
+      "ops": [
+        {
+          "act": {
+            "do": [
+              "browser.page",
+              "back"
+            ]
+          }
+        },
+        {
+          "read": {
+            "app": "so.tilo.browser",
+            "operation": "read-page",
+            "contains": "First section"
+          }
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "new-page",
+      "said": "Open another page, in a tab of its own",
+      "ops": [
+        {
+          "chord": [
+            "Control",
+            "t"
+          ]
+        },
+        {
+          "windows": 2
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "close-page",
+      "said": "Close the page again",
+      "ops": [
+        {
+          "chord": [
+            "Control",
+            "w"
+          ]
+        },
+        {
+          "windows": 1
+        }
+      ]
+    }
+  ]
+}

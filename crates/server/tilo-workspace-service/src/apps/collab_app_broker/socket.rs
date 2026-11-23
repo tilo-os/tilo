@@ -534,7 +534,6 @@ pub(super) async fn authenticate_launcher_handoff(
                 answerable: false,
             });
         }
-        let earlier = kept_document::earlier_ids_of(services, &handoff.app_id);
         let opened = launch
             .launch_ticket
             .map(|ticket| workspace_open::ConnectedLaunch {
@@ -547,7 +546,6 @@ pub(super) async fn authenticate_launcher_handoff(
                 handoff,
                 media_process,
                 launch,
-                earlier,
             ),
             launch: opened,
         });

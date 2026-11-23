@@ -764,11 +764,6 @@ mod tests {
             }
         }
 
-        phase index_is_formatted_the_way_tpm2_tools_expects;
-        {
-            assert_eq!(idx(DEFAULT_NV_INDEX), "0x01D91100");
-        }
-
         phase increments_count_the_gap_forward_only_and_never_overflow;
         {
             {

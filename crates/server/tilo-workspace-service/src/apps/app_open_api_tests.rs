@@ -7,8 +7,6 @@
 struct PressedOpens {
     presses: Mutex<Vec<String>>,
     opened: Mutex<Vec<String>>,
-    /// The apps the catalogue says were published under other ids before.
-    earlier: tilo_action_policy::EarlierIds,
 }
 
 impl PressedOpens {
@@ -21,9 +19,6 @@ impl PressedOpens {
 }
 
 impl crate::apps::services::LauncherServices for PressedOpens {
-    fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
-        self.earlier.clone()
-    }
     fn applications(&self) -> Vec<crate::apps::services::LaunchableApplication> {
         [
             "so.tilo.word-processor",
@@ -66,12 +61,9 @@ impl crate::apps::services::LauncherServices for PressedOpens {
 }
 
 async fn pressed_opens_rig(env: &Environment) -> (Rig, Arc<PressedOpens>) {
-    let mut earlier = tilo_action_policy::EarlierIds::new();
-    earlier.insert("so.tilo.lang.tasks", ["so.tilo.lang.todo"]);
     let launcher = Arc::new(PressedOpens {
         presses: Mutex::new(Vec::new()),
         opened: Mutex::new(Vec::new()),
-        earlier,
     });
     let rig = Rig::with_services(
         env,
@@ -306,34 +298,6 @@ async fn an_app_launches_an_installed_app_only_for_a_press_or_an_invocation_it_r
                 serde_json::from_str::<tilo_actions::InvocationUpdate>(&json).unwrap(),
                 tilo_actions::InvocationUpdate::Succeeded { .. }
             ));
-            rig.stop().await;
-        })
-        .await;
-}
-
-/// A reference kept under an app's earlier id (a todo a note links to, from
-/// before Todo became Tasks) opens the app that took its place; the request
-/// is not rewritten for it.
-#[tokio::test(flavor = "current_thread")]
-async fn a_reference_under_an_earlier_app_id_opens_the_renamed_app() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let env = Environment::new();
-            let (rig, launcher) = pressed_opens_rig(&env).await;
-            let workspace = env.route.cluster_id.clone();
-            let app = rig.worker.handle.clone();
-            // What `ResourceRef::open_target` asks of the reference.
-            let mut request = open_app_request(&workspace, "so.tilo.chat", None);
-            request.target = tilo_actions::remote::application_action_target(
-                &workspace,
-                "so.tilo.lang.todo",
-                "tl:so.tilo.lang.todo:item-1",
-                tilo_actions::remote::APPLICATION_OPEN_ACTION,
-            );
-            launcher.press(&env.route.app_id);
-            let opened = app_asks(&app, request).await;
-            assert!(!refused(&opened), "{opened:?}");
-            assert_eq!(launcher.opened(), ["so.tilo.lang.tasks"]);
             rig.stop().await;
         })
         .await;

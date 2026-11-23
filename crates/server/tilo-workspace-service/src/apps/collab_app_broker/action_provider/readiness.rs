@@ -22,32 +22,24 @@ use tilo_desktop_model::Workspace;
 const WORKSPACE_OWNER_WAIT: Duration = Duration::from_secs(5);
 
 impl AppBrokerState {
-    /// `workspace_id` as the shell names its owner, waiting at most [`WORKSPACE_OWNER_WAIT`] for the
-    /// shell to say whose it is, and `None` when it never does: a workspace joined through an API
-    /// whose host has not said whose it is here is nobody's, and stays so.
-    pub(super) fn workspace_naming_its_owner(
+    /// `workspace_id` decided once this dispatch holds it, waiting [`WORKSPACE_OWNER_WAIT`] for it.
+    pub(super) async fn workspace_once_joined<R>(
         &self,
         caller: &Caller,
         workspace_id: &str,
-    ) -> Option<(Workspace, BrokerActor)> {
+        decide: impl Fn(&Workspace, &BrokerActor, u64) -> R,
+    ) -> Option<R> {
         let until = tilo_clock::now().checked_add(WORKSPACE_OWNER_WAIT)?;
         let slice = WORKSPACE_OWNER_WAIT.div_f32(25.0);
-        let mut sample = None;
-        while tilo_clock::now() < until {
-            if let Some((workspace, actor, _)) =
-                self.decide_for(caller, workspace_id, |workspace, policy, now| {
-                    (workspace.clone(), policy.clone(), now)
-                })
-            {
-                if workspace.owner().is_some() {
-                    return Some((workspace, actor));
-                }
-                sample = Some((workspace, actor));
+        loop {
+            if let Some(answer) = self.decide_for(caller, workspace_id, &decide) {
+                return Some(answer);
             }
-            // The shell's publications, the identity store and the device fleet all announce.
-            tilo_identity::policy_change::wait_for_a_change(Some(slice));
+            if tilo_clock::now() >= until {
+                return None;
+            }
+            tokio::time::sleep(slice).await;
         }
-        sample
     }
 }
 
@@ -62,7 +54,7 @@ impl AppBrokerState {
         origin: Option<&super::super::InvocationCaller>,
         request: &InvokeRequest,
         argument: Option<&str>,
-        (mut workspace, mut policy, now): (Workspace, BrokerActor, u64),
+        (workspace, policy, now): (Workspace, BrokerActor, u64),
     ) -> Result<Option<u64>, ActionCallError> {
         let address = &request.target.address;
         let Some(app_id) = address
@@ -72,16 +64,6 @@ impl AppBrokerState {
         else {
             return Ok(None);
         };
-        // A shell claims a workspace it has just opened in the pass that shows it, and says so on
-        // the way. An action arriving in the moment before waits for that pass — the person is
-        // never refused in a workspace that is about to be theirs — and decides on the shell's
-        // next word.
-        if workspace.owner().is_none()
-            && let Some((named, actor)) = self.workspace_naming_its_owner(caller, workspace_id)
-        {
-            workspace = named;
-            policy = actor;
-        }
         if caller.workspace().is_none() {
             tracing::warn!("opening an app was refused: the caller names no workspace");
             return Err(ActionCallError::UnknownAction);

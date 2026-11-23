@@ -103,7 +103,7 @@ tempfile.workspace = true
 tilo-server = { path = "../../server/tilo-server" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 iroh-base = { workspace = true, features = ["key"] }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }
 # The surface a received workspace desktop is drawn on: every host
 # shows another device's windows through, reconciled from the tree that

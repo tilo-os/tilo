@@ -7,32 +7,83 @@
 //! does not fit is refused with [`io::ErrorKind::InvalidInput`] naming the limit, never
 //! silently.
 //!
+//! Windows names a local service with a named pipe instead, which is not here yet:
+//! [`bind`] and [`connect`] answer [`io::ErrorKind::Unsupported`], and their connection
+//! types are never produced. A caller that reaches a service only behind `cfg(unix)`
+//! needs no change.
+//!
 //! The crate is std-only: `tilo_files::native::socket` re-exports it, and a tool that
 //! must stay small to start quickly (the `cargo desktop` launcher) can bind and connect
 //! through the same code without taking on a dependency graph.
-#![cfg(unix)]
 
 use std::io;
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 
 /// The longest socket path the kernel takes, without its terminating NUL.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub const MAX_PATH: usize = 107;
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 pub const MAX_PATH: usize = 103;
+/// A named pipe's name is not a socket path, and a page has neither: no length
+/// of one fits here.
+#[cfg(not(unix))]
+pub const MAX_PATH: usize = 0;
+
+/// A listening local socket; on Windows, and in a page, nothing produces one yet.
+#[cfg(unix)]
+pub type Listener = UnixListener;
+#[cfg(not(unix))]
+pub struct Listener(std::convert::Infallible);
+#[cfg(unix)]
+pub type Stream = UnixStream;
+#[cfg(not(unix))]
+pub struct Stream(std::convert::Infallible);
+
+/// The refusal a caller without local sockets reaches.
+#[cfg(windows)]
+fn unsupported() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "local sockets are not supported on Windows yet",
+    )
+}
+
+/// The refusal a page reaches: it has no local socket to reach.
+#[cfg(all(not(unix), not(windows)))]
+fn unsupported() -> io::Error {
+    io::Error::new(io::ErrorKind::Unsupported, "a page has no local socket")
+}
 
 /// Listens on a new socket at `path`, whatever its length.
-pub fn bind(path: &Path) -> io::Result<UnixListener> {
-    reach(path, |short| UnixListener::bind(short))
+pub fn bind(path: &Path) -> io::Result<Listener> {
+    #[cfg(unix)]
+    {
+        reach(path, |short| UnixListener::bind(short))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Err(unsupported())
+    }
 }
 
 /// Connects to the socket at `path`, whatever its length.
-pub fn connect(path: &Path) -> io::Result<UnixStream> {
-    reach(path, |short| UnixStream::connect(short))
+pub fn connect(path: &Path) -> io::Result<Stream> {
+    #[cfg(unix)]
+    {
+        reach(path, |short| UnixStream::connect(short))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Err(unsupported())
+    }
 }
 
 /// Calls `act` with a name for `path` that fits the kernel's buffer, valid for as long as `act` runs.
+#[cfg(unix)]
 fn reach<T>(path: &Path, act: impl FnOnce(&Path) -> io::Result<T>) -> io::Result<T> {
     if path.as_os_str().len() <= MAX_PATH {
         return act(path);
@@ -68,11 +119,12 @@ fn through_directory<T>(path: &Path, act: impl FnOnce(&Path) -> io::Result<T>) -
     act(&short)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 fn through_directory<T>(path: &Path, _act: impl FnOnce(&Path) -> io::Result<T>) -> io::Result<T> {
     Err(too_long(path))
 }
 
+#[cfg(unix)]
 fn too_long(path: &Path) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
@@ -84,7 +136,13 @@ fn too_long(path: &Path) -> io::Error {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::mixed_attributes_style,
+    reason = "the module is a test module, whose panics the lint rules exempt, that binds a Unix socket"
+)]
 mod tests {
+    #![cfg(unix)]
+
     use super::*;
     use std::io::{Read as _, Write as _};
 

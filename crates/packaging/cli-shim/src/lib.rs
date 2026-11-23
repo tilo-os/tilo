@@ -63,26 +63,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_template_run_by_itself_points_at_tilo() {
-        let message = missing_sidecar_message(
-            Path::new("/usr/libexec/tilo-cli-shim"),
-            "No such file or directory",
-        );
-        assert!(message.contains("tilo-install"), "{message}");
-        assert!(message.contains("`tilo action list`"), "{message}");
-        assert!(!message.contains("sidecar"), "{message}");
-    }
-
-    #[test]
-    fn a_copy_missing_its_sidecar_names_the_file() {
-        let message = missing_sidecar_message(
+    fn a_copy_names_its_sidecar_and_the_template_points_at_tilo() {
+        let copy = missing_sidecar_message(
             Path::new("/usr/lib/tilo-apps/bin/notes"),
             "No such file or directory",
         );
         assert!(
-            message.contains("/usr/lib/tilo-apps/bin/notes.tilo-shim"),
-            "{message}"
+            copy.contains("/usr/lib/tilo-apps/bin/notes.tilo-shim"),
+            "{copy}"
         );
-        assert!(message.contains("reinstall"), "{message}");
+        let template = missing_sidecar_message(
+            Path::new("/usr/libexec/tilo-cli-shim"),
+            "No such file or directory",
+        );
+        assert!(template.contains("tilo-install"), "{template}");
+        assert!(!template.contains("sidecar"), "{template}");
     }
 }

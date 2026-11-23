@@ -25,6 +25,7 @@
  * `getSnapshot()` returns `PeerSnapshot` with `SessionHealth` v1.
  */
 import {createPeerVoice} from './voice-peer.mjs';
+import {hex} from './hex.mjs';
 import {memberText} from './json-text.mjs';
 import {changed as pageChanged} from './changes.mjs';
 import {AdmissionError} from './admission.mjs';
@@ -159,7 +160,8 @@ export function storageFailureCode(error) {
   if (/SecurityError/i.test(text)) return 'storage-denied';
   return 'storage-transaction-failed';
 }
-const hexKey = key => (typeof key === 'string' ? key : Array.from(key ?? [], byte => byte.toString(16).padStart(2, '0')).join(''));
+// Differs from `hex` in input type: accepts hex strings and nullish values in addition to bytes.
+const hexKey = key => (typeof key === 'string' ? key : hex(key ?? []));
 
 /** `InvokeArgument` for a JavaScript value: nothing, a prompted text, or a typed object. */
 function invokeArgument(argument) {
@@ -755,7 +757,7 @@ async function connect({
       const hostDevice = hexKey(host.hostCert?.device_public_key);
       // The host bridges this page into a call, so its frames carry the
       // host's device and it is the page's own voice there.
-      voice ??= voiceOptions === false ? undefined : createPeerVoice({peer: () => peer, workspace, device: hostDevice, ...voiceOptions});
+      voice ??= voiceOptions === false ? undefined : createPeerVoice({peer: () => peer, workspace, device: hostDevice, person: userPublicKey, ...voiceOptions});
       actions = hostDevice ? createActions() : undefined;
     }
     publish();
@@ -1416,8 +1418,6 @@ export async function pairDevice(options) {
   return options.deviceKey ? pairing() : withDeviceKey(own, pairing, signal);
 }
 
-const hexOf = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
-
 /**
  * Join the workspace `invitation` (as `inspectInvitation` takes) offers at
  * `origin`, as `identity` (default the current one): this page's device for
@@ -1598,7 +1598,7 @@ async function join({
   if (!identity && !certified) throw new IdentityError('locked', 'Unlock the identity first');
   if (!origin || !(invitation || entry)) throw new TypeError('origin and an invitation or an entry are required');
   runtime ??= await pageRuntime(connectOptions.desktop);
-  const person = identity ?? {userPublicKey: hexOf(JSON.parse(certified).cert.user_public_key)};
+  const person = identity ?? {userPublicKey: hex(JSON.parse(certified).cert.user_public_key)};
   profile ??= identityProfile(person, origin);
   deviceKey ??= await openDeviceKey({profile, storage: idbStorage()});
   const deviceKeyForWasm = deviceKey.kind === 'sealed-seed' ? await deviceKey.unseal() : deviceKey;

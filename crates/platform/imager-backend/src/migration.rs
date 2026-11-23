@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use cap_fs_ext::OpenOptionsFollowExt;
+use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, Metadata, OpenOptions};
 use cap_std::fs::Dir;
 use sha2::{Digest, Sha256};
@@ -57,8 +57,11 @@ pub fn changed(message: &str) -> io::Error {
 }
 
 pub fn check_cancel(cancelled: &AtomicBool) -> io::Result<()> {
-    if cancelled.load(Ordering::Relaxed) {
-        Err(io::Error::new(io::ErrorKind::Interrupted, "copy cancelled"))
+    if cancelled.load(Ordering::Acquire) {
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "migration cancelled",
+        ))
     } else {
         Ok(())
     }
@@ -84,12 +87,24 @@ fn preserve_directory_times(directory: &PinnedDirectory, original: &Metadata) ->
 pub struct OwnedTemporary {
     parent: Arc<PinnedDirectory>,
     pub name: OsString,
+    target: OsString,
     pub file: File,
     pub identity: Metadata,
 }
 
+/// How [`OwnedTemporary::publish`] treats an entry already at the target name.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PublishMode {
+    /// Refuse, leaving the existing entry untouched.
+    IfAbsent,
+    /// Accept an entry already holding exactly the bytes being published.
+    IfAbsentOrIdentical,
+    /// Atomically replace the existing entry.
+    Replace,
+}
+
 impl OwnedTemporary {
-    pub fn create(parent: &Arc<PinnedDirectory>, excluded: &OsStr) -> io::Result<Self> {
+    pub fn create(parent: &Arc<PinnedDirectory>, target: &OsStr) -> io::Result<Self> {
         parent.validate_destination()?;
         destination_security::check_private_file(&parent.file)?;
         let mut options = OpenOptions::new();
@@ -109,7 +124,7 @@ impl OwnedTemporary {
                 std::process::id(),
                 NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
             ));
-            if name == excluded {
+            if name == target {
                 continue;
             }
             match cap_primitives::fs::open(&parent.file, Path::new(&name), &options) {
@@ -119,6 +134,7 @@ impl OwnedTemporary {
                     return Ok(Self {
                         parent: Arc::clone(parent),
                         name,
+                        target: target.to_os_string(),
                         file,
                         identity,
                     });
@@ -147,6 +163,69 @@ impl OwnedTemporary {
     fn remove_owned(&self) -> io::Result<()> {
         self.validate()?;
         cap_primitives::fs::remove_file(&self.parent.file, Path::new(&self.name))
+    }
+
+    /// Durably publish `bytes` at the temporary's target name.
+    pub fn publish(self, bytes: &[u8], mode: PublishMode) -> io::Result<()> {
+        self.publish_with(bytes, mode, || Ok(()))
+    }
+
+    /// [`Self::publish`] with a check run after the bytes are synced and
+    /// validated, immediately before the name exists.
+    pub fn publish_with(
+        mut self,
+        bytes: &[u8],
+        mode: PublishMode,
+        before_publish: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.file.write_all(bytes)?;
+        migration_durability::sync_file(&self.file)?;
+        self.validate()?;
+        before_publish()?;
+        let target = Path::new(&self.target);
+        match mode {
+            PublishMode::Replace => cap_primitives::fs::rename(
+                &self.parent.file,
+                Path::new(&self.name),
+                &self.parent.file,
+                target,
+            )?,
+            PublishMode::IfAbsent | PublishMode::IfAbsentOrIdentical => {
+                match cap_primitives::fs::hard_link(
+                    &self.parent.file,
+                    Path::new(&self.name),
+                    &self.parent.file,
+                    target,
+                ) {
+                    Ok(()) => {}
+                    Err(error)
+                        if error.kind() == io::ErrorKind::AlreadyExists
+                            && mode == PublishMode::IfAbsentOrIdentical =>
+                    {
+                        if !self.matches_published(bytes)? {
+                            return Err(changed("existing entry differs from the published bytes"));
+                        }
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        migration_durability::sync_directory(&self.parent.file)
+    }
+
+    /// Whether the target name already holds exactly `bytes`, privately.
+    fn matches_published(&self, bytes: &[u8]) -> io::Result<bool> {
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No).nonblock(true);
+        let mut file =
+            cap_primitives::fs::open(&self.parent.file, Path::new(&self.target), &options)?;
+        destination_security::check_private_file(&file)?;
+        let mut existing = Vec::new();
+        (&mut file)
+            .take(bytes.len() as u64 + 1)
+            .read_to_end(&mut existing)?;
+        Ok(existing == bytes)
     }
 }
 

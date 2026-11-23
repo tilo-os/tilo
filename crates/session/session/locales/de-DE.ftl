@@ -241,6 +241,7 @@ session-bluetooth-timed-out = Der Umzug hat zu lange gedauert.
 session-bluetooth-unknown = Das ist keine Bluetooth-Adresse.
 session-notifications = Benachrichtigungszentrum
 session-time = Uhrzeit
+
 session-windows = Fenster
 session-tray = Statusleiste
 session-invite = Einladen
@@ -251,7 +252,9 @@ session-notifications-dismiss = Die Benachrichtigung verwerfen
 session-notifications-act = Die Aktion der Benachrichtigung ausführen
 session-notifications-clear = Das Benachrichtigungszentrum leeren
 session-notifications-undo-clear = Die verworfenen Benachrichtigungen zurückholen
+session-notifications-reply = In der Benachrichtigung antworten
 session-notifications-open = Die Benachrichtigung öffnen
+session-notifications-hand-to-agent = Die Benachrichtigung an deinen Agenten übergeben
 ## A notification another of the person's devices projected here: the app it
 ## came from and the device that showed it first.
 notification-from-device = { $app } von { $device }
@@ -403,6 +406,7 @@ capture-replay-save = Speichern
 capture-replay-stop = Beenden
 capture-shot-title = Bildschirmfoto
 capture-shot-copy = Kopieren
+capture-shot-mark = Markieren
 capture-shot-open = Öffnen
 capture-shot-reveal = Im Ordner zeigen
 capture-shot-dismiss = Fertig
@@ -560,6 +564,7 @@ so-tilo-session-notifications-act = Eine Aktion wählen
 so-tilo-session-notifications-clear = Alle löschen
 so-tilo-session-notifications-dismiss = Verwerfen
 so-tilo-session-notifications-notify = Benachrichtigung senden
+so-tilo-session-notifications-hand-to-agent = An den Agenten geben
 so-tilo-session-notifications-open-notice = Öffnen
 so-tilo-session-notifications-set-quiet = Meldungen zurückhalten
 so-tilo-session-notifications-undo-clear = Die gelöschten Benachrichtigungen zurückholen
@@ -585,3 +590,23 @@ machines-waiting-decline = Ablehnen
 session-toggle-touchpad-on = Ob das Touchpad an ist; weglassen zum Umschalten
 session-night-light-toggle-on = Ob das Nachtlicht an ist; weglassen zum Umschalten
 session-apps-uninstall-app = Der Name der App
+
+## Eine Datei an einen Empfänger geben, der nicht eines der eigenen Geräte ist.
+
+airdrop-verify-title = AirDrop-Empfänger überprüfen
+airdrop-verify-detail = Datei: { $name }
+    Größe: { $bytes } Bytes
+    Empfänger: { $endpoint }
+    Den SHA-256-Zertifikatsfingerabdruck des Empfängers als 64 Hexadezimalziffern von dessen vertrauenswürdiger Konsole oder einem anderen unabhängig geprüften Weg eingeben. Dies sendet die bereitgestellte Datei einmal, nur wenn der Fingerabdruck übereinstimmt. Abbrechen, wenn der Empfänger nicht geprüft werden kann.
+airdrop-verify-send-once = Einmal senden
+airdrop-verify-cancel = Abbrechen
+airdrop-error-unavailable = AirDrop benötigt Dateiübertragungsrechte und aktuellen Dateizugriff.
+airdrop-error-source = AirDrop unterstützt eine lesbare reguläre Datei bis 16 MiB.
+airdrop-error-busy = Eine AirDrop-Übertragung läuft bereits. Vor einer weiteren Übertragung abbrechen.
+airdrop-error-failed = AirDrop-Übertragung fehlgeschlagen. Den Empfänger vor einem neuen Versuch erneut prüfen.
+airdrop-error-declined = Die AirDrop-Übertragung wurde vor dem Senden abgebrochen.
+airdrop-error-verification = Fingerabdruck stimmt nicht überein. Keine Datei gesendet.
+airdrop-error-fresh-consent = Einen neuen AirDrop-Versuch starten, um Empfänger und Datei erneut zu bestätigen.
+
+so-tilo-session-notifications-reply = In einer Benachrichtigung mit Antwortfeld antworten
+session-osd = Anzeige

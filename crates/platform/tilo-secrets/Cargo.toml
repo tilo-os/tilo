@@ -54,7 +54,7 @@ js-sys = "=0.3.85"
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
 tempfile.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

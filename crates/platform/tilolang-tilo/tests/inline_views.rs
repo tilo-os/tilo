@@ -182,31 +182,21 @@ impl Workspace {
 
 /// Every text the tree shows, in order.
 fn texts(node: &UiNode) -> Vec<String> {
-    fn walk(node: &UiNode, out: &mut Vec<String>) {
-        if (node.kind == "text" || node.kind == "ui.Text")
-            && let Some(Value::Text(t)) = node.props.get("value")
-        {
-            out.push(t.clone());
-        }
-        for child in &node.children {
-            walk(child, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(node, &mut out);
-    out
+    crate::fixtures::nodes(node)
+        .into_iter()
+        .filter(|node| node.kind == "text" || node.kind == "ui.Text")
+        .filter_map(|node| match node.props.get("value") {
+            Some(Value::Text(t)) => Some(t.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn kinds(node: &UiNode) -> Vec<String> {
-    fn walk(node: &UiNode, out: &mut Vec<String>) {
-        out.push(node.kind.clone());
-        for child in &node.children {
-            walk(child, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(node, &mut out);
-    out
+    crate::fixtures::nodes(node)
+        .into_iter()
+        .map(|node| node.kind.clone())
+        .collect()
 }
 
 tilo_test_env::scenario! {

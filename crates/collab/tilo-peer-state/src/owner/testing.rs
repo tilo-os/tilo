@@ -10,13 +10,11 @@ use crate::owner::{
     VerifiedNativeEnrollmentIntent, WorkspaceId, publication,
 };
 use crate::owner_commit::OwnerCommitRequest;
-use crate::{
-    SeedDocument, SeedState, StatePeer, TransportOrigin, join, seed_workspace, workspace::media,
-};
-use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use crate::{SeedDocument, SeedState, StatePeer, TransportOrigin, join, seed_workspace};
+use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
-use std::{collections::BTreeMap, time::SystemTime};
+use std::time::SystemTime;
 use tilo_automation::Shortcut;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -31,8 +29,7 @@ pub(crate) fn document_on_disk(path: &std::path::Path) -> Vec<(std::path::PathBu
 }
 
 pub const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-/// The app of the record the fixtures write: Chat, whose voice channel a call binds.
-pub use crate::workspace::media::CHAT_APP as APP;
+pub use tilo_app_id::apps::CHAT as APP;
 
 /// Where `certificate`'s device keeps a workspace it founds on itself:
 /// `workspace`'s own host, reached at `endpoint`, signed by the device.
@@ -343,7 +340,14 @@ fn seeded(now: SystemTime) -> Seeded {
         now,
     )
     .unwrap();
-    let mut chat = media::voice_chat("voice", "Lounge");
+    let mut chat = AutoCommit::new();
+    let channels = chat.put_object(ROOT, "channels", ObjType::Map).unwrap();
+    let channel = {
+        let entry = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+        chat.put_object(&entry, "v", ObjType::Map).unwrap()
+    };
+    chat.put(&channel, "kind", "voice").unwrap();
+    chat.put(&channel, "workspace", "home").unwrap();
     collab_types::CommitNamed::commit_edit(&mut chat, "chat", "channels");
     peer.install_seed(
         SeedState {
@@ -411,40 +415,10 @@ pub fn governed_fixture_at(now: SystemTime) -> (RawFixture, StatePeer, SigningKe
             .admit_invited_member(&redemption, &governor_key, now)
             .unwrap()
     );
-    let policy = media::WorkspaceMediaV1 {
-        version: 1,
-        workspace: *uuid::Uuid::parse_str(WORKSPACE).unwrap().as_bytes(),
-        authorization_revision: 1,
-        authorization_basis: media::security_basis(
-            peer.admitted_workspace().unwrap(),
-            &peer.revocations(),
-        )
-        .unwrap(),
-        calls: BTreeMap::from([(
-            [68; 32],
-            media::CallV1 {
-                binding: peer
-                    .media()
-                    .resolve_media_binding(APP, "", "voice")
-                    .unwrap(),
-                epoch: 1,
-                phase: media::CallPhaseV1::Active,
-                allowed: media::DirectionsV1 {
-                    publish: true,
-                    subscribe: true,
-                },
-                denied: BTreeMap::new(),
-            },
-        )]),
-    };
-    peer.media_mut()
-        .author_media_policy(&policy, &governor_key, now)
-        .unwrap();
     let messages = peer
         .publication_mut()
         .durable_bootstrap_messages(&governor_key, now, 1)
         .unwrap();
-    assert!(peer.validated_media_policy().unwrap().is_some());
     let bootstrap = join::JoinBootstrap {
         version: 1,
         invite_id: verified.invite_id(),

@@ -497,6 +497,49 @@ impl Layout {
             group_removed,
         })
     }
+
+    /// Remove `strip_id` when it exists and holds no window groups. If it was
+    /// its workspace's recorded active strip, the workspace's first remaining
+    /// strip takes over, or the entry is cleared when no strip remains; any
+    /// per-strip focus or display pointers naming it go too. Returns whether
+    /// the strip was removed; a strip that still holds windows, or does not
+    /// exist, leaves the tree unchanged.
+    pub fn remove_empty_strip(&mut self, strip_id: StripId) -> bool {
+        let Some((ws_idx, strip_idx)) = self.strip_position(strip_id) else {
+            return false;
+        };
+        let Some(workspace) = self.workspaces.get_mut(ws_idx) else {
+            return false;
+        };
+        if workspace
+            .strips
+            .get(strip_idx)
+            .is_none_or(|strip| !strip.window_groups.is_empty())
+        {
+            return false;
+        }
+        let workspace_id = workspace.id();
+        workspace.strips.remove(strip_idx);
+        let fallback = workspace.strips.first().map(|strip| strip.id);
+        // Raw record: `strip_id` was just removed from `workspace.strips`, so `active_strip_for`
+        // would already filter it out.
+        if self.active_strip.get(&workspace_id) == Some(&strip_id) {
+            match fallback {
+                Some(first) => {
+                    self.active_strip.insert(workspace_id, first);
+                }
+                None => {
+                    self.active_strip.remove(&workspace_id);
+                }
+            }
+        }
+        self.active_group.remove(&strip_id);
+        self.outputs.shown.retain(|_, shown| *shown != strip_id);
+        self.outputs
+            .last_active
+            .retain(|(_, strip), _| *strip != strip_id);
+        true
+    }
 }
 
 impl Layout {

@@ -32,6 +32,7 @@ tilolang-did-cleared = hat { $field } geleert
 tilolang-did-set-date = hat das Datum { $field } gesetzt auf
 tilolang-did-cleared-date = hat das Datum { $field } geleert
 tilolang-did-many = hat { $count } { $kind } geändert
+tilolang-did-edited = hat es bearbeitet
 tilolang-did-set-time = hat die Uhrzeit { $field } gesetzt auf
 tilolang-did-cleared-time = hat die Uhrzeit { $field } geleert
 tilolang-did-marked = hat { $field } gesetzt
@@ -130,7 +131,7 @@ tilolang-none-value = Keine Angabe
 tilolang-empty-value = Leer
 tilolang-yes = Ja
 tilolang-no = Nein
-tilolang-history = Verlauf
+tilolang-history-of = Verlauf von { $title }
 tilolang-history-changes = { $count ->
     [one] 1 Änderung
    *[other] { $count } Änderungen

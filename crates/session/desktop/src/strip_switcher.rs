@@ -29,7 +29,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::i18n::{t, t_args};
 use tilo_desktop_model::{Layout, StripId};
-use tilo_desktop_surface::names;
+use tilo_session_core::desktop::names;
 use ui::widget::DrawChild;
 
 /// Longest strip name a person or an agent may give, in characters: what the strip switcher's row
@@ -170,9 +170,8 @@ impl SwitcherModel {
             })
             .collect();
         let focused = desktop
-            .active_strip
-            .get(&workspace.id())
-            .and_then(|id| strips.iter().position(|strip| strip.id == *id))
+            .active_strip_for(workspace)
+            .and_then(|id| strips.iter().position(|strip| strip.id == id))
             .unwrap_or(0);
         Self {
             strips,

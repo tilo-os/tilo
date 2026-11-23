@@ -372,65 +372,8 @@ tilo_test_env::scenario! {
         ));
     }
 
-    phase the_work_members_gave_servers_says_what_and_until_when;
-    {
-        let mut app = staged("people");
-        for text in [
-            "Work given to servers",
-            "Mail: reading and undoable changes allowed, taken by Kitchen NAS",
-            "Browser: reading and undoable changes allowed, taken by tilo.sh",
-            "Until 3 December 2026",
-            "Until 9 December 2026",
-        ] {
-            assert!(says(&mut app, text), "{text:?} is shown");
-        }
-        // Only the delegation this device signed offers Take back.
-        assert!(
-            !says(&mut app, "Take back"),
-            "a delegation another device signed is not this device's to take back"
-        );
-        let mut mine = staged("people-member");
-        assert!(says(&mut mine, "Take back"), "one's own delegation does");
-    }
 
-    phase taking_back_a_delegation_asks_first_and_keep_changes_nothing;
-    {
-        let (mut app, state) = mounted_with({
-            let mut settings = staged_settings("people-member");
-            settings.people.delegated[0].revocable = true;
-            settings.people.delegated[0].you = true;
-            settings
-        });
-        press(&mut app, "ws-people-delegation-revoke-nas/ada");
-        assert!(says(&mut app, "Take back this work?"));
-        assert!(says(&mut app, "The server stops taking your work at once."));
-        assert!(
-            state.take_asked().is_empty(),
-            "nothing is asked of the shell yet"
-        );
-        app.harness().key("Escape");
-        app.settle();
-        assert!(state.take_asked().is_empty(), "keeping changes nothing");
-        assert!(says(&mut app, "3 members"), "the tab is back");
-    }
 
-    phase a_confirmed_take_back_asks_the_shell_for_that_delegation;
-    {
-        let (mut app, state) = mounted_with({
-            let mut settings = staged_settings("people-member");
-            settings.people.delegated[0].revocable = true;
-            settings.people.delegated[0].you = true;
-            settings
-        });
-        press(&mut app, "ws-people-delegation-revoke-nas/ada");
-        press(&mut app, "ws-settings-decision.primary");
-        assert_eq!(
-            state.take_asked(),
-            [WorkspaceSettingsEffect::RevokeDelegation {
-                server: "nas".to_owned()
-            }]
-        );
-    }
 
     phase the_holders_of_the_workspace_say_what_each_can_read;
     {

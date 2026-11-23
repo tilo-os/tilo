@@ -194,12 +194,13 @@ fn read_plan_at(directory: &OwnedFd, name: &str, owner: u32) -> Result<Option<Va
     {
         return refuse("migration metadata is not a bounded private owner-controlled file");
     }
-    let mut bytes = Vec::new();
-    file.take((HANDOFF_MAX_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > HANDOFF_MAX_BYTES {
-        return refuse("migration metadata exceeds its size bound");
-    }
+    let bytes = tilo_files::read_from(file, HANDOFF_MAX_BYTES).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::FileTooLarge {
+            Fail::Refusal("migration metadata exceeds its size bound".into())
+        } else {
+            error.into()
+        }
+    })?;
     let Strict(value) = serde_json::from_slice(&bytes)
         .map_err(|_| Fail::Refusal("migration metadata is not valid JSON".into()))?;
     super::validate_migration(&value).map(Some)
@@ -474,39 +475,67 @@ pub fn run(host: &dyn Host, command: &str, args: &[OsString]) -> Result<String> 
 mod tests {
     use super::*;
 
-    tilo_test_env::scenario! {
-        fn account_queries_are_strict;
-
-        phase installed_uid_range_is_strict_and_defaults_are_preserved;
-        {
-            assert_eq!(parse_user_range("# UID_MIN 4\n").unwrap(), (1000, 60000));
-            assert_eq!(
-                parse_user_range("UID_MIN 2000 # local policy\nUID_MAX 3000\n").unwrap(),
-                (2000, 3000)
-            );
-            for policy in [
-                "UID_MIN 999",
-                "UID_MAX 999",
-                "UID_MIN 2000\nUID_MAX 1000",
-                "UID_MIN 1000\nUID_MIN 1000",
-                "UID_MIN +1000",
-                "UID_MIN ١٠٠٠",
-                "UID_MAX 4294967295",
-                "UID_MIN 1000 extra",
-                "UID_MIN",
-            ] {
-                assert!(parse_user_range(policy).is_err(), "{policy}");
-            }
+    // The installed /etc/login.defs policy and the NSS account names are read from
+    // fixed system paths, so the shipped `required-user-id` cannot be driven against
+    // fixture policies; these are its boundary rules. The delivery command below is
+    // driven through `run` as the installer's supervisor runs it.
+    #[test]
+    fn installed_account_policy_is_strict() {
+        assert_eq!(parse_user_range("# UID_MIN 4\n").unwrap(), (1000, 60000));
+        assert_eq!(
+            parse_user_range("UID_MIN 2000 # local policy\nUID_MAX 3000\n").unwrap(),
+            (2000, 3000)
+        );
+        for policy in [
+            "UID_MIN 999",
+            "UID_MAX 999",
+            "UID_MIN 2000\nUID_MAX 1000",
+            "UID_MIN 1000\nUID_MIN 1000",
+            "UID_MIN +1000",
+            "UID_MIN ١٠٠٠",
+            "UID_MAX 4294967295",
+            "UID_MIN 1000 extra",
+            "UID_MIN",
+        ] {
+            assert!(parse_user_range(policy).is_err(), "{policy}");
         }
-
-        phase username_query_rejects_numeric_and_option_ambiguity;
-        {
-            for name in ["", "0", "1234", "-root", "Root", "user/name", "a:b", "a\n"] {
-                assert!(!valid_username(name), "{name:?}");
-            }
-            assert!(valid_username("_account-2"));
-            assert!(!valid_username(&"a".repeat(33)));
+        for name in ["", "0", "1234", "-root", "Root", "user/name", "a:b", "a\n"] {
+            assert!(!valid_username(name), "{name:?}");
         }
+        assert!(valid_username("_account-2"));
+        assert!(!valid_username(&"a".repeat(33)));
+    }
+
+    #[test]
+    fn pinned_directories_never_follow_links_or_replacements() {
+        for path in [
+            "relative",
+            "/",
+            "//var",
+            "/var/",
+            "/var/../var",
+            "/var/./lib",
+        ] {
+            assert!(open_directory_chain(Path::new(path)).is_err(), "{path}");
+        }
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(other.path(), root.path().join("link")).unwrap();
+        assert!(open_directory_chain(&root.path().join("link")).is_err());
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("child")).unwrap();
+        let directory = open_directory_chain(root.path()).unwrap();
+        let child = fs::statat(&directory, "child", AtFlags::SYMLINK_NOFOLLOW).unwrap();
+        let chain = [Link {
+            parent: directory,
+            component: "child",
+            device: child.st_dev,
+            inode: child.st_ino,
+        }];
+        validate_chain(&chain).unwrap();
+        std::fs::rename(root.path().join("child"), root.path().join("old")).unwrap();
+        std::fs::create_dir(root.path().join("child")).unwrap();
+        assert!(validate_chain(&chain).is_err());
     }
 
     fn plan() -> Value {
@@ -522,147 +551,77 @@ mod tests {
             .expect("authenticated corpus must contain a valid migration")
     }
 
-    tilo_test_env::scenario! {
-        fn pinned_directories_never_follow_links_or_replacements;
-
-        phase normalized_directories_never_follow_symlinks;
-        {
-            for path in [
-                "relative",
-                "/",
-                "//var",
-                "/var/",
-                "/var/../var",
-                "/var/./lib",
-            ] {
-                assert!(open_directory_chain(Path::new(path)).is_err(), "{path}");
-            }
-            let root = tempfile::tempdir().unwrap();
-            let other = tempfile::tempdir().unwrap();
-            std::os::unix::fs::symlink(other.path(), root.path().join("link")).unwrap();
-            assert!(open_directory_chain(&root.path().join("link")).is_err());
-        }
-
-        phase pinned_chain_detects_replaced_directories;
-        {
-            let root = tempfile::tempdir().unwrap();
-            std::fs::create_dir(root.path().join("child")).unwrap();
-            let directory = open_directory_chain(root.path()).unwrap();
-            let child = fs::statat(&directory, "child", AtFlags::SYMLINK_NOFOLLOW).unwrap();
-            let chain = [Link {
-                parent: directory,
-                component: "child",
-                device: child.st_dev,
-                inode: child.st_ino,
-            }];
-            validate_chain(&chain).unwrap();
-            std::fs::rename(root.path().join("child"), root.path().join("old")).unwrap();
-            std::fs::create_dir(root.path().join("child")).unwrap();
-            assert!(validate_chain(&chain).is_err());
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn the_users_migration_plan_is_delivered_privately;
-
-        phase publication_is_private_idempotent_and_preserves_conflicting_consent;
-        {
-            let root = tempfile::tempdir().unwrap();
-            let directory = open_directory_chain(root.path()).unwrap();
-            let account = Account {
-                uid: rustix::process::geteuid().as_raw(),
-                gid: rustix::process::getegid().as_raw(),
-                home: root.path().into(),
-            };
-            let raw = plan();
+    #[test]
+    fn the_users_migration_plan_is_delivered_privately() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let seed = tempfile::tempdir().unwrap();
+        let raw = plan();
+        let seed_file = seed.path().join("migration-plan.json");
+        std::fs::write(&seed_file, canonical(&raw)).unwrap();
+        std::fs::set_permissions(&seed_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let uid = rustix::process::geteuid();
+        let gid = rustix::process::getegid();
+        let args = vec![
+            OsString::from("--username"),
+            OsString::from("fixture-account"),
+            OsString::from("--test-home"),
+            home.path().into(),
+            OsString::from("--test-seed-dir"),
+            seed.path().into(),
+            OsString::from("--test-uid"),
+            uid.as_raw().to_string().into(),
+            OsString::from("--test-gid"),
+            gid.as_raw().to_string().into(),
+        ];
+        let deliver = |args: &[OsString]| run(&super::super::System, "deliver-user-plan", args);
+        if uid.is_root() {
+            assert!(
+                deliver(&args)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("unprivileged caller")
+            );
+            assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
+        } else {
+            assert_eq!(
+                deliver(&args).unwrap(),
+                "delivered migration metadata to the target account\n"
+            );
+            deliver(&args).unwrap();
+            let destination = home.path().join(".local/state/tilo/migration-handoff");
             let name = format!("{}.migration.json", raw["operation_id"].as_str().unwrap());
-            publish(&directory, &name, &raw, &account).unwrap();
-            publish(&directory, &name, &raw, &account).unwrap();
-            let path = root.path().join(&name);
-            assert_eq!(std::fs::read(&path).unwrap(), canonical(&raw));
-            let facts = std::fs::metadata(&path).unwrap();
+            let published = destination.join(&name);
+            assert_eq!(std::fs::read(&published).unwrap(), canonical(&raw));
+            let facts = std::fs::metadata(&published).unwrap();
             assert_eq!(facts.mode() & 0o777, 0o600);
-            assert_eq!(facts.uid(), account.uid);
-            assert_eq!(facts.gid(), account.gid);
+            assert_eq!((facts.uid(), facts.gid()), (uid.as_raw(), gid.as_raw()));
+            assert_eq!(
+                std::fs::metadata(&destination).unwrap().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 1);
+            // Published consent is never replaced by a different plan.
             let mut conflicting = raw.clone();
             conflicting["conflicting_consent"] = Value::Bool(true);
-            assert!(publish(&directory, &name, &conflicting, &account).is_err());
-            assert_eq!(std::fs::read(&path).unwrap(), canonical(&raw));
-            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
-        }
+            std::fs::write(&published, canonical(&conflicting)).unwrap();
+            assert!(deliver(&args).is_err());
+            assert_eq!(std::fs::read(&published).unwrap(), canonical(&conflicting));
 
-        phase fixture_delivery_uses_only_the_callers_actual_account_and_keeps_seed;
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let home = tempfile::tempdir().unwrap();
-            let seed = tempfile::tempdir().unwrap();
-            let raw = plan();
-            let seed_file = seed.path().join("migration-plan.json");
-            std::fs::write(&seed_file, canonical(&raw)).unwrap();
-            std::fs::set_permissions(&seed_file, std::fs::Permissions::from_mode(0o600)).unwrap();
-            let uid = rustix::process::geteuid();
-            let gid = rustix::process::getegid();
-            let args = vec![
-                OsString::from("--username"),
-                OsString::from("fixture-account"),
-                OsString::from("--test-home"),
-                home.path().into(),
-                OsString::from("--test-seed-dir"),
-                seed.path().into(),
-                OsString::from("--test-uid"),
-                uid.as_raw().to_string().into(),
-                OsString::from("--test-gid"),
-                gid.as_raw().to_string().into(),
-            ];
-            let result = run(&super::super::System, "deliver-user-plan", &args);
-            if uid.is_root() {
-                assert!(
-                    result
-                        .unwrap_err()
-                        .to_string()
-                        .contains("unprivileged caller")
-                );
-                assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
-            } else {
-                assert_eq!(
-                    result.unwrap(),
-                    "delivered migration metadata to the target account\n"
-                );
-                run(&super::super::System, "deliver-user-plan", &args).unwrap();
-                let destination = home.path().join(".local/state/tilo/migration-handoff");
-                let name = format!("{}.migration.json", raw["operation_id"].as_str().unwrap());
-                assert_eq!(
-                    std::fs::read(destination.join(name)).unwrap(),
-                    canonical(&raw)
-                );
-                assert_eq!(
-                    std::fs::metadata(&destination).unwrap().mode() & 0o777,
-                    0o700
-                );
-                assert_eq!(std::fs::read_dir(destination).unwrap().count(), 1);
-            }
-            assert_eq!(std::fs::read(seed_file).unwrap(), canonical(&raw));
-            let mut wrong_actor = args;
+            let mut wrong_actor = args.clone();
             wrong_actor[7] = if uid.as_raw() == 1000 { "1001" } else { "1000" }.into();
-            assert!(run(&super::super::System, "deliver-user-plan", &wrong_actor).is_err());
+            assert!(deliver(&wrong_actor).is_err());
         }
-
-        phase private_seed_refuses_public_files_symlinks_and_duplicate_json;
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let root = tempfile::tempdir().unwrap();
-            let directory = open_directory_chain(root.path()).unwrap();
-            let owner = rustix::process::geteuid().as_raw();
-            let path = root.path().join("migration-plan.json");
-            std::fs::write(&path, b"{}").unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-            assert!(read_plan_at(&directory, "migration-plan.json", owner).is_err());
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-            std::fs::write(&path, br#"{"schema":1,"schema":1}"#).unwrap();
-            assert!(read_plan_at(&directory, "migration-plan.json", owner).is_err());
-            std::fs::remove_file(&path).unwrap();
-            std::os::unix::fs::symlink("missing", &path).unwrap();
-            assert!(read_plan_at(&directory, "migration-plan.json", owner).is_err());
-        }
+        // The seed is intent, kept as delivered whatever the destination did.
+        assert_eq!(std::fs::read(&seed_file).unwrap(), canonical(&raw));
+        // A public, linked or duplicate-keyed seed is refused before any delivery.
+        std::fs::set_permissions(&seed_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(deliver(&args).is_err());
+        std::fs::set_permissions(&seed_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::write(&seed_file, br#"{"schema":1,"schema":1}"#).unwrap();
+        assert!(deliver(&args).is_err());
+        std::fs::remove_file(&seed_file).unwrap();
+        std::os::unix::fs::symlink("missing", &seed_file).unwrap();
+        assert!(deliver(&args).is_err());
     }
 }

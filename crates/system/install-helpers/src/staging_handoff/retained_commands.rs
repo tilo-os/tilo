@@ -407,12 +407,13 @@ fn read_plan_at(
     {
         return refuse("migration metadata is not a bounded private owner-controlled file");
     }
-    let mut bytes = Vec::new();
-    file.take((HANDOFF_MAX_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > HANDOFF_MAX_BYTES {
-        return refuse("migration metadata exceeds its size bound");
-    }
+    let bytes = tilo_files::read_from(file, HANDOFF_MAX_BYTES).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::FileTooLarge {
+            Fail::Refusal("migration metadata exceeds its size bound".into())
+        } else {
+            error.into()
+        }
+    })?;
     let Strict(value) = serde_json::from_slice(&bytes)
         .map_err(|_| Fail::Refusal("migration metadata is not valid JSON".into()))?;
     validate_migration(&value).map(Some)
@@ -558,47 +559,27 @@ mod tests {
         Ok(value.clone())
     }
 
-    tilo_test_env::scenario! {
-        fn the_retained_receipt_is_strict;
+    // The receipt's bounds and duplicate-key refusals, and private delivery, are
+    // driven through the shipped binary by
+    // tests/staging_handoff.rs::native_retained_commands_refuse_what_they_cannot_bind
+    // and ::native_authenticated_retained_delivery_matches_candidate_responses.
 
-        phase receipt_is_bounded_and_rejects_duplicate_keys_at_every_depth;
-        {
-            for bytes in [
-                br#"{"schema":1,"schema":1}"#.as_slice(),
-                br#"{"schema":1,"retained_home":{"home":{"inode":1,"inode":2}}}"#,
-                br#"{"schema":1,"unknown":null}"#,
-                br#"{"schema":true}"#,
-                br#"{"schema":1,"retained_home":NaN}"#,
-                b"\xff",
-            ] {
-                assert!(parse_receipt(bytes).is_err());
-            }
-            let bytes = vec![b' '; RECEIPT_MAX_BYTES + 1];
+    #[test]
+    fn completed_receipt_consistency_is_checked_before_transport() {
+        for receipt in [
+            json!({"schema":1, "completed_applications_only":null}),
+            json!({"schema":1, "completed_applications_only":true}),
+            json!({"schema":1, "completed_home":{}, "completed_setup":null}),
+            json!({"schema":1, "completed_applications":{}}),
+            json!({"schema":1, "computer_apps_scope":{}}),
+        ] {
             assert!(
-                parse_receipt(bytes.as_slice())
-                    .unwrap_err()
-                    .to_string()
-                    .contains("bound")
+                authenticated_retained_plan(
+                    serde_json::to_vec(&receipt).unwrap().as_slice(),
+                    validated,
+                )
+                .is_err()
             );
-        }
-
-        phase completed_receipt_consistency_is_checked_before_transport;
-        {
-            for receipt in [
-                json!({"schema":1, "completed_applications_only":null}),
-                json!({"schema":1, "completed_applications_only":true}),
-                json!({"schema":1, "completed_home":{}, "completed_setup":null}),
-                json!({"schema":1, "completed_applications":{}}),
-                json!({"schema":1, "computer_apps_scope":{}}),
-            ] {
-                assert!(
-                    authenticated_retained_plan(
-                        serde_json::to_vec(&receipt).unwrap().as_slice(),
-                        validated,
-                    )
-                    .is_err()
-                );
-            }
         }
     }
 
@@ -610,136 +591,93 @@ mod tests {
         }
     }
 
-    tilo_test_env::scenario! {
-        fn retained_resize_and_preflight_hold_the_exact_geometry;
-
-        phase resize_requires_exact_filesystem_and_geometry;
-        {
-            let plan = json!({"home":{"volume":{
-                "first_lba":2048, "last_lba":4095, "sector_bytes":512,
-                "filesystem":"btrfs", "filesystem_uuid":"fs", "partition_guid":"part"
-            }}});
-            let resize = json!({
-                "schema":1, "device_id":1, "original_plan_sha256":null,
-                "reviewed_plan_sha256":null, "reviewed_plan":null,
-                "filesystem_uuid":"fs", "partition_guid":"part",
-                "from_bytes":2_097_152, "to_bytes":1_048_576, "new_last_lba":4095
-            });
-            assert!(validate_resize(&plan, &resize).is_ok());
-            for (key, value) in [
-                ("to_bytes", json!(1_048_575)),
-                ("from_bytes", json!(1_048_576)),
-                ("new_last_lba", json!(4096)),
-                ("device_id", json!(2)),
-                ("filesystem_uuid", json!("other")),
-                ("partition_guid", json!("other")),
-            ] {
-                let mut changed = resize.clone();
-                *changed.get_mut(key).unwrap() = value;
-                assert!(validate_resize(&plan, &changed).is_err(), "{key}");
-            }
+    #[test]
+    fn retained_resize_and_preflight_hold_the_exact_geometry() {
+        let plan = json!({"home":{"volume":{
+            "first_lba":2048, "last_lba":4095, "sector_bytes":512,
+            "filesystem":"btrfs", "filesystem_uuid":"fs", "partition_guid":"part"
+        }}});
+        let resize = json!({
+            "schema":1, "device_id":1, "original_plan_sha256":null,
+            "reviewed_plan_sha256":null, "reviewed_plan":null,
+            "filesystem_uuid":"fs", "partition_guid":"part",
+            "from_bytes":2_097_152, "to_bytes":1_048_576, "new_last_lba":4095
+        });
+        assert!(validate_resize(&plan, &resize).is_ok());
+        for (key, value) in [
+            ("to_bytes", json!(1_048_575)),
+            ("from_bytes", json!(1_048_576)),
+            ("new_last_lba", json!(4096)),
+            ("device_id", json!(2)),
+            ("filesystem_uuid", json!("other")),
+            ("partition_guid", json!("other")),
+        ] {
+            let mut changed = resize.clone();
+            *changed.get_mut(key).unwrap() = value;
+            assert!(validate_resize(&plan, &changed).is_err(), "{key}");
         }
 
-        phase preflight_preserves_sector_geometry_and_exclusive_write_boundaries;
-        {
-            for sector in [512_i128, 4096] {
-                let first = 2048 * sector;
-                let end = 4096 * sector;
-                let plan = json!({"home_policy":"copy","home":{"volume":{
-                    "disk_guid":"disk", "disk_bytes":134_217_728, "sector_bytes":u64::try_from(sector).unwrap(),
-                    "partition_guid":"part", "first_lba":2048, "last_lba":4095,
-                    "filesystem_uuid":"fs", "filesystem":"btrfs"
-                }}});
-                let host = Disk(json!({"blockdevices":[{
-                    "name":"/dev/test", "type":"disk", "pttype":"gpt", "ptuuid":"DISK",
-                    "size":134_217_728, "log-sec":u64::try_from(sector).unwrap(), "children":[{
-                        "partuuid":"PART", "parttype":"data", "uuid":"FS", "fstype":"btrfs",
-                        "start":u64::try_from(first / 512).unwrap(), "size":u64::try_from(end.checked_sub(first).unwrap()).unwrap()
-                    }]
-                }]}));
-                assert!(
-                    preflight_retained(
-                        &host,
-                        Some(&plan),
-                        "/dev/test",
-                        &[(first - 512, 512), (end, 512)]
-                    )
-                    .is_ok()
-                );
-                for writes in [
-                    vec![],
-                    vec![(first - 512, 513)],
-                    vec![(end - 1, 1)],
-                    vec![(-1, 512)],
-                    vec![(0, 0)],
-                    vec![(i128::MAX, 1)],
-                ] {
-                    assert!(preflight_retained(&host, Some(&plan), "/dev/test", &writes).is_err());
-                }
-                let mut changed = host.0.clone();
-                *changed
-                    .get_mut("blockdevices")
-                    .and_then(|devices| devices.get_mut(0))
-                    .and_then(|device| device.get_mut("children"))
-                    .and_then(|children| children.get_mut(0))
-                    .and_then(|child| child.get_mut("start"))
-                    .unwrap() = json!(u64::try_from(first / 512 + 1).unwrap());
-                assert!(
-                    preflight_retained(&Disk(changed), Some(&plan), "/dev/test", &[(0, 512)]).is_err()
-                );
+        for sector in [512_i128, 4096] {
+            let first = 2048 * sector;
+            let end = 4096 * sector;
+            let plan = json!({"home_policy":"copy","home":{"volume":{
+                "disk_guid":"disk", "disk_bytes":134_217_728, "sector_bytes":u64::try_from(sector).unwrap(),
+                "partition_guid":"part", "first_lba":2048, "last_lba":4095,
+                "filesystem_uuid":"fs", "filesystem":"btrfs"
+            }}});
+            let host = Disk(json!({"blockdevices":[{
+                "name":"/dev/test", "type":"disk", "pttype":"gpt", "ptuuid":"DISK",
+                "size":134_217_728, "log-sec":u64::try_from(sector).unwrap(), "children":[{
+                    "partuuid":"PART", "parttype":"data", "uuid":"FS", "fstype":"btrfs",
+                    "start":u64::try_from(first / 512).unwrap(), "size":u64::try_from(end.checked_sub(first).unwrap()).unwrap()
+                }]
+            }]}));
+            assert!(
+                preflight_retained(
+                    &host,
+                    Some(&plan),
+                    "/dev/test",
+                    &[(first - 512, 512), (end, 512)]
+                )
+                .is_ok()
+            );
+            for writes in [
+                vec![],
+                vec![(first - 512, 513)],
+                vec![(end - 1, 1)],
+                vec![(-1, 512)],
+                vec![(0, 0)],
+                vec![(i128::MAX, 1)],
+            ] {
+                assert!(preflight_retained(&host, Some(&plan), "/dev/test", &writes).is_err());
             }
+            let mut changed = host.0.clone();
+            *changed
+                .get_mut("blockdevices")
+                .and_then(|devices| devices.get_mut(0))
+                .and_then(|device| device.get_mut("children"))
+                .and_then(|children| children.get_mut(0))
+                .and_then(|child| child.get_mut("start"))
+                .unwrap() = json!(u64::try_from(first / 512 + 1).unwrap());
+            assert!(
+                preflight_retained(&Disk(changed), Some(&plan), "/dev/test", &[(0, 512)]).is_err()
+            );
         }
     }
 
-    tilo_test_env::scenario! {
-        fn retained_delivery_is_private_and_never_follows_links;
+    #[test]
+    fn retained_delivery_refuses_symlinked_or_public_metadata() {
+        let temporary = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(destination.path(), temporary.path().join("lib")).unwrap();
+        let plan = json!({"schema":1});
+        assert!(deliver_retained(Some(&plan), temporary.path(), validated).is_err());
+        assert_eq!(std::fs::read_dir(destination.path()).unwrap().count(), 0);
 
-        phase delivery_is_private_idempotent_and_never_replaces_conflicting_intent;
-        {
-            let temporary = tempfile::tempdir().unwrap();
-            let plan = json!({"schema":1,"intent":"first"});
-            deliver_retained(Some(&plan), temporary.path(), validated).unwrap();
-            let path = temporary.path().join("lib/tilo/migration-plan.json");
-            assert_eq!(std::fs::read(&path).unwrap(), canonical(&plan));
-            assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
-            deliver_retained(Some(&plan), temporary.path(), validated).unwrap();
-            let different = json!({"schema":1,"intent":"second"});
-            assert!(deliver_retained(Some(&different), temporary.path(), validated).is_err());
-            assert_eq!(std::fs::read(&path).unwrap(), canonical(&plan));
-            assert_eq!(
-                std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
-                1
-            );
-        }
-
-        phase delivery_refuses_symlinked_or_public_metadata;
-        {
-            let temporary = tempfile::tempdir().unwrap();
-            let destination = tempfile::tempdir().unwrap();
-            std::os::unix::fs::symlink(destination.path(), temporary.path().join("lib")).unwrap();
-            let plan = json!({"schema":1});
-            assert!(deliver_retained(Some(&plan), temporary.path(), validated).is_err());
-            assert_eq!(std::fs::read_dir(destination.path()).unwrap().count(), 0);
-
-            let clean = tempfile::tempdir().unwrap();
-            deliver_retained(Some(&plan), clean.path(), validated).unwrap();
-            let path = clean.path().join("lib/tilo/migration-plan.json");
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-            assert!(deliver_retained(Some(&plan), clean.path(), validated).is_err());
-        }
-
-        phase directory_path_requires_normalized_absolute_components;
-        {
-            for path in [
-                "relative",
-                "/",
-                "//var",
-                "/var/",
-                "/var/../var",
-                "/var/./lib",
-            ] {
-                assert!(open_directory_chain(Path::new(path)).is_err(), "{path}");
-            }
-        }
+        let clean = tempfile::tempdir().unwrap();
+        deliver_retained(Some(&plan), clean.path(), validated).unwrap();
+        let path = clean.path().join("lib/tilo/migration-plan.json");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(deliver_retained(Some(&plan), clean.path(), validated).is_err());
     }
 }

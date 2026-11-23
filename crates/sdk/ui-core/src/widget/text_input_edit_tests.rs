@@ -25,11 +25,6 @@ tilo_test_env::scenario! {
             let mut ti = TextInput::local();
             ti.text = "hello world".to_string();
             ti.core.set_selection(6, 11);
-            let mut doc = AutoCommit::new();
-            let obj_id = doc
-                .put_object(&automerge::ROOT, "text_1", ObjType::Text)
-                .unwrap();
-            let _ = doc.splice_text(&obj_id, 0, 0, "hello world");
             ti.delete_selection();
             assert_eq!(ti.text, "hello ");
             assert_eq!(ti.core.caret(), 6);
@@ -68,11 +63,6 @@ tilo_test_env::scenario! {
             let mut ti = TextInput::local();
             ti.text = "hello world".to_string();
             ti.core.set_selection(6, 11);
-            let mut doc = AutoCommit::new();
-            let obj_id = doc
-                .put_object(&automerge::ROOT, "text_1", ObjType::Text)
-                .unwrap();
-            let _ = doc.splice_text(&obj_id, 0, 0, "hello world");
             ti.insert_str("there");
             assert_eq!(ti.text, "hello there");
             assert_eq!(ti.core.caret(), "hello there".len());
@@ -216,52 +206,51 @@ tilo_test_env::scenario! {
             let single = TextInput::local();
             assert!(!Widget::accessibility(&single).unwrap().state.multiline);
         }
-    }
 
-    phase a_bound_text_is_only_read_and_edits_wait_for_the_owner;
-    {
-        use crate::a11y::Action;
+        // A field bound to a document's text reads it, never writes it, and reports the edit the
+        // app is to make.
+        {
+            use crate::a11y::Action;
+            let mut document = AutoCommit::new();
+            let title = document
+                .put_object(&automerge::ROOT, "title", ObjType::Text)
+                .unwrap();
+            document.splice_text(&title, 0, 0, "Draft").unwrap();
+            let mut input = TextInput::local();
+            input.bind_text(title.clone());
+            input.sync(&document, &automerge::ROOT);
+            assert_eq!(input.value(), "Draft");
+            assert!(
+                input.take_dirty().is_none(),
+                "showing the text is not an edit"
+            );
 
-        let _settled = crate::motion::testing::settled();
-        let mut document = AutoCommit::new();
-        let title = document
-            .put_object(&automerge::ROOT, "title", ObjType::Text)
-            .unwrap();
-        document.splice_text(&title, 0, 0, "Draft").unwrap();
-        let mut input = TextInput::local();
-        input.bind_text(title.clone());
-        input.sync(&document, &automerge::ROOT);
-        assert_eq!(input.value(), "Draft");
-        assert!(
-            input.take_dirty().is_none(),
-            "showing the text is not an edit"
-        );
+            assert!(Widget::perform_action(
+                &mut input,
+                &Action::SetSelection {
+                    anchor: 0,
+                    focus: 0,
+                },
+                &[],
+                &mut crate::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+            ));
+            assert_eq!(input.value(), "Draft", "moving the caret changes no text");
 
-        assert!(Widget::perform_action(
-            &mut input,
-            &Action::SetSelection {
-                anchor: 0,
-                focus: 0,
-            },
-            &[],
-            &mut crate::widget::Edits::lend(&mut document),
-            &automerge::ROOT,
-        ));
-        assert_eq!(input.value(), "Draft", "moving the caret changes no text");
-
-        assert!(Widget::perform_action(
-            &mut input,
-            &Action::SetValue("Project Atlas".into()),
-            &[],
-            &mut crate::widget::Edits::lend(&mut document),
-            &automerge::ROOT,
-        ));
-        assert_eq!(
-            document.text(&title).unwrap(),
-            "Draft",
-            "the input never writes the document"
-        );
-        assert_eq!(input.take_dirty().as_deref(), Some("Project Atlas"));
+            assert!(Widget::perform_action(
+                &mut input,
+                &Action::SetValue("Project Atlas".into()),
+                &[],
+                &mut crate::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+            ));
+            assert_eq!(
+                document.text(&title).unwrap(),
+                "Draft",
+                "the input never writes the document"
+            );
+            assert_eq!(input.take_dirty().as_deref(), Some("Project Atlas"));
+        }
     }
 
     phase touch_owns_text_selection_until_release;

@@ -72,7 +72,7 @@ fn real_prepared_setup_authenticates_exact_identity_accounts_then_imports_fresh_
     .unwrap()
     .write(&staging)
     .unwrap();
-    let account_before = fs::read(accounts::store_path_in(&source)).unwrap();
+    let account_before = fs::read(accounts::person::staged_path_in(&source)).unwrap();
     let vault_before = fs::read(accounts::vault_dir_in(&source).join("vault.enc")).unwrap();
     let exported = package(&root, &staging, "prepared.sealed");
     let reviewed = PreparedSetupReview::open(
@@ -136,7 +136,7 @@ fn real_prepared_setup_authenticates_exact_identity_accounts_then_imports_fresh_
     assert!(store.get(selected.as_str()).unwrap().is_some());
     assert!(store.get(other.as_str()).unwrap().is_none());
     assert_eq!(
-        fs::read(accounts::store_path_in(&source)).unwrap(),
+        fs::read(accounts::person::staged_path_in(&source)).unwrap(),
         account_before
     );
     assert_eq!(
@@ -792,7 +792,7 @@ fn offline_home_fixture(root: &Path) -> (Manifest, PathBuf, PathBuf, AccountId) 
         selection: PortableHomeSelection::FullHome,
         applications: false,
     });
-    let (_media_directory, _media_path, raw_media) = crate::setup::test_support::media::disk();
+    let (_media_directory, _media_path, raw_media) = crate::test_support::media::disk();
     let media = crate::media_layout::provision(
         &raw_media,
         4 * 1024 * 1024,

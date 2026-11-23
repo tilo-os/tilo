@@ -5,7 +5,7 @@
 //! `Description`, `FilePathList`, `OptionalData`.
 
 /// `EFI_GLOBAL_VARIABLE` vendor GUID.
-pub const GLOBAL_GUID: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
+pub const GLOBAL_GUID: &str = staging_handoff_model::gpt::EFI_GLOBAL_VARIABLE;
 pub const LOAD_OPTION_ACTIVE: u32 = 0x0000_0001;
 /// Owned entries are allocated at or above this number.
 pub const FIRST_OWNED_BOOT_NUMBER: u16 = 0x0100;
@@ -267,10 +267,6 @@ pub fn decode_load_option(bytes: &[u8]) -> Result<HardDriveLoadOption, String> {
     })
 }
 
-pub fn load_option_attributes(bytes: &[u8]) -> Option<u32> {
-    Some(u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,7 +326,6 @@ mod tests {
 
             {
                 assert_eq!(decode_load_option(FIXTURE).unwrap(), fixture_option());
-                assert_eq!(load_option_attributes(FIXTURE), Some(LOAD_OPTION_ACTIVE));
             }
 
             {

@@ -24,7 +24,7 @@ use migration_sources::service::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use accounts::person::PersonAccounts;
+use accounts::person::AccountList;
 
 use super::Lander;
 use super::state::{Item, Place, Review};
@@ -75,13 +75,13 @@ fn config_root() -> Result<std::path::PathBuf> {
 }
 
 /// The workspace's accounts, as this computer's held session reads them.
-fn record() -> Result<PersonAccounts> {
+fn record() -> Result<AccountList> {
     super::workspace::accounts(&mut super::workspace::Held::connect()?)
 }
 
 /// The account a connected `source` is reached with among the workspace's `record`: for mail,
 /// the account connected last.
-fn account(place: &Place, source: &str, record: &PersonAccounts) -> Result<String> {
+fn account(place: &Place, source: &str, record: &AccountList) -> Result<String> {
     let kind = kind(source)?;
     let connected = service::connected(record);
     let last: Option<String> = if kind == ServiceKind::Mail {

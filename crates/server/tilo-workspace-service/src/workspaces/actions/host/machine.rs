@@ -10,23 +10,40 @@
 //!
 //! The machine's token is the one thing that stays on the device that made it,
 //! in a file only its account reads: the plan names it by its nonce alone.
+//!
+//! A machine that installs with nobody at its screen keeps no copy of its disk's recovery key:
+//! it hands the key to its host as soon as it is one of the person's devices, and the key is an
+//! entry of the vault of their Servers workspace (`crate::workspaces::vault`), under the
+//! machine's own device key. Every device of the person reads it there, as Passwords does, and
+//! nothing else does.
 
 use super::{Args, answer, refused};
 use crate::service_authority::ServiceOperation;
 use crate::workspaces::Workspaces;
 use crate::workspaces::servers::{self, Servers, WaitingPlan};
+use accounts::vault_items::VaultChange;
+use accounts::{SecretId, SecretItem, SecretItemKind};
 use serde_json::Value;
 use tilo_actions::remote::ActionCallError;
+use tilo_server_protocol::servers::RecoveryKey;
 use tilo_user_identity::DeviceCert;
 
 /// Where the person's devices serve the installer, unless something names
 /// another site.
 const INSTALLER_URL: &str = "https://tilo.sh";
 
+/// The field of a vault entry that names the machine whose disk recovery key the entry is.
+const RECOVERY_MACHINE_FIELD: &str = "tilo.disk-recovery.machine";
+/// The tag a disk recovery key's entry carries, which Passwords lists it by.
+const RECOVERY_TAG: &str = "disk-recovery-key";
+/// The longest recovery key an entry keeps: systemd's is far shorter.
+const MAX_RECOVERY_KEY_BYTES: usize = 256;
+
 /// Do the machine operation `operation` with `args`, as the person's own
-/// device.
+/// device `device`.
 pub(super) async fn invoke(
     workspaces: &Workspaces,
+    device: &DeviceCert,
     operation: ServiceOperation,
     args: &Args,
 ) -> Result<Value, ActionCallError> {
@@ -38,8 +55,85 @@ pub(super) async fn invoke(
         }
         ServiceOperation::ListServers => answer(&person_servers(workspaces).await?),
         ServiceOperation::AdmitMachine => Box::pin(admit(workspaces, args)).await,
+        ServiceOperation::KeepRecoveryKey => {
+            Box::pin(keep_recovery_key(
+                workspaces,
+                device,
+                args.required_text("key")?,
+            ))
+            .await
+        }
+        ServiceOperation::ListRecoveryKeys => answer(&Box::pin(recovery_keys(workspaces)).await?),
         _ => Err(ActionCallError::UnknownAction),
     }
+}
+
+/// Keep `key`, the disk recovery key of the machine `device` is, in the vault of the person's
+/// Servers workspace: one entry per machine, which a machine that installs again replaces. What
+/// was handed is never echoed in a refusal.
+async fn keep_recovery_key(
+    workspaces: &Workspaces,
+    device: &DeviceCert,
+    key: &str,
+) -> Result<Value, ActionCallError> {
+    let key = key.trim();
+    if key.is_empty() || key.len() > MAX_RECOVERY_KEY_BYTES || key.chars().any(char::is_control) {
+        return Err(refused(&"a disk recovery key is 1 to 256 bytes of text"));
+    }
+    if !crate::workspaces::person_workspace::holds_person_workspace(workspaces).await {
+        return Err(refused(
+            &"this device does not hold your Servers workspace, so it keeps no recovery key",
+        ));
+    }
+    let machine = hex::encode(device.device_public_key);
+    let now = tilo_clock::unix_now();
+    let entry = SecretItem {
+        // The machine's key names its one entry, so a key handed again replaces it.
+        id: SecretId(hex::encode(&device.device_public_key[..16])),
+        kind: SecretItemKind::Other,
+        title: device.device_label.clone(),
+        username: String::new(),
+        password: key.to_owned(),
+        origins: std::collections::BTreeSet::new(),
+        notes: String::new(),
+        fields: std::collections::BTreeMap::from([(
+            RECOVERY_MACHINE_FIELD.to_owned(),
+            machine.clone(),
+        )]),
+        tags: std::collections::BTreeSet::from([RECOVERY_TAG.to_owned()]),
+        created_unix: now,
+        updated_unix: now,
+    };
+    let workspace = crate::workspaces::person_workspace::workspace_id(workspaces);
+    let opened = workspaces
+        .open_vault(&workspace)
+        .await
+        .map_err(|error| refused(&error))?;
+    workspaces
+        .write_vault(&opened, vec![VaultChange::Keep(entry)])
+        .await
+        .map_err(|error| refused(&format!("the recovery key was not kept: {error}")))?;
+    answer(&machine)
+}
+
+/// The disk recovery keys the vault of the person's Servers workspace keeps, one per machine.
+async fn recovery_keys(workspaces: &Workspaces) -> Result<Vec<RecoveryKey>, ActionCallError> {
+    let workspace = crate::workspaces::person_workspace::workspace_id(workspaces);
+    let opened = workspaces
+        .open_vault(&workspace)
+        .await
+        .map_err(|error| refused(&error))?;
+    Ok(opened
+        .entries()
+        .iter()
+        .filter_map(|(entry, _)| {
+            Some(RecoveryKey {
+                machine: entry.fields.get(RECOVERY_MACHINE_FIELD)?.clone(),
+                label: entry.title.clone(),
+                key: entry.password.clone(),
+            })
+        })
+        .collect())
 }
 
 /// Plan the machine `args` describes in the person's Servers workspace.

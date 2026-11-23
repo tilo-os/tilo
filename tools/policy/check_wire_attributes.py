@@ -440,7 +440,7 @@ def compact_sources(root: Path = ROOT) -> list[str]:
         found = set()
         for format in COMPACT:
             listed = subprocess.run(
-                ["git", "grep", "-l", "-F", format, "--", "crates", "apps"],
+                ["git", "grep", "-l", "-F", format, "--", "crates", "tools", "apps"],
                 cwd=root,
                 capture_output=True,
                 text=True,
@@ -457,7 +457,7 @@ def compact_sources(root: Path = ROOT) -> list[str]:
                 and not is_test_file(Path(source))
             ]
     sources = []
-    for directory in ("crates", "apps"):
+    for directory in ("crates", "tools", "apps"):
         for path in sorted((root / directory).rglob("*.rs")):
             source = path.relative_to(root).as_posix()
             if "/src/" in source and not is_test_file(Path(source)):

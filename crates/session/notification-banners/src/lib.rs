@@ -24,7 +24,7 @@ pub use surface::BannerSurface;
 /// The banners' package id.
 pub const APP_ID: &str = "so.tilo.notification-banners";
 
-pub use tilo_desktop::notifications::INLINE_REPLY;
+pub use tilo_session_core::desktop::notifications::INLINE_REPLY;
 
 /// The banners' toolkit definition, the one every host mounts, carrying
 /// their committed surface.

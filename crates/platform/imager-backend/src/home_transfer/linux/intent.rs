@@ -2,7 +2,6 @@
 //! must present the grants again and match them to this exact review.
 use super::super::super::migration_store::NativePath;
 use super::*;
-use std::io::Read;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -39,28 +38,17 @@ pub(super) fn save(review: &HomeReview) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    let mut temporary = migration::OwnedTemporary::create(&parent, name)?;
-    serde_json::to_writer(
-        &mut temporary.file,
-        &Intent {
-            version: 1,
-            source: NativePath::encode(&review.source),
-            destination: NativePath::encode(&review.destination),
-            source_identity: review.source_identity.clone(),
-            parent_identity: review.parent_identity.clone(),
-            revision: review.revision,
-            summary: review.summary.clone(),
-        },
-    )?;
-    durability::sync_file(&temporary.file)?;
-    temporary.validate()?;
-    cap_primitives::fs::hard_link(
-        &parent.file,
-        Path::new(&temporary.name),
-        &parent.file,
-        Path::new(name),
-    )?;
-    durability::sync_directory(&parent.file)
+    let bytes = serde_json::to_vec(&Intent {
+        version: 1,
+        source: NativePath::encode(&review.source),
+        destination: NativePath::encode(&review.destination),
+        source_identity: review.source_identity.clone(),
+        parent_identity: review.parent_identity.clone(),
+        revision: review.revision,
+        summary: review.summary.clone(),
+    })?;
+    migration::OwnedTemporary::create(&parent, name)?
+        .publish(&bytes, migration::PublishMode::IfAbsent)
 }
 
 pub(super) fn recover(source: &Path, destination: &Path, journal: &Path) -> io::Result<HomeReview> {
@@ -86,8 +74,8 @@ fn load(source: &Path, destination: &Path, journal: &Path) -> io::Result<HomeRev
     if !file.metadata()?.is_file() || file.metadata()?.len() > 16384 {
         return Err(changed("Invalid home review record."));
     }
-    let mut bytes = Vec::new();
-    file.take(16385).read_to_end(&mut bytes)?;
+    let bytes =
+        crate::record::read_bounded(file, 16384, || changed("Invalid home review record."))?;
     let intent: Intent = serde_json::from_slice(&bytes)?;
     if intent.version != 1
         || intent.source.decode().map_err(|error| changed(&error))? != source

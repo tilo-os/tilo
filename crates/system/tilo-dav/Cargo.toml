@@ -32,7 +32,7 @@ net = ["dep:tilo-net", "tilo-net/http", "dep:zeroize"]
 
 [dev-dependencies]
 tempfile.workspace = true
-test-http = { path = "../../dev/test-http" }
+test-http = { path = "../../../tools/test-http" }
 tokio = { workspace = true, features = ["rt"] }
 
 [lints]

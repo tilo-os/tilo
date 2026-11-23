@@ -387,8 +387,8 @@ impl Hosted {
         let workspaces = server.workspaces().unwrap().clone();
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         let page = Browser::open_at(&server, &browser, &server_device, &workspace).await;
-        let keeper = root.verifying_key().to_bytes();
-        let person = hex::encode(keeper);
+        let acts_for = root.verifying_key().to_bytes();
+        let person = hex::encode(acts_for);
         make_agent(&page, &workspaces, &workspace, &person, None).await;
         let model = ScriptedProvider::answering(Vec::new());
         workspaces.answer_models_with(model.clone());
@@ -399,7 +399,7 @@ impl Hosted {
                     name: "Google",
                     protocol: ProviderProtocol::OpenAiCompatible,
                     endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
-                    key: Some("the-keepers-own-model-key"),
+                    key: Some("the-persons-own-model-key"),
                     models: &["gemini-main"],
                 },
                 true,
@@ -990,42 +990,15 @@ const HIS_PASSWORD: &str = "only-his-own-mail-server-may-read-this";
 /// Admit the person of `device` to `workspace` as an editor: the server issues them an
 /// invitation and their device redeems it.
 async fn admit(hosted: &Hosted, workspace: &str, device: &crate::support::Device) {
-    let invitation = hosted
-        .workspaces
-        .issue(
-            workspace,
-            &hosted.workspaces.governor().clone(),
-            tilo_server::workspaces::IssueInvitationRequest {
-                request_id: device.cert.device_public_key,
-                role: tilo_peer_state::join::Role::Editor,
-                recipient_user_public_key: Some(device.cert.user_public_key),
-                invitee_name: Some("Bo".into()),
-                inviter_name: None,
-                expires_at_ns: tilo_clock::unix_now_ns()
-                    .checked_add(600_000_000_000)
-                    .unwrap(),
-            },
-        )
-        .await
-        .unwrap();
-    let verified = tilo_peer_state::join::decode_and_verify_invitation(
-        &invitation.signed_invitation,
-        None,
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
+    crate::workspace_actions::resource_support::admit_with(
+        &hosted.workspaces,
+        hosted.workspaces.governor(),
+        workspace,
+        device,
+        tilo_peer_state::join::Role::Editor,
+        "Bo",
     )
-    .unwrap();
-    let endpoint = test_server::endpoint(iroh::SecretKey::from_bytes(&device.key.to_bytes())).await;
-    tilo_server::workspace_join::WorkspaceJoinClient::new(endpoint)
-        .redeem_hint(
-            verified.grant().transport.first().unwrap(),
-            invitation.signed_invitation.clone(),
-            device.cert.clone(),
-            &device.key,
-            device.cert.device_public_key,
-        )
-        .await
-        .unwrap();
+    .await;
 }
 
 /// What another workspace keeps is not hers to use. Bo, who keeps a workspace of his own on the

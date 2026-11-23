@@ -180,27 +180,19 @@ impl PermissionStore {
     }
 
     /// Keep what the frontend answered for `app` of `device` as the person's answer.
-    fn answer_device(
-        &self,
-        device: DeviceCap,
-        app: &str,
-        permissions: &[String],
-    ) -> zbus::fdo::Result<()> {
+    fn answer_device(&self, device: DeviceCap, app: &str, permissions: &[String]) {
         let answer = if permissions.iter().any(|word| word == YES) {
             Answer::Allow
         } else {
             Answer::Deny
         };
         self.devices
-            .answer(app, device, answer, Lifetime::UntilRevoked)
-            .map_err(|error| failed(&format!("cannot keep the answer: {error}")))
+            .answer(app, device, answer, Lifetime::UntilRevoked);
     }
 
     /// Take back what `app` was answered of `device` on this device.
-    fn revoke_device(&self, device: DeviceCap, app: &str) -> zbus::fdo::Result<bool> {
-        self.devices
-            .revoke_here(app, device)
-            .map_err(|error| failed(&format!("cannot take the answer back: {error}")))
+    fn revoke_device(&self, device: DeviceCap, app: &str) -> bool {
+        self.devices.revoke_here(app, device)
     }
 
     /// `entry` with its permissions read from the person's answers when it is a device's.
@@ -251,11 +243,11 @@ impl PermissionStore {
         if let Some(device) = device_of(table, id) {
             for app in self.device_permissions(device).keys() {
                 if !permissions.contains_key(app) {
-                    self.revoke_device(device, app)?;
+                    self.revoke_device(device, app);
                 }
             }
             for (app, words) in std::mem::take(&mut permissions) {
-                self.answer_device(device, &app, &words)?;
+                self.answer_device(device, &app, &words);
             }
         }
         let viewed = self.with_mutation(|state| {
@@ -285,7 +277,7 @@ impl PermissionStore {
         if let Some(device) = device_of(table, id) {
             let answered = self.device_permissions(device);
             for app in answered.keys() {
-                self.revoke_device(device, app)?;
+                self.revoke_device(device, app);
             }
             let data = self
                 .state
@@ -372,7 +364,7 @@ impl PermissionStore {
         valid_key(app, MAX_APP, "application id")?;
         let permissions = checked_permission_list(permissions)?;
         if let Some(device) = device_of(table, id) {
-            self.answer_device(device, app, &permissions)?;
+            self.answer_device(device, app, &permissions);
             return self.lookup(table, id);
         }
         self.with_mutation(|state| {
@@ -408,7 +400,7 @@ impl PermissionStore {
         valid_key(id, MAX_ID, "id")?;
         valid_key(app, MAX_APP, "application id")?;
         if let Some(device) = device_of(table, id) {
-            if !self.revoke_device(device, app)? {
+            if !self.revoke_device(device, app) {
                 return Err(failed("permission-store permission does not exist"));
             }
             return self.lookup(table, id);

@@ -2,7 +2,7 @@
 //! profile's private directories and environment, hold the profile
 //! exclusively and serve its apps their document media.
 
-use crate::unix;
+use crate::host;
 use std::{
     io,
     path::{Path, PathBuf},
@@ -13,39 +13,42 @@ use std::{
 /// services start with. This does not mutate process-global state: the native
 /// executable applies the returned values at its single-threaded startup
 /// boundary.
-pub(crate) fn prepare_environment(profile: &Path) -> io::Result<[(&'static str, PathBuf); 5]> {
+///
+/// The device's key and certificates are not the profile's: they are in the one layout
+/// [`collaboration_identity_root`](tilo_identity::provisioning::collaboration_identity_root)
+/// names, Tilo's system tree on Tilo OS and the profile's data directory elsewhere.
+pub(crate) fn prepare_environment(profile: &Path) -> io::Result<[(&'static str, PathBuf); 4]> {
     if !profile.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "profile path must be absolute",
         ));
     }
-    unix::private_directory(profile)?;
+    host::private_directory(profile)?;
     let paths = environment(profile);
     for (_, path) in &paths {
-        unix::private_directory(path)?;
+        host::private_directory(path)?;
     }
     Ok(paths)
 }
 
 /// The directories inside the profile the runtime's services keep their state
 /// in, as the environment names them.
-fn environment(profile: &Path) -> [(&'static str, PathBuf); 5] {
+fn environment(profile: &Path) -> [(&'static str, PathBuf); 4] {
     [
         ("XDG_CONFIG_HOME", profile.join("config")),
         ("XDG_DATA_HOME", profile.join("data")),
         ("XDG_CACHE_HOME", profile.join("cache")),
         ("XDG_STATE_HOME", profile.join("state")),
-        ("TILO_IDENTITY_ROOT", profile.join("identity")),
     ]
 }
 
 /// Hold `root` exclusively for this process, recording the owner so a
 /// second start can name it.
 pub fn lock(root: &Path) -> io::Result<advisory_lock::FileLock> {
-    unix::private_directory(root)?;
+    host::private_directory(root)?;
     let lock_path = root.join("runtime.lock");
-    let lock = advisory_lock::FileLock::try_exclusive(unix::private_file(&lock_path)?).map_err(
+    let lock = advisory_lock::FileLock::try_exclusive(host::private_file(&lock_path)?).map_err(
         |error| match error {
             advisory_lock::TryLockError::WouldBlock => {
                 let owner = advisory_lock::owner_pid(&lock_path)

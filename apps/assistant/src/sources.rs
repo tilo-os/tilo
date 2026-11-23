@@ -287,11 +287,11 @@ mod tests {
 
     const ME: &str = "aa";
 
-    fn agent(id: &str, keeper: &str, created_at: i64) -> Agent {
+    fn agent(id: &str, acts_for: &str, created_at: i64) -> Agent {
         Agent {
             id: Atom(id.to_owned()),
             name: id.to_owned(),
-            keeper: keeper.to_owned(),
+            acts_for: acts_for.to_owned(),
             created_at,
             ..Agent::default()
         }

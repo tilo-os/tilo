@@ -346,32 +346,23 @@ mod tests {
     tilo_test_env::scenario! {
         fn attestation_scopes_parse_round_trip_and_match;
 
-        phase scope_roundtrip_all;
+        phase scopes_render_parse_and_round_trip;
         {
-            let s = AttestorScope::All;
-            assert_eq!(s.render(), "all");
-            assert_eq!(AttestorScope::parse("all").unwrap(), s);
-        }
-
-        phase scope_roundtrip_mime;
-        {
-            let s = AttestorScope::Mime(vec!["application/pdf".into()]);
-            assert_eq!(s.render(), "mime:application/pdf");
-            assert_eq!(AttestorScope::parse("mime:application/pdf").unwrap(), s);
-        }
-
-        phase scope_roundtrip_prefix;
-        {
-            let s = AttestorScope::Prefix(vec!["so.tilo.".into(), "dev.example.".into()]);
-            assert_eq!(s.render(), "prefix:so.tilo.,dev.example.");
-            assert_eq!(
-                AttestorScope::parse("prefix:so.tilo.,dev.example.").unwrap(),
-                s
-            );
-        }
-
-        phase scope_rejects_garbage;
-        {
+            let scopes = [
+                (AttestorScope::All, "all"),
+                (
+                    AttestorScope::Mime(vec!["application/pdf".into()]),
+                    "mime:application/pdf",
+                ),
+                (
+                    AttestorScope::Prefix(vec!["so.tilo.".into(), "dev.example.".into()]),
+                    "prefix:so.tilo.,dev.example.",
+                ),
+            ];
+            for (scope, rendered) in scopes {
+                assert_eq!(scope.render(), rendered);
+                assert_eq!(AttestorScope::parse(rendered).unwrap(), scope);
+            }
             assert!(matches!(
                 AttestorScope::parse("hello"),
                 Err(TrustLoadError::BadScope(_))
@@ -382,18 +373,15 @@ mod tests {
             ));
         }
 
-        phase scope_covers_matches_prefix;
+        phase a_scope_covers_the_package_ids_and_mimes_it_may_vouch_for;
         {
-            let s = AttestorScope::Prefix(vec!["so.tilo.".into()]);
-            assert!(s.covers("so.tilo.editor", &[]));
-            assert!(!s.covers("com.example.foo", &[]));
-        }
+            let prefix = AttestorScope::Prefix(vec!["so.tilo.".into()]);
+            assert!(prefix.covers("so.tilo.editor", &[]));
+            assert!(!prefix.covers("com.example.foo", &[]));
 
-        phase scope_covers_matches_mime;
-        {
-            let s = AttestorScope::Mime(vec!["application/pdf".into()]);
-            assert!(s.covers("dev.foo", &["application/pdf".into()]));
-            assert!(!s.covers("dev.foo", &["text/plain".into()]));
+            let mime = AttestorScope::Mime(vec!["application/pdf".into()]);
+            assert!(mime.covers("dev.foo", &["application/pdf".into()]));
+            assert!(!mime.covers("dev.foo", &["text/plain".into()]));
         }
     }
 
@@ -436,9 +424,9 @@ mod tests {
             );
         }
 
-        phase trusted_attestors_toml_roundtrip;
+        phase the_policy_files_round_trip_and_a_revocation_finds_its_key;
         {
-            let orig = TrustedAttestors {
+            let attestors = TrustedAttestors {
                 attestor: vec![
                     TrustedAttestor {
                         id: "tilo-curated/2026.07".into(),
@@ -452,34 +440,19 @@ mod tests {
                     },
                 ],
             };
-            let text = orig.to_toml_string().unwrap();
-            let decoded = TrustedAttestors::from_toml_str(&text).unwrap();
-            assert_eq!(decoded, orig);
-        }
+            let text = attestors.to_toml_string().unwrap();
+            assert_eq!(TrustedAttestors::from_toml_str(&text).unwrap(), attestors);
 
-        phase revocation_toml_roundtrip;
-        {
-            let orig = RevocationList {
+            let revoked = RevocationList {
                 revoked: vec![RevokedKey {
-                    pubkey_hex: "cc".repeat(32),
+                    pubkey_hex: "de".repeat(32),
                     reason: "compromised 2026-07-05".into(),
                 }],
             };
-            let text = orig.to_toml_string().unwrap();
-            let decoded = RevocationList::from_toml_str(&text).unwrap();
-            assert_eq!(decoded, orig);
-        }
-
-        phase revocation_list_finds_by_pubkey;
-        {
-            let list = RevocationList {
-                revoked: vec![RevokedKey {
-                    pubkey_hex: "de".repeat(32),
-                    reason: "test".into(),
-                }],
-            };
-            assert!(list.find(&[0xde; 32]).is_some());
-            assert!(list.find(&[0x00; 32]).is_none());
+            let text = revoked.to_toml_string().unwrap();
+            assert_eq!(RevocationList::from_toml_str(&text).unwrap(), revoked);
+            assert!(revoked.find(&[0xde; 32]).is_some());
+            assert!(revoked.find(&[0x00; 32]).is_none());
         }
 
         phase attestation_preimage_is_domain_separated;

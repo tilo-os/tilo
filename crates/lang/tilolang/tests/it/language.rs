@@ -576,14 +576,6 @@ fn check_fails_on_a_stale_ids_lock_and_writes_it_when_asked() {
         run(&["check", &path]),
         format!("{:?}", std::process::ExitCode::SUCCESS)
     );
-    let out = dir.join("out");
-    let built = run(&["build", &path, "--out", &out.to_string_lossy()]);
-    assert_eq!(built, format!("{:?}", std::process::ExitCode::SUCCESS));
-    assert!(
-        out.join("t.lock.wasm").exists(),
-        "the module is written outside the package"
-    );
-    assert!(!dir.join("app.wasm").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

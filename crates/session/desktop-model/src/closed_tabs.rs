@@ -272,7 +272,11 @@ impl Layout {
     /// was shown on while that display is still here. `None`, changing
     /// nothing, when the workspace is gone or remembers no close.
     pub fn reopen_closed(&mut self, workspace: WorkspaceId, app: Option<&str>) -> Option<Reopened> {
-        let focused = self.active_strip.get(&workspace).copied();
+        let focused = self
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.id() == workspace)
+            .and_then(|candidate| self.active_strip_for(candidate));
         let reopened = self
             .workspaces
             .iter_mut()

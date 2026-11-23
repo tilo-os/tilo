@@ -3,12 +3,12 @@ app so.tilo.notes "Notes" (
     category: .office,
     tagline: "Notes you write alone or together",
     keywords: ["note", "memo", "memos", "notebook", "journal", "markdown", "notepad", "textedit", "apple notes", "google keep", "onenote", "obsidian", "notiz", "notizbuch", "aufzeichnungen", "zettel", "merkzettel", "tagebuch", "notizen machen"],
-    previously: so.tilo.lang.notes,
 )
 
 use so.tilo.lang.discussion as discussion
 
-/// A note: a title, a body, the note it stands under and the tags people gave it.
+/// A note: a title, a body, the note it stands under, the tags people gave it and the
+/// reactions they left on it.
 type Note (untitled: "Untitled") {
     title: Text
     body: RichText
@@ -19,6 +19,12 @@ type Note (untitled: "Untitled") {
     parent: Option<Note>
     pinned: Bool = false
     tags: Set<Text>
+    /// Who reacted to the note, by emoji: the person and agent each pill in its header stands
+    /// for, and whose own reaction a press on it takes back.
+    reactions: Map<Set<Actor>>
+    /// The reactions it had in the native Notes app, each emoji with how many reacted with it:
+    /// who reacted there is not carried, since this app names people only as its own members.
+    reacted: Text = ""
     /// The file the note was imported from, by the address of its content: importing the same
     /// file again opens this note rather than making a second one.
     source: Text = ""
@@ -68,11 +74,13 @@ primary action new_note(nb: Notebook, title: Text = "", body: Text = "") -> Note
     nb.notes.insert(Note(title: title, body: RichText.from_markdown(body)))
 }
 
-/// Starts a note inside `n`'s own, after the notes it already holds: the note the window has
-/// open too, so a person writing one starts the note it stands under without finding its row.
-/// It is `n`'s action, so the window offers it for the note it shows and its row offers it.
-action new_child(n: Note) -> Note (icon: .plus, label: "New sub-note") {
-    let made = notebook.notes.insert(Note(title: "", parent: n))
+/// Starts a note inside `n`'s own, after the notes it already holds, titled `words` when the
+/// caller knows them already (a `/page` in one of `n`'s blocks names the page it makes with the
+/// words that stood there): the note the window has open too, so a person writing one starts the
+/// note it stands under without finding its row. It is `n`'s action, so the window offers it for
+/// the note it shows and its row offers it.
+action new_child(n: Note, words: Text = "") -> Note (icon: .plus, label: "New sub-note") {
+    let made = notebook.notes.insert(Note(title: words, parent: n))
     if let last = notebook.notes.filter(x -> x.parent == n and x != made).last() {
         notebook.notes.move(made, after: last)
     } else { notebook.notes.move(made, after: n) }
@@ -128,13 +136,17 @@ migration action carry_native_notebook(nb: Notebook) {
         let native = page.rich.get("body") ?? RichText("")
         let markdown = native.markdown
         let body = native.relinked(links: links, sources: picture_sources(markdown, pictures))
+        let reacted = reactions_said(page.lists.get("reactions") ?? [])
         let made = if end == "gone" {
-            nb.set_aside.insert(Note(title: title, body: body), id: page.id)
+            nb.set_aside.insert(Note(title: title, body: body, reacted: reacted), id: page.id)
         } else {
             let parent = if end == "top" {
                 carried.get(page.texts.get("parent") ?? "")
             } else { .none }
-            nb.notes.insert(Note(title: title, body: body, parent: parent), id: page.id)
+            nb.notes.insert(
+                Note(title: title, body: body, parent: parent, reacted: reacted),
+                id: page.id,
+            )
         }
         for tag in page.lists.get("tags") ?? [] {
             if let name = tags.get(tag) { made.tags.add(name) }
@@ -217,6 +229,41 @@ fn chain_end(parents: Map<Text>, id: Text, left: Int) -> Text {
             "top"
         } else if left <= 0 { "circle" } else { chain_end(parents, parent, left - 1) }
     } else { "gone" }
+}
+
+/// The reactions a native page kept, each key naming an emoji and then who reacted with it, as
+/// words: each emoji and how many reacted with it, in the order they were first used. Who
+/// reacted there is not carried, since this app names people only as its own members.
+fn reactions_said(keys: List<Text>) -> Text {
+    said_from(keys.map(k -> emoji_of(k)), 0, [])
+}
+
+/// [`reactions_said`] of `emoji` from the `at`th, past the emoji already `told`.
+fn said_from(emoji: List<Text>, at: Int, told: List<Text>) -> Text {
+    if let e = emoji.at(at) {
+        if told.contains(e) {
+            said_from(emoji, at + 1, told)
+        } else {
+            let here = "{e} {emoji.count(x -> x == e)}"
+            let rest = said_from(emoji, at + 1, [told, [e]].flat_map(x -> x))
+            if rest == "" { here } else { "{here}  {rest}" }
+        }
+    } else { "" }
+}
+
+/// The emoji a native reaction's key names: what stands before its first separator. The key
+/// ends in who reacted, written in hex, after the last one.
+fn emoji_of(key: Text) -> Text {
+    let unhexed = without_hex(key)
+    let separator = unhexed.slice(unhexed.len() - 1, unhexed.len())
+    key.split(separator).first() ?? key
+}
+
+/// `key` without the hex digits it ends in.
+fn without_hex(key: Text) -> Text {
+    if key.len() > 0 and "0123456789abcdef".contains(key.slice(key.len() - 1, key.len())) {
+        without_hex(key.slice(0, key.len() - 1))
+    } else { key }
 }
 
 /// Pins or unpins a note.
@@ -383,6 +430,13 @@ action untag(n: Note, t: Text) (label: "Untag", group: "Tags") {
     n.tags.remove(t)
 }
 
+/// Adds your reaction with an emoji to a note, or takes it back when you had reacted with it: a
+/// press on one of its pills, or the pick of the one its add button opened.
+action react(n: Note, emoji: Text) (icon: .smile_plus, label: "React") {
+    let mine = if let who = n.reactions.get(emoji) { who.any(p -> p == invoker) } else { false }
+    if mine { n.reactions.remove(emoji, invoker) } else { n.reactions.add(emoji, invoker) }
+}
+
 /// Puts a picture in a note, where its words end: the person picks the file, and the note
 /// keeps the address of its content rather than the picture, and the name it came in as.
 action insert_image(n: Note, image: File) (icon: .image, did: "added an image") {
@@ -430,6 +484,42 @@ action export_notebook(nb: Notebook) -> File (icon: .download) {
     let at: Map<Text> = Map<Text>()
     pages_under(nb, .none, "", pages, at)
     File.zip("Notes.zip", files_under(nb, .none, "", pages))
+}
+
+/// The notebook as one Markdown document: each note a heading one level deeper than the note it
+/// stands under (six at the deepest), its body beneath, and the notes under it after it — the
+/// notebook read as one text, in the order the tree keeps it.
+action export_notebook_markdown(nb: Notebook) -> File (icon: .download) {
+    File.of_text("Notes.md", notebook_markdown(nb))
+}
+
+/// Every note of the notebook as one Markdown document, in the order the tree keeps them.
+fn notebook_markdown(nb: Notebook) -> Text {
+    markdown_under(nb, .none, 1).join("\n")
+}
+
+/// The sections of the notes under `parent` and of the notes under them, `depth` deep: each
+/// note's own section, then the sections of the notes it holds, one level deeper.
+fn markdown_under(nb: Notebook, parent: Option<Note>, depth: Int) -> List<Text> {
+    let sections: List<Text> = []
+    for kid in kids_of(nb, parent) {
+        sections = [
+            sections,
+            [markdown_of_note(kid, depth)],
+            markdown_under(nb, .some(kid), depth + 1),
+        ]
+            .flat_map(x -> x)
+    }
+    sections
+}
+
+/// One note as its section of the notebook's document: its title a heading `depth` deep — Markdown
+/// has six, so a deeper note stands at the sixth — and its body under it when it says anything.
+fn markdown_of_note(n: Note, depth: Int) -> Text {
+    let hashes = ["#", "##", "###", "####", "#####", "######"].at(depth.min(6) - 1) ?? "#"
+    let body = n.body.markdown.trim()
+    let title = n.title.trim()
+    if body == "" { "{hashes} {title}\n" } else { "{hashes} {title}\n\n{body}\n" }
 }
 
 /// Names the notes under `parent`, and the notes under them, in the order the notebook keeps
@@ -570,19 +660,103 @@ action import_page(
     made
 }
 
-/// Imports a zip of pages as notes under the notebook, a page under the page that held it, in one
-/// change: undo takes the whole import back. That is this app's own notebook written out, a
-/// Notion export, and what `tilo migrate` brings from a wiki: a page per `.md` file, its pictures
-/// beside it, and a database beside it as a `.csv` that becomes a table at its page. Each page's
-/// title is its first heading, or its file's name; the pictures a page shows are the files it
-/// stands beside, a reference read from the page's own folder, and a link to a page of the archive
-/// is the reference to the note that page made. A migration says where each page came from in its
-/// own file beside the pages, and a page that is imported already keeps the note it made.
+/// Imports a note given as words rather than a file: its title, its body as Markdown, the
+/// pictures it shows and the notes its links lead to. A caller holding a page as text — a
+/// script, an agent, a migration — makes the note without writing a file first: `pictures` are
+/// the files the body names as `![alt](name)`, each by the name it came in as, which the note
+/// keeps so an export writes it beside the note again; `links` names, by the path a link leads
+/// to, the note it opens. The note stands at the top of the tree.
+action import_text(
+    nb: Notebook,
+    title: Text,
+    markdown: Text,
+    pictures: Option<List<File>> = .none,
+    links: Option<Map<Text>> = .none,
+) -> Note (icon: .file_plus, label: "Import a note as text", did: "imported a note") {
+    // A heading that says the title is the title, not a line of the body said twice.
+    let shown = without_heading(markdown, title)
+    if let files = pictures {
+        for picture in files {
+            let named = base_name(picture.name)
+            if shown.contains("]({named})") {
+                shown = shown.replace("]({named})", "]({picture.url})")
+            }
+        }
+    }
+    let leads_to = match links {
+        .some(pages) => pages,
+        .none => Map<Text>(),
+    }
+    let made = nb.notes.insert(
+        Note(title: title, body: RichText.from_markdown(shown, links: leads_to, from: "")),
+    )
+    if let files = pictures {
+        for picture in files {
+            if shown.contains(picture.url) {
+                made.images.put(picture.url, base_name(picture.name))
+            }
+        }
+    }
+    made
+}
+
+/// Imports a notebook another tool wrote: a zip of pages, or the JSON a Notion API page listing
+/// answers. A zip comes in under the notebook, a page under the page that held it, in one change:
+/// undo takes the whole import back. That is this app's own notebook written out, a Notion export,
+/// and what `tilo migrate` brings from a wiki: a page per `.md` file, its pictures beside it, and a
+/// database beside it as a `.csv` that becomes a table at its page. Each page's title is its first
+/// heading, or its file's name; the pictures a page shows are the files it stands beside, a
+/// reference read from the page's own folder, and a link to a page of the archive is the reference
+/// to the note that page made. A migration says where each page came from in its own file beside
+/// the pages, and a page that is imported already keeps the note it made. A listing carries no
+/// files, so each of its pages is a note at the top of the tree.
 action import_archive(nb: Notebook, file: File) (
     icon: .file_plus,
     did: "imported a notebook",
-    opens: ["application/zip", .zip],
+    opens: ["application/zip", "application/json", .zip, .json],
 ) {
+    // A listing carries no files, so each of its pages is one note at the top of the tree.
+    if file.media == "application/json" {
+        let text = match file.text() {
+            .ok(text) => text,
+            .err(why) => {
+                if nb.notes.find(n -> n.source == file.url) == .none {
+                    nb.notes.insert(failed_note(file, why))
+                }
+                return
+            }
+        }
+        let value = match json.parse(text) {
+            .ok(value) => value,
+            .err(why) => {
+                if nb.notes.find(n -> n.source == file.url) == .none {
+                    nb.notes.insert(failed_note(file, why))
+                }
+                return
+            }
+        }
+        let made = 0
+        for page in listing_pages(value) {
+            let title = page.at(0) ?? ""
+            let markdown = page.at(1) ?? ""
+            // A page whose note is here already keeps it: the same listing twice is one page.
+            if nb.notes.find(n -> n.source == file.url and n.title == title) == .none {
+                nb.notes.insert(
+                    Note(
+                        title: title,
+                        body: RichText.from_markdown(markdown),
+                        source: file.url,
+                        origin: file.name,
+                    ),
+                )
+                made = made + 1
+            }
+        }
+        if made == 0 and nb.notes.find(n -> n.source == file.url) == .none {
+            nb.notes.insert(failed_note(file, "This page listing holds no page."))
+        }
+        return
+    }
     // An archive of pages opens in the notebook with this, as one holding a notebook does.
     match file.files() {
         .ok(files) => {
@@ -687,17 +861,373 @@ action import_archive(nb: Notebook, file: File) (
         // An archive that does not read says why, in the note it would have filled.
         .err(why) => {
             if nb.notes.find(n -> n.source == file.url) == .none {
-                nb.notes.insert(
-                    Note(
-                        title: stem_of(file.name),
-                        body: RichText(why),
-                        source: file.url,
-                        origin: file.name,
-                    ),
-                )
+                nb.notes.insert(failed_note(file, why))
             }
         }
     }
+}
+
+/// The note a file that did not read leaves behind: the file the person chose, and what became of
+/// it, rather than a notebook that changed by nothing.
+fn failed_note(file: File, why: Text) -> Note {
+    Note(title: stem_of(file.name), body: RichText(why), source: file.url, origin: file.name)
+}
+
+/// The pages a Notion API page listing describes — the JSON a page's `children` endpoint answers —
+/// each as its title then its Markdown: one page per listing, titled by its `title` property, else
+/// its first heading, and saying its blocks — headings, paragraphs, lists, checklists, quotes,
+/// callouts, code, dividers and the pages inside it — each run with the marks it carries. A
+/// listing carries no bytes, so a picture it shows stays the link it was.
+fn listing_pages(value: json.Value) -> List<List<Text>> {
+    let pages: List<List<Text>> = []
+    // A listing is one page's blocks; an array of listings is several pages.
+    let listings = as_array(value) ?? [value]
+    for listing in listings {
+        let blocks = listing_blocks(listing)
+        if not blocks.is_empty() {
+            let markdown = ""
+            for block in blocks {
+                markdown = "{markdown}{block_markdown(block)}"
+            }
+            pages = [pages, [[listing_title(listing, blocks), markdown]]].flat_map(x -> x)
+        }
+    }
+    pages
+}
+
+/// The blocks a listing holds: its `results`, one page's blocks in the order they stood, or —
+/// when it says none — the listing itself as the one page's blocks.
+fn listing_blocks(listing: json.Value) -> List<json.Value> {
+    match object_field(listing, "results") {
+        .some(held) => as_array(held) ?? [held],
+        .none => [listing],
+    }
+}
+
+/// What a listing's page is called: the `title` it carries, else the `title` property among its
+/// properties, else the words of its first heading.
+fn listing_title(listing: json.Value, blocks: List<json.Value>) -> Text {
+    let named = title_words(listing) ?? ""
+    // A page's title stands in its properties, under the one the listing calls `title`.
+    if named == "" {
+        match object_field(listing, "properties") {
+            .some(properties) => {
+                if let fields = as_object(properties) {
+                    for key in fields.keys() {
+                        if let property = fields.get(key) {
+                            if text_field(property, "type") == "title" {
+                                let words = title_words(property) ?? ""
+                                if named == "" {
+                                    named = words
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .none => {}
+        }
+    }
+    if named == "" {
+        for block in blocks {
+            if block_kind(block) == "heading_1" {
+                if let body = object_field(block, "heading_1") {
+                    if named == "" {
+                        named = rich_words(body) ?? ""
+                    }
+                }
+            }
+        }
+    }
+    named.trim()
+}
+
+/// One listing block as Markdown: its words in the shape of its kind, then its children — a list
+/// item's under it, indented, so they stay its own.
+fn block_markdown(block: json.Value) -> Text {
+    let kind = block_kind(block)
+    let words = block_words(block) ?? ""
+    let out = block_line(block, kind, words)
+    let indented = kind == "bulleted_list_item" or kind == "numbered_list_item" or kind == "to_do"
+    let children = array_field(block, "children")
+    for child in children {
+        let under = block_markdown(child)
+        for line in under.split("\n") {
+            if line != "" {
+                if indented {
+                    out = "{out}    {line}\n"
+                } else {
+                    out = "{out}{line}\n"
+                }
+            }
+        }
+    }
+    if indented and not children.is_empty() {
+        out = "{out}\n"
+    }
+    out
+}
+
+/// One block's line of Markdown, in the shape of its kind; a kind this notebook has no block for
+/// keeps its words as a paragraph rather than dropping them.
+fn block_line(block: json.Value, kind: Text, text: Text) -> Text {
+    if kind == "heading_1" {
+        return "# {text}\n\n"
+    }
+    if kind == "heading_2" {
+        return "## {text}\n\n"
+    }
+    if kind == "heading_3" {
+        return "### {text}\n\n"
+    }
+    if kind == "bulleted_list_item" {
+        return "- {one_line(text)}\n"
+    }
+    if kind == "numbered_list_item" {
+        return "1. {one_line(text)}\n"
+    }
+    if kind == "to_do" {
+        if flag_field(block, "to_do", "checked") {
+            return "- [x] {one_line(text)}\n"
+        }
+        return "- [ ] {one_line(text)}\n"
+    }
+    if kind == "quote" or kind == "callout" {
+        // This notebook has no callout block of its own: a quote carries the same words.
+        return "> {one_line(text)}\n\n"
+    }
+    if kind == "code" {
+        let language = match object_field(block, "code") {
+            .some(body) => text_field(body, "language"),
+            .none => "",
+        }
+        if language == "" {
+            return "```\n{text}\n```\n\n"
+        }
+        return "```{language}\n{text}\n```\n\n"
+    }
+    if kind == "divider" {
+        return "---\n\n"
+    }
+    if kind == "child_page" {
+        return "[[{one_line(text)}]]\n\n"
+    }
+    if text.trim() == "" {
+        return "\n"
+    }
+    "{text}\n\n"
+}
+
+/// A block's kind: its `type`, else the name of the one object it carries besides what every
+/// block has.
+fn block_kind(block: json.Value) -> Text {
+    let written = text_field(block, "type")
+    if written != "" {
+        return written
+    }
+    let found = ""
+    if let fields = as_object(block) {
+        let listing = [
+            "object",
+            "id",
+            "created_time",
+            "last_edited_time",
+            "has_children",
+            "archived",
+        ]
+        for key in fields.keys() {
+            if not listing.contains(key) {
+                if let value = fields.get(key) {
+                    if is_object(value) and found == "" {
+                        found = key
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
+/// A block's words as Markdown: the runs of its body, each with the marks it carries, or the
+/// title a child page is called by.
+fn block_words(block: json.Value) -> Option<Text> {
+    let kind = block_kind(block)
+    if kind == "" {
+        return rich_words(block)
+    }
+    match object_field(block, kind) {
+        .some(body) => match rich_words(body) {
+            .some(words) => .some(words),
+            .none => title_words(body),
+        },
+        .none => .none,
+    }
+}
+
+/// A rich text array as Markdown, each run spelled with the marks it carries: code, bold,
+/// italic, strikethrough, underline, and the link it opens.
+fn rich_words(body: json.Value) -> Option<Text> {
+    match object_field(body, "rich_text") {
+        .some(held) => match as_array(held) {
+            .some(entries) => .some(rich_text_of(entries)),
+            .none => .none,
+        },
+        .none => .none,
+    }
+}
+
+/// The runs of a rich text array as one text, each spelled with the marks it carries.
+fn rich_text_of(entries: List<json.Value>) -> Text {
+    let out = ""
+    for entry in entries {
+        let text = text_field(entry, "plain_text")
+        if text == "" {
+            text = run_content(entry)
+        }
+        if text != "" {
+            let shown = text
+            if flag_field(entry, "annotations", "code") {
+                shown = "`{shown}`"
+            }
+            if flag_field(entry, "annotations", "bold") {
+                shown = "**{shown}**"
+            }
+            if flag_field(entry, "annotations", "italic") {
+                shown = "*{shown}*"
+            }
+            if flag_field(entry, "annotations", "strikethrough") {
+                shown = "~~{shown}~~"
+            }
+            if flag_field(entry, "annotations", "underline") {
+                shown = "__{shown}__"
+            }
+            let href = text_field(entry, "href")
+            if href != "" {
+                shown = "[{shown}]({href})"
+            }
+            out = "{out}{shown}"
+        }
+    }
+    out
+}
+
+/// The words a title holds: a plain string, the runs of a rich text array, or what a title object
+/// carries under `title` or `rich_text`.
+fn title_words(body: json.Value) -> Option<Text> {
+    match as_text(body) {
+        .some(text) => .some(text),
+        .none => match as_array(body) {
+            .some(entries) => .some(rich_text_of(entries)),
+            .none => match object_field(body, "title") {
+                .some(title) => title_words(title),
+                .none => rich_words(body),
+            },
+        },
+    }
+}
+
+/// The content of one rich text run's `text` object.
+fn run_content(entry: json.Value) -> Text {
+    match object_field(entry, "text") {
+        .some(held) => text_field(held, "content"),
+        .none => "",
+    }
+}
+
+/// The value at `key` of a JSON object, when it is one and holds the key.
+fn object_field(value: json.Value, key: Text) -> Option<json.Value> {
+    match as_object(value) {
+        .some(fields) => fields.get(key),
+        .none => .none,
+    }
+}
+
+/// The value as a JSON object's fields, when it is an object.
+fn as_object(value: json.Value) -> Option<Map<json.Value>> {
+    match value {
+        .object(fields) => .some(fields),
+        .array(items) => .none,
+        .string(text) => .none,
+        .number(number) => .none,
+        .bool(flag) => .none,
+        .null => .none,
+    }
+}
+
+/// The value as a JSON array's items, when it is an array.
+fn as_array(value: json.Value) -> Option<List<json.Value>> {
+    match value {
+        .object(fields) => .none,
+        .array(items) => .some(items),
+        .string(text) => .none,
+        .number(number) => .none,
+        .bool(flag) => .none,
+        .null => .none,
+    }
+}
+
+/// The value as text, when it is a JSON string.
+fn as_text(value: json.Value) -> Option<Text> {
+    match value {
+        .object(fields) => .none,
+        .array(items) => .none,
+        .string(text) => .some(text),
+        .number(number) => .none,
+        .bool(flag) => .none,
+        .null => .none,
+    }
+}
+
+/// The value as a flag, when it is a JSON boolean.
+fn as_bool(value: json.Value) -> Option<Bool> {
+    match value {
+        .object(fields) => .none,
+        .array(items) => .none,
+        .string(text) => .none,
+        .number(number) => .none,
+        .bool(flag) => .some(flag),
+        .null => .none,
+    }
+}
+
+/// Whether the value is a JSON object.
+fn is_object(value: json.Value) -> Bool {
+    match as_object(value) {
+        .some(fields) => true,
+        .none => false,
+    }
+}
+
+/// The array at `key` of a JSON object, and nothing when it holds none there.
+fn array_field(value: json.Value, key: Text) -> List<json.Value> {
+    match object_field(value, key) {
+        .some(held) => as_array(held) ?? [],
+        .none => [],
+    }
+}
+
+/// The text at `key` of a JSON object, and nothing when it holds none there.
+fn text_field(value: json.Value, key: Text) -> Text {
+    match object_field(value, key) {
+        .some(held) => as_text(held) ?? "",
+        .none => "",
+    }
+}
+
+/// Whether `field` of `key`'s object is true.
+fn flag_field(value: json.Value, key: Text, field: Text) -> Bool {
+    match object_field(value, key) {
+        .some(held) => match object_field(held, field) {
+            .some(flag) => as_bool(flag) ?? false,
+            .none => false,
+        },
+        .none => false,
+    }
+}
+
+/// `text` on one line: a list item's words do not break its marker.
+fn one_line(text: Text) -> Text {
+    text.replace("\r", " ").replace("\n", " ").trim()
 }
 
 /// The file an import from another service carries beside its pages, saying where each came
@@ -795,15 +1325,15 @@ fn unescaped(field: Text) -> Text {
 }
 
 /// Files dropped on the notebook come in one at a time. A Markdown file becomes a note. An
-/// archive becomes the pages it holds, whether the notebook's own written out or another app's
-/// export. One action, so undo takes the whole drop back at once.
+/// archive or a Notion page listing becomes the pages it holds, whether the notebook's own
+/// written out or another app's export. One action, so undo takes the whole drop back at once.
 action import_dropped(nb: Notebook, files: List<File>) (
     icon: .file_plus,
     label: "Import files",
     did: "imported a file",
 ) {
     for file in files {
-        if file.media == "application/zip" {
+        if file.media == "application/zip" or file.media == "application/json" {
             import_archive(nb, file)
         } else { import_markdown(nb, file) }
     }
@@ -889,10 +1419,16 @@ view notebook_menu(nb: Notebook, open: Option<Note>) {
             on choose: file.choose(import_markdown(nb), accept: ["text/markdown"])
         }
         ui.MenuItem("Import a Notion export or a zip of Markdown…", icon: .file_plus) {
-            on choose: file.choose(import_archive(nb), accept: ["application/zip"])
+            on choose: file.choose(
+                import_archive(nb),
+                accept: ["application/zip", "application/json"],
+            )
         }
         ui.MenuItem("Export the notebook…", icon: .download) {
             on choose: file.save(export_notebook(nb), name: "Notes.zip")
+        }
+        ui.MenuItem("Export the notebook as one Markdown document…", icon: .download) {
+            on choose: file.save(export_notebook_markdown(nb), name: "Notes.md")
         }
         if let n = open {
             ui.MenuItem("New sub-note", icon: .plus) {
@@ -956,11 +1492,11 @@ view note_editor(n: Note) {
     }
 }
 
-/// The open note: its title, where it stands and when it was written, its tags as chips, its
-/// body, what links to it and its discussion (its history is the window's, under the window bar's
-/// History). Its body's `[[` writes a link to another of the notebook's notes. Its editor reports
-/// the note's headings — their words and how deep each stands — which the window's map of them is
-/// drawn from, and shows the heading a person chose there.
+/// The open note: its title, where it stands and when it was written, its tags as chips and its
+/// reactions, its body, what links to it and its discussion (its history is the window's, under
+/// the window bar's History). Its body's `[[` writes a link to another of the notebook's notes.
+/// Its editor reports the note's headings — their words and how deep each stands — which the
+/// window's map of them is drawn from, and shows the heading a person chose there.
 template view note_page(
     n: Note,
     headings: State<List<Text>>,
@@ -986,21 +1522,39 @@ template view note_page(
                     }
                 }
             }
+            // Who reacted to the note, a pill per emoji: a press is the person's own reaction
+            // with it, and the add button opens the picker. The reactions it had in the native
+            // Notes app stand under them, naming how many reacted with each and no one here.
+            ui.Reactions(reactions: n.reactions) {
+                on toggle(e): react(n, e)
+            }
+            if n.reacted != "" {
+                text("Reacted in the native Notes: {n.reacted}", role: .caption, secondary: true)
+            }
         }
         // What `[[` offers: the notebook's notes that hold what is typed in it, asked of the
         // store as it is typed and handed a page at a time, and none at all while the picker is
-        // closed.
+        // closed. Its `/` menu offers a picture and a page of this note's own, which only the
+        // app can give it: one asks the person for a file, the other makes a note.
         ui.BlockEditor(
             bind: n.body,
             placeholder: "Write something",
             links: if linking { nb.notes.matching(link_text).take(48) } else { [] },
             reveal: reveal,
+            slash: ["image", "page"],
         ) {
             on links_open(open): set(linking, open)
             on links_query(text): set(link_text, text)
             // A picture pasted or dropped into the body is in it already, where the caret was:
             // the note keeps its name beside the address its bytes were kept at.
             on image(picture): keep_image(n, picture)
+            on slash_image: file.choose(
+                insert_image(n),
+                accept: ["image/png", "image/jpeg", "image/webp"],
+            )
+            // A page made from a block is titled with its words, as the words stand: what a
+            // person wrote in the block names the page it became.
+            on slash_page(words): new_child(n, words)
             on headings(words, levels): set(headings, words).then(set(heading_levels, levels))
         }
         std.linked(n, compact: true)
@@ -1011,7 +1565,8 @@ template view note_page(
 }
 
 /// What a note says of itself, as one quiet line under its title: the notes it stands under,
-/// each opening it, and beside them when it was last written and how many words it holds.
+/// each opening it, and beside them when it was made, when it was last written and how many
+/// words it holds.
 view note_details(n: Note) {
     // The notes over `n`, the outermost first, ending at `n` itself: a trail opens every place
     // before its last, so each note it stands under stays a press and nothing of the path is
@@ -1022,6 +1577,9 @@ view note_details(n: Note) {
     let count = n.body.text.words()
     // Written since it was made: a note written once says nothing of when.
     let shows_edited = edited != .none and edited != made
+    // A page another service held before this notebook arrived here when it was imported: its
+    // arrival is a move, which the line says rather than naming it a day it was written.
+    let made_said = if n.service == "" { "Created" } else { "Moved here" }
     row(gap: .related, align: .center) {
         // The trail takes the room the facts leave, a line under the title rather than the
         // window's own: what the page says of the note stands with the note.
@@ -1052,8 +1610,15 @@ view note_details(n: Note) {
                     text("From {n.service} by {n.by}", role: .caption, secondary: true)
                 }
             }
-            // When it was written since it was made; who made it and when is the window's
-            // History's to say.
+            // When it was made — and, for a page brought here from another service, when it
+            // arrived — then when it was written since; who made it is the window's History's
+            // to say.
+            if let at = made {
+                row(gap: .tight) {
+                    text(made_said, role: .caption, secondary: true)
+                    ui.Time(at, role: .caption, secondary: true)
+                }
+            }
             if shows_edited {
                 if let at = edited {
                     row(gap: .tight) {
@@ -1429,6 +1994,11 @@ scenario "a week of notes" {
         ),
     )
     plan.tags.add("planning")
+    let ada = person("Ada")
+    let leo = person("Leo")
+    invoke(react(plan, "🎉"), by: ada, at: 2026-06-29T07:05Z)
+    invoke(react(plan, "🎉"), by: leo, at: 2026-06-29T07:06Z)
+    invoke(react(plan, "🚀"), by: leo, at: 2026-06-29T07:06Z)
     let standups = notebook.notes.insert(
         Note(title: "Standups", body: RichText("Ten minutes, every morning."), parent: plan),
     )

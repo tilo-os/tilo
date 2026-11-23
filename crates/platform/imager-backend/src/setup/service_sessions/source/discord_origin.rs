@@ -145,7 +145,7 @@ fn capture_store(directory: &File, owner: u32) -> Result<BTreeMap<String, Captur
         }
         let captured = capture(&storage, owner, &name)?;
         bytes = bytes
-            .checked_add(captured.stamp.length)
+            .checked_add(captured.stamp.length())
             .ok_or(SourceError::LimitExceeded)?;
         if bytes > MAX_STORE_BYTES {
             return Err(SourceError::LimitExceeded);
@@ -179,7 +179,7 @@ fn snapshot_observed(
                 tilo_files::native::atomic::Privacy::Inherit,
             )
             .map_err(unavailable)?;
-        if Stamp::of(&file)? != expected.stamp {
+        if Stamp::of(&file).map_err(unavailable)? != expected.stamp {
             return Err(SourceError::Changed);
         }
     }

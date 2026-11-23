@@ -1,7 +1,7 @@
 use super::*;
+use crate::migration::PublishMode;
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, OpenOptions};
-use std::io::{Read, Write};
 
 fn name(operation: &str) -> io::Result<String> {
     if !operation_id(operation) {
@@ -19,18 +19,8 @@ pub(super) fn write(plan: &Plan, directory: &Path) -> io::Result<PathBuf> {
     let bytes = plan.bytes()?;
     let name = name(&plan.operation_id)?;
     let parent = parent(directory)?;
-    let mut temporary =
-        super::super::migration::OwnedTemporary::create(&parent, std::ffi::OsStr::new(&name))?;
-    temporary.file.write_all(&bytes)?;
-    super::super::migration_durability::sync_file(&temporary.file)?;
-    temporary.validate()?;
-    cap_primitives::fs::hard_link(
-        &parent.file,
-        Path::new(&temporary.name),
-        &parent.file,
-        Path::new(&name),
-    )?;
-    super::super::migration_durability::sync_directory(&parent.file)?;
+    super::super::migration::OwnedTemporary::create(&parent, std::ffi::OsStr::new(&name))?
+        .publish(&bytes, PublishMode::IfAbsent)?;
     Ok(directory.join(name))
 }
 pub(super) fn read(directory: &Path, operation: &str) -> io::Result<Plan> {
@@ -45,9 +35,9 @@ pub(super) fn read(directory: &Path, operation: &str) -> io::Result<Plan> {
             "Migration plan is not a bounded private regular file.",
         ));
     }
-    let mut bytes = Vec::new();
-    file.take((MAX_BYTES as u64).saturating_add(1))
-        .read_to_end(&mut bytes)?;
+    let bytes = crate::record::read_bounded(file, MAX_BYTES as u64, || {
+        refusal("Migration plan exceeds its bound.")
+    })?;
     parent.validate_destination()?;
     let plan = Plan::parse(&bytes)?;
     if plan.operation_id != operation {

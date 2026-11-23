@@ -143,7 +143,17 @@ enum WireFrame {
     Complete { response: Response },
 }
 
-const MAX_ARG_BYTES: usize = 4096;
+pub(crate) const MAX_ARG_BYTES: usize = 4096;
+/// The largest request line the broker accepts from a guest (8 MiB).
+///
+/// The largest legitimate request is a [`Request::FileAction`] with
+/// `MAX_OPERANDS` (256) paths of up to `PATH_MAX` (4096) bytes (1 MiB raw),
+/// `MAX_TEXT_BYTES` (64 KiB) of inline text, and a [`RunGroup::label`] bounded
+/// to [`MAX_ARG_BYTES`] (4096 bytes). Even if every byte were expanded sixfold
+/// by JSON escaping (`\u00xx`), those fields plus the short [`RunGroup::id`]
+/// and JSON framing stay under 7 MiB (~6.40 MiB). Anything past 8 MiB is
+/// refused and ends that connection.
+const MAX_REQUEST_LINE_BYTES: usize = 8 * 1024 * 1024;
 /// The most output one host command forwards to the guest, stdout and stderr
 /// together. Past it the command keeps running to completion (stopping an
 /// update halfway over its chatter would be worse) and only its exit status
@@ -452,6 +462,20 @@ impl BrokerState {
             }
             Request::LinuxVmLaunch { app, args, cwd } => self.linux_vm_launch(&app, &args, &cwd),
             Request::FileAction { action, run } => {
+                if run
+                    .as_ref()
+                    .is_some_and(|run| run.label.len() > MAX_ARG_BYTES)
+                {
+                    let reason =
+                        format!("command label is too large (at most {MAX_ARG_BYTES} bytes)");
+                    self.log(
+                        action.verb(),
+                        Some(&crate::file_actions::subjects(&action)),
+                        false,
+                        Some(&reason),
+                    );
+                    return Response::Denied { reason };
+                }
                 crate::file_actions::brokered(self, &action, run.as_ref())
             }
         }
@@ -1165,10 +1189,18 @@ const fn guest_left(revents: libc::c_short) -> bool {
     revents & (libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
 }
 
-/// The guest's next request line, or `None` at its end, on an error or once
-/// the broker stops. Waits in `poll(2)` on the connection and the broker's
-/// stop, never on a timer.
+/// The guest's next request line, or `None` at its end, on an error, if the
+/// line exceeds [`MAX_REQUEST_LINE_BYTES`], or once the broker stops. Waits in
+/// `poll(2)` on the connection and the broker's stop, never on a timer.
 fn next_line(reader: &mut BufReader<UnixStream>, shared: &Shared) -> Option<String> {
+    next_line_bounded(reader, shared, MAX_REQUEST_LINE_BYTES)
+}
+
+fn next_line_bounded(
+    reader: &mut BufReader<UnixStream>,
+    shared: &Shared,
+    max_bytes: usize,
+) -> Option<String> {
     let mut line = Vec::new();
     loop {
         if reader.buffer().is_empty() {
@@ -1199,9 +1231,27 @@ fn next_line(reader: &mut BufReader<UnixStream>, shared: &Shared) -> Option<Stri
             return String::from_utf8(line).ok();
         }
         let newline = available.iter().position(|byte| *byte == b'\n');
-        let taken = newline.map_or(available.len(), |at| at.saturating_add(1));
-        line.extend_from_slice(available.get(..taken).unwrap_or_default());
-        reader.consume(taken);
+        let content_len = newline.unwrap_or(available.len());
+        let new_len = line.len().checked_add(content_len)?;
+        if new_len > max_bytes {
+            tracing::warn!(
+                max_bytes,
+                "guest broker request exceeded maximum line length; closing connection"
+            );
+            return None;
+        }
+        if new_len > line.capacity() {
+            // Grow geometrically for throughput, without ever allocating past `max_bytes`.
+            let target = line
+                .capacity()
+                .saturating_mul(2)
+                .max(new_len)
+                .min(max_bytes);
+            line.reserve_exact(target.saturating_sub(line.len()));
+        }
+        line.extend_from_slice(available.get(..content_len).unwrap_or_default());
+        let consumed = newline.map_or(available.len(), |at| at.saturating_add(1));
+        reader.consume(consumed);
         if newline.is_some() {
             return String::from_utf8(line).ok();
         }
@@ -2778,5 +2828,161 @@ pub(crate) mod tests {
         assert_eq!(second.join().unwrap(), Response::Command { code: 0 });
         assert_eq!(std::fs::read_to_string(&events).unwrap(), "first\nsecond\n");
         drop(broker);
+    }
+
+    #[test]
+    fn over_long_request_line_closes_connection_and_other_connections_keep_working() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("broker.sock");
+        let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
+
+        let mut flood = UnixStream::connect(&socket).unwrap();
+        flood
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        flood
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+
+        let limit = MAX_REQUEST_LINE_BYTES;
+        let chunk = vec![b'a'; 64 * 1024];
+        let mut sent = 0_usize;
+        let target = limit + 1;
+        while sent < target {
+            let step = (target - sent).min(chunk.len());
+            match flood.write(&chunk[..step]) {
+                Ok(0) => break,
+                Ok(n) => sent += n,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                    ) =>
+                {
+                    break;
+                }
+                Err(error) => panic!("unexpected write error after {sent} bytes: {error}"),
+            }
+        }
+        // Keep the peer's write half open with no newline: the broker must end
+        // this connection itself as soon as the line exceeds the bound.
+        let mut probe = [0_u8; 1];
+        let closed = match flood.read(&mut probe) {
+            Ok(0) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => true,
+            other => panic!("broker did not close the oversized connection: {other:?}"),
+        };
+        assert!(closed);
+
+        // Other connections keep working.
+        assert!(matches!(
+            ask(&socket, &Request::Status),
+            Ok(Response::Status { .. })
+        ));
+        drop(flood);
+        drop(broker);
+    }
+
+    #[test]
+    fn file_action_run_label_is_bounded_on_sender_and_refused_on_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let allowed = dir.path().join("allowed");
+        std::fs::create_dir_all(&allowed).unwrap();
+        let mut s = state(dir.path());
+        assert!(matches!(
+            s.handle(Request::TrustDir {
+                path: allowed.clone()
+            }),
+            Response::Applied { .. } | Response::NeedsRestart { .. }
+        ));
+        let socket = dir.path().join("broker.sock");
+        let broker = Broker::start(socket.clone(), s).unwrap();
+
+        // Host refuses a label longer than MAX_ARG_BYTES after parsing.
+        let oversized = Request::FileAction {
+            action: crate::file_actions::FileAction::Touch(crate::file_actions::AppendFileOp {
+                files: vec![allowed.join("refused.txt")],
+                text: String::new(),
+                content: None,
+            }),
+            run: Some(RunGroup {
+                id: "ush-1-2-3".into(),
+                label: "x".repeat(MAX_ARG_BYTES + 1),
+            }),
+        };
+        assert!(
+            matches!(ask(&socket, &oversized), Ok(Response::Denied { .. })),
+            "host must refuse a RunGroup::label over MAX_ARG_BYTES"
+        );
+        assert!(!allowed.join("refused.txt").exists());
+
+        // Sender shortens a multi-byte UTF-8 label to <= MAX_ARG_BYTES on a char boundary.
+        let mut long_label = "a".repeat(MAX_ARG_BYTES - 1);
+        long_label.push('é'); // 2-byte char straddling MAX_ARG_BYTES
+        long_label.push_str("tail");
+        let run = RunGroup {
+            id: "ush-1-2-4".into(),
+            label: long_label,
+        };
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut io = crate::file_actions::command::Io {
+            out: &mut out,
+            err: &mut err,
+            broker: Some(&socket),
+            recoverable: dir.path().join("recoverable"),
+            progress: false,
+        };
+        let code = crate::file_actions::command::run_within(
+            "touch",
+            &[allowed.join("ok.txt").display().to_string()],
+            &allowed,
+            Some(&run),
+            &mut io,
+        );
+        assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+        assert!(allowed.join("ok.txt").exists());
+        let history = broker
+            .state()
+            .lock()
+            .unwrap()
+            .environment
+            .records
+            .history(DEFAULT_RECORD)
+            .unwrap();
+        let group = history
+            .iter()
+            .filter_map(|v| v.context.as_ref()?.group.as_ref())
+            .find(|g| g.id == "ush-1-2-4")
+            .expect("the run's group was recorded");
+        let recorded = group.label.as_deref().expect("recorded label");
+        assert!(recorded.len() <= MAX_ARG_BYTES, "len {}", recorded.len());
+        assert_eq!(recorded, "a".repeat(MAX_ARG_BYTES - 1));
+        drop(broker);
+    }
+
+    #[test]
+    fn next_line_bounded_enforces_exact_limit_without_blocking() {
+        let shared = Shared::new().unwrap();
+        let (server, mut peer) = UnixStream::pair().unwrap();
+        let mut reader = BufReader::new(server);
+        let max_bytes = 64_usize;
+
+        // Exact limit with newline succeeds and does not over-allocate.
+        let exact = "b".repeat(max_bytes);
+        peer.write_all(exact.as_bytes()).unwrap();
+        peer.write_all(b"\n").unwrap();
+        peer.flush().unwrap();
+        let read = next_line_bounded(&mut reader, &shared, max_bytes).unwrap();
+        assert_eq!(read, exact);
+        assert!(read.capacity() <= max_bytes);
+
+        // One byte past the limit without a newline fails immediately even while
+        // the peer holds the socket open.
+        let over = "c".repeat(max_bytes + 1);
+        peer.write_all(over.as_bytes()).unwrap();
+        peer.flush().unwrap();
+        assert_eq!(next_line_bounded(&mut reader, &shared, max_bytes), None);
+        drop(peer);
     }
 }

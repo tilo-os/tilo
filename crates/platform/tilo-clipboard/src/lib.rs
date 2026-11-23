@@ -38,6 +38,10 @@ pub struct ClipboardAttachment {
 }
 pub mod conformance;
 pub mod events;
+/// The clipboard over a connection an app's session opened for it: `serve` answers on the
+/// session's end, [`service::Connected`] is the app's.
+#[cfg(unix)]
+pub mod service;
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod native;

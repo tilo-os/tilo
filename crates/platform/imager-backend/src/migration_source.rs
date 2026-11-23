@@ -2,8 +2,7 @@
 use super::migration::{PinnedDirectory, changed, reject_windows_placeholder, same_snapshot};
 use super::migration_journal::FileReceipt;
 use super::nofollow::metadata_nofollow;
-use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
-use cap_primitives::fs::{FollowSymlinks, Metadata, OpenOptions};
+use cap_primitives::fs::Metadata;
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
@@ -61,9 +60,7 @@ impl LocalCopySource {
         if !expected.is_file() || expected.is_symlink() {
             return Err(changed("source is not a regular file"));
         }
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No).nonblock(true);
-        let file = cap_primitives::fs::open(&parent.file, Path::new(name), &options)?;
+        let file = parent.open_regular(name, false, false)?;
         let original = Metadata::from_file(&file)?;
         if !same_snapshot(expected, &original) {
             return Err(changed("source changed while opening"));

@@ -26,7 +26,7 @@ use ui::winit::event::{ElementState, WindowEvent};
 use ui::winit::keyboard::{Key, NamedKey};
 
 use super::{DesktopHandle, DesktopSurface, holder_refusal, route_of};
-use crate::navigation::{self, Admitted};
+use tilo_session_core::desktop::navigation::{self, Admitted};
 
 /// What a host asked of search, taken on the next update pass.
 #[derive(Clone, Debug, PartialEq)]
@@ -315,7 +315,7 @@ impl HostActionSource {
     /// The name the person sees an offer from it under ("Devices").
     #[must_use]
     pub fn label(self) -> String {
-        crate::i18n::t(match self {
+        tilo_session_core::desktop::i18n::t(match self {
             Self::Identity => "host-action-source-identity",
             Self::Devices => "host-action-source-devices",
             Self::Workspaces | Self::Workspace => "host-action-source-workspace",
@@ -347,7 +347,9 @@ pub fn host_action_key(id: &str) -> String {
     format!("{HOST_PREFIX}{id}")
 }
 
-pub fn is_host_offer(notification: &crate::notifications::Notification) -> bool {
+pub fn is_host_offer(
+    notification: &tilo_session_core::desktop::notifications::Notification,
+) -> bool {
     notification
         .actions
         .iter()
@@ -355,7 +357,10 @@ pub fn is_host_offer(notification: &crate::notifications::Notification) -> bool 
 }
 
 /// Whether `notification` offers host action `id` .
-pub(crate) fn offers(notification: &crate::notifications::Notification, id: &str) -> bool {
+pub(crate) fn offers(
+    notification: &tilo_session_core::desktop::notifications::Notification,
+    id: &str,
+) -> bool {
     notification
         .actions
         .iter()
@@ -549,8 +554,8 @@ impl DesktopHandle {
         if shared.search_open {
             return Some("system-search".to_owned());
         }
-        let route = crate::navigation::active_route(&shared.tree)?;
-        let window = crate::navigation::locate(&shared.tree, route)?;
+        let route = tilo_session_core::desktop::navigation::active_route(&shared.tree)?;
+        let window = tilo_session_core::desktop::navigation::locate(&shared.tree, route)?;
         let tab = window.tabs.iter().find(|tab| tab.id == route.tab)?;
         tilo_desktop_model::apps::canonical_app_id(&tab.tile).map(String::from)
     }
@@ -756,7 +761,7 @@ fn windows(
     let mut out = Vec::new();
     for workspace in &tree.workspaces {
         for (at, strip) in workspace.strips.iter().enumerate() {
-            let strip_name = crate::names::strip_named(&strip.name, at);
+            let strip_name = tilo_session_core::desktop::names::strip_named(&strip.name, at);
             for group in &strip.window_groups {
                 for tab in &group.tabs {
                     let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile);
@@ -769,7 +774,10 @@ fn windows(
                         .get(&tab.id)
                         .map(|holder| holder.name.clone())
                         .into_iter()
-                        .chain([crate::names::workspace(&workspace.name), strip_name.clone()])
+                        .chain([
+                            tilo_session_core::desktop::names::workspace(&workspace.name),
+                            strip_name.clone(),
+                        ])
                         .collect();
                     // A window's name by the one rule every surface names a window by: its title
                     // and the app it shows, or the app alone where the title only names the app.
@@ -807,7 +815,7 @@ fn windows(
         .collect();
     for (entry, (nth, all)) in out.iter_mut().zip(counted) {
         if all > 1 {
-            entry.place.push(crate::i18n::t_args(
+            entry.place.push(tilo_session_core::desktop::i18n::t_args(
                 "search-window-nth",
                 &[("nth", nth.into()), ("count", all.into())],
             ));
@@ -886,7 +894,10 @@ fn commands(tree: &Layout, host: &[HostAction], held: &dyn Fn(TabId) -> bool) ->
                     tilo_desktop_search::WORKSPACE_COMMAND_PREFIX,
                     workspace.id()
                 ),
-                title: format!("Switch to {}", crate::names::workspace(&workspace.name)),
+                title: format!(
+                    "Switch to {}",
+                    tilo_session_core::desktop::names::workspace(&workspace.name)
+                ),
                 subtitle: Some("Workspace".into()),
                 icon: Some(ui::icons::Icon::LayoutGrid),
                 unasked: false,
@@ -1105,7 +1116,10 @@ impl DesktopSurface {
             resource_options: feed.resource_options,
             scope: scope.clone(),
             placeholder: searched.map(|name| {
-                crate::i18n::t_args("search-window-placeholder", &[("searched", name.into())])
+                tilo_session_core::desktop::i18n::t_args(
+                    "search-window-placeholder",
+                    &[("searched", name.into())],
+                )
             }),
             ..SearchData::default()
         })
@@ -1570,7 +1584,7 @@ impl DesktopSurface {
             Target::Copy { text } => {
                 ui::text_selection::clipboard_copy(&text);
                 shared.say(ui::window_toolbar::ToolbarNotice::new(
-                    crate::i18n::t("desktop-search-copied"),
+                    tilo_session_core::desktop::i18n::t("desktop-search-copied"),
                     ui::widget::toast::ToastKind::Success,
                 ));
                 None

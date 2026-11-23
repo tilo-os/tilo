@@ -1971,3 +1971,66 @@ fn one_window_of_notes(workspace: WorkspaceId, salt: u16) -> Layout {
 
     layout
 }
+
+/// A workspace whose layout this device's service cannot read, one it does not hold, fails again
+/// until the workspaces move: the looks in between have nothing to read and are settled, rather
+/// than folding every layout again on each pass of the loop.
+#[test]
+fn a_layout_that_cannot_be_read_settles_the_looks_until_the_workspaces_move() {
+    use ed25519_dalek::SigningKey;
+
+    use crate::engine::Engine;
+
+    let state = tempfile::tempdir().expect("a state directory");
+    let root = SigningKey::from_bytes(&[0x60; 32]);
+    let key = SigningKey::from_bytes(&[0x61; 32]);
+    let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
+    let engine = Arc::new(
+        Engine::open(
+            tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key),
+            Some(state.path()),
+            std::iter::empty(),
+            crate::platform::membership_check::of_this_session(),
+        )
+        .expect("this device's engine opens"),
+    );
+    let service = crate::founding_fixture::serve(&engine);
+    let elsewhere = WorkspaceId::new();
+    let mut tree = Layout {
+        workspaces: vec![Workspace::new(elsewhere, "Elsewhere")],
+        active: elsewhere,
+        salt: tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key),
+        ..Layout::default()
+    };
+    let (wake, _heard) = woken();
+    let layouts = Layouts::new(
+        Arc::new(crate::continuations::Continuations::default()),
+        wake,
+        hex::encode(cert.user_public_key),
+        Some(state.path()),
+    );
+    attach_through_service(&layouts, &engine, &service);
+    look(&layouts, &engine, &mut tree);
+    let key = (elsewhere, Route::layout());
+    assert!(
+        layouts.held(&key, |held| held.failed.is_some() && !held.read),
+        "the service holds no layout of a workspace it does not hold"
+    );
+    let version = EngineVersion::of(&engine);
+    // The first of these takes in the answers the look read.
+    let _ = layouts.settled(version, &tree);
+    assert!(
+        layouts.settled(version, &tree),
+        "a layout that failed to read fails again until something moves: nothing to read"
+    );
+    assert!(
+        !layouts.settled(
+            EngineVersion {
+                revision: version.revision.saturating_add(1),
+                ..version
+            },
+            &tree
+        ),
+        "once the workspaces move it is read again"
+    );
+}

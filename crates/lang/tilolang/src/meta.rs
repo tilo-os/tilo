@@ -109,6 +109,10 @@ pub struct PackageMeta {
     /// other host is refused as a value.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub web: Vec<String>,
+    /// The URI schemes the app opens (`schemes: ["tube"]`), claimed in its manifest as a native
+    /// app claims them: a link of one of them opens in this app.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schemes: Vec<String>,
     /// SHA-256 (hex) of the wasm module without the metadata section.
     pub module_hash: String,
     pub types: Vec<TypeMeta>,

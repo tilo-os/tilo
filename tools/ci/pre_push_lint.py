@@ -55,6 +55,7 @@ escape, and CONTRIBUTING.md asks contributors never to use it.
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -86,7 +87,7 @@ WORKSPACE_LOCK = "Cargo.lock"
 # The manifest that gives every member the features the workspace's whole build
 # resolves for it (tools/ci/workspace_unify.py); a lint without it compiles code
 # no other family's build leaves out of a default feature set.
-UNIFY_MANIFEST = Path("crates/dev/workspace-unify/Cargo.toml")
+UNIFY_MANIFEST = Path("tools/workspace-unify/Cargo.toml")
 # How much of a failed run's output is shown before the rest is counted. The
 # rerun command in the failure line prints all of it.
 SHOWN_DIAGNOSTIC_LINES = 80
@@ -446,7 +447,7 @@ def select(root: Path, push: Push, files: set[str]) -> Selection | None:
 def unified_features(root: Path, selected: Iterable[str]) -> list[str]:
     """The features the workspace's whole build gives the selected packages.
 
-    crates/dev/workspace-unify unifies every family's build for the members, in
+    tools/workspace-unify unifies every family's build for the members, in
     the manifest tools/ci/workspace_unify.py generates. A lint that leaves it out
     compiles those members with their default features only, so code behind a
     feature another family enables goes unlinted.
@@ -693,19 +694,21 @@ def report(results: list[tuple[Lint, int, str]], elapsed: float, checked: str) -
     return 1
 
 
-def own_key(root: Path, push: Push, selection: Selection, runs: list[Lint]) -> str | None:
-    """What a pass of this push's lint is remembered by, or None when it cannot be named.
+def own_key(root: Path, push: Push, runs: list[Lint]) -> tuple[str, str] | None:
+    """What a pass of this push's lint is remembered by, and the patches it names.
 
-    The push's own patch, the tree of each linted package's own directory at its head, and the
-    runs it makes. A rebase that resolved no conflict leaves the patch the same, and one onto
-    commits that touch none of those directories leaves their trees the same.
+    The push's own patches and the runs it makes. A rebase changes neither: the same
+    change replayed onto newer commits has the same patch-id, and its runs are the
+    changed packages', which the patch decides. A rebase that resolves a conflict
+    into another change has another patch-id, so it is linted. What main's commits
+    since then did to a linted package's own files does not enter here: t's clippy
+    families lint those interactions on main, and a red main is fixed forward.
     """
-    directories = {name: directory.as_posix()
-                   for directory, name in package_maps(selection.metadata, root)[1].items()}
     # The format check names the commits it compares, which a rebase changes; the change it reads
     # is the patch below.
     commits = {commit for comparison in push.comparisons for commit in comparison}
     parts = [shlex.join(part for part in run.command if part not in commits) for run in runs]
+    patches = []
     for base, head in push.comparisons:
         patch = subprocess.run(["git", "diff", "--no-renames", "--binary", f"{base}..{head}", "--"],
                                cwd=root, capture_output=True, check=False)
@@ -713,17 +716,9 @@ def own_key(root: Path, push: Push, selection: Selection, runs: list[Lint]) -> s
                                   capture_output=True, check=False).stdout.split()
         if patch.returncode != 0 or not identity:
             return None
-        parts.append(identity[0].decode())
-    for name in selection.native:
-        directory = directories.get(name)
-        if directory is None or not push.tips:
-            return None
-        tree = rev(root, f"{push.tips[0]}^{{tree}}" if directory in ("", ".")
-                   else f"{push.tips[0]}:{directory}")
-        if tree is None:
-            return None
-        parts.append(f"{name} {tree}")
-    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+        patches.append(identity[0].decode())
+        parts.append(patches[-1])
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest(), " ".join(patches)
 
 
 def passes_path(root: Path) -> Path:
@@ -731,16 +726,18 @@ def passes_path(root: Path) -> Path:
     return Path(common) / PASSES
 
 
-def passed_before(root: Path, key: str) -> str | None:
-    """The head a lint of this key passed on, if one did."""
+def passed_before(root: Path, key: str) -> tuple[str, str] | None:
+    """The head a lint of this key passed on, and when, if one did."""
     try:
         lines = passes_path(root).read_text().splitlines()
     except FileNotFoundError:
         return None
     for line in reversed(lines):
-        stored, _, head = line.partition(" ")
-        if stored == key:
-            return head
+        fields = line.split(" ")
+        if fields and fields[0] == key:
+            head = fields[1] if len(fields) > 1 else ""
+            when = " ".join(fields[2:]) if len(fields) > 2 else ""
+            return head, when
     return None
 
 
@@ -750,7 +747,8 @@ def remember_pass(root: Path, key: str, head: str) -> None:
         lines = path.read_text().splitlines()
     except FileNotFoundError:
         lines = []
-    lines = [line for line in lines if not line.startswith(f"{key} ")] + [f"{key} {head}"]
+    when = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M UTC")
+    lines = [line for line in lines if not line.startswith(f"{key} ")] + [f"{key} {head} {when}"]
     temporary = path.with_name(f"{PASSES}.{os.getpid()}")
     temporary.write_text("".join(f"{line}\n" for line in lines[-PASSES_KEPT:]))
     temporary.replace(path)
@@ -853,11 +851,15 @@ def main(argv: list[str]) -> int:
     formatting = formatting_run(root, push) if rustfmt_available() else ["t", "test", "fmt"]
     runs = lint_runs(root, selection, formatting, checks)
     # A lint of files that are not the pushed commit's speaks for no change to stand on later.
-    key = None if options.range or dirty else own_key(root, push, selection, runs)
-    if key is not None and (before := passed_before(root, key)):
-        say(f"pre-push: the lint of this change passed at {before[:12]}, and main's commits since "
-            f"touch none of its packages' own files ({', '.join(selection.native)}): it is not "
-            "linted again. t's clippy families lint it with main's changes on main")
+    naming = None if options.range or dirty else own_key(root, push, runs)
+    key, patches = naming if naming is not None else (None, "")
+    if key is not None and (passed := passed_before(root, key)):
+        head, when = passed
+        since = f" from {when}" if when else ""
+        say(f"pre-push: reusing the clippy pass for patch {patches}{since}"
+            + (f" (passed at {head[:12]})" if head else "")
+            + ": this is the same change replayed onto newer commits. t's clippy families lint "
+            "it with main's changes on main")
         return 0
     say(f"pre-push: linting {packages(len(selection.native))}"
         + (f" through t ({' '.join(checks)})" if checks else ""))

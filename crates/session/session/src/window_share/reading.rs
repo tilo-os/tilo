@@ -49,8 +49,8 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use tilo_desktop_model::TabId;
-use tilo_desktop_surface::i18n::{t, t_args};
 use tilo_live::live_session::{LiveSession, MAX_HEARD};
+use tilo_session_core::desktop::i18n::{t, t_args};
 
 use super::WindowShares;
 use crate::live::{LiveState, Refusal, Relayer, TurnedAway};

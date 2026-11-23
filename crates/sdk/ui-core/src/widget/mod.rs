@@ -2462,6 +2462,12 @@ pub mod timeline_density;
 pub use time_field::{TimeField, TimeFieldProps};
 pub use time_picker::{TimePicker, TimePickerProps, TimeValue};
 pub use timeline_density::TimelineDensity;
+pub mod timeline;
+pub use timeline::{
+    Ghost, MonthFace, MonthReport, MonthTarget, Timeline, TimelineFace, TimelineGeom, TimelineItem,
+    TimelineItemProps, TimelineMode, TimelineProps, TimelineReport, TimelineTarget, TimelineText,
+    TimelineTokens, TimelineTone,
+};
 pub mod color_picker;
 pub mod color_swatch;
 pub use color_picker::{ColorPicker, ColorPickerOutcome, ColorPickerProps};
@@ -2543,18 +2549,36 @@ pub use cartesian_plot::{
 };
 pub mod pie_chart;
 pub use pie_chart::{PieChart, PieSlice, PieStyle, PieTooltipAnchor};
+pub mod polar_area_chart;
+pub use polar_area_chart::{PolarAreaChart, PolarAreaStyle};
 pub mod heatmap;
 pub use heatmap::{Heatmap, HeatmapCell, HeatmapStyle};
+pub mod histogram;
+pub use histogram::{Histogram, HistogramNormalization};
+pub mod candlestick_chart;
+pub use candlestick_chart::{Candle, CandlestickChart, CandlestickStyle};
+pub mod chord_chart;
+pub use chord_chart::{ChordChart, ChordSelection, ChordStyle};
 pub mod treemap;
 pub use treemap::{Treemap, TreemapStyle};
+pub mod radar_chart;
+pub use radar_chart::{RadarAxis, RadarChart, RadarLegendStyle, RadarSeries, RadarStyle};
+pub mod range_chart;
+pub use range_chart::{RangeBar, RangeChart, RangeStyle};
 pub mod category_chart;
 pub use category_chart::{
     Category, CategoryChart, CategoryChartStyle, CategoryLayout, CategorySeries, CategoryValue,
+};
+pub mod distribution_chart;
+pub use distribution_chart::{
+    DistributionChart, DistributionKind, DistributionSeries, DistributionStyle,
 };
 pub mod sankey;
 pub use sankey::{SankeyChart, SankeySelection, SankeyStyle};
 pub mod sunburst;
 pub use sunburst::{SunburstChart, SunburstNode, SunburstStyle};
+pub mod funnel_chart;
+pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStyle};
 pub mod gauge;
 pub use gauge::{
     BarGauge, BarGaugeProps, GaugeReading, GaugeStyle, GaugeThresholds, ProgressRing,
@@ -2735,7 +2759,11 @@ pub use capture_studio::{
     ReplayCommand, ScreenshotCommand, ScreenshotKept, ScreenshotSendDevice, ScreenshotSendTarget,
     SourceMode,
 };
+pub mod screenshot_markup;
 pub mod selection_handles;
+pub use screenshot_markup::{
+    MarkupExport, MarkupStroke, MarkupTool, ScreenshotMarkup, ScreenshotMarkupCommand,
+};
 pub use selection_handles::{Handle as SelectionHandle, SelectionHandles, TextGrip, TextGrips};
 
 pub mod activity_timeline;

@@ -34,7 +34,7 @@ pub fn distinct(outputs: &[Output]) -> Vec<Display> {
             continue;
         }
         let mirrors = displays.iter().any(|display| {
-            let shared = tilo_desktop_surface::display_rect(display).intersect(rect);
+            let shared = tilo_session_core::desktop::display_rect(display).intersect(rect);
             shared.width() > 0.0 && shared.height() > 0.0
         });
         let Ok(id) = u32::try_from(index) else {

@@ -384,7 +384,10 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_media_service_reads_players_and_takes_a_handoff;
 
-        phase the_reading_says_what_plays_where_how_and_where_its_sound_can_go;
+        phase a_person_reads_what_plays_drives_it_and_hands_it_on;
+        // The reading says what plays where, how and where its sound can go;
+        // the cover a player names is part of it; the resource offers a seek
+        // and the handoff; and a handoff is refused unless it names a source.
         {
             let (mut service, sent) = service();
             assert!(
@@ -427,11 +430,8 @@ mod tests {
                     .published(&player("music", Status::Playing))
                     .can_previous
             );
-        }
 
-        phase the_cover_a_player_names_is_part_of_the_reading;
-        {
-            let (mut service, sent) = service();
+            // The cover a player names is part of the reading.
             let mut named = player("music", Status::Playing);
             named.art_url = Some("file:///home/alice/cover.png".into());
             sent.send(Event::Players {
@@ -455,38 +455,21 @@ mod tests {
             .unwrap();
             assert!(service.poll(), "the cover changed the reading");
             assert_eq!(service.media().players[0].art, Some(image));
-        }
 
-        phase the_media_resource_offers_a_seek_and_the_handoff;
-        {
-            let (mut service, sent) = service();
-            sent.send(Event::Players {
-                players: vec![player("music", Status::Playing)],
-            })
-            .unwrap();
-            service.poll();
+            // The card takes the playhead to a point and continues what
+            // another device hands over.
             let actions: Vec<String> = service.resources()[0]
                 .actions
                 .iter()
                 .map(|spec| spec.id.clone())
                 .collect();
-            assert!(
-                actions.iter().any(|action| action == "seek"),
-                "the card takes the playhead to a point: {actions:?}"
-            );
-            assert!(
-                actions.iter().any(|action| action == "resume"),
-                "and continues what another device hands over: {actions:?}"
-            );
-            assert!(
-                actions.iter().any(|action| action == "stop"),
-                "and stops: {actions:?}"
-            );
-        }
+            for action in ["seek", "resume", "stop"] {
+                assert!(
+                    actions.iter().any(|present| present == action),
+                    "the card takes {action}: {actions:?}"
+                );
+            }
 
-        phase the_session_asks_to_continue_what_another_device_hands_over;
-        {
-            let (mut service, _) = service();
             let args = |request: &str, source: Option<&str>| {
                 let mut args = serde_json::Map::new();
                 args.insert("request".into(), request.into());

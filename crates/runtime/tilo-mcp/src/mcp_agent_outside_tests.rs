@@ -7,137 +7,6 @@
 
 use super::*;
 
-/// [`Notes`], whose read of a note is declared a document read, as an app that keeps
-/// documents declares its own.
-#[derive(Clone)]
-struct Documents(Notes);
-
-impl ActionProvider for Documents {
-    fn query(
-        &self,
-        caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        self.0.query(caller, query).map(|page| {
-            page.map(|mut page| {
-                // A row of each action, or a resource's actions as one row, each described once.
-                for row in &mut page.rows {
-                    let described = row.offered.as_mut().map(|offered| &mut offered.described);
-                    for action in row
-                        .action
-                        .iter_mut()
-                        .chain(described.into_iter().flatten())
-                        .filter(|action| action.address.action == "read")
-                    {
-                        action
-                            .contract
-                            .tags
-                            .push(tilo_actions::DOCUMENT_READ_TAG.into());
-                    }
-                }
-                page
-            })
-        })
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.0.invoke(caller, request)
-    }
-
-    fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.0.observe(caller, id)
-    }
-
-    fn cancel(
-        &self,
-        caller: &Caller,
-        id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionCallError>> {
-        self.0.cancel(caller, id)
-    }
-}
-
-/// [`Notes`], saying of what it answers that it carries content from outside, as a provider
-/// that reads the web says of a page.
-#[derive(Clone)]
-struct Outside(Notes);
-
-impl ActionProvider for Outside {
-    fn query(
-        &self,
-        caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        self.0.query(caller, query)
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.0.invoke(caller, request)
-    }
-
-    fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.0
-            .observe(caller, id)
-            .map(|state| state.with_untrusted(true))
-    }
-
-    fn cancel(
-        &self,
-        caller: &Caller,
-        id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionCallError>> {
-        self.0.cancel(caller, id)
-    }
-}
-
-/// [`Notes`], on a provider that also reads what it keeps outside its apps: one document,
-/// kept under `letter`.
-#[derive(Clone)]
-struct Kept(Notes, Arc<tilo_actions::remote::HeldCopies>);
-
-impl ActionProvider for Kept {
-    fn query(
-        &self,
-        caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        self.0.query(caller, query)
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.0.invoke(caller, request)
-    }
-
-    fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.0.observe(caller, id)
-    }
-
-    fn cancel(
-        &self,
-        caller: &Caller,
-        id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionCallError>> {
-        self.0.cancel(caller, id)
-    }
-
-    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
-        let reads: Arc<dyn tilo_actions::remote::ResourceReads> = self.1.clone();
-        Some(reads)
-    }
-}
-
 /// Whether `text` says the label of content from outside before anything else, and before
 /// `words`, which it holds.
 fn labelled_before(text: &str, words: &str) -> bool {
@@ -156,7 +25,7 @@ async fn what_a_document_says_is_read_behind_the_label_of_content_from_outside()
     assert!(!text.contains(crate::UNTRUSTED_NOTE), "{text}");
 
     // A document read by its path: the label first, then what the document says.
-    let documents = Documents(Notes::new(true).live());
+    let documents = Notes::new(true).live().reading_documents();
     let (text, failed) = tool(&agent(&documents), "tilo_read", read.clone()).await;
     assert!(!failed, "{text}");
     assert!(
@@ -170,7 +39,7 @@ async fn what_a_document_says_is_read_behind_the_label_of_content_from_outside()
 
     // What a provider itself says carries content from outside keeps that label when it is
     // read by a path, as it has it when an action answers it.
-    let outside = Outside(Notes::new(true).live());
+    let outside = Notes::new(true).live().answering_from_outside();
     let (text, failed) = tool(&agent(&outside), "tilo_read", read.clone()).await;
     assert!(!failed, "{text}");
     assert!(
@@ -184,7 +53,7 @@ async fn a_document_read_by_its_app_and_id_says_first_that_it_is_content_from_ou
     let mut held = tilo_actions::remote::HeldCopies::default();
     let mut letter = tilo_resource::model::Doc::new();
     held.0.insert("letter".to_owned(), letter.save());
-    let kept = Kept(Notes::new(true).live(), Arc::new(held));
+    let kept = Notes::new(true).live().keeping(held);
     let path = format!(
         "{}:so.tilo.test:letter",
         tilo_actions::remote::RESOURCE_PROVIDER

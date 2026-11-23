@@ -5,7 +5,6 @@ exclude = [
     "vendor/leveldb-sys",
     "vendor/hexane",
     "vendor/buffa-build",
-    "vendor/swarm-discovery",
     "tools/web/wasm-split",
     "fuzz",
     # A wasm32 library `tilolang bench --library` runs; built by its own build.sh.
@@ -37,11 +36,9 @@ exclude = [
     "vendor/cosmic-text",
     "vendor/taffy",
     "vendor/alacritty_terminal",
-    "vendor/twilight-http-ratelimiting",
     "vendor/iroh",
     "vendor/iroh-relay",
     "vendor/netwatch",
-    "vendor/noq-udp",
     "vendor/accesskit_unix",
     "vendor/atspi",
     "vendor/atspi-common",
@@ -279,36 +276,36 @@ members = [
     "crates/collab/workspace-join",
 
     # Dev
-    "crates/dev/workspace-unify",
-    "crates/dev/collab-probe",
-    "crates/dev/copy-lint",
-    "crates/dev/fake-discord",
-    "crates/dev/fake-oauth",
-    "crates/dev/fake-model-providers",
-    "crates/dev/nested-session-bus",
+    "tools/workspace-unify",
+    "tools/collab-probe",
+    "tools/copy-lint",
+    "tools/fake-discord",
+    "tools/fake-model-providers",
+    "tools/projector-stand-in",
+    "tools/nested-session-bus",
     "crates/dev/headless-schema",
-    "crates/dev/test-env",
-    "crates/dev/test-app-registry",
-    "crates/dev/test-http",
-    "crates/dev/test-server",
-    "crates/dev/tilo-app-cli",
-    "crates/dev/tilo-app-template-smoke",
+    "tools/test-env",
+    "tools/test-app-registry",
+    "tools/test-http",
+    "tools/test-server",
+    "tools/tilo-app-cli",
+    "tools/tilo-app-template-smoke",
     "crates/dev/tilo-device-admin",
-    "crates/dev/tilo-local",
-    "crates/dev/tilo-vm",
-    "crates/dev/tilo-vm-protocol",
+    "tools/tilo-local",
+    "tools/tilo-vm",
+    "tools/tilo-vm-protocol",
     "crates/dev/tilo-vmd",
-    "crates/dev/ui-builder",
+    "tools/ui-builder",
     "crates/dev/ui-graph",
-    "crates/dev/ui-examples",
-    "crates/dev/click-test-client",
+    "tools/ui-examples",
+    "tools/click-test-client",
 
     # Doc
     "crates/doc/bounded-zip",
     "crates/doc/tilo-doc",
     "crates/doc/tilo-doc-codecs",
     "crates/doc/tilo-document",
-    "crates/doc/tilo-docs",
+    "tools/tilo-docs",
     "crates/doc/tilo-doc-pdf",
     "crates/doc/tilo-automerge",
     "crates/doc/tilo-automerge-isolate",
@@ -352,7 +349,7 @@ members = [
     "crates/packaging/launcher-macos",
     "crates/packaging/package-store",
     "crates/packaging/tilo-app-package",
-    "crates/packaging/tilo-app-package-cli",
+    "tools/tilo-app-package-cli",
     "crates/packaging/bot-directory",
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
@@ -602,7 +599,6 @@ members = [
     "crates/system/ssh-agent-client",
     "crates/system/staging-reclaim",
     "crates/system/swipe",
-    "crates/system/system-extension",
     "crates/system/tilo-bluez",
     "crates/system/tilo-cli",
     "crates/system/tilo-crypto",
@@ -1668,10 +1664,6 @@ hexane = { path = "vendor/hexane" }
 # The content store's metadata database keeps the page cache its owner bounds, not redb's
 # Build outputs must not become Cargo inputs; see vendor/buffa-build/PROVENANCE.md.
 buffa-build = { path = "vendor/buffa-build" }
-# A multicast send failure is said once, and again only when its cause
-# changes, so a network that refuses multicast does not bury the log. See
-# vendor/swarm-discovery/PROVENANCE.md.
-swarm-discovery = { path = "vendor/swarm-discovery" }
 # Verify Cast TLS handshake signatures and bound cancellation; identity
 # authentication remains a separate explicit trust decision. See provenance.
 fcast-sender-sdk = { path = "vendor/fcast-sender-sdk" }
@@ -1690,9 +1682,6 @@ taffy = { path = "vendor/taffy" }
 # Erasing above the cursor clears the first line too. See
 # vendor/alacritty_terminal/PROVENANCE.md.
 alacritty_terminal = { path = "vendor/alacritty_terminal" }
-# A bucket's reset during a call no longer panics the limiter. See
-# vendor/twilight-http-ratelimiting/PROVENANCE.md.
-twilight-http-ratelimiting = { path = "vendor/twilight-http-ratelimiting" }
 # zbus's blocking API runs on a runtime of its own with a worker thread per
 # host CPU; one worker, as its message says. See vendor/zbus/PROVENANCE.md.
 zbus = { path = "vendor/zbus" }
@@ -1750,9 +1739,6 @@ iroh = { path = "vendor/iroh" }
 # on for its relay connections. See vendor/iroh-relay/TILO-PATCH.md.
 iroh-relay = { path = "vendor/iroh-relay" }
 netwatch = { path = "vendor/netwatch" }
-# A static musl build reads every packet's timestamp without panicking. See
-# vendor/noq-udp/TILO-PATCH.md.
-noq-udp = { path = "vendor/noq-udp" }
 # Members depend on `workspace-hack = "0.1"`; this workspace builds the local
 # crate, while workspaces outside it get crates.io's empty stub (.config/hakari.toml).
 workspace-hack = { path = "crates/workspace-hack" }

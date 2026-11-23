@@ -342,7 +342,8 @@ async fn a_device_that_is_not_the_sender_is_refused() {
     .await;
     let (b_endpoint, _b_action_service) = asking(&b.0).await;
 
-    // A device of another person the workspace never admitted.
+    // A device of another person the workspace never admitted is only the key it signs with:
+    // a visitor, which browses nothing.
     let stranger_root = SigningKey::from_bytes(&[9; 32]);
     let c = device(&stranger_root, 10);
     let (c_endpoint, c_action_service) = asking(&c.0).await;
@@ -957,4 +958,129 @@ async fn a_device_asking_from_an_endpoint_keyed_apart_is_answered_once_named() {
     serving.shutdown().await.unwrap();
     endpoint.close().await;
     b_endpoint.close().await;
+}
+
+/// `action` on the address `entry-1` left at the workspace's entry, as a visitor's page asks it.
+fn at_the_entry(action: &str) -> InvokeRequest {
+    InvokeRequest {
+        target: RemoteActionTarget {
+            provider: tilo_action_policy::VISITOR_ENTRY_APP.into(),
+            address: ActionAddress::new("entry-1", action),
+        },
+        ..invoke(InvocationId::new())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_visitor_does_what_the_entry_opens_and_no_more_and_not_too_often() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let a = device(&root, 2);
+    let mut peer = workspace(WORKSPACE, &a, std::slice::from_ref(&a.1));
+    // The workspace takes people by invitation and keeps their requests.
+    peer.governance_mut()
+        .put_governed_entry(
+            &tilo_action_policy::EntryPolicy {
+                listing: None,
+                invitation_only: true,
+                wait_list_max: 100,
+            },
+            &a.0,
+            tilo_clock::wall(),
+        )
+        .unwrap();
+    let dispatcher = Arc::new(TestProvider::new());
+    let engine = Engine::serving(
+        Replica::new(peer),
+        a.0.clone(),
+        dispatcher.clone(),
+        Bounds::default(),
+    )
+    .await;
+
+    // A page with a key of its own, which no certificate in the workspace names.
+    let visitor = SigningKey::from_bytes(&[9; 32]);
+    let (visitor_endpoint, visitor_service) = asking(&visitor).await;
+    let remote = visitor_service.remote(&visitor_endpoint, &engine.addr(), WORKSPACE);
+    let nobody = Caller::visitor(visitor.verifying_key().to_bytes());
+    let ask = |request: InvokeRequest| {
+        let remote = &remote;
+        let nobody = &nobody;
+        async move {
+            tokio::time::timeout(PATIENCE, ActionProvider::invoke(remote, nobody, request))
+                .await
+                .expect("the device answers")
+                .expect("the asker is not dropped")
+                .map(|receipt| receipt.status)
+        }
+    };
+
+    // Anything but what the entry opens is refused, as to a stranger, before any dispatcher
+    // meets the visitor.
+    assert_eq!(
+        ask(invoke(InvocationId::new())).await,
+        Err(ActionCallError::NotPermitted),
+        "a visitor may not change a note"
+    );
+    assert_eq!(
+        ask(at_the_entry("invite")).await,
+        Err(ActionCallError::NotPermitted),
+        "nor invite anyone from the wait list"
+    );
+    // Leaving an address, confirming it and taking it off are open to any key.
+    for action in ["join", "confirm", "leave"] {
+        assert!(
+            matches!(
+                ask(at_the_entry(action)).await,
+                Ok(ReceiptStatus::Completed { .. })
+            ),
+            "a visitor may {action}"
+        );
+    }
+    assert_eq!(
+        queried(&remote, &nobody).await,
+        Err(ActionCallError::NotPermitted),
+        "nor browse the workspace's actions"
+    );
+    let seen = dispatcher.callers();
+    assert_eq!(seen.len(), 3, "only what the grants allow runs");
+    assert_eq!(
+        seen[0].acting().visitor_key(),
+        Some(visitor.verifying_key().to_bytes()),
+        "the dispatcher meets the visitor as the key that signed"
+    );
+    assert_eq!(seen[0].user_public_key(), None, "acting for nobody");
+    assert_eq!(seen[0].workspace(), Some(WORKSPACE));
+
+    // One network gets so many calls in ten minutes, whatever key it signs with.
+    let calls_so_far = 3;
+    for _ in calls_so_far..tilo_peer_state::actions::VISITOR_CALLS_PER_TEN_MINUTES {
+        assert!(matches!(
+            ask(at_the_entry("join")).await,
+            Ok(ReceiptStatus::Completed { .. })
+        ));
+    }
+    let another = SigningKey::from_bytes(&[10; 32]);
+    let (another_endpoint, another_service) = asking(&another).await;
+    let fresh_key = another_service.remote(&another_endpoint, &engine.addr(), WORKSPACE);
+    let refused = tokio::time::timeout(
+        PATIENCE,
+        ActionProvider::invoke(&fresh_key, &nobody, at_the_entry("join")),
+    )
+    .await
+    .expect("the device answers")
+    .expect("the asker is not dropped")
+    .unwrap_err();
+    assert!(
+        refusal(&refused).starts_with("too many tries from your network"),
+        "{refused:?}"
+    );
+    assert_eq!(
+        dispatcher.callers().len(),
+        tilo_peer_state::actions::VISITOR_CALLS_PER_TEN_MINUTES,
+        "a call over the count runs nothing"
+    );
+
+    engine.close().await;
+    visitor_endpoint.close().await;
+    another_endpoint.close().await;
 }

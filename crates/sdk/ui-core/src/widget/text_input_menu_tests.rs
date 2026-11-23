@@ -12,79 +12,88 @@ use crate::text_edit::SUGGESTION_SETTLE;
 use crate::text_selection::{next_word_boundary, prev_word_boundary};
 use std::time::Duration;
 
+/// A field laid out wide enough for a menu, holding `text`.
+fn menu_field(text: &str) -> TextInput {
+    let mut ti = TextInput::local().with_initial_value(text);
+    ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+    ti
+}
+
 tilo_test_env::scenario! {
     fn a_fields_menu_offers_what_the_field_allows;
 
-    phase read_only_context_menu_copies_without_offering_or_applying_edits;
+    phase the_menus_rows_follow_what_the_field_allows;
     {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let services = crate::process::ProcessServices::null();
         let _host = crate::process::enter(&services);
-        crate::text_selection::clipboard_copy("clipboard");
-        let mut input = TextInput::local().with_initial_value("source");
-        input.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        input.select_all();
-        input.open_text_menu_at([20.0, 20.0]);
-        let cut = input
-            .context_actions
-            .iter()
-            .position(|action| matches!(action, Some(CtxAction::Cut)))
-            .unwrap();
-        input.set_read_only(true);
-        assert!(
-            !input.dispatch_context_action(cut),
-            "a menu opened before read-only cannot edit"
-        );
-        assert_eq!(input.value(), "source");
-        assert_eq!(
-            crate::text_selection::clipboard_paste().as_deref(),
-            Some("clipboard")
-        );
-        input.context_menu.close();
 
-        let mut doc = AutoCommit::new();
-        drive(
-            &mut input,
-            &mut doc,
-            &cursor_moved(20.0, 20.0),
-            mods(false, false),
-        );
-        drive(
-            &mut input,
-            &mut doc,
-            &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
-            mods(false, false),
-        );
-        assert!(input.context_menu.is_open());
-        let labels = input.context_menu_labels();
-        assert!(labels.iter().any(|label| label == "Copy"));
-        assert!(
-            !labels
-                .iter()
-                .any(|label| label == "Cut" || label == "Paste")
-        );
-        let copy = input
-            .context_actions
-            .iter()
-            .position(|action| matches!(action, Some(CtxAction::Copy)))
-            .unwrap();
-        input.dispatch_context_action(copy);
-        assert_eq!(
-            crate::text_selection::clipboard_paste().as_deref(),
-            Some("source")
-        );
-        assert_eq!(input.value(), "source");
-    }
-
-    phase context_menu_opens_on_right_click_dispatches_and_dismisses;
-    {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
-        // Case `right_click_selects_word_and_opens_menu_with_expected_labels`.
+        // A menu opened while the field was editable cannot edit once the field is read-only.
         {
-            let mut ti = TextInput::local().with_initial_value("hello world");
-            ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+            crate::text_selection::clipboard_copy("clipboard");
+            let mut input = menu_field("source");
+            input.select_all();
+            input.open_text_menu_at([20.0, 20.0]);
+            let cut = input
+                .context_actions
+                .iter()
+                .position(|action| matches!(action, Some(CtxAction::Cut)))
+                .unwrap();
+            input.set_read_only(true);
+            assert!(
+                !input.dispatch_context_action(cut),
+                "a menu opened before read-only cannot edit"
+            );
+            assert_eq!(input.value(), "source");
+            assert_eq!(
+                crate::text_selection::clipboard_paste().as_deref(),
+                Some("clipboard")
+            );
+            input.context_menu.close();
+        }
+
+        // Right-click on read-only text offers Copy and nothing that writes.
+        {
+            let mut input = menu_field("source");
+            input.set_read_only(true);
+            let mut doc = AutoCommit::new();
+            drive(
+                &mut input,
+                &mut doc,
+                &cursor_moved(20.0, 20.0),
+                mods(false, false),
+            );
+            drive(
+                &mut input,
+                &mut doc,
+                &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
+                mods(false, false),
+            );
+            assert!(input.context_menu.is_open());
+            let labels = input.context_menu_labels();
+            assert!(labels.iter().any(|label| label == "Copy"));
+            assert!(
+                !labels
+                    .iter()
+                    .any(|label| label == "Cut" || label == "Paste")
+            );
+            let copy = input
+                .context_actions
+                .iter()
+                .position(|action| matches!(action, Some(CtxAction::Copy)))
+                .unwrap();
+            input.dispatch_context_action(copy);
+            assert_eq!(
+                crate::text_selection::clipboard_paste().as_deref(),
+                Some("source")
+            );
+            assert_eq!(input.value(), "source");
+        }
+
+        // A right-click selects the word under it and opens the menu.
+        {
+            let mut ti = menu_field("hello world");
             ti.set_focus(true);
             let mut doc = AutoCommit::new();
 
@@ -104,10 +113,9 @@ tilo_test_env::scenario! {
             assert!(labels.contains(&"Select All".to_string()), "got {labels:?}");
         }
 
-        // Case `context_menu_dispatch_maps_index_to_copy`.
+        // The row a dispatcher picks is the action it maps to.
         {
-            let mut ti = TextInput::local().with_initial_value("hello world");
-            ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+            let mut ti = menu_field("hello world");
             // Pre-select "world" so Cut/Copy are present and the selection survives a copy.
             ti.core.set_selection(6, 11);
 
@@ -136,10 +144,9 @@ tilo_test_env::scenario! {
             assert_eq!(ti.selected_str(), Some("world"));
         }
 
-        // Case `context_menu_dispatch_cut_removes_selection`.
+        // Cutting removes what was selected.
         {
-            let mut ti = TextInput::local().with_initial_value("hello world");
-            ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+            let mut ti = menu_field("hello world");
             ti.core.set_selection(0, 5); // "hello"
             ti.open_context_menu([10.0, 18.0]);
             let cut_idx = ti
@@ -153,10 +160,9 @@ tilo_test_env::scenario! {
             assert_eq!(ti.value(), " world", "cut removed the selected word");
         }
 
-        // Case `left_click_outside_open_menu_dismisses_it`.
+        // A click outside the open menu dismisses it.
         {
-            let mut ti = TextInput::local().with_initial_value("hello world");
-            ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+            let mut ti = menu_field("hello world");
             ti.set_focus(true);
             ti.open_context_menu([10.0, 18.0]);
             assert!(ti.context_menu.is_open());
@@ -171,7 +177,7 @@ tilo_test_env::scenario! {
             );
         }
 
-        // Case `misspelling_context_action_replaces_the_selected_word`.
+        // A misspelling offers its correction, and taking it replaces the word.
         {
             let mut ti = TextInput::local()
                 .with_spell_language("en_US")
@@ -194,7 +200,7 @@ tilo_test_env::scenario! {
             assert_eq!(ti.value(), "the");
         }
 
-        // Case `selected_text_action_is_reported_without_blocking_the_widget`.
+        // A field's own action on the selection is reported without changing the text.
         {
             let mut ti = TextInput::local()
                 .with_spellcheck(false)
@@ -385,7 +391,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_short_pause_at_the_end_of_a_misspelled_word_shows_its_suggestion;
+    phase a_settled_word_offers_its_suggestion_on_a_pause_wherever_the_caret_sets;
     {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
@@ -431,12 +437,9 @@ tilo_test_env::scenario! {
         assert_eq!(ti.value(), "so beautiful");
         assert_eq!(ti.cursor_pos(), "so beautiful".len());
         assert!(ti.autocorrection_preview.is_none());
-    }
 
-    phase moving_the_caret_back_into_an_earlier_word_shows_its_suggestion;
-    {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
+        // Moving back into an earlier word settles it again; the word it left keeps its
+        // suggestion while the caret is in it, and a selection or an unfocused field offers nothing.
         let mut ti = suggesting_field("beautifull day");
         let start = crate::time::now();
         ti.refresh_suggestion_at(start);
@@ -478,12 +481,8 @@ tilo_test_env::scenario! {
         ti.set_focus(false);
         ti.refresh_suggestion_at(back + SUGGESTION_SETTLE * 4);
         assert!(ti.autocorrection_preview.is_none());
-    }
 
-    phase the_settling_word_schedules_its_own_wake;
-    {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
+        // The settling word schedules its own wake, so the suggestion appears without further input.
         let mut ti = suggesting_field("so beautifull");
         // Far enough ahead that a slow test run never sees the deadline pass.
         let now = crate::time::now() + Duration::from_secs(3600);

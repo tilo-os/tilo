@@ -1,4 +1,4 @@
-use super::super::sealed_tests::held;
+use super::super::sealed_compaction_tests::held;
 use super::*;
 use crate::{InputDisposition, TransportOrigin};
 use automerge::transaction::Transactable as _;

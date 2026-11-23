@@ -627,7 +627,7 @@ fn top_shown(session: &mut Session) -> String {
         .into_iter()
         .filter(|node| node.role == ui::a11y::Role::ListItem)
         .find(|node| node.bounds.is_some_and(|bounds| bounds.y0 >= 0.0))
-        .and_then(|node| node.name)
+        .and_then(|node| node.shown_name().map(str::to_owned))
         .expect("the window shows a row")
 }
 
@@ -650,7 +650,7 @@ fn first_check(session: &mut Session) -> (String, f64, f64) {
         .expect("the list shows a row not checked yet");
     let rect = node.bounds.expect("the row is laid out");
     (
-        node.name.unwrap_or_default(),
+        node.shown_name().unwrap_or_default().to_owned(),
         rect.x0 + 4.0 + BOX / 2.0,
         f64::midpoint(rect.y0, rect.y1),
     )
@@ -660,7 +660,7 @@ fn first_check(session: &mut Session) -> (String, f64, f64) {
 fn checked_off(session: &mut Session, title: &str) -> bool {
     accessible(session).into_iter().any(|node| {
         node.role == ui::a11y::Role::ListItem
-            && node.name.as_deref() == Some(title)
+            && node.answers_to(title)
             && node.state.checked == Some(true)
     })
 }
@@ -668,9 +668,7 @@ fn checked_off(session: &mut Session, title: &str) -> bool {
 /// Whether the sidebar shows `place` chosen.
 fn chosen(session: &mut Session, place: &str) -> bool {
     accessible(session).into_iter().any(|node| {
-        node.role == ui::a11y::Role::TreeItem
-            && node.name.as_deref() == Some(place)
-            && node.state.selected
+        node.role == ui::a11y::Role::TreeItem && node.answers_to(place) && node.state.selected
     })
 }
 

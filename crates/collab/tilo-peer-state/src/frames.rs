@@ -2,9 +2,9 @@
 //! count little-endian, then the bytes.
 //!
 //! Every link the engine runs itself writes the same records — a device's
-//! replica, one person's own documents, a stream of record content — so the
-//! framing, the author a message is filtered by, and the close code a refused
-//! connection ends with are here, for every host that dials.
+//! replica, a stream of record content — so the framing, the author a message
+//! is filtered by, and the close code a refused connection ends with are here,
+//! for every host that dials.
 
 // Nothing compiled for the web reads a link's frames yet: the page's session
 // dials and answers them with its own wiring.
@@ -52,31 +52,6 @@ pub(crate) fn from_device(message: &NeighbourMsg, device: [u8; 32]) -> bool {
             *peer == peer_handle(&device)
         }
         _ => false,
-    }
-}
-
-/// Write `message` as this link's next record.
-pub(crate) async fn write_message<W: AsyncWrite + Unpin>(
-    send: &mut W,
-    message: &NeighbourMsg,
-) -> Result<(), String> {
-    let bytes = postcard::to_allocvec(message).map_err(|error| error.to_string())?;
-    if bytes.len() > MAX_FRAME_BYTES {
-        return Err("frame too large".into());
-    }
-    write_frame(send, &bytes).await
-}
-
-/// The next message this link brought, or `None` once the other side finished
-/// its stream.
-pub(crate) async fn read_message<R: AsyncRead + Unpin>(
-    recv: &mut R,
-) -> Result<Option<NeighbourMsg>, String> {
-    match read_frame(recv, MAX_FRAME_BYTES).await? {
-        Some(bytes) => NeighbourMsg::decode(&bytes)
-            .map(Some)
-            .map_err(|error| error.to_string()),
-        None => Ok(None),
     }
 }
 

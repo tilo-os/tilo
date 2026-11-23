@@ -5,7 +5,7 @@
 //! and that holds at the display's scale as at 1.
 
 use super::*;
-use crate::navigation::LayoutEffect;
+use tilo_session_core::desktop::navigation::LayoutEffect;
 use ui::widget::TileContent;
 
 /// The windows' content: each tab shows the notice its title names.
@@ -37,7 +37,7 @@ pub(super) fn shell_at(windows: usize, scale: f64) -> (ui::headless::FrameHarnes
             pinned: false,
         })
         .collect();
-    let tree = seed_tree(&mut minter, "Office", tabs);
+    let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Office", tabs);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices));
     let mut frame = ui::headless::FrameHarness::for_root_with(
         ui::state::State::new(),
@@ -220,7 +220,7 @@ fn closing_a_window_of_an_app_with_two_windows_leaves_the_other() {
             pinned: false,
         })
         .collect();
-    let tree = seed_tree(&mut minter, "Office", tabs);
+    let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Office", tabs);
     let (surface, _handle) = DesktopSurface::new(tree, 7, Box::new(Notices));
     let mut frame = ui::headless::FrameHarness::for_root_with(
         ui::state::State::new(),

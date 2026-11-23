@@ -790,7 +790,6 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
         own_device_public_key: owner.device_public_key,
         app_serving: None,
         metrics: Arc::new(crate::metrics::Metrics::default()),
-        carried_calls: None,
         admin: Some(Arc::new(workspaces.clone())),
         fetch: None,
         agents: crate::peer::AgentRegistry::default(),

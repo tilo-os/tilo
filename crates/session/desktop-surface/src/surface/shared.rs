@@ -42,7 +42,7 @@ impl Shared {
         tab: tilo_desktop_model::TabId,
     ) -> Option<tilo_desktop_model::RemovedTab> {
         let removed = self.tree.close_tab(tab)?;
-        let said = crate::i18n::t_args(
+        let said = tilo_session_core::desktop::i18n::t_args(
             "shell-window-closed",
             &[(
                 "window",
@@ -54,7 +54,7 @@ impl Shared {
                 .action(ui::window_toolbar::ToolbarAction::new(
                     super::REOPEN_CLOSED,
                     "undo-2",
-                    crate::i18n::t("shell-window-closed-undo"),
+                    tilo_session_core::desktop::i18n::t("shell-window-closed-undo"),
                 )),
         );
         Some(removed)

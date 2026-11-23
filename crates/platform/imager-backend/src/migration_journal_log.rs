@@ -1,12 +1,11 @@
 //! Source-independent private journal storage. Validation always precedes repair.
-use super::migration::{OwnedTemporary, PinnedDirectory, changed};
+use super::migration::{OwnedTemporary, PinnedDirectory, PublishMode, changed};
 use super::{
     destination_security, migration_durability as durability,
     nofollow::{metadata_nofollow, same_directory_identity},
 };
 use advisory_lock::FileLock;
-use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
-use cap_primitives::fs::{FollowSymlinks, Metadata, OpenOptions};
+use cap_primitives::fs::Metadata;
 use serde::Serialize;
 use std::{
     ffi::OsString,
@@ -118,24 +117,10 @@ pub fn open_private(
     parent: &Arc<PinnedDirectory>,
     name: &std::ffi::OsStr,
 ) -> io::Result<(FileLock, Metadata)> {
-    let expected = metadata_nofollow(&parent.file, Path::new(name))?;
-    if !expected.is_file() || expected.is_symlink() {
-        return Err(changed("journal is not a regular file"));
-    }
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(true)
-        .follow(FollowSymlinks::No)
-        .nonblock(true);
-    let file = cap_primitives::fs::open(&parent.file, Path::new(name), &options)?;
-    destination_security::check_private_file(&file)?;
+    let file = parent.open_regular(name, true, true)?;
     let file =
         FileLock::try_exclusive(file).map_err(|e| changed(&format!("journal is busy: {e}")))?;
     let identity = Metadata::from_file(&file)?;
-    if !super::migration::same_snapshot(&expected, &identity) {
-        return Err(changed("journal replaced while opening"));
-    }
     Ok((file, identity))
 }
 pub fn validate(
@@ -193,17 +178,9 @@ pub fn create_private<T: Serialize>(
     let mut sequence = 0;
     write_record(&mut temporary.file, &mut sequence, header)?;
     rest(&mut temporary.file, &mut sequence)?;
-    durability::sync_file(&temporary.file)?;
-    parent.validate_destination()?;
-    temporary.validate()?;
-    cap_primitives::fs::hard_link(
-        &parent.file,
-        Path::new(&temporary.name),
-        &parent.file,
-        Path::new(&name),
-    )?;
-    durability::sync_directory(&parent.file)?;
-    let file = FileLock::try_exclusive(temporary.file.try_clone()?)
+    let published = temporary.file.try_clone()?;
+    temporary.publish(&[], PublishMode::IfAbsent)?;
+    let file = FileLock::try_exclusive(published)
         .map_err(|e| changed(&format!("journal is busy: {e}")))?;
     let identity = Metadata::from_file(&file)?;
     Ok((file, identity, sequence))
@@ -295,7 +272,39 @@ impl Log {
             validate(parent, name, &validation_file, identity)
         })
     }
+    /// Build a log over an already opened and validated journal file.
+    pub(crate) fn from_open(
+        parent: Arc<PinnedDirectory>,
+        name: OsString,
+        file: FileLock,
+        identity: Metadata,
+    ) -> Self {
+        Self {
+            file,
+            sequence: 0,
+            parent,
+            name,
+            identity,
+            failed: false,
+        }
+    }
+
+    /// The directory holding this journal.
+    pub(crate) fn parent(&self) -> &Arc<PinnedDirectory> {
+        &self.parent
+    }
+
     pub fn append<T: Serialize>(&mut self, record: &T) -> io::Result<()> {
+        self.append_with(|file, seq| write_record(file, seq, record), || Ok(()))
+    }
+
+    /// [`Self::append`] with a check run after the frames are written and
+    /// before they are synced, for callers' own crash and persistence hooks.
+    pub fn append_with(
+        &mut self,
+        records: impl FnOnce(&mut File, &mut u64) -> io::Result<()>,
+        before_sync: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()> {
         use super::migration_journal::{PersistenceBoundary, persistence_result};
         if self.failed {
             return Err(changed("journal persistence already failed"));
@@ -303,12 +312,7 @@ impl Log {
         let result = (|| {
             persistence_result(self.validate(), PersistenceBoundary::JournalUnavailable)?;
             persistence_result(
-                append_synced(
-                    &mut self.file,
-                    &mut self.sequence,
-                    |file, seq| write_record(file, seq, record),
-                    || Ok(()),
-                ),
+                append_synced(&mut self.file, &mut self.sequence, records, before_sync),
                 PersistenceBoundary::JournalReplacementUncertain,
             )
         })();

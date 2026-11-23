@@ -251,7 +251,6 @@ impl PageWindow {
                 }
             }
         }
-        instance.set_origin(true);
         let mut window = Self {
             view: AppWindow::new(Box::new(window_end), Vec::new()),
             instance,

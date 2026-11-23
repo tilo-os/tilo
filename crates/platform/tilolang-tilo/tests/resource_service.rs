@@ -87,19 +87,14 @@ fn an_action_through_the_service_is_written_as_one_change() {
 
 /// Every text a tree shows, in its props.
 fn texts(node: &UiNode) -> Vec<String> {
-    fn walk(node: &UiNode, out: &mut Vec<String>) {
-        for value in node.props.values() {
-            if let Value::Text(text) = value {
-                out.push(text.clone());
-            }
-        }
-        for child in &node.children {
-            walk(child, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(node, &mut out);
-    out
+    crate::fixtures::nodes(node)
+        .into_iter()
+        .flat_map(|node| node.props.values())
+        .filter_map(|value| match value {
+            Value::Text(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 tilo_test_env::scenario! {

@@ -4,7 +4,7 @@
 
 use super::super::DEFAULT_WAIT_MS;
 use super::*;
-use tilo_actions::tree::{LEVEL_PAGES, RESTART_PAUSE_MAX, restart_pause};
+use tilo_actions::tree::LEVEL_PAGES;
 
 tilo_test_env::scenario! {
     fn a_call_reads_the_directory_once_at_a_cost_that_does_not_grow;
@@ -57,28 +57,6 @@ tilo_test_env::scenario! {
             (20..=50).contains(&reads),
             "read {reads} times in {waited:?}"
         );
-    }
-
-    phase a_changing_directory_is_read_again_at_once_then_after_a_growing_pause;
-    {
-        let ms = std::time::Duration::from_millis;
-        let pauses: Vec<_> = (0..10).map(restart_pause).collect();
-        assert_eq!(
-            pauses,
-            [
-                ms(0),
-                ms(0),
-                ms(5),
-                ms(10),
-                ms(20),
-                ms(40),
-                ms(80),
-                ms(160),
-                ms(200),
-                ms(200)
-            ]
-        );
-        assert_eq!(restart_pause(u32::MAX), RESTART_PAUSE_MAX);
     }
 
     phase every_note_a_notebook_lists_is_read_at_its_path_past_a_levels_bound;

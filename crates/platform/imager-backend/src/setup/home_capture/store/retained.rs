@@ -160,7 +160,7 @@ impl Store {
         setup: &str,
         person: &[u8; 32],
     ) -> io::Result<RetainedCallerDeclaration> {
-        if rustix::process::geteuid().as_raw() != 0 || self.operation != plan.operation_id {
+        if !crate::native_root::is_root() || self.operation != plan.operation_id {
             return Err(failure(
                 "Retained registration requires root operation ownership",
             ));
@@ -301,7 +301,7 @@ pub struct RootRetainedPermit {
 }
 impl RootRetainedPermit {
     pub(in crate::setup) fn validate_plan(&self, plan: &Plan) -> io::Result<()> {
-        if rustix::process::geteuid().as_raw() != 0 || self.plan != *plan {
+        if !crate::native_root::is_root() || self.plan != *plan {
             return Err(failure(
                 "Root retained permit differs from exact admitted Plan",
             ));
@@ -454,7 +454,7 @@ impl RetainedSourceAuthority {
         active_person: &[u8; 32],
         cancel: &AtomicBool,
     ) -> io::Result<Arc<Self>> {
-        if rustix::process::geteuid().as_raw() != 0 {
+        if !crate::native_root::is_root() {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         crate::setup::migration::check_cancel(cancel)?;
@@ -642,7 +642,7 @@ impl RetainedSourceProjection {
         active_person: &[u8; 32],
         cancel: &AtomicBool,
     ) -> io::Result<Arc<RetainedSourceAuthority>> {
-        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
+        if rustix::process::getuid().as_raw() != 0 || !crate::native_root::is_root() {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         crate::setup::migration::check_cancel(cancel)?;

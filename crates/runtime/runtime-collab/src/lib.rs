@@ -25,8 +25,6 @@
     )
 )]
 
-use tilo_sort::CompactSort as _;
-
 pub mod browser_service_sessions;
 pub mod file_clipboard;
 pub use browser_service_sessions::*;
@@ -38,7 +36,7 @@ use runtime_portal::NotAvailable;
 
 pub mod approved_checks;
 pub mod external_moderation;
-pub mod held_elsewhere;
+pub mod shown_actions;
 /// The host distinguishes local UI intent from continuation of a published action.
 /// A published id is resolved only against broker-retained original ownership.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1018,53 +1016,72 @@ pub(crate) fn checked_observation(
     Ok(observation)
 }
 
+/// Canonical JSON digest of an invocation admission request, independent of
+/// object member order (including when `serde_json`'s `preserve_order`
+/// feature is enabled).
+#[must_use]
+pub fn admission_request_digest(value: &serde_json::Value) -> [u8; 32] {
+    fn canonical(value: &serde_json::Value, out: &mut Vec<u8>) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                let mut members: Vec<_> = fields.iter().collect();
+                #[cfg(target_arch = "wasm32")]
+                tilo_sort::CompactSort::compact_sort_by(members.as_mut_slice(), |left, right| {
+                    left.0.cmp(right.0)
+                });
+                #[cfg(not(target_arch = "wasm32"))]
+                members.sort_unstable_by(|left, right| left.0.cmp(right.0));
+                out.push(b'{');
+                for (position, (name, member)) in members.into_iter().enumerate() {
+                    if position > 0 {
+                        out.push(b',');
+                    }
+                    canonical(&serde_json::Value::String(name.clone()), out);
+                    out.push(b':');
+                    canonical(member, out);
+                }
+                out.push(b'}');
+            }
+            serde_json::Value::Array(items) => {
+                out.push(b'[');
+                for (position, item) in items.iter().enumerate() {
+                    if position > 0 {
+                        out.push(b',');
+                    }
+                    canonical(item, out);
+                }
+                out.push(b']');
+            }
+            scalar => out.extend_from_slice(scalar.to_string().as_bytes()),
+        }
+    }
+    let mut encoded = Vec::new();
+    canonical(value, &mut encoded);
+    let mut request = blake3::Hasher::new_derive_key("tilo invocation journal request v1");
+    request.update(&encoded);
+    *request.finalize().as_bytes()
+}
+
 impl LocalDocumentActionReport {
+    /// Maximum wire byte budget of an encoded report.
+    pub const MAX_BYTES: usize = 64 * 1024;
+    /// Maximum length in bytes of a report address, type, or group text field.
+    pub const MAX_FIELD_BYTES: usize = 4096;
+    /// Maximum number of entries in `original_heads` or `mutation_hashes`.
+    pub const MAX_HASHES: usize = 256;
+
     /// Bind the complete immutable report, except the invocation address itself.
     /// Generate `capture_id` once; finalize this address only after mutation hashes
     /// are known and preserve both identities across transport retries.
     pub fn bound_invocation(&self) -> Result<uuid::Uuid, String> {
-        // Match the broker's journal request digest, including recursively sorted
-        // object members even when serde_json's preserve_order feature is enabled.
-        fn canonical(value: &serde_json::Value, out: &mut Vec<u8>) {
-            match value {
-                serde_json::Value::Object(fields) => {
-                    let mut members: Vec<_> = fields.iter().collect();
-                    members.compact_sort_by(|left, right| left.0.cmp(right.0));
-                    out.push(b'{');
-                    for (position, (name, member)) in members.into_iter().enumerate() {
-                        if position > 0 {
-                            out.push(b',');
-                        }
-                        canonical(&serde_json::Value::String(name.clone()), out);
-                        out.push(b':');
-                        canonical(member, out);
-                    }
-                    out.push(b'}');
-                }
-                serde_json::Value::Array(items) => {
-                    out.push(b'[');
-                    for (position, item) in items.iter().enumerate() {
-                        if position > 0 {
-                            out.push(b',');
-                        }
-                        canonical(item, out);
-                    }
-                    out.push(b']');
-                }
-                scalar => out.extend_from_slice(scalar.to_string().as_bytes()),
-            }
-        }
         let mut value = serde_json::to_value(self).map_err(|_| "local report encoding failed")?;
         value
             .as_object_mut()
             .ok_or("invalid local report")?
             .remove("invocation");
-        let mut encoded = Vec::new();
-        canonical(&value, &mut encoded);
-        let mut request = blake3::Hasher::new_derive_key("tilo invocation journal request v1");
-        request.update(&encoded);
+        let digest = admission_request_digest(&value);
         let mut hash = blake3::Hasher::new_derive_key("tilo local document capture identity v1");
-        hash.update(request.finalize().as_bytes());
+        hash.update(&digest);
         let bytes = hash
             .finalize()
             .as_bytes()
@@ -1074,19 +1091,25 @@ impl LocalDocumentActionReport {
         Ok(uuid::Uuid::from_bytes(bytes))
     }
 
-    /// Closed, bounded encoding shared with the authenticated local endpoint.
-    /// Ownership is recovery provenance, never caller-selected authority.
-    pub fn encode(&self) -> Result<Vec<u8>, String> {
+    /// Validate the report's closed shape and bounds.
+    ///
+    /// Both the client (before encoding) and the broker (after decoding) call
+    /// this. Wire byte budget before deserialization, live ownership, and
+    /// published action arguments remain the broker's authority.
+    pub fn validate(&self) -> Result<(), String> {
         if self.version != 1 || self.invocation.is_nil() || self.capture_id.is_nil() {
             return Err("invalid local document report version or invocation".into());
         }
         for field in [&self.revision, &self.resource, &self.action] {
-            if field.is_empty() || field.len() > 4096 || field.chars().any(char::is_control) {
+            if field.is_empty()
+                || field.len() > Self::MAX_FIELD_BYTES
+                || field.chars().any(char::is_control)
+            {
                 return Err("invalid local document report address".into());
             }
         }
         for hashes in [&self.original_heads, &self.mutation_hashes] {
-            if hashes.len() > 256
+            if hashes.len() > Self::MAX_HASHES
                 || hashes
                     .windows(2)
                     .any(|pair| matches!(pair, [left, right] if left >= right))
@@ -1095,7 +1118,7 @@ impl LocalDocumentActionReport {
             }
         }
         if self.encoded.type_id.is_empty()
-            || self.encoded.type_id.len() > 4096
+            || self.encoded.type_id.len() > Self::MAX_FIELD_BYTES
             || self.encoded.type_id.chars().any(char::is_control)
             || serde_json::from_slice::<serde_json::Value>(&self.encoded.payload).is_err()
         {
@@ -1104,19 +1127,29 @@ impl LocalDocumentActionReport {
         if self
             .argument
             .as_ref()
-            .is_some_and(|argument| argument.len() > 64 * 1024)
+            .is_some_and(|argument| argument.len() > Self::MAX_BYTES)
         {
             return Err("local document report exceeds byte budget".into());
         }
         if let Some(group) = &self.group {
             for field in [&group.id, &group.kind].into_iter().chain(&group.label) {
-                if field.is_empty() || field.len() > 4096 || field.chars().any(char::is_control) {
+                if field.is_empty()
+                    || field.len() > Self::MAX_FIELD_BYTES
+                    || field.chars().any(char::is_control)
+                {
                     return Err("invalid local document report group".into());
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Closed, bounded encoding shared with the authenticated local endpoint.
+    /// Ownership is recovery provenance, never caller-selected authority.
+    pub fn encode(&self) -> Result<Vec<u8>, String> {
+        self.validate()?;
         let bytes = serde_json::to_vec(self).map_err(|error| error.to_string())?;
-        if bytes.len() > 64 * 1024 {
+        if bytes.len() > Self::MAX_BYTES {
             return Err("local document report exceeds byte budget".into());
         }
         Ok(bytes)
@@ -1162,3 +1195,175 @@ impl From<NotAvailable> for LocalDocumentActionError {
 
 #[cfg(all(test, feature = "client"))]
 mod local_document_action_transport_tests;
+
+#[cfg(test)]
+mod local_document_action_report_tests {
+    use super::{LocalDocumentActionReport, admission_request_digest};
+
+    const FIXTURE_INVOCATION: &str = "8eff53bb-6445-8d76-4cf7-fcab24a914d8";
+    const FIXTURE_FULL_DIGEST: [u8; 32] = [
+        0x1d, 0x11, 0xa6, 0x95, 0x02, 0xbd, 0x02, 0xde, 0xfa, 0x08, 0x2f, 0x5d, 0x0f, 0x49, 0x79,
+        0x70, 0x36, 0x91, 0x19, 0x47, 0x2d, 0xe9, 0x6e, 0x2a, 0x9e, 0xb4, 0x3c, 0x37, 0x68, 0x37,
+        0x0c, 0xbe,
+    ];
+    const FIXTURE_CAPTURE_DIGEST: [u8; 32] = [
+        0xcc, 0xb8, 0x10, 0x77, 0xa7, 0x61, 0xcb, 0x21, 0x08, 0xf2, 0xdf, 0xa1, 0x88, 0x28, 0x47,
+        0xe2, 0x7f, 0x78, 0x1e, 0xbc, 0x10, 0xbb, 0xc0, 0xac, 0x3b, 0x4c, 0x75, 0xff, 0xbc, 0xa2,
+        0x09, 0x56,
+    ];
+    const FIXTURE_BYTES: &[u8] = br#"{"ownership":{"root":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"device":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"agent":"agent-1","app_id":"so.tilo.notes","workspace":"ws-1","document":"doc-1"},"version":1,"invocation":"8eff53bb-6445-8d76-4cf7-fcab24a914d8","capture_id":"01020304-0506-0708-090a-0b0c0d0e0f10","revision":"rev-1","resource":"document:main","action":"edit","argument":"\u001etilo-args:{\"b\":2,\"a\":\"hello\"}","encoded":{"type_id":"notes.edit","payload":"{ \"z\": 1, \"a\": 2 }"},"context":{"resource":{"id":"parent-doc","kind":"document","label":"Parent"},"purpose":"edit body","group":{"id":"grp-1","label":"Edit","kind":"edit"},"source_invocation":"100f0e0d-0c0b-0a09-0807-060504030201"},"original_heads":[[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2]],"mutation_hashes":[[3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3],[4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4]],"group":{"id":"grp-1","label":"Edit","kind":"edit"}}"#;
+
+    const MINIMAL_FIXTURE_INVOCATION: &str = "5284f72b-32ef-2009-3a74-3688335c4ba2";
+    const MINIMAL_FIXTURE_FULL_DIGEST: [u8; 32] = [
+        0xba, 0x9b, 0xb6, 0x22, 0x50, 0x9b, 0xac, 0x9d, 0xa4, 0x74, 0x00, 0x56, 0x9e, 0x87, 0x99,
+        0x01, 0x8b, 0x2a, 0xf2, 0x8e, 0x77, 0xff, 0xdd, 0x37, 0xe8, 0x41, 0xaf, 0x12, 0xa3, 0x38,
+        0x9c, 0xf2,
+    ];
+    const MINIMAL_FIXTURE_BYTES: &[u8] = br#"{"ownership":null,"version":1,"invocation":"5284f72b-32ef-2009-3a74-3688335c4ba2","capture_id":"10203040-5060-7080-90a0-b0c0d0e0f001","revision":"rev-0","resource":"doc","action":"read","argument":null,"encoded":{"type_id":"notes.read","payload":"{}"},"context":null,"original_heads":[],"mutation_hashes":[],"group":null}"#;
+
+    const RICH_DIGEST_JSON_UNSORTED: &str = r#"{"z_nested":{"d":false,"b":{"y":null,"a":true}},"empty_obj":{},"empty_list":[],"float":12.75,"large_int":9007199254740993,"neg_large_int":-9007199254740993,"non_ascii":"café 日本語 🚀","escaped":"quote\"slash\\ctrl\u0007\n","bools":[true,false,null]}"#;
+    const RICH_DIGEST_JSON_SORTED: &str = r#"{"bools":[true,false,null],"empty_list":[],"empty_obj":{},"escaped":"quote\"slash\\ctrl\u0007\n","float":12.75,"large_int":9007199254740993,"neg_large_int":-9007199254740993,"non_ascii":"café 日本語 🚀","z_nested":{"b":{"a":true,"y":null},"d":false}}"#;
+    const RICH_DIGEST: [u8; 32] = [
+        0xcb, 0x37, 0xf7, 0xe9, 0x34, 0x57, 0xc2, 0x1b, 0x34, 0x0d, 0xb6, 0x39, 0xc1, 0x88, 0x03,
+        0x1b, 0x34, 0x64, 0x0e, 0xb5, 0x5e, 0x1e, 0x68, 0x29, 0x36, 0x80, 0xc9, 0x2a, 0x29, 0xd5,
+        0x8b, 0x4a,
+    ];
+
+    #[test]
+    fn fixed_fixture_bytes_identifier_and_digest_stay_byte_stable() {
+        let report: LocalDocumentActionReport = serde_json::from_slice(FIXTURE_BYTES).unwrap();
+        report.validate().unwrap();
+        let expected_id: uuid::Uuid = FIXTURE_INVOCATION.parse().unwrap();
+        assert_eq!(report.invocation, expected_id);
+        assert_eq!(report.bound_invocation().unwrap(), expected_id);
+        assert_eq!(report.encode().unwrap(), FIXTURE_BYTES);
+
+        let full_value = serde_json::to_value(&report).unwrap();
+        assert_eq!(admission_request_digest(&full_value), FIXTURE_FULL_DIGEST);
+
+        let mut without_invocation = full_value;
+        without_invocation
+            .as_object_mut()
+            .unwrap()
+            .remove("invocation");
+        assert_eq!(
+            admission_request_digest(&without_invocation),
+            FIXTURE_CAPTURE_DIGEST
+        );
+
+        let minimal: LocalDocumentActionReport =
+            serde_json::from_slice(MINIMAL_FIXTURE_BYTES).unwrap();
+        minimal.validate().unwrap();
+        let expected_minimal_id: uuid::Uuid = MINIMAL_FIXTURE_INVOCATION.parse().unwrap();
+        assert_eq!(minimal.invocation, expected_minimal_id);
+        assert_eq!(minimal.bound_invocation().unwrap(), expected_minimal_id);
+        assert_eq!(minimal.encode().unwrap(), MINIMAL_FIXTURE_BYTES);
+        assert_eq!(
+            admission_request_digest(&serde_json::to_value(&minimal).unwrap()),
+            MINIMAL_FIXTURE_FULL_DIGEST
+        );
+
+        // Omitting `ownership` still decodes via `#[serde(default)]` to the same report.
+        let mut minimal_without_ownership = serde_json::to_value(&minimal).unwrap();
+        minimal_without_ownership
+            .as_object_mut()
+            .unwrap()
+            .remove("ownership");
+        let legacy: LocalDocumentActionReport =
+            serde_json::from_value(minimal_without_ownership).unwrap();
+        assert_eq!(legacy.bound_invocation().unwrap(), expected_minimal_id);
+        assert_eq!(legacy.encode().unwrap(), MINIMAL_FIXTURE_BYTES);
+
+        let unsorted: serde_json::Value = serde_json::from_str(RICH_DIGEST_JSON_UNSORTED).unwrap();
+        let sorted: serde_json::Value = serde_json::from_str(RICH_DIGEST_JSON_SORTED).unwrap();
+        assert_eq!(admission_request_digest(&unsorted), RICH_DIGEST);
+        assert_eq!(admission_request_digest(&sorted), RICH_DIGEST);
+    }
+
+    #[test]
+    fn validate_refuses_every_malformed_or_out_of_bounds_field() {
+        let valid: LocalDocumentActionReport = serde_json::from_slice(FIXTURE_BYTES).unwrap();
+        assert!(valid.validate().is_ok());
+
+        let mut bad = valid.clone();
+        bad.version = 2;
+        assert!(bad.validate().is_err());
+
+        let mut bad = valid.clone();
+        bad.invocation = uuid::Uuid::nil();
+        assert!(bad.validate().is_err());
+
+        let mut bad = valid.clone();
+        bad.capture_id = uuid::Uuid::nil();
+        assert!(bad.validate().is_err());
+
+        for field in ["revision", "resource", "action", "type_id"] {
+            for invalid in [
+                String::new(),
+                "a".repeat(LocalDocumentActionReport::MAX_FIELD_BYTES + 1),
+                "bad\nchar".to_owned(),
+            ] {
+                let mut bad = valid.clone();
+                match field {
+                    "revision" => bad.revision = invalid,
+                    "resource" => bad.resource = invalid,
+                    "action" => bad.action = invalid,
+                    "type_id" => bad.encoded.type_id = invalid,
+                    _ => unreachable!(),
+                }
+                assert!(bad.validate().is_err(), "{field}");
+            }
+        }
+
+        let mut bad = valid.clone();
+        bad.encoded.payload = b"not json".to_vec();
+        assert!(bad.validate().is_err());
+
+        let mut bad = valid.clone();
+        bad.argument = Some("x".repeat(LocalDocumentActionReport::MAX_BYTES + 1));
+        assert!(bad.validate().is_err());
+
+        let over_hashes: Vec<[u8; 32]> = (0..=LocalDocumentActionReport::MAX_HASHES)
+            .map(|i| {
+                let [hi, lo] = u16::try_from(i).unwrap().to_be_bytes();
+                [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, hi, lo,
+                ]
+            })
+            .collect();
+        for kind in ["original_heads", "mutation_hashes"] {
+            for hashes in [
+                vec![[2; 32], [1; 32]],
+                vec![[1; 32], [1; 32]],
+                over_hashes.clone(),
+            ] {
+                let mut bad = valid.clone();
+                if kind == "original_heads" {
+                    bad.original_heads = hashes;
+                } else {
+                    bad.mutation_hashes = hashes;
+                }
+                assert!(bad.validate().is_err(), "{kind}");
+            }
+        }
+
+        for field in ["id", "kind", "label"] {
+            for invalid in [
+                String::new(),
+                "g".repeat(LocalDocumentActionReport::MAX_FIELD_BYTES + 1),
+                "bad\0group".to_owned(),
+            ] {
+                let mut bad = valid.clone();
+                let group = bad.group.as_mut().unwrap();
+                match field {
+                    "id" => group.id = invalid,
+                    "kind" => group.kind = invalid,
+                    "label" => group.label = Some(invalid),
+                    _ => unreachable!(),
+                }
+                assert!(bad.validate().is_err(), "group.{field}");
+            }
+        }
+    }
+}

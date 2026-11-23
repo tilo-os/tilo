@@ -100,6 +100,19 @@ impl FixtureHost {
     pub fn update(&self, change: impl FnOnce(&mut QuickSettingsState)) {
         self.readings.update(change);
     }
+
+    /// Fold one published reading `text` on `resource` through the panel's
+    /// live reading parser.
+    #[cfg(feature = "test-support")]
+    pub fn land(&self, resource: &str, text: &str) -> bool {
+        crate::readings::land(&self.readings, resource, text)
+    }
+
+    /// Read the panel's current state.
+    #[cfg(feature = "test-support")]
+    pub fn read<V>(&self, read: impl FnOnce(&QuickSettingsState) -> V) -> V {
+        self.readings.read(read)
+    }
 }
 
 impl PanelHost for FixtureHost {

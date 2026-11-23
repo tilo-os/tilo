@@ -34,7 +34,7 @@ use agent_session::handle_agent_session;
 use dispatch::handle_envelope;
 pub use fetch::FetchGrants;
 use live::{
-    handle_content_want, handle_host_said, handle_live_join, handle_presence, handle_voice,
+    handle_content_want, handle_host_said, handle_live_join, handle_presence,
     route_document_content,
 };
 use records::handle_open_document;
@@ -121,10 +121,6 @@ pub struct PeerContext {
     /// The devices this host certified for its browser environments, and the
     /// one record each reaches ([`crate::environment`]).
     pub environments: crate::environment::EnvironmentRegistry,
-    /// The workspaces whose calls this host carries: a workspace a person owns
-    /// (synced across their devices through this host) holds its calls
-    /// there. `None` holds no carried call.
-    pub carried_calls: Option<crate::workspaces::WeakWorkspaces>,
     /// The governance a device administers its workspaces through, set once
     /// when the host governs them; `None` administers nothing.
     pub admin: Option<Arc<crate::workspaces::Workspaces>>,
@@ -179,9 +175,6 @@ struct SessionCtx<'a> {
     /// Where this connection's workspaces post the presence they fan out to it;
     /// `None` takes each presence on the frame queue.
     presence: Option<&'a Arc<crate::presence_mailbox::PresenceMailbox>>,
-    /// The workspaces whose calls this host carries; `None` holds no carried
-    /// call.
-    carried_calls: Option<crate::workspaces::WeakWorkspaces>,
     /// What a device administers its workspaces through; `None` administers
     /// nothing.
     admin: Option<&'a crate::workspaces::Workspaces>,

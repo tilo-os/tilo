@@ -9,6 +9,10 @@
 //! model is carried through export unchanged. They are zip archives of XML 1.0, read through
 //! `BytesText::xml10_content`, so `\r\n` and lone `\r` fold to `\n`; character references arrive
 //! as `Event::GeneralRef` and every reader resolves them.
+//!
+//! Markdown is one dialect: [`markdown`] reads and writes a whole document, [`inline`] the text
+//! and marks inside one block, and [`blocks`] a body's lines with the ids a reader names a block
+//! by. Every caller — a file, a copy, a rich-text value, an agent's read — uses these three.
 
 #![cfg_attr(
     test,
@@ -20,8 +24,12 @@
 )]
 
 #[cfg(feature = "markdown")]
+pub mod blocks;
+#[cfg(feature = "markdown")]
 pub mod convert;
 pub mod format;
+#[cfg(feature = "markdown")]
+pub mod inline;
 pub mod xml_escape;
 
 #[cfg(feature = "docx")]
@@ -66,6 +74,10 @@ pub mod xlsx;
 #[cfg(test)]
 #[cfg(feature = "all")]
 mod bulk_equivalence;
+
+#[cfg(test)]
+#[cfg(feature = "all")]
+mod import_rules;
 
 #[cfg(feature = "docx")]
 pub use docx::DocxCodec;

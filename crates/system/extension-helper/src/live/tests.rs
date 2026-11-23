@@ -471,11 +471,27 @@ impl LiveHost for Fake {
     }
 }
 
+/// Stage an image as the device's update service would: its tree at `dir/name`,
+/// its composefs verity and its image digest both spelt with `mark`.
+fn stage(dir: &Path, fake: &Fake, name: &str, mark: char, files: &[(&str, &str)]) {
+    let root = dir.join(name);
+    tree(&root, files);
+    let verity = mark.to_string().repeat(128);
+    fake.roots.borrow_mut().insert(verity.clone(), root);
+    *fake.status.borrow_mut() = format!(
+        r#"{{"status":{{
+            "booted":{{"image":{{"imageDigest":"sha256:{a}"}},"composefs":{{"verity":"{b}"}}}},
+            "staged":{{"image":{{"imageDigest":"sha256:{image}"}},"composefs":{{"verity":"{verity}"}}}}}}}}"#,
+        a = "a".repeat(64),
+        b = "b".repeat(128),
+        image = mark.to_string().repeat(64),
+    );
+}
+
 fn machine() -> (tempfile::TempDir, Layout, Fake) {
     let dir = tempfile::tempdir().unwrap();
     let layout = Layout::new(dir.path().join("root"));
     let base = dir.path().join("booted");
-    let new = dir.path().join("staged");
     tree(
         &base,
         &[
@@ -485,8 +501,13 @@ fn machine() -> (tempfile::TempDir, Layout, Fake) {
             ("usr/lib/old-lib.so", "old"),
         ],
     );
-    tree(
-        &new,
+    let fake = Fake::default();
+    fake.roots.borrow_mut().insert("b".repeat(128), base);
+    stage(
+        dir.path(),
+        &fake,
+        "staged",
+        'd',
         &[
             ("usr/bin/fs", "fs 2"),
             ("usr/bin/shell", "shell 2"),
@@ -494,18 +515,6 @@ fn machine() -> (tempfile::TempDir, Layout, Fake) {
             ("usr/lib/modules/6.18/vmlinuz", "kernel"),
             ("usr/share/tilo/components.toml", MANIFEST),
         ],
-    );
-    let booted_verity = "b".repeat(128);
-    let staged_verity = "d".repeat(128);
-    let fake = Fake::default();
-    fake.roots.borrow_mut().insert(booted_verity.clone(), base);
-    fake.roots.borrow_mut().insert(staged_verity.clone(), new);
-    *fake.status.borrow_mut() = format!(
-        r#"{{"status":{{
-            "booted":{{"image":{{"imageDigest":"sha256:{a}"}},"composefs":{{"verity":"{booted_verity}"}}}},
-            "staged":{{"image":{{"imageDigest":"sha256:{e}"}},"composefs":{{"verity":"{staged_verity}"}}}}}}}}"#,
-        a = "a".repeat(64),
-        e = "e".repeat(64),
     );
     fake.logins.borrow_mut().push(Login {
         wrapper: 1,
@@ -596,386 +605,305 @@ fn a_restarted_desktop_is_back_only_once_it_is_usable() {
     );
 }
 
-tilo_test_env::scenario! {
-    fn a_staged_image_is_applied_live_or_waits_for_a_restart;
-
-    phase the_staged_image_applies_live_first_the_system_then_the_desktop;
-    {
-        let (_dir, layout, fake) = machine();
-
-        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-        let layer = fs::read_link(link(&layout).unwrap()).unwrap();
-        assert!(layer.starts_with(layers(&layout)));
-        assert_eq!(
-            fs::read_to_string(layer.join("usr/bin/fs")).unwrap(),
-            "fs 2"
-        );
-        assert!(
-            !layer.join("usr/bin/shell").exists(),
-            "the compositor waits for the desktop restart"
-        );
-        assert!(
-            !layer.join("usr/lib/modules").exists(),
-            "the kernel waits for a restart of the machine"
-        );
-        assert_eq!(
-            fs::read_to_string(layer.join("usr/lib/old-lib.so")).unwrap(),
-            "whiteout",
-            "a file the image dropped is hidden"
-        );
-        assert!(
-            fs::read_to_string(layer.join(format!(
-                "usr/lib/extension-release.d/extension-release.{}",
-                extension_name(&layer)
-            )))
-            .unwrap()
-            .contains(&"e".repeat(64))
-        );
-        assert_eq!(
-            *fake.restarted.borrow(),
-            ["fs.service", "ana:tilo-fs-recipient.service"],
-            "the greeter is never restarted under a login"
-        );
-        assert!(
-            fake.desktops.borrow().is_empty(),
-            "the desktop is left alone"
-        );
-        assert!(*fake.merges.borrow() >= 1, "the layer was merged");
-        assert!(merged_marker(&layout).exists());
-        let state = read_state(&layout).unwrap();
-        assert_eq!(state.applied, Some(Phase::System));
-        assert!(state.desktop_pending);
-        assert!(
-            state.reboot_required,
-            "the kernel needs a restart of the machine"
-        );
-        assert_eq!(state.deferred, ["greetd.service"]);
-
-        fake.restarted.borrow_mut().clear();
-        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-        assert!(fake.restarted.borrow().is_empty());
-
-        assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
-        let layer = fs::read_link(link(&layout).unwrap()).unwrap();
-        assert_eq!(
-            fs::read_to_string(layer.join("usr/bin/shell")).unwrap(),
-            "shell 2"
-        );
-        assert_eq!(*fake.desktops.borrow(), ["ana"]);
-        assert!(
-            fake.restarted.borrow().is_empty(),
-            "the system services already run the update"
-        );
-        let state = read_state(&layout).unwrap();
-        assert_eq!(state.applied, Some(Phase::Session));
-        assert!(!state.desktop_pending);
-        assert_eq!(
-            fs::read_dir(layers(&layout)).unwrap().count(),
-            1,
-            "only the linked layer is kept"
-        );
-    }
-
-    phase a_newer_image_over_an_applied_one_restarts_only_what_changed_since;
-    {
-        let (dir, layout, fake) = machine();
-        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-        assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
-
-        let newer = dir.path().join("newer");
-        tree(
-            &newer,
-            &[
-                ("usr/bin/fs", "fs 2"),
-                ("usr/bin/shell", "shell 2"),
-                ("usr/libexec/tilo/tilo-greeter", "greeter 3"),
-                ("usr/lib/old-lib.so", "old"),
-                ("usr/lib/modules/6.18/vmlinuz", "kernel"),
-                ("usr/share/tilo/components.toml", MANIFEST),
-            ],
-        );
-        let verity = "f".repeat(128);
-        fake.roots.borrow_mut().insert(verity.clone(), newer);
-        let status = fake
-            .status
-            .borrow()
-            .replace(&"d".repeat(128), &verity)
-            .replace(&"e".repeat(64), &"f".repeat(64));
-        *fake.status.borrow_mut() = status;
-        fake.restarted.borrow_mut().clear();
-        fake.desktops.borrow_mut().clear();
-
-        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-        assert!(
-            fake.restarted.borrow().is_empty(),
-            "fs and its recipient already run this build"
-        );
-        let layer = fs::read_link(link(&layout).unwrap()).unwrap();
-        assert_eq!(
-            fs::read_to_string(layer.join("usr/bin/shell")).unwrap(),
-            "shell 2",
-            "the system phase keeps the compositor the desktop already runs"
-        );
-        assert_eq!(
-            fs::read_to_string(layer.join("usr/libexec/tilo/tilo-greeter")).unwrap(),
-            "greeter 3"
-        );
-        assert!(
-            !layer.join("usr/lib/old-lib.so").exists(),
-            "the library is back as booted"
-        );
-        let state = read_state(&layout).unwrap();
-        assert_eq!(state.deferred, ["greetd.service"]);
-        assert!(
-            !state.desktop_pending,
-            "nothing the desktop runs changed since it restarted"
-        );
-        assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
-        assert!(
-            fake.desktops.borrow().is_empty(),
-            "the desktop is not restarted again"
-        );
-    }
-
-    phase a_unit_that_had_failed_before_the_update_does_not_roll_it_back;
-    {
-        let (_dir, layout, fake) = machine();
-        fake.failed_already.borrow_mut().push("fs.service".into());
-        assert_eq!(
-            apply(&fake, &fake, &layout, Phase::System).unwrap(),
-            0,
-            "an old failure is not the update's"
-        );
-        assert!(link(&layout).is_some(), "the update stays applied");
-    }
-
-    phase a_unit_that_fails_after_the_update_rolls_it_back;
-    {
-        let (_dir, layout, fake) = machine();
-        fake.failing.borrow_mut().push("fs.service".into());
-        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 1);
-        assert!(link(&layout).is_none(), "nothing was linked before");
-        assert!(
-            !merged_marker(&layout).exists(),
-            "the layer was merged away"
-        );
-        assert_eq!(
-            *fake.restarted.borrow(),
-            [
-                "fs.service",
-                "ana:tilo-fs-recipient.service",
-                "fs.service",
-                "ana:tilo-fs-recipient.service"
-            ],
-            "the same units restart again on the old build"
-        );
-        let state = read_state(&layout).unwrap();
-        assert!(state.failed);
-        assert!(
-            state.reboot_required,
-            "it applies with the next restart of the machine"
-        );
-        assert!(state.detail.contains("fs.service"));
-        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-    }
-
-    phase nothing_staged_takes_a_stale_layer_off;
-    {
-        let (_dir, layout, fake) = machine();
-        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-        assert!(linked(&layout));
-        let booted = fake
-            .status
-            .borrow()
-            .replace(r#""staged":"#, r#""ignored":"#);
-        *fake.status.borrow_mut() = booted;
-        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-        assert!(link(&layout).is_none());
-        assert!(!merged_marker(&layout).exists());
-        let state = read_state(&layout).unwrap();
-        assert_eq!(state.image, "");
-        assert!(!state.reboot_required && !state.desktop_pending);
-    }
-
-    phase an_image_that_cannot_be_opened_waits_for_a_restart_of_the_machine;
-    {
-        let (_dir, layout, fake) = machine();
-        fake.roots.borrow_mut().remove(&"d".repeat(128));
-        assert!(apply(&fake, &fake, &layout, Phase::System).is_err());
-        assert!(link(&layout).is_none(), "nothing was linked");
-        let state = read_state(&layout).unwrap();
-        assert_eq!(state.image, format!("sha256:{}", "e".repeat(64)));
-        assert!(state.failed);
-        assert!(
-            state.reboot_required,
-            "the desktop asks for the restart that applies it"
-        );
-        assert!(state.detail.contains("mount failed"));
-        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-    }
-}
-
-/// Apply image A's system phase; the fixture's newer image then gets staged over it.
-fn applied_system() -> (tempfile::TempDir, Layout, Fake, PathBuf) {
+/// A daily update applied live: first what needs no desktop restart, then the
+/// desktop; a newer image over it restarts only what changed since, never
+/// touching the layer a running sandbox still reads; a failed restart puts the
+/// previous layer back; and once nothing is staged the layer comes off.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one update journey asserts every step in order"
+)]
+fn a_staged_image_applies_live_is_replaced_by_the_next_and_comes_off_when_unstaged() {
     let (dir, layout, fake) = machine();
+
     assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
     let layer = fs::read_link(link(&layout).unwrap()).unwrap();
-    (dir, layout, fake, layer)
-}
+    assert!(layer.starts_with(layers(&layout)));
+    assert_eq!(
+        fs::read_to_string(layer.join("usr/bin/fs")).unwrap(),
+        "fs 2"
+    );
+    assert!(
+        !layer.join("usr/bin/shell").exists(),
+        "the compositor waits for the desktop restart"
+    );
+    assert!(
+        !layer.join("usr/lib/modules").exists(),
+        "the kernel waits for a restart of the machine"
+    );
+    assert_eq!(
+        fs::read_to_string(layer.join("usr/lib/old-lib.so")).unwrap(),
+        "whiteout",
+        "a file the image dropped is hidden"
+    );
+    assert!(
+        fs::read_to_string(layer.join(format!(
+            "usr/lib/extension-release.d/extension-release.{}",
+            extension_name(&layer)
+        )))
+        .unwrap()
+        .contains(&"d".repeat(64))
+    );
+    assert_eq!(
+        *fake.restarted.borrow(),
+        ["fs.service", "ana:tilo-fs-recipient.service"],
+        "the greeter is never restarted under a login"
+    );
+    assert!(
+        fake.desktops.borrow().is_empty(),
+        "the desktop is left alone"
+    );
+    assert!(*fake.merges.borrow() >= 1, "the layer was merged");
+    assert!(merged_marker(&layout).exists());
+    let state = read_state(&layout).unwrap();
+    assert_eq!(state.applied, Some(Phase::System));
+    assert!(state.desktop_pending);
+    assert!(
+        state.reboot_required,
+        "the kernel needs a restart of the machine"
+    );
+    assert_eq!(state.deferred, ["greetd.service"]);
 
-/// Stage another image (digest f, files `files`) as the device's update service would.
-fn stage(dir: &Path, fake: &Fake, files: &[(&str, &str)]) {
-    let root = dir.join("staged-next");
-    tree(&root, files);
-    let verity = "f".repeat(128);
-    fake.roots.borrow_mut().insert(verity.clone(), root);
-    let status = fake
+    fake.restarted.borrow_mut().clear();
+    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+    assert!(fake.restarted.borrow().is_empty());
+
+    assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
+    let first = fs::read_link(link(&layout).unwrap()).unwrap();
+    assert_eq!(
+        fs::read_to_string(first.join("usr/bin/shell")).unwrap(),
+        "shell 2"
+    );
+    assert_eq!(*fake.desktops.borrow(), ["ana"]);
+    assert!(
+        fake.restarted.borrow().is_empty(),
+        "the system services already run the update"
+    );
+    let state = read_state(&layout).unwrap();
+    assert_eq!(state.applied, Some(Phase::Session));
+    assert!(!state.desktop_pending);
+    assert_eq!(
+        fs::read_dir(layers(&layout)).unwrap().count(),
+        1,
+        "only the linked layer is kept"
+    );
+
+    // A sandbox started before the next update keeps the merged /usr it
+    // started with, and that mount reads this layer.
+    fake.mount(&first);
+    stage(
+        dir.path(),
+        &fake,
+        "newer",
+        'f',
+        &[
+            ("usr/bin/fs", "fs 2"),
+            ("usr/bin/shell", "shell 2"),
+            ("usr/libexec/tilo/tilo-greeter", "greeter 3"),
+            ("usr/lib/old-lib.so", "old"),
+            ("usr/lib/modules/6.18/vmlinuz", "kernel"),
+            ("usr/share/tilo/components.toml", MANIFEST),
+        ],
+    );
+    fake.desktops.borrow_mut().clear();
+    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+    assert!(
+        fake.restarted.borrow().is_empty(),
+        "fs and its recipient already run this build"
+    );
+    let second = fs::read_link(link(&layout).unwrap()).unwrap();
+    assert_ne!(second, first, "an apply builds a layer of its own");
+    assert_eq!(
+        fs::read_to_string(second.join("usr/bin/shell")).unwrap(),
+        "shell 2",
+        "the system phase keeps the compositor the desktop already runs"
+    );
+    assert_eq!(
+        fs::read_to_string(second.join("usr/libexec/tilo/tilo-greeter")).unwrap(),
+        "greeter 3"
+    );
+    assert!(
+        !second.join("usr/lib/old-lib.so").exists(),
+        "the library is back as booted"
+    );
+    let state = read_state(&layout).unwrap();
+    assert_eq!(state.deferred, ["greetd.service"]);
+    assert!(
+        !state.desktop_pending,
+        "nothing the desktop runs changed since it restarted"
+    );
+    assert!(
+        first.is_dir(),
+        "a layer a sandbox still mounts is never removed"
+    );
+    assert_eq!(
+        fs::read_to_string(first.join("usr/bin/fs")).unwrap(),
+        "fs 2",
+        "nor rewritten under the running sandbox"
+    );
+    assert_eq!(
+        fs::read_dir(layers(&layout)).unwrap().count(),
+        2,
+        "the linked layer and the one still mounted"
+    );
+    assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
+    assert!(
+        fake.desktops.borrow().is_empty(),
+        "the desktop is not restarted again"
+    );
+
+    // The reaping sweep removes only what nothing links or mounts.
+    assert_eq!(prune(&fake, &layout), 0);
+    assert!(first.is_dir(), "a mounted layer is kept");
+    assert!(second.is_dir(), "the linked layer is kept");
+    fake.release(&first);
+    assert_eq!(prune(&fake, &layout), 0);
+    assert!(!first.exists(), "nothing links or mounts it any more");
+    assert!(second.is_dir(), "the linked layer stays");
+
+    // The next update's unit fails after its restart: the previous layer is
+    // linked again, and is still there to be.
+    fake.failing.borrow_mut().push("fs.service".into());
+    stage(
+        dir.path(),
+        &fake,
+        "next",
+        'c',
+        &[
+            ("usr/bin/fs", "fs 3"),
+            ("usr/bin/shell", "shell 2"),
+            ("usr/libexec/tilo/tilo-greeter", "greeter 3"),
+            ("usr/lib/old-lib.so", "old"),
+            ("usr/lib/modules/6.18/vmlinuz", "kernel"),
+            ("usr/share/tilo/components.toml", MANIFEST),
+            ("usr/lib/newer", "newer"),
+        ],
+    );
+    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 1);
+    assert_eq!(
+        fs::read_link(link(&layout).unwrap()).unwrap(),
+        second,
+        "rollback relinks the previous layer"
+    );
+    assert!(second.is_dir(), "and it is still there to relink");
+
+    // Nothing staged any more: the stale layer comes off.
+    let booted = fake
         .status
         .borrow()
-        .replace(&"d".repeat(128), &verity)
-        .replace(&"e".repeat(64), &"f".repeat(64));
-    *fake.status.borrow_mut() = status;
+        .replace(r#""staged":"#, r#""ignored":"#);
+    *fake.status.borrow_mut() = booted;
+    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+    assert!(link(&layout).is_none());
+    assert!(!linked(&layout));
+    assert!(!merged_marker(&layout).exists());
+    let state = read_state(&layout).unwrap();
+    assert_eq!(state.image, "");
+    assert!(!state.reboot_required && !state.desktop_pending);
 }
 
-fn next_image() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("usr/bin/fs", "fs 3"),
-        ("usr/bin/shell", "shell 2"),
-        ("usr/libexec/tilo/tilo-greeter", "greeter 3"),
-        ("usr/lib/old-lib.so", "old"),
-        ("usr/lib/modules/6.18/vmlinuz", "kernel"),
-        ("usr/share/tilo/components.toml", MANIFEST),
-        ("usr/lib/newer", "newer"),
-    ]
+/// An update whose units fail, or whose image cannot be opened, leaves the
+/// booted system as it was and waits for a restart of the machine; a unit that
+/// had failed before the update is not the update's failure.
+#[test]
+fn an_update_that_cannot_be_applied_waits_for_a_restart_of_the_machine() {
+    let (_dir, layout, fake) = machine();
+    fake.failed_already.borrow_mut().push("fs.service".into());
+    assert_eq!(
+        apply(&fake, &fake, &layout, Phase::System).unwrap(),
+        0,
+        "an old failure is not the update's"
+    );
+    assert!(link(&layout).is_some(), "the update stays applied");
+
+    let (_dir, layout, fake) = machine();
+    fake.failing.borrow_mut().push("fs.service".into());
+    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 1);
+    assert!(link(&layout).is_none(), "nothing was linked before");
+    assert!(
+        !merged_marker(&layout).exists(),
+        "the layer was merged away"
+    );
+    assert_eq!(
+        *fake.restarted.borrow(),
+        [
+            "fs.service",
+            "ana:tilo-fs-recipient.service",
+            "fs.service",
+            "ana:tilo-fs-recipient.service"
+        ],
+        "the same units restart again on the old build"
+    );
+    let state = read_state(&layout).unwrap();
+    assert!(state.failed);
+    assert!(
+        state.reboot_required,
+        "it applies with the next restart of the machine"
+    );
+    assert!(state.detail.contains("fs.service"));
+    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+
+    let (_dir, layout, fake) = machine();
+    fake.roots.borrow_mut().remove(&"d".repeat(128));
+    assert!(apply(&fake, &fake, &layout, Phase::System).is_err());
+    assert!(link(&layout).is_none(), "nothing was linked");
+    let state = read_state(&layout).unwrap();
+    assert_eq!(state.image, format!("sha256:{}", "d".repeat(64)));
+    assert!(state.failed);
+    assert!(
+        state.reboot_required,
+        "the desktop asks for the restart that applies it"
+    );
+    assert!(state.detail.contains("mount failed"));
+    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
 }
 
-tilo_test_env::scenario! {
-    fn a_layer_a_running_sandbox_still_mounts_is_kept_until_it_lets_go;
-
-    phase a_mounted_layer_survives_the_next_apply_unchanged;
-    {
-        let (dir, layout, fake, first) = applied_system();
-        // A sandbox started before the update keeps the merged /usr it started with, and that
-        // mount reads this layer.
-        fake.mount(&first);
-        stage(dir.path(), &fake, &next_image());
-        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-        let second = fs::read_link(link(&layout).unwrap()).unwrap();
-        assert_ne!(second, first, "an apply builds a layer of its own");
-        assert!(
-            first.is_dir(),
-            "a layer a sandbox still mounts is never removed"
-        );
-        assert_eq!(
-            fs::read_to_string(first.join("usr/bin/fs")).unwrap(),
-            "fs 2",
-            "nor rewritten under the running sandbox"
-        );
-        assert_eq!(
-            fs::read_dir(layers(&layout)).unwrap().count(),
-            2,
-            "the linked layer and the one still mounted"
-        );
-    }
-
-    phase a_released_layer_is_removed_by_the_next_apply;
-    {
-        let (dir, layout, fake, first) = applied_system();
-        fake.mount(&first);
-        stage(dir.path(), &fake, &next_image());
-        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-        assert!(first.is_dir());
-        fake.release(&first);
-        assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
-        assert!(!first.exists(), "nothing mounts it any more");
-    }
-
-    phase rebuilding_a_layer_name_never_touches_the_one_there;
-    {
-        let (dir, _machine, fake) = machine();
-        let layout = Layout::new(dir.path().join("build"));
-        let linked = dir.path().join("staged");
-        let plan = Plan::new(vec![written("/usr/bin/fs")], &components());
-        let requested = layers(&layout).join("same");
-        let first = build_layer(
-            &fake,
-            &fake,
-            &plan,
-            Phase::System,
-            &linked,
-            &requested,
-            "sha256:aaa",
+#[test]
+fn rebuilding_a_layer_name_never_touches_the_one_there() {
+    let (dir, _machine, fake) = machine();
+    let layout = Layout::new(dir.path().join("build"));
+    let linked = dir.path().join("staged");
+    let plan = Plan::new(vec![written("/usr/bin/fs")], &components());
+    let requested = layers(&layout).join("same");
+    let first = build_layer(
+        &fake,
+        &fake,
+        &plan,
+        Phase::System,
+        &linked,
+        &requested,
+        "sha256:aaa",
+    )
+    .unwrap();
+    assert_eq!(first, requested);
+    let bytes = fs::read_to_string(first.join("usr/bin/fs")).unwrap();
+    let second = build_layer(
+        &fake,
+        &fake,
+        &plan,
+        Phase::System,
+        &linked,
+        &requested,
+        "sha256:aaa",
+    )
+    .unwrap();
+    assert_ne!(second, first, "a second build takes a fresh name");
+    assert_eq!(
+        fs::read_to_string(first.join("usr/bin/fs")).unwrap(),
+        bytes,
+        "the first layer is untouched"
+    );
+    assert_eq!(
+        fs::read_to_string(
+            first.join("usr/lib/extension-release.d/extension-release.tilo-live-update-same")
         )
-        .unwrap();
-        assert_eq!(first, requested);
-        let bytes = fs::read_to_string(first.join("usr/bin/fs")).unwrap();
-        let second = build_layer(
-            &fake,
-            &fake,
-            &plan,
-            Phase::System,
-            &linked,
-            &requested,
-            "sha256:aaa",
-        )
-        .unwrap();
-        assert_ne!(second, first, "a second build takes a fresh name");
-        assert_eq!(
-            fs::read_to_string(first.join("usr/bin/fs")).unwrap(),
-            bytes,
-            "the first layer is untouched"
-        );
-        assert_eq!(
-            fs::read_to_string(
-                first.join("usr/lib/extension-release.d/extension-release.tilo-live-update-same")
-            )
-            .unwrap()
-            .lines()
-            .next(),
-            Some("ID=_any"),
-            "the release file is named after the layer's link"
-        );
-    }
-
-    phase the_reaping_sweep_removes_only_what_nothing_links_or_mounts;
-    {
-        let (dir, layout, fake, linked) = applied_system();
-        let plan = Plan::new(vec![written("/usr/bin/fs")], &components());
-        let stray = build_layer(
-            &fake,
-            &fake,
-            &plan,
-            Phase::System,
-            &dir.path().join("staged"),
-            &layers(&layout).join("stray"),
-            "sha256:bbb",
-        )
-        .unwrap();
-        fake.mount(&stray);
-        assert_eq!(prune(&fake, &layout), 0);
-        assert!(stray.is_dir(), "a mounted layer is kept");
-        assert!(linked.is_dir(), "the linked layer is kept");
-        fake.release(&stray);
-        assert_eq!(prune(&fake, &layout), 0);
-        assert!(!stray.exists(), "nothing links or mounts it any more");
-        assert!(linked.is_dir(), "the linked layer stays");
-    }
-
-    phase a_failed_apply_puts_the_previous_layer_back;
-    {
-        let (dir, layout, fake, first) = applied_system();
-        // The first update's restarts are over; the unit fails at its next one.
-        fake.restarted.borrow_mut().clear();
-        fake.failing.borrow_mut().push("fs.service".into());
-        stage(dir.path(), &fake, &next_image());
-        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 1);
-        assert_eq!(
-            fs::read_link(link(&layout).unwrap()).unwrap(),
-            first,
-            "rollback relinks the previous layer"
-        );
-        assert!(first.is_dir(), "and it is still there to relink");
-    }
+        .unwrap()
+        .lines()
+        .next(),
+        Some("ID=_any"),
+        "the release file is named after the layer's link"
+    );
 }
 
 #[test]

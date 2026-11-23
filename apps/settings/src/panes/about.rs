@@ -919,7 +919,8 @@ mod tests {
         app.settle();
         let back = shown(&mut app);
         assert!(
-            back.contains(&t("settings-about-problem-froze")),
+            back.iter()
+                .any(|line| line.contains(&t("settings-about-problem-froze"))),
             "{back:#?}"
         );
     }

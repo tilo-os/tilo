@@ -11,7 +11,7 @@ use std::rc::Rc;
 use crate::app_names::claimant;
 
 use serde_json::Value;
-use tilo_action_policy::Lifetime;
+use tilo_action_policy::{ActionKind, Lifetime};
 use tilo_actions::ResourceSpec;
 use tilo_bluetooth_agent::{Method as PairingMethod, PairingDetails};
 use tilo_network_secret_agent::questions::{
@@ -304,11 +304,20 @@ impl Asker {
         if self.shown.borrow().is_some() {
             return;
         }
+        // A sheet another ask stands on is not a question's to take: a portal question waits
+        // until that ask is answered (a file chooser has a sheet of its own).
+        let portal_busy = self
+            .portal
+            .as_ref()
+            .is_some_and(|portal| portal.dialog().is_some());
         let later = self.later.borrow().clone();
         let showing = questions
             .pending()
             .into_iter()
             .filter(|question| !shown_inline(question) && !later.contains(&question.handle))
+            .filter(|question| {
+                !portal_busy || question.kind == tilo_portal::file_chooser::FILE_CHOOSER_QUESTION
+            })
             .find_map(|question| {
                 let kind = question.kind.clone();
                 self.show(question).then_some(kind)
@@ -1068,6 +1077,15 @@ fn agent_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     Some((asked.dialog(handle), plan))
 }
 
+/// The title a question about an app's action carries: the reading or the change it would do.
+fn app_question_title(kind: ActionKind, app: &str, target: &str) -> String {
+    let title = match kind {
+        ActionKind::Read => "app-question-title-read",
+        ActionKind::Undoable | ActionKind::Outside => "app-question-title-change",
+    };
+    words(title, &[("app", app), ("target", target)])
+}
+
 /// What an agent's run asks before a step its grants leave to the person, or an app before it takes
 /// another app's action: the step, what it would do, and whether to allow it once, allow the agent
 /// or the app every such step, or deny it ([`crate::step_questions`]).
@@ -1078,12 +1096,10 @@ fn step_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     // label that asks for more ("File a note…") is the step itself here, its arguments below it.
     let (title, detail, always) = match &asked.target {
         Some(target) => (
-            words(
-                "app-question-title",
-                &[
-                    ("app", &crate::app_names::app_name(&asked.agent)),
-                    ("target", &crate::app_names::app_name(target)),
-                ],
+            app_question_title(
+                asked.kind,
+                &crate::app_names::app_name(&asked.agent),
+                &crate::app_names::app_name(target),
             ),
             asked.action.trim_end_matches('…').to_owned(),
             word("portal-allow-always"),
@@ -1839,7 +1855,7 @@ mod tests {
         // run with, and answers on three buttons: deny, always and once; a step confirmed each time
         // offers no "always".
         {
-            let asked = |may_allow_agent| {
+            let asked = |kind, may_allow_agent| {
                 sheet(
                     crate::step_questions::KIND,
                     serde_json::to_value(crate::step_questions::StepQuestion {
@@ -1847,6 +1863,7 @@ mod tests {
                         target: Some("so.tilo.notes".into()),
                         action: "Delete finished tasks…".into(),
                         resource: "Tasks".into(),
+                        kind,
                         fields: vec![("Title".to_owned(), "Morning: 1 done".to_owned())],
                         risk: "low".into(),
                         may_allow_agent,
@@ -1854,13 +1871,12 @@ mod tests {
                     .unwrap(),
                 )
             };
-            let shown = asked(true);
             let files = crate::app_names::app_name("so.tilo.files");
             let notes = crate::app_names::app_name("so.tilo.notes");
-            assert_eq!(
-                shown.dialog.title,
-                words("app-question-title", &[("app", &files), ("target", &notes)])
-            );
+            let read = asked(ActionKind::Read, true).dialog.title;
+            assert_eq!(read, format!("{files} wants to read {notes}"));
+            let shown = asked(ActionKind::Undoable, true);
+            assert_eq!(shown.dialog.title, format!("{files} wants to change {notes}"));
             assert!(shown.dialog.heading.is_empty(), "the title names the app");
             assert_eq!(shown.dialog.detail, "Delete finished tasks");
             assert_eq!(
@@ -1878,7 +1894,8 @@ mod tests {
                 Some(word("portal-allow-always"))
             );
             assert!(matches!(&shown.plan, Plan::Choose(choices) if choices.len() == 2));
-            assert_eq!(asked(false).dialog.alternate_label, None);
+            let no_always = asked(ActionKind::Undoable, false);
+            assert_eq!(no_always.dialog.alternate_label, None);
         }
 
         phase an_installed_app_asks_for_the_sites_it_declares;

@@ -279,7 +279,7 @@ fn serve_kept<A: ResourceApp>(
 /// shows that another workspace holds: this host holds the person's own workspace, founded with them
 /// as its owner, which holds their profile records; any other is not held here.
 #[cfg(feature = "test-support")]
-fn decide_held_as_broker(harness: &mut FrameHarness, author: &str) {
+fn decide_each_record_where_it_is_kept(harness: &mut FrameHarness, author: &str) {
     let actor = tilo_broker_core::BrokerActor::person(author);
     let own = tilo_actions::policy::roles::workspace_of_person(author).and_then(|id| {
         let mut workspace =
@@ -287,17 +287,17 @@ fn decide_held_as_broker(harness: &mut FrameHarness, author: &str) {
         workspace.policy = tilo_actions::policy::WorkspacePolicy::new(id.clone(), author);
         Some((id, workspace))
     });
-    harness.decide_held_elsewhere(Box::new(move |records| {
+    harness.decide_shown_actions(Box::new(move |actions| {
         let now = ui_core::time::unix_now();
-        records
+        actions
             .iter()
-            .map(|record| ui_core::held_elsewhere::HeldDecision {
-                record: record.clone(),
-                verdict: actor.held_verdict(
+            .map(|action| ui_core::shown_actions::ActionDecision {
+                action: action.clone(),
+                verdict: actor.shown_verdict(
                     own.as_ref()
-                        .filter(|(id, _)| *id == record.workspace)
+                        .filter(|(id, _)| action.workspace.as_ref() == Some(id))
                         .map(|(_, workspace)| workspace),
-                    record,
+                    action,
                     now,
                 ),
             })
@@ -945,7 +945,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let mut harness = opened.harness;
         serve_kept::<A>(&mut harness, &opened.profile.settings(), author);
         #[cfg(feature = "test-support")]
-        decide_held_as_broker(&mut harness, author);
+        decide_each_record_where_it_is_kept(&mut harness, author);
         Ok(Self {
             harness,
             owner: opened.owner,

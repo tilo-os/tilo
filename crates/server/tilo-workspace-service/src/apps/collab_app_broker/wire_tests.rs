@@ -98,7 +98,6 @@ impl Workspace {
         let (connection, outgoing) = WireConnection::new(None);
         let hold = self.state.next_peer_id();
         let channel = connection.open(ChannelSession::new(Rc::new(JoinedChannel {
-            as_app: None,
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
             state: self.state.clone(),
             directories: self.directories.clone(),
@@ -933,10 +932,12 @@ async fn the_wire_client_calls_and_subscribes_against_the_host() {
         .await;
 }
 
-/// One action of a record `workspace` holds, which a window of another workspace shows.
-fn held_record(workspace: u128) -> runtime_collab::held_elsewhere::HeldRecord {
-    runtime_collab::held_elsewhere::HeldRecord::new(
-        &crate::apps::test_support::WorkspaceId::from_u128(workspace).to_string(),
+/// One action of a record a window shows, which `workspace` holds when it is not the window's.
+fn shown(workspace: Option<u128>) -> runtime_collab::shown_actions::ShownAction {
+    runtime_collab::shown_actions::ShownAction::new(
+        workspace
+            .map(|id| crate::apps::test_support::WorkspaceId::from_u128(id).to_string())
+            .as_deref(),
         "so.tilo.notes",
         ("test.playback", "person:test.playback", "mute"),
         &tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
@@ -944,8 +945,8 @@ fn held_record(workspace: u128) -> runtime_collab::held_elsewhere::HeldRecord {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_record_held_elsewhere_is_decided_by_its_workspace_and_again_when_its_grants_change() {
-    use runtime_collab::held_elsewhere::{HeldDecision, HeldVerdict};
+async fn a_shown_action_is_decided_by_the_workspace_holding_it_and_again_when_its_grants_change() {
+    use runtime_collab::shown_actions::{ActionDecision, ActionVerdict};
     tokio::task::LocalSet::new()
         .run_until(async {
             let workspace = Workspace::new(&[21]);
@@ -957,11 +958,11 @@ async fn a_record_held_elsewhere_is_decided_by_its_workspace_and_again_when_its_
             workspace.membership.write().workspaces.push(held);
             let mut endpoint = workspace.endpoint(21);
             let channel = endpoint.channel;
-            let records = vec![held_record(10), held_record(11)];
+            let actions = vec![shown(Some(10)), shown(Some(11)), shown(None)];
             let subscription = endpoint
                 .send(Operation::Subscribe {
                     channel,
-                    topic: Topic::HeldElsewhere(records.clone()),
+                    topic: Topic::ShownActions(actions.clone()),
                 })
                 .await;
             assert_eq!(
@@ -971,26 +972,28 @@ async fn a_record_held_elsewhere_is_decided_by_its_workspace_and_again_when_its_
                     result: Ok(Reply::Subscribed),
                 }
             );
-            let decided = |verdicts: [HeldVerdict; 2]| HostFrame::Event {
+            let decided = |verdicts: [ActionVerdict; 3]| HostFrame::Event {
                 subscription,
-                event: Event::HeldElsewhere(
-                    records
+                event: Event::ShownActions(
+                    actions
                         .iter()
                         .cloned()
                         .zip(verdicts)
-                        .map(|(record, verdict)| HeldDecision { record, verdict })
+                        .map(|(action, verdict)| ActionDecision { action, verdict })
                         .collect(),
                 ),
             };
-            let not_held = HeldVerdict::Refused(super::held_elsewhere::NOT_HELD.into());
+            let not_held = ActionVerdict::Refused(super::shown_actions::NOT_HERE.into());
             assert_eq!(
                 endpoint.frame().await,
                 decided([
-                    HeldVerdict::Refused(tilo_broker_core::held::REFUSED.into()),
+                    ActionVerdict::Refused(tilo_broker_core::shown::REFUSED.into()),
                     not_held.clone(),
+                    ActionVerdict::Allowed,
                 ]),
-                "a reader of the holding workspace may not change the record, and a workspace \
-                 this host does not hold is refused in words the person reads"
+                "a reader of the holding workspace may not change the record, a workspace this \
+                 host does not hold is refused in words the person reads, and the window's own \
+                 workspace decides its own records"
             );
 
             workspace
@@ -1004,7 +1007,7 @@ async fn a_record_held_elsewhere_is_decided_by_its_workspace_and_again_when_its_
             workspace.state.refresh_policy_surfaces();
             assert_eq!(
                 endpoint.frame().await,
-                decided([HeldVerdict::Allowed, not_held]),
+                decided([ActionVerdict::Allowed, not_held, ActionVerdict::Allowed]),
                 "the holding workspace's change reaches the window while it shows the record"
             );
         })

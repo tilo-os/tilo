@@ -12,15 +12,18 @@
 //! as the workspace's governance decides them for the asking device's
 //! certificate. A run on a workspace's Linux machine is taken the same way
 //! ([`Turn::Linux`]) and runs on the [`HostLinux`] its embedder installed, what
-//! it prints passed on to the device that asked as it prints it. Every other app action reaches this device through the session
-//! its members run, where the caller's certificate and the workspace's policy
+//! it prints passed on to the device that asked as it prints it. A provider the
+//! device's embedder registered ([`Workspaces::provide`](super::Workspaces::provide))
+//! answers the requests that name it, once the workspace's grants admit the
+//! asking device to the action. Every other app action reaches this device
+//! through the session its members run, where the caller's certificate and the
+//! workspace's policy
 //! decide them ([`AppActionServer`](crate::app_serving::AppActionServer)).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ed25519_dalek::SigningKey;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationLog,
     InvocationReceipt, InvocationState, InvokeRequest, Pending, Reservation,
@@ -65,8 +68,20 @@ pub(crate) struct DeviceWork {
     log: std::sync::Mutex<InvocationLog<InvocationState>>,
     /// The workspaces' governance, once they open: what a member device asks of it here.
     governance: std::sync::OnceLock<std::sync::Weak<super::actions::Shared>>,
+    /// The providers the embedder registered, by the provider id a request names.
+    provided: std::sync::RwLock<BTreeMap<&'static str, Provided>>,
+    /// Which registered provider took each invocation, so its observations and its
+    /// cancellation reach that provider.
+    taken: std::sync::Mutex<HashMap<InvocationId, &'static str>>,
     runtime: tokio::runtime::Handle,
 }
+
+/// A provider registered on the device action service.
+type Provided = Arc<dyn ActionProvider + Send + Sync>;
+
+/// How many invocations a registered provider took are remembered for routing their
+/// observations; the oldest are let go beyond it, and their provider is asked no more.
+const TAKEN_KEPT: usize = 4096;
 
 impl DeviceWork {
     /// Answer the workspaces' governance actions through `governance` from now on.
@@ -174,8 +189,106 @@ impl DeviceWork {
             turns: std::sync::OnceLock::new(),
             log: std::sync::Mutex::default(),
             governance: std::sync::OnceLock::new(),
+            provided: std::sync::RwLock::default(),
+            taken: std::sync::Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
         })
+    }
+
+    /// Answer the requests that name `provider` with `answers` from now on.
+    pub(crate) fn provide(&self, provider: &'static str, answers: Provided) {
+        self.provided.write_recover().insert(provider, answers);
+    }
+
+    /// The registered provider `provider` names, when there is one.
+    fn provided(&self, provider: &str) -> Option<(&'static str, Provided)> {
+        self.provided
+            .read_recover()
+            .get_key_value(provider)
+            .map(|(name, answers)| (*name, Arc::clone(answers)))
+    }
+
+    /// The registered provider that took `id`, when one did.
+    fn taker(&self, id: &InvocationId) -> Option<Provided> {
+        let name = *self.taken.lock_recover().get(id)?;
+        self.provided(name).map(|(_, answers)| answers)
+    }
+
+    /// Hand `request` to the registered provider `answers` once the workspace the caller asks
+    /// in admits its device to the action: the ordinary grant check, decided here once so no
+    /// provider decides it again.
+    fn admitted(
+        self: &Arc<Self>,
+        caller: &Caller,
+        request: InvokeRequest,
+        (name, answers): (&'static str, Provided),
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let (Some(device), Some(workspace)) = (
+            caller.device_public_key().copied(),
+            caller.workspace().map(str::to_owned),
+        ) else {
+            return Pending::ready(Err(ActionCallError::NotPermitted));
+        };
+        let work = Arc::clone(self);
+        let caller = caller.clone();
+        let (completer, answer) = tilo_actions::remote::pending();
+        self.runtime.spawn(async move {
+            let address = &request.target.address;
+            if let Err(refused) = work
+                .permits(device, &workspace, name, &address.resource, &address.action)
+                .await
+            {
+                completer.complete(Err(refused));
+                return;
+            }
+            {
+                let mut taken = work.taken.lock_recover();
+                if taken.len() >= TAKEN_KEPT {
+                    taken.clear();
+                }
+                taken.insert(request.invocation, name);
+            }
+            let receipt = answers.invoke(&caller, request).await;
+            completer.complete(receipt.unwrap_or(Err(ActionCallError::Unanswered)));
+        });
+        answer
+    }
+
+    /// Whether `workspace`'s grants let `device` run `action` on `resource` of `provider` now;
+    /// the refusal its caller reads when they do not.
+    async fn permits(
+        &self,
+        device: [u8; 32],
+        workspace: &str,
+        provider: &str,
+        resource: &str,
+        action: &str,
+    ) -> Result<(), ActionCallError> {
+        let kept = self.workspaces.lock().await.get(workspace).cloned();
+        let Some(kept) = kept else {
+            return Err(ActionCallError::Refused {
+                reason: "this device does not keep that workspace".into(),
+            });
+        };
+        let permitted = kept.lock().await.peer().permits_app_action(
+            device,
+            provider,
+            resource,
+            action,
+            tilo_clock::wall(),
+        );
+        match permitted {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(ActionCallError::Refused {
+                reason: format!(
+                    "your grants in this workspace do not let this device run {resource}#{action} \
+                     of {provider}"
+                ),
+            }),
+            Err(error) => Err(ActionCallError::Refused {
+                reason: format!("this device is not admitted to the workspace: {error}"),
+            }),
+        }
     }
 
     /// Take `request`, a device's ask that this one take a turn of work
@@ -239,8 +352,10 @@ impl DeviceWork {
                     work.run_linux(claim, &caller, *run, completer).await;
                     return;
                 }
-                // The take action asks for no agent's turn: the agent engine takes those.
-                Turn::Agent { .. } => {
+                // The take action asks for no agent's turn, no automation's firing
+                // and no action that runs once: the agent engine, the trigger
+                // runner and the app's own process take those.
+                Turn::Agent { .. } | Turn::Firing { .. } | Turn::Once { .. } => {
                     work.log.lock_recover().abandon(&invocation);
                     completer.complete(Err(ActionCallError::UnknownAction));
                     return;
@@ -468,7 +583,7 @@ async fn run_claimed(
 /// Outside a runtime context, where there is nothing to answer on.
 pub(crate) fn action_service(
     workspaces: Arc<WorkspacesMap>,
-    device: SigningKey,
+    device: Arc<dyn collab_types::signer::DeviceSigner>,
 ) -> (ActionService, Arc<DeviceWork>) {
     let work = DeviceWork::new(Arc::clone(&workspaces));
     let action_service = ActionService::over(
@@ -521,15 +636,24 @@ fn not_served() -> ActionCallError {
 
 impl ActionProvider for Answers {
     fn serves(&self, provider: &str) -> bool {
-        provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER || provider == WORK_PROVIDER
+        provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+            || provider == WORK_PROVIDER
+            || self.0.provided(provider).is_some()
     }
 
     fn query(
         &self,
-        _caller: &Caller,
-        _query: CatalogueQuery,
+        caller: &Caller,
+        query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        Pending::ready(Err(not_served()))
+        match query
+            .provider
+            .as_deref()
+            .and_then(|name| self.0.provided(name))
+        {
+            Some((_, answers)) => answers.query(caller, query),
+            None => Pending::ready(Err(not_served())),
+        }
     }
 
     fn invoke(
@@ -543,10 +667,16 @@ impl ActionProvider for Answers {
         if request.target.provider == WORK_PROVIDER {
             return self.0.take(caller, &request);
         }
+        if let Some(provided) = self.0.provided(&request.target.provider) {
+            return self.0.admitted(caller, request, provided);
+        }
         Pending::ready(Err(ActionCallError::UnknownAction))
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        if let Some(answers) = self.0.taker(id) {
+            return answers.observe(caller, id);
+        }
         let logged = self.0.log.lock_recover().get(caller, id).cloned();
         if logged.is_some() {
             return logged;
@@ -559,6 +689,9 @@ impl ActionProvider for Answers {
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        if let Some(answers) = self.0.taker(id) {
+            return answers.next_change(caller, id);
+        }
         self.0.log.lock_recover().get(caller, id)?;
         let mut moved = self.0.moved.subscribe();
         let (changed, change) = tilo_actions::remote::pending();
@@ -571,6 +704,9 @@ impl ActionProvider for Answers {
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        if let Some(answers) = self.0.taker(id) {
+            return answers.cancel(caller, id);
+        }
         if self.0.linux_running.lock_recover().contains(id) {
             return match self.0.linux() {
                 Some(linux) => linux.runs().cancel(caller, id),
@@ -610,14 +746,19 @@ impl super::Workspaces {
     /// Whether `device` may run `job`'s action in `workspace` now, as the
     /// workspace's per-action permission says, whatever kind of member it is.
     pub(crate) async fn permits_job(&self, device: [u8; 32], workspace: &str, job: &Job) -> bool {
+        self.permits_action(device, workspace, (&job.app, &job.resource, &job.action))
+            .await
+    }
+
+    /// Whether `device` may run `action` (app, resource, action) in `workspace` now.
+    pub(crate) async fn permits_action(
+        &self,
+        device: [u8; 32],
+        workspace: &str,
+        (app, resource, action): (&str, &str, &str),
+    ) -> bool {
         self.reads_peer(workspace, |peer| {
-            peer.permits_app_action(
-                device,
-                &job.app,
-                &job.resource,
-                &job.action,
-                tilo_clock::wall(),
-            )
+            peer.permits_app_action(device, app, resource, action, tilo_clock::wall())
         })
         .await
     }
@@ -684,11 +825,67 @@ impl super::Workspaces {
         id: &str,
         ttl_ms: u64,
     ) -> Result<(), String> {
-        let command = tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Lease {
-            id: id.to_owned(),
-            ttl_ms,
-            rank: tilo_peer_state::unranked(),
-        };
+        self.write_own_row(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Lease {
+                id: id.to_owned(),
+                ttl_ms,
+                rank: tilo_peer_state::unranked(),
+            },
+        )
+        .await
+    }
+
+    /// Keep that this device answered the schedule at `trigger` of the
+    /// automation `automation`, marked `mark`, through `answered_ms`: the
+    /// progress whichever device fires it next carries on from.
+    #[cfg(feature = "apps")]
+    pub(crate) async fn answer_schedule(
+        &self,
+        workspace: &str,
+        automation: &str,
+        trigger: usize,
+        mark: &str,
+        answered_ms: i64,
+    ) -> Result<(), String> {
+        self.write_own_row(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::AnswerSchedule {
+                automation: automation.to_owned(),
+                trigger: u32::try_from(trigger).map_err(|error| error.to_string())?,
+                mark: mark.to_owned(),
+                answered_ms,
+            },
+        )
+        .await
+    }
+
+    /// Keep that this device did the work of the lease `id`, and what it
+    /// answered: no device of the workspace takes it again.
+    pub(crate) async fn write_done(
+        &self,
+        workspace: &str,
+        id: &str,
+        answer: serde_json::Value,
+    ) -> Result<(), String> {
+        self.write_own_row(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::KeepDone {
+                id: id.to_owned(),
+                answer,
+            },
+        )
+        .await
+    }
+
+    /// Write `command`, a row of this device's own in the workspace's state:
+    /// a member copy's write sent to the device serving it, or a change of
+    /// the workspace this device governs.
+    async fn write_own_row(
+        &self,
+        workspace: &str,
+        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+    ) -> Result<(), String> {
         if self.is_member(workspace).await? {
             let commit = self.member_membership_write(workspace, command).await?;
             self.commit_member_document(workspace, commit).await?;

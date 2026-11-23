@@ -144,14 +144,6 @@ fn resource_of(session: &str, id: &str) -> String {
     format!("{SHORTCUT_PREFIX}{session}\u{1f}{id}")
 }
 
-fn unix_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 impl Shortcuts {
     /// Shortcuts of the sessions in `sessions`, gone when theirs end.
     #[must_use]
@@ -370,7 +362,7 @@ impl Shortcuts {
             ) else {
                 return;
             };
-            let timestamp = unix_millis();
+            let timestamp = tilo_clock::unix_now_ms();
             let _ = if activated {
                 GlobalShortcuts::activated(&emitter, session, id, timestamp, HashMap::new()).await
             } else {

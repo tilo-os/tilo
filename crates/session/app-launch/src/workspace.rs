@@ -142,12 +142,17 @@ impl Workspace {
             NetMode::Host => vec!["*".to_owned()],
             _ => return None,
         };
-        let answered = self
-            .grants
+        (!image_shipped && !self.answers_reach(app)).then_some(declared)
+    }
+
+    /// Whether anyone in this workspace answered what `app` may reach: a network grant or
+    /// restriction here names it.
+    #[must_use]
+    pub fn answers_reach(&self, app: &str) -> bool {
+        self.grants
             .sandbox
             .iter()
-            .any(|cap| cap.names_app(app) && matches!(cap.scope, Scope::NetHost(_)));
-        (!image_shipped && !answered).then_some(declared)
+            .any(|cap| cap.names_app(app) && matches!(cap.scope, Scope::NetHost(_)))
     }
 
     /// Whether `person` may change this workspace through `app`: what its
@@ -190,6 +195,8 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
+    use tilo_app_package::manifest::{NetMode, SandboxNet};
+
     use super::*;
     use collab_types::caps::{Access, CapOverride, Scope};
 
@@ -206,19 +213,87 @@ mod tests {
         grants
     }
 
+    fn read(path: &Path) -> LaunchGrants {
+        serde_json::from_slice(&std::fs::read(path).expect("readable")).expect("JSON")
+    }
+
     #[test]
-    fn an_installed_app_s_declared_network_is_asked_for_until_a_grant_names_it() {
-        use tilo_app_package::manifest::{NetMode, SandboxNet};
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one flow through a launch's grants, which is what it proves"
+    )]
+    fn a_launch_into_a_workspace_is_handed_its_grants_and_nothing_else_it_was_not_given() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let mut workspace = Workspace::under(directory.path(), "workspace-7");
+        assert_eq!(workspace.id, "workspace-7");
+        assert!(workspace.is_workspace());
+        assert_eq!(
+            workspace.write_grants("so.tilo.notes").expect("written"),
+            None,
+            "nothing granted, no capability file and no flag"
+        );
+
+        // Files is handed this device's home, and the workspace's own record
+        // never names it.
+        workspace.person = "person-7".to_owned();
+        let home = PathBuf::from("/home/you");
+        assert_eq!(
+            workspace.grants_for_launch("so.tilo.file-explorer", Some(home.clone())),
+            LaunchGrants {
+                author: false,
+                sandbox: vec![
+                    CapOverride::grant(
+                        Grantee::person("person-7"),
+                        Scope::FsPath(home.display().to_string()),
+                        Access::Write,
+                    )
+                    .through("so.tilo.file-explorer"),
+                ],
+            }
+        );
+        assert!(
+            workspace.grants.sandbox.is_empty(),
+            "the workspace's synced record never names this machine's home"
+        );
+        assert!(
+            workspace
+                .grants_for_launch("so.tilo.notes", Some(home))
+                .is_empty(),
+            "no other app browses the device's files"
+        );
+
+        // What was granted is written where the launcher reads it, owner-only,
+        // and reads back as it was.
+        workspace.grants = granted(&workspace, "so.tilo.notes", "/home/you/notes");
+        let path = workspace
+            .write_grants("so.tilo.notes")
+            .expect("written")
+            .expect("a capability file");
+        assert!(path.starts_with(directory.path().join("tilo").join("capabilities")));
+        assert_eq!(
+            read(&path),
+            workspace.grants,
+            "the launcher reads back what was granted"
+        );
+        let mode = {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::metadata(&path)
+                .expect("the file")
+                .permissions()
+                .mode()
+        };
+        assert_eq!(mode & 0o777, 0o600, "the person's grants are owner-only");
+
+        // An installed app's declared network is asked for until a grant names
+        // it, and an app the image ships is asked nothing.
         let maps = SandboxNet {
             mode: NetMode::Allowlist,
             hosts: vec!["tile.openstreetmap.org".into()],
         };
-        let mut workspace = Workspace::new("w", "/tmp/x");
         assert_eq!(
             workspace.unanswered_reach("so.example.maps", &maps, false),
             Some(vec!["tile.openstreetmap.org".to_owned()])
         );
-        // The image's own copy reaches what it declares; an app declaring none is asked nothing.
         assert_eq!(
             workspace.unanswered_reach("so.example.maps", &maps, true),
             None
@@ -265,98 +340,10 @@ mod tests {
             workspace.unanswered_reach("so.example.maps", &maps, false),
             None
         );
-    }
 
-    #[test]
-    fn a_launch_writes_the_grants_the_launcher_reads_and_names_nothing_else() {
-        let directory = tempfile::tempdir().expect("a directory");
-        let mut workspace = Workspace::under(directory.path(), "workspace-7");
-        assert_eq!(workspace.id, "workspace-7");
-        assert!(workspace.is_workspace());
-        assert_eq!(
-            workspace.write_grants("so.tilo.notes").expect("written"),
-            None,
-            "nothing granted, no capability file and no flag"
-        );
-
-        workspace.grants = granted(&workspace, "so.tilo.notes", "/home/you/notes");
-        let path = workspace
-            .write_grants("so.tilo.notes")
-            .expect("written")
-            .expect("a capability file");
-        assert!(path.starts_with(directory.path().join("tilo").join("capabilities")));
-        let read: LaunchGrants =
-            serde_json::from_slice(&std::fs::read(&path).expect("readable")).expect("JSON");
-        assert_eq!(
-            read, workspace.grants,
-            "the launcher reads back what was granted"
-        );
-        let mode = {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::metadata(&path)
-                .expect("the file")
-                .permissions()
-                .mode()
-        };
-        assert_eq!(mode & 0o777, 0o600, "the person's grants are owner-only");
-    }
-
-    #[test]
-    fn the_file_manager_is_handed_this_devices_home() {
-        let directory = tempfile::tempdir().expect("a directory");
-        let mut workspace = Workspace::under(directory.path(), "workspace-7");
-        workspace.person = "person-7".to_owned();
-        let home = PathBuf::from("/home/you");
-        assert_eq!(
-            workspace.grants_for_launch("so.tilo.file-explorer", Some(home.clone())),
-            LaunchGrants {
-                author: false,
-                sandbox: vec![
-                    CapOverride::grant(
-                        Grantee::person("person-7"),
-                        Scope::FsPath(home.display().to_string()),
-                        Access::Write,
-                    )
-                    .through("so.tilo.file-explorer"),
-                ],
-            }
-        );
-        assert!(
-            workspace.grants.sandbox.is_empty(),
-            "the workspace's synced record never names this machine's home"
-        );
-        assert!(
-            workspace
-                .grants_for_launch("so.tilo.notes", Some(home))
-                .is_empty(),
-            "no other app browses the device's files"
-        );
-
-        // Every launch path writes it where the launcher reads it, from the
-        // home this machine is actually running as.
-        let Some(home) = tilo_paths::home() else {
-            return;
-        };
-        let path = workspace
-            .write_grants("so.tilo.file-explorer")
-            .expect("written")
-            .expect("a capability file");
-        let read: LaunchGrants =
-            serde_json::from_slice(&std::fs::read(&path).expect("readable")).expect("JSON");
-        assert_eq!(
-            read,
-            workspace.grants_for_launch("so.tilo.file-explorer", Some(home)),
-            "the launcher is handed the home of this device"
-        );
-    }
-
-    #[test]
-    fn a_launch_reads_back_only_what_this_app_was_granted() {
-        let directory = tempfile::tempdir().expect("a directory");
-        let mut workspace = Workspace::under(directory.path(), "workspace-7");
+        // A launch reads back only what this app was granted, not the
+        // workspace's other grants, and whether it may change the workspace.
         workspace.policy = Some(WorkspacePolicy::new("workspace-7", "person-7"));
-        workspace.person = "person-7".to_owned();
-        workspace.grants = granted(&workspace, "so.tilo.notes", "/home/you/notes");
         workspace.grants = {
             let mut grants = workspace.grants.clone();
             grants.sandbox.push(
@@ -373,22 +360,20 @@ mod tests {
             .write_grants("so.tilo.notes")
             .expect("written")
             .expect("a capability file");
-        let read: LaunchGrants =
-            serde_json::from_slice(&std::fs::read(&path).expect("readable")).expect("JSON");
+        let filtered = read(&path);
         assert_eq!(
-            read,
+            filtered,
             workspace.grants_for_launch("so.tilo.notes", None),
             "the launcher reads what was granted to this app, not the workspace's other grants"
         );
-        assert_eq!(read.sandbox.len(), 1);
+        assert_eq!(filtered.sandbox.len(), 1);
         assert!(
-            read.author,
+            filtered.author,
             "the person may change the workspace through the app"
         );
-    }
 
-    #[test]
-    fn a_workspace_refuses_a_launch_whose_app_id_could_leave_its_directory() {
+        // An app id that could leave the launch's directory is refused, and a
+        // launch outside a workspace names none.
         let directory = tempfile::tempdir().expect("a directory");
         let mut workspace = Workspace::under(directory.path(), "workspace");
         workspace.grants = granted(&workspace, "so.tilo.notes", "/home/you/notes");
@@ -401,6 +386,21 @@ mod tests {
         assert!(
             !Workspace::under(directory.path(), "").is_workspace(),
             "a launch outside a workspace names no workspace"
+        );
+
+        // Every launch path writes it where the launcher reads it, from the
+        // home this machine is actually running as.
+        let Some(home) = tilo_paths::home() else {
+            return;
+        };
+        let path = workspace
+            .write_grants("so.tilo.file-explorer")
+            .expect("written")
+            .expect("a capability file");
+        assert_eq!(
+            read(&path),
+            workspace.grants_for_launch("so.tilo.file-explorer", Some(home)),
+            "the launcher is handed the home of this device"
         );
     }
 }

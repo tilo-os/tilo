@@ -27,8 +27,7 @@ const MAX_SEALED_STATE: u64 = 64 * 1024 * 1024;
 /// The sealed state at `path`, refused beyond [`MAX_SEALED_STATE`].
 fn read_sealed(path: &Path) -> Result<Vec<u8>> {
     let too_large = Error::InvalidState("sealed state exceeds 64 MiB".into());
-    tilo_files::native::bounded::read_or(path, MAX_SEALED_STATE, too_large)?
-        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound).into())
+    tilo_files::native::bounded::read_or(path, MAX_SEALED_STATE, too_large)
 }
 
 /// Record bound into every state envelope, so the file cannot be swapped

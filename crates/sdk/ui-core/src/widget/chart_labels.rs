@@ -1,11 +1,122 @@
-//! Labels the charts share: a ring chart's centre copy and values shortened for a label.
+//! Collision-free label layout shared by the charts.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Color;
 
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+
+/// The labels already placed in one chart, and the bounds every label must
+/// stay inside.
+#[derive(Clone, Debug)]
+pub(crate) struct LabelPlacer {
+    bounds: Rect,
+    placed: Vec<Rect>,
+    air: f64,
+}
+
+impl LabelPlacer {
+    pub(crate) fn new(bounds: Rect, theme: &Theme) -> Self {
+        Self {
+            bounds,
+            placed: Vec::new(),
+            air: f64::from(theme.tokens.spacing.s1),
+        }
+    }
+
+    /// Something a label may not cover (a node, the chart's centre copy).
+    pub(crate) fn block(&mut self, rect: Rect) {
+        self.placed.push(rect);
+    }
+
+    pub(crate) fn fits(&self, rect: Rect) -> bool {
+        let inside = rect.x0 >= self.bounds.x0 - 0.5
+            && rect.x1 <= self.bounds.x1 + 0.5
+            && rect.y0 >= self.bounds.y0 - 0.5
+            && rect.y1 <= self.bounds.y1 + 0.5;
+        inside
+            && self.placed.iter().all(|other| {
+                rect.inflate(self.air / 2.0, self.air / 2.0)
+                    .intersect(other.inflate(self.air / 2.0, self.air / 2.0))
+                    .is_zero_area()
+            })
+    }
+
+    pub(crate) fn place(&mut self, rect: Rect) -> bool {
+        if self.fits(rect) {
+            self.placed.push(rect);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// The smallest width a label is shortened into: three characters' worth.
+/// Below it the label is dropped rather than shown as a stub.
+pub(crate) fn min_label_width(tr: &mut TextRenderer, style: &TextStyle) -> f64 {
+    3.0 * f64::from(tr.measure_style("M", None, style).0)
+}
+
+/// `label` shortened with an ellipsis to `spare`, or `None` where not even
+/// [`min_label_width`] is left or nothing but the ellipsis would show.
+pub(crate) fn fit_label(
+    tr: &mut TextRenderer,
+    label: &str,
+    spare: f64,
+    style: &TextStyle,
+) -> Option<(String, f64, f64)> {
+    if label.is_empty() || spare < min_label_width(tr, style) {
+        return None;
+    }
+    let shown = tr.elide_to_width_style(label, spare as f32, style);
+    if shown.is_empty() || shown == "…" {
+        return None;
+    }
+    let (w, h) = tr.measure_style(&shown, None, style);
+    Some((shown, f64::from(w), f64::from(h)))
+}
+
+/// A label of `size` outside a ring of `radius` round `center`, at `angle`:
+/// on the right half it starts at the ring, on the left half it ends there,
+/// and it is centred over and under the ring at the top and bottom, so it
+/// never covers the ring it names.
+pub(crate) fn radial_label_rect(center: Point, radius: f64, angle: f64, size: (f64, f64)) -> Rect {
+    let (w, h) = size;
+    let (sin, cos) = angle.sin_cos();
+    let anchor = Point::new(center.x + radius * cos, center.y + radius * sin);
+    let x0 = if cos > AXIS {
+        anchor.x
+    } else if cos < -AXIS {
+        anchor.x - w
+    } else {
+        anchor.x - w / 2.0
+    };
+    let y0 = if sin > AXIS {
+        anchor.y
+    } else if sin < -AXIS {
+        anchor.y - h
+    } else {
+        anchor.y - h / 2.0
+    };
+    Rect::new(x0, y0, x0 + w, y0 + h)
+}
+
+const AXIS: f64 = 0.15;
+
+pub(crate) fn radial_extent(center: Point, radius: f64, angle: f64, bounds: Rect) -> f64 {
+    let cos = angle.cos();
+    let x = center.x + radius * cos;
+    if cos > AXIS {
+        bounds.x1 - x
+    } else if cos < -AXIS {
+        x - bounds.x0
+    } else {
+        2.0 * (x - bounds.x0).min(bounds.x1 - x)
+    }
+}
 
 fn half_chord(radius: f64, y0: f64, y1: f64) -> f64 {
     let y = y0.abs().max(y1.abs());
@@ -106,6 +217,10 @@ pub(crate) fn centre_label_layout(
     None
 }
 
+pub(crate) fn ground_ink(theme: &Theme) -> Color {
+    theme.tokens.colors.text_dim
+}
+
 /// A value shortened for a label: `1.2B`, `3.4M`, `5.6K`, `42`, `0.5`.
 pub(crate) fn format_compact(value: f64) -> String {
     let absolute = value.abs();
@@ -130,6 +245,24 @@ mod tests {
         /// Where a chart's labels are placed.
         /// Each phase was a test of its own and builds its own fixture.
         fn chart_labels_keep_clear_of_marks_and_each_other;
+
+        phase radial_labels_stay_off_their_ring;
+        {
+            let center = Point::new(200.0, 200.0);
+            let radius = 100.0;
+            for step in 0..16 {
+                let angle = f64::from(step) * std::f64::consts::TAU / 16.0;
+                let rect = radial_label_rect(center, radius, angle, (60.0, 16.0));
+                let nearest = Point::new(
+                    center.x.clamp(rect.x0, rect.x1),
+                    center.y.clamp(rect.y0, rect.y1),
+                );
+                assert!(
+                    nearest.distance(center) >= radius * 0.98,
+                    "{angle}: {rect:?} reaches into the ring"
+                );
+            }
+        }
 
         phase the_centre_copy_fits_its_hole_or_is_left_out;
         {
@@ -159,5 +292,14 @@ mod tests {
             }
         }
 
+        phase placed_labels_never_overlap;
+        {
+            let theme = Theme::dark();
+            let mut placer = LabelPlacer::new(Rect::new(0.0, 0.0, 100.0, 100.0), &theme);
+            assert!(placer.place(Rect::new(10.0, 10.0, 40.0, 20.0)));
+            assert!(!placer.place(Rect::new(30.0, 15.0, 60.0, 25.0)), "overlap");
+            assert!(!placer.place(Rect::new(90.0, 10.0, 120.0, 20.0)), "outside");
+            assert!(placer.place(Rect::new(10.0, 30.0, 40.0, 40.0)));
+        }
     }
 }

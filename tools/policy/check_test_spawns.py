@@ -22,21 +22,15 @@ There is no baseline and no opt-out.
 """
 from __future__ import annotations
 
-import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rust_source  # noqa: E402
+from rust_test_sources import sources, test_code  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-# Test support: every source of the crate tests share is test code, as the
-# files under `tests/` are. The trait's own implementation calls `spawn` on
-# `self`, which is not a command this check can name.
-SUPPORT = (Path("crates/dev/test-env/src"),)
-SCANNED = ("apps", "crates", "examples", "fuzz", "os", "tools")
 START = re.compile(r"\.\s*(spawn|output|status)\s*\(\s*\)")
 COMMAND_TYPE = r"(?:(?:std|tokio)\s*::\s*process\s*::\s*)?Command\b"
 CONSTRUCTOR = re.compile(rf"\b{COMMAND_TYPE}\s*::\s*(?:new|from)\s*\(")
@@ -157,49 +151,6 @@ def is_command(expression: str, code: str, commands: set[str]) -> bool:
     return bool(binding.search(code) or typed.search(code))
 
 
-def test_code(relative: Path, code: str) -> str:
-    if any(part == "fixtures" for part in relative.parts[:-1]):
-        # A fixture is a payload a test writes, builds and starts as a process
-        # of its own — often with a bare `rustc`, so it cannot link
-        # `tilo-test-env`: its children inherit the payload's environment, which
-        # the test that starts it sets, never a test thread's scope.
-        return ""
-    if rust_source.is_test_file(relative) or any(
-        support in relative.parents for support in SUPPORT
-    ):
-        return code
-    production = rust_source.blank_test_items(code)
-    return "".join(
-        c if c != p or c == "\n" else " " for c, p in zip(code, production)
-    )
-
-
-def own_workspace(relative: Path, root: Path) -> bool:
-    """Whether `relative` belongs to the repository's Cargo workspace rather
-    than to a tool with a workspace and lock of its own, whose tests cannot
-    take the lock: they do not link `tilo-test-env`, and so cannot open a
-    scope either."""
-    return not any((root / parent / "Cargo.lock").is_file() for parent in relative.parents if parent != Path("."))
-
-
-def sources(root: Path):
-    names = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", *SCANNED],
-        stdout=subprocess.PIPE, check=True,
-    ).stdout
-    for name in sorted(set(names.split(b"\0")) - {b""}):
-        relative = Path(os.fsdecode(name))
-        if relative.suffix != ".rs":
-            continue
-        if any(part in {"target", "vendor"} for part in relative.parts):
-            continue
-        if not own_workspace(relative, root):
-            continue
-        path = root / relative
-        if path.is_file():
-            yield relative, path.read_text(encoding="utf-8", errors="replace")
-
-
 def package(relative: Path) -> Path:
     """The package directory a source belongs to: the path up to its
     `src`, `tests`, `benches` or `examples` directory."""
@@ -245,7 +196,10 @@ def audit(root: Path = ROOT, files=None) -> list[tuple[str, int, str]]:
             commands.setdefault(package(relative), set()).update(RETURNS_COMMAND.findall(code))
     found = []
     for relative, code in loaded:
-        tests = test_code(relative, code)
+        # Fixture payloads run as their own process (often compiled with bare
+        # `rustc`), so they cannot link `tilo-test-env` and share no test
+        # thread's environment scope.
+        tests = test_code(relative, code, skip_fixtures=True)
         if not START.search(tests):
             continue
         own = commands.get(package(relative), set())

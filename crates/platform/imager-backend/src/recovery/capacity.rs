@@ -3,15 +3,11 @@ use std::io;
 
 #[cfg(unix)]
 pub fn capacity(directory: &std::fs::File, needed: u64) -> io::Result<()> {
-    use std::os::fd::AsRawFd;
-    let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: live pinned descriptor and writable native output storage.
-    if unsafe { libc::fstatvfs(directory.as_raw_fd(), status.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: successful fstatvfs initializes the structure.
-    let status = unsafe { status.assume_init() };
-    if u128::from(status.f_flag) & u128::from(libc::ST_RDONLY) != 0 {
+    let status = rustix::fs::fstatvfs(directory)?;
+    if status
+        .f_flag
+        .contains(rustix::fs::StatVfsMountFlags::RDONLY)
+    {
         return Err(io::Error::other("Selected recovery directory is read-only"));
     }
     let available = u128::from(status.f_bavail) * u128::from(status.f_frsize);

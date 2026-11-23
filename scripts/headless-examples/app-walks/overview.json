@@ -1,0 +1,130 @@
+{
+  "app": "overview",
+  "said": "See every window at once",
+  "family": "shell",
+  "live": "rust",
+  "apps": "file-explorer chat settings terminal",
+  "rust": {},
+  "tl": {
+    "session_args": [
+      "--shell",
+      "screen"
+    ]
+  },
+  "steps": [
+    {
+      "id": "signed-in",
+      "said": "Sign in: the desktop is there, nothing open, nothing over it",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "state": {
+            "chrome.session_locked": false,
+            "chrome.overlays.search": false,
+            "chrome.overlays.overview": false,
+            "chrome.overlays.strips": false,
+            "chrome.overlays.quick-settings": false,
+            "chrome.overlays.centre": false
+          }
+        },
+        {
+          "windows": 0
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "open-files",
+      "said": "Open Files",
+      "ops": [
+        {
+          "open": "files"
+        }
+      ],
+      "budget_ms": 30000
+    },
+    {
+      "id": "open-chat",
+      "said": "Open Chat",
+      "ops": [
+        {
+          "open": "chat"
+        },
+        {
+          "windows": {
+            "at_least": 2
+          }
+        }
+      ],
+      "budget_ms": 30000
+    },
+    {
+      "id": "overview-open",
+      "said": "Open the overview: every window is shown",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "desktop:chrome",
+            "overview",
+            {
+              "open": true
+            }
+          ]
+        },
+        {
+          "state": {
+            "rust": {
+              "chrome.overlays.overview": true
+            },
+            "tl": null
+          }
+        },
+        {
+          "must": [
+            "New workspace",
+            "chat",
+            {
+              "rust": "Windows in this workspace",
+              "tl": "Overview"
+            }
+          ]
+        }
+      ],
+      "dark": true,
+      "budget_ms": 10000
+    },
+    {
+      "id": "overview-close",
+      "said": "Close it: back to the windows",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "desktop:chrome",
+            "overview",
+            {
+              "open": false
+            }
+          ]
+        },
+        {
+          "state": {
+            "rust": {
+              "chrome.overlays.overview": false
+            },
+            "tl": null
+          }
+        },
+        {
+          "must_not": [
+            "New workspace"
+          ]
+        }
+      ],
+      "budget_ms": 10000
+    }
+  ]
+}

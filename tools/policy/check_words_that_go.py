@@ -23,6 +23,7 @@ takes the word out of the code without removing the concept, so it is not a way
 to lower a row.
 
     python3 tools/policy/check_words_that_go.py            # check
+    python3 tools/policy/check_words_that_go.py --staged   # only the names this commit adds
     python3 tools/policy/check_words_that_go.py --print    # every row's names and uses
     python3 tools/policy/check_words_that_go.py --update   # drop the names that are gone
 """
@@ -37,6 +38,9 @@ import tomllib
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from judged import STAGED_FLAG, git, judged  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 WORDS = ROOT / "tools/policy/words_that_go.toml"
@@ -213,6 +217,118 @@ def count(root: Path, rows: list[dict]) -> dict[str, Row]:
     return counts
 
 
+def judged_sources(root: Path, staged) -> list[tuple[Path, str]]:
+    """The files a commit stages that this check judges, in path order."""
+    return [
+        (relative, text)
+        for relative, text in staged.sources(suffixes=tuple(LANGUAGES))
+        if relative.parts
+        and relative.parts[0] not in SKIPPED_TOPS
+        and not SKIPPED_PARTS.intersection(relative.parts)
+        and relative.as_posix() != SELF
+    ]
+
+
+def held_by_the_tree(baseline: dict) -> set[str]:
+    """The names a whole-tree pass last accepted, as its baseline records them.
+
+    The staged run answers "did the tree hold this name before this commit" from
+    the baseline rather than by searching HEAD: the whole-tree run passes only
+    while every name of the tree's rows is listed there, and `--update` records
+    exactly those names, the row's text literals among them. A name the tree
+    gained since the last `--update` is one the whole-tree run is already red on,
+    and a commit that uses it is refused until that run records it, which is what
+    the red asks for. No commit costs a walk over HEAD: the tree around it was
+    judged by the run that wrote the baseline.
+    """
+    held: set[str] = set()
+    for row in baseline.values():
+        if isinstance(row, dict):
+            held.update(name for name in row.get("names", ()) if isinstance(name, str))
+    return held
+
+
+def head_texts(root: Path, relatives: list[Path]) -> dict[Path, str]:
+    """The text each of `relatives` held in the tree before this commit."""
+    wanted = [relative for relative in relatives if "\n" not in relative.as_posix()]
+    if not wanted:
+        return {}
+    # One `git cat-file` for the lot: a commit of many files costs one process.
+    output = git(
+        root,
+        "cat-file",
+        "--batch",
+        input=b"".join(b"HEAD:" + os.fsencode(relative.as_posix()) + b"\n" for relative in wanted),
+        empty=(128,),
+    )
+    texts = {}
+    offset = 0
+    for relative in wanted:
+        end = output.index(b"\n", offset)
+        header = output[offset:end].split()
+        offset = end + 1
+        if len(header) != 3:
+            continue
+        _oid, kind, size = header
+        if kind != b"blob":
+            continue
+        length = int(size)
+        texts[relative] = output[offset : offset + length].decode("utf-8", errors="replace")
+        offset += length + 1
+    return texts
+
+
+def staged_problems(root: Path, rows: list[dict], held: set[str]) -> list[str]:
+    """The row names a commit adds: ones neither its own files nor the tree held.
+
+    `held` is what the tree already held ([`held_by_the_tree`]), so a commit is
+    charged only with what it introduces. Nothing here walks HEAD or the tree:
+    the commit's own texts come from the index, their earlier ones from HEAD in
+    one `git cat-file`, and the rest from the baseline.
+    """
+    staged = judged(root, staged=True)
+    literals = sorted({text for row in rows for text in row.get("text", [])})
+    added: Counter[str] = Counter()
+    added_texts: Counter[str] = Counter()
+    sources = judged_sources(root, staged)
+    before_texts = head_texts(root, [relative for relative, _ in sources])
+    for relative, text in sources:
+        language = LANGUAGES[relative.suffix]
+        body, named = code(text, language)
+        before = before_texts.get(relative, "")
+        if before:
+            before_body, before_named = code(before, language)
+        else:
+            before_body, before_named = "", []
+        added.update(Counter(named) - Counter(before_named))
+        for literal in literals:
+            newer = body.count(literal) - before_body.count(literal)
+            if newer > 0:
+                added_texts[literal] += newer
+    split = {identifier: words(identifier) for identifier in added}
+
+    def holding(terms: list[str]) -> set[str]:
+        runs = [tuple(term.split()) for term in terms if not term.startswith("=")]
+        whole = {tuple(term[1:].split()) for term in terms if term.startswith("=")}
+        return {
+            identifier
+            for identifier in added
+            if split[identifier] in whole or any(holds(split[identifier], run) for run in runs)
+        }
+
+    # Only a name that holds a row's words can be reported, and one the tree already held is
+    # not new: both answers come from the baseline, never from a walk over HEAD, so a commit
+    # costs the same whether the tree around it is large or small.
+    rejected = {row["row"]: holding(row.get("idents", [])) for row in rows}
+    problems = []
+    for row in rows:
+        names = rejected[row["row"]] - held
+        names |= {text for text in row.get("text", []) if added_texts[text] and text not in held}
+        if names:
+            problems.append(f"'{row['row']}': new names {', '.join(sorted(names))}")
+    return problems
+
+
 def main(argv: list[str]) -> int:
     rows = load_rows()
     named = [row["row"] for row in rows]
@@ -226,8 +342,21 @@ def main(argv: list[str]) -> int:
         for row in named
         if row not in spec
     ]
-    counts = count(ROOT, rows)
     baseline = json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else {}
+    if STAGED_FLAG in argv:
+        problems += staged_problems(ROOT, rows, held_by_the_tree(baseline))
+        for problem in problems:
+            print(problem)
+        if problems:
+            print(
+                "words that go: this commit names a concept core.md's table says goes. Name it"
+                " with the word the table has instead.",
+                file=sys.stderr,
+            )
+            return 1
+        print("words that go: this commit adds no name the table rejects", file=sys.stderr)
+        return 0
+    counts = count(ROOT, rows)
     if "--print" in argv:
         print(f"{'names':>6} {'uses':>7} {'lines':>6} {'generic':>8}  row")
         for row in named:

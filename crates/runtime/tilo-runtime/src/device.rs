@@ -1,5 +1,5 @@
 //! This computer as one of the person's devices, without the Tilo desktop: the one daemon
-//! (`tilo-runtime --hold`) that the CLI, a server and tilo.sh all run.
+//! (`tilo-runtime`) that the CLI, a server and tilo.sh all run.
 //!
 //! It holds the person's workspaces in the device's own workspace service
 //! ([`workspaces::ServiceWorkspaces`]), each a copy synced with the device that serves it, the
@@ -30,14 +30,22 @@ pub mod compute;
 mod confirm;
 mod content;
 mod host_runs;
+#[cfg(target_os = "linux")]
+pub mod package_runs;
 pub mod peer;
 mod person;
+#[cfg(target_os = "linux")]
+pub mod processes;
 pub mod serve;
 pub mod services;
+mod shortcuts;
 pub mod take_work;
 mod ticket;
 #[cfg(test)]
 mod ticket_tests;
+pub(crate) mod unclaimed;
+#[cfg(test)]
+mod unclaimed_tests;
 pub mod workspaces;
 
 use std::process::ExitCode;

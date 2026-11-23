@@ -22,7 +22,7 @@ from tilo import Entry, Invocation, Resource
 __all__ = [
     "Conversation",
     "Message",
-    "PersonAccount",
+    "ListedAccount",
     "Endpoint",
     "Person",
     "Projected",
@@ -59,7 +59,7 @@ Message = TypedDict("Message", {
     "queued": "bool",
 })
 
-class PersonAccount(TypedDict):
+class ListedAccount(TypedDict):
     type_id: str
     display_name: str
     config: Any
@@ -185,7 +185,7 @@ ForgetEndpointArgs = TypedDict("ForgetEndpointArgs", {
 
 class Messages(Resource):
     """Messages — `tilo.messages`."""
-    __surface__ = "so.tilo.messages@710ec2ec69e89f74"
+    __surface__ = "so.tilo.messages@afef5fd05110757d"
     @property
     def conversations(self) -> list[Entry[Conversation]]:
         """Read only."""
@@ -291,8 +291,8 @@ class Messages(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.messages@710ec2ec69e89f74"
-    accounts: list[Entry[PersonAccount]]
+    __surface__ = "so.tilo.messages@afef5fd05110757d"
+    accounts: list[Entry[ListedAccount]]
 
     def publish_browser_identity(self,
         *,
@@ -338,7 +338,7 @@ class Accounts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.messages@710ec2ec69e89f74"
+    __surface__ = "so.tilo.messages@afef5fd05110757d"
     people: list[Entry[Person]]
 
     def project_contact(self,

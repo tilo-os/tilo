@@ -18,7 +18,7 @@ uuid.workspace = true
 url = { workspace = true, features = ["serde"] }
 percent-encoding.workspace = true
 # The in-memory WebDAV/Nextcloud server behind `fake-server`.
-test-http = { version = "0.1.0", path = "../../dev/test-http", optional = true }
+test-http = { version = "0.1.0", path = "../../../tools/test-http", optional = true }
 
 [features]
 # `cloud_source_dav::fake::FakeDav`, an in-memory WebDAV/Nextcloud server on
@@ -30,7 +30,7 @@ fake-server = ["dep:test-http", "dep:base64"]
 cloud-source = { path = "../cloud-source", features = ["conformance"] }
 # The conformance run needs the fake server of this very crate.
 cloud-source-dav = { path = ".", features = ["fake-server"] }
-test-http = { path = "../../dev/test-http" }
+test-http = { path = "../../../tools/test-http" }
 zeroize.workspace = true
 
 [lints]

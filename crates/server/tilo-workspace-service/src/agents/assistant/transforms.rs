@@ -7,7 +7,8 @@
 //! answer held to the shape the caller asked for, and its cost counted on the day of the
 //! assistant the person keeps in the workspace, as a judgement of their programs is.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use tilo_actions::ActionDescriptor;
 use tilo_actions::remote::{Pending, pending};
@@ -29,6 +30,9 @@ pub struct Transforms {
     service: ServiceSlot,
     /// Where a transform's cost is written once its answer came.
     runtime: tokio::runtime::Handle,
+    /// The transforms running now, so a burst is refused as busy rather than piling up on the
+    /// model ([`transform::MAX_RUNNING`]).
+    running: Arc<AtomicUsize>,
 }
 
 impl Transforms {
@@ -36,7 +40,31 @@ impl Transforms {
     /// `runtime`.
     #[must_use]
     pub fn new(service: ServiceSlot, runtime: tokio::runtime::Handle) -> Self {
-        Self { service, runtime }
+        Self {
+            service,
+            runtime,
+            running: Arc::default(),
+        }
+    }
+
+    /// One place of the transforms that may run at once, or `None` when as many as the agent
+    /// allows already run. The place is given back when the value is dropped.
+    fn begin(&self) -> Option<Place> {
+        self.running
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |running| {
+                (running < transform::MAX_RUNNING).then_some(running.saturating_add(1))
+            })
+            .ok()
+            .map(|_| Place(Arc::clone(&self.running)))
+    }
+}
+
+/// One of the transforms that may run at once: dropped, it gives its place back.
+struct Place(Arc<AtomicUsize>);
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -60,6 +88,14 @@ impl HostStepServices for Transforms {
                 request.address.resource
             ));
         }
+        let Some(place) = self.begin() else {
+            return Ok(Pending::ready(Err(Box::new(tilo_actions::ActionFailure {
+                code: transform::code::BUSY.to_owned(),
+                message: "the agent is already running as many transforms as it allows".to_owned(),
+                details: None,
+                retryable: true,
+            }))));
+        };
         let workspaces = self
             .service
             .service()
@@ -82,6 +118,7 @@ impl HostStepServices for Transforms {
             .and_then(|person| person_of(person).ok());
         let runtime = self.runtime.clone();
         let (done, answer) = pending();
+        let stop = Arc::clone(&request.stop);
         std::thread::Builder::new()
             .name("agent-transform".into())
             .spawn(move || {
@@ -102,8 +139,9 @@ impl HostStepServices for Transforms {
                         limit_micros: agent.spend_limit_micros,
                     }),
                     cost: AtomicU64::new(0),
+                    stop: stop.as_ref(),
                 };
-                let outcome = transform::run(&call, &model);
+                let outcome = transform::run_until(&call, &model, &stop);
                 let cost = model.cost.load(Ordering::Relaxed);
                 if cost > 0
                     && let (Some(agent), Some(spender)) = (&spender, &model.spender)
@@ -118,6 +156,8 @@ impl HostStepServices for Transforms {
                     tracing::warn!(%workspace, agent = %agent.id.0, %error, "a transform's cost is not counted on its person's assistant");
                 }
                 done.complete(outcome);
+                // The place is given back now the model call has stopped, however it ended.
+                drop(place);
             })
             .map_err(|error| format!("the transform could not start: {error}"))?;
         Ok(answer)
@@ -132,6 +172,8 @@ struct Asked<'a> {
     spender: Option<Spender>,
     /// What the answers cost, in millionths of the currency.
     cost: AtomicU64,
+    /// Set when the caller cancelled the transform: the call under way ends on it.
+    stop: &'a AtomicBool,
 }
 
 impl TransformModel for Asked<'_> {
@@ -143,6 +185,23 @@ impl TransformModel for Asked<'_> {
         max_output_tokens: u32,
         timeout: Duration,
     ) -> Result<String, String> {
+        self.answer_until(
+            kind,
+            (instructions, input),
+            max_output_tokens,
+            timeout,
+            self.stop,
+        )
+    }
+
+    fn answer_until(
+        &self,
+        kind: Interaction,
+        (instructions, input): (&str, &str),
+        max_output_tokens: u32,
+        timeout: Duration,
+        stop: &AtomicBool,
+    ) -> Result<String, String> {
         let mut model = self.workspaces.workspace_model(self.workspace, kind);
         if let Some(spender) = &self.spender {
             model = model.spending_as(spender.clone());
@@ -153,11 +212,46 @@ impl TransformModel for Asked<'_> {
                 (instructions, input),
                 max_output_tokens,
                 now.checked_add(timeout).unwrap_or(now),
-                &|| false,
+                &|| stop.load(Ordering::Relaxed),
             )
             .map_err(|refusal| refusal.words(None))?;
         self.cost
             .fetch_add(said.response.cost_micros, Ordering::Relaxed);
         Ok(said.text())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "in a test these are the assertion, not a hazard"
+    )]
+
+    use super::*;
+
+    /// As many transforms as the agent allows run at once; the next is refused as busy until one
+    /// ends.
+    #[test]
+    fn no_more_than_the_allowed_transforms_run_at_once() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let transforms = Transforms::new(ServiceSlot::default(), runtime.handle().clone());
+        let mut places = Vec::new();
+        for _ in 0..transform::MAX_RUNNING {
+            places.push(transforms.begin().expect("a place is free"));
+        }
+        assert!(
+            transforms.begin().is_none(),
+            "the agent is running as many transforms as it allows"
+        );
+        drop(places);
+        assert!(
+            transforms.begin().is_some(),
+            "a place is free once a transform ends"
+        );
     }
 }

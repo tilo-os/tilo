@@ -4290,30 +4290,6 @@ mod app_dir_tests {
             }
             {
                 let data = tempfile::tempdir().expect("tempdir");
-
-                let m = manifest("so.tilo.fixture");
-                let a = resolve_app_dir(&m, &opts_at(data.path(), Some("workspace-a")))
-                    .expect("workspace a");
-                let b = resolve_app_dir(&m, &opts_at(data.path(), Some("workspace-b")))
-                    .expect("workspace b");
-                let personal = resolve_app_dir(&m, &opts_at(data.path(), None)).expect("personal");
-
-                assert!(a.is_dir() && b.is_dir() && personal.is_dir());
-                assert_ne!(a, b);
-                assert_ne!(a, personal);
-                assert!(
-                    !a.starts_with(&b) && !b.starts_with(&a),
-                    "neither workspace may contain the other: {a:?} {b:?}"
-                );
-                for dir in [&a, &b, &personal] {
-                    assert!(
-                        dir.starts_with(data.path().join("tilo-workspaces")),
-                        "{dir:?} is outside the workspaces tree"
-                    );
-                }
-            }
-            {
-                let data = tempfile::tempdir().expect("tempdir");
                 let m = manifest("so.tilo.fixture");
                 let a = resolve_person_dir(&m, &opts_at(data.path(), Some("workspace-a")))
                     .expect("workspace a");

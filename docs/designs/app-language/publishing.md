@@ -297,6 +297,7 @@ follows `authority.md` and `docs/architecture/apps.md`:
 | `uses time` / `uses random` (journaled, deterministic on replay) | **Allowed** | Shown in package inspector; cannot leak or forge replay state |
 | `uses web` (outbound HTTP / outside service) | **Ask** | System approval sheet naming exact destinations/endpoints before any request |
 | `uses notify` (sending notices to members) | **Ask** | System approval sheet before the first notice |
+| `uses clipboard` (copying to, and pasting from, the person's clipboard) | **Ask** | System approval sheet naming what the app copies and reads before the first copy or paste |
 | Reading another app's resources or calling its actions (`use`) | **Ask** (stranger's code has no foreign grants) | System approval sheet showing the actual target resource and action, never the app's button label (`authority.md` §6) |
 | Background `trigger`s (`every` / `at`) | **Disabled** until pinned/enabled | Workspace must explicitly enable the app's triggers with a grant listing schedules and effects |
 

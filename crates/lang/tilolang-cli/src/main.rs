@@ -96,8 +96,9 @@ usage:
       are sent, so a shot shows what pointing there shows. --locale lays every window out for a
       person reading in that language (`en-US`, `de-DE`; default en-US), whatever locale this
       machine runs in.
-  tilolang check|fmt|ids ...
-      the compiler's commands (tilolangc --help); `use` also finds native apps in --path";
+  tilolang check|fmt|ids [DIR] [--json] [--watch] [--write-ids] [--path DIR]... [--check] [--rename OLD NEW] [--help]
+      the package's errors, its canonical form and its ids lock (check, fmt, ids); `use` also
+      finds native apps and the platform's packages in --path";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

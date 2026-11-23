@@ -79,10 +79,11 @@ tempfile.workspace = true
 # The zoom test looks at every frame's pixels as the CPU renderer draws them.
 tilo-cpu-raster = { path = "../../crates/sdk/tilo-cpu-raster" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 # A reader hosted in a desktop window, as the browser desktop hosts it.
 tilo-desktop-model = { path = "../../crates/session/desktop-model" }
 tilo-desktop-surface = { path = "../../crates/session/desktop-surface" }
+tilo-session-core = { path = "../../crates/session/core" }
 
 [[test]]
 name = "it"

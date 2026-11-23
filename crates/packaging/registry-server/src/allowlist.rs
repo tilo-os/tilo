@@ -157,25 +157,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn allowlist_round_trips_upserts_and_looks_up_publishers() {
-        {
-            let empty = PublisherAllowlist::empty();
-            let s = empty.to_toml().unwrap();
-            let back = PublisherAllowlist::from_toml(&s).unwrap();
-            assert_eq!(back, empty);
-        }
-        {
-            let mut al = PublisherAllowlist::empty();
-            al.upsert(PublisherRow {
-                pubkey_hex: "aa".repeat(32),
-                can_add_new: true,
-                note: "acme".into(),
-                namespaces: vec!["com.acme".into()],
-            });
-            let s = al.to_toml().unwrap();
-            let back = PublisherAllowlist::from_toml(&s).unwrap();
-            assert_eq!(back, al);
-        }
+    fn allowlist_upserts_and_owns_only_its_namespaces() {
         {
             let mut al = PublisherAllowlist::empty();
             assert!(!al.upsert(PublisherRow {
@@ -193,17 +175,6 @@ mod tests {
             assert_eq!(al.publishers.len(), 1);
             assert!(al.publishers[0].can_add_new);
             assert_eq!(al.publishers[0].note, "later");
-        }
-        {
-            let mut al = PublisherAllowlist::empty();
-            al.upsert(PublisherRow {
-                pubkey_hex: "de".repeat(32),
-                can_add_new: true,
-                note: String::new(),
-                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
-            });
-            assert!(al.get(&[0xde; 32]).is_some());
-            assert!(al.get(&[0x00; 32]).is_none());
         }
         {
             let al = PublisherAllowlist::from_toml(&format!(

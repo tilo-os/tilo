@@ -20,7 +20,7 @@ url.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 reqwest = { workspace = true, optional = true, features = ["blocking"] }
 tilo-net = { path = "../../platform/tilo-net", optional = true, features = ["blocking"] }
-test-http = { path = "../../dev/test-http", optional = true }
+test-http = { path = "../../../tools/test-http", optional = true }
 
 [features]
 default = ["client"]
@@ -33,9 +33,8 @@ client = ["dep:reqwest", "dep:tilo-net"]
 fake = ["dep:test-http"]
 
 [dev-dependencies]
-test-http = { path = "../../dev/test-http" }
-hex.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
+test-http = { path = "../../../tools/test-http" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

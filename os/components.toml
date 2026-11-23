@@ -240,6 +240,9 @@ scope = "session"
 packages = ["tilo-runtime"]
 bins = ["tilo-runtime"]
 dev_features = ["tilo-runtime/dev-overrides"]
+# The device's daemon runs this binary from boot: a swap restarts it so the
+# running daemon is the swapped one.
+units = ["tilo-runtime.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-runtime", to = "/usr/libexec/tilo/tilo-runtime", mode = "0755" },
@@ -661,7 +664,7 @@ files = [
 name = "system-extension"
 kind = "userspace"
 scope = "vm"
-packages = ["system-extension"]
+packages = ["tilo-extension"]
 bins = ["tilo-system-extension-manager"]
 units = [
   "tilo-system-extension-boot-pack-status.service",

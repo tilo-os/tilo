@@ -37,7 +37,9 @@ pub mod migration;
 pub mod nofollow;
 pub mod private;
 pub mod retained_home;
-#[cfg(unix)]
+// The browser's origin-private file system has no path-named socket; every
+// other host has the module, and Windows answers Unsupported in it.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub use tilo_socket as socket;
 pub mod tree;
 #[cfg(unix)]

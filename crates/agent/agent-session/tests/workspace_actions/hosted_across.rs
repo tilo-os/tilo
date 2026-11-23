@@ -15,42 +15,15 @@ const HELD_ADDS: &str = "Damson for the clerk.";
 /// Admit the person of `device` to `workspace` with `role`: the server issues them an
 /// invitation and their device redeems it.
 async fn admit_as(served: &Served, workspace: &str, device: &crate::support::Device, role: Role) {
-    let invitation = served
-        .workspaces
-        .issue(
-            workspace,
-            &served.devices.0.cert,
-            IssueInvitationRequest {
-                request_id: device.cert.device_public_key,
-                role,
-                recipient_user_public_key: Some(device.cert.user_public_key),
-                invitee_name: Some("A colleague".into()),
-                inviter_name: None,
-                expires_at_ns: tilo_clock::unix_now_ns()
-                    .checked_add(600_000_000_000)
-                    .unwrap(),
-            },
-        )
-        .await
-        .unwrap();
-    let verified = tilo_peer_state::join::decode_and_verify_invitation(
-        &invitation.signed_invitation,
-        None,
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
+    crate::workspace_actions::resource_support::admit_with(
+        &served.workspaces,
+        &served.devices.0.cert,
+        workspace,
+        device,
+        role,
+        "A colleague",
     )
-    .unwrap();
-    let endpoint = test_server::endpoint(iroh::SecretKey::from_bytes(&device.key.to_bytes())).await;
-    workspace_join::WorkspaceJoinClient::new(endpoint)
-        .redeem_hint(
-            verified.grant().transport.first().unwrap(),
-            invitation.signed_invitation.clone(),
-            device.cert.clone(),
-            &device.key,
-            device.cert.device_public_key,
-        )
-        .await
-        .unwrap();
+    .await;
 }
 
 /// The agent `root`'s person keeps elsewhere, on a turn of theirs there, reaching into

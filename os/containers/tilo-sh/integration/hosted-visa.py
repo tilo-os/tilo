@@ -2,8 +2,8 @@
 
 The stack's local tilo.sh runs the Browser of a hosted workspace in that
 workspace's VM (docs/hosted-browser.md). This is the flow a person and their
-agent take there, with the person's answering device held by the check
-(`tilo-approve`, the person the page made, opened from its recovery key):
+agent take there, with the person answering on their own page's question
+sheet (integration/person.mjs --answer, integration/page_person.py):
 
   a. a key opens Browser (`browser#open`); the window it answers with is the
      workspace's, and the time from the open to a live window is printed (the
@@ -17,21 +17,22 @@ agent take there, with the person's answering device held by the check
      person approving a submit is looking at;
   c. `capture-page` answers a picture of the filled form, saved as a PNG;
   d. the person refuses one submission: the window holds it, the call ends
-     refused, and the form stays filled and unsent — and the question they were
-     asked names the page it leaves from, POST, where it goes and the picture
-     of the filled form;
+     refused, and the form stays filled and unsent — and the sheet they were
+     asked on names the page it leaves from, and the form being sent, and
+     where it goes;
   e. a second form instance is submitted: the person is asked exactly once,
-     names the submission, and allows it; the same call returns, and the page
-     shows its receipt and reference (`read-page`); then a third is allowed on
-     a phone paired to the person, which holds no root (`tilo-approve pair`):
-     the person is asked on whichever of their devices they are at;
+     the sheet names the submission, and they allow it; the same call returns,
+     and the page shows its receipt and reference (`read-page`); then a third
+     is allowed on a browser of theirs signed in through a ticket from their
+     page, which holds none of their identity (`person.mjs --pair`): the
+     person is asked on whichever of their devices they are at;
   e3. the page the person's root is in shows another workspace, and a second
-     browser of theirs, paired to them by that page and holding none of the
-     root, is open in the applicant's: the question reaches that browser, and
+     browser of theirs, signed in by that page and holding none of the root,
+     is open in the applicant's: the question reaches that browser, and
      allowing there releases the submission. A submission they deny there is
      refused to the agent with the refusal's own code (`not_permitted`), and
      the filled page stays unsent;
-  f. a click on the submit button is held and asked the same way; the question
+  f. a click on the submit button is held and asked the same way; the sheet
      names what leaves, just as the submission's did;
   g. a reviewer who joined by invitation reads the agent's run in History;
   h. a key minted with the scope unticked is asked about the page actions
@@ -51,13 +52,13 @@ memory read.
 SERVER_KEY is the startup's server key (`tilo keys create`). OUT_DIR keeps
 what it found: the capture, the page as the agent read it back, the reviewer's
 History, the questions the person was asked, and its report. TILO_INVITEE
-names the stack's reviewer helper (integration/reviewer.py); the person is
-answered for by HOSTED_VISA_APPROVER (`tilo-approve`), in the identity root
-HOSTED_VISA_ROOT, through the host HOSTED_VISA_SERVER names as
-`KEY@HOST:PORT`; HOSTED_VISA_UNSCOPED_KEY is a key of the same person that may
-not operate web pages in Browser. HOSTED_VISA_SITE and HOSTED_VISA_SITE_SERVER
-are the site and the server a person enters through, for the person who watches
-the page on their shell (integration/person.mjs).
+names the stack's reviewer helper (integration/reviewer.py);
+HOSTED_VISA_UNSCOPED_KEY is a key of the same person that may not operate web
+pages in Browser. HOSTED_VISA_PAGE_ASKS and HOSTED_VISA_PAGE_ANSWERS name the
+page's asks FIFO and the file it answers in, and HOSTED_VISA_SITE and
+HOSTED_VISA_SITE_SERVER the site and the server a person enters through, for
+the person who answers on their page and for the one who watches the page on
+their shell (integration/person.mjs).
 
 Prints one JSON line with the timings and what it asserted.
 """
@@ -77,7 +78,7 @@ import urllib.request
 
 from pathlib import Path
 
-from approver import Person
+from page_person import PagePerson
 from tilo import AsyncTilo, Invocation, ProtocolError, Refused
 
 API_URL, SERVER_KEY, OUT, FORM_URL = sys.argv[1:5]
@@ -90,15 +91,15 @@ REVIEWER_EMAIL = "rosa@example.com"
 # timing out ahead of its page.
 STEP_SECONDS = float(os.environ.get("TILO_STEP_SECONDS") or 5)
 REVIEWER_SECONDS = 51 * STEP_SECONDS
-APPROVER = os.environ.get("HOSTED_VISA_APPROVER", "")
 UNSCOPED_KEY = os.environ.get("HOSTED_VISA_UNSCOPED_KEY", "")
-PERSON_ROOT = os.environ.get("HOSTED_VISA_ROOT", "")
-HOST = os.environ.get("HOSTED_VISA_SERVER", "")
 # The person in their own browser, watching the hosted Browser's page on their
 # shell: the site they arrive at, the server it enters through, and the window
 # they watch, by the name the shell gives the app that hosts it.
 SITE = os.environ.get("HOSTED_VISA_SITE", "")
 SITE_SERVER = os.environ.get("HOSTED_VISA_SITE_SERVER", "")
+# The `tilo` command the check built, which the browser it signs in runs
+# `tilo device add` with, on a computer that holds none of the person's root.
+TILO = os.environ.get("HOSTED_VISA_TILO", "")
 SHELL_EMAIL = "shell-person@example.invalid"
 # The tile on their shell, by the name the shell gives it: the hosted window is
 # the workspace's Browser, and a shell that names it by the page it shows names
@@ -107,7 +108,7 @@ SHELL_WINDOW = "browser|visa"
 PERSON_PAGE = Path(__file__).with_name("person.mjs")
 # The person's own page, where it stays open on the site (person.mjs
 # --answer): the questions of the submissions are answered on its sheet, and
-# the person's view of each is kept beside its answers.
+# what each sheet drew is kept beside its answers.
 PAGE_ASKS = os.environ.get("HOSTED_VISA_PAGE_ASKS", "")
 PAGE_ANSWERS = os.environ.get("HOSTED_VISA_PAGE_ANSWERS", "")
 # The workspace the person's page is open on, which is not the one their
@@ -208,93 +209,45 @@ def origin_of(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}"
 
 
+def shown_by(question: dict) -> str:
+    """What the sheet drew for `question`, as the person reads it."""
+    return "\n".join(question.get("shown") or [])
+
+
 def check_leaves(question: dict, what: str) -> None:
-    """Say that `question` names what leaves the page: where it leaves from,
-    the method it goes with, where it goes, and the filled page as a picture
-    the person is shown."""
-    page = question.get("page") or {}
+    """Say the sheet the person was shown names what leaves the page: the
+    page it leaves from, and where what it sends goes. The sheet says it in
+    the person's words — "send the form to <site>" — and keeps the method out
+    of them (`PageDeparture::doing`: a person thinks in sending and opening,
+    not in verbs), so a submission reads as a form sent, never an open. The
+    question the sheet was drawn from still holds what leaves exactly: the
+    method it goes with and the picture of the filled page the person is
+    shown, as the page records it beside what the sheet draws (`page`)."""
+    shown = shown_by(question)
+    origin = origin_of(FORM_URL)
     check(
-        page.get("page") == origin_of(FORM_URL),
-        f"the question about {what} names the page it leaves from ({page})",
+        origin in shown,
+        f"the sheet about {what} names the page it leaves from ({shown})",
     )
+    check(
+        f"send the form to {origin}" in shown,
+        f"the sheet about {what} names the submission and where it goes ({shown})",
+    )
+    page = question.get("page") or {}
     check(page.get("method") == "POST", f"the question about {what} names the method ({page})")
     check(page.get("destination"), f"the question about {what} names where it goes ({page})")
     check(page.get("picture"), f"the question about {what} shows the filled page ({page})")
 
 
-class PagePerson:
-    """The person answering on their own page's question sheet, as they do in
-    their browser (person.mjs --answer): each answer is asked of the page by
-    name, which keeps the person's view of the question and of the page once
-    they answered. A device of theirs that answers nothing (`tilo-approve`,
-    "none") reads the same question beside it, so what it names is held as
-    it is for the device that answers."""
-
-    def __init__(self, asks: str, answers: str, watcher: Person) -> None:
-        self.asks = asks
-        self.answers = answers
-        self.watcher = watcher
-        self.seen: list[dict] = []
-
-    def begin(self, answer: str, name: str) -> tuple[object, str, float]:
-        watching = self.watcher.begin("none", within=300)
-        with open(self.asks, "w") as asks:
-            asks.write(f"{answer} {name}\n")
-        return watching, name, time.perf_counter()
-
-    async def settle(self, started: tuple[object, str, float]) -> list[dict]:
-        watching, name, began = started
-        questions = await self.watcher.settle(watching, within=300, watching=True)  # type: ignore[arg-type]
-        deadline = time.monotonic() + 120
-        while time.monotonic() < deadline:
-            if os.path.isfile(self.answers):
-                with open(self.answers) as answered:
-                    for line in answered:
-                        seen = json.loads(line)
-                        if seen.get("name") == name:
-                            seen["seconds"] = round(time.perf_counter() - began, 2)
-                            self.seen.append(seen)
-                            check(True, f"the person answered {name} on their page's sheet ({seen['answer']})")
-                            return questions
-            await asyncio.sleep(0.2)
-        raise AssertionError(f"the person's page did not answer {name} in 120 s ({self.answers})")
-
-    def pair(self, workspace: str) -> dict:
-        """The person's root page makes a pairing link into `workspace`: the
-        device that follows it is approved here, as an agent set up from this
-        tab is (the page offers an agent's link the same way)."""
-        with open(self.asks, "w") as asks:
-            asks.write(f"pair {workspace}\n")
-        deadline = time.monotonic() + 120
-        while time.monotonic() < deadline:
-            if os.path.isfile(self.answers):
-                with open(self.answers) as answered:
-                    for line in answered:
-                        try:
-                            said = json.loads(line)
-                        except ValueError:
-                            continue
-                        made = said.get("pair") if isinstance(said, dict) else None
-                        if isinstance(made, dict) and made.get("workspace") == workspace:
-                            check(
-                                made.get("link"),
-                                f"the person's page made a pairing link into {workspace} ({made})",
-                            )
-                            return made
-            time.sleep(0.2)
-        raise AssertionError(
-            f"the person's page made no pairing link into {workspace} in 120 s ({self.answers})"
-        )
-
-
 class PairedBrowser(PagePerson):
-    """A second browser of the person's, paired to them by their root page and
-    holding none of it, open in the workspace their agent works in
-    (integration/person.mjs --pair-link --answer). The page their root is in
-    shows another workspace, so what the agent holds is put to this one."""
+    """A second browser of the person's, signed in to them through a ticket by
+    their root's page and holding none of it, open in the workspace their agent
+    works in (integration/person.mjs --pair --answer). The page their root is
+    in shows another workspace, so what the agent holds is put to this one."""
 
-    def __init__(self, link: str, directory: str, watcher: Person) -> None:
+    def __init__(self, workspace: str, directory: str) -> None:
         check(bool(SITE and SITE_SERVER), "the check names the site and the server the person's browsers enter through")
+        check(bool(TILO), "the check names the tilo command the browser signs in with (HOSTED_VISA_TILO)")
         Path(directory).mkdir(parents=True, exist_ok=True)
         self.log = Path(directory) / "browser.log"
         self.out = Path(directory) / "browser.out"
@@ -312,20 +265,21 @@ class PairedBrowser(PagePerson):
         self.holder = os.open(asks, os.O_RDWR)
         self.stdout = open(self.out, "w")
         self.stderr = open(self.log, "w")
+        self.workspace = workspace
         self.ran = subprocess.Popen(
-            ["node", str(PERSON_PAGE), SITE, SITE_SERVER, directory, "--pair-link", link,
-             "--answer", asks],
+            ["node", str(PERSON_PAGE), SITE, SITE_SERVER, directory, "--pair", workspace,
+             "--tilo", TILO, "--answer", asks],
             stdout=self.stdout, stderr=self.stderr,
         )
-        super().__init__(asks, answers, watcher)
+        super().__init__(asks, answers)
         self.stopped = False
-        # Listed before it is waited for: a browser that never paired is
+        # Listed before it is waited for: a browser that never signs in is
         # still this run's to stop.
         BROWSERS.append(self)
-        self.report = self.paired(directory)
+        self.report: dict = {}
 
-    def paired(self, directory: str) -> dict:
-        """The report the browser printed once it was paired and in."""
+    def paired(self) -> dict:
+        """The report the browser printed once it was signed in and in."""
         deadline = time.monotonic() + 420
         while time.monotonic() < deadline:
             try:
@@ -341,11 +295,11 @@ class PairedBrowser(PagePerson):
                     return said
             if self.ran.poll() not in (None, 0):
                 raise AssertionError(
-                    f"the paired browser ended ({self.ran.returncode}): "
+                    f"the signed-in browser ended ({self.ran.returncode}): "
                     f"{self.log.read_text()[-2000:]}"
                 )
             time.sleep(0.2)
-        raise AssertionError(f"the browser was not paired in 420 s (see {self.log})")
+        raise AssertionError(f"the browser was not signed in in 420 s (see {self.log})")
 
     def stop(self) -> None:
         """Its browser goes, as one a person closes does."""
@@ -629,17 +583,8 @@ async def fill_phase(report: dict[str, object]) -> int:
     agent = AsyncTilo(key=state["key"], url=API_URL)
     aws = agent.workspace(workspace)
     page = Page(aws, str(state["window"]))
-    person = Person(APPROVER, PERSON_ROOT, HOST, check=check)
-    on_page = PagePerson(PAGE_ASKS, PAGE_ANSWERS, person) if PAGE_ASKS and PAGE_ANSWERS else None
+    person = PagePerson(PAGE_ASKS, PAGE_ANSWERS, check=check)
     reviewer = None
-
-    def ask(answer: str, name: str) -> object:
-        """The person answers `name`: on their page's sheet where it is open,
-        else on their approving device."""
-        return on_page.begin(answer, name) if on_page else person.begin(answer)
-
-    async def answered(started: object) -> list[dict]:
-        return await (on_page.settle(started) if on_page else person.settle(started))  # type: ignore[arg-type]
 
     say("b. the agent fills the visa form through page actions, and the person is asked nothing")
     async with aws.run(RUN_TITLE):
@@ -691,13 +636,13 @@ async def fill_phase(report: dict[str, object]) -> int:
         report["capture"] = saved
 
         say("d. the person refuses a submission, and the form does not leave")
-        asked = ask("deny", "submission-denied")
+        asked = person.begin("deny", "submission-denied")
         began = time.perf_counter()
         refused = await refusal_of(page.do("submit-page", element=submit))
         report["deny_seconds"] = round(time.perf_counter() - began, 2)
-        questions = await answered(asked)
+        questions = await person.settle(asked)
         check(len(questions) == 1, f"the person was asked exactly once ({questions})")
-        check("submit" in json.dumps(questions[0]).lower(), f"the question names the submission ({questions[0]})")
+        check("send the form" in shown_by(questions[0]).lower(), f"the sheet names the submission ({shown_by(questions[0])})")
         check_leaves(questions[0], "a submission")
         check(refused != "allowed", f"the submission the person refused did not run ({refused})")
         after = await page.read()
@@ -710,31 +655,38 @@ async def fill_phase(report: dict[str, object]) -> int:
 
         say("e. a second form instance is submitted, and the person allows it")
         submit = await fill(page)
-        asked = ask("allow", "submission-allowed")
+        asked = person.begin("allow", "submission-allowed")
         began = time.perf_counter()
         run = await outcome(page.do("submit-page", element=submit))
         report["allow_seconds"] = round(time.perf_counter() - began, 2)
         check("released" in json.dumps(run), f"the submission ran once the person allowed it ({run})")
-        questions = await answered(asked)
+        questions = await person.settle(asked)
         check(len(questions) == 1, f"the person was asked exactly once ({questions})")
-        check("submit" in json.dumps(questions[0]).lower(), f"the question names the submission ({questions[0]})")
+        check("send the form" in shown_by(questions[0]).lower(), f"the sheet names the submission ({shown_by(questions[0])})")
         receipt = await page.read()
         write_json("receipt-page.json", receipt)
         check(RECEIPT in json.dumps(receipt), "the page shows the application was received")
         check("TV-" in json.dumps(receipt), f"the page shows the reference it made ({json.dumps(receipt)[:300]})")
         report["receipt"] = True
 
-        say("e2. the person is on their phone, paired to them and holding no root, and allows a submission there")
-        phone = person.paired(os.path.join(OUT, "phone"))
+        say("e2. a browser the person signs in through a ticket, holding none of their identity, allows a submission there")
+        phone = PairedBrowser(workspace, os.path.join(OUT, "phone"))
+        person.sign_in(workspace)
+        phone.report = phone.paired()
+        check(
+            phone.report.get("workspace") == workspace,
+            f"the signed-in browser is in the agent's workspace ({phone.report.get('workspace')})",
+        )
         submit = await fill(page)
-        asked = phone.begin("allow")
+        asked = phone.begin("allow", "phone-allowed")
         began = time.perf_counter()
         run = await outcome(page.do("submit-page", element=submit))
         report["phone_allow_seconds"] = round(time.perf_counter() - began, 2)
-        check("released" in json.dumps(run), f"the submission ran once the person allowed it on their phone ({run})")
+        check("released" in json.dumps(run), f"the submission ran once the person allowed it on their paired browser ({run})")
         questions = await phone.settle(asked)
-        check(len(questions) == 1, f"the phone was asked exactly once ({questions})")
-        check_leaves(questions[0], "a submission answered on a phone")
+        check(len(questions) == 1, f"the browser the page let in was asked exactly once ({questions})")
+        check_leaves(questions[0], "a submission answered on a browser the page let in")
+        phone.stop()
         person.asked.extend(questions)
         # The page the person allowed the submission of shows its receipt,
         # and so does the page on their shell.
@@ -744,16 +696,17 @@ async def fill_phase(report: dict[str, object]) -> int:
         report["shell_receipt"] = seen
         shell.stop()
 
-        say("e3. the root's page shows another workspace, and the browser the person paired is asked there")
+        say("e3. the root's page shows another workspace, and the browser the person signed in is asked there")
         check(
             PAGE_WORKSPACE and PAGE_WORKSPACE != workspace,
             f"the page holding the person's root shows another workspace ({PAGE_WORKSPACE}), not the agent's ({workspace})",
         )
-        check(on_page is not None, "the person's page is open, holding their root")
-        paired = PairedBrowser(on_page.pair(workspace), os.path.join(OUT, "paired-browser"), person)
+        paired = PairedBrowser(workspace, os.path.join(OUT, "paired-browser"))
+        person.sign_in(workspace)
+        paired.report = paired.paired()
         check(
             paired.report.get("workspace") == workspace,
-            f"the paired browser is in the agent's workspace ({paired.report.get('workspace')})",
+            f"the signed-in browser is in the agent's workspace ({paired.report.get('workspace')})",
         )
         report["paired_browser"] = {
             key: paired.report.get(key) for key in ("workspace", "pairedMs", "paired")
@@ -778,7 +731,7 @@ async def fill_phase(report: dict[str, object]) -> int:
         check(len(questions) == 1, f"the paired browser was asked exactly once ({questions})")
         check_leaves(questions[0], "a submission answered on a browser paired to the person")
         check(
-            not [seen for seen in on_page.seen if seen.get("name") == "browser-allowed"],
+            not [seen for seen in person.seen if seen.get("name") == "browser-allowed"],
             "the answer came from the paired browser, not from the page holding the root",
         )
         allowed_page = await page.read()
@@ -810,7 +763,7 @@ async def fill_phase(report: dict[str, object]) -> int:
 
         say("f. a click on the submit button is held, and the person is asked once")
         submit = await fill(page)
-        asked = person.begin("allow")
+        asked = person.begin("allow", "click-allowed")
         clicked_once = await outcome(page.do("click-page", element=submit))
         check("released" in json.dumps(clicked_once), f"the click left once the person allowed it ({clicked_once})")
         questions = await person.settle(asked)
@@ -852,7 +805,7 @@ async def fill_phase(report: dict[str, object]) -> int:
         async def asked_once(action: str, call: object) -> object:
             """Run one page action of the key without the scope, and hold the
             person to being asked about it once."""
-            asked = person.begin("allow")
+            asked = person.begin("allow", f"page-{action}")
             answer = await outcome(call)
             questions = await person.settle(asked)
             check(len(questions) == 1, f"the key without the scope is asked about {action} ({questions})")
@@ -890,10 +843,7 @@ async def fill_phase(report: dict[str, object]) -> int:
 
     report["questions_asked"] = person.answered()
     write_json("questions.json", person.asked)
-    if on_page:
-        report["answered_on_page"] = on_page.seen
-        with open(PAGE_ASKS, "w") as asks:
-            asks.write("done\n")
+    report["answered_on_page"] = person.seen
 
     for client in (agent, reviewer):
         if client is None:

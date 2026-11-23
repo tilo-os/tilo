@@ -95,7 +95,7 @@ workspace-hack = { version = "0.1" }
 getrandom = { workspace = true, features = ["wasm_js"] }
 
 [dev-dependencies]
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

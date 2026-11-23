@@ -32,8 +32,6 @@ mod colorpicker_hex_input;
 mod component_text_input;
 #[path = "container_update_forwarding.rs"]
 mod container_update_forwarding;
-#[path = "context_menu_test.rs"]
-mod context_menu_test;
 #[path = "control_label_stays_inside_its_control.rs"]
 mod control_label_stays_inside_its_control;
 #[path = "control_row_alignment.rs"]
@@ -131,8 +129,6 @@ mod toast_test;
 mod tokens_test;
 #[path = "tooltip_render_test.rs"]
 mod tooltip_render_test;
-#[path = "tooltip_test.rs"]
-mod tooltip_test;
 #[path = "touch_gestures_test.rs"]
 mod touch_gestures_test;
 #[path = "typography_golden_geometry.rs"]

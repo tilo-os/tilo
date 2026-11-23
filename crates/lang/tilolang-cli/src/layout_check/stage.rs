@@ -200,7 +200,6 @@ impl Staged {
             host.runtime().record_costs(true);
         }
         make_roots(&instance, app)?;
-        instance.set_origin(true);
         if seed > 0
             && let Some(host) = instance.host()
         {
@@ -740,7 +739,7 @@ fn refs_in(value: &RuntimeValue) -> Vec<RuntimeRef> {
 mod tests {
     use super::*;
     use std::path::Path;
-    use tilo_render_protocol::patch::{ActionCatalogue, ToUi};
+    use tilo_render_protocol::patch::ToUi;
 
     /// The packages of the app `name` of the apps the
     /// platform ships (`apps/tl/<name>`) and what it
@@ -772,10 +771,11 @@ mod tests {
             .map(|tree| (*tree).clone())
             .collect();
         let descriptors = tilo_actions::api::survey(&resources);
-        let encoded = serde_json::to_vec(&descriptors).expect("the action directory encodes");
         staged
             .instance
-            .say(ToUi::Actions(ActionCatalogue::All(encoded)));
+            .say(ToUi::Actions(tilo_app_window::catalogue::whole(
+                &descriptors,
+            )));
         staged.instance.flush();
         staged.exchange();
         staged.harness.relayout();
@@ -1315,7 +1315,7 @@ mod tests {
         if node
             .semantics
             .as_ref()
-            .is_some_and(|access| access.name.as_deref() == Some(label))
+            .is_some_and(|access| access.answers_to(label))
         {
             return node.semantics.as_ref();
         }
@@ -2146,7 +2146,7 @@ mod tests {
     fn chosen_named(node: &ui::headless::InspectionNode, label: &str) -> bool {
         node.semantics
             .as_ref()
-            .is_some_and(|access| access.name.as_deref() == Some(label) && access.state.selected)
+            .is_some_and(|access| access.answers_to(label) && access.state.selected)
             || node.children.iter().any(|child| chosen_named(child, label))
     }
 
@@ -2169,7 +2169,7 @@ mod tests {
     fn shown_named(node: &ui::headless::InspectionNode, label: &str) -> bool {
         node.semantics
             .as_ref()
-            .is_some_and(|access| access.name.as_deref() == Some(label))
+            .is_some_and(|access| access.answers_to(label))
             || node.children.iter().any(|child| shown_named(child, label))
     }
 
@@ -2182,9 +2182,11 @@ mod tests {
         roles: &[ui::a11y::Role],
         label: &str,
     ) -> usize {
-        let here = usize::from(node.semantics.as_ref().is_some_and(|access| {
-            roles.contains(&access.role) && access.name.as_deref() == Some(label)
-        }));
+        let here = usize::from(
+            node.semantics
+                .as_ref()
+                .is_some_and(|access| roles.contains(&access.role) && access.answers_to(label)),
+        );
         node.children
             .iter()
             .map(|child| count_named(child, roles, label))
@@ -2197,9 +2199,12 @@ mod tests {
         roles: &[ui::a11y::Role],
         label: &str,
     ) -> Option<&'a ui::headless::InspectionNode> {
-        let is_it = node.semantics.as_ref().is_some_and(|access| {
-            roles.contains(&access.role) && access.name.as_deref() == Some(label)
-        });
+        // A list row is named by its title and its secondary line; its title
+        // is the line it is found by.
+        let is_it = node
+            .semantics
+            .as_ref()
+            .is_some_and(|access| roles.contains(&access.role) && access.answers_to(label));
         if is_it {
             return Some(node);
         }

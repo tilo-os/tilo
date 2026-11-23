@@ -1,5 +1,6 @@
 use super::*;
-use accounts::{Account, AccountId, AccountStore, SecretVault};
+use accounts::person::AccountList;
+use accounts::{Account, AccountId, SecretVault};
 use test_http::{Reply, Responder};
 
 fn collection(server: &str) -> RemoteCalendar {
@@ -38,27 +39,27 @@ tilo_test_env::scenario! {
         .unwrap();
         assert_eq!(account.config["files"], original["files"]);
         assert_eq!(account.config["server_url"], original["server_url"]);
-        let mut shared = AccountStore::new();
-        shared.upsert(account.clone());
-        shared.save_in(root.path()).unwrap();
-        let mut projection = crate::AccountStore::from_store(&shared);
+        let mut record = accounts::person::staged_in(root.path()).unwrap();
+        record
+            .apply_confirmed(AccountList::saving(&account))
+            .unwrap();
+        accounts::person::keep_staged_in(root.path(), &mut record).unwrap();
+        let saved = record.state().unwrap();
+        assert_eq!(saved.all().len(), 1);
+        assert_eq!(
+            saved.account(account.id.as_str()).unwrap().type_id.as_str(),
+            "nextcloud"
+        );
+        assert_eq!(
+            saved.account(account.id.as_str()).unwrap().config["files"],
+            original["files"]
+        );
+        let projection = crate::CalendarAccounts::from_shared(&saved);
         assert_eq!(projection.accounts.len(), 1);
         assert_eq!(projection.accounts[0].id, "canonical-nextcloud");
         assert_eq!(
             projection.accounts[0].config.password, "",
             "a calendar's password is the workspace's vault's, never this device's"
-        );
-        projection.accounts[0].calendars[0].visible = false;
-        projection.persist_in(root.path()).unwrap();
-        let saved = AccountStore::load_in(root.path());
-        assert_eq!(saved.all().len(), 1);
-        assert_eq!(
-            saved.get(&account.id).unwrap().type_id.as_str(),
-            "nextcloud"
-        );
-        assert_eq!(
-            saved.get(&account.id).unwrap().config["files"],
-            original["files"]
         );
         assert!(
             SecretVault::open_in(root.path()).get(&account.id).is_none(),
@@ -104,9 +105,9 @@ tilo_test_env::scenario! {
             "no calendar of it is taken as one that can be written: {}",
             account.config
         );
-        let mut shared = AccountStore::new();
-        shared.upsert(account);
-        let projection = crate::AccountStore::from_shared(&shared);
+        let mut shared = AccountList::default();
+        shared.keep(&account).unwrap();
+        let projection = crate::CalendarAccounts::from_shared(&shared);
         assert_eq!(projection.accounts.len(), 1);
         assert!(projection.accounts[0].read_only);
         assert!(projection.accounts[0].calendars[0].read_only);
@@ -301,10 +302,12 @@ tilo_test_env::scenario! {
             true,
         )
         .unwrap();
-        let mut shared = AccountStore::new();
-        shared.upsert(account);
         let root = tempfile::tempdir().unwrap();
-        shared.save_in(root.path()).unwrap();
+        let mut record = accounts::person::staged_in(root.path()).unwrap();
+        record
+            .apply_confirmed(AccountList::saving(&account))
+            .unwrap();
+        accounts::person::keep_staged_in(root.path(), &mut record).unwrap();
         let credential_store = account_credentials::CredentialStore::for_root(Some(root.path().to_owned()));
         credential_store
             .seal_oauth(
@@ -320,19 +323,21 @@ tilo_test_env::scenario! {
             .unwrap();
         let vault = SecretVault::open_in(root.path());
         let before = vault.get(&AccountId::from("drive-account")).unwrap();
-        let projection = crate::AccountStore::from_store(&shared);
+        let shared = record.state().unwrap();
+        let projection = crate::CalendarAccounts::from_shared(&shared);
         assert_eq!(
             projection.accounts[0].config.oauth_account_id.as_deref(),
             Some("drive-account")
         );
         assert!(projection.accounts[0].config.password.is_empty());
-        projection.persist_in(root.path()).unwrap();
-        assert_eq!(AccountStore::load_in(root.path()).all().len(), 1);
         assert_eq!(
             SecretVault::open_in(root.path()).get(&AccountId::from("drive-account")),
             Some(before)
         );
-        let plaintext = std::fs::read_to_string(accounts::store_path_in(root.path())).unwrap();
+        let plaintext = String::from_utf8_lossy(
+            &std::fs::read(accounts::person::staged_path_in(root.path())).unwrap(),
+        )
+        .into_owned();
         assert!(!plaintext.contains("approved-google-access"));
         assert!(!plaintext.contains("canonical-refresh"));
     }

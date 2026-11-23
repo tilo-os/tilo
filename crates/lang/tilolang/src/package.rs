@@ -508,6 +508,7 @@ fn build_meta(
         previously: module.app.previously.clone(),
         profile_resources: module.app.profile_resources,
         web: module.app.web.clone(),
+        schemes: module.app.schemes.clone(),
         ..PackageMeta::default()
     };
     let type_id =

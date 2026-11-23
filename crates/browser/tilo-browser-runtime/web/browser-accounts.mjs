@@ -52,7 +52,7 @@ export async function readBrowserAccounts({origin, runtime, indexedDB = globalTh
   } finally { db.close(); }
 }
 
-/** The runtime reads the same typed PersonAccounts model Settings owns. */
+/** The runtime reads the same typed AccountList model Settings owns. */
 export function projectBrowserAccounts(rows, runtime, origin) {
   if (rows.length > 64) throw Error('Account lookup exceeds its profile budget');
   const accounts = [];

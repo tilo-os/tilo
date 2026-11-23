@@ -40,7 +40,7 @@ tilo_test_env::scenario! {
     /// Each phase was a test of its own and builds its own fixture.
     fn a_field_offers_completions_by_its_kind;
 
-    phase a_prose_field_offers_emoji_and_mentions_by_default;
+    phase a_prose_field_offers_emoji_and_mentions_and_nothing_closes_a_dismissed_one;
     {
         let _settled = crate::motion::testing::settled();
         let mut input = focused_with_people(ada());
@@ -63,6 +63,32 @@ tilo_test_env::scenario! {
             "typing after an accepted mention does not offer it again"
         );
 
+        // Escape dismisses a mention, and a new token opens it again.
+        let mut input = focused_with_people(ada());
+        type_text(&mut input, "hi @ad");
+        assert!(press_named(&mut input, NamedKey::Escape));
+        assert!(!input.is_completion_open());
+        type_text(&mut input, "a");
+        assert!(!input.is_completion_open(), "the dismissed @ stays closed");
+        type_text(&mut input, " @a");
+        assert!(input.is_completion_open(), "a new @ opens it again");
+
+        // An input method owns the keys the list would take.
+        let mut input = focused_with_people(ada());
+        type_text(&mut input, "hi @ad");
+        assert!(input.is_completion_open());
+        let mut document = AutoCommit::new();
+        drive(
+            &mut input,
+            &mut document,
+            &WindowEvent::Ime(winit::event::Ime::Preedit("a".to_owned(), None)),
+            Modifiers::default(),
+        );
+        assert!(
+            !input.is_completion_open(),
+            "the input method owns the keys the list would take"
+        );
+
         let mut input = focused_with_people(Vec::new());
         type_text(&mut input, "pizza :piz");
         assert!(
@@ -74,7 +100,7 @@ tilo_test_env::scenario! {
         assert_eq!(input.value(), "pizza 🍕");
     }
 
-    phase plain_and_either_single_opt_out_suppress_what_they_name;
+    phase plain_opt_outs_and_structured_kinds_offer_nothing_they_should_not;
     {
         let _settled = crate::motion::testing::settled();
         for (setting, mentions, emoji) in [
@@ -96,11 +122,7 @@ tilo_test_env::scenario! {
             type_text(&mut input, "pizza :piz");
             assert_eq!(input.is_completion_open(), emoji, "{setting:?} and emoji");
         }
-    }
 
-    phase a_search_secret_or_numeric_field_offers_nothing;
-    {
-        let _settled = crate::motion::testing::settled();
         for mut input in [
             focused_with_people(ada()).with_kind(TextInputKind::Search),
             focused_with_people(ada())
@@ -125,38 +147,6 @@ tilo_test_env::scenario! {
             type_text(&mut input, " :piz");
             assert!(!input.is_completion_open(), "{kind:?} offers no emoji");
         }
-    }
-
-    phase a_composing_field_offers_nothing;
-    {
-        let _settled = crate::motion::testing::settled();
-        let mut input = focused_with_people(ada());
-        type_text(&mut input, "hi @ad");
-        assert!(input.is_completion_open());
-        let mut document = AutoCommit::new();
-        drive(
-            &mut input,
-            &mut document,
-            &WindowEvent::Ime(winit::event::Ime::Preedit("a".to_owned(), None)),
-            Modifiers::default(),
-        );
-        assert!(
-            !input.is_completion_open(),
-            "the input method owns the keys the list would take"
-        );
-    }
-
-    phase escape_dismisses_a_mention_and_a_new_token_opens_again;
-    {
-        let _settled = crate::motion::testing::settled();
-        let mut input = focused_with_people(ada());
-        type_text(&mut input, "hi @ad");
-        assert!(press_named(&mut input, NamedKey::Escape));
-        assert!(!input.is_completion_open());
-        type_text(&mut input, "a");
-        assert!(!input.is_completion_open(), "the dismissed @ stays closed");
-        type_text(&mut input, " @a");
-        assert!(input.is_completion_open(), "a new @ opens it again");
     }
 }
 
@@ -241,7 +231,7 @@ tilo_test_env::scenario! {
         assert_eq!(labels(&input), ["Milan Novak"]);
     }
 
-    phase arrows_wrap_page_keys_move_and_tab_inserts_the_reference_and_a_space;
+    phase arrows_wrap_page_keys_move_tab_inserts_and_escape_and_leaving_close;
     {
         let _settled = crate::motion::testing::settled();
         let mut input = focused_with_people(Vec::new());
@@ -283,11 +273,8 @@ tilo_test_env::scenario! {
             [(4..12, "channel:general".to_owned())],
             "a rich field marks the inserted run as the reference"
         );
-    }
 
-    phase escape_closes_and_leaves_the_text_and_leaving_the_token_closes;
-    {
-        let _settled = crate::motion::testing::settled();
+        // Escape closes the drawer and leaves the text; the caret leaving the token closes it.
         let mut input = focused_with_people(Vec::new());
         input.set_completion_sources(vec![channels()]);
         type_text(&mut input, "#des");

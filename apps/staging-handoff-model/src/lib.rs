@@ -3,8 +3,12 @@
 
 use serde::{Deserialize, Serialize};
 
-mod migration;
-pub use migration::Migration;
+pub mod gpt;
+pub mod migration;
+pub use migration::{
+    Categories, ComputerApplicationsScope, DEFERRED_ORIGINAL_UID, DeferredHandoff, Filesystem,
+    Home, HomePolicy, MAX_EXCLUSIONS, Migration, NativePath, SourceVolume,
+};
 pub mod prepared;
 
 pub const HANDOFF_FILE: &str = "handoff.json";
@@ -210,9 +214,10 @@ impl Handoff {
         if bytes.len() > MAX_BYTES {
             return Err("staged installation resource is unexpectedly large".into());
         }
-        let handoff = serde_json::from_slice::<Self>(bytes)
+        let mut handoff = serde_json::from_slice::<Self>(bytes)
             .map_err(|error| format!("staged installation resource is malformed: {error}"))?;
         handoff.validate()?;
+        drop_invalid_hostname(&mut handoff.profile);
         Ok(handoff)
     }
 
@@ -223,6 +228,13 @@ impl Handoff {
     /// Why the resource is inconsistent, cannot be serialized, or does not fit `len` bytes.
     pub fn to_padded(&self, len: u64) -> Result<Vec<u8>, String> {
         self.validate()?;
+        if self
+            .profile
+            .get("hostname")
+            .is_some_and(|value| !value.as_str().is_some_and(valid_hostname))
+        {
+            return Err("staged installation profile field hostname is malformed".into());
+        }
         pad_json(&serde_json::to_vec(self).map_err(|e| e.to_string())?, len)
     }
 }
@@ -266,6 +278,25 @@ fn deserialize_profile<'de, D: serde::Deserializer<'de>>(
         }
     }
     deserializer.deserialize_map(ProfileVisitor)
+}
+
+/// One RFC-1123 DNS label (1-63 ASCII letters, digits or hyphens, with no
+/// leading/trailing hyphen and no surrounding whitespace or control characters).
+#[must_use]
+pub fn valid_hostname(value: &str) -> bool {
+    value.trim() == value && install_profile_model::valid_hostname(value)
+}
+
+/// Remove `"hostname"` when it fails the strict DNS-label rule so a read-back
+/// handoff or stored staging record loads cleanly and asks for a valid hostname
+/// instead of passing an invalid value to any privileged step.
+pub fn drop_invalid_hostname(profile: &mut serde_json::Map<String, serde_json::Value>) {
+    if profile
+        .get("hostname")
+        .is_some_and(|value| !value.as_str().is_some_and(valid_hostname))
+    {
+        profile.remove("hostname");
+    }
 }
 
 /// Validate the closed, secret-free installer profile shared by both sides.
@@ -687,5 +718,217 @@ mod tests {
         let mut lowercase = handoff();
         lowercase.owned_boot_entry = "00ab".into();
         assert!(lowercase.validate().unwrap_err().contains("firmware"));
+    }
+
+    #[test]
+    fn hostnames_accept_valid_dns_labels_up_to_63_chars() {
+        for good in ["a", "desktop", "My-Host-01", &"a".repeat(63)] {
+            let mut h = handoff();
+            h.profile.insert("hostname".into(), good.into());
+            let bytes = h.to_padded(4096).unwrap();
+            assert_eq!(Handoff::parse(&bytes).unwrap(), h, "{good}");
+        }
+
+        // Building a new handoff refuses invalid hostnames, while reading a staged handoff
+        // accepts bounded text (<= 256 chars) and drops the invalid hostname for repair.
+        for bad in [
+            "",
+            "bad host",
+            "-desktop",
+            "desktop-",
+            " desktop",
+            "desktop ",
+            "desktop\n",
+            "desktop\r",
+            "desktop\t",
+            "desktop\u{0000}",
+            "desktop.local",
+            &"h".repeat(64),
+            &"h".repeat(256),
+        ] {
+            let mut h = handoff();
+            h.profile.insert("hostname".into(), bad.into());
+            assert!(h.to_padded(4096).is_err(), "write refuses {bad:?}");
+            let encoded = serde_json::to_vec(&h).unwrap();
+            let parsed = Handoff::parse(&encoded).unwrap();
+            assert!(
+                !parsed.profile.contains_key("hostname"),
+                "read drops {bad:?}"
+            );
+        }
+
+        // The 256-character bound and string type remain enforced on read.
+        let mut oversized = handoff();
+        oversized
+            .profile
+            .insert("hostname".into(), "h".repeat(257).into());
+        assert!(Handoff::parse(&serde_json::to_vec(&oversized).unwrap()).is_err());
+        let mut non_string = handoff();
+        non_string.profile.insert("hostname".into(), 42.into());
+        assert!(Handoff::parse(&serde_json::to_vec(&non_string).unwrap()).is_err());
+    }
+
+    #[test]
+    fn windows_relative_paths_table() {
+        let max_len = "a".repeat(4096);
+        let over_len = "a".repeat(4097);
+        let cases: [(&str, bool); 27] = [
+            ("Documents", true),
+            ("Documents\\Private", true),
+            ("Documents/Private", true),
+            ("Documents\\Work/Notes", true),
+            (".config", true),
+            ("a\\...\\b", true),
+            ("日本語\\文書", true),
+            (max_len.as_str(), true),
+            ("", false),
+            ("dir\\", false),
+            ("dir/", false),
+            ("a\\\\b", false),
+            ("a//b", false),
+            ("a\\/b", false),
+            ("\\abs", false),
+            ("/abs", false),
+            ("\\\\server\\share", false),
+            ("\\\\?\\C:\\dir", false),
+            (".", false),
+            ("..", false),
+            ("a\\.\\b", false),
+            ("a\\..\\b", false),
+            ("C:\\dir", false),
+            ("C:dir", false),
+            ("dir:stream", false),
+            ("a\0b", false),
+            (over_len.as_str(), false),
+        ];
+        for (input, expected) in cases {
+            let path = NativePath::Windows(input.encode_utf16().collect());
+            assert_eq!(
+                path.is_normalized_relative(),
+                expected,
+                "Windows path {input:?}"
+            );
+        }
+        // Native UTF-16 units may hold an unpaired surrogate without being rejected as invalid.
+        let surrogate = NativePath::Windows(vec![
+            u16::from(b'a'),
+            0xD800,
+            u16::from(b'\\'),
+            u16::from(b'b'),
+        ]);
+        assert!(surrogate.is_normalized_relative());
+    }
+
+    #[test]
+    fn home_exclusions_round_trip_and_validate_strictly() {
+        let h = handoff();
+        let mut with_exclusions = migration(&h);
+        with_exclusions["home_exclusions"] = serde_json::json!([
+            {"platform": "Unix", "units": b"Documents/Private"}
+        ]);
+        let parsed: Migration = serde_json::from_value(with_exclusions.clone()).unwrap();
+        parsed.validate_standalone().unwrap();
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), with_exclusions);
+
+        let mut carried = h.clone();
+        carried.migration = Some(parsed);
+        let bytes = carried.to_padded(4096).unwrap();
+        assert_eq!(Handoff::parse(&bytes).unwrap(), carried);
+
+        for bad_exclusion in [
+            serde_json::json!({"platform": "Unix", "units": b""}),
+            serde_json::json!({"platform": "Unix", "units": b"/abs"}),
+            serde_json::json!({"platform": "Unix", "units": b"../escape"}),
+            serde_json::json!({"platform": "Unix", "units": b"a/../b"}),
+            serde_json::json!({"platform": "Unix", "units": b"a//b"}),
+            serde_json::json!({"platform": "Unix", "units": b"a/./b"}),
+            serde_json::json!({"platform": "Unix", "units": b"a\0b"}),
+            serde_json::json!({"platform": "Unix", "units": vec![b'a'; 4097]}),
+            serde_json::json!({"platform": "Windows", "units": [104, 111, 109, 101]}),
+        ] {
+            let mut bad = migration(&h);
+            bad["home_exclusions"] = serde_json::json!([bad_exclusion]);
+            let bad: Migration = serde_json::from_value(bad).unwrap();
+            assert!(bad.validate_standalone().is_err());
+        }
+
+        let mut no_home = with_exclusions;
+        no_home["categories"]["home"] = false.into();
+        no_home["categories"]["accounts"] = true.into();
+        assert!(
+            serde_json::from_value::<Migration>(no_home)
+                .unwrap()
+                .validate_standalone()
+                .is_err()
+        );
+
+        let mut too_many = migration(&h);
+        too_many["home_exclusions"] = serde_json::Value::Array(
+            (0..=MAX_EXCLUSIONS)
+                .map(|i| serde_json::json!({"platform": "Unix", "units": format!("d{i}").into_bytes()}))
+                .collect(),
+        );
+        assert!(
+            serde_json::from_value::<Migration>(too_many)
+                .unwrap()
+                .validate_standalone()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn flatpak_inventory_refuses_repeated_keys_and_unknown_fields_at_parse() {
+        let mut h = handoff();
+        let mut flatpak = migration(&h);
+        flatpak["categories"]["flatpak"] = true.into();
+        flatpak["flatpak_inventory"] = serde_json::json!({
+            "schema": 1,
+            "inventory": {"refs": [], "remotes": []},
+            "selected": [],
+            "installations": []
+        });
+        let json = serde_json::to_string(&flatpak).unwrap();
+        let repeated_inline = json.replacen(
+            "\"flatpak_inventory\":{\"schema\":1",
+            "\"flatpak_inventory\":{\"schema\":1,\"schema\":2",
+            1,
+        );
+        assert_ne!(json, repeated_inline);
+        assert!(serde_json::from_str::<Migration>(&repeated_inline).is_err());
+
+        // Also check when carried inside a full Handoff.
+        h.migration = Some(serde_json::from_str(&json).unwrap());
+        let encoded = serde_json::to_string(&h).unwrap();
+        let repeated_encoded = encoded.replacen(
+            "\"flatpak_inventory\":{\"schema\":1",
+            "\"flatpak_inventory\":{\"schema\":1,\"schema\":2",
+            1,
+        );
+        assert_ne!(encoded, repeated_encoded);
+        assert!(Handoff::parse(repeated_encoded.as_bytes()).is_err());
+
+        // Protected inventory form with repeated schema key is also refused at parse.
+        let mut protected = migration(&h);
+        protected["categories"]["flatpak"] = true.into();
+        protected["flatpak_inventory"] = serde_json::json!({
+            "kind": "protected-original-flatpak",
+            "schema": 1,
+            "operation": h.operation_id,
+            "len": 64,
+            "sha256": vec![7u8; 32]
+        });
+        let protected_json = serde_json::to_string(&protected).unwrap();
+        let repeated_protected = protected_json.replacen(
+            "\"kind\":\"protected-original-flatpak\",\"schema\":1",
+            "\"kind\":\"protected-original-flatpak\",\"schema\":1,\"schema\":1",
+            1,
+        );
+        assert_ne!(protected_json, repeated_protected);
+        assert!(serde_json::from_str::<Migration>(&repeated_protected).is_err());
+
+        // Unknown fields inside flatpak_inventory are refused at parse time too.
+        let mut unknown = flatpak;
+        unknown["flatpak_inventory"]["unexpected"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<Migration>(unknown).is_err());
     }
 }

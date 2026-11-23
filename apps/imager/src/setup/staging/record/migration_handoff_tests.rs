@@ -4,9 +4,8 @@ use imager_backend::setup::migration_handoff::*;
 use std::path::Path;
 
 pub(super) fn sample() -> Plan {
-    Plan {
+    Plan::try_from(Migration {
         schema: SCHEMA,
-        flatpak_inventory: None,
         operation_id: "migration-1".into(),
         categories: Categories {
             home: true,
@@ -14,8 +13,6 @@ pub(super) fn sample() -> Plan {
             accounts: true,
         },
         home_policy: HomePolicy::Copy,
-        home_exclusions: Vec::new(),
-        deferred_handoff: None,
         // The backend keeps the home's identity fields private; a plan
         // reaches the frontend only as the record it reads.
         home: serde_json::from_value(serde_json::json!({
@@ -35,7 +32,12 @@ pub(super) fn sample() -> Plan {
             "subvolume": null,
         }))
         .unwrap(),
-    }
+        pending_computer_applications_scope: None,
+        flatpak_inventory: None,
+        home_exclusions: Vec::new(),
+        deferred_handoff: None,
+    })
+    .unwrap()
 }
 
 #[test]

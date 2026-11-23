@@ -59,7 +59,7 @@ tilo-secret-vault = { path = "../secret-vault" }
 # The client half of the device-identity proof a non-dumpable caller makes.
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 ed25519-dalek.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

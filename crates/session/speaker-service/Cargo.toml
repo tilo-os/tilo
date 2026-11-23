@@ -31,7 +31,7 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 [dev-dependencies]
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["test-support"] }
 postcard = { workspace = true, features = ["alloc"] }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

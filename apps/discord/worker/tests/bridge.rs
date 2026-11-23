@@ -39,6 +39,10 @@ use ui::tilo_resource::{Id, Invoke, MemberId, Replica, Resource as _};
 tilo_automerge_isolate::test_worker!();
 tilo_agent_session::app_worker!();
 
+/// The bridge's calls: a voice channel carried both ways.
+#[path = "bridge_voice.rs"]
+mod voice_call;
+
 const APP: &str = "so.tilo.discord";
 const CHAT: &str = "so.tilo.chat";
 const ADA: [u8; 32] = [8; 32];
@@ -538,7 +542,10 @@ struct Bridge {
     ada: String,
     /// The installation the workspace admits as its Discord bridge.
     bot: String,
-    _server: tilo_server::daemon::Server,
+    /// The Discord worker under the connector host, which the bridge's
+    /// program and its call carrier both reach Discord through.
+    process: Arc<ConnectorProcess>,
+    server: tilo_server::daemon::Server,
     _packet_relay: tilo_test_env::relay::Relay,
     _scratch: tempfile::TempDir,
 }
@@ -705,6 +712,7 @@ impl Bridge {
             Arc::clone(&blobs) as Arc<dyn BlobAccess>,
         )
         .await
+        .map(Arc::new)
         .unwrap();
 
         let program = concat!(env!("CARGO_MANIFEST_DIR"), "/../bridge/program.json");
@@ -728,7 +736,7 @@ impl Bridge {
             cert.clone(),
             certifier.device_key(&bot.installation),
             bot,
-            BTreeMap::from([(APP.to_owned(), Arc::new(process))]),
+            BTreeMap::from([(APP.to_owned(), Arc::clone(&process))]),
             scratch.path().join("progress.json"),
         )
         .unwrap();
@@ -760,7 +768,8 @@ impl Bridge {
             general,
             ada,
             bot: bot_id,
-            _server: server,
+            process,
+            server,
             _packet_relay: packet_relay,
             _scratch: scratch,
         };

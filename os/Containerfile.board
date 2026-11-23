@@ -152,5 +152,8 @@ COPY --from=cfs-digest /out/digest /
 
 FROM split AS final
 COPY --from=uki /out/*.efi /boot/EFI/Linux/
+# Sealed: its UKI carries the board's device tree. tilo-vm reads the label and moves no dev VM
+# onto a layout of it.
 LABEL org.opencontainers.image.title="Tilo board dev image (not for production)" \
-      sh.tilo.image.flavour="dev"
+      sh.tilo.image.flavour="dev" \
+      sh.tilo.image.sealed="true"

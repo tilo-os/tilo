@@ -407,3 +407,144 @@ fn a_place_takes_the_ids_a_device_mints() {
         "the ids it was given, whole"
     );
 }
+
+struct TestTree {
+    tree: std::cell::RefCell<tilo_desktop_model::Layout>,
+    next_id: std::cell::Cell<u64>,
+    revision: std::cell::Cell<u64>,
+}
+
+impl crate::desktop::tree::DesktopTree for TestTree {
+    fn with_tree(&self, read: &mut dyn FnMut(&tilo_desktop_model::Layout)) {
+        read(&self.tree.borrow());
+    }
+
+    fn mint_id(&self) -> u64 {
+        let id = self.next_id.get();
+        self.next_id.set(id.saturating_add(1));
+        id
+    }
+
+    fn replace_tree(&self, tree: tilo_desktop_model::Layout) {
+        *self.tree.borrow_mut() = tree;
+        self.revision.set(self.revision.get().saturating_add(1));
+    }
+
+    fn focus_tab(&self, _: tilo_desktop_model::TabId) -> bool {
+        false
+    }
+
+    fn take_asked_floats(&self) -> Vec<crate::desktop::tree::AskedFloat> {
+        Vec::new()
+    }
+
+    fn revision(&self) -> u64 {
+        self.revision.get()
+    }
+
+    fn report_drawn(
+        &self,
+        _: tilo_desktop_model::WorkspaceId,
+        _: tilo_desktop_model::GroupId,
+        _: u32,
+    ) -> bool {
+        false
+    }
+}
+
+struct NoLayouts;
+
+impl super::Layouts for NoLayouts {
+    fn step(&self, _: &str, _: bool) -> super::Stepped {
+        super::Stepped::None
+    }
+
+    fn last_step(&self, _: &str) -> Option<(tilo_actions::Actor, String)> {
+        None
+    }
+
+    fn acted(
+        &self,
+        _: &tilo_desktop_model::Layout,
+        _: &tilo_desktop_model::Layout,
+        _: &tilo_actions::Actor,
+        _: &super::LayoutAction,
+        _: &[(tilo_desktop_model::TabId, String)],
+    ) {
+    }
+
+    fn shown(&self) -> std::collections::BTreeMap<tilo_desktop_model::TabId, String> {
+        std::collections::BTreeMap::new()
+    }
+}
+
+#[test]
+fn surface_at_falls_back_when_active_strip_is_missing_or_stale() {
+    let work_id = tilo_desktop_model::WorkspaceId::from_u128(1);
+    let mut work = tilo_desktop_model::Workspace::new(work_id, "Work");
+    work.strips = vec![
+        tilo_desktop_model::Strip::new(tilo_desktop_model::StripId(10), "First"),
+        tilo_desktop_model::Strip::new(tilo_desktop_model::StripId(11), "Second"),
+    ];
+    let tree = tilo_desktop_model::Layout {
+        active: work_id,
+        workspaces: vec![work],
+        ..Default::default()
+    };
+
+    let handle = crate::desktop::tree::TreeHandle::new(std::rc::Rc::new(TestTree {
+        tree: std::cell::RefCell::new(tree),
+        next_id: std::cell::Cell::new(100),
+        revision: std::cell::Cell::new(0),
+    }));
+    let names: super::Names = std::rc::Rc::new(|_, fallback| fallback.to_owned());
+    let words: super::Words = std::rc::Rc::new(|_, _, fallback| fallback.to_owned());
+    let layout = super::Layout::new(
+        "pat",
+        handle.clone(),
+        std::rc::Rc::new(NoLayouts),
+        names,
+        words,
+    );
+
+    // Missing active_strip record falls back to the workspace's first strip.
+    let missing = layout.surface_at().expect("a surviving row is chosen");
+    assert_eq!(missing.workspace, work_id);
+    assert_eq!(
+        missing.row, 10,
+        "a missing active_strip falls back to the workspace's first strip"
+    );
+
+    // Stale active_strip record falls back to the workspace's first surviving strip.
+    let mut stale_tree = handle.read(Clone::clone);
+    stale_tree
+        .active_strip
+        .insert(work_id, tilo_desktop_model::StripId(99));
+    handle.replace_tree(stale_tree);
+    let placed = layout.surface_at().expect("a surviving row is chosen");
+    assert_eq!(placed.workspace, work_id);
+    assert_eq!(
+        placed.row, 10,
+        "a stale active_strip falls back to the workspace's first surviving strip"
+    );
+
+    // With a stale record and no strips left at all, surface_at creates a real row instead of
+    // handing back the deleted strip's id.
+    let mut empty_tree = handle.read(Clone::clone);
+    empty_tree.workspaces[0].strips.clear();
+    empty_tree
+        .active_strip
+        .insert(work_id, tilo_desktop_model::StripId(99));
+    handle.replace_tree(empty_tree);
+    let created = layout.surface_at().expect("an empty workspace gets a row");
+    assert_ne!(created.row, 99, "the deleted strip id is never returned");
+    assert!(
+        handle.read(|tree| {
+            tree.workspaces[0]
+                .strips
+                .iter()
+                .any(|strip| strip.id.0 == created.row)
+        }),
+        "the created row exists in the workspace"
+    );
+}

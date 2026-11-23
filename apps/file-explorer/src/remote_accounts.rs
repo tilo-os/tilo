@@ -1,5 +1,5 @@
 //! The external accounts Files shows, as the workspace's accounts record holds them
-//! ([`accounts::person::PersonAccounts`], the record Settings keeps and every app follows): where
+//! ([`accounts::person::AccountList`], the record Settings keeps and every app follows): where
 //! each one mounts, and what to say when it cannot. Files reads no account file of its own; the
 //! system's cloud service, which keeps each account's folder in sync, is what reaches the server
 //! with the account's secret.
@@ -104,7 +104,7 @@ impl RemoteAccountHealth {
 /// The file accounts the workspace's accounts record holds, each with the folder it is kept in
 /// under `home` (none without one).
 pub fn from_record(
-    record: &accounts::person::PersonAccounts,
+    record: &accounts::person::AccountList,
     home: Option<&Path>,
 ) -> Vec<RemoteAccount> {
     from_accounts(&record.all(), home)

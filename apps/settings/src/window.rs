@@ -306,8 +306,8 @@ impl Chrome {
 }
 
 pub(crate) fn window(cx: &ViewCx<Settings>, mut app: SettingsApp) -> Element {
-    let accounts = cx.shared_workspace::<accounts::person::PersonAccounts>(
-        <accounts::person::PersonAccounts as ui::tilo_resource::SharedResource>::OWNER,
+    let accounts = cx.shared_workspace::<accounts::person::AccountList>(
+        <accounts::person::AccountList as ui::tilo_resource::SharedResource>::OWNER,
     );
     app.attach(cx, accounts);
     let app = app.into_shared();

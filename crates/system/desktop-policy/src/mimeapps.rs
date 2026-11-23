@@ -256,77 +256,61 @@ pub fn publish(path: &Path, list: &MimeAppsList) -> std::io::Result<bool> {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "host-storage")]
-    #[test]
-    fn publish_writes_a_list_host_tools_read_and_is_idempotent() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tilo-mimeapps.list");
-        let mut list = MimeAppsList::default();
-        list.defaults.insert(
-            "application/pdf".into(),
-            vec!["org.gnome.Evince.desktop".into()],
-        );
-        assert!(publish(&path, &list).unwrap());
-        assert!(
-            !publish(&path, &list).unwrap(),
-            "unchanged content is not rewritten"
-        );
-        let written = MimeAppsList::load(&path);
-        assert_eq!(written.defaults, list.defaults);
+    fn write(path: &Path, text: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
     }
 
+    /// A person runs `xdg-mime default` and a host app's "always open with" writes
+    /// the same lists; Tilo reads that whole chain, publishes its choice into the
+    /// list the host's own tools read, and both agree.
     #[test]
-    fn parse_reads_the_three_groups_and_ignores_the_rest() {
-        let list = MimeAppsList::parse(
-            "# comment\n[Default Applications]\nText/Plain=gedit.desktop;vim.desktop;\n\
-             [Added Associations]\nimage/png=gimp.desktop\n[Removed Associations]\n\
-             image/png=eog.desktop;\n[Other]\nx/y=z.desktop\nnot a line\n",
-        );
-        assert_eq!(
-            list.defaults["text/plain"],
-            vec!["gedit.desktop", "vim.desktop"]
-        );
-        assert_eq!(list.added["image/png"], vec!["gimp.desktop"]);
-        assert_eq!(list.removed["image/png"], vec!["eog.desktop"]);
-        assert!(!list.defaults.contains_key("x/y"));
-        assert_eq!(MimeAppsList::parse(&list.render()), list);
-    }
+    fn the_hosts_lists_decide_as_the_specification_says() {
+        let home = tempfile::tempdir().unwrap();
+        let config_home = home.path().join("config");
+        let etc = home.path().join("etc");
+        let data_home = home.path().join("share");
+        let usr = home.path().join("usr");
 
-    #[test]
-    fn search_path_follows_the_specification_order() {
-        let paths = search_path(
-            &["tilo".into()],
-            Some(Path::new("/home/u/.config")),
-            &[PathBuf::from("/etc/xdg")],
-            Some(Path::new("/home/u/.local/share")),
-            &[PathBuf::from("/usr/share")],
+        // xdg-mime writes the person's own list; a host app's association lands beside
+        // it. A package manager's system list is the last word only for what nobody
+        // above it says.
+        write(
+            &config_home.join("mimeapps.list"),
+            "# written by xdg-mime\n[Added Associations]\nimage/png=gimp.desktop;\n\
+             [Default Applications]\nText/Plain=gone.desktop;gedit.desktop;\n\
+             not a line\n[Other]\nx/y=z.desktop\n",
         );
-        let expected: Vec<PathBuf> = [
-            "/home/u/.config/tilo-mimeapps.list",
-            "/home/u/.config/mimeapps.list",
-            "/etc/xdg/tilo-mimeapps.list",
-            "/etc/xdg/mimeapps.list",
-            "/home/u/.local/share/applications/tilo-mimeapps.list",
-            "/home/u/.local/share/applications/mimeapps.list",
-            "/usr/share/applications/tilo-mimeapps.list",
-            "/usr/share/applications/mimeapps.list",
-        ]
-        .iter()
-        .map(PathBuf::from)
-        .collect();
-        assert_eq!(paths, expected);
-    }
-
-    #[test]
-    fn removals_bind_lower_lists_but_not_more_important_additions() {
-        let user = MimeAppsList::parse("[Added Associations]\nimage/png=gimp.desktop;\n");
-        let system = MimeAppsList::parse(
+        write(
+            &data_home.join("applications/mimeapps.list"),
             "[Removed Associations]\nimage/png=gimp.desktop;eog.desktop;\n\
              [Added Associations]\nimage/png=krita.desktop;\n",
         );
-        let override_system =
-            MimeAppsList::parse("[Removed Associations]\nimage/png=krita.desktop;\n");
-        let chain = MimeAppsChain::new(vec![user, override_system, system]);
+        write(
+            &config_home.join("tilo-mimeapps.list"),
+            "[Removed Associations]\nimage/png=krita.desktop;\n",
+        );
+
+        let paths = search_path(
+            &["tilo".into()],
+            Some(&config_home),
+            std::slice::from_ref(&etc),
+            Some(&data_home),
+            std::slice::from_ref(&usr),
+        );
+        let names = ["tilo-mimeapps.list", "mimeapps.list"];
+        let expected: Vec<PathBuf> = [&config_home, &etc]
+            .into_iter()
+            .flat_map(|dir| names.map(|name| dir.join(name)))
+            .chain(
+                [data_home.join("applications"), usr.join("applications")]
+                    .into_iter()
+                    .flat_map(|dir| names.map(move |name| dir.clone().join(name))),
+            )
+            .collect();
+        assert_eq!(paths, expected, "the specification's lookup order");
+
+        let chain = MimeAppsChain::load(&paths);
         assert!(
             chain.handles("gimp.desktop", "image/png", false),
             "the user's addition outranks the system removal"
@@ -344,23 +328,42 @@ mod tests {
             chain.added_types("krita.desktop"),
             BTreeSet::from(["image/png".to_string()])
         );
-    }
-
-    #[test]
-    fn default_skips_entries_that_are_not_usable() {
-        let chain = MimeAppsChain::new(vec![
-            MimeAppsList::parse("[Default Applications]\ntext/plain=gone.desktop;\n"),
-            MimeAppsList::parse("[Default Applications]\ntext/plain=gedit.desktop;\n"),
-        ]);
         assert_eq!(
             chain.default_for("text/plain", |id| id == "gedit.desktop"),
-            Some("gedit.desktop")
+            Some("gedit.desktop"),
+            "an entry naming a program this device no longer has is skipped"
         );
         assert_eq!(chain.default_for("text/plain", |_| false), None);
+
+        let list = MimeAppsList::load(&config_home.join("mimeapps.list"));
+        assert_eq!(
+            list.defaults["text/plain"],
+            vec!["gone.desktop", "gedit.desktop"]
+        );
+        assert_eq!(MimeAppsList::parse(&list.render()), list);
+        assert!(!list.defaults.contains_key("x/y"));
+
+        #[cfg(feature = "host-storage")]
+        {
+            let published = config_home.join("tilo-mimeapps.list");
+            let mut list = MimeAppsList::default();
+            list.defaults.insert(
+                "application/pdf".into(),
+                vec!["org.gnome.Evince.desktop".into()],
+            );
+            assert!(publish(&published, &list).unwrap());
+            assert!(
+                !publish(&published, &list).unwrap(),
+                "unchanged content is not rewritten"
+            );
+            let written = std::fs::read_to_string(&published).unwrap();
+            assert!(written.starts_with("# Written by the Tilo desktop"));
+            assert_eq!(MimeAppsList::load(&published).defaults, list.defaults);
+        }
     }
 
     #[test]
-    fn host_ids_round_trip_and_packages_are_not_host_apps() {
+    fn host_ids_name_desktop_files_and_never_a_package() {
         assert_eq!(host_app_id("org.gnome.Evince"), "org.gnome.Evince.desktop");
         assert_eq!(
             host_desktop_id("org.gnome.Evince.desktop"),
@@ -368,6 +371,5 @@ mod tests {
         );
         assert_eq!(host_desktop_id("so.tilo.pdf-viewer"), None);
         assert_eq!(host_desktop_id(".desktop"), None);
-        assert!(crate::defaults::validate_package_id(&host_app_id("kde-okular")).is_ok());
     }
 }

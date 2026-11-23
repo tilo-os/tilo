@@ -87,6 +87,7 @@ const SHELL_FILES: &[(&str, &str)] = &[
         "notices.tl",
         include_str!("../../../../apps/tl/shell/notices.tl"),
     ),
+    ("osd.tl", include_str!("../../../../apps/tl/shell/osd.tl")),
     (
         "overview.tl",
         include_str!("../../../../apps/tl/shell/overview.tl"),
@@ -1058,9 +1059,7 @@ impl ShellPart {
         if roots.is_empty() {
             return;
         }
-        // The package's migrations run where the shell's resources originate, as an app's do:
-        // the roots' making first, then the seed that runs once they are had.
-        self.instance.set_origin(true);
+        // The roots' making first, then the seed that runs once they are had.
         for _ in 0..3 {
             self.instance.sync();
             if !self.commit() {
@@ -1136,32 +1135,24 @@ impl ShellPart {
     /// Where the control assistive technology names `name` stands, in the desktop's logical
     /// layout `(x, y, width, height)`: what a test or a tool presses it by.
     pub fn control_bounds(&mut self, name: &str) -> Option<(f64, f64, f64, f64)> {
-        let (ox, oy) = self.widgets.placement().origin;
-        self.widgets
-            .host_mut()
-            .a11y_nodes()
-            .into_iter()
-            .filter(|(_, node)| node.label() == Some(name))
-            .find_map(|(_, node)| node.bounds())
-            .map(|rect| {
-                (
-                    f64::from(ox) + rect.x0,
-                    f64::from(oy) + rect.y0,
-                    rect.width(),
-                    rect.height(),
-                )
-            })
+        self.widgets.control_bounds(name)
     }
 
     /// Where every control assistive technology names `name` stands: a menu item repeats the
     /// name of the row it moves a place to, which a chip of that row elsewhere says too.
     pub fn control_bounds_all(&mut self, name: &str) -> Vec<(f64, f64, f64, f64)> {
         let (ox, oy) = self.widgets.placement().origin;
+        let ids: std::collections::HashSet<_> = self
+            .widgets
+            .host_mut()
+            .a11y_nodes_named(name)
+            .into_iter()
+            .collect();
         self.widgets
             .host_mut()
             .a11y_nodes()
             .into_iter()
-            .filter(|(_, node)| node.label() == Some(name))
+            .filter(|(id, _)| ids.contains(id))
             .filter_map(|(_, node)| node.bounds())
             .map(|rect| {
                 (
@@ -1327,6 +1318,22 @@ impl ShellPart {
         // The views asked for their pictures before one answered: the frames after this ask
         // again, now that a store reads them.
         self.again = true;
+    }
+
+    /// What the part shows as a host that writes it as semantic HTML reads it
+    /// (`ui::composition`): the bar, the strips and their windows as elements,
+    /// with the words each shows, for a page that shows the shell instead of
+    /// drawing it.
+    #[must_use]
+    pub fn composition(&self) -> ui::composition::Composition {
+        self.widgets.composition()
+    }
+
+    /// The scene the part's last drawn frame encoded: what a display with no working GPU
+    /// replays on the CPU (`tilo_cpu_raster`).
+    #[must_use]
+    pub fn scene(&self) -> &vello::Scene {
+        self.widgets.scene()
     }
 
     /// When the session has something of its own to draw, which the part does not know: it

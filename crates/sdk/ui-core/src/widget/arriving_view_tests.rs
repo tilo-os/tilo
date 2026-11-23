@@ -52,7 +52,8 @@ fn walk(widget: &dyn Widget, found: &mut Vec<(String, Option<String>)>) {
 }
 
 #[test]
-fn remote_data_shows_ground_then_a_skeleton_then_cross_fades_in_without_moving() {
+fn remote_data_shows_ground_then_a_skeleton_that_stands_its_minimum_then_cross_fades_in_without_moving()
+ {
     let t0 = crate::time::now();
     let mut frame = ShotFrame::new((400, 300), Theme::dark());
     let height = content_height(&mut frame);
@@ -81,18 +82,30 @@ fn remote_data_shows_ground_then_a_skeleton_then_cross_fades_in_without_moving()
 
     let skeleton = t0 + GRACE;
     assert_eq!(view.step(skeleton - Duration::from_millis(1)), Step::Ground);
-    frame_at(&mut frame, &mut view, skeleton);
+    frame_at(&mut frame, &mut view, ms(t0, 160));
+    assert_eq!(view.step(ms(t0, 160)), Step::Skeleton);
     assert_eq!(view.step(skeleton), Step::Skeleton);
 
+    // The answer lands, but the skeleton never shows for less than its minimum.
     arriving.writer().ready(height);
-    frame_at(&mut frame, &mut view, ms(t0, 200));
-    assert_eq!(
-        view.showing(),
-        Showing::Placeholder,
-        "the skeleton never flashes"
-    );
-
     let reveal = skeleton + MIN_SHOWN;
+    for at in [ms(t0, 200), ms(t0, 300), reveal - Duration::from_millis(1)] {
+        frame_at(&mut frame, &mut view, at);
+        assert_eq!(
+            view.showing(),
+            Showing::Placeholder,
+            "the skeleton never flashes: at {:?}",
+            at - t0
+        );
+    }
+    with_monotonic_time(ms(t0, 300), || {
+        assert_eq!(
+            view.next_wake_deadline(),
+            Some(reveal),
+            "a deadline, not a loop"
+        );
+    });
+
     frame_at(&mut frame, &mut view, reveal);
     assert_eq!(view.showing(), Showing::Answer);
     assert_eq!(shown(&view), "Spacer");
@@ -115,36 +128,7 @@ fn remote_data_shows_ground_then_a_skeleton_then_cross_fades_in_without_moving()
 }
 
 #[test]
-fn a_skeleton_never_shows_for_less_than_its_minimum() {
-    let t0 = crate::time::now();
-    let mut frame = ShotFrame::new((400, 300), Theme::dark());
-    let (arriving, mut view) = with_monotonic_time(t0, || {
-        let arriving: Arriving<f32> = Arriving::pending(Source::Remote);
-        let view = arriving.view(|height| Box::new(Spacer::fixed(*height)));
-        (arriving, view)
-    });
-    frame_at(&mut frame, &mut view, t0);
-    frame_at(&mut frame, &mut view, ms(t0, 160));
-    assert_eq!(view.step(ms(t0, 160)), Step::Skeleton);
-    arriving.writer().ready(10.0);
-    let reveal = t0 + GRACE + MIN_SHOWN;
-    for at in [ms(t0, 170), ms(t0, 300), reveal - Duration::from_millis(1)] {
-        frame_at(&mut frame, &mut view, at);
-        assert_eq!(view.showing(), Showing::Placeholder, "at {:?}", at - t0);
-    }
-    with_monotonic_time(ms(t0, 300), || {
-        assert_eq!(
-            view.next_wake_deadline(),
-            Some(reveal),
-            "a deadline, not a loop"
-        );
-    });
-    frame_at(&mut frame, &mut view, reveal);
-    assert_eq!(view.showing(), Showing::Answer);
-}
-
-#[test]
-fn a_failure_shows_the_error_with_a_retry_that_asks_again() {
+fn a_failure_shows_the_error_with_a_retry_that_asks_again_or_alone_when_there_is_none() {
     let t0 = crate::time::now();
     let mut frame = ShotFrame::new((400, 300), Theme::dark());
     let (arriving, mut view) = with_monotonic_time(t0, || {
@@ -175,18 +159,14 @@ fn a_failure_shows_the_error_with_a_retry_that_asks_again() {
         Step::Ground,
         "a fresh read's grace period"
     );
-}
 
-#[test]
-fn a_read_without_a_way_to_retry_shows_its_failure_alone() {
-    let t0 = crate::time::now();
-    let mut frame = ShotFrame::new((400, 300), Theme::dark());
-    let (arriving, mut view) = with_monotonic_time(t0, || {
+    // A read that offers no way to retry shows its failure alone.
+    let (lonely, mut view) = with_monotonic_time(t0, || {
         let arriving: Arriving<f32> = Arriving::pending(Source::Remote);
         let view = arriving.view(|height| Box::new(Spacer::fixed(*height)));
         (arriving, view)
     });
-    arriving.writer().fail(String::from("gone"));
+    lonely.writer().fail(String::from("gone"));
     frame_at(&mut frame, &mut view, ms(t0, 10));
     assert_eq!(view.showing(), Showing::Failure);
     let mut found = Vec::new();
@@ -324,21 +304,6 @@ tilo_test_env::scenario! {
         assert!(
             (shown_height(&view) - 20.0).abs() < 0.5,
             "the new answer shows"
-        );
-    }
-
-    phase an_arrival_paints_its_placeholder_steps_inside_its_rect;
-    {
-        let t0 = crate::time::now();
-        let mut clock = ArrivalClock::with_budget(t0, Source::Remote, frame_budget());
-        assert_eq!(ArrivalFace::new(SHAPE, &clock, t0).step(), Step::Ground);
-        let waiting = ArrivalFace::new(SHAPE, &clock, ms(t0, 2_000));
-        assert_eq!(waiting.step(), Step::Skeleton);
-        assert_eq!(waiting.description(), "Loading");
-        clock.arrive(ms(t0, 3_000));
-        assert_eq!(
-            ArrivalFace::new(SHAPE, &clock, ms(t0, 3_000)).step(),
-            Step::Shown
         );
     }
 

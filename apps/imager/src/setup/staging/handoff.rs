@@ -42,8 +42,9 @@ const PROFILE_KEYS: [&str; 12] = [
     "tpm_handoff",
 ];
 
-pub fn validate_profile(
+fn validate_profile_with(
     profile: &serde_json::Map<String, serde_json::Value>,
+    strict_hostname: bool,
 ) -> Result<(), String> {
     for (key, value) in profile {
         if !PROFILE_KEYS.contains(&key.as_str()) {
@@ -53,6 +54,9 @@ pub fn validate_profile(
         }
         let ok = match key.as_str() {
             "schema" => value.as_u64() == Some(1),
+            "hostname" if strict_hostname => value
+                .as_str()
+                .is_some_and(staging_handoff_model::valid_hostname),
             "purpose" => value
                 .as_str()
                 .is_some_and(install_profile_model::valid_purpose),
@@ -77,6 +81,24 @@ pub fn validate_profile(
     }
     Ok(())
 }
+
+pub fn validate_profile(
+    profile: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    validate_profile_with(profile, true)
+}
+
+/// Validates a profile read back from a staging record the Imager stored itself.
+/// Earlier builds could store a hostname outside the strict DNS-label rule; the
+/// record still loads and [`drop_invalid_hostname`] clears the bad value so the
+/// installer asks again.
+pub fn validate_stored_profile(
+    profile: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    validate_profile_with(profile, false)
+}
+
+pub use staging_handoff_model::drop_invalid_hostname;
 
 pub fn profile_from_install(
     profile: &crate::model::InstallProfile,
@@ -273,6 +295,43 @@ mod tests {
 
         assert_eq!(parse_live(&bytes).unwrap(), decoded);
 
+        // A plan carrying both home_exclusions and pending_computer_applications_scope
+        // crosses Plan, staging_handoff_model, Handoff, and parse_live without field loss.
+        let mut rich = handoff.clone();
+        let mut rich_migration = migration;
+        rich_migration["home_policy"] = serde_json::json!("access-read-write");
+        rich_migration["home_exclusions"] = serde_json::json!([
+            {"platform": "Unix", "units": b"Documents/Private"}
+        ]);
+        rich_migration["pending_computer_applications_scope"] = serde_json::json!({
+            "schema": 1,
+            "source_operation": handoff.operation_id,
+            "applications_operation": "44444444-4444-4444-8444-444444444444",
+            "staging_operation": "55555555-5555-4555-8555-555555555555",
+            "staging_plan_sha256": "a".repeat(64),
+            "setup_binding": "owned setup fixture",
+            "identity_public_key": vec![7u8; 32]
+        });
+        let rich_plan = imager_backend::setup::migration_handoff::Plan::parse(
+            &serde_json::to_vec(&rich_migration).unwrap(),
+        )
+        .unwrap();
+        rich.migration = Some(rich_plan.clone().into());
+        let rich_bytes = rich.to_padded(16384).unwrap();
+        let rich_shared = staging_handoff_model::Handoff::parse(&rich_bytes).unwrap();
+        assert_eq!(rich_shared, rich.staging);
+        assert_eq!(Handoff::parse(&rich_bytes).unwrap(), rich);
+        let rich_decoded = serde_json::to_value(&rich_shared).unwrap();
+        assert_eq!(rich_decoded["migration"], rich_migration);
+        assert_eq!(parse_live(&rich_bytes).unwrap(), rich_decoded);
+        assert_eq!(
+            imager_backend::setup::migration_handoff::Plan::parse(
+                &serde_json::to_vec(&rich_decoded["migration"]).unwrap()
+            )
+            .unwrap(),
+            rich_plan
+        );
+
         for pointer in [
             "/unexpected",
             "/migration/unexpected",
@@ -326,6 +385,18 @@ mod tests {
             );
             assert!(parse_live(&invalid).is_err(), "{pointer}");
         }
+
+        // Imager refuses an invalid hostname when building/validating, while read-back
+        // consumers (shared model and live helper) accept the handoff and drop the bad hostname.
+        let mut bad_host = decoded;
+        bad_host["profile"]["hostname"] = serde_json::json!("bad host");
+        let bad_host_bytes = serde_json::to_vec(&bad_host).unwrap();
+        assert!(Handoff::parse(&bad_host_bytes).is_err());
+        let parsed_shared = staging_handoff_model::Handoff::parse(&bad_host_bytes).unwrap();
+        assert!(!parsed_shared.profile.contains_key("hostname"));
+        let parsed_live = parse_live(&bad_host_bytes).unwrap();
+        assert!(parsed_live["profile"].get("hostname").is_none());
+        assert_eq!(parsed_live, serde_json::to_value(&parsed_shared).unwrap());
     }
 
     tilo_test_env::scenario! {
@@ -383,6 +454,20 @@ mod tests {
                 let mut unknown = serde_json::to_value(sample()).unwrap();
                 unknown["extra"] = 1.into();
                 assert!(Handoff::parse(&serde_json::to_vec(&unknown).unwrap()).is_err());
+
+                let mut max_host = sample();
+                max_host
+                    .profile
+                    .insert("hostname".into(), "h".repeat(63).into());
+                assert!(validate_profile(&max_host.profile).is_ok());
+                assert!(max_host.validate().is_ok());
+
+                for bad_host in ["", &"h".repeat(64), "-tilo", "tilo-", "bad host", "tilo\n"] {
+                    let mut h = sample();
+                    h.profile.insert("hostname".into(), bad_host.into());
+                    assert!(validate_profile(&h.profile).is_err(), "{bad_host:?}");
+                    assert!(h.validate().is_err(), "{bad_host:?}");
+                }
             }
 
             {

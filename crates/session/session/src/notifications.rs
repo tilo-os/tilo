@@ -19,10 +19,7 @@ use serde_json::{Map, Value};
 use settings_store::notification_policy::{EffectiveNotificationPolicy, NotificationPolicy};
 use settings_store::system_sounds::{QuietState, SystemSoundEvent};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
-use tilo_desktop_surface::notifications::{
-    self, BannerAsk, ContinuityNotificationId, Notification, NotificationIconKind,
-    NotificationPerson, QuietReason, RemoteNotificationRoute, ScheduledNotificationTarget,
-};
+use tilo_desktop_surface::notifications::BannerAsk;
 use tilo_desktop_surface::{DesktopNotifications, NotificationOutcome};
 use tilo_lock::MutexRecover as _;
 use tilo_notification_banners::{Ask, Link};
@@ -30,6 +27,11 @@ use tilo_notifications_service::{Arrival, Caller, Callers, CloseReason, Notifica
 use tilo_quick_settings::hosted::NotificationCentre;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
+use tilo_session_core::desktop::notifications;
+use tilo_session_core::desktop::notifications::{
+    ContinuityNotificationId, Notification, NotificationIconKind, NotificationPerson, QuietReason,
+    RemoteNotificationRoute, ScheduledNotificationTarget,
+};
 use tilo_session_power::PowerLink;
 
 use crate::app_icons;
@@ -398,6 +400,8 @@ pub(crate) struct SessionNotifications {
     signals: Rc<NoticeSignals>,
     opened: Opened,
     opening: RefCell<Vec<u64>>,
+    /// The kept notifications the person handed to an agent, by id, until the pass sends them.
+    handed: RefCell<Vec<u64>>,
     chosen: Chosen,
     by_sender: BTreeMap<u32, u64>,
     up: BTreeSet<u32>,
@@ -407,6 +411,9 @@ pub(crate) struct SessionNotifications {
     transient: BTreeSet<u64>,
     /// The log revision the banners were last handed.
     published: Option<u64>,
+    /// Whether the tilolang shell draws the banners itself: then the session ages them here, as a
+    /// banner's stack would, so a banner goes a few seconds after it arrived.
+    shell_banners: Cell<bool>,
     /// Counts arrivals, keeping each one's artwork apart.
     generation: u64,
     /// The Do Not Disturb change since the readout last said one: whoever flipped the switch, on
@@ -518,12 +525,14 @@ impl SessionNotifications {
             signals,
             opened,
             opening: RefCell::new(Vec::new()),
+            handed: RefCell::default(),
             chosen,
             by_sender: BTreeMap::new(),
             up: BTreeSet::new(),
             banners_up: BTreeSet::new(),
             transient: BTreeSet::new(),
             published: None,
+            shell_banners: Cell::new(false),
             generation: 0,
             quiet_changed: Cell::new(None),
             history,
@@ -758,7 +767,9 @@ impl SessionNotifications {
             count: self.desktop.unread(),
             quiet: self.quiet_status(),
             notices,
+            banners: log.active().iter().rev().map(|notice| notice.id).collect(),
             banner: log.active().last().map(|notice| notice.id),
+            undo: self.desktop.can_undo_clear(),
         }
     }
 
@@ -796,6 +807,30 @@ impl SessionNotifications {
         std::mem::take(&mut *self.opening.borrow_mut())
     }
 
+    /// Hand the notification `id` the centre shows to the agent the person keeps in the
+    /// workspace in front: what the row asks, carried out by the pass that sends it to the agent
+    /// ([`Shared::deliver_hands`]). A notification no longer shown is not handed on.
+    pub(crate) fn hand(&self, id: u64) {
+        if self.notice_of(id).is_some() {
+            self.handed.borrow_mut().push(id);
+        }
+    }
+
+    /// The notification `id`, still up as a banner or kept in the centre.
+    pub(crate) fn notice_of(&self, id: u64) -> Option<notifications::Notification> {
+        let log = self.desktop.log();
+        log.active()
+            .iter()
+            .find(|notification| notification.id == id)
+            .or_else(|| log.history_entry(id))
+            .cloned()
+    }
+
+    /// The notifications handed to an agent since the last look.
+    pub(crate) fn take_handed(&self) -> Vec<u64> {
+        std::mem::take(&mut *self.handed.borrow_mut())
+    }
+
     /// Dismiss a retained notification, or every one an app grouped: the centre and the panel list
     /// them no more.
     pub(crate) fn dismiss(&self, id: Option<u64>, group: Option<&str>) {
@@ -823,6 +858,23 @@ impl SessionNotifications {
     /// Run one of a retained notification's own actions.
     pub(crate) fn run_action(&self, id: u64, key: &str) {
         self.desktop.invoke_action(id, key);
+    }
+
+    /// Reply in a banner that offers a reply: what the person typed reaches its sender, and the
+    /// banner goes, as the banners' own reply field carries it.
+    pub(crate) fn reply(&self, id: u64, text: &str) {
+        let Some(banner) = self.banner(id) else {
+            return;
+        };
+        let takes_reply = banner
+            .actions
+            .iter()
+            .any(|(key, _)| key == tilo_notification_banners::INLINE_REPLY);
+        if let (Some(sender), true) = (banner.sender_id, takes_reply) {
+            self.daemon.replied(sender, text);
+            self.desktop
+                .answer(tilo_desktop_surface::notifications::BannerAsk::Dismiss(id));
+        }
     }
 
     /// Clear the centre, or bring back what the last Clear all took.
@@ -867,6 +919,12 @@ impl SessionNotifications {
         self.desktop.next_deadline()
     }
 
+    /// The tilolang shell draws this device's banners itself: the session ages them here, so a
+    /// banner goes a few seconds after it arrived rather than waiting for a dismissal.
+    pub(crate) fn set_shell_banners(&self) {
+        self.shell_banners.set(true);
+    }
+
     /// The places the person chose from a role's notices since this was last taken.
     pub(crate) fn take_places_chosen(&self) -> Vec<Place> {
         std::mem::take(&mut *self.places_chosen.borrow_mut())
@@ -897,6 +955,21 @@ impl SessionNotifications {
     /// `token` mints the token an app raises its window by. Answers whether a banner the person was
     /// not shown before is up now, for their visual alert.
     pub(crate) fn step(&mut self, token: &mut dyn FnMut() -> Option<String>) -> bool {
+        // The tilolang shell draws its banners from the log, so the session ages them: every live
+        // banner counts as on screen, so one goes a few seconds after it arrived, with nothing
+        // over it holding it.
+        if self.shell_banners.get() {
+            let now = ui::time::now();
+            let on_screen: Vec<u64> = self
+                .desktop
+                .log()
+                .active()
+                .iter()
+                .rev()
+                .map(|notice| notice.id)
+                .collect();
+            self.desktop.present(now, &on_screen, false);
+        }
         // Banners whose time on screen ran out leave first.
         self.desktop.expire(ui::time::now());
         self.settle(CloseReason::Expired);
@@ -1208,10 +1281,31 @@ pub enum CentreAction {
     #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     UndoClear,
+    /// Reply in a banner that offers a reply: what the person typed reaches its sender, and the
+    /// banner goes
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    Reply {
+        /// The notification's id, as the banners carry it.
+        #[param("The notification")]
+        notification: u64,
+        /// What the person typed.
+        #[param("What to say back")]
+        text: String,
+    },
     /// Open one of the notifications the centre kept
     #[effect(kind = "outside")]
     #[effect(own_device)]
     OpenNotice {
+        /// The notification's id, as the rows carry it.
+        #[param("The notification")]
+        notification: u64,
+    },
+    /// Hand a notification to the agent the person keeps: it works on what it was told, and
+    /// its answer comes where their conversation with it is
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    HandToAgent {
         /// The notification's id, as the rows carry it.
         #[param("The notification")]
         notification: u64,
@@ -1284,7 +1378,9 @@ impl Service for Served {
                 "act" => t("session-notifications-act"),
                 "clear" => t("session-notifications-clear"),
                 "undo-clear" => t("session-notifications-undo-clear"),
+                "reply" => t("session-notifications-reply"),
                 "open-notice" => t("session-notifications-open"),
+                "hand-to-agent" => t("session-notifications-hand-to-agent"),
                 _ => continue,
             };
             spec.type_mut().label = label;
@@ -1328,8 +1424,14 @@ impl Service for Served {
                 .run_action(notification, &action),
             CentreAction::Clear => self.notifications.borrow().clear(),
             CentreAction::UndoClear => self.notifications.borrow().undo_clear(),
+            CentreAction::Reply { notification, text } => {
+                self.notifications.borrow().reply(notification, &text);
+            }
             CentreAction::OpenNotice { notification } => {
                 self.notifications.borrow().ask_open(notification);
+            }
+            CentreAction::HandToAgent { notification } => {
+                self.notifications.borrow().hand(notification);
             }
             CentreAction::Notify {
                 title,
@@ -1366,6 +1468,36 @@ impl crate::Shared {
     /// What the session's own roles tell the person, as the one place that shows it.
     pub(crate) fn telling(&self) -> Rc<dyn Notices> {
         RoleNotices::of(&self.notifications)
+    }
+
+    /// Send each kept notification the person handed to an agent ([`SessionNotifications::hand`])
+    /// to the agent they keep in the workspace in front, through the session's one send: the
+    /// notification's title is what it is asked, and the whole of it is what the agent reads. A
+    /// new agent is kept where the workspace keeps none, as the canvas and search do.
+    pub(crate) fn deliver_hands(&self) {
+        let handed = self.notifications.borrow().take_handed();
+        for id in handed {
+            let Some(notification) = self.notifications.borrow().notice_of(id) else {
+                continue;
+            };
+            let title: String = notification.title.chars().take(240).collect();
+            let body = if notification.body.is_empty() {
+                title.clone()
+            } else {
+                format!("{title}\n\n{}", notification.body)
+            };
+            let workspace = self.active_workspace_id();
+            let to = crate::agents::agent_recipient(self.search.kept_agent(&workspace));
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("to".into(), serde_json::json!([to]));
+            arguments.insert("text".into(), serde_json::json!(body));
+            arguments.insert("workspace".into(), serde_json::json!(workspace));
+            // The send goes out in the pass that took it, as any other: its answer is nobody's
+            // here, and the person reads where it landed in Chat.
+            if let Err(error) = self.sends.send(None, &arguments) {
+                tracing::warn!(%error, "a notification was not handed to an agent");
+            }
+        }
     }
 
     /// Open what the person chose on a scheduled notification, in the workspace that scheduled it,

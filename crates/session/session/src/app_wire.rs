@@ -34,9 +34,8 @@ use tilo_workspace_service::apps::collab_broker::{BrokerChannels, BrokerHandle, 
 use tilo_workspace_service::apps::collab_outbound::PeerPublisher;
 use tilo_workspace_service::apps::services::{
     ApplicationServices, BrowserServiceSessionServices, Caller, DisplayControlServices,
-    DriveServices, ProcessServices, PublishedResources, Reading, ResourceWatch,
-    ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices,
-    WifiContinuityServices, WorkspaceMemberships,
+    DriveServices, ProcessServices, PublishedResources, Reading, ResourceWatch, SpeakerChange,
+    SpeakerServices, WifiContinuityServices, WorkspaceMemberships,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -366,9 +365,8 @@ pub struct Sealed {
 
 /// What this session hands the broker besides the link and the launcher: the
 /// board every app's live activity shows on, the index its publications land
-/// in, the session it decides a workspace against, the shortcuts it saves and
-/// runs, the workspace's activity it serves, and the runs of what people ask
-/// its agents.
+/// in, the session it decides a workspace against, the workspace's activity it
+/// serves, and the runs of what people ask its agents.
 pub struct Hosted {
     pub live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
     /// The calls this session's apps join: the service a view's call steps
@@ -379,7 +377,6 @@ pub struct Hosted {
     /// what search finds of an app that never opened them here.
     pub records: Option<std::sync::Arc<crate::resource_index::RecordIndex>>,
     pub layout: std::sync::Arc<LayoutAuthority>,
-    pub shortcuts: std::sync::Arc<ShortcutLibrary>,
     pub activity: std::sync::Arc<ActivityWire>,
     /// Who keeps each workspace's agents, as its record of them names them:
     /// what the broker admits an agent's session on.
@@ -459,10 +456,6 @@ pub struct Hosted {
     /// Files' clipboard: what a person copied or cut there, pasted into a
     /// folder of this desktop's, and what it put on the desktop's clipboard.
     pub file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
-    /// The person's own store, which the broker keeps their own records in as
-    /// well as in this desktop: what their other devices' records reach this
-    /// session's apps through. `None` on a session that keeps none.
-    pub personal: Option<tilo_peer_state::PersonalSync>,
     /// What Browser's asks for vault items are answered with: nothing in a person's own
     /// session, and the workspace's server's word where this session holds a workspace's
     /// Browser.
@@ -590,102 +583,6 @@ pub(crate) fn owner_publisher(
     })
 }
 
-/// The workspace's shortcuts as the broker keeps and runs them: a shortcut a
-/// person saves is one of its workspace's settings, and a run executes on
-/// `runtime`.
-pub struct ShortcutLibrary {
-    runtime: tokio::runtime::Handle,
-    /// The workspaces this device's records are held in: where a saved shortcut
-    /// is written. A session that holds none saves none.
-    engine: Option<std::sync::Arc<crate::engine::Engine>>,
-}
-
-impl ShortcutLibrary {
-    /// A library whose runs execute on `runtime`, saving into the workspaces of
-    /// `engine`.
-    #[must_use]
-    pub fn new(
-        runtime: tokio::runtime::Handle,
-        engine: Option<std::sync::Arc<crate::engine::Engine>>,
-    ) -> Self {
-        Self { runtime, engine }
-    }
-}
-
-/// Store `request`'s change in its workspace: signed as the saver's own device
-/// ([`tilo_peer_state::workspace::sign_saved_shortcut`]), then written into the
-/// workspace's document as one of its settings. Every device of the workspace
-/// admits the write by the same rule, and reads the shortcut back from the
-/// document.
-async fn save_shortcut(
-    engine: std::sync::Arc<crate::engine::Engine>,
-    request: ShortcutLibraryRequest,
-) -> Result<(), String> {
-    let (key, device) = tilo_identity::broker::trusted_current_device(&request.workspace)
-        .map_err(|error| format!("this device cannot sign in the workspace: {error}"))?;
-    if request.actor.person_id() != Some(hex::encode(device.user_public_key).as_str()) {
-        return Err("a shortcut is saved from its saver's own device".into());
-    }
-    let change = match &request.change {
-        tilo_automation::ShortcutChange::Save(shortcut) => {
-            let mut shortcut = shortcut.as_ref().clone();
-            // A trigger this device cannot watch would be saved into a shortcut
-            // that never runs: the person is told now.
-            for trigger in &shortcut.triggers {
-                crate::automation::triggers::validate_trigger(trigger)?;
-            }
-            tilo_peer_state::workspace::sign_saved_shortcut(
-                &request.workspace,
-                &mut shortcut,
-                &device,
-                &key,
-            )?;
-            tilo_automation::ShortcutChange::Save(Box::new(shortcut))
-        }
-        delete @ tilo_automation::ShortcutChange::Delete(_) => delete.clone(),
-    };
-    let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
-        workspace: request.workspace,
-        operation: tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
-            invocation: uuid::Uuid::new_v4(),
-            caller: device,
-            command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Settings(
-                tilo_peer_state::workspace_membership::SettingsChange::Shortcuts(change),
-            ),
-        },
-    };
-    engine
-        .owner()
-        .commit_workspace_membership_command(request, &key, std::time::SystemTime::now())
-        .await
-        .map(drop)
-}
-
-impl ShortcutLibraryServices for ShortcutLibrary {
-    fn keymap(&self) -> settings_store::hardware::ShortcutConfig {
-        settings_store::hardware::ShortcutConfig::load()
-    }
-
-    fn store(&self, request: ShortcutLibraryRequest) -> ShortcutStore {
-        let Some(engine) = self.engine.clone() else {
-            return Box::pin(std::future::ready(Err(
-                "this session keeps no shortcuts".to_owned()
-            )));
-        };
-        let runtime = self.runtime.clone();
-        Box::pin(async move {
-            runtime
-                .spawn(save_shortcut(engine, request))
-                .await
-                .map_err(|_| "this session stopped before it saved the shortcut".to_owned())?
-        })
-    }
-
-    fn runtime(&self) -> Result<tokio::runtime::Handle, String> {
-        Ok(self.runtime.clone())
-    }
-}
-
 /// The session the broker's thread decides against: the workspaces it shows and
 /// their shortcuts, as the session's loop last published them.
 ///
@@ -707,6 +604,9 @@ pub struct LayoutAuthority {
     /// Who is here in each workspace, as presence names and colours them: what the broker tells the
     /// apps there of each member ([`Self::set_people`]).
     people: Mutex<std::collections::HashMap<String, Vec<collab_types::Member>>>,
+    /// This device's engine, whose workspaces the tree does not show are still the session's: the
+    /// person's own workspace above all.
+    held: Option<std::sync::Arc<crate::engine::Engine>>,
 }
 
 /// Who the person at this device is, as the broker's decisions name them.
@@ -733,7 +633,54 @@ impl LayoutAuthority {
             revocations,
             names,
             people: Mutex::new(std::collections::HashMap::new()),
+            held: None,
         }
+    }
+
+    /// The authority over `tree`, also answering for the workspaces `held` — this device's
+    /// engine — keeps but the tree does not show. The person's own workspace is one: it is
+    /// theirs, held beside the shell, and what its governance says decides a read or a change in
+    /// it as an on-screen workspace's does.
+    #[must_use]
+    pub fn holding(mut self, held: Option<std::sync::Arc<crate::engine::Engine>>) -> Self {
+        self.held = held;
+        self
+    }
+
+    /// `workspace` as this device's engine describes it: its name, policy, sandbox and the names
+    /// of its people, as their governance has them. `None` for a workspace this device does not
+    /// hold.
+    fn held_workspace(&self, workspace: &str) -> Option<tilo_desktop_model::Workspace> {
+        let engine = self.held.as_deref()?;
+        let id = tilo_desktop_model::WorkspaceId::parse(workspace)?;
+        engine
+            .owner()
+            .with_current(id, |view| {
+                let peer = view.peer();
+                let Some(document) = peer.admitted_workspace() else {
+                    return Ok(None);
+                };
+                let mut described = tilo_desktop_model::Workspace::new(id, String::new());
+                tilo_peer_state::workspace::adopt_workspace(&mut described, document, &[]);
+                let Ok(sandbox) = peer.governance().governed_sandbox() else {
+                    return Ok(None);
+                };
+                described.sandbox = sandbox;
+                if let Ok(people) = peer.governance().governed_members(tilo_clock::wall()) {
+                    described.named_people(
+                        people
+                            .members
+                            .iter()
+                            .filter(|member| !member.removed)
+                            .filter_map(|member| {
+                                Some((member.id.person_id()?, member.name.as_str()))
+                            }),
+                    );
+                }
+                Ok(Some(described))
+            })
+            .ok()
+            .flatten()
     }
 
     /// Who is here in `workspace` now: each person by their user root, with the name and colour
@@ -823,16 +770,23 @@ fn claim_earlier_owners(tree: &mut tilo_desktop_model::Layout, names: &Names) {
 
 /// The session as the identity service reads it: an app signs in the person's
 /// workspace through the session this session shows, so the workspace the
-/// request names is the one the person sees it in.
+/// request names is the one the person sees it in — or one this device holds
+/// beside the shell, the person's own above all.
 impl tilo_identity::broker::WorkspaceMembership for LayoutAuthority {
     fn with_workspace(
         &self,
         workspace: &tilo_desktop_model::WorkspaceId,
         read: &mut dyn FnMut(&tilo_desktop_model::Workspace),
     ) {
-        let tree = self.tree.lock_recover();
-        if let Some(held) = tree.workspaces.iter().find(|held| &held.id() == workspace) {
-            read(held);
+        {
+            let tree = self.tree.lock_recover();
+            if let Some(held) = tree.workspaces.iter().find(|held| &held.id() == workspace) {
+                read(held);
+                return;
+            }
+        }
+        if let Some(held) = self.held_workspace(&workspace.to_string()) {
+            read(&held);
         }
     }
 }
@@ -843,16 +797,46 @@ impl WorkspaceAuthority for LayoutAuthority {
         Ok(())
     }
 
+    /// A workspace this session acts in is one the shell shows, or one this device holds beside
+    /// it: the person's own workspace is never on the shell, and a read or a change in it is
+    /// decided by its governance all the same.
+    fn with_workspace(
+        &self,
+        workspace: &str,
+        read: &mut dyn FnMut(Option<&tilo_desktop_model::Workspace>),
+    ) -> Result<(), String> {
+        {
+            let tree = self.tree.lock_recover();
+            if let Some(shown) = tilo_broker_core::services::workspace_in(&tree, workspace) {
+                read(Some(shown));
+                return Ok(());
+            }
+        }
+        if let Some(held) = self.held_workspace(workspace) {
+            read(Some(&held));
+            return Ok(());
+        }
+        read(None);
+        Ok(())
+    }
+
     /// A workspace this session shows is one this device was let into, so its
     /// shortcuts are proven against the revocations its workspace records. A
+    /// held workspace the shell does not show is let into all the same. A
     /// workspace whose document this device does not hold — a session kept from
     /// before it joined, or one it left — revokes nothing here: the shortcuts
     /// it shows are proven by what it does hold, and a call it can no longer
     /// make is refused elsewhere.
     fn workspace_revocations(&self, workspace: &str) -> Option<tilo_user_identity::RevocationList> {
-        let tree = self.tree.lock_recover();
-        tilo_broker_core::services::workspace_in(&tree, workspace)?;
-        Some(self.revocations.of(workspace).unwrap_or_default())
+        let shown = {
+            let tree = self.tree.lock_recover();
+            tilo_broker_core::services::workspace_in(&tree, workspace).is_some()
+        };
+        let held = shown
+            || self.held.as_ref().is_some_and(|engine| {
+                tilo_desktop_model::WorkspaceId::parse(workspace).is_some_and(|id| engine.holds(id))
+            });
+        held.then(|| self.revocations.of(workspace).unwrap_or_default())
     }
 
     /// Every write the broker's checks read here is announced: the session on [`Self::publish`],
@@ -1111,7 +1095,6 @@ fn broker_services(
         content,
         records,
         layout,
-        shortcuts,
         activity,
         agents,
         agent_sessions,
@@ -1134,11 +1117,9 @@ fn broker_services(
         settings_steps,
         nearby,
         file_clipboard,
-        personal,
         item_lending,
         fanout: _,
     } = hosted;
-    let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
     // What each window this session runs shows, kept with its launches: read
     // by the service a window's app speaks on, and by the session's own passes.
     let window_notes = launches.notes();
@@ -1242,9 +1223,11 @@ fn broker_services(
         workspace_governance: BrokerService::unserved(
             "workspace grants are given in the session's own sheets, not by an app",
         ),
-        // A shortcut a person saves lands on the shell, and a shortcut's run
-        // executes on the session's runtime.
-        shortcut_library: BrokerService::served(shortcut_library),
+        // A shortcut a person saves lands in its workspace, and a shortcut's run executes on the
+        // device's runtime: this session installs neither.
+        shortcut_library: BrokerService::unserved(
+            "shortcuts are saved and run by the device's own broker, not by this session",
+        ),
         // The device's shortcut catalogue, as the shortcut guide and
         // Settings read it: the broker hands over the keymap, and only this
         // machine's callers are offered it.
@@ -1353,10 +1336,6 @@ fn broker_services(
         workspace_nodes: BrokerService::when(crate::workspace_nodes::WorkspaceNodes::service(
             engine.as_ref(),
         )),
-        // The person's own records, kept in their store as well as in this
-        // desktop: what an app writes of its own scope reaches their other
-        // devices, and what those wrote reaches the app here.
-        personal: BrokerService::when(personal),
         // A workspace placed on a host has its records changed there: the
         // person's actions on them are sent to the host, which decides and
         // runs them, and the change reaches the windows here by sync. The
@@ -1404,6 +1383,11 @@ fn broker_services(
                             tilo_rt::app().handle().clone(),
                         ),
                     ),
+                    // The public web a shortcut's step and an app read: the same search and
+                    // page read the workspace's agents look things up with.
+                    std::sync::Arc::new(tilo_workspace_service::agents::WebSearch::new(
+                        tilo_rt::app().handle().clone(),
+                    )),
                 ],
                 // An agent's task writes its programs; this session's links runs them as the
                 // steps of the run the task is in. An agent whose turn is worked in its own
@@ -1524,9 +1508,6 @@ pub(crate) struct AppWire {
     /// Files' clipboard, whose copies the loop puts on the desktop's
     /// clipboard: what the person pastes into any other app.
     pub(crate) file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
-    /// The person's own store open to their other devices, held so its links
-    /// and the writes it keeps end with the session.
-    pub(crate) _personal: Option<tilo_workspace_service::apps::personal::Links>,
     /// The workspaces' trees served to the files daemon that mounts them, until the session ends.
     pub(crate) _files_tree: Option<tilo_workspace_service::files::socket::Serving>,
     /// The hosts of the workspaces this device takes part in but does not host: where the
@@ -1569,9 +1550,12 @@ impl AppWire {
             call: ui::CallPresence {
                 channel: call.channel.clone(),
                 name,
+                bridge: None,
             },
             camera: call.camera,
             screen: call.screen,
+            muted: call.muted,
+            deafened: call.deafened,
         });
         sync.in_call(presence.clone());
         self.calls.follow(sync, presence.as_ref());
@@ -1760,7 +1744,6 @@ mod tests {
                 crate::engine::revocations_of(None),
                 Names::default(),
             )),
-            shortcuts: library(),
             activity: crate::activity_provider::wire(requests()),
             agents: None,
             agent_sessions: None,
@@ -1783,7 +1766,6 @@ mod tests {
             file_clipboard: std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
                 std::sync::Arc::new(|| ()),
             )),
-            personal: None,
             item_lending: std::sync::Arc::default(),
             fanout: std::sync::Arc::new(FanoutState::new()),
             endpoint: None,
@@ -1797,20 +1779,6 @@ mod tests {
                 tilo_workspace_service::service::ServiceSlot::default(),
             ),
         }
-    }
-
-    /// A shortcut library whose runs would execute on a runtime of the
-    /// tests' own. Nothing starts a run here: these tests publish and read,
-    /// they save no shortcut.
-    fn library() -> std::sync::Arc<ShortcutLibrary> {
-        static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-        let runtime = RUNTIME.get_or_init(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("a runtime for shortcut runs")
-        });
-        std::sync::Arc::new(ShortcutLibrary::new(runtime.handle().clone(), None))
     }
 
     tilo_test_env::scenario! {
@@ -2291,10 +2259,10 @@ mod tests {
         );
         assert_eq!(
             services.host_steps.len(),
-            7,
+            8,
             "the steps this session serves are the workspace's activity, a ticket for a new \
              computer, identity administration, the person's hosting account, the machines they \
-             planned, its own actions and its agents' transforms"
+             planned, its own actions, its agents' transforms and the web its shortcuts reach"
         );
         let providers: Vec<&str> = services
             .host_steps
@@ -2325,6 +2293,10 @@ mod tests {
             (
                 tilo_workspace_service::agents::assistant::transforms::PROVIDER,
                 "a shortcut's AI step and an app's ask are transformed by this device's agents",
+            ),
+            (
+                tilo_workspace_service::agents::WEB_SEARCH_PROVIDER,
+                "a shortcut's step and an app search and read the web",
             ),
         ] {
             assert!(

@@ -1,5 +1,5 @@
 //! Exact, cancellable image copy and read-back verification on native files.
-use crate::media_model::SourceIdentity;
+use crate::imager_model::SourceIdentity;
 use sha2::{Digest, Sha256};
 use std::{
     fs::OpenOptions,

@@ -225,22 +225,18 @@ impl VolumeStores {
             let held = storage(&store.records)?;
             let name = format!("{}.mounted-volume.json", primary_store.operation);
             check_cancel(cancel)?;
-            match held.open_read(OsStr::new(&name), Privacy::OwnerOnly) {
-                Ok(file) => {
-                    if read_private(&file)? != bytes {
-                        return Err(failure("Volume conflicts with protected matching retry"));
-                    }
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => held
-                    .publish(
-                        OsStr::new(&name),
-                        &bytes,
-                        PublishMode::IfAbsent,
-                        Privacy::OwnerOnly,
-                    )
-                    .map_err(io::Error::other)?,
-                Err(error) => return Err(error),
-            }
+            crate::record::publish_or_match(
+                &held,
+                &name,
+                &bytes,
+                MAX_RECORD,
+                |metadata| {
+                    metadata.uid() == 0
+                        && metadata.nlink() == 1
+                        && metadata.mode().trailing_zeros() >= 6
+                },
+                || failure("Volume conflicts with protected matching retry"),
+            )?;
             let file = held.open_read(OsStr::new(&name), Privacy::OwnerOnly)?;
             result.volumes.push(VolumeStore {
                 namespace,

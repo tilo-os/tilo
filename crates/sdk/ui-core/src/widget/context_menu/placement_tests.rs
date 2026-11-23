@@ -25,37 +25,57 @@ tilo_test_env::scenario! {
     /// Each phase was a test of its own and builds its own fixture.
     fn a_menu_stands_where_its_opening_put_it_inside_the_window;
 
+    // Opened from a control, the menu hangs one anchor gap under it with its
+    // leading edge on the control's; at the window's trailing edge it lines up
+    // with the control's trailing edge, and near the bottom it opens above.
     phase a_menu_opened_from_the_keyboard_stands_under_its_row;
     {
         let _settled = crate::motion::testing::settled();
         let mut m = menu();
-        let row = row(100.0);
-        m.open_anchored(row, WINDOW);
+        let anchor = row(100.0);
+        m.open_anchored(anchor, WINDOW);
         let rect = m.get_rect();
         assert!(
-            rect.y0 >= row.y1 && rect.y0 - row.y1 <= ANCHOR_GAP + 0.5,
-            "directly under the row: {rect:?} vs {row:?}"
+            rect.y0 >= anchor.y1 && rect.y0 - anchor.y1 <= ANCHOR_GAP + 0.5,
+            "directly under the row: {rect:?} vs {anchor:?}"
         );
         assert!(
-            (rect.x0 - row.x0).abs() < 1.0,
-            "hugging its leading edge: {rect:?} vs {row:?}"
+            (rect.x0 - anchor.x0).abs() < 1.0,
+            "hugging its leading edge: {rect:?} vs {anchor:?}"
         );
-    }
-
-    phase a_menu_near_the_foot_of_the_window_flips_above_its_row;
-    {
-        let _settled = crate::motion::testing::settled();
+        let button = Rect::new(300.0, 16.0, 332.0, 48.0);
         let mut m = menu();
-        let row = row(540.0);
-        m.open_anchored(row, WINDOW);
+        m.open_anchored(button, WINDOW);
+        m.layout_within(&mut TextRenderer::new(), &Theme::dark());
+        let rect = m.get_rect();
+        assert!((rect.x0 - button.x0).abs() < 1e-9, "{rect:?}");
+        assert!(
+            (rect.y0 - (button.y1 + ANCHOR_GAP)).abs() < 1e-9,
+            "{rect:?}"
+        );
+
+        let more = Rect::new(736.0, 16.0, 768.0, 48.0);
+        let mut m = menu();
+        m.open_anchored(more, WINDOW);
+        m.layout_within(&mut TextRenderer::new(), &Theme::dark());
         let rect = m.get_rect();
         assert!(
-            rect.y1 <= row.y0 && row.y0 - rect.y1 <= ANCHOR_GAP + 0.5,
-            "above the row where below is too small: {rect:?} vs {row:?}"
+            (rect.x1 - more.x1).abs() < 1e-9,
+            "trailing-aligned: {rect:?}"
+        );
+        assert!(rect.y0 >= more.y1, "under its trigger: {rect:?}");
+
+        let low = row(540.0);
+        let mut m = menu();
+        m.open_anchored(low, WINDOW);
+        let rect = m.get_rect();
+        assert!(
+            rect.y1 <= low.y0 && low.y0 - rect.y1 <= ANCHOR_GAP + 0.5,
+            "above the row where below is too small: {rect:?} vs {low:?}"
         );
     }
 
-    phase a_menu_opened_at_the_pointer_stands_at_the_pointer;
+    phase a_menu_opened_at_the_pointer_stands_at_the_pointer_and_stays_in_the_window;
     {
         let _settled = crate::motion::testing::settled();
         let mut m = menu();
@@ -67,11 +87,7 @@ tilo_test_env::scenario! {
             "the pointer is the menu's corner, with no gap: {rect:?}"
         );
         assert_eq!(m.position(), Some([300.0, 200.0]));
-    }
 
-    phase a_menu_opened_past_the_windows_corner_stays_inside_it;
-    {
-        let _settled = crate::motion::testing::settled();
         let mut m = menu();
         m.open_at_clamped([790.0, 590.0], WINDOW);
         let rect = m.get_rect();
@@ -82,6 +98,26 @@ tilo_test_env::scenario! {
         assert!(
             rect.y0 >= WINDOW.y0 && rect.y1 <= WINDOW.y1 - PADDING + 0.5,
             "{rect:?}"
+        );
+
+        // The same point-placed menu painted as an overlay at the window's
+        // bottom-trailing corner stays in the window it is presented in.
+        let mut m = menu();
+        m.open_at([1270.0, 790.0]);
+        let presence = PresenceCtx::default();
+        presence.viewport.set(Some(Rect::new(0.0, 0.0, 1280.0, 800.0)));
+        let mut scene = Scene::new();
+        m.draw_overlay(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &presence,
+        );
+        let rect = m.get_rect();
+        assert!(
+            rect.x0 >= 0.0 && rect.x1 <= 1280.0 && rect.y0 >= 0.0 && rect.y1 <= 800.0,
+            "a menu at the bottom-trailing corner stays in the window: {rect:?}"
         );
     }
 

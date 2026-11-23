@@ -221,4 +221,71 @@ impl BlockEditor {
         }
         active
     }
+
+    /// A view asking for a formatting command, as a toolbar beside the document does: `bold`,
+    /// `italic`, `underline`, `strike`, `bullets`, `numbers`, `heading:<level>` or
+    /// `link:<address>`, then a count the view changes every time it asks (`bold:1`,
+    /// `bold:2`), so the same command asked twice is two commands. The ask is answered once:
+    /// the same ask again changes nothing. Answers whether it changed the document.
+    pub fn format_asked(&mut self, asked: Option<String>) -> bool {
+        if asked == self.asked_format {
+            return false;
+        }
+        self.asked_format.clone_from(&asked);
+        let Some(asked) = asked else {
+            return false;
+        };
+        // The count is after the last colon; what the ask is, is before it.
+        let command = asked.rsplit_once(':').map_or(asked.as_str(), |(it, _)| it);
+        let (name, argument) = command
+            .split_once(':')
+            .map_or((command, ""), |(name, argument)| (name, argument));
+        match name {
+            "bold" => self.toggle_mark(Mark::Bold),
+            "italic" => self.toggle_mark(Mark::Italic),
+            "underline" => self.toggle_mark(Mark::Underline),
+            "strike" => self.toggle_mark(Mark::Strikethrough),
+            "bullets" => self.toggle_list(false),
+            "numbers" => self.toggle_list(true),
+            "heading" => match argument.trim().parse::<u8>() {
+                Ok(0) => self.set_heading(None),
+                Ok(level) => self.set_heading(Some(level)),
+                Err(_) => false,
+            },
+            "link" => self.insert_link(argument),
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Block, CursorPlacement};
+
+    /// A toolbar's ask formats once: the same ask again is the command it already ran, and what
+    /// the ask names is what it formats.
+    #[test]
+    fn a_formatting_ask_applies_once() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph("hello world")]);
+        editor.focus_block(0, CursorPlacement::End);
+        assert!(editor.format_asked(Some("bold:1".into())), "the ask bolds");
+        assert_eq!(editor.active_marks(), [Mark::Bold]);
+        assert!(
+            !editor.format_asked(Some("bold:1".into())),
+            "the same ask is the command it already ran"
+        );
+        assert_eq!(editor.active_marks(), [Mark::Bold], "it is still bold");
+        assert!(
+            editor.format_asked(Some("bold:2".into())),
+            "a new ask unbolds"
+        );
+        assert!(editor.active_marks().is_empty());
+        assert!(
+            !editor.format_asked(Some("nonsense:1".into())),
+            "a command the editor has not is no command"
+        );
+        assert!(!editor.format_asked(None));
+    }
 }

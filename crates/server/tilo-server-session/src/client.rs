@@ -277,15 +277,6 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::CompactVolunteer { workspace_id }
         | Envelope::CompactRequest { workspace_id, .. }
         | Envelope::Compacted { workspace_id, .. }
-        | Envelope::VoiceCall { workspace_id, .. }
-        | Envelope::VoiceCallResult { workspace_id, .. }
-        | Envelope::VoiceJoin { workspace_id, .. }
-        | Envelope::VoiceGranted { workspace_id, .. }
-        | Envelope::VoiceRefused { workspace_id, .. }
-        | Envelope::VoiceLeave { workspace_id, .. }
-        | Envelope::VoiceCalls { workspace_id }
-        | Envelope::VoiceCallList { workspace_id, .. }
-        | Envelope::VoiceShow { workspace_id, .. }
         | Envelope::OpenDocument { workspace_id, .. }
         | Envelope::DocumentOpened { workspace_id, .. }
         | Envelope::DocumentContentWant { workspace_id, .. }

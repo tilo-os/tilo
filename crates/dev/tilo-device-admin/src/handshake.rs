@@ -18,7 +18,7 @@
 
 use ed25519_dalek::{Signer as _, Verifier as _};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 
 use tilo_user_identity::{DeviceCert, DeviceCertError, RevocationList, verify_device_cert_at};
 
@@ -31,8 +31,10 @@ const PROOF_TAG: &[u8] = b"tilo-device-admin-proof-v1\0";
 /// No handshake frame comes near this; a certificate is a few hundred bytes.
 pub const MAX_FRAME: usize = 16 * 1024;
 
+const FRAMING: wire_frame::Framing = wire_frame::Framing::big_endian(MAX_FRAME);
+
 /// First frame: dialer → device.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
     pub version: u32,
     pub cert: DeviceCert,
@@ -40,13 +42,13 @@ pub struct Hello {
 }
 
 /// Second frame: device → dialer.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Answer {
     Challenge(Box<Challenge>),
     Refused(Refusal),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Challenge {
     pub cert: DeviceCert,
     pub nonce: [u8; 32],
@@ -55,14 +57,14 @@ pub struct Challenge {
 }
 
 /// Third frame: dialer → device.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Proof {
     /// 64 bytes: the dialer's device key over [`Role::Administrator`]'s digest.
     pub proof: Vec<u8>,
 }
 
 /// Last frame: device → dialer.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Verdict {
     /// The stream now carries tilo-vmd's requests; `session` names this
     /// session in the device's journal.
@@ -293,13 +295,10 @@ pub async fn write_frame<T: Serialize + Sync>(
     writer: &mut (impl AsyncWrite + Unpin + Send),
     frame: &T,
 ) -> std::io::Result<()> {
-    let body = postcard::to_stdvec(frame).map_err(std::io::Error::other)?;
-    if body.len() > MAX_FRAME {
-        return Err(std::io::Error::other("handshake frame too large"));
-    }
-    let len = u32::try_from(body.len()).map_err(std::io::Error::other)?;
-    writer.write_all(&len.to_be_bytes()).await?;
-    writer.write_all(&body).await?;
+    FRAMING
+        .write_value_async(writer, frame)
+        .await
+        .map_err(std::io::Error::from)?;
     writer.flush().await
 }
 
@@ -307,19 +306,11 @@ pub async fn write_frame<T: Serialize + Sync>(
 pub async fn read_frame<T: for<'de> Deserialize<'de>>(
     reader: &mut (impl AsyncRead + Unpin + Send),
 ) -> std::io::Result<T> {
-    let mut prefix = [0_u8; 4];
-    reader.read_exact(&mut prefix).await?;
-    let len = usize::try_from(u32::from_be_bytes(prefix)).map_err(std::io::Error::other)?;
-    if len > MAX_FRAME {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "handshake frame too large",
-        ));
-    }
-    let mut body = vec![0_u8; len];
-    reader.read_exact(&mut body).await?;
-    postcard::from_bytes(&body)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    FRAMING
+        .read_value_async(reader)
+        .await
+        .map_err(std::io::Error::from)?
+        .ok_or_else(|| std::io::Error::from(wire_frame::FrameError::Closed))
 }
 
 #[cfg(test)]
@@ -524,15 +515,121 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn frames_round_trip_and_oversized_ones_are_refused() {
-        let (mut a, mut b) = tokio::io::duplex(64 * 1024);
-        write_frame(&mut a, &Verdict::Refused(Refusal::Revoked))
+    async fn frames_round_trip_flush_and_enforce_eof_and_bounds() {
+        let (a, mut b) = tokio::io::duplex(64 * 1024);
+        // BufWriter verifies write_frame explicitly flushes the frame.
+        let mut buffered = tokio::io::BufWriter::new(a);
+        write_frame(&mut buffered, &Verdict::Refused(Refusal::Revoked))
             .await
             .unwrap();
         let verdict: Verdict = read_frame(&mut b).await.unwrap();
-        assert!(matches!(verdict, Verdict::Refused(Refusal::Revoked)));
+        assert_eq!(verdict, Verdict::Refused(Refusal::Revoked));
+
+        // Oversized outgoing payload fails before writing anything.
+        let oversized = Proof {
+            proof: vec![0_u8; MAX_FRAME + 1],
+        };
+        assert!(write_frame(&mut buffered, &oversized).await.is_err());
+
+        // Oversized incoming length prefix returns InvalidData.
+        let mut a = buffered.into_inner();
         let len = u32::try_from(MAX_FRAME + 1).unwrap();
         a.write_all(&len.to_be_bytes()).await.unwrap();
-        assert!(read_frame::<Verdict>(&mut b).await.is_err());
+        let error = read_frame::<Verdict>(&mut b).await.unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+
+        // End of stream before a frame maps to UnexpectedEof.
+        let mut empty: &[u8] = &[];
+        let eof = read_frame::<Verdict>(&mut empty).await.unwrap_err();
+        assert_eq!(eof.kind(), std::io::ErrorKind::UnexpectedEof);
+
+        // Mid-frame truncation maps to UnexpectedEof.
+        let mut truncated: &[u8] = &[0, 0, 0, 2, 0];
+        let cut = read_frame::<Verdict>(&mut truncated).await.unwrap_err();
+        assert_eq!(cut.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    async fn assert_wire_fixture<T>(value: &T, expected_hex: &str)
+    where
+        T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug + Sync,
+    {
+        let expected = hex::decode(expected_hex).unwrap();
+        let mut wire = Vec::new();
+        write_frame(&mut wire, value).await.unwrap();
+        assert_eq!(wire, expected);
+        let mut slice = expected.as_slice();
+        let decoded: T = read_frame(&mut slice).await.unwrap();
+        assert_eq!(decoded, *value);
+        assert!(slice.is_empty());
+    }
+
+    #[tokio::test]
+    async fn wire_bytes_match_frozen_fixtures() {
+        // Literal bytes captured from main before migrating handshake.rs to wire-frame.
+        const HELLO_HEX: &str = concat!(
+            "000000b1018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf37488",
+            "01b40f6f5ced4928c628d1c2c6eae90338905995612959273a5c63f93636c146",
+            "14ac8737d104746573740302000000000a01e8074021d1dab95870593c82352b",
+            "f99c5035a414641ee0db93fb48bb1d2efffaf3b0a8d322166f0e3d839ca80798",
+            "75e8ab990d27a63be78f930ccae924b64c4fd66c0b0d0d0d0d0d0d0d0d0d0d0d",
+            "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+        );
+        const CHALLENGE_HEX: &str = concat!(
+            "000000f0008a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf37488",
+            "01b40f6f5c43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e42",
+            "4a0fbafd3c0474657374010000000a01e8074085f98aee2a18c1dfc1ffad3941",
+            "db70aac1da9c7c7468edc48f7780a492228297f4232394e3e3df66e3a596eb84",
+            "0fb3cfadadcf7187562bd3e96e143c030b68080e0e0e0e0e0e0e0e0e0e0e0e0e",
+            "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e402e169384f142720b59cace8a",
+            "ae2a1745e7c1528b2ca4d6892ca30de98cc66fb8c66b2b8223e193035e49730b",
+            "74578451f190df509db432950c5821e8782c570f",
+        );
+        const REFUSED_HEX: &str = "000000020104";
+        const PROOF_HEX: &str = concat!(
+            "0000004140d9e12b9546fed4b2c4d13880b2024c801f88951c4396ab939f9361",
+            "6f166da37471351009c1dff8d52d312b54b22d56d41e0f7c9551962805ef29cb",
+            "0430e03d09",
+        );
+        const ADMITTED_HEX: &str = "00000002002a";
+        const VERDICT_REFUSED_HEX: &str = "000000020103";
+
+        let person = Person::new(1);
+        let admin_key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let device_key = ed25519_dalek::SigningKey::from_bytes(&[10; 32]);
+        let binding = Binding {
+            dialer: [11; 32],
+            device: [12; 32],
+        };
+        let client_nonce = [13; 32];
+        let device_nonce = [14; 32];
+
+        assert_wire_fixture(
+            &Hello {
+                version: VERSION,
+                cert: person.certify(&admin_key, DeviceCapabilities::administrator()),
+                nonce: client_nonce,
+            },
+            HELLO_HEX,
+        )
+        .await;
+        assert_wire_fixture(
+            &Answer::Challenge(Box::new(Challenge {
+                cert: person.certify(&device_key, DeviceCapabilities::member()),
+                nonce: device_nonce,
+                proof: prove(&device_key, Role::Device, &client_nonce, &binding),
+            })),
+            CHALLENGE_HEX,
+        )
+        .await;
+        assert_wire_fixture(&Answer::Refused(Refusal::NotAdministrator), REFUSED_HEX).await;
+        assert_wire_fixture(
+            &Proof {
+                proof: prove(&admin_key, Role::Administrator, &device_nonce, &binding),
+            },
+            PROOF_HEX,
+        )
+        .await;
+        assert_wire_fixture(&Verdict::Admitted { session: 42 }, ADMITTED_HEX).await;
+        assert_wire_fixture(&Verdict::Refused(Refusal::Revoked), VERDICT_REFUSED_HEX).await;
     }
 }

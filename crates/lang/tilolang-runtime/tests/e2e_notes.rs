@@ -2,7 +2,13 @@
 
 #[cfg(test)]
 mod cases {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
     use crate::common::*;
+    use bounded_zip::{ZipLimits, write_zip};
+    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::rich::RichValue;
     use tilolang_runtime::{
         AmStore, EditOutcome, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
@@ -13,73 +19,65 @@ mod cases {
     const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 
     /// The device the notebook's files are read from: its content store, of what a test kept
-    /// there. A file's hash is its bytes, as a content store addresses them.
+    /// there. A file's hash is its bytes, as a content store addresses them: the same bytes are
+    /// one file, whatever name they came in as.
     #[derive(Clone, Default)]
-    struct Device(std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, Vec<u8>>>>);
+    struct Device(Rc<RefCell<HashMap<String, Vec<u8>>>>);
 
     impl Device {
-        /// The file `name` of `text`, kept in this device's store.
-        fn keeping(
-            &self,
-            name: &str,
-            media: &str,
-            text: &str,
-        ) -> tilolang_runtime::blob::FileValue {
-            let hash = digest_of(text.as_bytes());
-            self.0
-                .borrow_mut()
-                .insert(hash.clone(), text.as_bytes().to_vec());
-            tilolang_runtime::blob::FileValue::new(
+        /// `bytes` kept as the file `name`: what a person choosing it would answer.
+        fn keeping(&self, name: &str, media: &str, bytes: &[u8]) -> FileValue {
+            let hash = blake3::hash(bytes).to_hex().to_string();
+            self.0.borrow_mut().insert(hash.clone(), bytes.to_vec());
+            FileValue::new(
                 name,
                 media,
-                i64::try_from(text.len()).unwrap_or(i64::MAX),
+                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
                 hash,
             )
         }
+
+        /// The pages `entries` as one archive, kept under `name`.
+        fn archive(&self, name: &str, entries: &[(&str, &[u8])]) -> FileValue {
+            let entries: Vec<(String, Vec<u8>)> = entries
+                .iter()
+                .map(|(name, bytes)| ((*name).to_owned(), bytes.to_vec()))
+                .collect();
+            let bytes = write_zip(&entries, &ZipLimits::default()).expect("the archive writes");
+            self.keeping(name, "application/zip", &bytes)
+        }
     }
 
-    impl tilolang_runtime::blob::BlobHost for Device {
+    impl BlobHost for Device {
         fn read(&self, hash: &str) -> Option<Vec<u8>> {
             self.0.borrow().get(hash).cloned()
         }
 
-        fn choose(
-            &self,
-            _request: &tilolang_runtime::blob::FileRequest,
-        ) -> Result<Option<tilolang_runtime::blob::FileValue>, String> {
+        fn choose(&self, _request: &FileRequest) -> Result<Option<FileValue>, String> {
             Ok(None)
         }
 
-        fn save(
-            &self,
-            _request: &tilolang_runtime::blob::SaveRequest,
-            _content: &[u8],
-        ) -> Result<(), String> {
+        fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
             Err("this test writes no files out".to_owned())
         }
 
-        fn keep(
-            &self,
-            name: &str,
-            media: &str,
-            bytes: &[u8],
-        ) -> Result<tilolang_runtime::blob::FileValue, String> {
-            let text = String::from_utf8_lossy(bytes).into_owned();
-            Ok(self.keeping(name, media, &text))
+        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
+            Ok(self.keeping(name, media, bytes))
         }
     }
 
-    /// The address a content store names `bytes` by: the same bytes are one file, whatever
-    /// name they came in as.
-    fn digest_of(bytes: &[u8]) -> String {
-        use std::fmt::Write as _;
-        let mut digest = 0xcbf2_9ce4_8422_2325_u64;
-        for byte in bytes {
-            digest = (digest ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        let mut hex = String::with_capacity(17);
-        let _ = write!(hex, "h{digest:016x}");
-        hex
+    /// A PNG of one colour: what a page that shows a picture keeps beside it.
+    fn png() -> Vec<u8> {
+        // A 2x2 PNG, written out here so the test needs no image library.
+        const PIXELS: &[u8] = &[
+            0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, b'I', b'H',
+            b'D', b'R', 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x72, 0xb6, 0x0d, 0x24, 0x00, 0x00, 0x00, 0x16, b'I', b'D', b'A', b'T', 0x78,
+            0x9c, 0x63, 0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x00, 0x00, 0x00, 0x08, 0x00,
+            0x01, 0x2c, 0x0a, 0x0b, 0x4e, 0x00, 0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xae,
+            0x42, 0x60, 0x82,
+        ];
+        PIXELS.to_vec()
     }
 
     struct Notes {
@@ -89,7 +87,7 @@ mod cases {
         /// The device whose files the notebook reads, as a person's own store holds them.
         device: Device,
         /// What the workspace's clock says: when a note is made, and when it is written since.
-        clock: std::rc::Rc<std::cell::RefCell<String>>,
+        clock: Rc<RefCell<String>>,
     }
 
     impl Notes {
@@ -102,8 +100,8 @@ mod cases {
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
             let device = Device::default();
             rt.set_blobs(device.clone());
-            let clock = std::rc::Rc::new(std::cell::RefCell::new(now.to_owned()));
-            let reading = std::rc::Rc::clone(&clock);
+            let clock = Rc::new(RefCell::new(now.to_owned()));
+            let reading = Rc::clone(&clock);
             rt.set_clock(move || reading.borrow().clone());
             let discussion = App::compile(DISCUSSION, &[]);
             discussion.load(&rt);
@@ -131,7 +129,7 @@ mod cases {
             service: &str,
             page: &str,
         ) -> ResourceRef {
-            let file = Value::file(self.device.keeping(name, "text/markdown", text));
+            let file = Value::file(self.device.keeping(name, "text/markdown", text.as_bytes()));
             returned_ref(self.call(
                 "import_page",
                 vec![
@@ -148,7 +146,7 @@ mod cases {
 
         /// The Markdown file `name` imported by the person's own File menu: no service's words.
         fn import_file(&self, name: &str, text: &str) -> ResourceRef {
-            let file = Value::file(self.device.keeping(name, "text/markdown", text));
+            let file = Value::file(self.device.keeping(name, "text/markdown", text.as_bytes()));
             returned_ref(self.call("import_markdown", vec![Value::resource(&self.nb), file]))
         }
 
@@ -227,6 +225,76 @@ mod cases {
                 Value::Text(title) => title,
                 other => panic!("title reads {other:?}"),
             }
+        }
+
+        /// Import the archive `file` as notes, as the notebook's File menu does.
+        fn import(&self, file: &FileValue) {
+            self.call(
+                "import_archive",
+                vec![Value::resource(&self.nb), Value::file(file.clone())],
+            );
+        }
+
+        /// Every note the notebook holds, by the tree the window shows them in.
+        fn notes(&self) -> Vec<ResourceRef> {
+            of_kind(the_tree(&self.window()), "ui.TreeViewNode")
+                .into_iter()
+                .filter_map(|node| match node.props.get("item") {
+                    Some(Value::Ref(r)) => Some(ResourceRef::clone(&r.target)),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// The titles of every note, in the order the tree shows them.
+        fn titles(&self) -> Vec<String> {
+            self.notes()
+                .iter()
+                .map(|note| self.title_of(note))
+                .collect()
+        }
+
+        fn note_titled(&self, title: &str) -> ResourceRef {
+            self.notes()
+                .into_iter()
+                .find(|note| self.title_of(note) == title)
+                .unwrap_or_else(|| panic!("no note titled {title}"))
+        }
+
+        fn body_of(&self, note: &ResourceRef) -> RichValue {
+            match self.rt.read(note, "body").unwrap() {
+                Value::Rich(body) => body,
+                other => panic!("body reads {other:?}"),
+            }
+        }
+
+        /// The pictures the note keeps, each by the address of its bytes and the name it came
+        /// in as: a map reads as its entries, each a pair.
+        fn images_of(&self, note: &ResourceRef) -> Vec<(Value, Value)> {
+            match self.rt.read(note, "images").unwrap() {
+                Value::List(entries) => entries
+                    .into_iter()
+                    .filter_map(|entry| match entry {
+                        Value::Tuple(fields) if fields.len() == 2 => {
+                            let mut fields = fields.into_iter();
+                            Some((fields.next()?, fields.next()?))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                other => panic!("images reads {other:?}"),
+            }
+        }
+
+        /// The notes the body of `note` refers to, by the ids of the notes they name.
+        fn linked_ids(&self, note: &ResourceRef) -> Vec<String> {
+            self.body_of(note)
+                .references()
+                .iter()
+                .filter(|reference| reference.as_resource().is_some())
+                .filter_map(tilolang_runtime::rich::resource_id)
+                .map(str::to_owned)
+                .collect()
         }
     }
 
@@ -789,34 +857,6 @@ mod cases {
         );
     }
 
-    /// A page the person imports is a note of the notebook, drawn in its tree at the top and
-    /// named by the document's first heading; the window shows it when the host shows the note
-    /// the import made, as it shows what a press made.
-    #[test]
-    fn an_imported_page_is_a_note_the_window_shows() {
-        let n = Notes::new();
-        n.titled("Trip to Lisbon");
-        let imported = n.import_file("Lisbon.md", "# Lisbon in May\n\nA week of trams and tiles.");
-        let mut view = n.window();
-        assert_eq!(
-            labels(&view),
-            ["Trip to Lisbon", "Lisbon in May"],
-            "the imported page is a row of the notebook's tree"
-        );
-        // The window shows what the import made: its view answers `on show` for the note, and
-        // the row it opens is the one chosen.
-        assert!(
-            view.show(&imported).unwrap(),
-            "the notebook shows the note the import made"
-        );
-        view.poll_patches().unwrap();
-        assert_eq!(
-            the_tree(&view).props.get("selection"),
-            Some(&Value::List(vec![Value::resource(&imported)])),
-            "the row of the note the import made is the one chosen"
-        );
-    }
-
     /// The key a navigation row states as the place it stands under, when it states one.
     fn parent_key(row: &UiNode) -> Option<String> {
         match row.props.get("parent") {
@@ -939,9 +979,9 @@ mod cases {
             "{}",
             dump(view.tree())
         );
-        // When it was made: one moment, because nothing has written it since. The note's line
-        // stands before its body and its history, whose own times come after it.
-        assert_eq!(moments(&view)[..1], ["2026-06-30T08:00:00Z"]);
+        // When it was made: one moment, because nothing has written it since. A note is there
+        // from the change that made it, so its line says when that was.
+        assert_eq!(moments(&view), ["2026-06-30T08:00:00Z"]);
         assert!(line_says(&view, "Created"), "{}", dump(view.tree()));
         assert!(!line_says(&view, "Edited"), "nothing wrote it since");
 
@@ -955,7 +995,7 @@ mod cases {
         .unwrap();
         view.poll_patches().unwrap();
         assert_eq!(
-            moments(&view)[..2],
+            moments(&view),
             ["2026-06-30T08:00:00Z", "2026-06-30T08:05:00Z"],
             "the note was made at one moment and written at another"
         );
@@ -998,7 +1038,74 @@ mod cases {
         );
         assert!(
             line_says(&view, "Created"),
-            "and still says what is known of it"
+            "and still says when it was made"
+        );
+    }
+
+    /// A page another service held arrives here when it is imported: its line says it was moved
+    /// here rather than written here, which is the day its history names.
+    #[test]
+    fn a_page_from_another_service_says_it_moved_here() {
+        let n = Notes::new();
+        let page = n.import_page(
+            "Q3 plan.md",
+            "# Q3 plan\n\nShip the offline editor.\n",
+            "Ada",
+            "Outline",
+            "https://outline.example/doc/1",
+        );
+        let mut view = n.window();
+        view.fire_with(
+            &the_tree(&view).key.clone(),
+            "select",
+            Some(&Value::resource(&page)),
+        )
+        .unwrap();
+        view.poll_patches().unwrap();
+        assert!(line_says(&view, "Moved here"), "{}", dump(view.tree()));
+        assert!(
+            !line_says(&view, "Created"),
+            "it was not written here: {}",
+            dump(view.tree())
+        );
+        assert_eq!(moments(&view)[..1], ["2026-06-30T08:00:00Z"]);
+    }
+
+    /// The editor's `/` menu offers a picture and a page of the note's own, which only the app can
+    /// give it: a page made from a block is a note under the open one, titled with the words that
+    /// stood in the block.
+    #[test]
+    fn a_page_made_from_a_block_is_a_note_titled_with_its_words() {
+        let n = Notes::new();
+        let plan = n.titled("Q3 plan");
+        let mut view = n.window();
+        let editors = of_kind(view.tree(), "ui.BlockEditor");
+        let editor = editors.first().expect("the open note's body is the editor");
+        assert_eq!(
+            editor.props.get("slash"),
+            Some(&Value::List(vec![
+                Value::text("image"),
+                Value::text("page"),
+            ])),
+            "the view offers the commands only it can carry out: {}",
+            dump(view.tree())
+        );
+        let key = editor.key.clone();
+        view.fire_with(&key, "slash_page", Some(&Value::text("Meeting notes")))
+            .expect("the view makes the page");
+        view.poll_patches().unwrap();
+
+        assert_eq!(
+            labels(&view),
+            ["Q3 plan", "Meeting notes"],
+            "the page stands under the open note: {}",
+            dump(view.tree())
+        );
+        let made = node_titled(&view, "Meeting notes");
+        assert_eq!(
+            parent_of_node(made).map(|parent| parent.id_string()),
+            Some(plan.id_string()),
+            "it is the note's own page"
         );
     }
 
@@ -1129,13 +1236,314 @@ mod cases {
         );
     }
 
-    /// A service's pages come over as the tree they were: a page whose file's path stands in
-    /// another's folder lands under the note of that page, each page keeps whose words it is and
-    /// where it is read there, and importing a page again — its words changed on the service
-    /// since — opens the note it made rather than making a second one.
+    /// What a person arrives with, dropped on the notebook or chosen from its File menu: a
+    /// Markdown file, a folder of Markdown pages, a Notion export, pages with pictures, and a
+    /// migration from a wiki. Each zip comes in as the notebook's tree — a page under the page
+    /// whose folder it stood in — with the links between its pages kept as links between notes,
+    /// the pictures it shows kept with the note, and a database exported beside a page a table
+    /// at it. Importing the same pages again makes no second note.
     #[test]
-    fn a_services_pages_come_over_as_the_tree_they_were() {
+    #[allow(clippy::too_many_lines, reason = "one flow, read top to bottom")]
+    fn what_a_person_arrives_with_comes_in_as_the_tree_it_was() {
         let n = Notes::new();
+
+        // A file dropped anywhere on the notebook reaches it as the window hands it over: its
+        // name, its media type and where its bytes are kept, never a path the app's process
+        // cannot read. A Markdown file comes in as a note, and an archive as its pages.
+        let errands = n.device.keeping(
+            "Errands.md",
+            "text/markdown",
+            b"# Errands\n\nBread, then the post office.\n",
+        );
+        // The notebook's own export shape: `Plan.md`, a page under its folder, and that page's
+        // own with a link back up to the one it stands in.
+        let folder = n.device.archive(
+            "Notes.zip",
+            &[
+                (
+                    "Plan.md",
+                    "# Plan\n\nShip the offline editor. See [the standups](Plan/Standups.md).\n"
+                        .as_bytes(),
+                ),
+                (
+                    "Plan/Standups.md",
+                    "# Standups\n\nTen minutes, every morning.\n\n[Monday](Standups/Monday.md)\n"
+                        .as_bytes(),
+                ),
+                (
+                    "Plan/Standups/Monday.md",
+                    "# Monday\n\nAda is on the sync bug. Back to [the plan](../../Plan.md).\n"
+                        .as_bytes(),
+                ),
+            ],
+        );
+        let view = n.window();
+        let shell = of_kind(view.tree(), "ui.NavShell")
+            .into_iter()
+            .next()
+            .expect("the notebook is a shell");
+        assert!(
+            shell.events.contains_key("drop"),
+            "the notebook takes a file dropped anywhere on it"
+        );
+        let shell = shell.key.clone();
+        view.fire_with(
+            &shell,
+            "drop",
+            Some(&Value::List(vec![Value::file(errands)])),
+        )
+        .expect("the notebook takes the dropped file");
+        assert_eq!(
+            n.titles(),
+            ["Errands"],
+            "the Markdown file came in as a note"
+        );
+        view.fire_with(
+            &shell,
+            "drop",
+            Some(&Value::List(vec![Value::file(folder.clone())])),
+        )
+        .expect("the notebook takes the dropped archive");
+        assert_eq!(
+            n.titles(),
+            ["Errands", "Plan", "Standups", "Monday"],
+            "the archive's pages came in beside the note the file made, one note per page"
+        );
+        let plan = n.note_titled("Plan");
+        let standups = n.note_titled("Standups");
+        let monday = n.note_titled("Monday");
+        assert_eq!(
+            n.parent_of(&standups),
+            Some(ResourceRef::clone(&plan)),
+            "a page stands under the page whose folder it was written in"
+        );
+        assert_eq!(n.parent_of(&monday), Some(ResourceRef::clone(&standups)));
+        assert_eq!(n.parent_of(&plan), None);
+        // A link to a page of the archive is the reference to the note that page made, wherever
+        // the reader of the file is: the note opens, it is not a web address.
+        assert_eq!(
+            n.linked_ids(&plan),
+            vec![standups.id_string()],
+            "the link to the standups names their note"
+        );
+        assert_eq!(n.linked_ids(&standups), vec![monday.id_string()]);
+        assert_eq!(
+            n.linked_ids(&monday),
+            vec![plan.id_string()],
+            "a link up out of a folder names the page it left"
+        );
+        // The heading that named the page is its title, not its body's first line again.
+        let body = n.body_of(&plan).written_text();
+        assert!(
+            !body.contains("# Plan"),
+            "the title's heading is not said twice: {body}"
+        );
+
+        // A Notion export: the pages it wrote, the database it wrote beside one as a CSV, and a
+        // page it never titled.
+        n.import(&n.device.archive(
+            "Export.zip",
+            &[
+                ("Garden.md", "# Garden\n\nGrow the garden.\n".as_bytes()),
+                (
+                    "Garden Tasks.csv",
+                    "Task,Owner\nShip the editor,Ada\nGrow the garden,\n".as_bytes(),
+                ),
+                (
+                    "Untitled 1f2e3d4c.md",
+                    "# Notes from the call\n\nThree people, two decisions.\n".as_bytes(),
+                ),
+                ("__MACOSX/Garden.md", "not a page".as_bytes()),
+            ],
+        ));
+        assert_eq!(
+            n.titles(),
+            [
+                "Errands",
+                "Plan",
+                "Standups",
+                "Monday",
+                "Garden",
+                "Notes from the call"
+            ],
+            "a page the export never titled takes the heading it says, and the archive's own \
+             bookkeeping is no page"
+        );
+        let body = n.body_of(&n.note_titled("Garden")).written_text();
+        assert!(
+            body.contains("| Task | Owner |") && body.contains("| Ship the editor | Ada |"),
+            "the database beside the page is a table at it: {body}"
+        );
+        assert!(
+            body.contains("| Grow the garden |  |"),
+            "a row's empty field is an empty cell: {body}"
+        );
+
+        // A picture a page shows is kept with the note, and named: an export writes it beside
+        // the note under the name it came in as.
+        let pixels = png();
+        n.import(&n.device.archive(
+            "Trip.zip",
+            &[
+                (
+                    "Trip.md",
+                    "# Trip\n\n![a fox](Trip/images/fox.png)\n".as_bytes(),
+                ),
+                ("Trip/images/fox.png", pixels.as_slice()),
+            ],
+        ));
+        let trip = n.note_titled("Trip");
+        let images = n.images_of(&trip);
+        assert_eq!(images.len(), 1, "the note keeps the picture it shows");
+        let (Value::Text(address), Value::Text(name)) = (&images[0].0, &images[0].1) else {
+            panic!("a picture is kept by its address and its name: {images:?}");
+        };
+        assert!(address.starts_with("tilo-blob://"), "{address}");
+        assert_eq!(name, "fox.png");
+        assert!(
+            n.body_of(&trip).written_text().contains(address),
+            "the body shows the picture from where it is kept"
+        );
+
+        // An import from another service says where each page came from in its own file beside
+        // the pages: a page keeps the title that service gave it, who wrote it, its address
+        // there, the page it stood under and its dates.
+        let record = |path: &str, title: &str, page: &str, above: &str| {
+            format!(
+                "{path}\t{title}\tAda\tOutline\t{page}\t{above}\t2025-08-01T10:00:00Z\t\
+                 2025-09-01T10:00:00Z\n"
+            )
+        };
+        let said = format!(
+            "tilo-import 1\n{}{}",
+            record(
+                "Q3 plan.md",
+                "Q3 plan",
+                "https://outline.example/doc/top",
+                ""
+            ),
+            record(
+                "Q3 plan/Ideas.md",
+                "Ideas to ship",
+                "https://outline.example/doc/ideas",
+                "https://outline.example/doc/top"
+            ),
+        );
+        n.import(
+            &n.device.archive(
+                "Outline pages.zip",
+                &[
+                    ("tilo-import.tsv", said.as_bytes()),
+                    (
+                        "Q3 plan.md",
+                        "# Q3 plan\n\nShip the offline editor.\n".as_bytes(),
+                    ),
+                    (
+                        "Q3 plan/Ideas.md",
+                        "Three ideas, and no heading of its own.\n\n\
+                     ![a fox](Ideas/images/fox.png)\n"
+                            .as_bytes(),
+                    ),
+                    ("Q3 plan/Ideas/images/fox.png", pixels.as_slice()),
+                ],
+            ),
+        );
+        let arrived = [
+            "Errands",
+            "Plan",
+            "Standups",
+            "Monday",
+            "Garden",
+            "Notes from the call",
+            "Trip",
+            "Q3 plan",
+            "Ideas to ship",
+        ];
+        assert_eq!(n.titles(), arrived, "a note a page");
+        let q3 = n.note_titled("Q3 plan");
+        let ideas = n.note_titled("Ideas to ship");
+        assert_eq!(
+            n.parent_of(&ideas),
+            Some(ResourceRef::clone(&q3)),
+            "the page stands under the page it stood under there, by that page's address"
+        );
+        assert_eq!(n.said_of(&ideas, "by"), "Ada");
+        assert_eq!(n.said_of(&ideas, "service"), "Outline");
+        assert_eq!(
+            n.said_of(&ideas, "page"),
+            "https://outline.example/doc/ideas"
+        );
+        assert_eq!(n.said_of(&ideas, "created"), "2025-08-01T10:00:00Z");
+        assert_eq!(n.said_of(&ideas, "updated"), "2025-09-01T10:00:00Z");
+        assert_eq!(
+            n.title_of(&ideas),
+            "Ideas to ship",
+            "the service's title, not its file's name"
+        );
+        let body = n.body_of(&ideas).written_text();
+        assert!(
+            body.contains("Three ideas, and no heading of its own."),
+            "{body}"
+        );
+        let images = n.images_of(&ideas);
+        assert_eq!(images.len(), 1, "the picture the page shows: {images:?}");
+        assert_eq!(images[0].1, Value::text("fox.png"));
+
+        // Importing the page again by its address there — however its words changed — opens the
+        // note it made rather than making a second one, and the note is the person's now.
+        n.import(&n.device.archive(
+            "Outline pages.zip",
+            &[
+                ("tilo-import.tsv", said.as_bytes()),
+                (
+                    "Q3 plan/Ideas.md",
+                    "Rewritten at the source since.\n".as_bytes(),
+                ),
+            ],
+        ));
+        assert_eq!(n.titles(), arrived, "the page already made its note");
+        assert!(
+            n.body_of(&ideas).written_text().contains("Three ideas"),
+            "the note is the person's now, as they left it"
+        );
+
+        // The same archive imported again keeps one note of each page: a note remembers the
+        // file it came from.
+        n.import(&folder);
+        assert_eq!(n.titles(), arrived, "the pages already made their notes");
+    }
+
+    /// One page at a time: a file the person imports themselves, a page `tilo migrate` brings
+    /// from a service, and a file a caller outside the window names by the content it put. Each
+    /// is a note of the notebook, drawn in its tree and named by the document's first heading,
+    /// standing under the note of its folder; a service's page keeps whose words it is and where
+    /// it is read there, and importing it again — its words changed on the service since — opens
+    /// the note it made rather than making a second one.
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "one flow, read top to bottom")]
+    fn a_page_comes_in_as_a_note_under_its_folder() {
+        let n = Notes::new();
+        n.titled("Trip to Lisbon");
+        let imported = n.import_file("Lisbon.md", "# Lisbon in May\n\nA week of trams and tiles.");
+        let mut view = n.window();
+        assert_eq!(
+            labels(&view),
+            ["Trip to Lisbon", "Lisbon in May"],
+            "the imported page is a row of the notebook's tree"
+        );
+        // The window shows what the import made: its view answers `on show` for the note, and
+        // the row it opens is the one chosen.
+        assert!(
+            view.show(&imported).unwrap(),
+            "the notebook shows the note the import made"
+        );
+        view.poll_patches().unwrap();
+        assert_eq!(
+            the_tree(&view).props.get("selection"),
+            Some(&Value::List(vec![Value::resource(&imported)])),
+            "the row of the note the import made is the one chosen"
+        );
+
         let plan = n.import_page(
             "Q3 plan.md",
             "# Q3 plan\n\nShip the offline editor.",
@@ -1182,10 +1590,8 @@ mod cases {
         );
         assert_eq!(again, plan, "a page imported again is the note it made");
         assert_eq!(
-            n.rt.project(&n.rt.read(&n.nb, "notes").unwrap())["count"]
-                .as_i64()
-                .unwrap(),
-            2,
+            n.titles(),
+            ["Trip to Lisbon", "Lisbon in May", "Q3 plan", "Ideas"],
             "and the notebook holds no second note of it"
         );
 
@@ -1200,5 +1606,89 @@ mod cases {
         );
         assert_eq!(n.said_of(&books, "service"), "", "no service wrote it");
         assert_eq!(n.said_of(&books, "origin"), "Reading list/Books.md");
+
+        // What a caller outside the window gives a `File` parameter: the content it put into the
+        // workspace, as `tilo_put_finish` answered it, and the file's own name and media type.
+        // The action imports it as the person's own chooser would.
+        let put = n.device.keeping(
+            "Standup.md",
+            "text/markdown",
+            b"# Imported\n\nWords from a file.\n",
+        );
+        let named = serde_json::json!({"file": {
+            "content": tilo_actions::content_resource(&put.hash).expect("a reference"),
+            "name": put.name,
+            "media": put.media,
+        }});
+        let file = tilolang_runtime::value::from_json(&named).expect("a reference names a file");
+        let made = returned_ref(n.call("import_markdown", vec![Value::resource(&n.nb), file]));
+        assert_eq!(n.title_of(&made), "Imported");
+        assert!(
+            n.body_of(&made)
+                .written_text()
+                .contains("Words from a file."),
+            "the file's words are the note's"
+        );
+        assert_eq!(
+            n.said_of(&made, "origin"),
+            "Standup.md",
+            "the note keeps the name the file came in as"
+        );
+
+        // A reference this workspace's store holds no content for is no file: the action still
+        // runs, and what it answers says why the content it was given could not be read. Naming
+        // a reference never reaches bytes the store does not hold.
+        let named = serde_json::json!({"file": {
+            "content": tilo_actions::content_resource(&"0".repeat(64)).expect("a reference"),
+            "name": "Gone.md",
+        }});
+        let file = tilolang_runtime::value::from_json(&named).expect("a reference names a file");
+        let made = returned_ref(n.call("import_markdown", vec![Value::resource(&n.nb), file]));
+        let body = n.body_of(&made).written_text();
+        assert!(
+            body.contains("the content of `Gone.md` is not on this device"),
+            "the note says why the file was no words: {body}"
+        );
+    }
+
+    /// A picture the editor put into a note's body is named by the note, so an export writes it
+    /// beside the note under the name it came in as.
+    #[test]
+    fn a_picture_the_editor_puts_in_is_named_by_the_note() {
+        let n = Notes::new();
+        let note = returned_ref(n.call(
+            "new_note",
+            vec![
+                Value::resource(&n.nb),
+                Value::text("Plan"),
+                Value::text("Ship the offline editor."),
+            ],
+        ));
+        let view = n.window();
+        let editor = of_kind(view.tree(), "ui.BlockEditor")
+            .into_iter()
+            .next()
+            .expect("the open note's body is the editor")
+            .key
+            .clone();
+        // What the editor says of a picture it wrote in at the caret: its name, then where its
+        // bytes were kept.
+        view.fire_with(
+            &editor,
+            "image",
+            Some(&Value::List(vec![
+                Value::text("Pasted image.png"),
+                Value::text("tilo-blob://pixels"),
+            ])),
+        )
+        .expect("the view takes the picture");
+        assert_eq!(
+            n.images_of(&note),
+            vec![(
+                Value::text("tilo-blob://pixels"),
+                Value::text("Pasted image.png")
+            )],
+            "the note keeps the picture's name beside the address of its bytes"
+        );
     }
 }

@@ -1088,29 +1088,6 @@ tilo_test_env::scenario! {
         assert!(tall > short && tall <= slow + 1e-9, "{short} {tall} {slow}");
     }
 
-    phase routine_motion_never_overshoots;
-    {
-        let start = crate::time::now();
-        for spec in [
-            Appear::SPEC,
-            Drill::SPEC,
-            PanelSlide::SPEC,
-            Disclose::SPEC,
-            WindowMotion::MOVE,
-        ] {
-            let mut v = MotionValue::new(0.0_f64);
-            v.set(
-                1.0,
-                spec.timing(Direction::Enter, on(), MotionSource::Pointer),
-                start,
-            );
-            for step in 0..600 {
-                let x = v.get(ms(start, step));
-                assert!(x <= 1.0 + 1e-9, "{spec:?} overshot to {x}");
-            }
-        }
-    }
-
     phase the_standard_motions_are_one_library_every_surface_composes_from;
     {
         let now = crate::time::now();

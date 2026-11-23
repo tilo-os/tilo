@@ -135,7 +135,7 @@ fn scroll_of(child: Element, width: f32, height: f32, content_h: f32) -> Scrolla
 }
 
 #[test]
-fn a_press_on_a_source_outside_a_scroll_lifts_it_past_the_threshold() {
+fn a_press_on_a_source_lifts_it_wherever_it_stands_and_a_drag_out_lands_where_let_go() {
     // The class's reference case: a source that stands on its own page lifts as soon as a
     // press travels past the threshold.
     let mut laid = Laid::of(source("notes.page:one", 40.0), 300.0, 400.0);
@@ -145,14 +145,11 @@ fn a_press_on_a_source_outside_a_scroll_lifts_it_past_the_threshold() {
     drag_bus::end(None);
     let in_flight = in_flight.expect("the source published what it lifted");
     assert_eq!(in_flight.source, "source");
-}
 
-#[test]
-fn a_press_on_a_source_inside_a_scroll_lifts_it_and_keeps_it_past_the_viewport() {
     // The same source inside a scroll view with far more content than it shows, in the
     // layouts a view composes around it (a page, a stack): a press over the source is the
     // source's, and what it holds lifts as it does anywhere else.
-    let mut laid = Laid::of(
+    let scrolled = || {
         scroll_of(
             Box::new(crate::widget::arrange::Stack::stack().push_part(
                 crate::widget::arrange::Part::new(Box::new(
@@ -164,11 +161,9 @@ fn a_press_on_a_source_inside_a_scroll_lifts_it_and_keeps_it_past_the_viewport()
             300.0,
             200.0,
             4_000.0,
-        ),
-        300.0,
-        200.0,
-    );
-    // From the source, out past the viewport's foot.
+        )
+    };
+    let mut laid = Laid::of(scrolled(), 300.0, 200.0);
     let from = laid.source_centre();
     laid.press_and_travel((from.x, from.y), (from.x, 320.0));
     let in_flight = drag_bus::current();
@@ -180,30 +175,12 @@ fn a_press_on_a_source_inside_a_scroll_lifts_it_and_keeps_it_past_the_viewport()
         "the lift follows the pointer past the region's foot: {}",
         in_flight.pointer.y
     );
-}
 
-#[test]
-fn a_drag_out_of_a_scroll_is_let_go_where_the_person_let_go() {
     // The drop leg: a resource picked up inside the scroll view — behind the page and stack a
     // view composes it in — is carried out of the region and let go beyond its foot, and is
     // reported dropped where the person let go, not clipped to the region's edge, which is what
     // a source that lost the pointer as it left would say.
-    let mut laid = Laid::of(
-        scroll_of(
-            Box::new(crate::widget::arrange::Stack::stack().push_part(
-                crate::widget::arrange::Part::new(Box::new(
-                    crate::widget::arrange::Page::full().push_part(
-                        crate::widget::arrange::Part::new(Box::new(source("notes.page:one", 40.0))),
-                    ),
-                )),
-            )),
-            300.0,
-            200.0,
-            4_000.0,
-        ),
-        300.0,
-        200.0,
-    );
+    let mut laid = Laid::of(scrolled(), 300.0, 200.0);
     let from = laid.source_centre();
     laid.drag((from.x, from.y), (from.x, 320.0));
     let landed = drag_bus::take("elsewhere", everywhere());

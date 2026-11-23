@@ -5,7 +5,7 @@
 
 use crate::journal::Owner;
 use crate::{Route, Service};
-use accounts::person::PersonAccounts;
+use accounts::person::AccountList;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkState {
@@ -36,7 +36,7 @@ pub enum Refusal {
 /// The current binding must come from the host's account-owned adapter and
 /// certified device authority, never from user-supplied action parameters.
 pub fn check(
-    accounts: &PersonAccounts,
+    accounts: &AccountList,
     route: &Route,
     expected: &Owner,
     live: &LiveBinding,
@@ -48,7 +48,7 @@ pub fn check(
 }
 
 pub(crate) fn check_native(
-    accounts: &PersonAccounts,
+    accounts: &AccountList,
     route: &Route,
     expected: &Owner,
     live: &LiveBinding,
@@ -59,7 +59,7 @@ pub(crate) fn check_native(
     check_owned(accounts, route, expected, live)
 }
 fn check_owned(
-    accounts: &PersonAccounts,
+    accounts: &AccountList,
     route: &Route,
     expected: &Owner,
     live: &LiveBinding,
@@ -117,8 +117,8 @@ mod tests {
     fn route() -> Route {
         Route::new(Service::Signal, "account-a".into(), "recipient".into()).unwrap()
     }
-    fn store() -> PersonAccounts {
-        let mut store = PersonAccounts::default();
+    fn store() -> AccountList {
+        let mut store = AccountList::default();
         let mut account = Account::new("account-a", "signal");
         account.display_name = "Same display name".into();
         account.enabled = true;
@@ -141,7 +141,7 @@ mod tests {
                 state: LinkState::Linked,
             };
             assert_eq!(check(&store(), &route(), &owner(), &live), Ok(()));
-            let mut store = PersonAccounts::default();
+            let mut store = AccountList::default();
             let mut other = Account::new("account-b", "signal");
             other.enabled = true;
             store.keep(&other).unwrap();
@@ -185,7 +185,7 @@ mod tests {
                 Err(Refusal::WrongActor)
             );
             live.owner = owner();
-            let mut disabled = PersonAccounts::default();
+            let mut disabled = AccountList::default();
             let mut account = Account::new("account-a", "signal");
             account.enabled = false;
             disabled.keep(&account).unwrap();
@@ -193,7 +193,7 @@ mod tests {
                 check(&disabled, &route(), &owner(), &live),
                 Err(Refusal::AccountDisabled)
             );
-            let mut wrong = PersonAccounts::default();
+            let mut wrong = AccountList::default();
             let mut account = Account::new("account-a", "sms");
             account.enabled = true;
             wrong.keep(&account).unwrap();

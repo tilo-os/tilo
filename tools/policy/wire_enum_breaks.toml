@@ -363,7 +363,7 @@ file = "crates/dev/ui-graph/src/component.rs"
 enum = "Value"
 reason = "renames the Principal variant to Actor: the component catalogue is generated from the tree and read by the same build"
 [[break]]
-file = "crates/dev/tilo-vm-protocol/src/lib.rs"
+file = "tools/tilo-vm-protocol/src/lib.rs"
 enum = "Request"
 reason = "the account-slot variants are renamed at the same indexes; the request names are JSON-RPC between the tilo-vm CLI and its daemon, built and shipped together, so no older reader meets them"
 
@@ -678,4 +678,24 @@ reason = "the search request and answer went: a workspace's search is the `tilo.
 [[break]]
 file = "crates/collab/action-policy/src/workspace.rs"
 enum = "Change"
-reason = "`SetMemberRoles`, a whole-set role assignment no build ever wrote, went. It was added after the stored governance this tree still reads was written, so that governance numbers its variants without it and reads as it was written again; only frames written in the few days between its addition and its removal shift, and those are development data"
+reason = "`SetMemberRoles` went and came back as `RetiredSetMemberRoles` in its place. It held that place from the first build with custom roles, so every workspace those builds kept numbers `SetMemberCustomRole` and `TransferOwnership` after it; while it was gone a kept ownership transfer did not read, the workspace replayed to the owner it was handed away from, and its state no longer opened. Only operations written in the hours it was gone read differently now"
+
+[[break]]
+file = "crates/runtime/linux-vm/src/hosted/control.rs"
+enum = "Request"
+reason = "the hosted-VM control protocol is one request and one reply per connection on the host's local socket, never kept; the host and its every client (ush, the member, the CLI) ship in one image, so no bytes written by another build are read"
+
+[[break]]
+file = "crates/runtime/linux-vm/src/hosted/control.rs"
+enum = "Reply"
+reason = "the host's answer on the same local connection, never kept, between ends shipped in one image"
+
+[[break]]
+file = "crates/server/tilo-server-protocol/src/transport.rs"
+enum = "Envelope"
+reason = "the host-kept call frames go (`VoiceCall` to `VoiceShow`): being in a call is a device's presence on the workspace's live session, which carries its media too, so no host keeps a call. Envelopes are live frames of a session and kept nowhere, and the peer protocol version is bumped from 63 to 64 with the removal and `previous-peer-frames.txt` moves to it, so a device at another version admits nothing from this one"
+
+[[break]]
+file = "crates/browser/tilo-browser-runtime/src/peer_js_state.rs"
+enum = "JsVoiceEvent"
+reason = "the host's call events go with the host-kept calls: a page reads who is in a call from its presence. The events are JSON tagged by name, handed from the page's wasm to its own JavaScript of the same build, and kept nowhere"

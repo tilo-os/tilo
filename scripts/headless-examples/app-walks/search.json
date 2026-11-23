@@ -1,0 +1,138 @@
+{
+  "app": "search",
+  "said": "Search the desktop",
+  "family": "shell",
+  "live": "rust",
+  "apps": "file-explorer chat settings terminal",
+  "rust": {},
+  "tl": {
+    "session_args": [
+      "--shell",
+      "screen"
+    ]
+  },
+  "steps": [
+    {
+      "id": "signed-in",
+      "said": "Sign in: the desktop is there, nothing open, nothing over it",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "state": {
+            "chrome.session_locked": false,
+            "chrome.overlays.search": false,
+            "chrome.overlays.overview": false,
+            "chrome.overlays.strips": false,
+            "chrome.overlays.quick-settings": false,
+            "chrome.overlays.centre": false
+          }
+        },
+        {
+          "windows": 0
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "open-files",
+      "said": "Open Files",
+      "ops": [
+        {
+          "open": "files"
+        }
+      ],
+      "budget_ms": 30000
+    },
+    {
+      "id": "open-chat",
+      "said": "Open Chat",
+      "ops": [
+        {
+          "open": "chat"
+        },
+        {
+          "windows": {
+            "at_least": 2
+          }
+        }
+      ],
+      "budget_ms": 30000
+    },
+    {
+      "id": "search-open",
+      "said": "Open search and type: rows come in as you type",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "desktop:shell",
+            "search",
+            {
+              "query": "Term"
+            }
+          ]
+        },
+        {
+          "must": [
+            {
+              "rust": "Terminal",
+              "tl": "Terminal, so.tilo.terminal"
+            }
+          ]
+        }
+      ],
+      "dark": true,
+      "budget_ms": 10000
+    },
+    {
+      "id": "search-window",
+      "said": "Search for an open window by its name",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "desktop:shell",
+            "search",
+            {
+              "query": "Home"
+            }
+          ]
+        },
+        {
+          "must": [
+            [
+              "Home",
+              {
+                "prefix": "Home"
+              },
+              {
+                "prefix": "Files"
+              }
+            ]
+          ]
+        }
+      ],
+      "budget_ms": 10000
+    },
+    {
+      "id": "search-close",
+      "said": "Escape closes search",
+      "ops": [
+        {
+          "key": "Escape"
+        },
+        {
+          "must_not": [
+            {
+              "rust": "Search the web for Home",
+              "tl": "Search everywhere for Home"
+            }
+          ]
+        }
+      ],
+      "budget_ms": 10000
+    }
+  ]
+}

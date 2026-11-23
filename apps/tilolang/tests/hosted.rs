@@ -932,7 +932,7 @@ fn widget_by_id<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> 
 fn named(widget: &dyn Widget, label: &str, out: &mut Vec<ui::kurbo::Rect>) {
     if widget
         .accessibility()
-        .is_some_and(|access| access.name.as_deref() == Some(label))
+        .is_some_and(|access| access.answers_to(label))
         && widget.get_rect().width() > 0.0
     {
         out.push(widget.get_rect());
@@ -2066,7 +2066,7 @@ fn place_at(session: &mut Session, label: &str) -> (f64, f64) {
     let rect = accessible(session)
         .into_iter()
         .filter(|node| node.role == ui::a11y::Role::TreeItem)
-        .filter(|node| node.name.as_deref() == Some(label))
+        .filter(|node| node.answers_to(label))
         .find_map(|node| node.bounds)
         .unwrap_or_else(|| panic!("the sidebar shows the place {label:?}"));
     (

@@ -41,10 +41,7 @@ pub const MAX_DECODED_PIXELS: u64 = 32 * 1024 * 1024;
 pub const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
 
 pub fn read_bounded(reader: impl Read, max_bytes: usize) -> Option<Vec<u8>> {
-    let limit = u64::try_from(max_bytes).ok()?.saturating_add(1);
-    let mut bytes = Vec::new();
-    reader.take(limit).read_to_end(&mut bytes).ok()?;
-    (bytes.len() <= max_bytes).then_some(bytes)
+    tilo_files::read_from(reader, max_bytes).ok()
 }
 
 #[derive(Clone, PartialEq, Eq)]

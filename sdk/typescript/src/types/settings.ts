@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings@8e61701a4169b577";
+export const SURFACE = "so.tilo.settings@d4364d82d8a5ad57";
 
 /** One of "none", "grayscale", "inverted", "grayscale_inverted". */
 export type ColorFilter = "none" | "grayscale" | "inverted" | "grayscale_inverted";
@@ -188,7 +188,7 @@ export interface Restart {
   before: number;
 }
 
-export interface PersonAccount {
+export interface ListedAccount {
   type_id: string;
   display_name: string;
   config: unknown;
@@ -1524,7 +1524,7 @@ export function mcpServer(ws: tilo.Workspace, path: string): McpServer {
 
 /** Accounts — `tilo.accounts`. */
 export interface Accounts extends tilo.Resource {
-  accounts: Array<tilo.Entry<PersonAccount>>;
+  accounts: Array<tilo.Entry<ListedAccount>>;
   publishBrowserIdentity(args: {
     root: string;
     origin: string;

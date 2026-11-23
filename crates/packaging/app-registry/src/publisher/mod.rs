@@ -13,7 +13,7 @@ pub use bot::{BotRelease, build_bot_entry};
 pub use client::{DEFAULT_REGISTRY, REGISTRY_ENV, RegistryClient};
 pub use entry::{
     EntryMetadata, Platform, ThinPackage, build_entry, build_entry_with_objects, check_package,
-    check_package_with,
+    check_package_with, release_time,
 };
 pub use publish::{Published, publish};
 

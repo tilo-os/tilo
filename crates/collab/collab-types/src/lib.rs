@@ -46,6 +46,7 @@ pub mod action_authority;
 pub mod actors;
 pub mod app_surface;
 pub mod artifact;
+pub mod calls;
 pub mod canonical;
 pub mod caps;
 pub mod channel_key;
@@ -65,11 +66,11 @@ pub mod member;
 pub mod mls_governance;
 pub mod op;
 pub mod peer;
-pub mod personal;
 pub mod presence;
 pub mod readers;
 pub mod realtime;
 pub mod receipt;
+pub mod record_id;
 pub mod redaction;
 pub mod role;
 pub mod scope;
@@ -78,7 +79,6 @@ pub mod stamp;
 pub mod surface;
 pub mod units;
 pub mod validator;
-pub mod work_delegation;
 pub mod workspace_document;
 pub mod workspace_grant;
 pub mod workspace_id;
@@ -136,10 +136,6 @@ pub use op::{
     validate_whole_document_payload_route,
 };
 pub use peer::{PeerPresence, PeerPresencePayload};
-pub use personal::{
-    is_personal_cluster, person_document_context, person_document_for_workspace,
-    person_document_id, person_resource_type, personal_cluster, personal_cluster_of,
-};
 pub use readers::{
     EVERY_MEMBER, Readers, app_document_id, content_artifact_id, is_store_document, reader_group,
     reader_set_name, store_document_readers,
@@ -150,6 +146,10 @@ pub use receipt::{
     check_opened, check_opened_mutation, check_reassembled, claim_node, claimed_invokers,
     decide_op, decide_op_pinned, recorded_contexts, written_node,
 };
+pub use record_id::{
+    is_personal_cluster, person_document_context, person_document_for_workspace,
+    person_document_id, person_resource_type, personal_cluster, personal_cluster_of,
+};
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,
     encode_redact_payload, hash_target_op, parse_redact_payload,
@@ -157,6 +157,7 @@ pub use redaction::{
 pub use role::{ArtifactKind, OpKind, Role};
 pub use stamp::Stamp;
 pub use tilo_action_policy::{MemberId, PersonId, PersonIdError};
+pub use workspace_id::{is_person_workspace, person_workspace, person_workspace_of};
 
 /// Whether an installation can be named in a bot's signed delegation.
 #[must_use]

@@ -278,17 +278,13 @@ fn read_artifact(path: &Path, private: bool) -> Result<Vec<u8>, String> {
     if !metadata.is_file() {
         return Err(format!("{} is not a regular file", path.display()));
     }
-    let mut bytes = Vec::new();
-    file.take(MAX_ARTIFACT_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-    if bytes.len() as u64 > MAX_ARTIFACT_BYTES {
-        return Err(format!(
-            "{} exceeds the artifact size limit",
-            path.display()
-        ));
-    }
-    Ok(bytes)
+    tilo_files::read_from(file, MAX_ARTIFACT_BYTES).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::FileTooLarge {
+            format!("{} exceeds the artifact size limit", path.display())
+        } else {
+            format!("cannot read {}: {error}", path.display())
+        }
+    })
 }
 
 fn decode_artifact<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {

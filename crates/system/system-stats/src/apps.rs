@@ -170,12 +170,6 @@ mod tests {
                         .to_owned(),
                     None,
                 ),
-                (
-                    "/user.slice/user-1000.slice/session-3.scope".to_owned(),
-                    None,
-                ),
-                ("/system.slice/sshd.service".to_owned(), None),
-                ("/init.scope".to_owned(), None),
             ] {
                 assert_eq!(app_of_cgroup(&path).as_deref(), app, "{path}");
             }
@@ -195,13 +189,7 @@ mod tests {
                 Err(Refusal::NotYours),
                 "another user's process"
             );
-            assert_eq!(
-                policy.check(500, 1001, Some(&app), false),
-                Err(Refusal::NotYours)
-            );
             for path in [
-                "/system.slice/sshd.service",
-                "/user.slice/user-1000.slice/session-3.scope",
                 "/user.slice/user-1000.slice/user@1000.service/session.slice/pipewire.service",
                 "/user.slice/user-1000.slice/user@1000.service/app.slice2/x.scope",
             ] {

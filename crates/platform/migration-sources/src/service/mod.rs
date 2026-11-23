@@ -42,7 +42,7 @@ mod outline;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use accounts::person::PersonAccounts;
+use accounts::person::AccountList;
 use accounts::{Account, AccountId, SecretVault};
 use tilo_resource::Invoke;
 
@@ -276,9 +276,9 @@ pub struct ServiceReport {
 )]
 pub fn connect(
     config_root: &Path,
-    record: &PersonAccounts,
+    record: &AccountList,
     address: ServiceAddress,
-) -> Result<(AccountId, Invoke<PersonAccounts>), ServiceError> {
+) -> Result<(AccountId, Invoke<AccountList>), ServiceError> {
     match address.kind {
         ServiceKind::Outline => {
             let server = http::base(&address.server)?;
@@ -345,7 +345,7 @@ pub fn config_root() -> Option<std::path::PathBuf> {
 
 /// The connected service sources under `config_root`.
 #[must_use]
-pub fn connected(record: &PersonAccounts) -> Vec<(AccountId, ServiceKind, String)> {
+pub fn connected(record: &AccountList) -> Vec<(AccountId, ServiceKind, String)> {
     record
         .all()
         .iter()
@@ -363,7 +363,7 @@ fn persist(
     title: &str,
     config: serde_json::Value,
     secret: &str,
-) -> Result<(AccountId, Invoke<PersonAccounts>), ServiceError> {
+) -> Result<(AccountId, Invoke<AccountList>), ServiceError> {
     let id = AccountId::new(format!("{type_id}-{}", short_digest(server)));
     let mut account = Account::new(id, type_id);
     account.display_name = title.chars().take(256).collect();
@@ -373,13 +373,13 @@ fn persist(
         &account,
         accounts::Secret::password(secret.to_owned()),
     )?;
-    Ok((account.id.clone(), PersonAccounts::saving(&account)))
+    Ok((account.id.clone(), AccountList::saving(&account)))
 }
 
 /// The account, its server and its key as the vault holds them.
 fn reach(
     config_root: &Path,
-    record: &PersonAccounts,
+    record: &AccountList,
     account: &str,
 ) -> Result<(Account, String, Zeroizing<String>), ServiceError> {
     let id = AccountId::new(account);
@@ -406,7 +406,7 @@ fn reach(
 /// No such connected mail account, or the vault could not be read.
 pub fn mail_account(
     config_root: &Path,
-    record: &PersonAccounts,
+    record: &AccountList,
     account: &str,
 ) -> Result<(accounts::email::AccountConfig, Zeroizing<String>), ServiceError> {
     let (stored, _, secret) = reach(config_root, record, account)?;
@@ -425,7 +425,7 @@ pub fn mail_account(
 /// The source is not connected, refused its key or could not be read.
 pub fn review(
     config_root: &Path,
-    record: &PersonAccounts,
+    record: &AccountList,
     account: &str,
 ) -> Result<ServiceReview, ServiceError> {
     let (stored, server, key) = reach(config_root, record, account)?;
@@ -460,7 +460,7 @@ pub fn review(
 /// journal keeps what landed before.
 pub fn run(
     config_root: &Path,
-    record: &PersonAccounts,
+    record: &AccountList,
     journal: &mut ServiceJournal,
     landing: &mut dyn Landing,
     publish: &mut dyn FnMut(&str) -> Result<(), String>,
@@ -500,7 +500,7 @@ pub fn run(
 
 fn land(
     config_root: &Path,
-    record: &PersonAccounts,
+    record: &AccountList,
     journal: &mut ServiceJournal,
     landing: &mut dyn Landing,
     publish: &mut dyn FnMut(&str) -> Result<(), String>,

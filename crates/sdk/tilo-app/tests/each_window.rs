@@ -136,14 +136,6 @@ impl ResourceApp for BindingWindow {
 
 const TASKS: u32 = 1_500;
 
-fn seeded() -> TestApp<Window> {
-    let mut app = TestApp::<Window>::for_person("ada").unwrap();
-    app.call("seed", serde_json::json!({ "count": TASKS }))
-        .unwrap();
-    app.harness().relayout();
-    app
-}
-
 /// The list's items as assistive technology sees them: `(position, set size)`.
 fn list_items<A: ResourceApp>(app: &mut TestApp<A>) -> Vec<(usize, usize)> {
     app.harness()
@@ -167,14 +159,31 @@ fn control(id: &Id) -> String {
     format!("set-done-{id}")
 }
 
-#[test]
-fn the_published_tree_lists_every_row_while_only_the_window_is_mounted() {
-    let mut app = seeded();
-    let total = usize::try_from(TASKS).unwrap();
+fn mounted<A: ResourceApp>(app: &mut TestApp<A>, id: &Id) -> bool {
+    app.harness().targets().contains_key(&control(id))
+}
 
-    // Agents and the palette: the published tree carries a page of the
-    // tasks with their actions, mounted or not; every other task is
-    // resolved by its id when addressed, as an agent addresses it.
+/// A person and an agent work in a list of 1,500 tasks: only the rows near what the window shows
+/// are mounted and read, while the published tree, agents and assistive technology still reach
+/// every item; a change away from the view keeps the window's tree, Tab walks past the mounted
+/// rows, and a row scrolled into view shows its item as another member left it.
+#[test]
+#[allow(clippy::too_many_lines, reason = "one flow, read top to bottom")]
+fn a_long_list_mounts_only_the_rows_near_the_view_while_every_item_is_reached() {
+    let mut app = TestApp::<Window>::for_person("ada").unwrap();
+    app.call("seed", serde_json::json!({ "count": TASKS }))
+        .unwrap();
+    app.harness().relayout();
+    let total = usize::try_from(TASKS).unwrap();
+    let first = task_id(&app, 0);
+    let middle = task_id(&app, total.div_euclid(2));
+    let near_end = task_id(&app, total.saturating_sub(3));
+    let far = task_id(&app, total.saturating_sub(2));
+    let last = task_id(&app, total.saturating_sub(1));
+
+    // Agents and the palette: the published tree carries a page of the tasks with their
+    // actions, mounted or not; every other task is resolved by its id when addressed, as an
+    // agent addresses it.
     let resources = app.harness().resources();
     let root = resources
         .iter()
@@ -195,7 +204,6 @@ fn the_published_tree_lists_every_row_while_only_the_window_is_mounted() {
         paged.actions.iter().any(|spec| spec.id == "set-done"),
         "its actions are bound to it"
     );
-    let last = task_id(&app, total.saturating_sub(1));
     app.call_on(
         &tilo_resource::items::item_resource_id::<Checklist>("tasks", &last),
         "set-done",
@@ -217,9 +225,10 @@ fn the_published_tree_lists_every_row_while_only_the_window_is_mounted() {
         "each row is announced as one of {total}: {items:?}"
     );
     assert!(items.contains(&(1, total)), "the first row is shown");
+    assert!(mounted(&mut app, &first));
+    assert!(!mounted(&mut app, &middle));
 
     // An item whose row is not mounted is still invoked by agents.
-    let far = task_id(&app, total.saturating_sub(2));
     assert!(
         app.harness().click_named(&control(&far)).is_err(),
         "its row is not mounted"
@@ -228,27 +237,88 @@ fn the_published_tree_lists_every_row_while_only_the_window_is_mounted() {
     app.call_on(&item, "set-done", serde_json::json!({ "done": true }))
         .unwrap();
     assert!(app.state().tasks.get(&far).unwrap().done);
-}
 
-fn mounted<A: ResourceApp>(app: &mut TestApp<A>, id: &Id) -> bool {
-    app.harness().targets().contains_key(&control(id))
-}
-
-#[test]
-fn scrolling_to_the_end_mounts_the_last_rows_with_their_actions() {
-    let mut app = seeded();
-    let total = usize::try_from(TASKS).unwrap();
-    let first = task_id(&app, 0);
-    let focused = task_id(&app, 10);
-    let middle = task_id(&app, total.div_euclid(2));
-    let near_end = task_id(&app, total.saturating_sub(3));
-    assert!(mounted(&mut app, &first));
-    assert!(!mounted(&mut app, &middle));
-    assert!(!mounted(&mut app, &near_end));
-    app.harness()
-        .perform_named(&control(&focused), &tilo_app::a11y::Action::Focus)
+    // A change reads the rows shown, not every row.
+    let shown = list_items(&mut app).len();
+    let before = READS.with(std::cell::Cell::get);
+    app.call("draft", serde_json::json!({ "title": "Next" }))
         .unwrap();
+    app.harness().relayout();
+    let reads = READS.with(std::cell::Cell::get).saturating_sub(before);
+    assert!(
+        reads > 0,
+        "the shown rows follow the change (it ran {reads} reads)"
+    );
+    assert!(
+        reads <= shown.saturating_mul(2),
+        "{reads} rows read for a change to the draft, with {shown} of {total} mounted"
+    );
 
+    // An item added away from the view keeps the window's tree.
+    let before = list_items(&mut app).len();
+    let nodes = app.harness().layout_node_ids();
+    let frames = app.harness().relayout_frames();
+    let rebuilt = app.harness().rebuilt_frames();
+    app.call("seed", serde_json::json!({ "count": 1 })).unwrap();
+    app.harness().relayout();
+    assert!(app.harness().relayout_frames() > frames, "a frame ran");
+    assert_eq!(
+        app.harness().rebuilt_frames(),
+        rebuilt,
+        "an item added below the view recomposes no layout tree"
+    );
+    assert_eq!(
+        app.harness().layout_node_ids(),
+        nodes,
+        "the window's layout tree is the one it was"
+    );
+    let total = total.saturating_add(1);
+    let items = list_items(&mut app);
+    assert_eq!(items.len(), before, "no row mounted or dropped");
+    assert!(items.iter().all(|&(_, size)| size == total), "{items:?}");
+
+    // Tab moves focus without scrolling the view: the rows beside the focused one stay
+    // mounted, so each press finds the next row.
+    let steps = 90;
+    let focused = task_id(&app, steps);
+    assert!(!mounted(&mut app, &focused), "the row starts out unmounted");
+    app.harness()
+        .perform_named(&control(&first), &tilo_app::a11y::Action::Focus)
+        .unwrap();
+    for _ in 0..steps {
+        app.harness().key("Tab");
+    }
+    app.harness().key("Space");
+    app.harness().relayout();
+    let done: Vec<usize> = app
+        .state()
+        .tasks
+        .values()
+        .enumerate()
+        .filter(|(_, task)| task.done)
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(
+        done,
+        [steps, total.saturating_sub(3), total.saturating_sub(2)],
+        "Tab reached row {steps} one row at a time"
+    );
+
+    // Another member (here an agent) completes a task while its row is out of view: past the
+    // published page, the item is addressed by its id.
+    assert!(
+        !mounted(&mut app, &near_end),
+        "the row starts out unmounted"
+    );
+    app.call_on(
+        tilo_resource::items::item_resource_id::<Checklist>("tasks", &near_end).as_str(),
+        "set-done",
+        serde_json::json!({ "done": true }),
+    )
+    .unwrap();
+    app.harness().relayout();
+
+    // Scrolling to the end mounts the last rows with their actions.
     app.harness().send(&WindowEvent::CursorMoved {
         device_id: tilo_app::winit::event::DeviceId::dummy(),
         position: tilo_app::winit::dpi::PhysicalPosition::new(200.0, 300.0),
@@ -257,7 +327,6 @@ fn scrolling_to_the_end_mounts_the_last_rows_with_their_actions() {
         app.harness().scroll(0.0, -400.0);
     }
     app.harness().relayout();
-
     let items = list_items(&mut app);
     assert!(
         items.contains(&(total, total)),
@@ -274,40 +343,22 @@ fn scrolling_to_the_end_mounts_the_last_rows_with_their_actions() {
         mounted(&mut app, &focused),
         "the focused row stays mounted wherever the view scrolls"
     );
+    assert!(mounted(&mut app, &near_end), "the row mounted at the end");
+
+    // The checkbox shows the task completed: clicking it reopens the task. A checkbox still
+    // showing it open would complete it again.
+    app.harness().click_named(&control(&near_end)).unwrap();
+    app.harness().relayout();
+    assert!(
+        !app.state().tasks.get(&near_end).unwrap().done,
+        "the mounted row showed the task as completed"
+    );
     app.harness().click_named(&control(&near_end)).unwrap();
     app.harness().relayout();
     assert!(
         app.state().tasks.get(&near_end).unwrap().done,
         "the row's checkbox acts on its item"
     );
-}
-
-#[test]
-fn adding_an_item_away_from_the_view_keeps_the_window_tree() {
-    let mut app = seeded();
-    let before = list_items(&mut app).len();
-    let nodes = app.harness().layout_node_ids();
-    let frames = app.harness().relayout_frames();
-    let rebuilt = app.harness().rebuilt_frames();
-
-    app.call("seed", serde_json::json!({ "count": 1 })).unwrap();
-    app.harness().relayout();
-
-    assert!(app.harness().relayout_frames() > frames, "a frame ran");
-    assert_eq!(
-        app.harness().rebuilt_frames(),
-        rebuilt,
-        "an item added below the view recomposes no layout tree"
-    );
-    assert_eq!(
-        app.harness().layout_node_ids(),
-        nodes,
-        "the window's layout tree is the one it was"
-    );
-    let items = list_items(&mut app);
-    let total = usize::try_from(TASKS).unwrap().saturating_add(1);
-    assert_eq!(items.len(), before, "no row mounted or dropped");
-    assert!(items.iter().all(|&(_, size)| size == total), "{items:?}");
 }
 
 /// What assistive technology reads of the window: each node's role, name
@@ -453,94 +504,6 @@ fn a_live_window_mounts_an_added_row_in_place() {
         assert_eq!(checkboxes(app), shown);
     })
     .unwrap();
-}
-
-#[test]
-fn a_change_reads_the_rows_shown_not_every_row() {
-    let mut app = seeded();
-    let total = usize::try_from(TASKS).unwrap();
-    let shown = list_items(&mut app).len();
-    let before = READS.with(std::cell::Cell::get);
-
-    app.call("draft", serde_json::json!({ "title": "Next" }))
-        .unwrap();
-    app.harness().relayout();
-
-    let reads = READS.with(std::cell::Cell::get).saturating_sub(before);
-    assert!(
-        reads > 0,
-        "the shown rows follow the change (it ran {reads} reads)"
-    );
-    assert!(
-        reads <= shown.saturating_mul(2),
-        "{reads} rows read for a change to the draft, with {shown} of {total} mounted"
-    );
-}
-
-#[test]
-fn a_row_out_of_view_shows_its_item_as_it_is_when_it_mounts() {
-    let mut app = seeded();
-    let total = usize::try_from(TASKS).unwrap();
-    let far = task_id(&app, total.saturating_sub(3));
-    assert!(!mounted(&mut app, &far), "the row starts out unmounted");
-    // Another member (here an agent) completes the task while its row
-    // is out of view.
-    // Past the published page, the item is addressed by its id.
-    let item = tilo_resource::items::item_resource_id::<Checklist>("tasks", &far);
-    app.call_on(
-        item.as_str(),
-        "set-done",
-        serde_json::json!({ "done": true }),
-    )
-    .unwrap();
-    app.harness().relayout();
-
-    app.harness().send(&WindowEvent::CursorMoved {
-        device_id: tilo_app::winit::event::DeviceId::dummy(),
-        position: tilo_app::winit::dpi::PhysicalPosition::new(200.0, 300.0),
-    });
-    for _ in 0..200 {
-        app.harness().scroll(0.0, -400.0);
-    }
-    app.harness().relayout();
-    assert!(mounted(&mut app, &far), "the row mounted at the end");
-
-    // The checkbox shows the task completed: clicking it reopens the task.
-    // A checkbox still showing it open would complete it again.
-    app.harness().click_named(&control(&far)).unwrap();
-    app.harness().relayout();
-    assert!(
-        !app.state().tasks.get(&far).unwrap().done,
-        "the mounted row showed the task as completed"
-    );
-}
-
-#[test]
-fn tab_walks_rows_past_the_mounted_window() {
-    let mut app = seeded();
-    let steps = 90;
-    let target = task_id(&app, steps);
-    assert!(!mounted(&mut app, &target), "the row starts out unmounted");
-    let first = control(&task_id(&app, 0));
-    app.harness()
-        .perform_named(&first, &tilo_app::a11y::Action::Focus)
-        .unwrap();
-    // Tab moves focus without scrolling the view: the rows beside the
-    // focused one stay mounted, so each press finds the next row.
-    for _ in 0..steps {
-        app.harness().key("Tab");
-    }
-    app.harness().key("Space");
-    app.harness().relayout();
-    let done: Vec<usize> = app
-        .state()
-        .tasks
-        .values()
-        .enumerate()
-        .filter(|(_, task)| task.done)
-        .map(|(index, _)| index)
-        .collect();
-    assert_eq!(done, [steps], "Tab reached row {steps} one row at a time");
 }
 
 /// `A`'s window opened again over a record that already holds every task,

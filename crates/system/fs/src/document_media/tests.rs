@@ -7,134 +7,148 @@ fn scope(workspace: &str, app: &str) -> BlobScope {
     BlobScope::new(workspace, app).unwrap()
 }
 
-#[tokio::test]
-async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
-    {
-        let store = Arc::new(ContentStore::memory());
-        let media = DocumentMedia::new(Arc::clone(&store));
-        let photos = scope("workspace-1", "so.tilo.photos");
+#[test]
+#[allow(clippy::too_many_lines, reason = "a journey is its steps")]
+fn an_app_puts_media_and_every_caller_reads_only_what_it_may() {
+    use std::io::{Seek, SeekFrom, Write};
 
-        let hash = media.store(&photos, b"an image".to_vec()).await.unwrap();
-        assert_eq!(
-            media.read_range(photos.clone(), hash, 3, 5).await,
-            ReadOutcome::Ready {
-                bytes: b"image".to_vec(),
-                total_len: 8,
-            }
-        );
-        assert!(media.contains(&photos, hash).await);
-        assert_eq!(media.len_of(&photos, hash).await, Some(8));
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("fs-blobs.sock");
+    let store = {
+        let _guard = runtime.enter();
+        Arc::new(ContentStore::memory())
+    };
+    let _server = {
+        let _guard = runtime.enter();
+        serve_socket(&socket, DocumentMedia::new(Arc::clone(&store))).unwrap()
+    };
 
-        assert!(
-            media
-                .contains(&scope("workspace-1", "so.tilo.chat"), hash)
-                .await
-        );
-
-        let other = scope("workspace-2", "so.tilo.photos");
-        assert_eq!(
-            media.read_range(other.clone(), hash, 0, u32::MAX).await,
-            ReadOutcome::Unavailable
-        );
-        assert!(!media.contains(&other, hash).await);
-        assert_eq!(media.len_of(&other, hash).await, None);
-
-        let file_bytes = store.ingest(Bytes::from_static(b"a file")).await.unwrap();
-        assert_eq!(
-            media
-                .read_range(photos.clone(), file_bytes, 0, u32::MAX)
-                .await,
-            ReadOutcome::Unavailable
-        );
-    }
-    {
-        let dir = tempfile::tempdir().unwrap();
-        let photos = scope("workspace-1", "so.tilo.photos");
-        let hash = {
-            let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
-            let media = DocumentMedia::new(Arc::clone(&store));
-            let hash = media.store(&photos, b"durable".to_vec()).await.unwrap();
-            store.shutdown().await.unwrap();
-            hash
-        };
-        let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
-        let media = DocumentMedia::new(store);
-        assert_eq!(
-            media.read_range(photos, hash, 0, u32::MAX).await,
-            ReadOutcome::Ready {
-                bytes: b"durable".to_vec(),
-                total_len: 7,
-            }
-        );
-    }
-    {
-        let media = DocumentMedia::new(Arc::new(ContentStore::memory()));
-        let too_big = vec![0_u8; usize::try_from(MAX_BLOB_BYTES).unwrap() + 1];
-        assert!(matches!(
-            media
-                .store(&scope("workspace-1", "so.tilo.photos"), too_big)
-                .await,
-            Err(BlobError::TooLarge { .. })
-        ));
-    }
-}
-
-/// Every store answers for the empty content without anyone having put it, so only a
-/// workspace's reference decides who reads it.
-#[tokio::test]
-async fn the_empty_attachment_is_readable_only_where_it_was_stored() {
-    let media = DocumentMedia::new(Arc::new(ContentStore::memory()));
+    // The photos app keeps an image and a streamed video as this device's content; every
+    // in-workspace app reads them by address.
     let photos = scope("workspace-1", "so.tilo.photos");
-    let other = scope("workspace-2", "so.tilo.photos");
-    let empty = Hash::from(*blake3::hash(b"").as_bytes());
-
-    for unreferenced in [&photos, &other] {
+    let writer = launcher_connection(&socket, "workspace-1", "so.tilo.photos");
+    let session = BlobClient::connect_session(&socket).unwrap();
+    let image_hash = writer.put(IMAGE, "image/png").unwrap().hash;
+    assert_eq!(image_hash, blake3::hash(IMAGE).to_hex().to_string());
+    let video = pattern(3 * 1024 * 1024);
+    let uploads = session.scope("workspace-1", "so.tilo.photos").unwrap();
+    let mut upload = uploads.begin_upload("video/mp4").unwrap();
+    for piece in video.chunks(512 * 1024 + 7) {
+        upload.append(piece).unwrap();
+    }
+    let video_hash = upload.finish().unwrap().hash;
+    for (hash, bytes) in [(&image_hash, IMAGE.to_vec()), (&video_hash, video.clone())] {
+        let chat = launcher_connection(&socket, "workspace-1", "so.tilo.chat");
         assert_eq!(
-            media
-                .read_range(unreferenced.clone(), empty, 0, u32::MAX)
-                .await,
+            chat.read_all(hash).unwrap(),
+            ReadOutcome::Ready {
+                bytes: bytes.clone(),
+                total_len: bytes.len() as u64,
+            },
+            "another app in the workspace reads it"
+        );
+        assert!(chat.has(hash).unwrap());
+        assert_eq!(
+            chat.read(hash, 7, 11).unwrap(),
+            ReadOutcome::Ready {
+                bytes: bytes[7..18].to_vec(),
+                total_len: bytes.len() as u64,
+            },
+            "a range reads only its bytes"
+        );
+    }
+    for (workspace, app) in [
+        ("workspace-2", "so.tilo.photos"),
+        ("workspace-2", "so.tilo.chat"),
+    ] {
+        let elsewhere = launcher_connection(&socket, workspace, app);
+        assert_eq!(
+            elsewhere.read_all(&image_hash).unwrap(),
+            ReadOutcome::Unavailable
+        );
+        assert!(!elsewhere.has(&image_hash).unwrap(), "{workspace}/{app}");
+    }
+    assert!(matches!(
+        session
+            .scope("workspace-1", "so.tilo.photos")
+            .unwrap()
+            .read_all(&image_hash)
+            .unwrap(),
+        ReadOutcome::Ready { .. }
+    ));
+
+    // An upload abandoned before it finishes keeps nothing.
+    let abandoned = b"never finished";
+    let mut upload = uploads.begin_upload("application/octet-stream").unwrap();
+    upload.append(abandoned).unwrap();
+    drop(upload);
+    let abandoned_hash = blake3::hash(abandoned).to_hex().to_string();
+    assert!(!writer.has(&abandoned_hash).unwrap());
+    assert_eq!(
+        writer.read_all(&abandoned_hash).unwrap(),
+        ReadOutcome::Unavailable
+    );
+
+    // The empty content is readable only where a workspace stored it.
+    let empty = Hash::from(*blake3::hash(b"").as_bytes());
+    for unreferenced in [
+        scope("workspace-1", "so.tilo.photos"),
+        scope("workspace-2", "so.tilo.photos"),
+    ] {
+        assert_eq!(
+            runtime.block_on(DocumentMedia::new(Arc::clone(&store)).read_range(
+                unreferenced,
+                empty,
+                0,
+                u32::MAX
+            )),
             ReadOutcome::Unavailable,
             "the empty content was read before anyone stored it"
         );
-        assert!(!media.contains(unreferenced, empty).await);
-        assert_eq!(media.len_of(unreferenced, empty).await, None);
     }
-
-    assert_eq!(media.store(&photos, Vec::new()).await.unwrap(), empty);
+    let stored = writer.put(&[], "application/octet-stream").unwrap();
     assert_eq!(
-        media.read_range(photos.clone(), empty, 0, u32::MAX).await,
-        ReadOutcome::Ready {
-            bytes: Vec::new(),
-            total_len: 0,
-        }
+        stored.hash,
+        empty.to_hex(),
+        "photos stored the empty content"
     );
-    assert!(media.contains(&photos, empty).await);
-    assert_eq!(media.len_of(&photos, empty).await, Some(0));
+    assert!(writer.has(&empty.to_hex()).unwrap());
 
-    assert_eq!(
-        media.read_range(other.clone(), empty, 0, u32::MAX).await,
-        ReadOutcome::Unavailable,
-        "another workspace read the empty content this one stored"
-    );
-    assert!(!media.contains(&other, empty).await);
-    assert_eq!(media.len_of(&other, empty).await, None);
-}
+    // The largest attachment is refused whole, not buffered.
+    let too_big = vec![0_u8; usize::try_from(MAX_BLOB_BYTES).unwrap() + 1];
+    assert!(matches!(
+        runtime.block_on(DocumentMedia::new(Arc::clone(&store)).store(&photos, too_big)),
+        Err(BlobError::TooLarge { .. })
+    ));
 
-#[tokio::test]
-async fn ranged_reads_after_a_restart_read_only_the_range() {
-    let dir = tempfile::tempdir().unwrap();
-    let photos = scope("workspace-1", "so.tilo.photos");
+    // A durable store reads back after a restart, and only the ranges it reads are trusted.
+    let durable = tempfile::tempdir().unwrap();
     let data = pattern(9 * 1024 * 1024 + 12_345);
-    let hash = {
-        let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
+    let media_hash = {
+        let store = Arc::new(
+            runtime
+                .block_on(ContentStore::open(durable.path()))
+                .unwrap(),
+        );
         let media = DocumentMedia::new(Arc::clone(&store));
-        let hash = media.store(&photos, data.clone()).await.unwrap();
-        store.shutdown().await.unwrap();
+        let hash = runtime
+            .block_on(media.store(&photos, data.clone()))
+            .unwrap();
+        runtime.block_on(store.shutdown()).unwrap();
         hash
     };
-    let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
+    let store = Arc::new(
+        runtime
+            .block_on(ContentStore::open(durable.path()))
+            .unwrap(),
+    );
     let media = DocumentMedia::new(Arc::clone(&store));
-    assert!(!store.is_cached(hash));
+    assert!(!store.is_cached(media_hash));
     let total_len = data.len() as u64;
     for (offset, max_len) in [
         (0, 0),
@@ -149,9 +163,7 @@ async fn ranged_reads_after_a_restart_read_only_the_range() {
         let start = usize::try_from(offset.min(total_len)).unwrap();
         let end = (start + max_len as usize).min(data.len());
         assert_eq!(
-            media
-                .read_range(photos.clone(), hash, offset, max_len)
-                .await,
+            runtime.block_on(media.read_range(photos.clone(), media_hash, offset, max_len)),
             ReadOutcome::Ready {
                 bytes: data[start..end].to_vec(),
                 total_len
@@ -159,100 +171,95 @@ async fn ranged_reads_after_a_restart_read_only_the_range() {
             "range {offset} + {max_len}"
         );
         assert!(
-            !store.is_cached(hash),
+            !store.is_cached(media_hash),
             "range {offset} + {max_len} cached the blob"
         );
     }
-    for max_len in [0, MAX_READ_CHUNK] {
-        assert_eq!(
-            media
-                .read_range(scope("workspace-2", "so.tilo.photos"), hash, 0, max_len)
-                .await,
-            ReadOutcome::Unavailable
-        );
-    }
-    assert_eq!(store.local(hash).await.unwrap().as_ref(), data);
-    assert!(!store.is_cached(hash));
-    store.shutdown().await.unwrap();
-}
+    assert_eq!(
+        runtime.block_on(media.read_range(
+            scope("workspace-2", "so.tilo.photos"),
+            media_hash,
+            0,
+            1
+        )),
+        ReadOutcome::Unavailable
+    );
+    assert_eq!(
+        runtime.block_on(store.local(media_hash)).unwrap().as_ref(),
+        data
+    );
+    assert!(!store.is_cached(media_hash));
+    runtime.block_on(store.shutdown()).unwrap();
 
-#[tokio::test]
-async fn cold_ranged_reads_verify_only_selected_chunk_groups() {
-    use std::io::{Seek, SeekFrom, Write};
-
-    let dir = tempfile::tempdir().unwrap();
-    let photos = scope("workspace-1", "so.tilo.photos");
-    let data = pattern(9 * 1024 * 1024 + 12_345);
-    let hash = {
-        let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
-        let media = DocumentMedia::new(Arc::clone(&store));
-        let hash = media.store(&photos, data.clone()).await.unwrap();
-        store.shutdown().await.unwrap();
-        hash
-    };
+    // A range read verifies the groups it reads: the good byte before the damage still reads,
+    // the damaged one does not, and nothing claims the blob on those reads.
     let damaged = data.len() - 100;
-    let path = dir.path().join("files/data").join(hash.to_hex());
+    let path = durable.path().join("files/data").join(media_hash.to_hex());
     let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
     file.seek(SeekFrom::Start(damaged as u64)).unwrap();
     file.write_all(&[data[damaged] ^ 0xff]).unwrap();
     file.sync_all().unwrap();
     drop(file);
-
-    let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
+    let store = Arc::new(
+        runtime
+            .block_on(ContentStore::open(durable.path()))
+            .unwrap(),
+    );
     let media = DocumentMedia::new(Arc::clone(&store));
     assert_eq!(
-        media.read_range(photos.clone(), hash, 0, 10).await,
+        runtime.block_on(media.read_range(photos.clone(), media_hash, 0, 10)),
         ReadOutcome::Ready {
             bytes: data[..10].to_vec(),
             total_len: data.len() as u64
         }
     );
     assert_eq!(
-        media
-            .read_range(photos.clone(), hash, damaged as u64, 1)
-            .await,
+        runtime.block_on(media.read_range(photos.clone(), media_hash, damaged as u64, 1)),
         ReadOutcome::Unavailable
     );
     assert_eq!(
-        media.read_range(photos, hash, 0, 0).await,
+        runtime.block_on(media.read_range(photos.clone(), media_hash, 0, 0)),
         ReadOutcome::Ready {
             bytes: Vec::new(),
             total_len: data.len() as u64
         }
     );
-    assert!(!store.is_cached(hash));
-    store.shutdown().await.unwrap();
-}
+    assert!(!store.is_cached(media_hash));
+    runtime.block_on(store.shutdown()).unwrap();
 
-#[tokio::test]
-async fn ranged_reads_keep_the_verified_file_chunk_fallback() {
-    let store = Arc::new(ContentStore::memory());
-    let photos = scope("workspace-1", "so.tilo.photos");
+    // A chunk of a file-backed blob is read from its entry in the file store, and a damage to
+    // that entry is refused.
+    let inner = Arc::new(ContentStore::memory());
     let data = pattern(3 * 1024 * 1024);
-    let content = store.write_content(&data).await.unwrap().unwrap();
-    let manifest = store.manifest(content).await.unwrap();
+    let content = runtime
+        .block_on(inner.write_content(&data))
+        .unwrap()
+        .unwrap();
+    let manifest = runtime.block_on(inner.manifest(content)).unwrap();
     let chunk = manifest.chunks()[0];
     let hash = Hash::from(chunk.hash);
     assert!(
-        store.files().get_inline(hash.as_bytes()).is_none(),
+        inner.files().get_inline(hash.as_bytes()).is_none(),
         "the chunk lives in the file-backed entry, not inline"
     );
-    document_reference(&store, &photos, hash).await.unwrap();
-    let media = DocumentMedia::new(Arc::clone(&store));
+    runtime
+        .block_on(document_reference(&inner, &photos, hash))
+        .unwrap();
+    let media = DocumentMedia::new(Arc::clone(&inner));
     assert_eq!(
-        media.read_range(photos.clone(), hash, 7, 11).await,
+        runtime.block_on(media.read_range(photos.clone(), hash, 7, 11)),
         ReadOutcome::Ready {
             bytes: data[7..18].to_vec(),
             total_len: u64::from(chunk.len)
         }
     );
-    assert!(!store.is_cached(hash));
-    store
+    assert!(!inner.is_cached(hash));
+    inner
         .files()
         .write_at(content.as_bytes(), 7, &[data[7] ^ 0xff])
         .unwrap();
     assert_eq!(
-        media.read_range(photos, hash, 7, 11).await,
+        runtime.block_on(media.read_range(photos, hash, 7, 11)),
         ReadOutcome::Unavailable
     );
 }

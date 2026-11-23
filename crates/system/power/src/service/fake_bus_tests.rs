@@ -33,8 +33,10 @@ struct Calls {
 }
 
 /// The arguments of one `Inhibit` call.
+#[derive(Clone)]
 struct LogindInhibitorRequest {
     what: String,
+    mode: String,
 }
 
 type Shared = Arc<Mutex<Calls>>;
@@ -61,6 +63,7 @@ impl FakeLogind {
             let mut calls = calls(&self.calls);
             calls.inhibits.push(LogindInhibitorRequest {
                 what: what.to_owned(),
+                mode: mode.to_owned(),
             });
             calls.held.push(ours);
         }
@@ -568,4 +571,58 @@ async fn resuming_samples_what_came_due_during_sleep() {
             .drain_signals()
             .contains(&PowerSignal::ResumedFromSleep)
     );
+}
+
+/// The `LogindManager` proxy on the same fake daemon, apart from the service: what it
+/// asks logind for reads back as it was asked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_proxy_takes_its_locks_and_reads_loginds_verdict() {
+    let recorded: Shared = Shared::default();
+    let (server, client) = tokio::net::UnixStream::pair().expect("socketpair");
+    let server = Builder::unix_stream(server)
+        .server(Guid::generate())
+        .expect("server")
+        .p2p()
+        .serve_at(
+            LOGIND_PATH,
+            FakeLogind {
+                calls: Arc::clone(&recorded),
+                verdict: "challenge".into(),
+                foreign: Vec::new(),
+            },
+        )
+        .expect("logind")
+        .build();
+    let client = Builder::unix_stream(client).p2p().build();
+    let (server, client) = tokio::join!(server, client);
+    let (_server, client) = (server.expect("server"), client.expect("client"));
+    let manager = LogindManager::with_connection(&client)
+        .await
+        .expect("proxy");
+
+    assert_eq!(
+        manager.can_suspend().await.expect("CanSuspend"),
+        "challenge"
+    );
+
+    let holder = manager
+        .inhibit("idle:sleep", "Tilo power test", "playing back", "block")
+        .await
+        .expect("Inhibit");
+    assert_eq!(holder.what(), "idle:sleep");
+    drop(holder);
+
+    let delegated = manager.delegate_handled_keys().await.expect("delegate");
+    let asked = calls(&recorded)
+        .inhibits
+        .last()
+        .cloned()
+        .expect("the delegate request");
+    assert!(
+        asked.what.contains("handle-lid-switch") && asked.mode == "block",
+        "the lid and power key move to the compositor: {:?} {:?}",
+        asked.what,
+        asked.mode
+    );
+    assert_eq!(delegated.what(), asked.what);
 }

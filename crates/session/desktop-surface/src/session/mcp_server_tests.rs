@@ -239,7 +239,7 @@ fn a_window_asks_the_shell_for_the_persons_connect_setup_or_pairing_link() {
         ),
     ] {
         let mut minter = tilo_desktop_model::IdMinter::new(7);
-        let tree = crate::seed_tree(&mut minter, "Office", Vec::new());
+        let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Office", Vec::new());
         let handle = crate::DesktopSurface::new(tree, 7, Box::new(Notices)).1;
         let (session, openings) = super::serve("workspace", Arc::default());
         let person = Caller::local_person("ada").in_workspace("workspace");

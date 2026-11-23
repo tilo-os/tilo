@@ -66,7 +66,6 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
         stop: None,
         presence: None,
         revocations: &revocations,
-        carried_calls: None,
         admin: None,
         fetch: None,
         agents: Box::leak(Box::default()),
@@ -245,7 +244,6 @@ async fn requests_the_server_does_not_answer_are_refused() {
         stop: None,
         presence: None,
         revocations: &revocations,
-        carried_calls: None,
         admin: None,
         fetch: None,
         agents: Box::leak(Box::default()),
@@ -290,7 +288,6 @@ async fn requests_the_server_does_not_answer_are_refused() {
     // An answer the app action server abandons arrives as a refusal on the connection.
     let abandoned = SessionCtx {
         app_serving: Some(&abandoning),
-        carried_calls: None,
         admin: None,
         fetch: None,
         ..session

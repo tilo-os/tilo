@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Write vendor/regex-syntax: regex-syntax 0.8.11 with its Unicode tables
+"""Write vendor/regex-syntax: regex-syntax 0.8.12 with its Unicode tables
 laid out without pointers.
 
-    python3 tools/regex-syntax-tables.py ~/.cargo/registry/src/*/regex-syntax-0.8.11
+    python3 tools/regex-syntax-tables.py ~/.cargo/registry/src/*/regex-syntax-0.8.12
 
 ucd-generate writes the name tables as slices of `(&str, &[..])` and the
 simple case folding table as `(char, &[char])`: about 3,900 entries the

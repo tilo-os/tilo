@@ -223,12 +223,12 @@ mod tests {
 
         fn collect(&self) {
             let catalog = package_store::Catalog::at(self.store.layout().root(), None);
-            let request = install::gc::Request {
+            let request = package_store::gc::Request {
                 grace_secs: 0,
-                ..install::gc::Request::after_change(0)
+                ..package_store::gc::Request::after_change(0)
             };
             let runtimes = BundleRoot::new(self.runtimes());
-            install::gc::collect(&self.store, &catalog, &runtimes, request).unwrap();
+            package_store::gc::collect(&self.store, &catalog, &runtimes, request).unwrap();
         }
     }
 

@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_names_are_numbered_in_id_order() {
+    fn names_in_one_folder_are_unique_safe_and_stable() {
         let mut tree = Tree::new(ItemId::new("root"));
         tree.upsert(item("b", &["root"], "Report.pdf", ItemKind::File));
         tree.upsert(item("a", &["root"], "Report.pdf", ItemKind::File));
@@ -351,10 +351,8 @@ mod tests {
                 ("Report.pdf".to_owned(), "a".to_owned()),
             ]
         );
-    }
 
-    #[test]
-    fn truncated_duplicate_names_remain_unique_and_resolvable() {
+        // Names longer than NAME_MAX stay distinct and resolvable once numbered.
         let mut tree = Tree::new(ItemId::new("root"));
         let first = format!("{}.txt", "a".repeat(250));
         let second = format!("{}b.txt", "a".repeat(249));
@@ -377,64 +375,9 @@ mod tests {
             assert!(name.len() <= MAX_NAME_BYTES, "{name}");
             assert_eq!(tree.resolve([name.as_str()]).unwrap().id, item.id);
         }
-    }
 
-    #[test]
-    fn multi_parent_items_have_a_path_per_parent_and_resolve_back() {
-        let mut tree = Tree::new(ItemId::new("root"));
-        tree.upsert(item("x", &["root"], "Work", ItemKind::Folder));
-        tree.upsert(item("y", &["root"], "Shared", ItemKind::Folder));
-        tree.upsert(item("f", &["x", "y"], "plan.txt", ItemKind::File));
-        let mut paths = tree.paths(&ItemId::new("f"));
-        paths.sort();
-        assert_eq!(paths, [["Shared", "plan.txt"], ["Work", "plan.txt"]]);
-        assert_eq!(
-            tree.resolve(["Shared", "plan.txt"])
-                .map(|i| i.id.0.as_str()),
-            Some("f")
-        );
-        let removed = tree.remove_recursive(&ItemId::new("x"));
-        assert_eq!(removed.len(), 1, "plan.txt still lives under Shared");
-        assert!(tree.resolve(["Shared", "plan.txt"]).is_some());
-    }
-
-    #[test]
-    fn recursive_removal_preserves_an_implicit_root_parent() {
-        let mut tree = Tree::new(ItemId::new("root"));
-        tree.upsert(item("folder", &["root"], "Folder", ItemKind::Folder));
-        tree.upsert(item(
-            "shared",
-            &["folder", "root"],
-            "Shared",
-            ItemKind::Folder,
-        ));
-        tree.upsert(item("file", &["shared"], "file", ItemKind::File));
-        let removed = tree.remove_recursive(&ItemId::new("folder"));
-        assert_eq!(
-            removed.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
-            ["folder"]
-        );
-        assert_eq!(
-            tree.resolve(["Shared", "file"]).unwrap().id.as_str(),
-            "file"
-        );
-    }
-
-    #[test]
-    fn recursive_removal_deletes_internal_diamonds_and_cycles() {
-        let mut tree = Tree::new(ItemId::new("root"));
-        tree.upsert(item("folder", &["root"], "Folder", ItemKind::Folder));
-        tree.upsert(item("a", &["folder", "b"], "A", ItemKind::Folder));
-        tree.upsert(item("b", &["folder", "a"], "B", ItemKind::Folder));
-        tree.upsert(item("file", &["a", "b"], "file", ItemKind::File));
-        let removed = tree.remove_recursive(&ItemId::new("folder"));
-        assert_eq!(removed.len(), 4);
-        assert!(tree.is_empty());
-        assert!(tree.children(&ItemId::new("root")).is_empty());
-    }
-
-    #[test]
-    fn invalid_names_and_native_documents_project_safely() {
+        // Invalid names are rewritten; an unsupported native document keeps
+        // its name and a supported one gains its export extension.
         let mut tree = Tree::new(ItemId::new("root"));
         tree.upsert(item("1", &["root"], "a/b", ItemKind::File));
         tree.upsert(item("2", &["root"], "..", ItemKind::File));
@@ -457,18 +400,8 @@ mod tests {
         assert_eq!(names, ["Budget", "_..", "a\u{2215}b"]);
         let long = "é".repeat(300);
         assert!(sanitize(&long).len() <= MAX_NAME_BYTES);
-    }
 
-    #[test]
-    fn cycles_do_not_hang_path_projection() {
-        let mut tree = Tree::new(ItemId::new("root"));
-        tree.upsert(item("a", &["b"], "A", ItemKind::Folder));
-        tree.upsert(item("b", &["a"], "B", ItemKind::Folder));
-        assert!(tree.paths(&ItemId::new("a")).is_empty());
-    }
-
-    #[test]
-    fn mount_names_are_unique_and_stable() {
+        // Mounted accounts get the same uniqueness, in account-id order.
         let names = mount_names(&[("n2", "Cloud"), ("n1", "Cloud"), ("w", " ")]);
         assert_eq!(
             names,
@@ -478,5 +411,64 @@ mod tests {
                 ("w".to_owned(), "w".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn paths_follow_every_parent_and_ignore_cycles() {
+        let mut tree = Tree::new(ItemId::new("root"));
+        tree.upsert(item("x", &["root"], "Work", ItemKind::Folder));
+        tree.upsert(item("y", &["root"], "Shared", ItemKind::Folder));
+        tree.upsert(item("f", &["x", "y"], "plan.txt", ItemKind::File));
+        let mut paths = tree.paths(&ItemId::new("f"));
+        paths.sort();
+        assert_eq!(paths, [["Shared", "plan.txt"], ["Work", "plan.txt"]]);
+        assert_eq!(
+            tree.resolve(["Shared", "plan.txt"])
+                .map(|i| i.id.0.as_str()),
+            Some("f")
+        );
+        let removed = tree.remove_recursive(&ItemId::new("x"));
+        assert_eq!(removed.len(), 1, "plan.txt still lives under Shared");
+        assert!(tree.resolve(["Shared", "plan.txt"]).is_some());
+
+        // Folders that name each other as parents have no path to the root,
+        // and projecting one ends instead of following the cycle.
+        let mut tree = Tree::new(ItemId::new("root"));
+        tree.upsert(item("a", &["b"], "A", ItemKind::Folder));
+        tree.upsert(item("b", &["a"], "B", ItemKind::Folder));
+        assert!(tree.paths(&ItemId::new("a")).is_empty());
+    }
+
+    #[test]
+    fn recursive_removal_keeps_items_that_still_reach_the_root() {
+        let mut tree = Tree::new(ItemId::new("root"));
+        tree.upsert(item("folder", &["root"], "Folder", ItemKind::Folder));
+        tree.upsert(item(
+            "shared",
+            &["folder", "root"],
+            "Shared",
+            ItemKind::Folder,
+        ));
+        tree.upsert(item("file", &["shared"], "file", ItemKind::File));
+        let removed = tree.remove_recursive(&ItemId::new("folder"));
+        assert_eq!(
+            removed.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            ["folder"]
+        );
+        assert_eq!(
+            tree.resolve(["Shared", "file"]).unwrap().id.as_str(),
+            "file"
+        );
+
+        // A diamond or cycle wholly inside the subtree goes with it.
+        let mut tree = Tree::new(ItemId::new("root"));
+        tree.upsert(item("folder", &["root"], "Folder", ItemKind::Folder));
+        tree.upsert(item("a", &["folder", "b"], "A", ItemKind::Folder));
+        tree.upsert(item("b", &["folder", "a"], "B", ItemKind::Folder));
+        tree.upsert(item("file", &["a", "b"], "file", ItemKind::File));
+        let removed = tree.remove_recursive(&ItemId::new("folder"));
+        assert_eq!(removed.len(), 4);
+        assert!(tree.is_empty());
+        assert!(tree.children(&ItemId::new("root")).is_empty());
     }
 }

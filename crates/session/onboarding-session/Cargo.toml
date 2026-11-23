@@ -39,6 +39,7 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 sha2.workspace = true
+staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 tempfile.workspace = true
 threshold-identity = { path = "../../collab/threshold-identity" }
 tilo-clock = { path = "../../platform/tilo-clock" }
@@ -70,9 +71,11 @@ rustix = { workspace = true, features = ["fs", "pipe", "process", "stdio"] }
 browser-continuity = { path = "../../browser/browser-continuity", features = ["native"] }
 
 [dev-dependencies]
+iroh.workspace = true
+tilo-api = { path = "../../server/tilo-api", features = ["test-support"] }
 tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 
 [lints]

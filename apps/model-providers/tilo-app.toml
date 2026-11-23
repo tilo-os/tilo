@@ -43,8 +43,8 @@ mode = "off"
 [sandbox.services]
 # The app's actions reach the shell over the workspace's broker: its window
 # publishes them there, and they are invoked back through it.
-collab = "optional@35"
-model-gateway = "optional@35"
+collab = "optional@36"
+model-gateway = "optional@36"
 
 [entrypoint]
 bin = "bin/model-providers"

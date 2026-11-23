@@ -286,7 +286,6 @@ impl StatePeer {
             gathering: super::compaction_set::Gathering::default(),
             workspace_host: self.workspace_host,
             own_device: self.own_device,
-            refused_base: None,
             governance_now: self
                 .governance_now
                 .clone()

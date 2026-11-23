@@ -195,7 +195,7 @@ tilo_test_env::scenario! {
 #[test]
 fn standalone_is_rejected_outside_connect() {
     let output = Command::new(runtime_binary())
-        .args(["--standalone", "--daemon", "--profile", "/nonexistent/tilo"])
+        .args(["--standalone", "--profile", "/nonexistent/tilo"])
         .output_locked()
         .unwrap();
     assert!(!output.status.success());

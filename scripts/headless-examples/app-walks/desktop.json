@@ -1,0 +1,87 @@
+{
+  "app": "desktop",
+  "said": "The desktop a person signs in to",
+  "family": "shell",
+  "live": "rust",
+  "apps": "file-explorer chat settings terminal",
+  "rust": {},
+  "tl": {
+    "session_args": [
+      "--shell",
+      "screen"
+    ]
+  },
+  "steps": [
+    {
+      "id": "signed-in",
+      "said": "Sign in: the desktop is there, nothing open, nothing over it",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "state": {
+            "chrome.session_locked": false,
+            "chrome.overlays.search": false,
+            "chrome.overlays.overview": false,
+            "chrome.overlays.strips": false,
+            "chrome.overlays.quick-settings": false,
+            "chrome.overlays.centre": false
+          }
+        },
+        {
+          "windows": 0
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "open-files",
+      "said": "Open Files",
+      "ops": [
+        {
+          "open": "files"
+        }
+      ],
+      "budget_ms": 30000
+    },
+    {
+      "id": "open-chat",
+      "said": "Open Chat",
+      "ops": [
+        {
+          "open": "chat"
+        },
+        {
+          "windows": {
+            "at_least": 2
+          }
+        }
+      ],
+      "budget_ms": 30000
+    },
+    {
+      "id": "both-shown",
+      "said": "Both windows are on the desktop, in the dark theme too",
+      "ops": [
+        {
+          "windows": 2
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "close-chat",
+      "said": "Close Chat with the window's own close",
+      "ops": [
+        {
+          "close_app": "chat"
+        },
+        {
+          "windows": 1
+        }
+      ],
+      "budget_ms": 10000
+    }
+  ]
+}

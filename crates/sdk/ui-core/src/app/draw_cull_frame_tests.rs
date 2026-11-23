@@ -176,50 +176,37 @@ const RUNS: &[(f64, usize)] = &[(40.0, 10), (-24.0, 6)];
 
 #[test]
 fn culled_scroll_frames_present_what_full_frames_present() {
-    let scrollers: [(&str, fn() -> Box<dyn Widget>); 4] = [
-        ("scrollable column", || column(400)),
-        ("virtual list", || virtual_list(2_000)),
-        ("code editor", || code(600)),
-        ("framed column", framed_column),
+    let scrollers: [(&str, fn() -> Box<dyn Widget>, bool); 7] = [
+        ("scrollable column", || column(400), true),
+        ("virtual list", || virtual_list(2_000), true),
+        ("code editor", || code(600), true),
+        ("data table", || data_table(2_000), false),
+        ("tree view", || tree_view(100, 10), false),
+        ("scroll region", || transcript(2_000), false),
+        ("framed column", framed_column, true),
     ];
-    for (name, make) in scrollers {
+    for (name, make, copies) in scrollers {
         for scale in [1.0, 2.0] {
             let twins = twins(make, &Theme::dark(), scale, RUNS);
             eprintln!("{name} {scale}x: {twins:?}");
-            assert!(
-                twins.copied * 4 >= twins.frames * 3,
-                "{name} {scale}x: most frames copy ({twins:?})"
-            );
-            assert!(
-                twins.smaller * 2 >= twins.copied,
-                "{name} {scale}x: a frame that copies draws less than a full \
-                 one ({twins:?})"
-            );
+            if copies {
+                assert!(
+                    twins.copied * 4 >= twins.frames * 3,
+                    "{name} {scale}x: most frames copy ({twins:?})"
+                );
+                assert!(
+                    twins.smaller * 2 >= twins.copied,
+                    "{name} {scale}x: a frame that copies draws less than a full \
+                     one ({twins:?})"
+                );
+            }
         }
     }
-}
 
-#[test]
-fn the_other_scrollers_present_what_full_frames_present() {
-    let scrollers: [(&str, fn() -> Box<dyn Widget>); 3] = [
-        ("data table", || data_table(2_000)),
-        ("tree view", || tree_view(100, 10)),
-        ("scroll region", || transcript(2_000)),
-    ];
-    for (name, make) in scrollers {
-        for scale in [1.0, 2.0] {
-            let twins = twins(make, &Theme::dark(), scale, RUNS);
-            eprintln!("{name} {scale}x: {twins:?}");
-        }
-    }
-}
-
-/// The first frame of a scroll inside a frame expects nothing the frame
-/// paints at its edges: the rows it leaves out there are repainted, so it
-/// draws its widgets again in full, and later frames leave out only what
-/// the copies keep.
-#[test]
-fn a_frame_that_left_out_what_it_repaints_draws_its_widgets_again() {
+    // The first frame of a scroll inside a frame expects nothing the frame
+    // paints at its edges: the rows it leaves out there are repainted, so it
+    // draws its widgets again in full, and later frames leave out only what
+    // the copies keep.
     let twins = twins(framed_column, &Theme::dark(), 1.0, &[(40.0, 8)]);
     assert!(twins.culled.1 >= 1, "{twins:?}");
     assert!(

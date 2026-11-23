@@ -79,7 +79,7 @@ impl ScratchReceipt {
             .strip_prefix("inventory-")
             .ok_or(io::ErrorKind::PermissionDenied)?;
         if !crate::is_operation_id(suffix)
-            || rustix::process::geteuid().as_raw() != 0
+            || !crate::native_root::is_root()
             || !self.parent.is_absolute()
         {
             return Err(io::ErrorKind::PermissionDenied.into());
@@ -136,7 +136,7 @@ impl Store {
         &self,
         record: &Record,
     ) -> io::Result<ScratchLease> {
-        if rustix::process::geteuid().as_raw() != 0 || record.grant.operation != self.operation {
+        if !crate::native_root::is_root() || record.grant.operation != self.operation {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let allocation_lease = self.inventory_allocation_lease()?;
@@ -153,10 +153,7 @@ impl Store {
         if btrfs::subvolume_identity(parent.as_fd())?.filesystem != record.grant.filesystem {
             return Err(failure("Inventory scratch Store filesystem differs"));
         }
-        let mut capacity: libc::statvfs = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstatvfs(parent.as_raw_fd(), &raw mut capacity) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        let capacity = rustix::fs::fstatvfs(&parent)?;
         let quota_bytes = capacity
             .f_bavail
             .checked_mul(capacity.f_frsize)

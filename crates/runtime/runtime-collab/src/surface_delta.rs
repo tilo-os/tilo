@@ -13,8 +13,11 @@
 //!   one), named by a content hash;
 //! * each distinct ordered set of shapes once, a *template*, named by a hash
 //!   of its shapes' ids;
-//! * each resource once, with the fields that are its own and the template of
-//!   the actions it offers.
+//! * each resource once, with the fields that are its own, the template of
+//!   the actions it offers, and which of them it cannot run now and why
+//!   ([`Unavailable`]): a shape is the action as its type declares it, so
+//!   whether a resource's state lets it run is the resource's, not the
+//!   shape's.
 //!
 //! [`SurfacePublication`] turns the next surface into a delta from what the
 //! receiver holds. The broker's [`SurfaceTable`] applies deltas and expands the result into
@@ -34,13 +37,25 @@ pub type ShapeId = [u8; SHAPE_ID_BYTES];
 
 pub use tilo_actions::published::ResourceFields;
 
-/// One resource: the fields that are its own, and the template of the actions
-/// it offers.
+/// One resource: the fields that are its own, the template of the actions it
+/// offers, and those of them it cannot run now.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SurfaceResource {
     pub resource: String,
     pub fields: ResourceFields,
     pub template: ShapeId,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unavailable: Vec<Unavailable>,
+}
+
+/// An action of a resource's template the resource cannot run now: its
+/// requirement does not pass, for the reason it gives.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Unavailable {
+    /// Where the action stands in the resource's template.
+    pub at: u32,
+    pub code: String,
+    pub reason: String,
 }
 
 /// A change to a connection's published surface.
@@ -153,15 +168,31 @@ impl SurfaceTable {
             }
         }
         for resource in &delta.resources {
-            let known = delta
+            let members = delta
                 .templates
                 .iter()
-                .any(|(id, _)| *id == resource.template)
-                || (held && self.templates.contains_key(&resource.template));
-            if !known {
+                .find(|(id, _)| *id == resource.template)
+                .map(|(_, members)| members)
+                .or_else(|| {
+                    held.then(|| self.templates.get(&resource.template))
+                        .flatten()
+                });
+            let Some(members) = members else {
                 return Err(format!(
                     "resource `{}` names a template the broker does not hold",
                     resource.resource
+                ));
+            };
+            if let Some(past) = resource
+                .unavailable
+                .iter()
+                .find(|unavailable| unavailable.at as usize >= members.len())
+            {
+                return Err(format!(
+                    "resource `{}` says action {} of its template cannot run, past its {}",
+                    resource.resource,
+                    past.at,
+                    members.len()
                 ));
             }
         }
@@ -209,19 +240,33 @@ impl SurfaceTable {
     pub fn actions(&self) -> Vec<ExportedAction> {
         let mut rows: Vec<&(u64, SurfaceResource)> = self.resources.values().collect();
         rows.compact_sort_by_key(|(seq, _)| *seq);
-        let mut actions = Vec::new();
-        for (_, resource) in rows {
-            let Some(members) = self.templates.get(&resource.template) else {
-                continue;
-            };
-            for member in members {
-                let Some(shape) = self.shapes.get(member) else {
-                    continue;
-                };
-                actions.push(shape.on_resource(&resource.resource, &resource.fields));
-            }
-        }
-        actions
+        rows.into_iter()
+            .flat_map(|(_, resource)| self.offered(resource))
+            .collect()
+    }
+
+    /// The actions the published resource `resource` offers, as [`Self::actions`] carries them.
+    #[must_use]
+    pub fn actions_of(&self, resource: &str) -> Vec<ExportedAction> {
+        self.resources
+            .get(resource)
+            .map(|(_, held)| self.offered(held))
+            .unwrap_or_default()
+    }
+
+    fn offered(&self, resource: &SurfaceResource) -> Vec<ExportedAction> {
+        let Some(members) = self.templates.get(&resource.template) else {
+            return Vec::new();
+        };
+        members
+            .iter()
+            .enumerate()
+            .filter_map(|(at, member)| {
+                self.shapes
+                    .get(member)
+                    .map(|shape| resource.offers(at, shape))
+            })
+            .collect()
     }
 
     /// The workspace holding the published resource `resource`, when another workspace than the
@@ -264,6 +309,26 @@ impl SurfaceTable {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.resources.is_empty()
+    }
+}
+
+impl SurfaceResource {
+    /// The action `shape`, standing at `at` in this resource's template, as it is offered on
+    /// this resource: with its fields, and unavailable where this resource says so.
+    #[must_use]
+    pub fn offers(&self, at: usize, shape: &ExportedAction) -> ExportedAction {
+        let mut action = shape.on_resource(&self.resource, &self.fields);
+        if let Some(unavailable) = self
+            .unavailable
+            .iter()
+            .find(|unavailable| unavailable.at as usize == at)
+        {
+            action.contract.availability = tilo_actions::Availability::Unavailable {
+                code: unavailable.code.clone(),
+                reason: unavailable.reason.clone(),
+            };
+        }
+        action
     }
 }
 
@@ -310,6 +375,10 @@ pub struct SurfacePublication {
     resources: HashMap<String, Held>,
     /// The templates the resources name, and so the shapes they name.
     templates: HashMap<ShapeId, Vec<ShapeId>>,
+    /// The shapes the templates name, by action: a resource coming into view offers actions
+    /// its type's other resources already offer, and finds their ids here rather than hashing
+    /// them again.
+    shapes: KnownShapes,
 }
 
 impl SurfacePublication {
@@ -342,6 +411,7 @@ impl SurfacePublication {
         };
         let held_templates: HashSet<ShapeId> = base.templates.keys().copied().collect();
         let held_shapes: HashSet<ShapeId> = base.templates.values().flatten().copied().collect();
+        let mut known = base.shapes.clone();
 
         // A resource's actions, in the order they were surveyed.
         let mut order: Vec<&str> = Vec::new();
@@ -387,28 +457,13 @@ impl SurfacePublication {
                 );
                 continue;
             }
-            let mut members = Vec::with_capacity(indices.len());
-            let mut shapes = Vec::new();
-            let mut fields = None;
-            for index in &indices {
-                let Some(descriptor) = descriptors.get(*index) else {
-                    continue;
-                };
-                let exported = descriptor.exported();
-                fields.get_or_insert_with(|| exported.resource_fields());
-                let shape = exported.shape();
-                let id = shape_id(&shape);
-                members.push(id);
-                shapes.push((id, shape));
-            }
-            let Some(mut fields) = fields else { continue };
-            fields.workspace = workspace;
-            let template = template_id(&members);
-            let resource = SurfaceResource {
-                resource: name.to_owned(),
-                fields,
-                template,
+            let Some((resource, shapes)) =
+                shaped(name, &indices, descriptors, workspace, &mut known)
+            else {
+                continue;
             };
+            let members: Vec<ShapeId> = shapes.iter().map(|(id, _)| *id).collect();
+            let template = resource.template;
             if old.map(|old| &old.resource) != Some(&resource) {
                 for (id, shape) in shapes {
                     if !held_shapes.contains(&id) && sent_shapes.insert(id) {
@@ -430,11 +485,17 @@ impl SurfacePublication {
             .cloned()
             .collect();
         delta.removed.compact_sort();
+        let named: HashSet<&ShapeId> = templates.values().flatten().collect();
+        known.retain(|_, shapes| {
+            shapes.retain(|(_, id)| named.contains(id));
+            !shapes.is_empty()
+        });
         (
             delta,
             Self {
                 resources,
                 templates,
+                shapes: known,
             },
         )
     }
@@ -472,6 +533,7 @@ impl SurfacePublication {
                 resource: (*name).to_owned(),
                 fields,
                 template: held.resource.template,
+                unavailable: held.resource.unavailable.clone(),
             });
         }
         let mut delta = SurfaceDelta::default();
@@ -493,6 +555,62 @@ fn hash16(bytes: &[u8]) -> ShapeId {
     for (to, from) in id.iter_mut().zip(blake3::hash(bytes).as_bytes()) {
         *to = *from;
     }
+    id
+}
+
+/// The shapes a publisher already named, by action, with their ids.
+type KnownShapes = HashMap<String, Vec<(std::sync::Arc<ExportedAction>, ShapeId)>>;
+
+/// The resource `name` as the entries of `descriptors` at `indices` publish it, with the
+/// shapes its template names in order; `None` when none of them is there.
+fn shaped<E: SurfaceEntry>(
+    name: &str,
+    indices: &[usize],
+    descriptors: &[E],
+    workspace: Option<String>,
+    known: &mut KnownShapes,
+) -> Option<(SurfaceResource, Vec<(ShapeId, ExportedAction)>)> {
+    let mut members = Vec::with_capacity(indices.len());
+    let mut shapes = Vec::new();
+    let mut unavailable = Vec::new();
+    let mut fields = None;
+    for descriptor in indices.iter().filter_map(|index| descriptors.get(*index)) {
+        let mut exported = descriptor.exported();
+        fields.get_or_insert_with(|| exported.resource_fields());
+        if let tilo_actions::Availability::Unavailable { code, reason } =
+            std::mem::take(&mut exported.contract.availability)
+        {
+            unavailable.push(Unavailable {
+                at: u32::try_from(members.len()).unwrap_or(u32::MAX),
+                code,
+                reason,
+            });
+        }
+        let shape = exported.shape();
+        let id = shape_of(known, shape.clone());
+        members.push(id);
+        shapes.push((id, shape));
+    }
+    let mut fields = fields?;
+    fields.workspace = workspace;
+    let resource = SurfaceResource {
+        resource: name.to_owned(),
+        fields,
+        template: template_id(&members),
+        unavailable,
+    };
+    Some((resource, shapes))
+}
+
+/// The id of `shape`: the one `known` holds for an equal shape, else its content hash, which
+/// `known` then holds.
+fn shape_of(known: &mut KnownShapes, shape: ExportedAction) -> ShapeId {
+    let same = known.entry(shape.action.clone()).or_default();
+    if let Some((_, id)) = same.iter().find(|(held, _)| **held == shape) {
+        return *id;
+    }
+    let id = shape_id(&shape);
+    same.push((std::sync::Arc::new(shape), id));
     id
 }
 
@@ -549,6 +667,7 @@ mod tests {
                 workspace: None,
             },
             template: id(template),
+            unavailable: Vec::new(),
         }
     }
 

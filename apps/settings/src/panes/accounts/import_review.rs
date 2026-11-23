@@ -17,7 +17,7 @@ pub(super) struct ImportReview {
     pub revision: u64,
     pub choices: Vec<Choice>,
     pub status: Option<String>,
-    before: Option<accounts::AccountStore>,
+    before: Option<accounts::person::AccountList>,
 }
 
 impl ImportReview {
@@ -121,7 +121,7 @@ impl ImportReview {
                 .reviewed_config(authentication)
                 .map_err(error_message)?;
             let id = accounts::AccountId::from(config.email.to_ascii_lowercase());
-            if store.get(&id).is_some() {
+            if store.account(id.as_str()).is_some() {
                 continue;
             }
             if additions
@@ -142,7 +142,9 @@ impl ImportReview {
         }
         let count = additions.len();
         for account in additions {
-            store.upsert(account);
+            store
+                .keep(&account)
+                .map_err(|_| t("accounts-import-save-failed"))?;
         }
         if count != 0 {
             root.save_store(&store)

@@ -714,6 +714,10 @@ finish() {
   # A failed check keeps no outputs, and a boot that hangs says nothing of its own:
   # what the machine last printed goes to the log.
   if [ "$code" != 0 ]; then
+    # A boot that hangs before its console says anything shows only on its screen, and a
+    # firmware or boot loader stalled on the TPM leaves its trace in swtpm's log.
+    ./os/dev/vm.sh shot failure >/dev/null 2>&1 && cp "${TILO_RUN:-}/failure.png" "$out/" 2>/dev/null || true
+    cp "${TILO_TPM_DIR:-}/swtpm.log" "$out/" 2>/dev/null || true
     { printf '\n--- the machine'"'"'s console, its last 100 lines\n'
       tail -n 100 "$out/serial.log" | tr -d '\r' | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g'
     } 2>/dev/null | tee /dev/console >&2 2>/dev/null || true

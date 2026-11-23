@@ -739,7 +739,7 @@ fn published_before_own_removal(
 /// the member's own record they were, opens with every one of them read as this build writes
 /// it, so each is carried and served; its files hold them so from then on.
 #[test]
-fn publications_an_earlier_build_kept_open_in_todays_layout() {
+fn changes_an_earlier_build_kept_to_send_open_in_todays_layout() {
     use neighbour_wire::NeighbourMsg;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -1127,9 +1127,9 @@ async fn the_host_authors_a_workspace_record_no_factory_makes() {
 #[tokio::test]
 #[allow(
     clippy::too_many_lines,
-    reason = "one authoring pass: granted, written, read back through the native view and the voice binding"
+    reason = "one authoring pass: granted, written and read back through the native view"
 )]
-async fn an_authored_chat_keeps_its_native_view_and_voice_binding() {
+async fn an_authored_chat_keeps_its_native_view() {
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -1208,7 +1208,7 @@ async fn an_authored_chat_keeps_its_native_view_and_voice_binding() {
         original.bytes,
         "a refused or failed authoring callback cannot publish a partial graph"
     );
-    let voice = workspaces
+    workspaces
         .author_application(
             &created.workspace,
             &cert,
@@ -1216,10 +1216,8 @@ async fn an_authored_chat_keeps_its_native_view_and_voice_binding() {
             "so.tilo.chat",
             "",
             |doc| {
-                tilo_peer_state::workspace::media::put_voice_channel(doc, "standup", "Standup");
                 doc.put(ROOT, "preserved_native_marker", true)
-                    .map_err(|error| error.to_string())?;
-                Ok("standup".to_owned())
+                    .map_err(|error| error.to_string())
             },
         )
         .await
@@ -1230,14 +1228,6 @@ async fn an_authored_chat_keeps_its_native_view_and_voice_binding() {
         .expect("native replay accepts the actual publication the host authored");
     let mut doc = automerge::AutoCommit::load(&retained.bytes).unwrap();
     assert!(doc.get(ROOT, "preserved_native_marker").unwrap().is_some());
-    let current = workspaces.workspace(&created.workspace).await.unwrap();
-    let guard = current.lock().await;
-    let binding = guard
-        .call_binding("so.tilo.chat", "", &voice)
-        .await
-        .expect("the same native source resolves through production voice admission");
-    assert_eq!(binding.channel_id, voice);
-    drop(guard);
     let committed = workspaces
         .resource_document(&created.workspace, "so.tilo.chat", "")
         .await
@@ -1246,7 +1236,7 @@ async fn an_authored_chat_keeps_its_native_view_and_voice_binding() {
     assert_eq!(
         doc.get_heads(),
         automerge::AutoCommit::load(&committed).unwrap().get_heads(),
-        "native view bytes and the voice binding share the committed graph"
+        "native view bytes are the committed graph"
     );
     server.shutdown().await;
 }
@@ -1270,7 +1260,7 @@ async fn assert_unprepared_authoring_refused(
     }
 }
 
-async fn is_banned(
+pub(crate) async fn is_banned(
     workspaces: &Workspaces,
     workspace: &str,
     host: &DeviceCert,
@@ -1359,63 +1349,6 @@ async fn a_renamed_workspace_shows_its_new_name_to_members_and_after_a_restart()
         restored.peer().governance().workspace_name().as_deref(),
         Some("Plaza")
     );
-}
-
-#[tokio::test]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the server stays live until its consuming shutdown"
-)]
-async fn the_owner_bans_and_unbans_and_a_stranger_cannot() {
-    use tilo_server_session::workspaces::RemoveMemberRequest;
-    let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let server = test_host(dir.path(), &key, &cert).await;
-    let workspaces = server.workspaces();
-    let created = workspaces.create("Demo").await.unwrap();
-    let guest = [7; 32];
-    let request = |request_id| RemoveMemberRequest {
-        request_id,
-        user_public_key: guest,
-    };
-    let stranger_root = SigningKey::from_bytes(&[9; 32]);
-    let stranger_key = SigningKey::from_bytes(&[10; 32]);
-    let mut stranger = DeviceCert {
-        user_public_key: stranger_root.verifying_key().to_bytes(),
-        device_public_key: stranger_key.verifying_key().to_bytes(),
-        device_label: "stranger".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut stranger, &stranger_root).unwrap();
-    assert!(
-        workspaces
-            .ban_member(&created.workspace, &stranger, request([1; 32]))
-            .await
-            .is_err(),
-        "someone not in the workspace bans nobody"
-    );
-    workspaces
-        .ban_member(&created.workspace, &cert, request([2; 32]))
-        .await
-        .unwrap();
-    assert!(is_banned(workspaces, &created.workspace, &cert, guest).await);
-    assert!(
-        workspaces
-            .unban_member(&created.workspace, &cert, request([2; 32]))
-            .await
-            .is_err(),
-        "one request id names one change"
-    );
-    workspaces
-        .unban_member(&created.workspace, &cert, request([3; 32]))
-        .await
-        .unwrap();
-    assert!(!is_banned(workspaces, &created.workspace, &cert, guest).await);
-    server.shutdown().await;
 }
 
 #[tokio::test]

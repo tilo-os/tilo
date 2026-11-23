@@ -20,8 +20,9 @@
 //! person is also admitted as one of the owner's devices before it is handed
 //! the workspace, whatever role it holds it in.
 
-use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use iroh_base::EndpointAddr;
 use serde_json::{Map, Value, json};
@@ -33,14 +34,118 @@ use tilo_peer_state::join::{Role, TransportHint};
 use tilo_server_protocol::workspaces::WorkspaceHolder;
 use tilo_server_session::client::ServerClient;
 use tilo_server_session::workspaces::{
-    CATCH_UP_WORKSPACE, CaughtUpWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE,
-    HOST_WORKSPACES_RESOURCE, HostedWorkspace, UNHOST_WORKSPACE, ask_host,
+    CATCH_UP_ABSENT, CATCH_UP_STANDING, CATCH_UP_WORKSPACE, CaughtUpWorkspace,
+    HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, HostedWorkspace, StandingPage,
+    UNHOST_WORKSPACE, ask_host,
 };
 use tilo_user_identity::DeviceCert;
 
 use super::{CollaborationError, GovernedWorkspace, Workspaces};
-use tilo_lock::RwLockRecover as _;
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_server_protocol::WorkspaceId;
+
+/// How many addresses of the content a handing device keeps none of one ask
+/// carries: about seventy bytes each in its frame, so an ask stays well
+/// within [`tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES`]. A list no
+/// longer than this goes in the catch-up itself, as a build before lists in
+/// parts takes it; a longer one goes ahead of it in parts
+/// ([`CATCH_UP_ABSENT`]).
+const ABSENT_PER_ASK: usize = 4096;
+
+/// How long a server taking a workspace in waits for its content to move before it answers what
+/// it still lacks ([`Workspaces::content_settled`]).
+const CONTENT_SETTLES_WITHIN: Duration = Duration::from_secs(60);
+
+/// How many cursors of where a store stands one answer carries: under a
+/// hundred and fifty bytes each in its frame, so an answer stays well within
+/// [`tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES`] however many
+/// records and authors the workspace has ([`CATCH_UP_STANDING`]).
+const CURSORS_PER_ANSWER: usize = 512;
+
+/// The most addresses the list one handing device hands here holds: a
+/// workspace whose content its handing device keeps none of past this is
+/// refused, rather than held in memory without bound.
+const MAX_ABSENT: usize = 1 << 21;
+
+/// The longest address such a list holds.
+const MAX_ABSENT_ADDRESS: usize = 256;
+
+/// How long a list handed in parts is kept after it was last handed to or
+/// counted with: a catch-up that ended without letting it go leaves it no
+/// longer than this.
+const ABSENT_KEPT_FOR: Duration = Duration::from_secs(600);
+
+/// The list of content one device handing a workspace over keeps none of
+/// itself, with when it was last handed to or counted with.
+type AbsentList = (Arc<BTreeSet<String>>, Instant);
+
+/// The content each device handing a workspace over keeps none of itself,
+/// as it handed the list here in parts ([`CATCH_UP_ABSENT`]), by device and
+/// workspace.
+#[derive(Default)]
+pub(super) struct HandedAbsent(Mutex<HashMap<([u8; 32], String), AbsentList>>);
+
+impl HandedAbsent {
+    /// Add `part` to the list kept under `key`, afresh when `first`; an
+    /// empty first part lets the list go. Lists not handed to or counted
+    /// with for [`ABSENT_KEPT_FOR`] go first. Answers how many addresses the
+    /// list holds.
+    fn keep(
+        &self,
+        key: &([u8; 32], String),
+        part: BTreeSet<String>,
+        first: bool,
+    ) -> Result<usize, String> {
+        let now = tilo_clock::now();
+        let mut lists = self.0.lock_recover();
+        lists.retain(|_, (_, touched)| now.duration_since(*touched) < ABSENT_KEPT_FOR);
+        if first {
+            lists.remove(key);
+        }
+        let kept = if first && part.is_empty() {
+            Some(0)
+        } else if first || lists.contains_key(key) {
+            let (list, touched) = lists
+                .entry(key.clone())
+                .or_insert_with(|| (Arc::default(), now));
+            *touched = now;
+            let list = Arc::make_mut(list);
+            list.extend(part);
+            Some(list.len())
+        } else {
+            None
+        };
+        if kept.is_some_and(|kept| kept > MAX_ABSENT) {
+            lists.remove(key);
+        }
+        drop(lists);
+        match kept {
+            None => Err(
+                "the first part of the list of content this device keeps none of is not here: \
+                 hand the list again"
+                    .into(),
+            ),
+            Some(kept) if kept > MAX_ABSENT => Err(format!(
+                "the content the asking device keeps none of is more than the {MAX_ABSENT} \
+                 addresses this server takes of it"
+            )),
+            Some(kept) => Ok(kept),
+        }
+    }
+
+    /// The list kept under `key`, counted with now, when one is.
+    fn counted_with(&self, key: &([u8; 32], String)) -> Option<Arc<BTreeSet<String>>> {
+        let now = tilo_clock::now();
+        let mut lists = self.0.lock_recover();
+        lists.retain(|_, (_, touched)| now.duration_since(*touched) < ABSENT_KEPT_FOR);
+        let list = lists.get_mut(key).map(|(list, touched)| {
+            *touched = now;
+            Arc::clone(list)
+        });
+        drop(lists);
+        list
+    }
+}
 
 /// The device a signed host address names.
 const fn host_device(hint: &TransportHint) -> [u8; 32] {
@@ -385,19 +490,59 @@ impl Workspaces {
         // only for content this device's resources name.
         let names_content = self.content_named(workspace).await > 0;
         // What this device keeps none of itself it cannot hand over: the
-        // server is not held to it.
-        let absent: Vec<Value> = self
-            .content_lacked(workspace)
-            .await
-            .into_iter()
-            .map(Value::String)
-            .collect();
+        // server is not held to it. A list longer than one ask carries goes
+        // ahead in parts, and the server counts with it as it holds it.
+        let absent = self.content_lacked(workspace).await;
+        let parted = absent.len() > ABSENT_PER_ASK;
+        if parted {
+            hand_absent(reached, workspace, &absent).await?;
+        }
+        let absent = (!parted).then(|| absent.into_iter().map(Value::String).collect());
+        let caught_up = self
+            .caught_up_counting(workspace, &link, reached, names_content, absent)
+            .await;
+        if parted {
+            // The list is the server's to let go once the catch-up ended,
+            // and it does after a while unasked.
+            let mut arguments = Map::new();
+            arguments.insert("workspace".into(), Value::String(workspace.to_owned()));
+            arguments.insert("first".into(), Value::Bool(true));
+            arguments.insert("absent".into(), Value::Array(Vec::new()));
+            if let Err(error) = reached.ask(CATCH_UP_ABSENT, arguments).await {
+                tracing::debug!(%workspace, server = %hex::encode(server), %error, "a server did not let go of the content this device keeps none of");
+            }
+        }
+        caught_up
+    }
+
+    /// Ask `reached` to take in what this device keeps of `workspace`, over
+    /// `link`, until it says it keeps it all, or answers that neither narrowed
+    /// what it lacks nor fetched any ([`Self::caught_up_with_this`]). The
+    /// content this device keeps none of is `absent`, or, when `None`, the
+    /// list it handed the server in parts.
+    async fn caught_up_counting(
+        &self,
+        workspace: &str,
+        link: &tilo_peer_state::direct::DirectSync,
+        reached: &OtherHost,
+        names_content: bool,
+        absent: Option<Vec<Value>>,
+    ) -> Result<(), String> {
+        let server = reached.certificate.device_public_key;
         let mut before: Option<(usize, u32)> = None;
         loop {
             let mut arguments = Map::new();
             arguments.insert("workspace".into(), Value::String(workspace.to_owned()));
             arguments.insert("names_content".into(), Value::Bool(names_content));
-            arguments.insert("absent".into(), Value::Array(absent.clone()));
+            arguments.insert("cursor_pages".into(), Value::Bool(true));
+            match &absent {
+                Some(absent) => {
+                    arguments.insert("absent".into(), Value::Array(absent.clone()));
+                }
+                None => {
+                    arguments.insert("absent_parts".into(), Value::Bool(true));
+                }
+            }
             let answer = reached
                 .ask(CATCH_UP_WORKSPACE, arguments)
                 .await
@@ -409,8 +554,12 @@ impl Workspaces {
                 })?;
             let caught_up: CaughtUpWorkspace =
                 serde_json::from_value(answer).map_err(|error| error.to_string())?;
-            let cursors: Vec<tilo_peer_state::store::Cursor> =
+            let mut cursors: Vec<tilo_peer_state::store::Cursor> =
                 super::decode_hex(&caught_up.cursors)?;
+            if caught_up.more_cursors {
+                let rest = read_standing(reached, workspace, cursors.last()).await?;
+                cursors.extend(rest);
+            }
             let lacked = link.lacked_by(server, &cursors)?;
             let content_missing = caught_up.content_missing;
             if lacked == 0 && content_missing == 0 {
@@ -422,7 +571,8 @@ impl Workspaces {
             if !narrowed && !caught_up.fetched {
                 return Err(format!(
                     "the server {} still lacks {lacked} of the changes this device keeps and \
-                     {content_missing} blobs of the content they name",
+                     {content_missing} blobs of the content they name (each resource still waiting \
+                     for its keys there counts as one)",
                     hex::encode(server)
                 ));
             }
@@ -455,30 +605,7 @@ impl Workspaces {
     ) -> Result<(Vec<tilo_peer_state::store::Cursor>, u32, bool), String> {
         let workspace_id = WorkspaceId::parse(workspace)
             .ok_or_else(|| "a workspace is named by its id".to_owned())?;
-        let state = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let handing = state.lock().await.handed_by.clone();
-        let named = self
-            .hosts(workspace)
-            .await
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .find(|hint| host_device(hint) == caller.device_public_key)
-            .map(|hint| WorkspaceDeviceHintV1::from_transport_hint(&hint))
-            .transpose()
-            .map_err(|error| error.to_string())?;
-        // Until the change naming this device among those keeping the
-        // workspace arrives, the device that handed it over is the one it
-        // knows of.
-        let address = named
-            .or_else(|| {
-                handing.filter(|handing| {
-                    handing.device_certificate.device_public_key == caller.device_public_key
-                })
-            })
-            .ok_or("only a device keeping the workspace hands its changes over")?;
+        let address = self.handing(caller, workspace).await?;
         let cursors = self
             .take_store_of(
                 workspace_id,
@@ -496,6 +623,160 @@ impl Workspaces {
         ))
     }
 
+    /// The address of `caller`, a device `workspace` names among those
+    /// keeping it, or the device that handed it to this one.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not kept here, or the caller is not a device keeping
+    /// it.
+    async fn handing(
+        &self,
+        caller: &DeviceCert,
+        workspace: &str,
+    ) -> Result<WorkspaceDeviceHintV1, String> {
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let handing = state.lock().await.handed_by.clone();
+        let named = self
+            .hosts(workspace)
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|hint| host_device(hint) == caller.device_public_key)
+            .map(|hint| WorkspaceDeviceHintV1::from_transport_hint(&hint))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        // Until the change naming this device among those keeping the
+        // workspace arrives, the device that handed it over is the one it
+        // knows of.
+        named
+            .or_else(|| {
+                handing.filter(|handing| {
+                    handing.device_certificate.device_public_key == caller.device_public_key
+                })
+            })
+            .ok_or_else(|| "only a device keeping the workspace hands its changes over".to_owned())
+    }
+
+    /// Keep `part` of the list of content `caller`, a device keeping
+    /// `workspace`, keeps none of itself, for its catch-up to count with
+    /// ([`Self::absent_handed`]): the list afresh when `first`, and an empty
+    /// first part lets it go. Answers how many addresses the list holds.
+    ///
+    /// # Errors
+    ///
+    /// The caller is not a device keeping the workspace, the list's first
+    /// part is not here (it was let go, or this device started again), or the
+    /// list grew past what one device's list holds here ([`MAX_ABSENT`]).
+    pub(crate) async fn keep_absent(
+        &self,
+        caller: &DeviceCert,
+        workspace: &str,
+        part: BTreeSet<String>,
+        first: bool,
+    ) -> Result<usize, String> {
+        self.handing(caller, workspace).await?;
+        if part
+            .iter()
+            .any(|address| address.len() > MAX_ABSENT_ADDRESS)
+        {
+            return Err("a content address is longer than any the workspace names".into());
+        }
+        self.inner.handed_absent.keep(
+            &(caller.device_public_key, workspace.to_owned()),
+            part,
+            first,
+        )
+    }
+
+    /// Where this device's store of `workspace` stands on the lineages after
+    /// `after`, as `caller`, a device keeping it, reads the rest of its
+    /// catch-up's answer ([`Self::standing_page`]).
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not kept here, or the caller is not a device keeping
+    /// it.
+    pub(crate) async fn standing_after(
+        &self,
+        caller: &DeviceCert,
+        workspace: &str,
+        after: tilo_peer_state::store::Lineage,
+    ) -> Result<(Vec<tilo_peer_state::store::Cursor>, bool), String> {
+        let workspace_id = WorkspaceId::parse(workspace)
+            .ok_or_else(|| "a workspace is named by its id".to_owned())?;
+        self.handing(caller, workspace).await?;
+        let cursors = self
+            .inner
+            .store
+            .stands(workspace_id)
+            .into_iter()
+            .map(|(cursor, _)| cursor)
+            .collect();
+        Ok(self.standing_page(cursors, Some(after)))
+    }
+
+    /// The page of `cursors`, where this device's store stands, that one
+    /// answer carries: the cursors of the lineages after `after`, in lineage
+    /// order, at most [`CURSORS_PER_ANSWER`], and whether more follow them.
+    #[cfg_attr(
+        not(any(test, feature = "test-support")),
+        allow(
+            clippy::unused_self,
+            reason = "only a test build reads the store's own page size"
+        )
+    )]
+    pub(crate) fn standing_page(
+        &self,
+        mut cursors: Vec<tilo_peer_state::store::Cursor>,
+        after: Option<tilo_peer_state::store::Lineage>,
+    ) -> (Vec<tilo_peer_state::store::Cursor>, bool) {
+        #[cfg(any(test, feature = "test-support"))]
+        let per_answer = match self
+            .inner
+            .cursors_per_answer
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            0 => CURSORS_PER_ANSWER,
+            set => set,
+        };
+        #[cfg(not(any(test, feature = "test-support")))]
+        let per_answer = CURSORS_PER_ANSWER;
+        cursors.sort_unstable();
+        if let Some(after) = after {
+            cursors.retain(|cursor| cursor.lineage > after);
+        }
+        let more = cursors.len() > per_answer;
+        cursors.truncate(per_answer);
+        (cursors, more)
+    }
+
+    /// Answer where this device's store stands after a catch-up
+    /// ([`CATCH_UP_STANDING`]) at most `cursors` at a time from now on: what a
+    /// test reads a store of a few records in many pages with.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn answer_cursors_in_pages_of(&self, cursors: usize) {
+        self.inner
+            .cursors_per_answer
+            .store(cursors, std::sync::atomic::Ordering::Release);
+    }
+
+    /// The list of content the device `caller` keeps none of itself, as it
+    /// handed it here in parts for `workspace` ([`Self::keep_absent`]); `None`
+    /// when no list of it is here.
+    pub(crate) fn absent_handed(
+        &self,
+        caller: [u8; 32],
+        workspace: &str,
+    ) -> Option<Arc<BTreeSet<String>>> {
+        self.inner
+            .handed_absent
+            .counted_with(&(caller, workspace.to_owned()))
+    }
+
     /// How many blobs of the content `workspace`'s resources name this device
     /// keeps none of, once `from`, the device handing the workspace over,
     /// may have handed them: none are lacked, fewer than when this was asked,
@@ -506,7 +787,8 @@ impl Workspaces {
     /// asked again for all this device lacks first, and each count after that
     /// follows an answer to those asks, a write to the workspace, or a change
     /// to its member list. Says too whether that count is below the first:
-    /// content arrived while it waited.
+    /// content arrived while it waited. A count that has not dropped within
+    /// [`CONTENT_SETTLES_WITHIN`] is answered as it stands.
     async fn content_settled(
         &self,
         workspace: &str,
@@ -524,8 +806,25 @@ impl Workspaces {
         drop(self.inner.reached.send(workspace.to_owned()));
         let asked = self.content_lacking(workspace, names_content, absent).await;
         let mut lacking = asked;
+        // Nothing moving for this long ends the wait, with what is still lacked: the device handing
+        // the workspace over then hears that nothing narrowed, and says so, rather than waiting
+        // on a resource whose keys never come.
+        let quiet = tokio::time::sleep(CONTENT_SETTLES_WITHIN);
+        tokio::pin!(quiet);
         while lacking > 0 {
             let lacked_by_it = tokio::select! {
+                () = &mut quiet => {
+                    tracing::warn!(
+                        %workspace,
+                        from = %hex::encode(from),
+                        lacking,
+                        waits_for_keys = names_content,
+                        "a hand-over's content did not move for {} s: it still lacks this many \
+                         blobs, counting each resource still waiting for its keys as one",
+                        CONTENT_SETTLES_WITHIN.as_secs()
+                    );
+                    break;
+                }
                 answer = answers.recv() => match answer {
                     Ok(answer) if answer.workspace == workspace => {
                         answer.lacks && answer.from == from
@@ -1104,6 +1403,91 @@ impl OtherHost {
         let status = ask_host(&self.client, host_invocation(action, arguments)).await?;
         receipt_output(status)
     }
+}
+
+/// Where `reached`'s store of `workspace` stands on the lineages after the
+/// one `last` names, read page by page ([`CATCH_UP_STANDING`]).
+///
+/// # Errors
+///
+/// The server did not answer a page, or answered one it cannot mean.
+async fn read_standing(
+    reached: &OtherHost,
+    workspace: &str,
+    last: Option<&tilo_peer_state::store::Cursor>,
+) -> Result<Vec<tilo_peer_state::store::Cursor>, String> {
+    let mut read = Vec::new();
+    let mut after = last.map(|cursor| cursor.lineage);
+    while let Some(lineage) = after {
+        let mut arguments = Map::new();
+        arguments.insert("workspace".into(), Value::String(workspace.to_owned()));
+        arguments.insert(
+            "after".into(),
+            Value::String(hex::encode(
+                postcard::to_stdvec(&lineage).map_err(|error| error.to_string())?,
+            )),
+        );
+        let answer = reached
+            .ask(CATCH_UP_STANDING, arguments)
+            .await
+            .map_err(|error| {
+                format!(
+                    "the server {} did not say where its store of the workspace stands: {error}",
+                    hex::encode(reached.certificate.device_public_key)
+                )
+            })?;
+        let page: StandingPage =
+            serde_json::from_value(answer).map_err(|error| error.to_string())?;
+        let cursors: Vec<tilo_peer_state::store::Cursor> = super::decode_hex(&page.cursors)?;
+        // Each page goes on after the last: one that does not is the end.
+        after = cursors
+            .last()
+            .map(|cursor| cursor.lineage)
+            .filter(|next| page.more && *next > lineage);
+        read.extend(cursors);
+    }
+    Ok(read)
+}
+
+/// Hand `reached` the list of content this device keeps none of itself of
+/// `workspace`, `absent`, in parts each one ask carries ([`CATCH_UP_ABSENT`]),
+/// for the catch-up after to count with.
+///
+/// # Errors
+///
+/// The server did not take a part: a build before lists in parts knows no
+/// such action.
+async fn hand_absent(
+    reached: &OtherHost,
+    workspace: &str,
+    absent: &BTreeSet<String>,
+) -> Result<(), String> {
+    let addresses: Vec<&String> = absent.iter().collect();
+    for (index, part) in addresses.chunks(ABSENT_PER_ASK).enumerate() {
+        let mut arguments = Map::new();
+        arguments.insert("workspace".into(), Value::String(workspace.to_owned()));
+        arguments.insert("first".into(), Value::Bool(index == 0));
+        arguments.insert(
+            "absent".into(),
+            Value::Array(
+                part.iter()
+                    .map(|address| Value::String((*address).clone()))
+                    .collect(),
+            ),
+        );
+        reached
+            .ask(CATCH_UP_ABSENT, arguments)
+            .await
+            .map_err(|error| {
+                format!(
+                    "the server {} did not take the list of the {} blobs of content this device \
+                     keeps none of: {error}",
+                    hex::encode(reached.certificate.device_public_key),
+                    absent.len()
+                )
+            })?;
+    }
+    Ok(())
 }
 
 /// The invocation of the host operation `action` with `arguments`.

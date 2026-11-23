@@ -151,16 +151,6 @@ impl DictationStatus {
             Self::Recovery { .. } => "recovery",
         }
     }
-
-    /// Whether a dictation still holds the microphone: from consent until its worker
-    /// is gone.
-    #[must_use]
-    pub const fn running(self) -> bool {
-        !matches!(
-            self,
-            Self::Idle | Self::Unavailable(_) | Self::Recovery { .. }
-        )
-    }
 }
 
 /// Why the recognizer worker stopped, without any recorded words.
@@ -193,39 +183,6 @@ impl RuntimeError {
             Self::Protocol => "protocol",
             Self::Busy => "busy",
             Self::Canceled => "canceled",
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_dictation_owns_the_seat_from_consent_until_its_worker_is_gone() {
-        for status in [
-            DictationStatus::Consent,
-            DictationStatus::Preparing,
-            DictationStatus::Loading,
-            DictationStatus::Listening,
-            DictationStatus::StoppingRecording,
-            DictationStatus::Finishing,
-            DictationStatus::Stopping,
-        ] {
-            assert!(status.running(), "{status:?} is a running dictation");
-        }
-        for status in [
-            DictationStatus::Idle,
-            DictationStatus::Unavailable(DictationError::RecognizerUnavailable(
-                RuntimeError::Canceled,
-            )),
-            DictationStatus::Recovery {
-                reason: RecoveryReason::TooLong,
-                copied: false,
-                copy_failed: false,
-            },
-        ] {
-            assert!(!status.running(), "{status:?} is over");
         }
     }
 }

@@ -15,7 +15,6 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use os_actions::brightness::BrightnessTarget;
 use settings_store::hardware::{
@@ -65,7 +64,7 @@ impl Displays {
         night_light: Option<u32>,
         turned: Option<(&str, Transform)>,
     ) -> Result<(), tilo_compositor::Error> {
-        let now = unix_now_ms();
+        let now = tilo_clock::unix_now_ms();
         let expired = self.deadline.is_some_and(|deadline| now >= deadline);
         let stamp = settings_store::stamp();
         let document = settings_store::document_changed(self.seen, self.stamp, stamp);
@@ -197,7 +196,7 @@ fn settle(
 ) -> DisplayTransaction {
     for _ in 0..4 {
         let before = (transaction.state, transaction.deadline_unix_ms);
-        transaction = reconcile(transaction, descriptors, set, unix_now_ms());
+        transaction = reconcile(transaction, descriptors, set, tilo_clock::unix_now_ms());
         match transaction.state {
             DisplayTransactionState::AwaitingConfirmation
             | DisplayTransactionState::Confirmed
@@ -396,15 +395,6 @@ fn transform(transform: OutputTransform) -> Transform {
         OutputTransform::Rotate180 => Transform::_180,
         OutputTransform::Rotate270 => Transform::_270,
     }
-}
-
-/// Milliseconds since the Unix epoch: the clock staged changes count down on.
-pub(crate) fn unix_now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 /// The built-in panel's backlight, which the idle dim lowers and puts back: on a laptop the panel

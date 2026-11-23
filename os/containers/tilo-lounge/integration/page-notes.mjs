@@ -331,6 +331,23 @@ try {
     problems.push('an app on the workspace page did not open');
   }
   await look('12-home-to-notes');
+
+  // The workspace's desktop: the windows its people have open on any device. An app opened
+  // there is a window on the workspace's layout, which the page lists as a link to its page.
+  await openPage('desktop', 'desktop');
+  const desktop = await look('12b-desktop');
+  if (desktop.refused) problems.push(`the desktop page was refused (${desktop.refused})`);
+  await press(
+    `[...document.querySelectorAll('#tilo-page .tilo-desktop-app')].find(b => (b.innerText || '').trim() === 'Tasks') ?? null`,
+    'Tasks on the desktop page',
+  );
+  const opened = await until(
+    `[...document.querySelectorAll('#tilo-page .tilo-window-show')].some(a => a.getAttribute('href')?.endsWith('/tasks'))`,
+    30_000,
+  );
+  step('12b-desktop opened', {ms: opened});
+  if (opened === null) problems.push('an app opened on the desktop page did not show as a window');
+  await look('12c-desktop-window');
   // The apps a person opens in their first hour: each is the page the server
   // renders. An app that is not in this build's catalogue is said, not
   // failed: which apps the page serves is the catalogue's, and the walk is

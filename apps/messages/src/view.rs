@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use tilo_contact_directory::{ContactDirectory, routing};
-use tilo_messaging::PersonAccounts;
+use tilo_messaging::AccountList;
 use ui::LocalState;
 use ui::framework::{Actions, Effected, Fixture, Live, ViewCx, WorkspaceResource};
 use ui::i18n::ArgValue;
@@ -21,7 +21,7 @@ use crate::{CATALOG, Messages, MessagesEffect};
 #[derive(Clone, Default)]
 struct CapturePeople {
     directory: ContactDirectory,
-    accounts: PersonAccounts,
+    accounts: AccountList,
 }
 
 /// A person of the workspace: their root public key, as the workspace names them, and the
@@ -35,7 +35,7 @@ pub(crate) struct WorkspacePerson {
 #[derive(Clone)]
 pub(crate) struct Sources {
     directory: Option<WorkspaceResource<ContactDirectory>>,
-    accounts: Option<WorkspaceResource<PersonAccounts>>,
+    accounts: Option<WorkspaceResource<AccountList>>,
     record: Option<Live<Messages>>,
     pub(crate) tilo: bool,
     pub(crate) me: Option<PersonId>,
@@ -80,7 +80,7 @@ impl Sources {
             WorkspaceResource::get,
         )
     }
-    pub(crate) fn accounts(&self) -> Rc<PersonAccounts> {
+    pub(crate) fn accounts(&self) -> Rc<AccountList> {
         self.accounts.as_ref().map_or_else(
             || Rc::new(self.fixture.accounts.clone()),
             WorkspaceResource::get,
@@ -431,7 +431,7 @@ fn sources(cx: &ViewCx<Messages>) -> Sources {
             None
         },
         accounts: if live {
-            cx.shared_workspace::<PersonAccounts>(PersonAccounts::OWNER)
+            cx.shared_workspace::<AccountList>(AccountList::OWNER)
         } else {
             None
         },
@@ -1250,7 +1250,7 @@ pub(super) fn fixture(fixture: &mut Fixture<Messages>) {
         "12025550123@s.whatsapp.net".into(),
         "fixture-whatsapp-revision".into(),
     );
-    let mut accounts = PersonAccounts {
+    let mut accounts = AccountList {
         accounts: Collection::new(),
     };
     for (id, service, label) in [
@@ -1259,7 +1259,7 @@ pub(super) fn fixture(fixture: &mut Fixture<Messages>) {
     ] {
         accounts.accounts.push(
             Id::from_raw(id),
-            tilo_messaging::PersonAccount {
+            tilo_messaging::ListedAccount {
                 type_id: service.into(),
                 display_name: label.into(),
                 config: serde_json::json!({"messaging_scope":format!("{id}-scope")}),
@@ -1392,7 +1392,7 @@ mod route_tests {
         directory
             .invoke(&ContactDirectory::PROJECT_CONTACT.with((Id::from_raw(PERSON), "Alex".into())))
             .expect("person");
-        let mut accounts = PersonAccounts::default();
+        let mut accounts = AccountList::default();
         accounts
             .keep_account(
                 "sender".into(),
@@ -1454,7 +1454,7 @@ mod route_tests {
         directory
             .invoke(&ContactDirectory::PROJECT_CONTACT.with((Id::from_raw(PERSON), "Alex".into())))
             .expect("person");
-        let mut accounts = PersonAccounts::default();
+        let mut accounts = AccountList::default();
         accounts
             .keep_account(
                 "sender".into(),
@@ -1544,7 +1544,7 @@ mod route_tests {
                 )
                 .expect("distinct same-name identity");
         }
-        let mut accounts = PersonAccounts::default();
+        let mut accounts = AccountList::default();
         accounts
             .keep_account(
                 "sender".into(),

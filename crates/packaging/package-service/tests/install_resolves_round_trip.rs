@@ -1,48 +1,13 @@
 use crate::common;
-use package_service::install::{
-    InstallError, InstallExpectation, install_tapp, install_verified_tapp,
-};
+use package_service::install::{InstallError, InstallExpectation, install_verified_tapp};
 use package_service::{PackageStore, Pinning};
 
 #[test]
-fn installs_resolve_list_and_bind_registry_identity() {
-    // Phase `install_tapp_then_resolve_recovers_entry`.
-    {
-        let dir = tempfile::tempdir().unwrap();
-        let store = PackageStore::at(dir.path());
-
-        let (tapp_bytes, expected_id) = common::build_tapp(4);
-        let installed = install_tapp(&store, &tapp_bytes, Pinning::Tried, None).unwrap();
-        assert_eq!(installed.package_id(), Some(expected_id));
-
-        let registry = store.registry().unwrap();
-        let entry = registry.find_package(expected_id).expect("resolve");
-        assert_eq!(entry.id, "so.tilo.editor");
-        assert_eq!(entry.pinning(), Pinning::Tried);
-        assert!(entry.payload_root.exists(), "payload dir must be created");
-        assert!(entry.payload_root.join("bin/editor").exists());
-        assert!(entry.payload_root.join("share/splash.png").exists());
-        let manifest = std::fs::read_to_string(&entry.manifest_path).unwrap();
-        assert!(manifest.contains("so.tilo.editor"));
-        assert!(
-            !dir.path().join("store").exists() && !dir.path().join("payloads").exists(),
-            "no private blob directory and no second unpacked copy"
-        );
-    }
-    // Phase `list_includes_installed_package`.
-    {
-        let dir = tempfile::tempdir().unwrap();
-        let store = PackageStore::at(dir.path());
-        let (bytes, id) = common::build_tapp(1);
-        install_tapp(&store, &bytes, Pinning::Pinned, None).unwrap();
-
-        let registry = store.registry().unwrap();
-        let listed = registry.entries();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].package_id(), Some(id));
-        assert_eq!(listed[0].pinning(), Pinning::Pinned);
-    }
-    // Phase `verified_install_binds_every_registry_identity_before_writing`.
+fn a_verified_install_binds_every_registry_identity_before_writing() {
+    // The install → resolve → list flow itself is exercised over the wire
+    // (`tests/wire_round_trip.rs`) and against a materialised tree
+    // (`package-store/tests/install.rs`); what only this install path does is
+    // check the registry's expectations.
     {
         let dir = tempfile::tempdir().unwrap();
         let store = PackageStore::at(dir.path());

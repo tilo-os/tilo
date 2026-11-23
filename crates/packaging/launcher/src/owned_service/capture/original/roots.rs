@@ -2,7 +2,7 @@
 //! must come from retained protected source contexts, never public paths.
 use super::{
     AsRawFd, Deserialize, Facts, File, FromRawFd, MAX_BYTES, MetadataExt, OpenOptionsExt, RawFd,
-    SEALS, Seek, Serialize, Write, io, readonly, refused, root,
+    Serialize, io, readonly, refused, root,
 };
 use std::{
     ffi::CString,

@@ -889,3 +889,235 @@ fn a_note_the_run_removed_stands_struck_in_the_tree() {
     crate::legibility::mark_all_seen(&tidied);
     assert!(struck(&mut notebook).is_empty());
 }
+
+/// A note with a field of every kind, and an action that writes each: what history's words are
+/// made of.
+const WORDS: &str = r#"app so.tilo.words "Words"
+
+type Project {
+    name: Text
+}
+
+enum Priority {
+    none
+    high
+}
+
+type Note {
+    title: Text
+    due: Option<Date> = .none
+    starts: Option<Time> = .none
+    assignee: Option<Actor> = .none
+    project: Option<Project> = .none
+    priority: Option<Priority> = .none
+    pinned: Bool = false
+    votes: Int = 0
+    ratio: Float = 0.5
+    tags: Set<Text>
+}
+
+type Notebook {
+    notes: Collection<Note>
+    projects: Collection<Project>
+}
+
+root Notebook
+
+default view notebook for Notebook
+
+view notebook(nb: Notebook) {
+    ui.VirtualList {
+        for n in nb.notes {
+            ui.ListItem(item: n) {
+                text(n.title)
+            }
+        }
+    }
+}
+
+action new_note(nb: Notebook, title: Text) -> Note {
+    nb.notes.insert(Note(title: title))
+}
+
+action new_dated(nb: Notebook, title: Text, due: Date) -> Note {
+    nb.notes.insert(Note(title: title, due: due))
+}
+
+action new_started(nb: Notebook, title: Text, starts: Time) -> Note {
+    nb.notes.insert(Note(title: title, starts: starts))
+}
+
+action new_assigned(nb: Notebook, title: Text, who: Actor) -> Note {
+    nb.notes.insert(Note(title: title, assignee: who))
+}
+
+action new_filed(nb: Notebook, title: Text, project: Project) -> Note {
+    nb.notes.insert(Note(title: title, project: project))
+}
+
+action new_project(nb: Notebook, name: Text) -> Project {
+    nb.projects.insert(Project(name: name))
+}
+
+action retitle(n: Note, title: Text) {
+    n.title = title
+}
+
+action schedule(n: Note, due: Option<Date>) {
+    n.due = due
+}
+
+action start_at(n: Note, starts: Option<Time>) {
+    n.starts = starts
+}
+
+action assign(n: Note, who: Option<Actor>) {
+    n.assignee = who
+}
+
+action file(n: Note, project: Option<Project>) {
+    n.project = project
+}
+
+action new_high(nb: Notebook, title: Text) -> Note {
+    nb.notes.insert(Note(title: title, priority: .some(.high)))
+}
+
+action new_pinned(nb: Notebook, title: Text) -> Note {
+    nb.notes.insert(Note(title: title, pinned: true))
+}
+
+action prioritize(n: Note) {
+    n.priority = .some(.high)
+}
+
+action deprioritize(n: Note) {
+    n.priority = .none
+}
+
+action pin(n: Note, pinned: Bool) {
+    n.pinned = pinned
+}
+
+action vote(n: Note, votes: Int) {
+    n.votes = votes
+}
+
+action weigh(n: Note, ratio: Float) {
+    n.ratio = ratio
+}
+
+action tag(n: Note, tag: Text) {
+    n.tags.add(tag)
+}
+"#;
+
+tilo_test_env::scenario! {
+    fn a_field_of_every_kind_reads_as_what_was_done_to_it;
+
+    phase the_catch_up_says_each_kind_of_change_in_its_own_words;
+    // One note per kind of field, each changed by someone else while the person looking was
+    // away: the catch-up the window's mark opens says what was done to each, in history's
+    // words, with the value the words speak of.
+    {
+        let words = "so.tilo.words";
+        let (ada, _) = Replica::new("ada", Workspace::new(), &[(WORDS, "")]);
+        ada.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
+        let root = Value::resource(&ada.host.root_of(words).unwrap());
+        ada.commit();
+        let make = |action: &str, args: &[Value]| -> ResourceRef {
+            let mut all = vec![root.clone()];
+            all.extend_from_slice(args);
+            match call(&ada, "ada", words, action, all) {
+                Value::Ref(at) => (*at.target).clone(),
+                other => panic!("a note: {other:?}"),
+            }
+        };
+        let project = make("new_project", &[Value::text("Work")]);
+        let renamed = make("new_note", &[Value::text("Rename me")]);
+        let moved = make("new_dated", &[Value::text("Move me"), Value::text("2026-10-27")]);
+        let cleared = make("new_dated", &[Value::text("Clear my day"), Value::text("2026-10-27")]);
+        let timed = make("new_note", &[Value::text("Give me a time")]);
+        let untimed = make("new_started", &[Value::text("Take my time away"), Value::text("2026-10-29T09:00:00Z")]);
+        let handed = make(
+            "new_assigned",
+            &[Value::text("Hand me back"), Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")))],
+        );
+        let filed = make("new_filed", &[Value::text("File me out"), Value::resource(&project)]);
+        let shelved = make("new_note", &[Value::text("Give me a project")]);
+        let high_set = make("new_note", &[Value::text("Raise me")]);
+        let high_cleared = make("new_high", &[Value::text("Lower me")]);
+        let pinned_set = make("new_note", &[Value::text("Pin me")]);
+        let pinned_cleared = make("new_pinned", &[Value::text("Unpin me")]);
+        let counted = make("new_note", &[Value::text("Count me")]);
+        let weighed = make("new_note", &[Value::text("Weigh me")]);
+        let tagged = make("new_note", &[Value::text("Tag me")]);
+        ada.commit();
+
+        // Bo changes them while Ada is away.
+        let note = |at: &ResourceRef| Value::resource(at);
+        let bo = "bo";
+        call(&ada, bo, words, "retitle", vec![note(&renamed), Value::text("Renamed")]);
+        call(&ada, bo, words, "schedule", vec![note(&moved), Value::some(Value::text("2026-10-30"))]);
+        call(&ada, bo, words, "schedule", vec![note(&cleared), Value::none()]);
+        call(&ada, bo, words, "start_at", vec![note(&timed), Value::some(Value::text("2026-10-29T15:00:00Z"))]);
+        call(&ada, bo, words, "start_at", vec![note(&untimed), Value::none()]);
+        call(&ada, bo, words, "assign", vec![note(&handed), Value::none()]);
+        call(&ada, bo, words, "file", vec![note(&filed), Value::none()]);
+        call(&ada, bo, words, "file", vec![note(&shelved), Value::some(Value::resource(&project))]);
+        call(&ada, bo, words, "prioritize", vec![note(&high_set)]);
+        call(&ada, bo, words, "deprioritize", vec![note(&high_cleared)]);
+        call(&ada, bo, words, "pin", vec![note(&pinned_set), Value::Bool(true)]);
+        call(&ada, bo, words, "pin", vec![note(&pinned_cleared), Value::Bool(false)]);
+        call(&ada, bo, words, "vote", vec![note(&counted), Value::Int(3)]);
+        call(&ada, bo, words, "weigh", vec![note(&weighed), Value::Float(0.75)]);
+        call(&ada, bo, words, "tag", vec![note(&tagged), Value::text("home")]);
+        ada.commit();
+
+        let mut notebook = ada.view(words);
+        let marks = row_marks(&mut notebook);
+        let said_of = |at: &ResourceRef| -> String {
+            match marked(&marks, &at.id_string()) {
+                Some(mark) => said(mark),
+                None => panic!("{at:?} is marked: {marks:?}"),
+            }
+        };
+        let got = vec![
+            said_of(&renamed),
+            said_of(&moved),
+            said_of(&cleared),
+            said_of(&timed),
+            said_of(&untimed),
+            said_of(&handed),
+            said_of(&filed),
+            said_of(&shelved),
+            said_of(&high_set),
+            said_of(&high_cleared),
+            said_of(&pinned_set),
+            said_of(&pinned_cleared),
+            said_of(&counted),
+            said_of(&weighed),
+            said_of(&tagged),
+        ];
+        assert_eq!(
+            got,
+            [
+                "renamed",
+                "moved it to 2026-10-30",
+                "cleared the due date",
+                "set the starts time to 2026-10-29T15:00:00Z",
+                "cleared the starts time",
+                "unassigned it",
+                "moved it out of Work",
+                "moved it to Work",
+                "set priority to High",
+                "cleared priority",
+                "marked it pinned",
+                "unmarked it pinned",
+                "set votes to 3",
+                "set ratio to 0.75",
+                "changed tags",
+            ]
+        );
+    }
+}

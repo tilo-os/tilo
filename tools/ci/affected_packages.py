@@ -46,6 +46,7 @@ from ci.workspace_graph import (
 )
 from ci import runner_labels, qualified_native
 from ci import suites as path_suites
+from ci.package_sets import VENDORED_TEST_CRATES
 
 
 # Preserve the existing wire/document/package contract suites, including
@@ -238,14 +239,9 @@ FILTER_CONFIG_FILES = (
 )
 # The feature selection of crates/workspace-hack, which every member depends on.
 FEATURE_CONFIG_FILE = ".config/hakari.toml"
-# Vendored crates that carry Tilo patches, with the paths their own tests read.
-# The workspace builds them only as path dependencies, so Cargo selection never
-# runs their tests; t's `vendored` check does
-# (tools/ci/test-vendored-crates.sh) when one of these paths or the runner
-# changes.
-VENDORED_TEST_CRATES = {
-    "vendor/automerge": ("vendor/automerge/", "vendor/automerge-test/"),
-}
+# The vendored test inventory lives in tools/ci/package_sets.py (VENDORED_TEST_CRATES);
+# t's `vendored` check runs this runner when one of its input paths or the runner
+# itself changes.
 VENDORED_TEST_RUNNER = "tools/ci/test-vendored-crates.sh"
 HEAVY_PACKAGES = {
     "browser",

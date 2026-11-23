@@ -220,3 +220,208 @@ pub fn device_of(answer: CertifyAnswer, agent: &str) -> Device {
         server_address: address,
     }
 }
+
+/// How many times the call asking the device to certify this computer is sent.
+const CERTIFY_TRIES: u32 = 3;
+
+/// Log this computer in with `ticket`, which another of the person's devices issued: that device
+/// has the person's root certify this computer's key `key`, for `agent`, listed as `label`, asked
+/// through `service` over `endpoint`, and the login it answers is kept in `place`. The login this
+/// computer became.
+///
+/// The one way a computer becomes one of the person's devices: `tilo login <ticket>` through the
+/// daemon's `devices#logIn`, and a ticket handed to the daemon at its first boot.
+///
+/// # Errors
+/// The text is no ticket, the issuing device is not reached, the ticket is spent, wrong or ran
+/// out, the person declined, or the login cannot be kept.
+pub async fn log_in(
+    key: &SigningKey,
+    endpoint: &iroh::Endpoint,
+    place: &tilo_device_identity::login::Place,
+    ticket: &str,
+    agent: &str,
+    label: Option<&str>,
+) -> Result<Device> {
+    let ticket = tilo_device_identity::login::Ticket::parse(ticket)
+        .map_err(|_| anyhow!("This is not a Tilo ticket: ask for a new one."))?;
+    if ticket.direction != tilo_device_identity::login::Direction::Login {
+        return Err(anyhow!(
+            "That ticket signs a browser in: run `tilo device add <ticket>` with it on this \
+             computer."
+        ));
+    }
+    let answer = certified_with(key, endpoint, &ticket, agent, label).await?;
+    let device = device_of(answer, agent);
+    tilo_device_identity::login::store(place, &device)
+        .map_err(|error| anyhow!("keeping this computer's login: {error:#}"))?;
+    Ok(device)
+}
+
+/// [`log_in`] from this process, on an endpoint of its own for the time the login takes: how a
+/// computer no person's certificate names yet logs in, whose daemon serves the device key alone
+/// and so has no API to ask.
+///
+/// # Errors
+/// As [`log_in`], and when this computer's endpoint does not bind.
+pub async fn log_in_here(
+    key: &SigningKey,
+    place: &tilo_device_identity::login::Place,
+    ticket: &str,
+    agent: &str,
+    label: Option<&str>,
+) -> Result<Device> {
+    let parsed = tilo_device_identity::login::Ticket::parse(ticket.trim())
+        .map_err(|_| anyhow!("This is not a Tilo ticket: ask for a new one."))?;
+    let endpoint = tilo_server_client::ServerAddress::at(address_of(&parsed.issuer)?)
+        .bind(Some(key.to_bytes()))
+        .await
+        .map_err(|error| anyhow!("this computer's endpoint: {error}"))?;
+    let logged_in = log_in(key, &endpoint, place, ticket.trim(), agent, label).await;
+    endpoint.close().await;
+    logged_in
+}
+
+/// A device serving `ticket` on `endpoint`, keyed by `key`, as the device that printed it
+/// does: a computer that logs in with it is certified by `approver` for the person whose root
+/// key is `person`, and enters `entry`. What the router serves ends with it.
+///
+/// # Panics
+/// Outside a runtime context.
+#[cfg(feature = "test-support")]
+#[must_use]
+pub fn issuing_for_test(
+    endpoint: &iroh::Endpoint,
+    key: &SigningKey,
+    ticket: tilo_device_identity::login::Ticket,
+    person: [u8; 32],
+    entry: tilo_device_identity::login::Entry,
+    approver: Arc<dyn tilo_device_identity::login::Approver>,
+) -> iroh::protocol::Router {
+    let service = tilo_peer_state::actions::ActionService::new(
+        key.clone(),
+        Arc::new(tilo_peer_state::actions::NoActions),
+    );
+    service.admit_uncertified(
+        tilo_device_identity::login::SCOPE,
+        Arc::new(tilo_peer_state::new_device::ServedTicket::new(
+            ticket,
+            person,
+            entry,
+            tilo_user_identity::DeviceCapabilities::member(),
+            approver,
+            tilo_user_identity::RevocationList::new(),
+            tilo_device_identity::login::TICKET_LIFETIME_NS,
+        )),
+    );
+    iroh::protocol::Router::builder(endpoint.clone())
+        .accept(tilo_peer_state::actions::ACTIONS_ALPN, service)
+        .spawn()
+}
+
+/// Ask the device that issued `ticket` to have the person's root certify `key`, for `agent`,
+/// listed as `label`: its answer, once the person approved. A call lost on its way is asked again
+/// with the same invocation, which the issuer answers where the call is.
+async fn certified_with(
+    key: &SigningKey,
+    endpoint: &iroh::Endpoint,
+    ticket: &tilo_device_identity::login::Ticket,
+    agent: &str,
+    label: Option<&str>,
+) -> Result<CertifyAnswer> {
+    use tilo_actions::remote::{
+        ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget,
+    };
+    use tilo_device_identity::login::{
+        CERTIFY, CertifyInput, PROVIDER, RESOURCE, SCOPE, TICKET_LIFETIME_NS,
+    };
+    let issuer = address_of(&ticket.issuer)?;
+    let dialed = tilo_server_client::ServerAddress::at(issuer);
+    let input = CertifyInput {
+        secret: ticket.secret_hex(),
+        device_public_key: hex::encode(key.verifying_key().to_bytes()),
+        agent: agent.to_owned(),
+        label: label.map(str::to_owned),
+    };
+    let serde_json::Value::Object(argument) = serde_json::to_value(&input)? else {
+        return Err(anyhow!("the certify input is an object"));
+    };
+    // Asked as this computer's own key, the one the certificate is for: a daemon's shared action
+    // service signs as its workspace service instead.
+    let device = Arc::new(
+        tilo_peer_state::actions::ActionService::new(
+            key.clone(),
+            Arc::new(tilo_peer_state::actions::NoActions),
+        )
+        .remote(endpoint, &dialed.addr(), SCOPE),
+    );
+    let request = InvokeRequest {
+        on_behalf_of: None,
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(RESOURCE, CERTIFY),
+        },
+        argument: InvokeArgument::Json(argument),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let now = std::time::Instant::now();
+    let deadline = now
+        .checked_add(std::time::Duration::from_nanos(TICKET_LIFETIME_NS))
+        .unwrap_or(now);
+    let mut sent = 1;
+    let settled = loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let answer = Arc::clone(&device)
+            .invoke_until_settled(request.clone(), left)
+            .await;
+        match answer {
+            Some(Err(error))
+                if sent < CERTIFY_TRIES && matches!(error, ActionCallError::Unavailable { .. }) =>
+            {
+                sent = sent.saturating_add(1);
+            }
+            answer => break answer,
+        }
+    };
+    match settled {
+        Some(Ok(tilo_actions::InvocationUpdate::Succeeded { output, .. })) => output
+            .value
+            .and_then(|value| serde_json::from_value(value).ok())
+            .ok_or_else(|| anyhow!(TOO_OLD)),
+        Some(Ok(tilo_actions::InvocationUpdate::Failed { error, .. })) => Err(anyhow!(
+            "Your device didn't add this computer: {}.",
+            error.message.trim_end_matches('.')
+        )),
+        Some(Ok(_)) | None => Err(anyhow!(UNREACHED)),
+        Some(Err(error)) => Err(anyhow!(certify_refused(&error))),
+    }
+}
+
+/// What a call the device that made a ticket did not take says.
+#[must_use]
+pub fn certify_refused(error: &tilo_actions::remote::ActionCallError) -> String {
+    use tilo_actions::remote::ActionCallError;
+    match error {
+        ActionCallError::Refused { reason } => {
+            format!(
+                "Your device didn't take this ticket: {}.",
+                reason.trim_end_matches('.')
+            )
+        }
+        ActionCallError::UnknownAction => TOO_OLD.to_owned(),
+        ActionCallError::Unavailable { reason } => format!(
+            "The device that made this ticket did not take it: {}. If its `tilo device add` \
+             ended, ask for a new ticket.",
+            reason.trim_end_matches('.')
+        ),
+        _ => "The device that made this ticket can't be reached from here: it may be asleep, or \
+              its `tilo device add` ended. Ask for a new ticket."
+            .to_owned(),
+    }
+}

@@ -28,6 +28,16 @@ fn refused() -> io::Error {
     io::ErrorKind::PermissionDenied.into()
 }
 
+/// Whether this process holds root's effective identity.
+pub(crate) fn is_root() -> bool {
+    rustix::process::geteuid().as_raw() == 0
+}
+
+/// Refuse unless this process holds root's effective identity.
+pub(crate) fn require_root() -> io::Result<()> {
+    if is_root() { Ok(()) } else { Err(refused()) }
+}
+
 impl NativeRoot {
     pub(crate) fn retained_service() -> io::Result<Self> {
         let uid = rustix::process::getuid().as_raw();

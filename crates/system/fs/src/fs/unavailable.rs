@@ -298,7 +298,7 @@ where
 mod tests {
     use super::*;
 
-    fn note() -> (tempfile::TempDir, UnavailableNote) {
+    fn fixture() -> (tempfile::TempDir, UnavailableNote) {
         let dir = tempfile::tempdir().unwrap();
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
@@ -319,9 +319,12 @@ mod tests {
             .projection()
     }
 
+    /// A read no peer answers leaves the file unavailable until bytes arrive, whether they
+    /// arrive before or after the read's bound; a failure a retry ended clears the same way, and
+    /// the next read no peer answers is noted again.
     #[tokio::test]
-    async fn a_read_no_peer_answers_shows_the_file_unavailable_until_bytes_arrive() {
-        let (_dir, note) = note();
+    async fn a_file_no_peer_serves_shows_unavailable_until_bytes_arrive() {
+        let (_dir, note) = fixture();
         let bound = Duration::from_millis(100);
 
         let failed = noted_bounded_read(
@@ -341,36 +344,66 @@ mod tests {
         let back = projection(&note);
         assert!(!back.unavailable(), "bytes that arrived make it available");
         assert_eq!(back.transfer.last_error, None);
-    }
 
-    #[tokio::test]
-    async fn a_read_past_its_bound_marks_the_file_and_the_late_fetch_clears_it() {
-        let (_dir, note) = note();
-        let (land, landing) = tokio::sync::oneshot::channel::<()>();
-        let late = noted_bounded_read(
-            Duration::from_millis(100),
-            async move {
-                let _ = landing.await;
-                Ok(())
-            },
-            Some(note.clone()),
-        )
-        .await;
-        assert!(late.is_err(), "a read past its bound fails");
-        assert!(projection(&note).unavailable());
+        {
+            let (_dir, note) = fixture();
+            let (land, landing) = tokio::sync::oneshot::channel::<()>();
+            let late = noted_bounded_read(
+                Duration::from_millis(100),
+                async move {
+                    let _ = landing.await;
+                    Ok(())
+                },
+                Some(note.clone()),
+            )
+            .await;
+            assert!(late.is_err(), "a read past its bound fails");
+            assert!(projection(&note).unavailable());
 
-        land.send(()).unwrap();
-        tilo_test_env::within("the late fetch clears the note", async {
-            while projection(&note).unavailable() {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await;
+            land.send(()).unwrap();
+            tilo_test_env::within("the late fetch clears the note", async {
+                while projection(&note).unavailable() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await;
+        }
+
+        {
+            let (_dir, note) = fixture();
+            let mut retried = DocumentAvailability::new(note.document_id, EntryKind::File);
+            retried.transfer.retry_count = 1;
+            retried.transfer.last_error = Some(TransferError {
+                message: NO_PEER_DELIVERED_ERROR.into(),
+                occurred_at_ms: 5,
+            });
+            note.registry.lock_recover().put(retried).unwrap();
+            assert!(projection(&note).unavailable());
+
+            let read =
+                noted_bounded_read(bound, async { Ok(vec![7_u8]) }, Some(note.clone())).await;
+            assert_eq!(read.unwrap(), vec![7]);
+            let back = projection(&note);
+            assert!(!back.unavailable(), "bytes that arrived make it available");
+            assert_eq!(back.transfer.last_error, None);
+
+            let failed = noted_bounded_read(
+                bound,
+                async { Err::<Vec<u8>, _>(anyhow!("no peer served the content")) },
+                Some(note.clone()),
+            )
+            .await;
+            assert!(failed.is_err());
+            assert!(
+                projection(&note).unavailable(),
+                "the next read no peer answers is noted again"
+            );
+        }
     }
 
     #[tokio::test]
     async fn a_transfer_that_owns_the_record_keeps_its_own_state() {
-        let (_dir, note) = note();
+        let (_dir, note) = fixture();
         let mut record = DocumentAvailability::new(note.document_id, EntryKind::File);
         record.transfer.phase = TransferPhase::Downloading;
         note.registry.lock_recover().put(record).unwrap();
@@ -411,7 +444,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_read_that_completes_a_file_records_it_stored() {
-        let (_dir, mut note) = note();
+        let (_dir, mut note) = fixture();
         let store = Arc::new(crate::store::ContentStore::memory());
         let data = crate::test_bytes::pseudo(3 * 1024 * 1024, 5);
         let whole = store.write_content(&data).await.unwrap().unwrap();
@@ -490,7 +523,7 @@ mod tests {
 
     #[tokio::test]
     async fn files_read_whole_together_are_recorded_in_one_write() {
-        let (_dir, note) = note();
+        let (_dir, note) = fixture();
         let store = Arc::new(crate::store::ContentStore::memory());
         let mut files = Vec::new();
         for seed in 0..24_u64 {
@@ -546,37 +579,5 @@ mod tests {
         }
         assert_eq!(written, 1, "the files are written together");
         assert_eq!(woken, 1, "the pinned-hydration pass is woken once");
-    }
-
-    #[tokio::test]
-    async fn bytes_after_a_retry_that_ended_make_the_file_available_again() {
-        let (_dir, note) = note();
-        let mut retried = DocumentAvailability::new(note.document_id, EntryKind::File);
-        retried.transfer.retry_count = 1;
-        retried.transfer.last_error = Some(TransferError {
-            message: NO_PEER_DELIVERED_ERROR.into(),
-            occurred_at_ms: 5,
-        });
-        note.registry.lock_recover().put(retried).unwrap();
-        assert!(projection(&note).unavailable());
-
-        let bound = Duration::from_millis(100);
-        let read = noted_bounded_read(bound, async { Ok(vec![7_u8]) }, Some(note.clone())).await;
-        assert_eq!(read.unwrap(), vec![7]);
-        let back = projection(&note);
-        assert!(!back.unavailable(), "bytes that arrived make it available");
-        assert_eq!(back.transfer.last_error, None);
-
-        let failed = noted_bounded_read(
-            bound,
-            async { Err::<Vec<u8>, _>(anyhow!("no peer served the content")) },
-            Some(note.clone()),
-        )
-        .await;
-        assert!(failed.is_err());
-        assert!(
-            projection(&note).unavailable(),
-            "the next read no peer answers is noted again"
-        );
     }
 }

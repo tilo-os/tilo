@@ -112,15 +112,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         &self,
         id: tilo_actions::InvocationId,
     ) -> Option<tilo_actions::remote::InvocationState> {
-        let provider = std::sync::Arc::clone(&self.host);
         let caller = self.caller();
-        let asked = caller.clone();
-        let told = std::sync::Arc::clone(&provider);
-        let state = tokio::task::spawn_blocking(move || provider.observe(&caller, &id))
-            .await
-            .ok()
-            .flatten();
-        told.observed(&asked, &id, state.as_ref());
+        let state = tilo_actions::remote::observed_off_the_worker(
+            std::sync::Arc::clone(&self.host),
+            caller.clone(),
+            id,
+        )
+        .await;
+        self.host.observed(&caller, &id, state.as_ref());
         state
     }
 

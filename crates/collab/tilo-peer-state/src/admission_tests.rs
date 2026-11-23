@@ -6,6 +6,7 @@ use tilo_action_policy::Change;
 
 mod editor;
 mod holders;
+mod signed_invocations;
 use crate::join::WorkspaceId;
 use editor::owner_signs;
 pub(crate) use editor::{other_owner, seeded_editor, seeded_editor_with_second_device};

@@ -451,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn traffic_counts_per_connection_and_day_through_restarts() {
+    fn traffic_counts_per_connection_and_local_day_through_restarts_and_resets() {
         let mut usage = NetworkUsage::default();
         let home = |total| reading("wlan0", "wifi:Home", ConnectionKind::Wifi, total);
         assert!(usage.account(&[home(1_000)], Some("a"), MARCH_14, 0));
@@ -477,13 +477,13 @@ mod tests {
             500
         );
 
+        // A counter that started again counts from zero, and so does another boot.
         usage.account(&[home(200)], Some("a"), MARCH_14 + 240, 0);
         assert_eq!(
             usage.connections["wifi:Home"]
                 .on(date("2026-03-14"))
                 .received,
-            700,
-            "a counter that started again counts from zero"
+            700
         );
         usage.account(&[home(300)], Some("b"), MARCH_14 + DAY, 0);
         assert_eq!(
@@ -493,20 +493,10 @@ mod tests {
             300,
             "another boot counts from zero, on the next day"
         );
-        assert_eq!(
-            usage.connections["wifi:Home"]
-                .between(date("2026-03-01"), date("2026-03-31"))
-                .received,
-            1_000
-        );
-    }
 
-    #[test]
-    fn the_local_day_is_the_one_counted_on() {
-        let mut usage = NetworkUsage::default();
+        // 23:00 UTC is the 15th two hours east.
         let cable = |total| reading("eth0", "wired:Office", ConnectionKind::Wired, total);
         usage.account(&[cable(0)], None, MARCH_14, 0);
-        // 23:00 UTC is the 15th two hours east.
         usage.account(&[cable(100)], None, MARCH_14 + 11 * 3_600, 7_200);
         assert_eq!(
             usage.connections["wired:Office"]
@@ -514,10 +504,8 @@ mod tests {
                 .received,
             100
         );
-    }
 
-    #[test]
-    fn the_mobile_period_starts_on_its_day_and_again_on_reset() {
+        // The mobile period starts on the reset day and again on a reset.
         let mut usage = NetworkUsage {
             reset_day: ResetDay::new(15).unwrap(),
             ..NetworkUsage::default()
@@ -540,12 +528,10 @@ mod tests {
             usage.reset_day.next_period(date("2026-03-15")),
             date("2026-04-15")
         );
-
         usage.reset_data_used(None).unwrap();
         assert_eq!(usage.mobile_used(date("2026-03-15")), 0);
         usage.account(&[sim(2_500)], None, MARCH_14 + DAY + 60, 0);
         assert_eq!(usage.mobile_used(date("2026-03-15")), 550);
-        // A new reset day keeps the history; the period follows the day.
         usage.reset_day = ResetDay::new(1).unwrap();
         assert_eq!(
             usage.mobile_used(date("2026-03-15")),
@@ -554,17 +540,14 @@ mod tests {
         );
         usage.limit_gb = 2;
         assert_eq!(usage.limit(), Some(2_000_000_000));
-    }
 
-    #[test]
-    fn history_older_than_the_horizon_is_let_go() {
+        // History older than the horizon is let go.
         let mut usage = NetworkUsage::default();
-        let home = |total| reading("wlan0", "wifi:Home", ConnectionKind::Wifi, total);
         usage.account(&[home(0)], None, MARCH_14, 0);
         usage.account(&[home(10)], None, MARCH_14 + 60, 0);
-        let cafe = |total| reading("wlan1", "wifi:Cafe", ConnectionKind::Wifi, total);
-        usage.account(&[cafe(0)], None, MARCH_14 + HORIZON_DAYS * DAY, 0);
-        usage.account(&[cafe(5)], None, MARCH_14 + HORIZON_DAYS * DAY + 60, 0);
+        let away = |total| reading("wlan1", "wifi:Cafe", ConnectionKind::Wifi, total);
+        usage.account(&[away(0)], None, MARCH_14 + HORIZON_DAYS * DAY, 0);
+        usage.account(&[away(5)], None, MARCH_14 + HORIZON_DAYS * DAY + 60, 0);
         assert!(!usage.connections.contains_key("wifi:Home"));
         assert!(usage.connections.contains_key("wifi:Cafe"));
     }

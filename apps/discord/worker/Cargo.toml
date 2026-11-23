@@ -36,7 +36,7 @@ tokio = { workspace = true, features = ["io-std", "io-util", "macros", "net", "r
 tokio-rustls.workspace = true
 # Discord's REST rate limits: buckets per route and major parameter, and the
 # global limit. Transport-free, so calls stay on tilo-net and its egress rule.
-twilight-http-ratelimiting = "0.17.1"
+twilight-http-ratelimiting = "0.18.0"
 tokio-websockets = { version = "0.13.3", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector"] }
 url.workspace = true
 zeroize.workspace = true
@@ -54,17 +54,20 @@ tilo-seal = { path = "../../../crates/system/tilo-seal" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-fake-discord = { path = "../../../crates/dev/fake-discord" }
+fake-discord = { path = "../../../tools/fake-discord" }
 tempfile.workspace = true
 collab-types = { path = "../../../crates/collab/collab-types" }
 # `relay`: the loopback packet relay the bridge's host takes as its home.
-tilo-test-env = { path = "../../../crates/dev/test-env", features = ["iroh-relay"] }
+tilo-test-env = { path = "../../../tools/test-env", features = ["iroh-relay"] }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-secrets = { path = "../../../crates/platform/tilo-secrets" }
 # The bridge end to end: its program on a workspace's host, with this binary.
 tilo-server = { path = "../../../crates/server/tilo-server", features = ["agents"] }
 # The bridge's host, and its Chat read and changed through its own package.
-tilo-workspace-service = { path = "../../../crates/server/tilo-workspace-service", features = ["agents"] }
+tilo-workspace-service = { path = "../../../crates/server/tilo-workspace-service", features = ["agents", "test-support"] }
+tilo-server-protocol = { path = "../../../crates/server/tilo-server-protocol" }
+# The workspace's live session a member's device takes part in the bridged call on.
+tilo-live = { path = "../../../crates/collab/tilo-live", features = ["relay"] }
 tilo-agent-session = { path = "../../../crates/agent/agent-session" }
 tilo-automation = { path = "../../../crates/collab/automation" }
 tilo-user-identity = { path = "../../../crates/collab/tilo-user-identity" }

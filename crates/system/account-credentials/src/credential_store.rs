@@ -690,13 +690,6 @@ impl CredentialStore {
             .map_err(CredentialError::Storage)
     }
 
-    fn store(&self) -> accounts::AccountStore {
-        match &self.config_root {
-            Some(root) => accounts::AccountStore::load_in(root),
-            None => accounts::AccountStore::load(),
-        }
-    }
-
     fn reporter(&self, id: &AccountId) -> accounts::AccountSyncReporter {
         match &self.config_root {
             Some(root) => accounts::AccountSyncReporter::in_root(id.clone(), root.clone()),
@@ -1116,36 +1109,32 @@ impl CredentialStore {
             .map_err(|error| CredentialError::Storage(error.to_string()))
     }
 
-    /// What `id`'s drive signs in with now, made in memory from the grant this device keeps: an
-    /// `OAuth` account's current access token, renewed when it is due (or when `force`, after
-    /// the drive refused it), or an iCloud account's session headers. Nothing of it is written
-    /// anywhere but the renewed grant, back into the vault. A grant the provider no longer
-    /// takes moves the account to "sign in again".
+    /// What `account`'s drive signs in with now, made in memory from the grant this device
+    /// keeps: an `OAuth` account's current access token, renewed when it is due (or when
+    /// `force`, after the drive refused it), or an iCloud account's session headers. Nothing of
+    /// it is written anywhere but the renewed grant, back into the vault. A grant the provider
+    /// no longer takes moves the account to "sign in again".
     ///
     /// # Errors
-    /// The account is gone, disabled, signs in with no grant here, or its grant was not renewed.
+    /// The account is disabled, signs in with no grant here, or its grant was not renewed.
     pub fn file_credential(
         &self,
-        id: &AccountId,
+        account: &Account,
         force: bool,
     ) -> Result<cloud_source::Credential, CredentialError> {
-        let result = self.made_file_credential(id, force);
+        let result = self.made_file_credential(account, force);
         if result.as_ref().err() == Some(&CredentialError::NeedsAuthentication) {
-            let _ = self.reporter(id).needs_authentication();
+            let _ = self.reporter(&account.id).needs_authentication();
         }
         result
     }
 
     fn made_file_credential(
         &self,
-        id: &AccountId,
+        account: &Account,
         force: bool,
     ) -> Result<cloud_source::Credential, CredentialError> {
-        let account = self
-            .store()
-            .get(id)
-            .cloned()
-            .ok_or_else(|| CredentialError::Account("account no longer exists".into()))?;
+        let id = &account.id;
         if !account.enabled {
             return Err(CredentialError::Account("account is disabled".into()));
         }
@@ -1261,13 +1250,13 @@ fn expires_at(unix: Option<u64>) -> Option<std::time::SystemTime> {
 /// the last one.
 pub struct DriveSignIn {
     store: CredentialStore,
-    account: AccountId,
+    account: Account,
     rejected: std::sync::atomic::AtomicBool,
 }
 
 impl DriveSignIn {
     #[must_use]
-    pub const fn new(store: CredentialStore, account: AccountId) -> Self {
+    pub fn new(store: CredentialStore, account: Account) -> Self {
         Self {
             store,
             account,

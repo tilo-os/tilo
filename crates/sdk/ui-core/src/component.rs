@@ -1370,6 +1370,11 @@ fn toolkit_enums() -> Vec<EnumDescription> {
         crate::widget::connection_description(),
         crate::widget::category_chart::bars_description(),
         crate::widget::pie_chart::slice_description(),
+        crate::widget::distribution_chart::samples_description(),
+        crate::widget::polar_area_chart::areas_description(),
+        crate::widget::radar_chart::axes_description(),
+        crate::widget::radar_chart::radar_series_description(),
+        crate::widget::funnel_chart::stages_description(),
     ]
 }
 

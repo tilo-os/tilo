@@ -42,11 +42,6 @@ pub struct Workspace {
     /// The holders of it, each as it names itself in its own signed address.
     #[serde(default)]
     pub holders: Vec<WorkspaceHolder>,
-    /// The members' live delegations of their own work to servers, each as
-    /// the member's device signed it: who gave a server which work, until
-    /// when.
-    #[serde(default)]
-    pub delegations: Vec<WorkspaceDelegation>,
 }
 
 /// The roles and assignments of a workspace, requested independently of the roster.
@@ -54,22 +49,6 @@ pub struct Workspace {
 pub struct WorkspaceRoles {
     pub custom_roles: std::collections::BTreeMap<String, String>,
     pub assigned_roles: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-}
-
-/// A member's delegation of their own work to a server, as a page reads it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceDelegation {
-    /// Whose work it is: their user root, hex.
-    pub person: String,
-    /// The server that may take it: its device key, hex.
-    pub server: String,
-    /// The agent of theirs it acts as, when it acts as one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<String>,
-    /// What it may take, by the paths the workspace decides actions by.
-    pub grants: Vec<tilo_action_policy::Grant>,
-    /// When it stops working, ns since the epoch.
-    pub expires_at_ns: u64,
 }
 
 /// A holder of a workspace, as its own signed address names it.

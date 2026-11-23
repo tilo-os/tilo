@@ -25,10 +25,7 @@ impl VirtualRows {
     }
 
     pub(super) fn unread_row(&self) -> Option<ListKey> {
-        let item = self.unread.as_deref()?;
-        self.model
-            .key_presenting(item)
-            .or_else(|| self.names_item.borrow().as_ref().and_then(|f| f(item)))
+        self.key_of_item(self.unread.as_deref()?)
     }
 
     pub fn set_key_presenting(&mut self, f: impl Fn(&str) -> Option<ListKey> + 'static) {

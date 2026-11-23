@@ -258,7 +258,7 @@ pub(super) fn reading_of(
     names: &Names,
 ) -> Reading {
     let mut reading = Reading {
-        front: tilo_desktop_surface::navigation::active_route(tree)
+        front: crate::desktop::navigation::active_route(tree)
             .map(|route| route.group.to_string())
             .unwrap_or_default(),
         ..Reading::default()
@@ -266,23 +266,19 @@ pub(super) fn reading_of(
     for workspace in &tree.workspaces {
         reading.workspaces.push(WorkspaceReading {
             key: workspace.id().to_string(),
-            name: tilo_desktop_surface::names::workspace(&workspace.name),
+            name: crate::desktop::names::workspace(&workspace.name),
             // A layout holds every workspace the person is in and shows one: the shell draws the
             // rows of the one in front, so the reading says which that is.
             current: workspace.id() == tree.active,
         });
-        let front = tree
-            .active_strip
-            .get(&workspace.id())
-            .and_then(|id| workspace.strips.iter().position(|row| row.id == *id))
-            .unwrap_or(0);
+        let front = tree.active_strip_for(workspace);
         for (at, row) in workspace.strips.iter().enumerate() {
             reading.rows.push(RowReading {
                 key: row.id.0.to_string(),
                 workspace: workspace.id().to_string(),
-                name: tilo_desktop_surface::names::strip_named(&row.name, at),
+                name: crate::desktop::names::strip_named(&row.name, at),
                 shell: SHELL.to_owned(),
-                current: at == front,
+                current: Some(row.id) == front,
             });
             for group in &row.window_groups {
                 let canvas = workspace.layout.place_of(group.id);

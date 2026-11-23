@@ -1150,6 +1150,11 @@ mod tests {
             worker.handle(Wake::Timeout, &mut env);
             assert_eq!(worker.next_wake(now, None), None, "watching again");
             assert_eq!(env.enumerations, before, "the watch sends the baseline");
+
+            // A lost watch is polled for until it is back.
+            worker.handle(Wake::Event(PolicyEvent::WatchLost), &mut env);
+            assert_eq!(env.enumerations, before.saturating_add(1), "a lost watch reads the graph at once");
+            assert_eq!(worker.next_wake(now, None), Some(POLL_INTERVAL));
         }
 
         phase without_a_running_pipewire_the_worker_waits_for_its_socket;
@@ -1194,16 +1199,6 @@ mod tests {
             env.graph_watchable = false;
             env.daemon = FakeDaemon::StoppedUnwatchable;
             let worker = PolicyWorker::start(&mut env);
-            assert_eq!(worker.next_wake(Instant::now(), None), Some(POLL_INTERVAL));
-        }
-
-        phase a_lost_watch_polls_until_it_is_back;
-        {
-            let mut env = FakeEnv::new([laptop(true)]);
-            let mut worker = PolicyWorker::start(&mut env);
-            worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
-            worker.handle(Wake::Event(PolicyEvent::WatchLost), &mut env);
-            assert_eq!(env.enumerations, 2, "a lost watch reads the graph at once");
             assert_eq!(worker.next_wake(Instant::now(), None), Some(POLL_INTERVAL));
         }
 

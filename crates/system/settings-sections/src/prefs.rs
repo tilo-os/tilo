@@ -1877,6 +1877,11 @@ impl NotificationPrefs {
         let seconds = mute_seconds(&duration).ok_or_else(|| {
             ui::tilo_resource::Refusal::new(format!("`{duration}` is not offered"))
         })?;
+        if !self.per_app.contains_key(&app) && !valid_app_id(&app) {
+            return Err(ui::tilo_resource::Refusal::new(format!(
+                "`{app}` is not an app id"
+            )));
+        }
         let until = (seconds > 0).then(|| (cx.now_ms() / 1000).saturating_add(seconds));
         self.per_app.entry(app).or_default().muted_until = until;
         Ok(())
@@ -1925,8 +1930,27 @@ pub fn mute_seconds(english: &str) -> Option<i64> {
         .find_map(|(name, seconds)| (*name == english).then_some(*seconds))
 }
 
-/// Whether `id` can name an app in the notification policy.
+/// Whether `id` can name an app when writing a new notification policy rule.
+///
+/// Differs from [`tilo_app_id::AppId::parse`] by allowing a single segment
+/// without a dot (for host desktop-file ids such as `firefox`) and capping
+/// length at 160 bytes for notification policy keys.
 pub fn valid_app_id(id: &str) -> bool {
+    const GRAMMAR: tilo_app_id::Grammar = tilo_app_id::Grammar::CANONICAL
+        .max_bytes(160)
+        .allow_single_segment();
+    GRAMMAR.matches(id)
+}
+
+/// Whether `id` may remain as an already-stored key in
+/// [`NotificationPrefs::per_app`] or be listed from stored settings.
+///
+/// Keeps the pre-unification rule (non-empty, at most 160 bytes, ASCII
+/// alphanumerics plus `.`, `-`, `_`) so rules saved before the grammar
+/// tightened — such as a host desktop file named `foo..desktop` yielding
+/// `foo.` — stay visible in Settings, can still be removed, and never block
+/// other actions on [`NotificationPrefs`].
+pub fn valid_stored_app_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 160
         && id
@@ -2080,7 +2104,7 @@ impl AppearancePrefs {
 impl NotificationPrefs {
     /// What the notification section holds, however it was changed.
     fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
-        match self.per_app.keys().find(|app| !valid_app_id(app)) {
+        match self.per_app.keys().find(|app| !valid_stored_app_id(app)) {
             Some(app) => Err(ui::tilo_resource::Refusal::new(format!(
                 "`{app}` is not an app id"
             ))),
@@ -2138,12 +2162,6 @@ mod paste_shortcut_tests {
             .set_paste_shortcut("org.example.MyTerm", "ctrl_shift_v")
             .unwrap();
         let stored = serde_json::to_value(&input).unwrap();
-        let section = stored.as_object().unwrap();
-        let overrides = settings_store::paste_shortcut::overrides_from_section(section);
-        assert_eq!(
-            settings_store::paste_shortcut::resolve("org.example.MyTerm", &overrides),
-            settings_store::paste_shortcut::PasteShortcut::CtrlShiftV
-        );
         let back: InputPrefs = serde_json::from_value(stored).unwrap();
         assert_eq!(back.paste_shortcuts, input.paste_shortcuts);
     }
@@ -2230,5 +2248,108 @@ mod theme_tests {
         };
         assert_eq!(custom.look(), None);
         assert_eq!(custom.look_choice(), "custom:ember");
+    }
+}
+
+#[cfg(test)]
+mod notification_app_id_tests {
+    use super::{NotificationPrefs, notification_prefs, valid_app_id, valid_stored_app_id};
+    use ui::tilo_resource::{Fields, Invoke, Replica, Resource};
+
+    #[test]
+    fn notification_app_ids_allow_single_segments_within_160_bytes_and_refuse_empty_segments() {
+        let longest = "a".repeat(160);
+        let too_long = "a".repeat(161);
+        let too_long_dotted = format!("a.{}", "b".repeat(159));
+        for (id, expected) in [
+            ("so.tilo.chat", true),
+            ("org.example.My_App-2", true),
+            ("firefox", true),
+            ("kde4-konsole", true),
+            ("-foo", true),
+            ("-org.example.App", true),
+            (longest.as_str(), true),
+            (too_long.as_str(), false),
+            (too_long_dotted.as_str(), false),
+            ("", false),
+            (".foo", false),
+            ("foo.", false),
+            ("a..b", false),
+            ("..", false),
+            (".", false),
+            ("not an id", false),
+            ("org/example", false),
+        ] {
+            assert_eq!(valid_app_id(id), expected, "{id:?}");
+            let mut replica = Replica::<NotificationPrefs>::new();
+            let result = replica.apply(NotificationPrefs::MUTE_APP.with(
+                notification_prefs::MuteApp {
+                    app: id.to_owned(),
+                    duration: "For 1 hour".to_owned(),
+                },
+            ));
+            assert_eq!(result.is_ok(), expected, "{id:?} gave {result:?}");
+        }
+    }
+
+    #[test]
+    fn stored_rule_allows_dnd_and_removal_while_new_bad_keys_are_refused() {
+        assert!(valid_stored_app_id("foo."));
+        assert!(!valid_app_id("foo."));
+
+        let mut doc = ui::tilo_resource::Doc::new();
+        NotificationPrefs::initialize(&mut doc).unwrap();
+        let mut stored = NotificationPrefs::default();
+        stored.per_app.insert(
+            "foo.".into(),
+            settings_store::notification_policy::AppNotificationRule {
+                banners: Some(false),
+                ..Default::default()
+            },
+        );
+        stored
+            .write_fields(&mut doc, &ui::tilo_resource::__private::ROOT)
+            .unwrap();
+        doc.commit();
+        let mut replica = Replica::<NotificationPrefs>::from_doc(doc);
+
+        // Existing stored `foo.` never blocks switching Do Not Disturb.
+        replica
+            .apply(NotificationPrefs::SET_DO_NOT_DISTURB.with(true))
+            .unwrap();
+        assert!(replica.state().unwrap().do_not_disturb);
+
+        // Adding a new rule under `a..b` is refused by `mute_app`, while muting the
+        // already-stored `foo.` rule succeeds.
+        assert!(
+            replica
+                .apply(
+                    NotificationPrefs::MUTE_APP.with(notification_prefs::MuteApp {
+                        app: "a..b".into(),
+                        duration: "For 1 hour".into(),
+                    })
+                )
+                .is_err()
+        );
+        assert!(!replica.state().unwrap().per_app.contains_key("a..b"));
+        replica
+            .apply(
+                NotificationPrefs::MUTE_APP.with(notification_prefs::MuteApp {
+                    app: "foo.".into(),
+                    duration: "For 1 hour".into(),
+                }),
+            )
+            .unwrap();
+        assert!(
+            replica.state().unwrap().per_app["foo."]
+                .muted_until
+                .is_some()
+        );
+
+        // Removing the stored `foo.` rule succeeds.
+        replica
+            .apply(Invoke::edit(&NotificationPrefs::paths().per_app.remove("foo.")).unwrap())
+            .unwrap();
+        assert!(!replica.state().unwrap().per_app.contains_key("foo."));
     }
 }

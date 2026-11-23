@@ -217,3 +217,77 @@ fn a_document_block_is_patched_alone() {
         Some("Root[0]/BlockEditor[0]#block:b")
     );
 }
+
+/// A canvas at (100, 50) holding two places, the second a window's well.
+fn canvas(second_at: [f64; 2]) -> Composition {
+    let mut map = Composed::new("Root[0]".to_owned(), "Map", [100.0, 50.0, 800.0, 600.0]);
+    map.places = true;
+    let first = text("Root[0]/MapPin[0]", "Groceries");
+    let mut first = Composed {
+        rect: [140.0, 90.0, 300.0, 200.0],
+        ..first
+    };
+    first.layout = None;
+    let mut second = Composed::new(
+        "Root[0]/MapPin[1]".to_owned(),
+        "MapPin",
+        [second_at[0], second_at[1], 400.0, 300.0],
+    );
+    let mut well = Composed::new(
+        "Root[0]/MapPin[1]/WindowWell[0]".to_owned(),
+        "WindowWell",
+        [second_at[0], second_at[1], 400.0, 300.0],
+    );
+    well.well = Some("tab-7".to_owned());
+    // A window's frame lays its well out itself, as a column.
+    second.flows = true;
+    second.children = vec![well];
+    map.children = vec![first, second];
+    Composition {
+        viewport: [1024, 720],
+        focus: None,
+        root: map,
+        layers: Vec::new(),
+    }
+}
+
+#[test]
+fn a_canvas_places_what_it_holds_and_a_host_fills_its_wells() {
+    let mut page = Page::new();
+    page.wells.insert(
+        "tab-7".to_owned(),
+        "<a href=\"/w/ws/notes\">Notes</a>".to_owned(),
+    );
+    let html = page.render(&canvas([500.0, 350.0]));
+    assert!(
+        html.contains("position:relative;overflow:auto;"),
+        "the canvas scrolls to what it places: {html}"
+    );
+    assert!(
+        html.contains("position:absolute;left:40px;top:40px;width:300px;height:200px;"),
+        "a place stands at its point from the canvas's corner: {html}"
+    );
+    assert!(
+        html.contains("position:absolute;left:400px;top:300px;width:400px;height:300px;"),
+        "{html}"
+    );
+    assert!(
+        html.contains("data-well=\"tab-7\"><a href=\"/w/ws/notes\">Notes</a>"),
+        "the host's window stands in its well: {html}"
+    );
+    assert!(
+        page.placed.is_empty(),
+        "nothing is flowed: {:?}",
+        page.placed
+    );
+    // Another member moved the second place: only its element changes.
+    let patches = page.patch(&canvas([520.0, 330.0]));
+    assert_eq!(patches.len(), 1, "{patches:?}");
+    assert!(
+        patches[0]
+            .html
+            .contains("position:absolute;left:420px;top:280px;"),
+        "{patches:?}"
+    );
+    assert_eq!(page.path(patches[0].id), Some("Root[0]/MapPin[1]"));
+}

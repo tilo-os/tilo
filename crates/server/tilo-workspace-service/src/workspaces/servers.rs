@@ -84,7 +84,9 @@ pub const HISTORY_KEPT: usize = 20;
 pub const MINUTES_PER_DAY: u32 = 24 * 60;
 const MAX_REQUEST: usize = 64;
 
-/// The person's servers, by device key (lowercase hex).
+/// The person's servers, by device key (lowercase hex): each server's name,
+/// what it holds and offers, the updates it follows, its maintenance window
+/// and how it unlocks.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Servers {
     pub servers: Collection<Server>,
@@ -174,18 +176,6 @@ impl Asked {
 }
 
 impl Servers {
-    /// What the document holds, read through
-    /// [`fields`](tilo_resource::read::fields): each server's name, what it
-    /// holds and offers, the updates it follows, its maintenance window and how
-    /// it unlocks. The person's agent or a script reads what their servers
-    /// are set to as it reads any document.
-    ///
-    /// # Errors
-    /// A named item is not this read's to answer.
-    pub fn read_document(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-
     /// The entry of the server whose device key is `device`, unless it was
     /// retired.
     #[must_use]
@@ -338,7 +328,7 @@ pub fn genesis(workspace: &str) -> Result<automerge::AutoCommit, String> {
     super::person_workspace::genesis::<Servers>(workspace)
 }
 
-#[resource(kind = "tilo.servers", read_content = Servers::read_document)]
+#[resource(kind = "tilo.servers", read_content = tilo_resource::read::fields)]
 impl Servers {
     /// Plan a machine that is not installed yet: enter the secret-free plan
     /// document `plan` under its own id ([`plan`]), with the nonce of the
@@ -1148,6 +1138,26 @@ pub async fn apply_on(
     action: Invoke<Servers>,
 ) -> Result<(), String> {
     super::person_workspace::apply_on(workspaces, workspace, SERVERS, action).await
+}
+
+/// Take the machine whose device key is `device` in as the one the plan `plan` describes: the
+/// plan's entry becomes the machine's, under its key, as when it begins its install. What the
+/// device that served the machine's ticket does once the person's root certified it.
+///
+/// # Errors
+/// No machine is planned under `plan`, or the document refused the change or could not be
+/// written.
+pub async fn admit_planned(
+    workspaces: &Workspaces,
+    plan: &str,
+    device: &[u8; 32],
+) -> Result<(), String> {
+    let nonce = read(workspaces).await?.waiting_plan(plan)?.plan.token.nonce;
+    apply(
+        workspaces,
+        Servers::BEGIN_INSTALL.with((hex::encode(device), nonce, "[]".to_owned(), String::new())),
+    )
+    .await
 }
 
 /// The Servers workspace's [`SERVERS`] document as this device reads it.

@@ -1,10 +1,10 @@
-//! The `tilo mcp` connections to this computer's one daemon (`tilo-runtime --hold`), which holds
+//! The `tilo mcp` connections to this computer's one daemon (`tilo-runtime`), which holds
 //! the device's session with the workspace.
 //!
 //! The host keeps one session per device, so two processes entering as the same device cut each
 //! other off, over and over: each agent's calls then fail as "not connected to the host" or go
 //! unanswered. Every `tilo mcp` therefore reaches the daemon over a socket in the device's
-//! directory ([`reach`], starting `tilo-runtime --hold` when none listens) and relays its agent's
+//! directory ([`reach`], starting `tilo-runtime` when none listens) and relays its agent's
 //! stdio to it ([`relay`]). The daemon serves each connection as its own agent run over the one
 //! session.
 
@@ -102,7 +102,7 @@ fn reach_starting(
     }
 }
 
-/// Start the daemon (`tilo-runtime --hold`): as the user service where it is installed, so the
+/// Start the daemon (`tilo-runtime`): as the user service where it is installed, so the
 /// one daemon of the device lives where the person's login keeps it, never inside the agent or
 /// command that happened to need it first (and ends with it). Elsewhere on its own: in a process
 /// group of its own, so the agent that ends this connection does not end it with the others',

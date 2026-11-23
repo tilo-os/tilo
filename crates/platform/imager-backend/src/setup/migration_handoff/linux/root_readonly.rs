@@ -137,16 +137,13 @@ impl Ownership {
                 "Root readonly source mount flags or filesystem changed",
             ));
         }
-        let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-        // SAFETY: held readable directory and complete kernel output storage.
-        if unsafe { libc::fstatvfs(root.as_raw_fd(), status.as_mut_ptr()) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: successful fstatvfs initialized the output.
-        let flags = unsafe { status.assume_init() }.f_flag;
-        let required =
-            libc::ST_RDONLY | libc::ST_NODEV | libc::ST_NOSUID | libc::ST_NOEXEC | libc::ST_NOATIME;
-        if flags & required != required {
+        let flags = rustix::fs::fstatvfs(root)?.f_flag;
+        let required = rustix::fs::StatVfsMountFlags::RDONLY
+            | rustix::fs::StatVfsMountFlags::NODEV
+            | rustix::fs::StatVfsMountFlags::NOSUID
+            | rustix::fs::StatVfsMountFlags::NOEXEC
+            | rustix::fs::StatVfsMountFlags::NOATIME;
+        if !flags.contains(required) {
             return Err(denied("Kernel readonly source protections changed"));
         }
         if self.volume.filesystem == Filesystem::Btrfs {

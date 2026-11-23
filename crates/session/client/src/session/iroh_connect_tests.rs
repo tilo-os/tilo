@@ -327,8 +327,9 @@ async fn a_session_beside_the_devices_own_holds_no_keys() {
 }
 
 /// A session beside its device's own that is handed the device's key service reads and asks with
-/// that one and settles no keys itself: the device keeps its one place in each workspace's key
-/// group.
+/// that one, and hands it the groups' governance it hears over the session as a link would: a
+/// page that reaches its workspace with no link still joins each record's group, and the device
+/// keeps its one place in each workspace's key group.
 #[tokio::test]
 async fn a_session_beside_the_devices_own_reads_with_the_devices_keys() {
     let root = SigningKey::from_bytes(&[1; 32]);
@@ -352,8 +353,8 @@ async fn a_session_beside_the_devices_own_reads_with_the_devices_keys() {
     let own = session(false, None);
     let beside = session(true, Some(own.workspace_keys.clone()));
     assert!(
-        beside.governance.is_none(),
-        "a session handed the device's key service settles none of its own"
+        beside.governance.is_some(),
+        "a session handed the device's key service carries the governance it hears to that service"
     );
     assert!(
         !matches!(

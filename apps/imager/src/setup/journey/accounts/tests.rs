@@ -84,7 +84,7 @@ tilo_test_env::scenario! {
         assert!(accessible.state.disabled);
         assert!(
             accessible
-                .value
+                .name
                 .unwrap()
                 .contains(&t("installer-accounts-unavailable"))
         );
@@ -228,7 +228,7 @@ music_streaming = ["streaming", "user-read-private"]
             assert!(!accessible.state.disabled);
             assert!(
                 accessible
-                    .value
+                    .name
                     .unwrap()
                     .contains(&t("installer-accounts-spotify-source-sign-in"))
             );
@@ -346,7 +346,7 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
         )
         .unwrap();
     let source_account_metadata =
-        std::fs::read(accounts::store_path_in(&config.join("tilo"))).unwrap();
+        std::fs::read(accounts::person::staged_path_in(&config.join("tilo"))).unwrap();
     let roots = SourceRoots {
         home: home.clone(),
         config,
@@ -485,7 +485,7 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     assert_eq!(
-        std::fs::read(accounts::store_path_in(&home.join(".config/tilo"))).unwrap(),
+        std::fs::read(accounts::person::staged_path_in(&home.join(".config/tilo"))).unwrap(),
         source_account_metadata
     );
     let retained = accounts.prepared_handle().unwrap();
@@ -631,7 +631,7 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         assert_eq!(
-            std::fs::read(accounts::store_path_in(&home.join(".config/tilo"))).unwrap(),
+            std::fs::read(accounts::person::staged_path_in(&home.join(".config/tilo"))).unwrap(),
             source_account_metadata
         );
     }
@@ -1028,7 +1028,7 @@ tilo_test_env::scenario! {
         assert_eq!(cloud.revoked.load(Ordering::SeqCst), 1);
         assert!(accounts.prepared.is_empty());
         assert!(!accounts.can_continue());
-        assert!(!accounts::store_path_in(&stage.join(".config/tilo")).exists());
+        assert!(!accounts::person::staged_path_in(&stage.join(".config/tilo")).exists());
         assert!(
             !accounts
                 .projection()
@@ -1212,7 +1212,7 @@ tilo_test_env::scenario! {
         assert_eq!(inventory.tilo_accounts.len(), 1);
         assert!(inventory.unreadable_sources.is_empty());
         let selected = inventory.tilo_accounts[0].source_id.clone();
-        let metadata = std::fs::read(accounts::store_path_in(&root)).unwrap();
+        let metadata = std::fs::read(accounts::person::staged_path_in(&root)).unwrap();
         let vault = std::fs::read(accounts::vault_dir_in(&root).join("vault.enc")).unwrap();
         let projected = serde_json::to_string(&inventory).unwrap();
         assert!(!projected.contains("private-source-spotify-access"));
@@ -1252,7 +1252,7 @@ tilo_test_env::scenario! {
         assert_eq!(accounts.prepared_handle().unwrap().count(), 1);
         assert!(browser.opened.lock().unwrap().is_empty());
         assert_eq!(
-            std::fs::read(accounts::store_path_in(&root)).unwrap(),
+            std::fs::read(accounts::person::staged_path_in(&root)).unwrap(),
             metadata
         );
         assert_eq!(
@@ -1289,7 +1289,7 @@ tilo_test_env::scenario! {
                 record.keep(&changed).unwrap();
                 record.project(&root).unwrap();
             }
-            let original = std::fs::read(accounts::store_path_in(&root)).unwrap();
+            let original = std::fs::read(accounts::person::staged_path_in(&root)).unwrap();
             accounts.apply(AccountRequest::Confirm).unwrap();
             settle(&mut accounts);
             assert!(matches!(accounts.step, Step::Failed { .. }));
@@ -1311,7 +1311,7 @@ tilo_test_env::scenario! {
                     .is_none()
             );
             assert_eq!(
-                std::fs::read(accounts::store_path_in(&root)).unwrap(),
+                std::fs::read(accounts::person::staged_path_in(&root)).unwrap(),
                 original
             );
             assert!(browser.opened.lock().unwrap().is_empty());
@@ -1330,7 +1330,7 @@ tilo_test_env::scenario! {
                 assert!(accounts.prepared.is_empty());
                 assert!(browser.opened.lock().unwrap().is_empty());
                 assert_eq!(
-                    std::fs::read(accounts::store_path_in(&root)).unwrap(),
+                    std::fs::read(accounts::person::staged_path_in(&root)).unwrap(),
                     original
                 );
             }
@@ -1392,7 +1392,7 @@ fn saved_tilo_source_redirects_cannot_escape_the_consented_config_root() {
     let selected = inventory.tilo_accounts[0].source_id.clone();
     let saved = source._temp.path().join("outside-consented-config");
     std::fs::rename(&root, &saved).unwrap();
-    let original = std::fs::read(accounts::store_path_in(&saved)).unwrap();
+    let original = std::fs::read(accounts::person::staged_path_in(&saved)).unwrap();
     let ciphertext = std::fs::read(accounts::vault_dir_in(&saved).join("vault.enc")).unwrap();
     symlink(&saved, &root).unwrap();
     let refused = imager_backend::account_transfer::discover(&source.roots);
@@ -1411,7 +1411,7 @@ fn saved_tilo_source_redirects_cannot_escape_the_consented_config_root() {
     assert!(matches!(accounts.step, Step::Failed { .. }));
     assert!(accounts.prepared_handle().is_none());
     assert_eq!(
-        std::fs::read(accounts::store_path_in(&saved)).unwrap(),
+        std::fs::read(accounts::person::staged_path_in(&saved)).unwrap(),
         original
     );
     assert_eq!(
@@ -1712,10 +1712,8 @@ tilo_test_env::scenario! {
             &format!("installer.account.detected.{}", fixture.nextcloud_id),
         )
         .unwrap();
-        assert_eq!(
-            nextcloud.accessibility().unwrap().value,
-            Some(t("installer-accounts-left-out"))
-        );
+        let name = nextcloud.accessibility().unwrap().name.unwrap();
+        assert!(name.ends_with(&format!(", {}", t("installer-accounts-left-out"))));
         fixture.assert_sources_unchanged();
     }
 }
@@ -2143,7 +2141,7 @@ impl SavedBatchFixture {
         let source_files = [
             rclone,
             nextcloud,
-            accounts::store_path_in(&tilo),
+            accounts::person::staged_path_in(&tilo),
             accounts::vault_dir_in(&tilo).join("vault.enc"),
         ]
         .into_iter()

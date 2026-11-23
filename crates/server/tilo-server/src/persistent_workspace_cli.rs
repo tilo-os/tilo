@@ -1303,11 +1303,17 @@ pub(crate) async fn run(
         .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
     let state = args.state.clone();
     std::fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
+    // The operator's kill switch: the mode file in the state directory wins over the environment,
+    // and the entry reads it as it turns someone new away, so pausing the host takes no restart.
+    let mode = tilo_workspace_service::workspaces::mode::HostMode::held(
+        state.clone(),
+        tilo_workspace_service::workspaces::mode::Mode::Normal,
+    );
     // The deployment's own routes answer from the start: its health check says
     // the host is starting while it opens its workspaces, which can take a
     // minute, and that it serves once people can get in.
     let management = match persistent.http {
-        Some(listen) => Some(http::listen(listen).await?),
+        Some(listen) => Some(http::listen(listen, Arc::clone(&mode)).await?),
         None => None,
     };
     let listen = args.web.web.context("a workspace needs --web")?;
@@ -1575,7 +1581,7 @@ pub(crate) async fn run(
                 discord_api_base: persistent.discord_api_base.clone(),
             },
         );
-        let (runners, discord) = start_bots(
+        let (mut runners, discord) = start_bots(
             &workspaces,
             &workspace,
             &server_cert,
@@ -1589,6 +1595,21 @@ pub(crate) async fn run(
         if let Some(discord) = &discord {
             offer_sign_in(discord, &persistent).await;
         }
+        // The bridge carries the workspace's calls to Discord's voice channels
+        // as the host's own device in the workspace's live session.
+        runners.extend(discord.as_ref().and_then(|discord| {
+            let relay = hosted.server.live_relay()?;
+            Some(tokio::spawn(
+                tilo_server::workspace_bots::discord_voice::VoiceBridge::new(
+                    workspaces.clone(),
+                    workspace.clone(),
+                    server_cert.clone(),
+                    relay,
+                    Arc::clone(discord),
+                )
+                .run(),
+            ))
+        }));
         // Bots the workspaces' members ask for, beside the operator's: one
         // follower for every workspace this host governs, the Lounge and the
         // workspaces its people keep of their own, as each of them is made.
@@ -1702,6 +1723,9 @@ pub(crate) async fn run(
     let mut invitations = wait_list
         .as_ref()
         .and_then(|page| page.invitations(&context.workspaces));
+    // The workspace's entry admits under the same switch `/mode` reports, from the moment it
+    // serves.
+    context.workspaces.hold_mode(mode);
     let result = tokio::select! {
         result = serve_operator(&context, &mut operator, invitations.as_mut(), owner_socket.as_ref()) => result,
         result = &mut shutdown => result,

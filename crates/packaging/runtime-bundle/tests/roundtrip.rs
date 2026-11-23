@@ -163,7 +163,7 @@ tilo_test_env::scenario! {
             },
         )
         .unwrap_err();
-        matches!(err, BundleError::PublisherMismatch { .. });
+        assert!(matches!(err, BundleError::PublisherMismatch { .. }));
     }
 
     phase tampered_root_hash_in_signed_bundle_is_caught;
@@ -287,7 +287,7 @@ tilo_test_env::scenario! {
             },
         )
         .unwrap_err();
-        matches!(err, BundleError::ArchMismatch { .. });
+        assert!(matches!(err, BundleError::ArchMismatch { .. }));
     }
 
     phase build_verify_roundtrip_aarch64_fedora_fixture;
@@ -339,7 +339,7 @@ tilo_test_env::scenario! {
         fs::write(&libc, bytes).unwrap();
 
         let err = verify_bundle(out.path()).unwrap_err();
-        matches!(err, BundleError::HashMismatch { .. });
+        assert!(matches!(err, BundleError::HashMismatch { .. }));
     }
 
     phase build_is_deterministic_over_root_hash;

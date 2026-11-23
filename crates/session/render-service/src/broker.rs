@@ -10,9 +10,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Environment variable naming the descriptor of the service's broker socket.
-pub const BROKER_FD_ENV: &str = "TILO_RENDER_BROKER_FD";
-
 /// First argument that starts the session binary as a render service
 /// (`tilo-session __render-service`).
 pub const MODE: &str = "__render-service";

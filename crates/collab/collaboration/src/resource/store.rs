@@ -103,7 +103,7 @@ pub struct ResourceSet {
     /// The workspace these records are opened in, which is the cluster its
     /// route names. Stamped as a record's home when it is first created here.
     home: String,
-    /// The person's own cluster, for records kept in their own scope: their route names it, so one
+    /// The person's own workspace, for records kept in their own scope: their route names it, so one
     /// record of an app is one record on every device they use, in their store rather than a
     /// workspace's.
     person: Option<uuid::Uuid>,
@@ -370,7 +370,7 @@ impl ResourceSet {
     }
 
     /// The cluster a record's route names: the workspace it is kept in, or
-    /// the person's own cluster for a record kept in their own scope.
+    /// the person's own workspace for a record kept in their own scope.
     fn cluster(&self) -> Result<uuid::Uuid, ResourceOpenError> {
         if let Some(person) = self.person {
             return Ok(person);
@@ -1275,8 +1275,9 @@ impl ResourceOwners {
     }
 
     /// The owner of `app_id`'s records of one person, kept in their own scope. Those carry one
-    /// route per `(app, record)` in the person's cluster, so every device of theirs opens the same
-    /// document, and their store carries it; one that derives no cluster keeps them on this device.
+    /// route per `(app, record)` in the person's own workspace, so every device of theirs opens
+    /// the same document, and that workspace carries it; one that names no person keeps them on
+    /// this device.
     /// # Errors Rejects an invalid app or scope.
     pub fn open_personal(
         &mut self,
@@ -1289,7 +1290,7 @@ impl ResourceOwners {
             false,
             author
                 .person_id()
-                .and_then(collab_types::personal_cluster_of),
+                .and_then(collab_types::person_workspace_of),
         )
     }
 

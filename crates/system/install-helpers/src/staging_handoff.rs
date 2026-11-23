@@ -21,7 +21,6 @@
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
-use std::io::Read as _;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -40,12 +39,12 @@ mod user_commands;
 
 const HANDOFF_MAX_BYTES: usize = 64 * 1024;
 const HANDOFF_RELATIVE: &str = "EFI/tilo-staging/handoff.json";
-const EFI_GLOBAL: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
-const LOADER_VENDOR: &str = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
-const ESP_TYPE: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
+const EFI_GLOBAL: &str = staging_handoff_model::gpt::EFI_GLOBAL_VARIABLE;
+const LOADER_VENDOR: &str = staging_handoff_model::gpt::SYSTEMD_LOADER;
+const ESP_TYPE: &str = staging_handoff_model::gpt::EFI_SYSTEM;
 /// The Tilo staging root type; only the live installer UKI resolves it
 /// (`os/usr/libexec/tilo-root-discover`).
-const STAGING_ROOT_TYPE: &str = "d4c4daf6-f72c-43ee-b8e3-5ba32550311d";
+const STAGING_ROOT_TYPE: &str = staging_handoff_model::gpt::TILO_STAGING_ROOT;
 const GUIDED_EFI_BYTES: i128 = 2 * 1024 * 1024 * 1024;
 const GUIDED_BOOT_BYTES: i128 = 1024 * 1024 * 1024;
 const MIN_GUIDED_ROOT_BYTES: i128 = 32 * 1024 * 1024 * 1024;
@@ -258,17 +257,9 @@ fn dollar(text: &str, pattern: impl Fn(&str) -> bool) -> bool {
     pattern(text) || text.strip_suffix('\n').is_some_and(pattern)
 }
 
-fn is_guid_text(text: &str) -> bool {
-    let groups: Vec<&str> = text.split('-').collect();
-    groups.len() == 5
-        && groups.iter().zip([8, 4, 4, 4, 12]).all(|(group, length)| {
-            group.len() == length && group.bytes().all(|b| b.is_ascii_hexdigit())
-        })
-}
-
 /// `GUID_RE.match(text)`.
 fn is_guid(text: &str) -> bool {
-    dollar(text, is_guid_text)
+    dollar(text, staging_handoff_model::is_guid)
 }
 
 /// `BOOT_ID_RE.match(text)`: four uppercase hex digits.
@@ -535,6 +526,8 @@ pub fn validate_handoff(raw: &Value) -> Result<Handoff> {
         return refuse("handoff profile carries fields outside the installer profile");
     };
     validate_profile(profile)?;
+    let mut sanitized_profile = profile.clone();
+    staging_handoff_model::drop_invalid_hostname(&mut sanitized_profile);
     let mut handoff = Handoff {
         operation_id: guid(field("operation_id"), "operation_id")?,
         host_os,
@@ -545,7 +538,7 @@ pub fn validate_handoff(raw: &Value) -> Result<Handoff> {
         target_extent: extent(field("target_extent"), "target_extent", false)?,
         owned_boot_entry: entry,
         original_boot_order: order,
-        profile: profile.clone(),
+        profile: sanitized_profile,
         plan: None,
         migration: None,
     };
@@ -657,26 +650,20 @@ pub fn read_bounded(path: &Path) -> Result<Vec<u8>> {
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )?;
-    let mut file = fs::File::from(descriptor);
+    let file = fs::File::from(descriptor);
     if !file.metadata()?.file_type().is_file() {
         return refuse(format!("{} is not a regular file", path.display()));
     }
-    let mut data = Vec::new();
-    let mut chunk = vec![0u8; 65536];
-    loop {
-        let count = file.read(&mut chunk)?;
-        if count == 0 {
-            break;
-        }
-        data.extend_from_slice(chunk.get(..count).unwrap_or_default());
-        if data.len() > HANDOFF_MAX_BYTES {
-            return refuse(format!(
+    tilo_files::read_from(file, HANDOFF_MAX_BYTES).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::FileTooLarge {
+            Fail::Refusal(format!(
                 "{} is larger than {HANDOFF_MAX_BYTES} bytes",
                 path.display()
-            ));
+            ))
+        } else {
+            error.into()
         }
-    }
-    Ok(data)
+    })
 }
 
 fn load_handoff_file(path: &Path) -> Result<Handoff> {

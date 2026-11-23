@@ -73,11 +73,9 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
     };
     cfg.password = "app-password".into();
     let account = mail_engine::account::Account::new(cfg);
-    let mut replica = ui::tilo_resource::Replica::<accounts::person::PersonAccounts>::new();
+    let mut replica = tilo_resource::Replica::<accounts::person::AccountList>::new();
     replica
-        .apply(accounts::person::PersonAccounts::saving(
-            &account.to_stored(),
-        ))
+        .apply(accounts::person::AccountList::saving(&account.to_stored()))
         .expect("the record keeps the account");
 
     // 2) Mail reads that exact account back from the record, without its

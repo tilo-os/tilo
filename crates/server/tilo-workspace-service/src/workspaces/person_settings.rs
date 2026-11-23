@@ -1219,6 +1219,14 @@ pub(super) fn view_of(profile: &agent_provider_config::ProviderProfile) -> Provi
             .as_ref()
             .filter(|kept| kept.param != agent_provider_config::ReasoningParam::Omit)
             .map(|kept| kept.effort.clone()),
+        headers: profile
+            .headers
+            .iter()
+            .map(|header| person_models::RequestHeader {
+                name: header.name.clone(),
+                value: header.value.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -1408,6 +1416,17 @@ pub(super) fn add_provider(
         }
         person_models::Protocol::Anthropic => agent_provider_config::ProviderProtocol::Anthropic,
     };
+    let headers = adding
+        .headers
+        .iter()
+        .map(|header| {
+            let header = agent_provider_config::ProviderHeader {
+                name: header.name.trim().to_owned(),
+                value: header.value.clone(),
+            };
+            header.check().map(|()| header)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let profile = agent_provider_config::ProviderProfile {
         id: uuid::Uuid::new_v4().to_string(),
         label: name.to_owned(),
@@ -1416,6 +1435,7 @@ pub(super) fn add_provider(
         location,
         credential: None,
         enabled: true,
+        headers,
         ..Default::default()
     };
     let view = view_of(&profile);
@@ -1646,6 +1666,7 @@ mod tests {
                 name: "OpenAI".into(),
                 protocol: person_models::Protocol::OpenAiCompatible,
                 endpoint: "https://api.openai.com/v1".into(),
+                headers: Vec::new(),
             },
             Destinations::Public,
         )
@@ -1700,6 +1721,7 @@ mod tests {
                 name: "Anthropic".into(),
                 protocol: person_models::Protocol::Anthropic,
                 endpoint: "https://api.anthropic.com".into(),
+                headers: Vec::new(),
             },
             Destinations::Public,
         )
@@ -1735,6 +1757,7 @@ mod tests {
                 name: "Mine".into(),
                 protocol: person_models::Protocol::OpenAiCompatible,
                 endpoint: "https://models.example.com/v1".into(),
+                headers: Vec::new(),
             },
             Destinations::Public,
         )
@@ -1779,6 +1802,7 @@ mod tests {
                     name: name.into(),
                     protocol: person_models::Protocol::OpenAiCompatible,
                     endpoint: endpoint.into(),
+                    headers: Vec::new(),
                 },
                 Destinations::Public,
             );

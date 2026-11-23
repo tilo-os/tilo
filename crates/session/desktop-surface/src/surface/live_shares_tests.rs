@@ -14,7 +14,7 @@ use ui::window_share::{Ask, Embed, EmbedState, ResourceView};
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, WindowToolbar};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::surface::{DesktopSurface, TileSource, seed_tree};
+use crate::surface::{DesktopSurface, TileSource};
 
 const NOTES: &str = "so.tilo.notes";
 
@@ -350,7 +350,7 @@ fn shell_with(seen: &Seen, notes_title: &str) -> (ui::headless::FrameHarness, u6
             pinned: false,
         });
     }
-    let tree = seed_tree(&mut minter, "Office", tabs);
+    let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Office", tabs);
     let (surface, _handle) = DesktopSurface::new(tree, 8, Box::new(ShareTiles(seen.clone())));
     let mut frame = ui::headless::FrameHarness::for_root(
         ui::state::State::new(),

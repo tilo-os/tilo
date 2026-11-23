@@ -41,6 +41,8 @@ use records::{bundle, founding_document};
 mod document_index;
 #[cfg(test)]
 mod index_walk_tests;
+#[cfg(test)]
+mod journey_tests;
 mod kernel_changes;
 mod leases;
 mod posix;
@@ -1276,34 +1278,6 @@ impl Namespace {
         }
         parts.reverse();
         Some(format!("/{}", parts.join("/")))
-    }
-
-    #[cfg(test)]
-    pub fn live_paths_for_blob(&self, hash: Hash) -> Vec<String> {
-        self.live_node_ids()
-            .into_iter()
-            .filter(|id| {
-                self.node_hash(id) == Some(hash) || self.thumbnail_for_id(id) == Some(hash)
-            })
-            .filter_map(|id| self.path_for_id(&id))
-            .collect()
-    }
-
-    #[cfg(test)]
-    pub fn live_document_ids_for_direct_blob(
-        &self,
-        hash: Hash,
-        max_live_documents: usize,
-    ) -> Result<Vec<FileDocumentId>, LiveDocumentBlobScanError> {
-        let mut records: Vec<_> = self
-            .live_document_blob_roots(max_live_documents)?
-            .into_iter()
-            .filter(|roots| roots.manifest == Some(hash) || roots.thumbnail == Some(hash))
-            .map(|roots| roots.document_id)
-            .collect();
-        records.sort();
-        records.dedup();
-        Ok(records)
     }
 
     /// Minimal live record graph the content store uses to resolve manifest chunks. Crate-private,

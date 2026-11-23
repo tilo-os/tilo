@@ -2079,38 +2079,51 @@ mod tests {
             assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"abcdef");
         }
 
-        phase a_write_outlives_its_lease_and_keeps_the_document_until_it_lands;
+        phase a_write_outlives_its_lease_and_keeps_the_record_until_it_lands;
         // A caller that may not wait lets go of its lease while its last write
         // is still queued: the write lands anyway, and nobody else, in this
-        // process or another, can lease the document until it has.
+        // process or another, can lease the record until it has. A document
+        // and a view's record are leased alike.
         {
-            let tmp = TempDir::new().unwrap();
-            let fs = FsStore::with_debounce(tmp.path(), Duration::from_secs(3600));
-            let key = record("closing");
-            let lease = fs.lease(&key).unwrap();
-            let revision = fs
-                .write(&key, WriteOp::Replace(b"last words".to_vec()), Some(b"me"))
-                .unwrap();
-            drop(lease);
-            let other = FsStore::new(tmp.path());
-            assert!(
-                matches!(other.lease(&key), Err(DurableError::Busy(_))),
-                "another process waits for the queued write"
-            );
-            assert!(
-                matches!(fs.lease(&key), Err(DurableError::Busy(_))),
-                "so does a new owner in this one"
-            );
-            fs.flush(Some(&key)).unwrap();
-            assert_eq!(fs.durability(&key, revision), Durability::Durable);
-            drop(other.lease(&key).unwrap());
-            let Target::Document(directory) = fs.target(&key).unwrap() else {
-                panic!("a record is a document");
-            };
-            assert_eq!(
-                fs::read(directory.join(DOCUMENT_FILE)).unwrap(),
-                b"last words"
-            );
+            for (key, bytes, document) in [
+                (record("closing"), b"last words".to_vec(), true),
+                (
+                    StorageKey::view("private-action-history", "owner", 0),
+                    b"evidence".to_vec(),
+                    false,
+                ),
+            ] {
+                let tmp = TempDir::new().unwrap();
+                let fs = FsStore::with_debounce(tmp.path(), Duration::from_secs(3600));
+                let lease = fs.lease(&key).unwrap();
+                let writer = document.then_some(&b"me"[..]);
+                let revision = fs
+                    .write(&key, WriteOp::Replace(bytes.clone()), writer)
+                    .unwrap();
+                drop(lease);
+                let other = FsStore::new(tmp.path());
+                assert!(
+                    matches!(other.lease(&key), Err(DurableError::Busy(_))),
+                    "another process waits for the queued write"
+                );
+                assert!(
+                    matches!(fs.lease(&key), Err(DurableError::Busy(_))),
+                    "so does a new owner in this one"
+                );
+                fs.flush(Some(&key)).unwrap();
+                assert_eq!(fs.durability(&key, revision), Durability::Durable);
+                // The worker must release the check before flush wakes its caller.
+                let next = other.lease(&key).unwrap();
+                if document {
+                    let Target::Document(directory) = fs.target(&key).unwrap() else {
+                        panic!("a record is a document");
+                    };
+                    assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), bytes);
+                } else {
+                    assert_eq!(other.read(&key).unwrap().unwrap().bytes, bytes);
+                }
+                drop(next);
+            }
         }
 
         phase records_lists_one_workspaces_committed_documents_sorted;
@@ -2197,25 +2210,6 @@ mod tests {
             }
         }
 
-        phase a_dropped_view_lease_keeps_queued_commits_exclusive_until_settled;
-        {
-            let tmp = TempDir::new().unwrap();
-            let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
-            let peer = FsStore::new(tmp.path());
-            let key = StorageKey::view("private-action-history", "owner", 0);
-            let lease = store.lease(&key).unwrap();
-            let revision = store
-                .write(&key, WriteOp::Replace(b"evidence".to_vec()), None)
-                .unwrap();
-            drop(lease);
-            assert!(matches!(peer.lease(&key), Err(DurableError::Busy(_))));
-            store.flush(Some(&key)).unwrap();
-            assert_eq!(store.durability(&key, revision), Durability::Durable);
-            // The worker must release the check before flush wakes its caller.
-            let _next = peer.lease(&key).unwrap();
-            assert_eq!(peer.read(&key).unwrap().unwrap().bytes, b"evidence");
-        }
-
         phase view_creation_syncs_new_ancestors_once_and_retries_failed_durability;
         {
             for initial in [
@@ -2282,86 +2276,42 @@ mod tests {
             }
         }
 
-        phase failed_writes_stay_unacknowledged_until_a_safe_replacement;
+        phase failed_record_writes_stay_unacknowledged_and_a_replaced_directory_is_never_written;
+        // A torn append and the replacement it needs are the document
+        // writer's journey on this store
+        // (`doc_writer::tests::a_document_is_typed_compacted_failed_recovered_and_reopened_on_every_store`).
         {
-            // Phase `a_torn_append_requires_a_replacement_without_duplicating_bytes`.
-            {
-                let tmp = TempDir::new().unwrap();
-                let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
-                let key = record("rec");
-                let _lease = store.lease(&key).unwrap();
-                let base = store
-                    .write(&key, WriteOp::Replace(b"base".to_vec()), None)
+            let tmp = TempDir::new().unwrap();
+            let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
+            let key = record("rec");
+            let _lease = store.lease(&key).unwrap();
+            let directory =
+                DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "workspace-a", "rec")
                     .unwrap();
-                store.flush(Some(&key)).unwrap();
-                store.faults().append_prefix = Some(2);
-                let torn = store
-                    .write(&key, WriteOp::Append(b"+one".to_vec()), None)
-                    .unwrap();
-                assert!(store.flush(Some(&key)).is_err());
-                assert!(matches!(
-                    store.durability(&key, torn),
-                    Durability::Failed(_)
-                ));
-                assert_eq!(store.durability(&key, base), Durability::Durable);
-                let refused = store
-                    .write(&key, WriteOp::Append(b"+two".to_vec()), None)
-                    .unwrap();
-                assert!(store.flush(Some(&key)).is_err());
-                assert!(matches!(
-                    store.durability(&key, refused),
-                    Durability::Failed(_)
-                ));
-                assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"base+o");
-                let replaced = store
-                    .write(&key, WriteOp::Replace(b"base+one+two".to_vec()), None)
-                    .unwrap();
-                store.flush(Some(&key)).unwrap();
-                assert_eq!(store.durability(&key, replaced), Durability::Durable);
-                assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"base+one+two");
-            }
-            // Phase `directory_sync_failure_leaves_the_replacement_unacknowledged`.
-            {
-                let tmp = TempDir::new().unwrap();
-                let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
-                let key = record("rec");
-                let _lease = store.lease(&key).unwrap();
-                let directory =
-                    DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "workspace-a", "rec")
-                        .unwrap();
-                store.faults().sync_failure = Some(fs::canonicalize(&directory).unwrap());
-                let revision = store
-                    .write(&key, WriteOp::Replace(b"visible".to_vec()), None)
-                    .unwrap();
-                assert!(store.flush(Some(&key)).is_err());
-                assert!(matches!(
-                    store.durability(&key, revision),
-                    Durability::Failed(_)
-                ));
-                store.faults().sync_failure = None;
-                let retry = store
-                    .write(&key, WriteOp::Replace(b"visible".to_vec()), None)
-                    .unwrap();
-                store.flush(Some(&key)).unwrap();
-                assert_eq!(store.durability(&key, retry), Durability::Durable);
-            }
-            // Phase `a_replaced_record_directory_is_never_written_or_recreated`.
-            {
-                let tmp = TempDir::new().unwrap();
-                let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
-                let key = record("rec");
-                let _lease = store.lease(&key).unwrap();
-                let directory =
-                    DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "workspace-a", "rec")
-                        .unwrap();
-                fs::remove_file(directory.join(CANONICAL_LOCK)).unwrap();
-                fs::write(directory.join(CANONICAL_LOCK), b"replacement").unwrap();
-                store
-                    .write(&key, WriteOp::Replace(b"forbidden".to_vec()), None)
-                    .unwrap();
-                assert!(store.flush(Some(&key)).is_err());
-                assert!(!directory.join(DOCUMENT_FILE).exists());
-            }
+            store.faults().sync_failure = Some(fs::canonicalize(&directory).unwrap());
+            let revision = store
+                .write(&key, WriteOp::Replace(b"visible".to_vec()), None)
+                .unwrap();
+            assert!(store.flush(Some(&key)).is_err());
+            assert!(matches!(
+                store.durability(&key, revision),
+                Durability::Failed(_)
+            ));
+            store.faults().sync_failure = None;
+            let retry = store
+                .write(&key, WriteOp::Replace(b"visible".to_vec()), None)
+                .unwrap();
+            store.flush(Some(&key)).unwrap();
+            assert_eq!(store.durability(&key, retry), Durability::Durable);
+
+            // The record's directory replaced under it: never written again.
+            fs::remove_file(directory.join(CANONICAL_LOCK)).unwrap();
+            fs::write(directory.join(CANONICAL_LOCK), b"replacement").unwrap();
+            store
+                .write(&key, WriteOp::Replace(b"forbidden".to_vec()), None)
+                .unwrap();
+            assert!(store.flush(Some(&key)).is_err());
+            assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"visible");
         }
     }
 
@@ -2490,14 +2440,17 @@ mod tests {
         });
     }
 
-    /// A check another process holds refuses the lease once the store's
-    /// thread has opened it, as it does a caller that waits.
+    /// What the store's thread finds while opening a key for a thread that
+    /// declined waiting is that thread's answer once it is woken: a check
+    /// another process holds refuses the lease, as it does a caller that
+    /// waits, and a directory that cannot be made is reported once, after
+    /// which the next call tries again.
     #[test]
-    fn a_lease_without_waiting_is_refused_while_another_process_holds_the_check() {
+    fn a_preparation_for_a_thread_that_declined_waiting_reports_refusals_once() {
         let tmp = TempDir::new().unwrap();
         let fs = FsStore::with_debounce(tmp.path(), Duration::ZERO);
-        let key = record("held");
-        let Target::Document(directory) = fs.target(&key).unwrap() else {
+        let held = record("held");
+        let Target::Document(directory) = fs.target(&held).unwrap() else {
             panic!("a record is a document");
         };
         fs::create_dir_all(&directory).unwrap();
@@ -2508,11 +2461,29 @@ mod tests {
             advisory_lock::LockMode::Exclusive,
         )
         .unwrap();
+        // The app directory cannot be created: a file stands there.
+        fs::write(tmp.path().join("so.tilo.blocked"), b"not a directory").unwrap();
+        let blocked = StorageKey::document("so.tilo.blocked", "workspace-a", "blocked");
         let (wake, notified) = thread_wake();
         durable_store::waiting::decline_on_this_thread(wake);
-        assert!(matches!(fs.lease(&key), Err(DurableError::Opening(_))));
+
+        assert!(matches!(fs.lease(&held), Err(DurableError::Opening(_))));
         tilo_test_env::recv("the preparation's wake", &notified);
-        assert!(matches!(fs.lease(&key), Err(DurableError::Busy(_))));
+        assert!(matches!(fs.lease(&held), Err(DurableError::Busy(_))));
+
+        assert!(matches!(
+            fs.lease_shared(&blocked),
+            Err(DurableError::Opening(_))
+        ));
+        tilo_test_env::recv("the preparation's wake", &notified);
+        assert!(matches!(
+            fs.lease_shared(&blocked),
+            Err(DurableError::Failed { .. })
+        ));
+        assert!(matches!(
+            fs.lease_shared(&blocked),
+            Err(DurableError::Opening(_))
+        ));
     }
 
     /// A blocking flush on a thread that must not wait is reported: a test
@@ -2536,31 +2507,6 @@ mod tests {
             .unwrap_or_default();
         assert!(message.contains("FsStore::flush"), "{message}");
         fs.flush(Some(&key)).unwrap();
-    }
-
-    #[test]
-    fn a_failed_preparation_is_reported_to_the_next_caller() {
-        let tmp = TempDir::new().unwrap();
-        // The app directory cannot be created: a file stands there.
-        fs::write(tmp.path().join("so.tilo.test"), b"not a directory").unwrap();
-        let fs = FsStore::with_debounce(tmp.path(), Duration::ZERO);
-        let key = record("blocked");
-        let (wake, notified) = thread_wake();
-        durable_store::waiting::decline_on_this_thread(wake);
-        assert!(matches!(
-            fs.lease_shared(&key),
-            Err(DurableError::Opening(_))
-        ));
-        tilo_test_env::recv("the preparation's wake", &notified);
-        assert!(matches!(
-            fs.lease_shared(&key),
-            Err(DurableError::Failed { .. })
-        ));
-        // Reported once; the next call tries again.
-        assert!(matches!(
-            fs.lease_shared(&key),
-            Err(DurableError::Opening(_))
-        ));
     }
 
     #[test]

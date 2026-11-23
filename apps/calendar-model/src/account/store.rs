@@ -1,13 +1,12 @@
-//! Keeping an account in the shared store, and reading it back: what a device
-//! with a window does. A calendar's password is the workspace's vault's, not
+//! The calendar's own shape of the workspace's accounts: what a device with a
+//! window reads them as. A calendar's password is the workspace's vault's, not
 //! this device's: the app asks the session for it when it signs in.
 
-use std::path::Path;
-
-use accounts::{Account as StoredAccount, AccountId, AccountStore as SharedStore, AccountTypeId};
+use accounts::person::AccountList;
+use accounts::{Account as StoredAccount, AccountId};
 use serde::{Deserialize, Serialize};
 
-use super::{AccountStore, CalDavConfig, CalendarAccount, RemoteCalendar, TYPE_ID};
+use super::{CalDavConfig, CalendarAccount, CalendarAccounts, RemoteCalendar, TYPE_ID};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct StoredConfig {
@@ -24,9 +23,9 @@ struct StoredConfig {
 }
 
 impl CalendarAccount {
-    /// The opaque, secret-free config payload persisted into a shared
-    /// [`StoredAccount`]. The `#[serde(skip)]` password keeps the credential
-    /// out of this JSON; it lives only in the vault.
+    /// The opaque, secret-free config payload saved into the workspace's
+    /// record for this account. The `#[serde(skip)]` password keeps the
+    /// credential out of this JSON; it lives only in the vault.
     fn to_stored(&self) -> StoredAccount {
         let mut stored = StoredAccount::new(AccountId::from(self.id.clone()), TYPE_ID);
         stored.display_name = self.label().to_string();
@@ -77,28 +76,14 @@ impl CalendarAccount {
     }
 }
 
-impl AccountStore {
-    pub fn load_from_settings_in(config_root: &Path) -> Self {
-        Self::try_load_in(config_root).unwrap_or_else(|_| {
-            tracing::error!("calendar accounts could not be opened");
-            Self::default()
-        })
-    }
-
-    pub fn try_load_in(config_root: &Path) -> Result<Self, String> {
-        Ok(Self::from_shared(&SharedStore::load_in(config_root)))
-    }
-
-    pub fn from_store(shared: &SharedStore) -> Self {
-        Self::from_shared(shared)
-    }
-
-    pub fn from_shared(shared: &SharedStore) -> Self {
-        let ty = AccountTypeId::from(TYPE_ID);
+impl CalendarAccounts {
+    /// The workspace's accounts as the calendar's shape, reading the record's calendar accounts and
+    /// the Nextcloud accounts connected for calendars.
+    pub fn from_shared(shared: &AccountList) -> Self {
         let accounts = shared
-            .list(&ty)
+            .of_type(TYPE_ID)
             .into_iter()
-            .chain(shared.all().iter().filter(|stored| {
+            .chain(shared.all().into_iter().filter(|stored| {
                 stored
                     .config
                     .get("use_calendar")
@@ -107,56 +92,50 @@ impl AccountStore {
                     && stored.type_id.as_str() != TYPE_ID
             }))
             .filter(|stored| stored.enabled)
-            .filter_map(CalendarAccount::from_stored)
+            .filter_map(|stored| CalendarAccount::from_stored(&stored))
             .collect();
         Self { accounts }
-    }
-
-    /// Write these accounts into the shared store under `config_root`, preserving unrelated
-    /// accounts. For a Nextcloud projection only calendar preferences change; its type, services and
-    /// sign-in stay. No credential is written: a calendar's password is the workspace's vault's.
-    ///
-    /// # Errors
-    ///
-    /// When the shared account store cannot be saved to `config_root`.
-    pub fn persist_in(&self, config_root: &Path) -> std::io::Result<()> {
-        let mut shared = SharedStore::load_in(config_root);
-        for acct in &self.accounts {
-            let id = AccountId::from(acct.id.clone());
-            if let Some(source) = shared.get(&id).filter(|source| {
-                source.type_id.as_str() != TYPE_ID || acct.config.oauth_account_id.is_some()
-            }) {
-                let mut stored = source.clone();
-                let config = stored
-                    .config
-                    .as_object_mut()
-                    .ok_or_else(|| std::io::Error::other("Nextcloud settings are not an object"))?;
-                if let Some(calendar) = config.get_mut("calendar") {
-                    calendar["calendars"] = serde_json::to_value(acct.kept_calendars())?;
-                    calendar["collapsed"] = acct.collapsed.into();
-                } else {
-                    config.insert(
-                        "calendars".into(),
-                        serde_json::to_value(acct.kept_calendars())?,
-                    );
-                    config.insert("collapsed".into(), acct.collapsed.into());
-                }
-                shared.upsert(stored);
-                continue;
-            }
-            shared.upsert(acct.to_stored());
-        }
-        shared.save_in(config_root)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use accounts::SecretVault;
+
+    /// Keep `store`'s accounts as the record a home stages, as a device does
+    /// through the workspace's record.
+    fn keep(root: &std::path::Path, store: &CalendarAccounts) {
+        let mut record = accounts::person::staged_in(root).unwrap();
+        for account in &store.accounts {
+            record
+                .apply_confirmed(AccountList::saving(&account.to_stored()))
+                .unwrap();
+        }
+        accounts::person::keep_staged_in(root, &mut record).unwrap();
+    }
+
+    /// The accounts `root`'s staged record holds, as the calendar reads them.
+    fn load(root: &std::path::Path) -> CalendarAccounts {
+        let record = accounts::person::staged_in(root).unwrap();
+        CalendarAccounts::from_shared(&record.state().unwrap())
+    }
+
+    fn cfg(name: &str, user: &str) -> CalDavConfig {
+        CalDavConfig {
+            display_name: name.into(),
+            server_url: "https://caldav.example".into(),
+            username: user.into(),
+            ..Default::default()
+        }
+    }
+
+    fn temp_root() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("tilo-cal-accounts-{}", uuid::Uuid::new_v4()))
+    }
 
     tilo_test_env::scenario! {
-        /// The account store: what it writes and what it reads back. No password is in it.
+        /// The calendar's accounts: what it keeps in the workspace's record and what it
+        /// reads back. No password is in it.
         fn a_calendar_accounts_password_stays_out_of_the_store;
 
         phase account_credentials_are_never_serialized_or_debugged;
@@ -177,7 +156,7 @@ mod tests {
         {
             {
                 let root = temp_root();
-                let mut store = AccountStore::new();
+                let mut store = CalendarAccounts::new();
                 let mut a = CalendarAccount::new(cfg("Work", "a@x.example"));
                 a.calendars.push(RemoteCalendar {
                     id: "work/team".into(),
@@ -189,9 +168,9 @@ mod tests {
                 a.collapsed = true;
                 store.upsert(a);
                 store.upsert(CalendarAccount::new(cfg("Home", "b@y.example")));
-                store.persist_in(&root).expect("persist");
+                keep(&root, &store);
 
-                let back = AccountStore::load_from_settings_in(&root);
+                let back = load(&root);
                 assert_eq!(back.len(), 2);
                 assert_eq!(back.accounts[0].config.username, "a@x.example");
                 assert_eq!(back.accounts[0].calendars.len(), 1);
@@ -202,36 +181,40 @@ mod tests {
             {
                 let root = temp_root();
                 let other_id = AccountId::from("unrelated-service");
-                let mut shared = SharedStore::new();
-                shared.upsert(StoredAccount::new(
-                    other_id.clone(),
-                    AccountTypeId::from("unrelated"),
-                ));
-                shared.save_in(&root).expect("seed unrelated account");
-                let mut vault = SecretVault::open_in(&root);
+                let mut record = accounts::person::staged_in(&root).unwrap();
+                record
+                    .apply_confirmed(AccountList::saving(&StoredAccount::new(
+                        other_id.clone(),
+                        "unrelated",
+                    )))
+                    .unwrap();
+                accounts::person::keep_staged_in(&root, &mut record).unwrap();
+                let mut vault = accounts::SecretVault::open_in(&root);
                 vault.put(&other_id, &accounts::Secret::password("unrelated-secret"));
                 vault.save();
 
-                let mut store = AccountStore::sample();
-                store.persist_in(&root).expect("persist calendar accounts");
+                let mut store = CalendarAccounts::sample();
+                keep(&root, &store);
                 let calendar = &mut store.accounts[0].calendars[0];
                 let id = calendar.id.clone();
                 calendar.visible = false;
-                store.persist_in(&root).expect("persist visibility toggle");
+                keep(&root, &store);
 
-                let restarted = AccountStore::load_from_settings_in(&root);
+                let restarted = load(&root);
                 assert!(
                     restarted
                         .all_calendars()
                         .find(|(_, calendar)| calendar.id == id)
                         .is_some_and(|(_, calendar)| !calendar.visible)
                 );
-                assert!(SharedStore::load_in(&root).get(&other_id).is_some());
-                assert!(SecretVault::open_in(&root).get(&other_id).is_some());
+                let staged = accounts::person::staged_in(&root).unwrap();
+                let kept = staged.state().unwrap();
+                assert!(kept.account(other_id.as_str()).is_some());
+                assert!(accounts::SecretVault::open_in(&root).get(&other_id).is_some());
                 std::fs::remove_dir_all(&root).ok();
             }
             {
-                let mut store = AccountStore::new();
+                let mut store = CalendarAccounts::new();
                 store.upsert(CalendarAccount::new(cfg("A", "a@x.example")));
                 let mut updated = CalendarAccount::new(cfg("A renamed", "a@x.example"));
                 updated.id = "a@x.example".into();
@@ -243,18 +226,19 @@ mod tests {
                 let root = temp_root();
                 let mut c = cfg("A", "a@x.example");
                 c.password = "hunter2".into();
-                let mut store = AccountStore::new();
+                let mut store = CalendarAccounts::new();
                 store.upsert(CalendarAccount::new(c));
-                store.persist_in(&root).expect("persist");
+                keep(&root, &store);
 
-                let store_json =
-                    std::fs::read_to_string(accounts::store_path_in(&root)).expect("store written");
+                let kept =
+                    String::from_utf8_lossy(&std::fs::read(accounts::person::staged_path_in(&root)).unwrap())
+                        .into_owned();
                 assert!(
-                    !store_json.contains("hunter2"),
-                    "password must not reach the shared store JSON"
+                    !kept.contains("hunter2"),
+                    "a password must not reach the workspace's record"
                 );
 
-                let back = AccountStore::load_from_settings_in(&root);
+                let back = load(&root);
                 assert_eq!(
                     back.accounts[0].config.password, "",
                     "a calendar's password is the workspace's vault's, never this device's"
@@ -262,7 +246,7 @@ mod tests {
                 std::fs::remove_dir_all(&root).ok();
             }
             {
-                let store = AccountStore::sample();
+                let store = CalendarAccounts::sample();
                 assert_eq!(store.len(), 2);
                 let total = store.all_calendars().count();
                 assert_eq!(total, 4);
@@ -287,62 +271,52 @@ mod tests {
             reading.calendars.push(team(false));
             let mut writing = CalendarAccount::new(cfg("Home", "b@y.example"));
             writing.calendars.push(team(false));
-            let mut store = AccountStore::new();
+            let mut store = CalendarAccounts::new();
             store.upsert(reading);
             store.upsert(writing);
-            store.persist_in(&root).expect("persist");
+            keep(&root, &store);
 
             // The account's settings say it, beside its server and its user name, and so
             // does every calendar of it. An account that is written to says nothing new.
             let reading_id = AccountId::from("a@x.example");
-            let shared = SharedStore::load_in(&root);
-            let kept = shared.get(&reading_id).expect("kept").config.clone();
+            let staged = accounts::person::staged_in(&root).unwrap();
+            let kept_record = staged.state().unwrap();
+            let kept = kept_record.account(reading_id.as_str()).expect("kept").config;
             assert_eq!(kept["read_only"], true, "{kept}");
             assert_eq!(kept["calendars"][0]["read_only"], true, "{kept}");
-            let other = shared
-                .get(&AccountId::from("b@y.example"))
-                .expect("kept")
-                .config
-                .clone();
+            let other = kept_record.account("b@y.example").expect("kept").config;
             assert!(other.get("read_only").is_none(), "{other}");
             assert_eq!(other["calendars"][0]["read_only"], false, "{other}");
 
             // Read back, changed as a look at its server's calendars changes an account,
             // and saved again: the account's word stays, and no calendar of it is lifted.
-            let mut back = AccountStore::load_from_settings_in(&root);
+            let mut back = load(&root);
             assert!(back.accounts[0].read_only && back.accounts[0].calendars[0].read_only);
             assert!(!back.accounts[1].read_only && !back.accounts[1].calendars[0].read_only);
             back.accounts[0].calendars = vec![team(false)];
             back.accounts[0].collapsed = true;
-            back.persist_in(&root).expect("persist again");
-            let again = AccountStore::load_from_settings_in(&root);
+            keep(&root, &back);
+            let again = load(&root);
             assert!(again.accounts[0].read_only && again.accounts[0].collapsed);
             assert!(again.accounts[0].calendars[0].read_only);
             assert!(!again.accounts[1].read_only && !again.accounts[1].calendars[0].read_only);
 
             // Settings in which a calendar lost its own mark and the account kept its word
             // read as an account none of whose calendars can be written.
-            let mut shared = SharedStore::load_in(&root);
-            let mut stored = shared.get(&reading_id).expect("kept").clone();
+            let mut record = accounts::person::staged_in(&root).unwrap();
+            let mut stored = record
+                .state()
+                .unwrap()
+                .account(reading_id.as_str())
+                .expect("kept");
             stored.config["calendars"][0]["read_only"] = false.into();
-            shared.upsert(stored);
-            shared.save_in(&root).expect("save");
-            let read = AccountStore::load_from_settings_in(&root);
+            record
+                .apply_confirmed(AccountList::saving(&stored))
+                .unwrap();
+            accounts::person::keep_staged_in(&root, &mut record).unwrap();
+            let read = load(&root);
             assert!(read.accounts[0].read_only && read.accounts[0].calendars[0].read_only);
             std::fs::remove_dir_all(&root).ok();
         }
-    }
-
-    fn cfg(name: &str, user: &str) -> CalDavConfig {
-        CalDavConfig {
-            display_name: name.into(),
-            server_url: "https://caldav.example".into(),
-            username: user.into(),
-            ..Default::default()
-        }
-    }
-
-    fn temp_root() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("tilo-cal-accounts-{}", uuid::Uuid::new_v4()))
     }
 }

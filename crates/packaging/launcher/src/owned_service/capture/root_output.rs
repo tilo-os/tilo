@@ -1,5 +1,8 @@
 //! Root-host original-source output ownership. Never a live non-root broker proof.
-use super::{contains, writable_directory};
+use super::{
+    contains, directory_identity as identity, writable_capacity as actual_capacity,
+    writable_directory,
+};
 use crate::owned_service::ServiceAuthority;
 use std::{
     fs::File,
@@ -51,35 +54,12 @@ pub struct OriginalOutputAdmission {
 fn refuse(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
 }
-fn identity(file: &File) -> io::Result<(u64, u64)> {
-    let facts = file.metadata()?;
-    if !facts.is_dir() {
-        return Err(refuse("Original output descriptor is not a directory"));
-    }
-    Ok((facts.dev(), facts.ino()))
-}
 fn mount_id(file: &File) -> io::Result<u64> {
     crate::fd::mount_id(
         file,
         rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
         "Original output mount identity is unavailable",
     )
-}
-fn actual_capacity(file: &File) -> io::Result<u64> {
-    let mut facts = std::mem::MaybeUninit::<libc::statvfs>::zeroed();
-    // SAFETY: live directory fd and valid output buffer.
-    if unsafe { libc::fstatvfs(file.as_raw_fd(), facts.as_mut_ptr()) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: successful fstatvfs initialized the buffer.
-    let facts = unsafe { facts.assume_init() };
-    if facts.f_flag & libc::ST_RDONLY != 0 || facts.f_frsize == 0 {
-        return Err(refuse("Original output filesystem is not writable"));
-    }
-    facts
-        .f_bavail
-        .checked_mul(facts.f_frsize)
-        .ok_or_else(|| refuse("Original output capacity overflow"))
 }
 fn ext4_uuid(partition: &File) -> io::Result<[u8; 16]> {
     let mut superblock = [0u8; 120];

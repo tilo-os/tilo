@@ -20,7 +20,7 @@ use tilo_desktop_model::commands::Requester;
 use tilo_desktop_model::ownership::Authors;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::host::chrome::{ChromeSource, Facts, HostChrome, Notices};
-use tilo_desktop_surface::navigation::ChromeEffect;
+use tilo_session_core::desktop::navigation::ChromeEffect;
 use ui::floating_layer::Card;
 use ui::live_activity::{Published, Summary};
 use ui::search::Scope;
@@ -636,7 +636,7 @@ impl ChromeSource for SessionChrome {
                     .find(|held| held.id() == workspace)
                     .map(|held| (held.id(), held.owner().cloned()))
             })
-            .ok_or_else(|| tilo_desktop_surface::i18n::t("desktop-workspace-gone"))?;
+            .ok_or_else(|| tilo_session_core::desktop::i18n::t("desktop-workspace-gone"))?;
         let reads = match &self.engine {
             Some(engine) if engine.holds(id) => engine.reads_whole(id),
             _ => owner.is_none_or(|owner| owner == self.person),
@@ -644,7 +644,7 @@ impl ChromeSource for SessionChrome {
         if reads {
             Ok(())
         } else {
-            Err(tilo_desktop_surface::i18n::t(
+            Err(tilo_session_core::desktop::i18n::t(
                 "desktop-cannot-branch-workspace",
             ))
         }
@@ -659,9 +659,9 @@ impl ChromeSource for SessionChrome {
     /// it, as a join here has always left it, and nothing of it leaves this machine.
     fn may_open_workspace(&self, workspace: tilo_desktop_model::WorkspaceId) -> Result<(), String> {
         match &self.engine {
-            Some(engine) if self.sync.is_some() && !engine.holds(workspace) => {
-                Err(tilo_desktop_surface::i18n::t("desktop-workspace-not-held"))
-            }
+            Some(engine) if self.sync.is_some() && !engine.holds(workspace) => Err(
+                tilo_session_core::desktop::i18n::t("desktop-workspace-not-held"),
+            ),
             _ => Ok(()),
         }
     }
@@ -671,7 +671,7 @@ impl ChromeSource for SessionChrome {
         workspace: tilo_desktop_model::WorkspaceId,
     ) -> Result<(), String> {
         let Some(engine) = &self.engine else {
-            return Err(tilo_desktop_surface::i18n::t(
+            return Err(tilo_session_core::desktop::i18n::t(
                 "desktop-cannot-delete-workspace",
             ));
         };
@@ -683,11 +683,13 @@ impl ChromeSource for SessionChrome {
                     .find(|held| held.id() == workspace)
                     .map(tilo_desktop_model::Workspace::id)
             })
-            .ok_or_else(|| tilo_desktop_surface::i18n::t("desktop-workspace-gone"))?;
+            .ok_or_else(|| tilo_session_core::desktop::i18n::t("desktop-workspace-gone"))?;
         if engine.may_delete(id) {
             Ok(())
         } else {
-            Err(tilo_desktop_surface::i18n::t("desktop-workspace-stays"))
+            Err(tilo_session_core::desktop::i18n::t(
+                "desktop-workspace-stays",
+            ))
         }
     }
 

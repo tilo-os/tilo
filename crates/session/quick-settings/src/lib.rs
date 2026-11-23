@@ -43,7 +43,7 @@ pub use faces::{available as control_available, control_id, control_named, subli
 // The one reading of what plays, which the shell's widget, the lock
 // screen's card and the bar's pill show as this panel does.
 pub use resource::{Page, QuickSettings, QuickSettingsApp};
-pub use tilo_desktop_surface::now_playing::{
+pub use tilo_session_core::desktop::now_playing::{
     NowPlaying, Offer as MediaOffer, Output as MediaOutput, Player as MediaPlayer,
 };
 
@@ -297,12 +297,12 @@ pub enum PowerProfile {
 }
 
 impl PowerProfile {
-    /// The name the power service publishes the profile by, and takes it
-    /// back as.
+    /// The name the system service's `power` resource takes in
+    /// `set-power-mode` (`PowerMode::named`).
     #[must_use]
     pub(crate) const fn published(self) -> &'static str {
         match self {
-            PowerProfile::Saver => "power-saver",
+            PowerProfile::Saver => "saver",
             PowerProfile::Balanced => "balanced",
             PowerProfile::Performance => "performance",
         }

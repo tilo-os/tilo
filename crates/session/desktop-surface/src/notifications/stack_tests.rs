@@ -97,7 +97,7 @@ impl NotificationHost for TestHost {
         self.log.borrow_mut().take_history(id);
         HistoryActivation::OpenApp {
             app_id,
-            label: super::super::group_label(&n),
+            label: tilo_session_core::desktop::notifications::group_label(&n),
         }
     }
     fn dismiss_history(&self, id: u64) {
@@ -730,10 +730,10 @@ tilo_test_env::scenario! {
                 ("snooze".into(), "Snooze".into()),
             ]);
             let mut newest = 0;
-            for index in 0..super::super::MAX_NOTIFICATIONS {
+            for index in 0..tilo_session_core::desktop::notifications::MAX_NOTIFICATIONS {
                 newest = host.push(
                     Notification::new(format!("Alarm {index}"), "Fixture")
-                        .with_dismiss_after(super::super::PERSISTENT_DISMISS),
+                        .with_dismiss_after(tilo_session_core::desktop::notifications::PERSISTENT_DISMISS),
                 );
             }
             let viewport = Rect::new(0.0, 0.0, 320.0, 600.0);
@@ -770,7 +770,7 @@ tilo_test_env::scenario! {
             }
             assert_eq!(
                 host.log().active().len(),
-                super::super::MAX_NOTIFICATIONS,
+                tilo_session_core::desktop::notifications::MAX_NOTIFICATIONS,
                 "fitting banners must not discard alarm data"
             );
         }
@@ -976,7 +976,7 @@ tilo_test_env::scenario! {
         for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
             let theme = theme.with_reduce_motion(true);
             let host = TestHost::default();
-            let ids: Vec<u64> = (0..super::super::MAX_NOTIFICATIONS)
+            let ids: Vec<u64> = (0..tilo_session_core::desktop::notifications::MAX_NOTIFICATIONS)
                 .map(|i| host.push(Notification::new(format!("Banner {i}"), "Body")))
                 .collect();
             // Three stand at most, and this corner has room for one of them.

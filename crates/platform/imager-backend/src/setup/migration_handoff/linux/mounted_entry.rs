@@ -37,7 +37,7 @@ impl ResolvedSource {
             .rev()
             .find(|mount| mount.point == self.mountpoint)
             .ok_or_else(|| refusal("Mounted entry source mount disappeared"))?;
-        let relative = binding.home.relative.decode().map_err(refusal)?;
+        let relative = binding.home.relative().decode().map_err(refusal)?;
         let suffix = relative
             .strip_prefix(
                 mount
@@ -90,8 +90,8 @@ impl ResolvedSource {
             metadata.gid(),
             metadata.mode(),
         ) != (
-            binding.home.inode,
-            binding.home.original_uid,
+            binding.home.inode(),
+            binding.home.original_uid(),
             binding.group,
             binding.mode,
         ) || fs_native::snapshot_lease::mount_id(&file)? != mount_id
@@ -102,7 +102,7 @@ impl ResolvedSource {
         // Query Btrfs durable inode metadata only. This temporary descriptor is
         // closed here; the handed descriptor remains O_PATH and confers no DAC
         // bypass. The worker opens data only after original credentials drop.
-        if let Some(expected) = &binding.home.subvolume {
+        if let Some(expected) = binding.home.subvolume() {
             let query = fs::File::open(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
             let actual = super::super::super::migration_durability::identity(&query)?;
             if actual != *expected {
@@ -198,13 +198,13 @@ pub fn capture_mounted_entry(
         None
     };
     let result = EntryBinding {
-        home: Home {
+        home: Home::new(
             volume,
-            relative: NativePath::encode(&relative),
-            inode: metadata.ino(),
-            original_uid: metadata.uid(),
+            NativePath::encode(&relative),
+            metadata.ino(),
+            metadata.uid(),
             subvolume,
-        },
+        ),
         kind,
         group: metadata.gid(),
         mode: metadata.mode(),

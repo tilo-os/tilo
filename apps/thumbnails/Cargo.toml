@@ -36,7 +36,7 @@ serde_json.workspace = true
 tempfile.workspace = true
 # Finds the built binaries where the test run put them; on Linux the worker
 # and launcher also read the device's stores from the environment it sets.
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 
 # A compute worker, its catalogue and its launcher sandbox (bubblewrap plus
 # the Landlock shim) exist on Linux only.

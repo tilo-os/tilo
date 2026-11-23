@@ -202,6 +202,56 @@ class UiClockContractTests(unittest.TestCase):
             )
             self.assertEqual(self.found(root), [])
 
+    def test_a_renamed_import_does_not_bind_or_shadow_the_bare_clock_name(self):
+        with self.subTest(phase='a renamed clock-module import does not bind the bare name'):
+            root = self.tree(
+                {
+                    "apps/board/src/instant.rs": (
+                        "use std::time::Instant;\n"
+                        "use ui::time::Instant as Clock;\n"
+                        "fn f() -> Instant { Instant::now() }\n"
+                    ),
+                    "apps/board/src/wall.rs": (
+                        "use std::time::SystemTime;\n"
+                        "use ui::time::SystemTime as Wall;\n"
+                        "fn f() -> SystemTime { SystemTime::now() }\n"
+                    ),
+                    "apps/board/src/braced.rs": (
+                        "use std::time::Instant;\n"
+                        "use ui::time::{Duration, Instant as Clock};\n"
+                        "fn f() -> Instant { Instant::now() }\n"
+                    ),
+                }
+            )
+            self.assertEqual(self.found(root), [])
+        with self.subTest(phase='a renamed std import does not shadow an earlier clock-module import'):
+            root = self.tree(
+                {
+                    "apps/board/src/instant.rs": (
+                        "use ui::time::Instant;\n"
+                        "use std::time::Instant as StdInstant;\n"
+                        "fn f() -> Instant { Instant::now() }\n"
+                    ),
+                    "apps/board/src/wall.rs": (
+                        "use ui::time::SystemTime;\n"
+                        "use std::time::SystemTime as StdSystemTime;\n"
+                        "fn f() -> SystemTime { SystemTime::now() }\n"
+                    ),
+                    "apps/board/src/braced.rs": (
+                        "use ui::time::{Instant as Clock, SystemTime};\n"
+                        "fn f() -> SystemTime { SystemTime::now() }\n"
+                    ),
+                }
+            )
+            self.assertEqual(
+                self.found(root),
+                [
+                    "apps/board/src/braced.rs:2",
+                    "apps/board/src/instant.rs:3",
+                    "apps/board/src/wall.rs:3",
+                ],
+            )
+
     def test_a_read_past_the_clock_in_tests_or_comments_is_exempt(self):
         root = self.tree(
             {

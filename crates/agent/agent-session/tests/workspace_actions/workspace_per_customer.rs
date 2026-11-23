@@ -23,7 +23,7 @@ const CUSTOMERS: usize = 8;
 const PLANTED: &str = "planted-by-cus-a-4f1c9a7e52d0486b93e6";
 
 /// A server key of a new person's on `on_server`, approved on a page of theirs.
-async fn server_key(on_server: &OnServer, name: &str) -> String {
+pub(super) async fn server_key(on_server: &OnServer, name: &str) -> String {
     let (root, _) = tilo_user_identity::UserIdentity::generate(name, 1);
     let page = enrol(
         &root,
@@ -34,7 +34,7 @@ async fn server_key(on_server: &OnServer, name: &str) -> String {
 }
 
 /// `method path?query` with `body` as `token`: the status and JSON answer.
-async fn rest(
+pub(super) async fn rest(
     api: &Arc<Server>,
     token: &str,
     method: hyper::Method,
@@ -57,7 +57,7 @@ async fn rest(
 }
 
 /// An MCP session of `token` at `path`.
-fn mcp<'a>(api: &'a Arc<Server>, path: &str, token: &str) -> Mcp<'a> {
+pub(super) fn mcp<'a>(api: &'a Arc<Server>, path: &str, token: &str) -> Mcp<'a> {
     Mcp {
         api,
         path: path.to_owned(),
@@ -67,7 +67,7 @@ fn mcp<'a>(api: &'a Arc<Server>, path: &str, token: &str) -> Mcp<'a> {
 }
 
 /// `tool` with `arguments`, typed: the status and the reply.
-async fn call(session: &mut Mcp<'_>, tool: &str, arguments: Value) -> (u16, Value) {
+pub(super) async fn call(session: &mut Mcp<'_>, tool: &str, arguments: Value) -> (u16, Value) {
     session
         .post(json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
                      "params": {"name": tool, "arguments": arguments,
@@ -76,7 +76,7 @@ async fn call(session: &mut Mcp<'_>, tool: &str, arguments: Value) -> (u16, Valu
 }
 
 /// The ids `token` lists among its workspaces.
-async fn listed(api: &Arc<Server>, token: &str, labels: &Value) -> Vec<String> {
+pub(super) async fn listed(api: &Arc<Server>, token: &str, labels: &Value) -> Vec<String> {
     let (status, list) = rest(
         api,
         token,
@@ -96,14 +96,14 @@ async fn listed(api: &Arc<Server>, token: &str, labels: &Value) -> Vec<String> {
 }
 
 /// Where the account's `action` (`keys#mint`) is run.
-fn account_action(action: &str) -> String {
+pub(super) fn account_action(action: &str) -> String {
     let (resource, action) = action.split_once('#').expect("resource#action");
     format!("/v1/resources/account/{resource}/actions/{action}")
 }
 
 /// What `path` with `args` answered once it finished: a pending answer is
 /// followed with `tilo_status`, as an agent and the SDKs follow it.
-async fn done(session: &mut Mcp<'_>, path: &str, args: Value) -> Value {
+pub(super) async fn done(session: &mut Mcp<'_>, path: &str, args: Value) -> Value {
     let mut answer = session.tilo_do(json!({"path": path, "args": args})).await;
     let deadline = tilo_test_env::hang_deadline();
     loop {
@@ -167,7 +167,12 @@ async fn listed_by(agent: &mut Mcp<'_>, path: &str) -> Value {
 
 /// `token`'s agent, over MCP at its workspace's URL, writes an issue titled
 /// `title` there and puts a file in: the issue's path and the file's reference.
-async fn work(api: &Arc<Server>, mcp_url: &str, token: &str, title: &str) -> (String, String) {
+pub(super) async fn work(
+    api: &Arc<Server>,
+    mcp_url: &str,
+    token: &str,
+    title: &str,
+) -> (String, String) {
     let path = mcp_url.strip_prefix(ISSUER).unwrap();
     let mut agent = mcp(api, path, token);
     let (status, opened) = agent.initialize().await;

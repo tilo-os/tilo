@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use collab_types::presence::Shown;
 use iroh_base::{EndpointAddr, EndpointId};
-use tilo_session::sync::{Client, Device, OwnPresence, Topic, Transport};
+use tilo_session::sync::{Client, Device, InCall, OwnPresence, Topic, Transport};
 use tilo_session_actions::SessionActions;
 use tilo_session_client::Link;
 use tilo_user_identity::DeviceCert;
@@ -33,6 +33,8 @@ struct Page {
     client: Rc<Client>,
     /// The workspaces the page shows, by topic.
     workspaces: HashMap<WorkspaceId, String>,
+    /// The workspace whose call this page is in, which its presence says.
+    calling: Option<String>,
     /// The wave this page said last, so the same one said again is the same wave.
     waved: Option<u32>,
     /// The action APIs this page asks the host's actions through, one per workspace: one session path,
@@ -102,6 +104,7 @@ pub(crate) fn register(id: u32, handle: &Link, cert: &DeviceCert, host: &DeviceC
                 user: hex::encode(cert.user_public_key),
                 client,
                 workspaces: HashMap::new(),
+                calling: None,
                 waved: None,
                 apis: RefCell::default(),
                 open_api,
@@ -276,6 +279,106 @@ pub(crate) fn members(peer: u32, workspace: &str) -> Option<Vec<Shown>> {
             )
             .0,
         )
+    })
+}
+
+/// `peer` is in `call` in `workspace`, or in no call there (`None`): its presence there says so,
+/// and everyone in the workspace lists it in the call's channel. Joining a call takes part in the
+/// workspace and puts it in front, where this page's call is said.
+pub(crate) fn call(peer: u32, workspace: &str, call: Option<InCall>) -> Result<(), JsError> {
+    let number = workspace_id(workspace)?;
+    PAGES.with_borrow_mut(|pages| {
+        let page = pages
+            .get_mut(&peer)
+            .ok_or_else(|| js_error("not a started peer"))?;
+        match &call {
+            Some(_) => {
+                page.workspaces.insert(number, workspace.to_owned());
+                page.calling = Some(workspace.to_owned());
+                page.follow(Some(number));
+            }
+            None if page.calling.as_deref() == Some(workspace) => page.calling = None,
+            None => return Ok(()),
+        }
+        page.client.in_call(call);
+        page.client.follow();
+        Ok(())
+    })
+}
+
+/// This page's call in `workspace`, if it is in one there.
+pub(crate) fn own_call(peer: u32, workspace: &str) -> Option<InCall> {
+    PAGES.with_borrow(|pages| {
+        let page = pages.get(&peer)?;
+        if page.calling.as_deref() != Some(workspace) {
+            return None;
+        }
+        page.client.own().call
+    })
+}
+
+/// The voice channels of `workspace` anyone is in, as its presence says (this page's own call
+/// among them), or `None` while this page takes no part there. Each device is its person as the
+/// workspace's governance names it, when its presence named nobody yet.
+pub(crate) fn channels(peer: u32, workspace: &str) -> Option<Vec<tilo_live::calls::Channel>> {
+    PAGES.with_borrow(|pages| {
+        let page = pages.get(&peer)?;
+        page.workspaces
+            .values()
+            .find(|shown| shown.as_str() == workspace)?;
+        let heard: Vec<_> = page
+            .client
+            .calls()
+            .into_iter()
+            .filter(|call| call.workspace == workspace)
+            .collect();
+        let persons = page
+            .handle
+            .workspace_devices(workspace)
+            .into_iter()
+            .filter_map(|(device, person)| {
+                let mut key = [0; 32];
+                hex::decode_to_slice(&device, &mut key).ok()?;
+                Some((key, person))
+            })
+            .collect();
+        let own = page.client.own();
+        let call = own
+            .call
+            .as_ref()
+            .filter(|_| page.calling.as_deref() == Some(workspace));
+        Some(tilo_live::calls::channels(
+            &heard,
+            call.map(|call| tilo_live::calls::Own {
+                device: *page.client.publisher().as_bytes(),
+                person: own.user.as_deref(),
+                call,
+            }),
+            &persons,
+            &page.handle.call_rules(workspace),
+        ))
+    })
+}
+
+/// What the call in `channel` of `workspace` lets this page's person do now, and what the call
+/// allows; nothing for a workspace the page is not in.
+pub(crate) fn allows(
+    peer: u32,
+    workspace: &str,
+    channel: &str,
+) -> Option<(tilo_live::calls::CallRule, tilo_live::calls::Directions)> {
+    PAGES.with_borrow(|pages| {
+        let page = pages.get(&peer)?;
+        page.workspaces
+            .values()
+            .find(|shown| shown.as_str() == workspace)?;
+        let rule = page
+            .handle
+            .call_rules(workspace)
+            .remove(channel)
+            .unwrap_or_default();
+        let may = rule.may(page.client.own().user.as_deref());
+        Some((rule, may))
     })
 }
 

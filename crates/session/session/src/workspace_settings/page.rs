@@ -193,7 +193,7 @@ mod tests {
         let review = agents.pane().review.expect("the agent's review");
         let limit = review.limit.expect("its daily limit");
         assert!(limit.summary.contains('5'), "{}", limit.summary);
-        assert!(limit.can_choose, "its keeper sets its limit");
+        assert!(limit.can_choose, "its person sets its limit");
         assert!(review.editable, "a page bounds the agent in its list");
         assert!(review.can_retire);
         agents.ask(

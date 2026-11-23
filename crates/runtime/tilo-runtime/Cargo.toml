@@ -37,13 +37,18 @@ path = "src/bin/tilo-runtime.rs"
 name = "it"
 path = "tests/it.rs"
 
-[dependencies]
+# The Windows build is the daemon's command line and its refusal for now: the
+# services it hosts here reach a profile over Unix sockets and inherited
+# descriptors, and named pipes and handle passing are not in yet. Each joins
+# this table when its Windows body exists, behind the same functions.
+[target.'cfg(not(windows))'.dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
-tilo-files = { path = "../../platform/tilo-files" }
+# `watch`: a development device follows reinstalls of the apps its tilolang hosts run.
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 anyhow.workspace = true
 automerge.workspace = true
 # Seals and opens the channel state this device keeps for its encrypted routes.
@@ -68,6 +73,14 @@ iroh-blobs.workspace = true
 launcher = { path = "../../packaging/launcher" }
 libc.workspace = true
 package-store = { path = "../../packaging/package-store" }
+# The tilolang hosts this device runs: the link each is handed (which the
+# process-boundary tests also drive as an app inside a login does), the sealed
+# module, the log targets a launch's latency and an app's output are kept
+# under, and where an earlier version of an app kept its documents.
+runtime-portal = { path = "../runtime-portal" }
+tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
+tilo-app-state = { path = "../../system/app-state" }
 # The installed applications this runtime launches, read through their signed
 # manifests.
 app-catalogue = { path = "../../packaging/app-catalogue" }
@@ -91,7 +104,6 @@ tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 # The surface an app under development names (`app_surface`), and the
 # runtime's own words (consent prompt, device grants), from Fluent. The
 # broker links it on every platform already.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 # The one per-user index the host's own search reads.
 tilo-os-search = { path = "../os-search" }
 # The native request an app hands a host search result back with.
@@ -101,6 +113,8 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 # The workspace host every device runs, which the profile's own workspace is placed on.
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["agents", "apps", "device-keys", "files"] }
+# The person's saved chords, which a shortcut's keyboard trigger may not take.
+settings-store = { path = "../../system/settings-store" }
 # The groups a device's key service settles, and what their members seal is checked against.
 tilo-workspace-keys = { path = "../../collab/workspace-keys" }
 # This computer's login, the daemon's place, and Tilo's API the daemon serves as the device.
@@ -135,11 +149,20 @@ uuid.workspace = true
 
 # Mounts the workspace files where this user can mount FUSE.
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
+# The toolkit the Unix launch edge and its surface files are read with.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+
+# What the daemon's command line needs on Windows: the profile it names and the
+# MCP projection it can answer without a daemon.
+[target.'cfg(windows)'.dependencies]
+tilo-mcp = { path = "../tilo-mcp" }
+tilo-paths.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+uuid.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser.workspace = true
 # The member that takes work runs its workspaces' shells: ush's own commands
@@ -158,9 +181,6 @@ tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "mi
 # The relays the replica tests start.
 tilo-server = { path = "../../server/tilo-server" }
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
-# The attachment an app makes to the host this runtime serves, which the
-# process-boundary tests drive as an app inside a login does.
-runtime-portal = { path = "../runtime-portal" }
 # The channel fixtures owner tests seal writes with.
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "device-keys", "files", "test-support"] }
 # The join protocol a runtime joins workspaces over.
@@ -171,9 +191,9 @@ ed25519-dalek.workspace = true
 # The cluster of a person's own records, which their store's key is.
 collab-types = { path = "../../collab/collab-types" }
 tempfile.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 # A server on this machine's loopback, which is what a test's devices relay through.
-test-server = { path = "../../dev/test-server" }
+test-server = { path = "../../../tools/test-server" }
 # Paused time drives the watch lease's expiry.
 tokio = { workspace = true, features = ["test-util"] }
 

@@ -16,13 +16,11 @@ use browser_continuity::Profile as BrowserProfile;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    ffi::OsStr,
     io,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
 };
 
 /// Only a normal first installed account; UID mapping needs an authenticated identity transport and
@@ -47,16 +45,7 @@ fn source_uid_matches(uid: u32) -> bool {
     cfg!(test) || uid == ORIGINAL_UID
 }
 
-fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
-    if cancel.load(Ordering::Acquire) {
-        Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "migration cancelled",
-        ))
-    } else {
-        Ok(())
-    }
-}
+use crate::migration::check_cancel;
 
 fn operation_path(home: &Path, operation: &str) -> PathBuf {
     let mut directory = home.to_path_buf();
@@ -66,34 +55,10 @@ fn operation_path(home: &Path, operation: &str) -> PathBuf {
     directory.join(format!("{operation}{JOURNAL_SUFFIX}"))
 }
 
-fn open_or_create(
-    directory: &Arc<crate::migration_directory::PinnedDirectory>,
-    name: &str,
-) -> io::Result<Arc<crate::migration_directory::PinnedDirectory>> {
-    match crate::setup::nofollow::metadata_nofollow(&directory.file, Path::new(name)) {
-        Ok(metadata) => {
-            if metadata.is_symlink() || !metadata.is_dir() {
-                return Err(refused("private journal path is not a directory"));
-            }
-            directory.open_child(name.as_ref(), &metadata)
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            use cap_primitives::fs::DirBuilderExt as _;
-            let mut options = cap_primitives::fs::DirOptions::new();
-            options.mode(0o700);
-            cap_primitives::fs::create_dir(&directory.file, Path::new(name), &options)?;
-            let metadata =
-                crate::setup::nofollow::metadata_nofollow(&directory.file, Path::new(name))?;
-            directory.open_child(name.as_ref(), &metadata)
-        }
-        Err(error) => Err(error),
-    }
-}
-
 fn journal_directory(home: &Path) -> io::Result<Arc<crate::migration_directory::PinnedDirectory>> {
     let mut directory = crate::migration_directory::PinnedDirectory::open_absolute(home)?;
     for segment in DIRECTORY {
-        directory = open_or_create(&directory, segment)?;
+        directory = directory.open_or_create_child(segment.as_ref())?;
     }
     private_journal_directory(directory)
 }
@@ -587,16 +552,16 @@ fn browser_operation_directory(
 ) -> io::Result<Arc<crate::migration_directory::PinnedDirectory>> {
     let mut directory = crate::migration_directory::PinnedDirectory::open_absolute(home)?;
     for segment in [".local", "state", "tilo"] {
-        directory = open_or_create(&directory, segment)?;
+        directory = directory.open_or_create_child(OsStr::new(segment))?;
     }
-    directory = open_or_create(&directory, "browser-continuity")?;
+    directory = directory.open_or_create_child(OsStr::new("browser-continuity"))?;
     directory = private_journal_directory(directory)?;
     let root = browser_operation_directory_path(home, operation)?;
     let name = root
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| refused("Browser projection operation is not canonical"))?;
-    directory = open_or_create(&directory, name)?;
+    directory = directory.open_or_create_child(OsStr::new(name))?;
     private_journal_directory(directory)
 }
 
@@ -771,14 +736,13 @@ fn import_browser(
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    let container = open_or_create(
-        &operation_directory,
+    let container = operation_directory.open_or_create_child(OsStr::new(
         browser_continuity::completion::DEFERRED_CONTAINER,
-    )?;
+    ))?;
     let container = private_journal_directory(container)?;
-    let import = open_or_create(&container, "import")?;
+    let import = container.open_or_create_child(OsStr::new("import"))?;
     let import = private_journal_directory(import)?;
-    let home_directory = open_or_create(&import, "home")?;
+    let home_directory = import.open_or_create_child(OsStr::new("home"))?;
     private_journal_directory(home_directory)?;
     let plan_bytes = browser_plan.encode().map_err(|error| {
         io::Error::other(format!("Selected browser plan encoding failed: {error}"))

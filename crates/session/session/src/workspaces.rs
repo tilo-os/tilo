@@ -56,7 +56,7 @@ pub(crate) fn left_workspace(notices: &dyn Notices, name: &str) {
             "session-left-workspace",
             Some("session-left-workspace-body"),
         ),
-        &tilo_desktop_surface::names::workspace(name),
+        &tilo_session_core::desktop::names::workspace(name),
     );
 }
 
@@ -877,7 +877,7 @@ impl Personal {
     ///
     /// Cheap when neither the workspace nor the list moved since the last call, which every pass
     /// makes.
-    pub(crate) fn sync_store(&mut self, store: &crate::person_resources::PersonResources) -> bool {
+    pub(crate) fn sync_store(&mut self, store: &crate::PersonResources) -> bool {
         let revision = *store.changes().borrow();
         let heads = self.directory.heads();
         if self
@@ -1155,51 +1155,68 @@ impl crate::Shared {
             .unwrap_or_default();
         let mut tree = self.handle.read(Clone::clone);
         let mut changed = false;
+        // The workspaces on the shell this device is founding or about to: an ask of one of them
+        // waits for the founding to land and is delivered then, rather than refused for a
+        // workspace this device is making ([`crate::mcp_server::SessionServices::hold_founding`]).
+        let mut founding = BTreeSet::new();
         for workspace in &mut tree.workspaces {
             if let Some(engine) = &self.engine
-                && self.personal.as_ref().is_some_and(|personal| {
-                    let personal = personal.borrow();
-                    // The workspace the shell started with is founded only once it is known
-                    // to be the person's first.
-                    personal.made_here(workspace.id()) && personal.seed() != Some(workspace.id())
-                })
+                && self
+                    .personal
+                    .as_ref()
+                    .is_some_and(|personal| personal.borrow().made_here(workspace.id()))
                 && !workspace.id().is_nil()
                 && !borrowed.contains(&workspace.id())
                 && !engine.holds(workspace.id())
             {
-                // A workspace made on this session is a workspace from here on,
-                // not only this session's: its governance is founded in the
-                // workspace it already has an identity for.
-                // It is signed by this device's signer, off the loop: the pass after it landed
-                // sees it held.
-                let (engine, id) = (std::sync::Arc::clone(engine), workspace.id());
-                // The name it is founded under is the one a person reads: a workspace nobody
-                // named keeps no name of its own, and a workspace is founded under a name, so
-                // the word the session reads for it stands in until one is given.
-                let name = tilo_desktop_surface::names::workspace(&workspace.name);
-                let told = name.clone();
-                let founded =
-                    crate::landing::off_loop(async move { engine.found(id, &name).await });
-                // A founding that failed is tried again when the next one ends, and the person
-                // hears why the workspace is not on the service yet: never a silent sole copy on
-                // this layout.
-                let sync = self.sync.clone();
-                self.landings.then(founded, {
-                    let notifications = Rc::clone(&self.notifications);
-                    move |outcome| match outcome {
-                        Some(Err(error)) => notifications
-                            .borrow()
-                            .tell(&crate::notices::workspace_not_founded_notice(&told, &error)),
-                        Some(Ok(())) => {
-                            // The workspace is held here now, as one joined is: its live session
-                            // opens, so this device says who is here in it and hears who else is.
-                            if let Some(sync) = &sync {
-                                sync.workspace_arrived();
+                // A founding that failed is tried again when the next founding ends, not on every
+                // pass: until then nothing waits on it, and an ask of it hears what the service
+                // says.
+                if !engine.founding_failed(workspace.id()) {
+                    founding.insert(workspace.id().to_string());
+                }
+                // The workspace the shell started with is founded only once it is known to be the
+                // person's first. Until then an ask of it waits all the same: it is founded the
+                // moment it is known to be theirs, and taken off the shell otherwise.
+                let settled = self
+                    .personal
+                    .as_ref()
+                    .is_none_or(|personal| personal.borrow().seed() != Some(workspace.id()));
+                if settled {
+                    // A workspace made on this session is a workspace from here on,
+                    // not only this session's: its governance is founded in the
+                    // workspace it already has an identity for.
+                    // It is signed by this device's signer, off the loop: the pass after it landed
+                    // sees it held.
+                    let (engine, id) = (std::sync::Arc::clone(engine), workspace.id());
+                    // The name it is founded under is the one a person reads: a workspace nobody
+                    // named keeps no name of its own, and a workspace is founded under a name, so
+                    // the word the session reads for it stands in until one is given.
+                    let name = tilo_session_core::desktop::names::workspace(&workspace.name);
+                    let told = name.clone();
+                    let founded =
+                        crate::landing::off_loop(async move { engine.found(id, &name).await });
+                    // A founding that failed is tried again when the next one ends, and the person
+                    // hears why the workspace is not on the service yet: never a silent sole copy on
+                    // this layout.
+                    let sync = self.sync.clone();
+                    self.landings.then(founded, {
+                        let notifications = Rc::clone(&self.notifications);
+                        move |outcome| match outcome {
+                            Some(Err(error)) => notifications
+                                .borrow()
+                                .tell(&crate::notices::workspace_not_founded_notice(&told, &error)),
+                            Some(Ok(())) => {
+                                // The workspace is held here now, as one joined is: its live session
+                                // opens, so this device says who is here in it and hears who else is.
+                                if let Some(sync) = &sync {
+                                    sync.workspace_arrived();
+                                }
                             }
+                            None => {}
                         }
-                        None => {}
-                    }
-                });
+                    });
+                }
             }
             if workspace
                 .owner()
@@ -1221,6 +1238,8 @@ impl crate::Shared {
         if changed {
             self.handle.replace_tree(tree);
         }
+        self.session_services.keep_founding(founding);
+        self.session_services.release_founding();
         self.project_governance();
     }
 
@@ -1278,7 +1297,7 @@ impl crate::Shared {
     /// no empty workspace to arrive in and vanish from.
     pub(crate) fn add_joined_workspace(&self, joined: &directory::Joined) -> Result<(), String> {
         let Some(workspace) = WorkspaceId::parse(&joined.granted.workspace) else {
-            return Err(tilo_desktop_surface::i18n::t(
+            return Err(tilo_session_core::desktop::i18n::t(
                 "desktop-joined-workspace-unknown",
             ));
         };
@@ -1443,8 +1462,8 @@ impl crate::Shared {
                 })
                 .or(named_on_shell)
                 .map_or_else(
-                    || tilo_desktop_surface::names::workspace(""),
-                    |name| tilo_desktop_surface::names::workspace(&name),
+                    || tilo_session_core::desktop::names::workspace(""),
+                    |name| tilo_session_core::desktop::names::workspace(&name),
                 );
             match &enrolled.result {
                 Ok(()) => {
@@ -2010,7 +2029,7 @@ impl crate::Shared {
 mod tests {
     use super::*;
     use tilo_desktop_model::{IdMinter, Workspace, WorkspaceId};
-    use tilo_desktop_surface::seed_tree;
+    use tilo_session_core::desktop::seed_tree;
     use tilo_user_identity::DeviceCert;
 
     /// The list as a later session opens it.

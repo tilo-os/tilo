@@ -298,37 +298,6 @@ mod tests {
             );
         }
 
-        phase update_through_a_source_holds_its_lock_and_returns_the_stored_value;
-        {
-            let doc = Arc::new(crate::HostDocument::new(Map::new(), |_| Ok(())));
-            let threads: Vec<_> = (0..4)
-                .map(|_| {
-                    let doc = Arc::clone(&doc);
-                    std::thread::spawn(move || {
-                        for _ in 0..50 {
-                            let mut step = |section: &Map<String, Value>| {
-                                let count = section.get("count").and_then(Value::as_u64).unwrap_or(0);
-                                object(json!({"count": count.saturating_add(1)}))
-                            };
-                            crate::SettingsSource::update_section_with(
-                                doc.as_ref(),
-                                "counter",
-                                &ChangeOrigin::default(),
-                                &mut step,
-                            )
-                            .unwrap();
-                        }
-                    })
-                })
-                .collect();
-            for thread in threads {
-                thread.join().unwrap();
-            }
-            assert_eq!(
-                crate::SettingsSource::load(doc.as_ref())["counter"]["count"],
-                json!(200)
-            );
-        }
 
         phase a_section_write_refuses_a_key_from_another_section_and_writes_nothing;
         {

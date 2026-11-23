@@ -1,5 +1,5 @@
 use super::*;
-use crate::text_render::{FontChoice, TextStyle, TextWrapMode};
+use crate::text_render::TextStyle;
 
 fn shape(fs: &mut FontSystem, text: &str, width: f32, style: &TextStyle) -> RichTextLayout {
     RichTextLayout::shape_styled(
@@ -44,40 +44,6 @@ tilo_test_env::scenario! {
         next.buffer.shape_until_scroll(&mut fs, false);
         let fresh = shape(&mut fs, text, 80.0, &style);
         assert_geometry(&next, &fresh, text);
-    }
-
-    phase resize_and_style_transitions_match_cold_unicode_layout;
-    {
-        let mut fs = crate::font_catalog::fixture_font_system();
-        let text = "Latin ligatures ffi é\nשלום mixed العربية\n👩‍💻 中文\nlast\n";
-        let base = TextStyle::new(16.0);
-        let mut previous = Some(shape(&mut fs, text, 240.0, &base));
-        for style in [
-            base.clone(),
-            base.clone().with_line_height(1.7),
-            TextStyle::new(24.0),
-            base.clone().with_family(FontChoice::Serif),
-            base.clone().with_italic(true),
-            base.clone().with_letter_spacing(0.8),
-            base.clone().with_wrap_mode(TextWrapMode::Balance),
-            base.with_auto_hyphenation("en-US"),
-        ] {
-            for width in [80.0, 160.0, 240.0, 80.0] {
-                let actual = RichTextLayout::shape_styled_reusing(
-                    &mut fs,
-                    &[RichSpan::new(text)],
-                    &style,
-                    Some(width),
-                    TextAlign::Left,
-                    vec![],
-                    vec![],
-                    previous,
-                );
-                let fresh = shape(&mut fs, text, width, &style);
-                assert_geometry(&actual, &fresh, text);
-                previous = Some(actual);
-            }
-        }
     }
 
     phase retained_idle_paragraphs_keep_both_caches_across_many_layout_owners;

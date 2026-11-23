@@ -43,8 +43,8 @@ use tilo_desktop_model::branch::{CHAT, CHAT_DOCUMENTS, TERMINAL, stays};
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
 };
-use tilo_desktop_surface::notifications::NotificationIconKind;
 use tilo_files::native::tree::{Copied, Strategy, clone_tree};
+use tilo_session_core::desktop::notifications::NotificationIconKind;
 
 use crate::engine::{Engine, SealKeys};
 use crate::engine_write::Polled;
@@ -788,8 +788,9 @@ impl crate::Shared {
                 .find(|held| held.id() == source)
                 .map(|held| (held.id(), held.name.clone()))
         }) else {
-            self.handle
-                .acknowledge(tilo_desktop_surface::i18n::t("desktop-workspace-gone"));
+            self.handle.acknowledge(tilo_session_core::desktop::i18n::t(
+                "desktop-workspace-gone",
+            ));
             return;
         };
         let engine = self.engine.clone();
@@ -829,11 +830,11 @@ impl crate::Shared {
             &Notice::new(
                 String::new(),
                 1,
-                tilo_desktop_surface::i18n::t_args(
+                tilo_session_core::desktop::i18n::t_args(
                     "session-branching-workspace",
                     &[("name", source_name.clone().into())],
                 ),
-                tilo_desktop_surface::i18n::t_args(
+                tilo_session_core::desktop::i18n::t_args(
                     "session-branching-workspace-body",
                     &[("branch", name.clone().into())],
                 ),
@@ -937,18 +938,18 @@ impl crate::Shared {
 fn told(branched: &Branched, name: &str, source_name: &str) -> (String, String) {
     if branched.missing.is_empty() {
         (
-            tilo_desktop_surface::i18n::t_args(
+            tilo_session_core::desktop::i18n::t_args(
                 "session-branched-workspace",
                 &[("branch", name.to_owned().into())],
             ),
-            tilo_desktop_surface::i18n::t_args(
+            tilo_session_core::desktop::i18n::t_args(
                 "session-branched-workspace-body",
                 &[("name", source_name.to_owned().into())],
             ),
         )
     } else {
         (
-            tilo_desktop_surface::i18n::t_args(
+            tilo_session_core::desktop::i18n::t_args(
                 "session-branch-failed",
                 &[("branch", name.to_owned().into())],
             ),

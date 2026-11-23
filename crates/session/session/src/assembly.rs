@@ -143,6 +143,14 @@ pub(crate) struct Shared {
     /// sound and capture uses, its charge and what plays. The bar's status
     /// cluster, the lock screen and the session read it.
     pub(crate) readings: crate::status::Shared,
+    /// The hardware keys' readout: what the last press said, and when it goes,
+    /// published as `device.osd` for the shell that draws it.
+    #[cfg(target_os = "linux")]
+    pub(crate) osd: crate::osd::Shared,
+    /// Whether this session shows the tilolang shell, which draws the readout and the banners
+    /// itself: the native ones are not drawn beside them.
+    #[cfg(target_os = "linux")]
+    pub(crate) tilolang_shell: bool,
     /// The system services, reached for their readings.
     pub(crate) services: Rc<RefCell<tilo_service::Services>>,
     /// The sends the session's send action took, which the pass carries out.
@@ -227,6 +235,13 @@ pub(crate) struct Shared {
     pub(crate) workspace_tabs: crate::workspace_settings::WorkspaceTabs,
     #[cfg(target_os = "linux")]
     pub(crate) portal: Option<tilo_sheets::portal::PortalState>,
+    /// This session's Nearby Send: what the `AirDrop` receiver's verification in front of the
+    /// person is asked of.
+    #[cfg(target_os = "linux")]
+    pub(crate) nearby: Option<std::sync::Arc<crate::nearby_transfer::NearbyTransfer>>,
+    /// The verification of an `AirDrop` receiver, on the portal sheet.
+    #[cfg(target_os = "linux")]
+    pub(crate) air_drop_consent: crate::nearby_airdrop::Consent,
     #[cfg(target_os = "linux")]
     pub(crate) file_picker: Option<tilo_sheets::file_picker::FilePickerState>,
     /// The question about a display change, which stands on every display

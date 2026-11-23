@@ -254,13 +254,13 @@ impl InventoryScratch {
     ) -> io::Result<Arc<Self>> {
         directory.validate_destination()?;
         destination_security::check_private_file(&directory.file)?;
-        let mut filesystem = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-        if unsafe { libc::fstatvfs(directory.file.as_raw_fd(), filesystem.as_mut_ptr()) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let filesystem = unsafe { filesystem.assume_init() };
+        let filesystem = rustix::fs::fstatvfs(&directory.file)?;
         let block = filesystem.f_frsize;
-        if block == 0 || filesystem.f_flag & libc::ST_RDONLY != 0 {
+        if block == 0
+            || filesystem
+                .f_flag
+                .contains(rustix::fs::StatVfsMountFlags::RDONLY)
+        {
             return Err(changed("Archive scratch filesystem is not writable"));
         }
         let round = |bytes: u64| -> io::Result<u64> {
@@ -451,11 +451,7 @@ impl InventoryScratch {
         Ok(())
     }
     fn require_free(&self, bytes: u64) -> io::Result<()> {
-        let mut filesystem = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-        if unsafe { libc::fstatvfs(self.directory.file.as_raw_fd(), filesystem.as_mut_ptr()) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let filesystem = unsafe { filesystem.assume_init() };
+        let filesystem = rustix::fs::fstatvfs(&self.directory.file)?;
         let available = filesystem
             .f_bavail
             .checked_mul(filesystem.f_frsize)
@@ -463,17 +459,17 @@ impl InventoryScratch {
         let required = bytes
             .checked_add(self.minimum_free.load(Ordering::Acquire))
             .ok_or_else(|| changed("Inventory scratch restoration reserve overflow"))?;
-        if filesystem.f_flag & libc::ST_RDONLY != 0 || required > available {
+        if filesystem
+            .f_flag
+            .contains(rustix::fs::StatVfsMountFlags::RDONLY)
+            || required > available
+        {
             return Err(changed("Inventory scratch capacity unavailable"));
         }
         Ok(())
     }
     fn allocation_bytes(&self, bytes: u64) -> io::Result<u64> {
-        let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-        if unsafe { libc::fstatvfs(self.directory.file.as_raw_fd(), stats.as_mut_ptr()) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let block = unsafe { stats.assume_init() }.f_frsize;
+        let block = rustix::fs::fstatvfs(&self.directory.file)?.f_frsize;
         if block == 0 {
             return Err(changed("Inventory allocation block unavailable"));
         }

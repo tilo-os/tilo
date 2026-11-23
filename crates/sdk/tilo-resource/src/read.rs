@@ -11,6 +11,61 @@ use crate::{Id, Model, Resource};
 /// The operation type of `read`.
 pub const TYPE: &str = "tilo.resource.read";
 
+/// What `state` reads as to a view of another language that does not run its
+/// app: the record's JSON ([`Model::to_json`]) with each collection a list of
+/// its items, their ids dropped, and each keyed collection a list of its
+/// values. A reading names no item by id — the surface's fields are the item's
+/// — so what a view reads it as is what the runtime hands it (a runtime's
+/// `set_reading`).
+#[must_use]
+pub fn reading<R: Resource>(state: &R::State) -> serde_json::Value {
+    let (Some(shape), Some(json)) = (R::shape(), R::state_json(state)) else {
+        return serde_json::Value::Null;
+    };
+    projected(&shape, &json)
+}
+
+/// The key a collection's entry holds its value under in the record's JSON form
+/// ([`crate::Model::to_json`]): its document key is [`crate::shape::ENTRY_VALUE_KEY`].
+const JSON_ENTRY_VALUE: &str = "value";
+
+/// `json`, the record's JSON form, as [`reading`] reads it of `shape`.
+fn projected(shape: &crate::Shape, json: &serde_json::Value) -> serde_json::Value {
+    match (shape, json) {
+        (crate::Shape::Record(fields), serde_json::Value::Object(map)) => {
+            let fields: serde_json::Map<_, _> = fields
+                .iter()
+                .filter_map(|field| {
+                    map.get(field.key)
+                        .map(|value| (field.key.to_owned(), projected(&field.shape, value)))
+                })
+                .collect();
+            serde_json::Value::Object(fields)
+        }
+        (crate::Shape::Collection(inner), serde_json::Value::Array(entries)) => {
+            let items = entries
+                .iter()
+                .map(|entry| {
+                    let item = entry.get(JSON_ENTRY_VALUE).unwrap_or(entry);
+                    projected(inner, item)
+                })
+                .collect();
+            serde_json::Value::Array(items)
+        }
+        (crate::Shape::Keyed(item), serde_json::Value::Array(values)) => {
+            serde_json::Value::Array(values.iter().map(|value| projected(item, value)).collect())
+        }
+        (crate::Shape::Map(item), serde_json::Value::Object(entries)) => {
+            let entries: serde_json::Map<_, _> = entries
+                .iter()
+                .map(|(key, value)| (key.clone(), projected(item, value)))
+                .collect();
+            serde_json::Value::Object(entries)
+        }
+        (_, json) => json.clone(),
+    }
+}
+
 /// The `read` action, bound to the nested resource `item` when one is named
 /// (its own `read`, without an `item` parameter).
 #[must_use]
@@ -193,16 +248,15 @@ pub fn page(
 
 /// What a record holds, as the record's own model's JSON
 /// ([`Model::to_json`]): every field it keeps, in the shape its own type
-/// gives them. This is the body of the `read_content` of a record whose
-/// fields are all it holds, so a caller with no window open — an agent, a
-/// script, the SDK — reads it through the framework's `read`, as it reads
-/// any app's record:
+/// gives them. Name it directly as `read_content` on a record whose fields are
+/// all it holds, so a caller with no window open — an agent, a script, the
+/// SDK — reads it through the framework's `read`, as it reads any app's
+/// record:
 ///
 /// ```ignore
+/// #[resource(kind = "calculator.document", read_content = tilo_resource::read::fields)]
 /// impl Calculator {
-///     pub fn read_document(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
-///         tilo_resource::read::fields(self, item)
-///     }
+///     // ...
 /// }
 /// ```
 ///

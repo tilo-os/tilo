@@ -19,8 +19,9 @@ use tilo_desktop_model::{IdMinter, Tab, TabId, TileContent as ModelTile, Workspa
 use tilo_desktop_surface::{
     DesktopHandle, DesktopSurface, Elsewhere, NeighbourMsg, PeerAction, PeerId, PeerOutcome,
     PeerRead, PeerStreamStart, PeerSurface, PeerSurfaces, StreamState, SurfaceId, TileSource,
-    WhyEnded, seed_tree,
+    WhyEnded,
 };
+use tilo_session_core::desktop::seed_tree;
 use tilo_window_share::streaming::InputEvent;
 use ui::headless::FrameHarness;
 use ui::widget::{TileContent, TileHost};

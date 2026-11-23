@@ -12,6 +12,7 @@ use tilo_user_identity::DeviceCert;
 
 use crate::handshake::{Admit, EntryFuture};
 use crate::workspace_access::person_device;
+use crate::workspaces::mode::{Mode, PAUSED_RETRY_AFTER_SECS};
 use crate::workspaces::pages::Presented;
 use crate::workspaces::{Carried, Workspaces};
 
@@ -62,6 +63,27 @@ impl Admit for Workspaces {
                 Through::Entry => self.member_device(cert, &entering.workspace).await,
                 Through::Invitation { .. } => None,
             };
+            // The operator's kill switch: a paused host admits nobody new. A device of someone it
+            // already has in it is not new, and enters as it does at any other time. The person is
+            // told the wait a host at its bound asks for, in the mode's own words.
+            if member_device.is_none() {
+                let mode = self.mode();
+                if !mode.allows_joins() {
+                    let said = if mode == Mode::BackSoon {
+                        "the host is paused; back soon"
+                    } else {
+                        "the host is watch-only right now; come back soon"
+                    };
+                    return Entered::Refused(EnterRefusal::Entry {
+                        refused: tilo_server_protocol::directory::EntryRefused {
+                            code: tilo_server_protocol::directory::EntryRefusalCode::Full,
+                            error: said.to_owned(),
+                            ..Default::default()
+                        },
+                        retry_after_secs: Some(PAUSED_RETRY_AFTER_SECS),
+                    });
+                }
+            }
             let reply = match (member_device, entering.through) {
                 (Some(reply), _) => reply,
                 (None, Through::Entry) => {
@@ -409,14 +431,15 @@ fn entered(reply: JoinReply) -> Entered {
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::SigningKey;
-    use tilo_server_protocol::directory::{EntryJoin, Listing};
-    use tilo_server_protocol::entering::{Entered, Entering, Entry, Through};
+    use tilo_server_protocol::directory::{EntryJoin, EntryRefusalCode, Listing};
+    use tilo_server_protocol::entering::{EnterRefusal, Entered, Entering, Entry, Through};
     use tilo_server_protocol::workspaces::{JoinReply, Role};
     use tilo_server_session::workspaces::RemoveMemberRequest;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
 
     use crate::handshake::Admit;
     use crate::workspaces::fixtures::{governor, signed_pre_admission_as, test_host};
+    use crate::workspaces::mode::HostMode;
     use crate::workspaces::{PreAdmitRequest, Workspaces};
 
     /// A device `root` certifies with `capabilities`, as the person's own
@@ -700,6 +723,105 @@ mod tests {
                 .permissions(agent.device_public_key, tilo_clock::wall())
                 .is_err(),
             "the agent holds nothing here"
+        );
+        server.shutdown().await;
+    }
+
+    /// While the operator's switch pauses the host, nobody new is admitted, and the entry answers
+    /// the way a host at its bound does: the person comes back after a wait. A device of someone
+    /// the workspace already has in it is not new and enters at their part; back to normal, the
+    /// next newcomer walks in.
+    #[tokio::test]
+    async fn a_paused_host_admits_nobody_new_while_a_members_device_enters() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
+        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+        workspaces
+            .publish(
+                &workspace,
+                &owner,
+                Listing {
+                    description: String::new(),
+                    default_role: Role::Viewer,
+                },
+            )
+            .await
+            .unwrap();
+        let ada = SigningKey::from_bytes(&rand::random());
+        member_at(workspaces, &owner, &workspace, &ada, Role::Editor).await;
+
+        // The operator pauses the host: a stranger is turned away with the wait a host at its
+        // bound asks for.
+        workspaces.hold_mode(HostMode::held(
+            dir.path().to_owned(),
+            crate::workspaces::mode::Mode::SpectatorOnly,
+        ));
+        let stranger = device_of(
+            &SigningKey::from_bytes(&rand::random()),
+            DeviceCapabilities::member(),
+        );
+        let refused = through_the_entry(workspaces, &workspace, &stranger).await;
+        let Entered::Refused(EnterRefusal::Entry {
+            refused: answer,
+            retry_after_secs,
+        }) = refused
+        else {
+            panic!("a paused host admits nobody new: {refused:?}");
+        };
+        assert_eq!(answer.code, EntryRefusalCode::Full);
+        assert_eq!(
+            retry_after_secs,
+            Some(crate::workspaces::mode::PAUSED_RETRY_AFTER_SECS)
+        );
+        assert!(
+            answer.error.contains("watch-only"),
+            "a watch-only host says so: {}",
+            answer.error
+        );
+
+        // Paused entirely, the host says it is paused, not merely watch-only.
+        workspaces.hold_mode(HostMode::held(
+            dir.path().to_owned(),
+            crate::workspaces::mode::Mode::BackSoon,
+        ));
+        let Entered::Refused(EnterRefusal::Entry {
+            refused: answer, ..
+        }) = through_the_entry(workspaces, &workspace, &stranger).await
+        else {
+            panic!("a back-soon host admits nobody new");
+        };
+        assert!(
+            answer.error.contains("paused"),
+            "a back-soon host says so: {}",
+            answer.error
+        );
+
+        // A device of a member is not new: it enters at the part its person holds.
+        let tab = device_of(&ada, DeviceCapabilities::member());
+        assert!(
+            matches!(
+                through_the_entry(workspaces, &workspace, &tab).await,
+                Entered::Admitted {
+                    role: Role::Editor,
+                    ..
+                }
+            ),
+            "a member's further device enters while the host is paused"
+        );
+
+        // Back to normal, the next newcomer walks in.
+        workspaces.hold_mode(HostMode::held(
+            dir.path().to_owned(),
+            crate::workspaces::mode::Mode::Normal,
+        ));
+        assert!(
+            matches!(
+                through_the_entry(workspaces, &workspace, &stranger).await,
+                Entered::Admitted { .. }
+            ),
+            "an unpaused host admits the stranger"
         );
         server.shutdown().await;
     }

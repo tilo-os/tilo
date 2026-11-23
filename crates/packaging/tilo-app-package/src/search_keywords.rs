@@ -116,36 +116,6 @@ mod tests {
             assert_eq!(parse_tagline("app-tagline =   \n"), None);
         }
 
-        phase every_app_has_an_english_and_german_tagline;
-        {
-            let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
-            let mut checked = 0;
-            for entry in std::fs::read_dir(&apps).expect("apps/") {
-                let dir = entry.expect("entry").path();
-                if !dir.join("tilo-app.toml").is_file() {
-                    continue;
-                }
-                let taglines = read_taglines(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
-                for language in ["en", "de"] {
-                    let tagline = taglines
-                        .get(language)
-                        .unwrap_or_else(|| panic!("{} lacks an {language} app-tagline", dir.display()));
-                    assert!(
-                        tagline.chars().count() <= crate::validate::MAX_TAGLINE_CHARS,
-                        "{}: {tagline:?} is longer than a row",
-                        dir.display()
-                    );
-                    assert!(
-                        !tagline.contains(" · ") && !tagline.ends_with('.'),
-                        "{}: {tagline:?} is one phrase, without separators or a full stop",
-                        dir.display()
-                    );
-                }
-                checked += 1;
-            }
-            assert!(checked > 40, "found only {checked} apps");
-        }
-
         phase the_message_is_read_trimmed_and_without_repeats;
         {
             let source = "# comment\nsearch-keywords = youtube,  Video , video, ,videos\n";

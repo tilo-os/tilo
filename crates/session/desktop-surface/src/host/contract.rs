@@ -82,7 +82,9 @@ pub trait DesktopRules {
     /// # Errors
     /// The refusal, in words for the person.
     fn may_delete_workspace(&self, _workspace: WorkspaceId) -> Result<(), String> {
-        Err(crate::i18n::t("desktop-cannot-delete-workspace"))
+        Err(tilo_session_core::desktop::i18n::t(
+            "desktop-cannot-delete-workspace",
+        ))
     }
 
     /// Whether the person may branch the workspace `workspace` : they read everything it holds,

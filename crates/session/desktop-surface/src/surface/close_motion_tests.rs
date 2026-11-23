@@ -59,7 +59,7 @@ impl Shell {
                 pinned: false,
             })
             .collect();
-        let tree = seed_tree(&mut minter, "Office", tabs);
+        let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Office", tabs);
         let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices));
         let mut frame = ui::headless::FrameHarness::for_root_with(
             ui::state::State::new(),

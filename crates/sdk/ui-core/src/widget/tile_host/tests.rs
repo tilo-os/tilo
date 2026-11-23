@@ -1398,11 +1398,25 @@ fn a_shell_window_presents_history_on_its_tab_not_in_a_band() {
     );
     let mut driver = harness(Box::new(group));
     let targets = driver.targets();
+    // The tab bar's own History press shares the band's id, so the band is looked for inside the
+    // hosted tile: nothing there may offer History.
+    let band = targets.keys().find(|key| {
+        key.as_str() == "history-open"
+            || (key.starts_with("WindowGroup[0]/TileHost")
+                && (key.ends_with("/history-open")
+                    || key.ends_with(&format!("/{}", crate::widget::HISTORY_CONTROL_ID))))
+    });
     assert!(
-        !targets.contains_key("history-open")
-            && !targets.contains_key(crate::widget::HISTORY_CONTROL_ID),
-        "a hosted tile draws no History band: {:?}",
+        band.is_none(),
+        "a hosted tile draws no History band: {band:?} among {:?}",
         targets.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        targets.contains_key(&format!(
+            "WindowGroup[0]/TabBar[0]/{}",
+            crate::widget::tabs::WINDOW_HISTORY_TARGET
+        )),
+        "the window's tab offers History instead"
     );
     assert_eq!(window_history_control(&driver), Some(false));
 

@@ -30,6 +30,8 @@ __all__ = [
     "Direct",
     "Attached",
     "Part",
+    "Skill",
+    "Example",
     "Chat",
     "DeleteChannelArgs",
     "DeleteCategoryArgs",
@@ -42,6 +44,10 @@ __all__ = [
     "DecideArgs",
     "ThreadDeleteArgs",
     "DirectDeleteArgs",
+    "CorrectSkillArgs",
+    "ForgetSkillArgs",
+    "KeepExampleArgs",
+    "DropExampleArgs",
 ]
 
 DeleteChannelArgs = TypedDict("DeleteChannelArgs", {
@@ -102,9 +108,34 @@ DirectDeleteArgs = TypedDict("DirectDeleteArgs", {
 })
 """The arguments of `delete`."""
 
+CorrectSkillArgs = TypedDict("CorrectSkillArgs", {
+    "name": NotRequired["str | None"],
+    "work": NotRequired["str | None"],
+    "how": NotRequired["str | None"],
+    "form": NotRequired["str | None"],
+    "model": NotRequired["str | None"],
+})
+"""The arguments of `correct_skill`."""
+
+ForgetSkillArgs = TypedDict("ForgetSkillArgs", {
+})
+"""The arguments of `forget_skill`."""
+
+KeepExampleArgs = TypedDict("KeepExampleArgs", {
+    "text": "str",
+    "accepted": "bool",
+    "note": NotRequired["str | None"],
+})
+"""The arguments of `keep_example`."""
+
+DropExampleArgs = TypedDict("DropExampleArgs", {
+    "example": "Example",
+})
+"""The arguments of `drop_example`."""
+
 class Conversations(Resource):
     """Conversations — `tl.so.tilo.chat.Conversations`."""
-    __surface__ = "so.tilo.chat@b91eb01292edf00c"
+    __surface__ = "so.tilo.chat@d21a7a397512be3f"
     @property
     def _5kzdptyg(self) -> list[Entry[Category | Direct | TextChannel | VoiceChannel]]:
         """channels (`5kzdptyg` on the wire)."""
@@ -113,6 +144,7 @@ class Conversations(Resource):
     @_5kzdptyg.setter
     def _5kzdptyg(self, value: list[Entry[Category | Direct | TextChannel | VoiceChannel]]) -> None:
         self.edit("5kzdptyg", value=value)
+    n2xgh234: list[Entry[Skill]]  # skills
 
     def new_channel(self,
         *,
@@ -146,6 +178,16 @@ class Conversations(Resource):
         if name is not None:
             args["name"] = name
         return self.action("new_voice_channel", **args)
+
+    def new_skill(self,
+        *,
+        name: str | None = None,
+    ) -> Skill:
+        """Starts a skill, called `name`. What it is for and how its work is done are written on its page, or by an agent told to share the guidance with the workspace."""
+        args: dict[str, Any] = {}
+        if name is not None:
+            args["name"] = name
+        return self.action("new_skill", **args)
 
     def report_problem(self, *, body: str) -> Message:
         """Files a problem report, what someone ran into while using Tilo, in the workspace's #feedback channel, which the first report opens. The people who read the reports there answer, react and start a thread under one as under any message. The channel is made under one key on every device, so reports filed apart open one."""
@@ -216,12 +258,12 @@ class Conversations(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_channel", "new_category", "new_voice_channel", "report_problem", "message_person", "write_to", "delete_channel", "delete_channel_many", "delete_category", "delete_category_many", "move_channel", "move_channel_many", "move_category", "move_category_many"})
+    __actions__ = frozenset({"new_channel", "new_category", "new_voice_channel", "new_skill", "report_problem", "message_person", "write_to", "delete_channel", "delete_channel_many", "delete_category", "delete_category_many", "move_channel", "move_channel_many", "move_category", "move_category_many"})
 
 
 class Category(Resource):
     """Category — `tl.so.tilo.chat.Category`."""
-    __surface__ = "so.tilo.chat@b91eb01292edf00c"
+    __surface__ = "so.tilo.chat@d21a7a397512be3f"
     hbhrds5c: str  # name
     hvqgmwrk: list[Entry[TextChannel | VoiceChannel]]  # channels
 
@@ -263,13 +305,13 @@ class Category(Resource):
 
 class VoiceChannel(Resource):
     """VoiceChannel — `tl.so.tilo.chat.VoiceChannel`."""
-    __surface__ = "so.tilo.chat@b91eb01292edf00c"
+    __surface__ = "so.tilo.chat@d21a7a397512be3f"
     olqjezxu: str  # name
 
 
 class TextChannel(Resource):
     """TextChannel — `tl.so.tilo.chat.TextChannel`."""
-    __surface__ = "so.tilo.chat@b91eb01292edf00c"
+    __surface__ = "so.tilo.chat@d21a7a397512be3f"
     x3haugpo: str  # name
     u6b35mgm: str  # topic
     ksuxpopi: list[Entry[Message]]  # messages
@@ -360,7 +402,7 @@ class TextChannel(Resource):
 
 class Message(Resource):
     """Message — `tl.so.tilo.chat.Message`."""
-    __surface__ = "so.tilo.chat@b91eb01292edf00c"
+    __surface__ = "so.tilo.chat@d21a7a397512be3f"
     xfrqdy3y: str  # body
     @property
     def _4uwxpnw2(self) -> Message | None:
@@ -425,7 +467,7 @@ class Message(Resource):
 
 class Report(Resource):
     """Report — `tl.so.tilo.chat.Report`."""
-    __surface__ = "so.tilo.chat@b91eb01292edf00c"
+    __surface__ = "so.tilo.chat@d21a7a397512be3f"
     jqcabz2h: Message | None  # message
     e3zqz33a: str | None  # person
     adip7bw4: str  # said
@@ -454,7 +496,7 @@ class Report(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.chat.Thread`."""
-    __surface__ = "so.tilo.chat@b91eb01292edf00c"
+    __surface__ = "so.tilo.chat@d21a7a397512be3f"
     xuvfifa5: str  # name
     ijy454g6: list[Entry[Message]]  # messages
     @property
@@ -539,7 +581,7 @@ class Thread(Resource):
 
 class Direct(Resource):
     """Direct — `tl.so.tilo.chat.Direct`."""
-    __surface__ = "so.tilo.chat@b91eb01292edf00c"
+    __surface__ = "so.tilo.chat@d21a7a397512be3f"
     @property
     def _5stv6ro7(self) -> str:
         """name (`5stv6ro7` on the wire)."""
@@ -645,7 +687,7 @@ class Direct(Resource):
 
 class Attached(Resource):
     """Attached — `tl.so.tilo.chat.Attached`."""
-    __surface__ = "so.tilo.chat@b91eb01292edf00c"
+    __surface__ = "so.tilo.chat@d21a7a397512be3f"
     qsdc77jc: str  # name
     h5lqkkjt: str  # media
     g7nx7a7g: int  # size
@@ -654,7 +696,7 @@ class Attached(Resource):
 
 class Part(Resource):
     """Part — `tl.so.tilo.chat.Part`."""
-    __surface__ = "so.tilo.chat@b91eb01292edf00c"
+    __surface__ = "so.tilo.chat@d21a7a397512be3f"
     zevnbs3i: str  # kind
     @property
     def _3hkzkqvr(self) -> str:
@@ -666,7 +708,112 @@ class Part(Resource):
         self.edit("3hkzkqvr", value=value)
 
 
+class Skill(Resource):
+    """Skill — `tl.so.tilo.chat.Skill`."""
+    __surface__ = "so.tilo.chat@d21a7a397512be3f"
+    gfk6pm4a: str  # name
+    gnfldsvz: str  # work
+    bn3w5doj: str  # how
+    ijpa4i7d: str  # form
+    @property
+    def _3wlkwi6k(self) -> str:
+        """model (`3wlkwi6k` on the wire)."""
+        return self.fields["3wlkwi6k"]
+
+    @_3wlkwi6k.setter
+    def _3wlkwi6k(self, value: str) -> None:
+        self.edit("3wlkwi6k", value=value)
+    bxx5rykt: list[Entry[Example]]  # examples
+
+    def correct_skill(self,
+        *,
+        name: str | None = None,
+        work: str | None = None,
+        how: str | None = None,
+        form: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Corrects a skill: only what is given changes, and what is left out stays as it is."""
+        args: dict[str, Any] = {}
+        if name is not None:
+            args["name"] = name
+        if work is not None:
+            args["work"] = work
+        if how is not None:
+            args["how"] = how
+        if form is not None:
+            args["form"] = form
+        if model is not None:
+            args["model"] = model
+        return self.action("correct_skill", **args)
+
+    def correct_skill_many(self, items: list[CorrectSkillArgs]) -> list[dict[str, Any]]:
+        """Runs `correct_skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("correct_skill", items)
+
+    def forget_skill(self) -> None:
+        """Forgets a skill: no later turn reads it."""
+        return self.action("forget_skill")
+
+    def forget_skill_many(self, items: list[ForgetSkillArgs]) -> list[dict[str, Any]]:
+        """Runs `forget_skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("forget_skill", items)
+
+    def keep_example(self,
+        *,
+        text: str,
+        accepted: bool,
+        note: str | None = None,
+    ) -> None:
+        """Keeps an example of a skill: a result the person accepted (more like this) or rejected (less like this), with what they said about it. The same result said again is that example, moved newest, and a skill keeps its newest twelve."""
+        args: dict[str, Any] = {}
+        args["text"] = text
+        args["accepted"] = accepted
+        if note is not None:
+            args["note"] = note
+        return self.action("keep_example", **args)
+
+    def keep_example_many(self, items: list[KeepExampleArgs]) -> list[dict[str, Any]]:
+        """Runs `keep_example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("keep_example", items)
+
+    def drop_example(self, *, example: Example) -> None:
+        """Takes an example out of a skill."""
+        return self.action("drop_example", example=example)
+
+    def drop_example_many(self, items: list[DropExampleArgs]) -> list[dict[str, Any]]:
+        """Runs `drop_example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("drop_example", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"correct_skill", "correct_skill_many", "forget_skill", "forget_skill_many", "keep_example", "keep_example_many", "drop_example", "drop_example_many"})
+
+
+class Example(Resource):
+    """Example — `tl.so.tilo.chat.Example`."""
+    __surface__ = "so.tilo.chat@d21a7a397512be3f"
+    fspydtu6: str  # text
+    @property
+    def _2u2ngevv(self) -> bool:
+        """accepted (`2u2ngevv` on the wire)."""
+        return self.fields["2u2ngevv"]
+
+    @_2u2ngevv.setter
+    def _2u2ngevv(self, value: bool) -> None:
+        self.edit("2u2ngevv", value=value)
+    agcun6lt: str  # note
+    @property
+    def _3ccutu3r(self) -> int:
+        """at (`3ccutu3r` on the wire)."""
+        return self.fields["3ccutu3r"]
+
+    @_3ccutu3r.setter
+    def _3ccutu3r(self, value: int) -> None:
+        self.edit("3ccutu3r", value=value)
+
+
 class Chat(Resource):
     """Chat — `tl.so.tilo.chat`."""
-    __surface__ = "so.tilo.chat@b91eb01292edf00c"
+    __surface__ = "so.tilo.chat@d21a7a397512be3f"
 

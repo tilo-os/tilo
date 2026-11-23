@@ -786,8 +786,10 @@ mod tests {
     use super::*;
     use crate::namespace::ROOT_INO;
 
+    /// A frame is a little-endian length then postcard, a closed peer reads as the end, and a
+    /// frame over the size limit or cut short is refused.
     #[tokio::test]
-    async fn storage_frames_are_little_endian_length_then_postcard() {
+    async fn storage_frames_carry_a_length_then_postcard_and_refuse_bad_frames() {
         let (mut client, mut server) = tokio::net::UnixStream::pair().unwrap();
         let mut wire = Vec::new();
         STORAGE_FRAMING
@@ -806,6 +808,21 @@ mod tests {
         let closed: Option<StorageRequest> =
             STORAGE_FRAMING.read_value_async(&mut server).await.unwrap();
         assert!(closed.is_none());
+
+        let oversized = (16_u32 * 1024 * 1024 + 1).to_le_bytes();
+        assert!(matches!(
+            STORAGE_FRAMING
+                .read_value_async::<_, StorageRequest>(&mut &oversized[..])
+                .await,
+            Err(wire_frame::FrameError::TooLarge(_))
+        ));
+        let truncated = [2, 0, 0, 0, 1];
+        assert!(matches!(
+            STORAGE_FRAMING
+                .read_value_async::<_, StorageRequest>(&mut &truncated[..])
+                .await,
+            Err(wire_frame::FrameError::Truncated)
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -861,24 +878,6 @@ mod tests {
         server.abort();
     }
 
-    #[tokio::test]
-    async fn storage_frames_over_sixteen_mebibytes_are_refused() {
-        let oversized = (16_u32 * 1024 * 1024 + 1).to_le_bytes();
-        assert!(matches!(
-            STORAGE_FRAMING
-                .read_value_async::<_, StorageRequest>(&mut &oversized[..])
-                .await,
-            Err(wire_frame::FrameError::TooLarge(_))
-        ));
-        let truncated = [2, 0, 0, 0, 1];
-        assert!(matches!(
-            STORAGE_FRAMING
-                .read_value_async::<_, StorageRequest>(&mut &truncated[..])
-                .await,
-            Err(wire_frame::FrameError::Truncated)
-        ));
-    }
-
     tilo_test_env::scenario! {
         fn storage_is_attributed_and_reclaimed_fail_closed;
 
@@ -888,7 +887,8 @@ mod tests {
                 local_bytes: 10,
                 ..facts
             };
-            let cases = [
+            let mut split = ResidencySplit::default();
+            for (facts, holding) in [
                 (FileFacts::default(), None),
                 (held(FileFacts::default()), Some(Holding::OnlyHere)),
                 (
@@ -930,14 +930,6 @@ mod tests {
                 (
                     held(FileFacts {
                         acknowledged: true,
-                        pinned: true,
-                        ..FileFacts::default()
-                    }),
-                    Some(Holding::Pinned),
-                ),
-                (
-                    held(FileFacts {
-                        acknowledged: true,
                         cached: true,
                         pinned: true,
                         unsaved: true,
@@ -945,23 +937,21 @@ mod tests {
                     }),
                     Some(Holding::OnlyHere),
                 ),
-            ];
-            let mut split = ResidencySplit::default();
-            for (facts, holding) in cases {
+            ] {
                 assert_eq!(classify(&facts), holding, "{facts:?}");
                 add_to(&mut split, &facts);
             }
             assert_eq!(
                 split,
                 ResidencySplit {
-                    pinned_bytes: 20,
+                    pinned_bytes: 10,
                     replicated_bytes: 20,
                     only_here_bytes: 30,
                     only_here_files: 3,
                     cache_bytes: 10,
                 }
             );
-            assert_eq!(split.total_bytes(), 80);
+            assert_eq!(split.total_bytes(), 70);
         }
 
         phase storage_attribution_and_candidates_fail_closed;

@@ -1,0 +1,178 @@
+{
+  "app": "app-restart",
+  "said": "Files and Calendar keep what the person made",
+  "family": "settings",
+  "live": "rust",
+  "apps": "file-explorer calendar",
+  "rust": {
+    "id": "so.tilo.calendar",
+    "native": "calendar"
+  },
+  "steps": [
+    {
+      "id": "files-open",
+      "said": "Open Files",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "open": "file-explorer"
+        },
+        {
+          "window_of": "file-explorer"
+        }
+      ],
+      "dark": true,
+      "budget_ms": 60000
+    },
+    {
+      "id": "folder",
+      "said": "Make a folder called Walks",
+      "ops": [
+        {
+          "press": "New folder"
+        },
+        {
+          "wait_for": {
+            "shown": "Name of the new folder"
+          }
+        },
+        {
+          "type": "Walks"
+        },
+        {
+          "key": "Enter"
+        },
+        {
+          "must": [
+            "Walks"
+          ]
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
+      "id": "file",
+      "said": "Make a file called Walk.txt",
+      "ops": [
+        {
+          "press": "More actions"
+        },
+        {
+          "press_any": [
+            {
+              "menuitem": "New file…"
+            },
+            "New file…"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Name of the new file"
+          }
+        },
+        {
+          "type": "Walk"
+        },
+        {
+          "key": "Enter"
+        },
+        {
+          "must": [
+            "Walk.txt"
+          ]
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
+      "id": "files-again",
+      "said": "Quit Files and open it again; the folder and the file are still there",
+      "ops": [
+        {
+          "restart_app": "file-explorer"
+        },
+        {
+          "wait_window": {
+            "app": "file-explorer",
+            "within": 30
+          }
+        },
+        {
+          "must": [
+            "Walks",
+            "Walk.txt"
+          ]
+        }
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "calendar-open",
+      "said": "Open Calendar",
+      "ops": [
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        }
+      ],
+      "dark": true,
+      "budget_ms": 60000
+    },
+    {
+      "id": "event",
+      "said": "Make an event called Walks walk",
+      "ops": [
+        {
+          "press": "New event"
+        },
+        {
+          "type": "Walks walk"
+        },
+        {
+          "key": "Escape"
+        },
+        {
+          "must": {
+            "see": [
+              {
+                "prefix": "Open event Walks walk"
+              }
+            ],
+            "within": 20
+          }
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
+      "id": "calendar-again",
+      "said": "Quit Calendar and open it again; the event is still there",
+      "ops": [
+        {
+          "restart_app": "calendar"
+        },
+        {
+          "wait_window": {
+            "app": "so.tilo.calendar",
+            "within": 30
+          }
+        },
+        {
+          "read": {
+            "app": "so.tilo.calendar",
+            "operation": "read",
+            "contains": "Walks walk"
+          }
+        }
+      ],
+      "budget_ms": 60000
+    }
+  ]
+}

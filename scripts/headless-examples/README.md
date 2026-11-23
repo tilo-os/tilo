@@ -43,36 +43,84 @@ method running, and checks that the shell holds the body's caret, that it follow
 the typing, and that Super+V, pressed the moment the caret moves, opens the
 clipboard pane under that caret's line, its first frame as tall as its page.
 
-## App walks
+## First-hour walks
 
-A Rust app under `apps/` is deleted only once the tilolang app under `apps/tl/`
-does what a person did with it at least as well. `app-walk.py` walks that first
-hour twice — once in the Rust app, once in the tilolang one — in headless
-sessions of their own, and snapshots every step of both so the runs can be put
-side by side and judged:
+Nothing a person sees may be lost when code is deleted: the Rust shell for the
+tilolang one (`apps/tl/shell`), a Rust app for its tilolang port, the session
+moving onto the device daemon. Each walk is one thing a person meets in their
+first hour — the launcher, the switcher, search, quick settings, an app — and
+says what they do and what they must see. `app-walk.py` walks it in every
+version its step file names that is still in the tree, one headless session
+each, snapshots every step (the marked ones in the dark theme too), and holds
+what it found to the walk's baseline from main.
+
+**A lane runs one command, before it pushes:**
 
 ```bash
-python3 scripts/headless-examples/app-walk.py notes --out target/app-walk/notes
-python3 scripts/headless-examples/app-walk.py notes --only tl
+scripts/headless-examples/walk.sh switcher          # red if a step main walked is not walked here
+scripts/headless-examples/walk.sh --list            # the walks there are
 ```
 
-One step file per app under `app-walks/` holds the steps; both versions are
-driven by it, and only the control each version answers to is named per version.
-Every step is snapshotted in the light theme, and the ones the step file marks
-`dark` again in the dark theme. `walk.json` in the output says, per version,
-what each step found: the snapshot, how long the app took to answer, how many
-notes it held afterwards, and — where a version offers no control for a step —
-that it has none; `walk.md` is the same as a page, the versions' snapshots and
-findings step by step. A walk needs the session build and the `tilolang` tool
-that `dist/dev/nested-session-build.sh` makes.
+It runs the t check `app-walk/<walk>` on this tree, brings its outputs back to
+`target/walk/<walk>/now`, the baseline run's to `target/walk/<walk>/baseline-<run>`,
+and writes `target/walk/<walk>/index.md`: every step, main's shots beside this
+tree's, and the comparison. The check is red when a step walked on main is not
+walked here (a control, a state, a window a person waited for is missing, or a
+step went over its `budget_ms`), or takes twice as long and a second more.
+Controls drawn on main and gone here are listed for the person reading the shots.
 
-t runs one as the check `app-walk/APP` (dispatch only), on the session the
-nested-session check built: `t test app-walk/notes` walks Notes there, and
-`t outputs app-walk/notes --to DIR` brings back DIR/walk.md with its snapshots.
+**Names do not matter.** A walk is of the switcher, not of a binary: its step file
+names versions (`rust`, `tl`) and, per version, what differs — how the session
+starts (`"session_args": ["--shell", "screen"]` for the tilolang shell), the app
+it opens (`id`, a native app of the session build or a tilolang `package`) and,
+where they differ, the controls. A version whose `source` (by default its
+package's directory) is gone from the tree is not walked, and a version the
+baseline does not have is held to the version a person got on main (the step
+file's `live`). So the lane that deletes `apps/tasks` runs `scripts/headless-examples/walk.sh tasks`
+before and after unchanged: after, only the tilolang Tasks is walked, and it is
+held to the Rust one's baseline.
 
-| Walk | The app, in the versions its file names |
-|---|---|
-| `notes.json` | Notes: `apps/tl/notes` (`so.tilo.notes`), after the native app it replaced was deleted |
+**Families share a session.** Walks that name the same `family` (`shell`, `apps`,
+`settings`) run in one session per version, one after another, with a reset between
+them (windows closed, nothing over the desktop, notifications cleared, the light
+theme); `order` puts a walk that locks the screen last. t runs one check per family
+and one per walk in none, and each walk reports how long it took (`walk_ms`) beside
+the session's start (`session_start_ms`).
+
+**Writing a walk.** One file per walk under `app-walks/`, named in t.toml's
+`app-walk/{app}` matrix (a test holds the two together). A step is
+`{"id", "said", "ops", "dark"?, "budget_ms"?}`; ops are the methods `op_*` of
+`app-walk.py`'s `Walk` — `must` (what has to be drawn: a name, an identity, or a
+list of alternatives), `must_not`, `press`, `click`, `type`, `key`, `chord`,
+`open` (another app, by directory name), `do` (an action by its address, red when
+refused), `read` (an action the app publishes, held to the paths or words a
+person made), `act` (an action by resource and operation, its answer kept for a
+later step), `serve` (a stand-in, and test pages on this machine's loopback),
+`image` (a picture for an app that shows photographs), `windows`, `search`,
+`theme`, `wait_for`… `scripts/headless-examples/walk.sh WALK
+--discover` keeps every step's controls and the desktop's actions in `walk.json`,
+for naming the control that is really there.
+
+**Several devices of one person.** A walk naming `"devices": ["laptop", "phone"]` runs a
+headless session per device on the same host, each on its own state and device key. The first
+device is the walk's own session; each further one is added the way a person adds a device:
+the first shows Add a device, the new device's requester takes the link and prints its code,
+the code is approved on the first device, and the new device starts as that person and is
+shown the first device's workspace. They find each other on the host's loopback. Every op
+runs on the first device unless it says `{"on": "phone", "must": [...]}` or its step says
+`"on": "phone"`, and every step is shot on each device. An entry such as `{"name": "laptop",
+"session_args": ["--output", "B=1280x720"]}` starts that device differently. `use` runs an
+action found by what it acts on (`kind`, `label`, `action`) rather than by an instance's id,
+and `keep` holds a value from its answer for a later op on any device (`{revision}`);
+`has_file` finds a file a device was sent or synced in its own state.
+
+**The baseline** is `app-walks/baseline/<walk>.json`: per version, per step,
+whether main walked it, how long it took and the controls it drew, and the t run
+that keeps main's shots. `scripts/headless-examples/walk.sh WALK --write-baseline` on main writes it;
+a lane that fixes a step main could not walk refreshes it in the same push.
+
+`app-walk.py WALK --out DIR [--only rust|tl] [--compare [FILE]]` runs a walk
+without t, on a session build of this machine (`--build` makes one).
 
 For examples that connect to an existing compositor, start it once:
 

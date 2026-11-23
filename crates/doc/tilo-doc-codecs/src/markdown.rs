@@ -8,8 +8,8 @@ use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use tilo_content::{ContentInputs, ContentSource};
-use tilo_doc::document::{MarkSpan, MarkValue};
-use tilo_doc::export::{CellGrid, ExportBlock, InlinePlan};
+use tilo_doc::document::MarkSpan;
+use tilo_doc::export::{CellGrid, ExportBlock};
 use tilo_doc::model::{DocMut, DocRef};
 use tilo_doc::schema::{
     MARK_NOTE_REF, PROP_AUTHOR, PROP_KEYWORDS, PROP_MODIFIED, PROP_SUBJECT, PROP_TITLE,
@@ -243,6 +243,11 @@ fn span_style_attr(tag: &str) -> Option<String> {
 
 /// Per-document parser state threaded through the pulldown-cmark event loop; bundled into one
 /// struct so the loop can be split into named helpers below instead of one 300-line function.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one flag per state the event walker carries: a list item, a table cell, a quote, \
+              and the line break an alert's marker took"
+)]
 #[derive(Default)]
 struct ImportState {
     prev: Option<String>,
@@ -270,19 +275,50 @@ struct ImportState {
     image: Option<ImageIn>,
     in_quote: bool,
     quote_block: Option<String>,
+    /// The text a quote's first line has said so far, while it may still be an alert's marker:
+    /// a reader splits `[!WARNING]` into several text events, so the marker is read as it
+    /// arrives.
+    quote_prefix: Option<String>,
+    /// The space after an alert's marker, which the marker takes with it.
+    trim_space: bool,
+    /// The line break after an alert's marker, which the marker took with it.
+    skip_break: bool,
 }
 
-const CALLOUTS: [&str; 5] = ["note", "tip", "important", "warning", "caution"];
+/// What a quote's first line has said of an alert's marker so far.
+enum AlertRead {
+    /// The marker may still be coming.
+    Waiting,
+    /// The line does not open with a marker.
+    NotOne,
+    /// It is this alert's; the marker and its following space are `marker` characters from the
+    /// block's start, and a space yet to arrive is `trim`med.
+    One {
+        kind: &'static str,
+        marker: usize,
+        trim: bool,
+    },
+}
+
+/// The callouts a quote can be, by the name its `alert` attribute stores: GitHub-flavoured
+/// Markdown's alerts.
+pub const CALLOUTS: [&str; 5] = ["note", "tip", "important", "warning", "caution"];
+
+/// The callout `name` names, its case aside.
+#[must_use]
+pub fn callout_named(name: &str) -> Option<&'static str> {
+    let name = name.trim();
+    CALLOUTS
+        .into_iter()
+        .find(|callout| callout.eq_ignore_ascii_case(name))
+}
 
 const CALLOUT_ATTR: &str = "alert";
 
 fn alert_of(text: &str) -> Option<(&'static str, &str)> {
     let rest = text.strip_prefix("[!")?;
     let (name, said) = rest.split_once(']')?;
-    let kind = CALLOUTS
-        .into_iter()
-        .find(|callout| callout.eq_ignore_ascii_case(name.trim()))?;
-    Some((kind, said))
+    Some((callout_named(name)?, said))
 }
 
 struct ImageIn {
@@ -396,6 +432,8 @@ impl ImportState {
                         if self.in_quote { "quote" } else { "paragraph" },
                     );
                     self.quote_block = self.in_quote.then_some(id);
+                    self.quote_prefix = self.in_quote.then(String::new);
+                    self.trim_space = false;
                 }
             }
             Event::End(TagEnd::Paragraph) => {
@@ -403,6 +441,7 @@ impl ImportState {
                     self.cur = None;
                 }
                 self.quote_block = None;
+                self.quote_prefix = None;
             }
             Event::Start(Tag::List(start)) => self.ordered_stack.push(start.is_some()),
             Event::End(TagEnd::List(_)) => {
@@ -495,6 +534,10 @@ impl ImportState {
 
     /// Toggle-mark and inline-content events: strong/em/strike, links, footnote refs, text,
     /// inline code, breaks, and the `<span>`/`<sup>`/`<sub>` HTML fallback.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the dispatch over every inline event, one arm each"
+    )]
     fn handle_inline_event(&mut self, doc: &mut DocMut, ev: &Event) {
         match ev {
             Event::Start(Tag::Strong) => self.mark_stack.push(("strong", self.cur_len)),
@@ -559,13 +602,20 @@ impl ImportState {
                 }
             }
             Event::Text(t) => {
+                // A text after the marker means the break the marker would have taken is not
+                // coming.
+                self.skip_break = false;
                 if let Some(image) = self.image.as_mut() {
                     image.alt.push_str(t);
                 } else if let Some(b) = self.cur.clone() {
-                    let start = self.cur_len;
-                    doc.splice_text(&b, self.cur_len, 0, t);
-                    self.cur_len = self.cur_len.saturating_add(t.chars().count());
-                    self.take_alert(doc, &b, start, t);
+                    let text = if std::mem::take(&mut self.trim_space) {
+                        t.strip_prefix(' ').unwrap_or_else(|| t.as_ref())
+                    } else {
+                        t.as_ref()
+                    };
+                    doc.splice_text(&b, self.cur_len, 0, text);
+                    self.cur_len = self.cur_len.saturating_add(text.chars().count());
+                    self.read_alert(doc, &b, text);
                 }
             }
             Event::Code(t) => {
@@ -583,11 +633,14 @@ impl ImportState {
                 }
             }
             Event::SoftBreak | Event::HardBreak => {
-                if let Some(image) = self.image.as_mut() {
-                    image.alt.push(' ');
-                } else if let Some(b) = self.cur.as_ref() {
-                    doc.splice_text(b, self.cur_len, 0, " ");
-                    self.cur_len = self.cur_len.saturating_add(1);
+                // A break right after an alert's marker belongs to the marker it took.
+                if !std::mem::take(&mut self.skip_break) {
+                    if let Some(image) = self.image.as_mut() {
+                        image.alt.push(' ');
+                    } else if let Some(b) = self.cur.as_ref() {
+                        doc.splice_text(b, self.cur_len, 0, " ");
+                        self.cur_len = self.cur_len.saturating_add(1);
+                    }
                 }
             }
             Event::InlineHtml(html) | Event::Html(html) => self.handle_inline_html(html),
@@ -596,18 +649,54 @@ impl ImportState {
     }
 
     /// A quote that opens with an alert's marker is that alert: the marker is not part of what
-    /// it says, and the block keeps which alert it is.
-    fn take_alert(&mut self, doc: &mut DocMut, block: &str, start: usize, text: &str) {
-        if start > 0 || self.quote_block.as_deref() != Some(block) {
+    /// it says, and the block keeps which alert it is. A reader hands the marker over in
+    /// pieces (`[`, `!WARNING`, `]`), so it is read as each piece arrives.
+    fn read_alert(&mut self, doc: &mut DocMut, block: &str, text: &str) {
+        if self.quote_block.as_deref() != Some(block) {
             return;
         }
-        let Some((kind, said)) = alert_of(text) else {
-            return;
+        let read = {
+            let Some(prefix) = self.quote_prefix.as_mut() else {
+                return;
+            };
+            prefix.push_str(text);
+            match prefix.find(']') {
+                None if prefix.chars().count() > 24 => AlertRead::NotOne,
+                None => AlertRead::Waiting,
+                Some(close) => match alert_of(prefix.get(..=close).unwrap_or_default()) {
+                    None => AlertRead::NotOne,
+                    Some((kind, _)) => {
+                        // The marker and the space after it are the marker's, not the
+                        // quote's; a space that has not arrived yet is dropped when it does.
+                        let rest = prefix.get(close.saturating_add(1)..).unwrap_or_default();
+                        let (space, trim) = match rest.chars().next() {
+                            None => (0, true),
+                            Some(' ') => (1, false),
+                            Some(_) => (0, false),
+                        };
+                        AlertRead::One {
+                            kind,
+                            marker: close.saturating_add(1).saturating_add(space),
+                            trim,
+                        }
+                    }
+                },
+            }
         };
-        let marker = text.chars().count().saturating_sub(said.chars().count());
-        doc.splice_text(block, 0, isize::try_from(marker).unwrap_or(isize::MAX), "");
-        doc.set_attr(block, CALLOUT_ATTR, kind);
-        self.cur_len = self.cur_len.saturating_sub(marker);
+        match read {
+            AlertRead::Waiting => {}
+            AlertRead::NotOne => self.quote_prefix = None,
+            AlertRead::One { kind, marker, trim } => {
+                doc.splice_text(block, 0, isize::try_from(marker).unwrap_or(isize::MAX), "");
+                doc.set_attr(block, CALLOUT_ATTR, kind);
+                self.cur_len = self.cur_len.saturating_sub(marker);
+                self.quote_prefix = None;
+                self.trim_space = trim;
+                if self.cur_len == 0 {
+                    self.skip_break = true;
+                }
+            }
+        }
     }
 
     fn handle_inline_html(&mut self, html: &str) {
@@ -776,7 +865,8 @@ fn export_md(
             _ => {
                 if b.flag("code") {
                     let lang = b.str_attr("lang").unwrap_or("");
-                    let fence = "`".repeat(fence_length(&b.text));
+                    let lines: Vec<&str> = b.text.split('\n').collect();
+                    let fence = fence_for(&lines);
                     out.push_str(&fence);
                     out.push_str(lang);
                     out.push('\n');
@@ -785,12 +875,21 @@ fn export_md(
                         out.push('\n');
                     }
                     out.push_str(&fence);
+                } else if b.kind == "paragraph"
+                    && b.marks.is_empty()
+                    && (picture_source(&b.text) || b.flag(crate::rich::TABLE_SOURCE))
+                {
+                    // A picture, and a table kept as its Markdown source, are the Markdown they
+                    // are written as; written raw, a reader of the file shows the picture and
+                    // the table, not the markup.
+                    out.push_str(&b.text);
                 } else {
-                    out.push_str(&render_inline_notes(
-                        &b.text,
-                        &b.marks,
-                        Some(&mut footnotes),
-                    ));
+                    let said = render_inline_notes(&b.text, &b.marks, Some(&mut footnotes));
+                    if b.kind == "paragraph" {
+                        out.push_str(&guard_paragraph(&said));
+                    } else {
+                        out.push_str(&said);
+                    }
                 }
             }
         }
@@ -813,18 +912,19 @@ fn export_md(
     out
 }
 
-/// The backticks a code block's fence takes: three, or one more than the
-/// longest line of `code` that is only backticks (surrounding whitespace
-/// aside), since such a line would close a shorter fence and end the block
-/// early. Markdown closes a fence on a line indented up to three spaces,
-/// such as the fence of a list item the code shows.
-fn fence_length(code: &str) -> usize {
-    code.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && line.bytes().all(|byte| byte == b'`'))
-        .map(str::len)
+/// The backticks a fenced block of `lines` takes: three, or one more than the longest run a
+/// line opens with, since a run of that many backticks would close a shorter fence and end the
+/// block early. Markdown closes a fence on a line indented up to three spaces, such as the
+/// fence of a list item the code shows.
+#[must_use]
+pub fn fence_for(lines: &[&str]) -> String {
+    let longest = lines
+        .iter()
+        .map(|line| line.trim_start().chars().take_while(|c| *c == '`').count())
+        .filter(|run| *run >= 3)
         .max()
-        .map_or(3, |longest| longest.saturating_add(1).max(3))
+        .unwrap_or(0);
+    "`".repeat(longest.saturating_add(1).max(3))
 }
 
 /// A quote as Markdown: each of its lines set apart (`> …`), and an alert of one opening with
@@ -833,11 +933,7 @@ fn render_quote(block: &BlockView, footnotes: &mut Footnotes<'_>) -> String {
     let mut out = String::new();
     let alert = block
         .str_attr(CALLOUT_ATTR)
-        .and_then(|name| {
-            CALLOUTS
-                .into_iter()
-                .find(|callout| callout.eq_ignore_ascii_case(name.trim()))
-        })
+        .and_then(callout_named)
         .map(str::to_ascii_uppercase);
     if let Some(alert) = alert {
         let _ = writeln!(out, "> [!{alert}]");
@@ -887,61 +983,37 @@ fn render_table(grid: &CellGrid<'_>) -> String {
     out
 }
 
-fn mark_delim(m: &MarkSpan) -> Option<&'static str> {
-    match m.name.as_str() {
-        "strong" => Some("**"),
-        "em" => Some("*"),
-        "strike" => Some("~~"),
-        "fontFamily" if m.value == MarkValue::Str("mono".to_string()) => Some("`"),
-        _ => None,
-    }
+/// A paragraph that is only a picture: the Markdown a view draws as an image, `![alt](source)`,
+/// and nothing beside it.
+fn picture_source(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix("![") else {
+        return false;
+    };
+    let Some((alt, target)) = rest.split_once("](") else {
+        return false;
+    };
+    let Some(target) = target.strip_suffix(')') else {
+        return false;
+    };
+    !alt.contains(['\n', '[']) && !target.is_empty() && !target.contains(['\n', ')'])
 }
 
-/// Markdown has no native colour/font-size/font-family syntax, so these run marks ride
-/// an inline `<span style=…>` on export/import (kept lossless with `.odt`/`.docx`);
-/// `fontFamily`=mono is excluded. CSS declaration for a styling mark at char `i`, if any.
-fn span_decl(m: &MarkSpan) -> Option<String> {
-    match m.name.as_str() {
-        "color" => m.value.as_str().map(|c| format!("color: {c}")),
-        "highlight" => m.value.as_str().map(|c| format!("background: {c}")),
-        "fontSize" => m.value.as_int().map(|n| format!("font-size: {n}pt")),
-        "fontFamily" => match m.value.as_str() {
-            Some("serif") => Some("font-family: serif".into()),
-            Some("sans") => Some("font-family: sans-serif".into()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Combined `style="…"` value for a run's styling marks; sorted for a
-/// stable, idempotent round-trip.
-fn span_style(marks: &[&MarkSpan]) -> Option<String> {
-    let mut decls: Vec<String> = marks.iter().filter_map(|mark| span_decl(mark)).collect();
-    if decls.is_empty() {
-        return None;
-    }
-    decls.sort();
-    decls.dedup();
-    Some(decls.join("; "))
-}
-
-fn vert_wrap(marks: &[&MarkSpan]) -> Option<&'static str> {
-    let mut sup = false;
-    let mut sub = false;
-    for m in marks {
-        match m.name.as_str() {
-            "super" => sup = true,
-            "sub" => sub = true,
-            _ => {}
+/// A paragraph's text must not read as a block marker: a line that opens like a heading, a
+/// quote, a bullet or a numbered item is escaped where the marker starts.
+#[must_use]
+pub fn guard_paragraph(rendered: &str) -> String {
+    let chars: Vec<char> = rendered.chars().collect();
+    let first = chars.first().copied();
+    let digits = chars.iter().take_while(|c| c.is_ascii_digit()).count();
+    let numbered = digits > 0 && matches!(chars.get(digits), Some('.' | ')'));
+    match first {
+        Some('#' | '>' | '-' | '+') => format!("\\{rendered}"),
+        _ if numbered => {
+            let head: String = chars.iter().take(digits).collect();
+            let tail: String = chars.iter().skip(digits).collect();
+            format!("{head}\\{tail}")
         }
-    }
-    if sup {
-        Some("sup")
-    } else if sub {
-        Some("sub")
-    } else {
-        None
+        _ => rendered.to_owned(),
     }
 }
 
@@ -1001,96 +1073,29 @@ fn render_inline(text: &str, marks: &[MarkSpan]) -> String {
     render_inline_notes(text, marks, None)
 }
 
-/// Re-emits inline marks as Markdown: closes ending toggle marks, handles the link
-/// transition, then opens starting ones; a `note-ref` char renders as `[^N]` via `footnotes`.
+/// `text` with `marks` as inline Markdown, by the one inline renderer; a referenced note is
+/// written as the footnote number this export gave it.
 fn render_inline_notes(
     text: &str,
     marks: &[MarkSpan],
-    mut footnotes: Option<&mut Footnotes>,
+    footnotes: Option<&mut Footnotes<'_>>,
 ) -> String {
-    let plan = InlinePlan::new(text, marks);
-    let n = text.chars().count();
-    let cap = n.saturating_add(1);
-    let mut open_at: Vec<Vec<&'static str>> = vec![Vec::new(); cap];
-    let mut close_at: Vec<Vec<&'static str>> = vec![Vec::new(); cap];
-    for m in marks {
-        if let Some(d) = mark_delim(m) {
-            let s = m.start.min(n);
-            let e = m.end.min(n);
-            if s >= e {
-                continue;
-            }
-            if let Some(slot) = open_at.get_mut(s) {
-                slot.push(d);
-            }
-            if let Some(slot) = close_at.get_mut(e) {
-                slot.push(d);
-            }
+    match footnotes {
+        Some(numbers) => {
+            crate::inline::render_with(text, marks, crate::inline::Style::DOCUMENT, |id| {
+                let n = numbers.number(id);
+                Some(format!("[^{n}]"))
+            })
         }
+        None => crate::inline::render_with(text, marks, crate::inline::Style::DOCUMENT, |_| None),
     }
-    let mut out = String::new();
-    let mut cur_link: Option<&str> = None;
-    let mut cur_span: Option<String> = None;
-    let mut cur_wrap: Option<&'static str> = None;
-    for point in plan.points() {
-        for d in close_at.get(point.offset).into_iter().flatten() {
-            out.push_str(d);
-        }
-        let span = point.run.as_ref().and_then(|run| span_style(&run.marks));
-        let wrap = point.run.as_ref().and_then(|run| vert_wrap(&run.marks));
-        let link = point.run.as_ref().and_then(|run| run.link);
-        let link_changing = link != cur_link;
-        if (link_changing || span != cur_span || wrap != cur_wrap)
-            && let Some(w) = cur_wrap.take()
-        {
-            let _ = write!(out, "</{w}>");
-        }
-        if (link_changing || span != cur_span) && cur_span.is_some() {
-            out.push_str("</span>");
-            cur_span = None;
-        }
-        if link_changing {
-            if let Some(href) = cur_link {
-                out.push_str("](");
-                out.push_str(href);
-                out.push(')');
-            }
-            cur_link = link;
-            if cur_link.is_some() {
-                out.push('[');
-            }
-        }
-        if cur_span.is_none()
-            && let Some(style) = &span
-        {
-            let _ = write!(out, r#"<span style="{style}">"#);
-            cur_span = Some(style.clone());
-        }
-        if cur_wrap.is_none()
-            && let Some(w) = wrap
-        {
-            let _ = write!(out, "<{w}>");
-            cur_wrap = Some(w);
-        }
-        for d in open_at.get(point.offset).into_iter().flatten() {
-            out.push_str(d);
-        }
-        if let Some(run) = &point.run {
-            if let (Some(fns), Some(note_id)) = (footnotes.as_deref_mut(), run.note_reference) {
-                let num = fns.number(note_id);
-                let _ = write!(out, "[^{num}]");
-            } else {
-                out.push_str(run.text);
-            }
-        }
-    }
-    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tilo_doc::Document;
+    use tilo_doc::document::MarkValue;
     use tilo_doc::snapshot::{AttrVal, DocSnapshot};
 
     #[allow(
@@ -1343,6 +1348,27 @@ mod tests {
                 .unwrap(),
         )
         .unwrap()
+    }
+
+    fn a_quote_opening_with_an_alert_marker_is_that_alert() {
+        for source in [
+            "> [!WARNING] mind the gap\n",
+            "> [!warning]\n> mind the gap\n",
+        ] {
+            let snap = import(source);
+            assert_eq!(snap.blocks.len(), 1, "{source:?}: {:?}", snap.blocks);
+            let quote = &snap.blocks[0];
+            assert_eq!(quote.kind, "quote", "{source:?}");
+            assert_eq!(
+                quote.attrs.get("alert"),
+                Some(&AttrVal::Str("warning".into())),
+                "{source:?}: {:?}",
+                quote.attrs
+            );
+            assert_eq!(quote.text, "mind the gap", "{source:?}");
+            let out = export(source);
+            assert_eq!(out, "> [!WARNING]\n> mind the gap\n", "{source:?}");
+        }
     }
 
     fn a_code_block_showing_a_fence_exports_as_one_block() {
@@ -1822,10 +1848,14 @@ mod tests {
 
     #[test]
     fn markdown_roundtrips_blocks_marks_front_matter_and_footnotes() {
-        let cases: [(&str, fn()); 5] = [
+        let cases: [(&str, fn()); 6] = [
             (
                 "markdown block structure roundtrips",
                 markdown_block_structure_roundtrips,
+            ),
+            (
+                "a quote opening with an alert marker is that alert",
+                a_quote_opening_with_an_alert_marker_is_that_alert,
             ),
             (
                 "a code block showing a fence exports as one block",

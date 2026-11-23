@@ -11,11 +11,13 @@
 //! `keep-awake`, `release`, `power-key`, `lid` and `sleep` actions) and
 //! `power:battery`. Nothing here touches the compositor or draws anything.
 
+#[cfg(feature = "service")]
 pub mod effects;
 mod model;
 /// What a resource of a kind this crate publishes from outside a document is
 /// called, in the person's language: the kind's entry in the catalogue beside
 /// this crate, read the way a declaration's words are.
+#[cfg(feature = "service")]
 mod i18n {
     tilo_resource::declared_catalogue!(CATALOGUE);
 
@@ -24,21 +26,31 @@ mod i18n {
     }
 }
 
+#[cfg(feature = "service")]
 mod service;
 
+#[cfg(feature = "service")]
 use std::collections::BTreeMap;
+#[cfg(feature = "service")]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(feature = "service")]
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "service")]
 use std::time::Instant;
 
+#[cfg(feature = "service")]
 use tilo_lock::MutexRecover as _;
+#[cfg(feature = "service")]
 use tilo_power_mgmt::inhibit::{INHIBIT_IDLE, INHIBIT_SUSPEND};
+#[cfg(feature = "service")]
 use tilo_power_mgmt::{
     InhibitRegistry, InhibitToken, PowerAction, PowerBridge, PowerPolicy, PowerSignal,
 };
 
 pub use model::{Battery, ChargeCapCapability, Notice, Sleep};
+#[cfg(feature = "service")]
 pub use os_actions::battery::BATTERY;
+#[cfg(feature = "service")]
 pub use service::{SLEEP, SessionPower, battery_surface};
 
 /// The pack's charge-limit control as this machine offers it: the limit the
@@ -46,6 +58,7 @@ pub use service::{SLEEP, SessionPower, battery_surface};
 /// [`tilo_power_mgmt::sysfs`] reading plus the narrowly scoped
 /// `tilo-battery-cap@` service that owns the write ([`OsChargePack`]); a
 /// test's is in memory.
+#[cfg(feature = "service")]
 pub trait ChargePack: Send + Sync + std::fmt::Debug {
     /// The limit this pack's driver offers, its current value and the ones
     /// it takes; `None` where the hardware offers no limit.
@@ -61,9 +74,11 @@ pub trait ChargePack: Send + Sync + std::fmt::Debug {
 
 /// This machine's pack: the driver's limit, written through the
 /// `tilo-battery-cap@` service that alone may touch it.
+#[cfg(feature = "service")]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OsChargePack;
 
+#[cfg(feature = "service")]
 impl ChargePack for OsChargePack {
     fn limit(&self) -> Option<ChargeCapCapability> {
         os_actions::charge_capability()
@@ -79,11 +94,13 @@ impl ChargePack for OsChargePack {
 ///
 /// Clone freely: every clone shares one policy, one registry and one
 /// mailbox.
+#[cfg(feature = "service")]
 #[derive(Clone, Debug)]
 pub struct PowerLink {
     inner: Arc<Inner>,
 }
 
+#[cfg(feature = "service")]
 #[derive(Debug)]
 struct Inner {
     bridge: PowerBridge,
@@ -105,18 +122,21 @@ struct Inner {
     attached: AtomicBool,
 }
 
+#[cfg(feature = "service")]
 #[derive(Debug)]
 struct Held {
     reason: String,
     _token: InhibitToken,
 }
 
+#[cfg(feature = "service")]
 impl Default for PowerLink {
     fn default() -> Self {
         Self::new(PowerPolicy::default())
     }
 }
 
+#[cfg(feature = "service")]
 impl PowerLink {
     /// A link running `policy`, as the session's settings loader resolved
     /// it, over this machine's own pack.
@@ -358,18 +378,14 @@ impl PowerLink {
             profiles: self.inner.bridge.profiles(),
         }
     }
-
-    /// Switch to the power profile `profile` names, one of the profiles
-    /// [`Self::sleep`] offers.
-    pub fn set_profile(&self, profile: &str) {
-        self.inner.bridge.set_profile(profile);
-    }
 }
 
 /// `timeout` in whole minutes, rounding up: what a person reads.
+#[cfg(feature = "service")]
 fn minutes(timeout: Option<std::time::Duration>) -> Option<u64> {
     timeout.map(|timeout| timeout.as_secs().div_ceil(60))
 }
 
 #[cfg(test)]
+#[cfg(feature = "service")]
 mod tests;

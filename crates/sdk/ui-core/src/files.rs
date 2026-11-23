@@ -86,8 +86,10 @@ pub fn dropped_file(path: &Path) -> Result<File, FileRefusal> {
     let (dir, file) =
         tilo_files::file_at(path).map_err(|error| FileRefusal::Unreadable(error.to_string()))?;
     let bytes = tilo_files::blocking::read_bounded(&dir, &file, MAX_FILE_BYTES.saturating_add(1))
-        .map_err(|error| FileRefusal::Unreadable(error.to_string()))?
-        .ok_or(FileRefusal::TooLarge)?;
+        .map_err(|error| match error {
+        tilo_files::FsError::FileTooLarge => FileRefusal::TooLarge,
+        other => FileRefusal::Unreadable(other.to_string()),
+    })?;
     keep_file(&name, &bytes)
 }
 

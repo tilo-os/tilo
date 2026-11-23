@@ -3778,7 +3778,7 @@ async fn drive_shovel(
     #[cfg(test)]
     let mut key_timer_rounds = 0_usize;
     let signer: SharedSigner = std::rc::Rc::new(tokio::sync::Mutex::new(signer));
-    let person = PersonalCluster::of(&presentation, &signer).map(std::rc::Rc::new);
+    let person = PersonWorkspace::of(&presentation, &signer).map(std::rc::Rc::new);
     let queue = DocumentQueue::start(signer.clone(), inbound_tx.clone());
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
@@ -4456,7 +4456,7 @@ async fn install_sdk_encryption(
 /// launch workspace's. The identity service lends the proof only to an app
 /// that keeps something of the person's there, so it is asked when a route
 /// there first joins, and never by an app that joins none.
-struct PersonalCluster {
+struct PersonWorkspace {
     workspace: String,
     device_certificate: Vec<u8>,
     signer: SharedSigner,
@@ -4467,7 +4467,7 @@ struct PersonalCluster {
     clippy::future_not_send,
     reason = "the host identity transport is constructed and retained only on the shovel LocalSet"
 )]
-impl PersonalCluster {
+impl PersonWorkspace {
     /// The person's own workspace as `presentation`'s certified identity
     /// names it, signed for by `signer`; `None` for a connection without a
     /// certified identity, or one launched into that workspace.
@@ -4492,7 +4492,7 @@ impl PersonalCluster {
                 return None;
             }
         };
-        let workspace = collab_types::personal_cluster(&root.user_public_key).to_string();
+        let workspace = collab_types::person_workspace(&root.user_public_key).to_string();
         (workspace != launch.workspace_id).then(|| Self {
             workspace,
             device_certificate: launch.device_certificate,
@@ -4600,7 +4600,7 @@ struct SdkJoinContext<'a> {
     client: &'a runtime_collab::CollabClient,
     presentation: &'a [u8],
     /// The person's own workspace, when it is not the launch's.
-    person: Option<&'a PersonalCluster>,
+    person: Option<&'a PersonWorkspace>,
     member_handle: Option<&'a str>,
     member_kind: &'a str,
     inbound_tx: &'a InboundBridge,
@@ -4615,8 +4615,8 @@ struct SdkRoute {
     workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,
     /// The queries the app holds open in the device's store: each one's task carrying its pages.
     resource_queries: std::collections::HashMap<u64, tokio::task::AbortHandle>,
-    /// The task carrying what the holding workspaces say of the records the app last named.
-    held_elsewhere: Option<tokio::task::AbortHandle>,
+    /// The task carrying what the host says of the actions the window last named.
+    shown_actions: Option<tokio::task::AbortHandle>,
     committed: bool,
 }
 
@@ -7117,40 +7117,40 @@ async fn dispatch_sdk_request(
                 }
             }
         }
-        CollabRequest::DecideHeldElsewhere { records } => {
-            if let Some(earlier) = route.held_elsewhere.take() {
+        CollabRequest::DecideShownActions { actions } => {
+            if let Some(earlier) = route.shown_actions.take() {
                 earlier.abort();
             }
-            if records.is_empty() {
+            if actions.is_empty() {
                 return true;
             }
-            match route.channel.held_elsewhere(records.clone()).await {
+            match route.channel.shown_actions(actions.clone()).await {
                 Ok(verdicts) => {
                     let tx = inbound_tx.clone();
                     let task = tokio::task::spawn_local(async move {
                         while let Ok(verdicts) = verdicts.read().await {
                             if !tx
-                                .send_durable(CollabEvent::HeldElsewhereVerdicts { verdicts })
+                                .send_durable(CollabEvent::ActionVerdicts { verdicts })
                                 .await
                             {
                                 break;
                             }
                         }
                     });
-                    route.held_elsewhere = Some(task.abort_handle());
+                    route.shown_actions = Some(task.abort_handle());
                 }
                 Err(error) => {
                     let reason = format!("The host couldn't be asked about this: {error}");
-                    let verdicts = records
+                    let verdicts = actions
                         .into_iter()
-                        .map(|record| runtime_collab::held_elsewhere::HeldDecision {
-                            record,
-                            verdict: runtime_collab::held_elsewhere::HeldVerdict::Refused(
+                        .map(|action| runtime_collab::shown_actions::ActionDecision {
+                            action,
+                            verdict: runtime_collab::shown_actions::ActionVerdict::Refused(
                                 reason.clone(),
                             ),
                         })
                         .collect();
-                    let _ = inbound_tx.send_reply(CollabEvent::HeldElsewhereVerdicts { verdicts });
+                    let _ = inbound_tx.send_reply(CollabEvent::ActionVerdicts { verdicts });
                 }
             }
         }

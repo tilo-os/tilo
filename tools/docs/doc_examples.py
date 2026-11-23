@@ -8,13 +8,19 @@ code block whose info string is `<lang> example=<id>`. Consecutive blocks with
 one id are that example's tabs, and each of them is the whole program its
 language needs: a Python program importing `tilo`, a TypeScript module
 importing `tilo-sdk`, a shell program running the `tilo` command. A block
-whose info string says `fragment` is a partial snippet and is not run.
+whose info string says `fragment` is a partial snippet and is not run. A block
+whose info string says `host=<name>` runs on an environment of that name, not
+the API server every other example shares: its check brings that environment
+up and runs it with `--host <name>`, and `run` without `--host` leaves it out.
 
 `check` enforces the conventions and runs nothing. `list` prints what the pages
 carry. `run` executes every block against a local Tilo: `--api` names the
 `api-on-server` example of `tilo-agent-session`, which serves a host with its
 API and runs the program with `TILO_API_URL`, `TILO_API_KEY` and `TILO_INVITEE`
-set, so an example reaches the API the way the published one reaches tilo.sh. Python runs
+set, so an example reaches the API the way the published one reaches tilo.sh.
+With `--host`, the examples of that host run instead, in the environment as it
+is (a stack's check exports `TILO_API_URL` and `TILO_API_KEY`), and `--api` is
+not needed. Python runs
 from `sdk/python` with uv, TypeScript resolves `tilo-sdk` to the tree's
 `sdk/typescript` and runs with bun, and `sh` runs the `tilo` command `--tilo`
 names.
@@ -77,6 +83,7 @@ class Block:
     example: str | None
     fragment: bool
     code: str
+    host: str | None = None
 
     @property
     def location(self) -> str:
@@ -97,6 +104,10 @@ class Example:
     @property
     def languages(self) -> tuple[str, ...]:
         return tuple(block.lang for block in self.blocks)
+
+    @property
+    def host(self) -> str | None:
+        return self.blocks[0].host
 
 
 @dataclass(frozen=True)
@@ -141,6 +152,7 @@ def blocks_of(page: str, markdown: str) -> Iterator[Block]:
         lang = words[0] if words else ""
         attributes = words[1:]
         ids = [word.partition("=")[2] for word in attributes if word.partition("=")[0] == "example"]
+        hosts = [word.partition("=")[2] for word in attributes if word.partition("=")[0] == "host"]
         lines = run[1:-1] if len(run) > 1 and closing_fence(run[-1][1]) else run[1:]
         yield Block(
             page=page,
@@ -149,6 +161,7 @@ def blocks_of(page: str, markdown: str) -> Iterator[Block]:
             example=ids[0] if ids else None,
             fragment="fragment" in attributes,
             code="\n".join(line for _, line in lines),
+            host=hosts[0] if hosts else None,
         )
 
 
@@ -173,6 +186,14 @@ def block_problems(block: Block) -> list[str]:
     """What one block's info string breaks, whichever example it belongs to."""
     if "=" in block.lang:
         return [f"{block.location}: a block names its language first, then example=<id>"]
+    if block.host is not None:
+        if block.example is None:
+            return [
+                f"{block.location}: host= names the environment an example runs in, "
+                "so the block needs example=<id>"
+            ]
+        if not developer_docs.SLUG.fullmatch(block.host):
+            return [f"{block.location}: host '{block.host}' is not lowercase kebab case"]
     if block.example is not None:
         if not block.example:
             return [f"{block.location}: example= names no id"]
@@ -207,6 +228,14 @@ def example_problems(example: Example, languages: Iterable[str], firsts: dict[st
         if block.lang in seen:
             problems.append(f"{block.location}: example '{example.id}' has two {block.lang} blocks")
         seen.append(block.lang)
+    hosts = sorted({block.host for block in example.blocks if block.host is not None})
+    unnamed = [block for block in example.blocks if block.host is None]
+    if len(hosts) > 1 or (hosts and unnamed):
+        named = hosts + (["the API server"] if unnamed else [])
+        problems.append(
+            f"{example.location}: example '{example.id}' names more than one host "
+            f"({', '.join(named)}); its blocks are one program and run on one"
+        )
     missing = [lang for lang in languages if lang not in seen]
     if missing:
         problems.append(
@@ -308,9 +337,16 @@ class Outcome:
     seconds: float
 
 
-def execute(block: Block, repository: Path, api: Path, tilo: Path | None, timeout: float) -> Outcome:
-    """Run one block with an API server of its own, so it sees a fresh Tilo and a key of its own."""
+def execute(
+    block: Block, repository: Path, api: Path | None, tilo: Path | None, timeout: float
+) -> Outcome:
+    """Run one block with an API server of its own, so it sees a fresh Tilo and a key of its own.
+
+    `api` is `None` when the block runs on its own host: its program runs in the environment as it
+    is, which the check that brought that host up handed it (`TILO_API_URL`, `TILO_API_KEY`).
+    """
     command = command_for(block, repository, tilo)
+    program = command if api is None else [str(api), "--", *command]
     with tempfile.TemporaryDirectory(prefix=f"docs-example-{block.example or block.lang}.") as scratch:
         directory = Path(scratch)
         (directory / FILENAMES[block.lang]).write_text(block.code + "\n", encoding="utf-8")
@@ -327,7 +363,7 @@ def execute(block: Block, repository: Path, api: Path, tilo: Path | None, timeou
         started = time.monotonic()
         try:
             process = subprocess.Popen(
-                [str(api), "--", *command],
+                program,
                 cwd=directory,
                 env=environment,
                 stdout=subprocess.PIPE,
@@ -351,7 +387,8 @@ def execute(block: Block, repository: Path, api: Path, tilo: Path | None, timeou
 
 def print_examples(book: Book) -> None:
     for example in book.examples:
-        print(f"{example.id}  {example.location}  {', '.join(example.languages)}")
+        host = f"  on host {example.host}" if example.host else ""
+        print(f"{example.id}  {example.location}  {', '.join(example.languages)}{host}")
     print(f"{len(book.examples)} examples, {len(book.blocks)} blocks")
 
 
@@ -369,19 +406,40 @@ def check(book: Book) -> int:
     return 0
 
 
-def run(book: Book, api: Path, tilo: Path | None, only: Sequence[str], timeout: float) -> int:
-    """Run every selected block, naming each by its example, language and place in the page."""
+def run(
+    book: Book, api: Path | None, tilo: Path | None, only: Sequence[str], timeout: float, host: str | None
+) -> int:
+    """Run every selected block, naming each by its example, language and place in the page.
+
+    Without `host`, the examples that name no host run against `api`, and those of a host are
+    left to the check that brings it up. With `host`, those examples run instead, in the
+    environment as it is, and each block is not wrapped in an API server of its own.
+    """
     if book.problems:
         return report(book.problems)
-    if not api.exists():
-        raise DocsError(f"{api}: no API server to serve the examples with")
-    selected = book.examples
+    if host is None:
+        selected = [example for example in book.examples if example.host is None]
+        elsewhere = [example for example in book.examples if example.host is not None]
+        if api is None:
+            raise DocsError("run needs --api (the api-on-server example) or --host (the examples of one host)")
+        if not api.exists():
+            raise DocsError(f"{api}: no API server to serve the examples with")
+    else:
+        selected = [example for example in book.examples if example.host == host]
+        elsewhere = []
+        # The host's own check exported the environment: no API server of the book's wraps these.
+        api = None
     if only:
         known = {example.id for example in book.examples}
         unknown = sorted(set(only) - known)
         if unknown:
             raise DocsError(f"--only {', '.join(unknown)}: no such example")
-        selected = [example for example in book.examples if example.id in known.intersection(only)]
+        named = [example for example in book.examples if example.id in set(only)]
+        for example in named:
+            if example.host != host:
+                where = f" on host {example.host}, with --host {example.host}" if example.host else " on the API server"
+                raise DocsError(f"--only {example.id}: it runs{where}")
+        selected = [example for example in selected if example.id in set(only)]
     passed = failed = 0
     failures: list[str] = []
     for example in selected:
@@ -399,6 +457,8 @@ def run(book: Book, api: Path, tilo: Path | None, only: Sequence[str], timeout: 
             failed += 1
             failures.append(f"{example.id} [{block.lang}] {block.location}")
             print(textwrap.indent(outcome.output.strip(), "     "))
+    for example in elsewhere:
+        print(f"skip {example.id} {example.location} (it runs on host {example.host})")
     print(f"docs examples: {passed} passed, {failed} failed")
     for failure in failures:
         print(f"failed: {failure}", file=sys.stderr)
@@ -414,8 +474,13 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("check", help="fail on an example that breaks the conventions")
     running = commands.add_parser("run", help="run every example against a local Tilo")
     running.add_argument(
-        "--api", type=Path, required=True,
+        "--api", type=Path,
         help="the api-on-server example: it serves a host with its API and sets TILO_API_URL and TILO_API_KEY",
+    )
+    running.add_argument(
+        "--host", metavar="NAME",
+        help="run the examples of host NAME (example=<id> host=<name>) in the environment as it is, "
+             "which the check that brought the host up exports; --api is then not needed",
     )
     running.add_argument("--tilo", type=Path, help="the tilo command sh examples run (cargo build -p tilo-cli)")
     running.add_argument("--only", action="append", default=[], metavar="ID", help="run one example (repeatable)")
@@ -428,7 +493,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "check":
             return check(book)
-        return run(book, args.api.resolve(), args.tilo.resolve() if args.tilo else None, args.only, args.timeout)
+        return run(
+            book,
+            args.api.resolve() if args.api else None,
+            args.tilo.resolve() if args.tilo else None,
+            args.only,
+            args.timeout,
+            args.host,
+        )
     except DocsError as error:
         print(f"docs examples: {error}", file=sys.stderr)
         return 1

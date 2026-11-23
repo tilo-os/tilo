@@ -130,7 +130,7 @@ kind = "tilo.accounts"
 label = "Accounts"
 version = 3
 fields = [
-  { path = "accounts", type = { collection = { named = "PersonAccount" } }, stored = "collection" },
+  { path = "accounts", type = { collection = { named = "ListedAccount" } }, stored = "collection" },
   { path = "accounts.*.type_id", type = "text" },
   { path = "accounts.*.display_name", type = "text" },
   { path = "accounts.*.config", type = "any" },
@@ -167,7 +167,7 @@ params = [
 ]
 
 [[resources.types]]
-name = "PersonAccount"
+name = "ListedAccount"
 fields = [
   { name = "type_id", type = "text" },
   { name = "display_name", type = "text" },

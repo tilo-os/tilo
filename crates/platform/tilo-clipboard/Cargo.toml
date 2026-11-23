@@ -28,6 +28,8 @@ tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
 # Wayland program offer each other.
 tilo-mime = { version = "0.1.0", path = "../tilo-mime" }
 tilo-rt = { version = "0.1.0", path = "../tilo-rt" }
+# The framing every socket protocol in the tree uses: one length prefix, then its payload.
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame" }
 tracing.workspace = true
 
 # macOS (`NSPasteboard`) and Windows, and X11 with `x11`. Wayland goes
@@ -55,7 +57,7 @@ js-sys = "=0.3.85"
 
 [dev-dependencies]
 # Bounds the Wayland worker tests' waits.
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Already locked by the compositor; the isolated fixture drives the real

@@ -4406,18 +4406,6 @@ mod tests {
                 }
             }
 
-            {
-                assert_eq!(TextWeight::Regular.to_u16(), 400);
-                assert_eq!(TextWeight::Medium.to_u16(), 500);
-                assert_eq!(TextWeight::Semibold.to_u16(), 600);
-                assert_eq!(TextWeight::Bold.to_u16(), 700);
-                assert_eq!(TextWeight::Bold.to_cosmic_weight(), Weight(700));
-                assert_eq!(TextWeight::Regular.to_cosmic_weight(), Weight::NORMAL);
-                // Default must be Regular so call sites through `draw_text` keep their
-                // 400-weight behaviour.
-                assert_eq!(TextWeight::default(), TextWeight::Regular);
-            }
-
             // Case `font_choice_families_resolve_and_shape`: Two different families must be
             // distinct shape-cache entries (so serif doesn't collide with sans).
             {

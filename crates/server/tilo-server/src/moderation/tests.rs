@@ -152,7 +152,7 @@ fn a_decision_reads_on_the_reports_it_settles() {
     api.decide(DecideReports {
         id: "mallory@1".into(),
         person: report.person.clone(),
-        reports: vec![report.id.clone()],
+        reports: vec![report.id],
         ruling: tilo_moderation::Ruling {
             outcome: Outcome::NoAction,
             until_ms: None,

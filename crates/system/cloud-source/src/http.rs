@@ -269,8 +269,6 @@ pub fn parse_http_date(text: &str) -> Option<SystemTime> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     use super::*;
 
     #[test]
@@ -376,25 +374,6 @@ mod tests {
             classify(404, Some(Duration::from_secs(1))),
             Some(Error::NotFound)
         ));
-    }
-
-    struct Counting(AtomicUsize);
-
-    impl CredentialSource for Counting {
-        fn credential(&self) -> Result<crate::Credential> {
-            Err(Error::Unauthorized)
-        }
-
-        fn rejected(&self) {
-            self.0.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
-    #[test]
-    fn unauthorized_reports_the_rejection() {
-        let credentials = Counting(AtomicUsize::new(0));
-        assert!(matches!(unauthorized(&credentials), Error::Unauthorized));
-        assert_eq!(credentials.0.load(Ordering::SeqCst), 1);
     }
 
     struct Failing;

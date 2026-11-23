@@ -51,3 +51,18 @@ tilo-devices = Your devices
 tilo-devices-keep-device = Keep a device of the person's
 tilo-devices-keep-fact = Keep what a device says of itself
 tilo-devices-keep-wifi = Keep a Wi-Fi passphrase
+
+## Nearby Send
+
+so-tilo-device-nearby-send-send = Send files to a nearby device
+so-tilo-device-nearby-send-accept = Keep a file a nearby device offered
+so-tilo-device-nearby-send-decline = Turn down a file a nearby device offered
+so-tilo-device-nearby-send-cancel = Stop a transfer, sent or received
+so-tilo-device-nearby-send-retry = Offer again a transfer that failed
+so-tilo-device-nearby-send-share = Share a resource with people, opening the invitation sheet
+# What a turn says it is doing, as the person reads it on its reply: one line per step, what is
+# being done and what app it is about.
+agent-step-searching = Searching the web for “{ $what }”…
+agent-step-reading = Reading { $what }…
+agent-step-editing = Editing { $what }…
+agent-step-exploring = Looking at what { $what } can do…

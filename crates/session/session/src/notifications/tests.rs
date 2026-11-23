@@ -2,11 +2,11 @@ use std::sync::{Arc, Mutex};
 
 use settings_store::notification_policy::AppNotificationRule;
 use settings_store::system_sounds::{SystemSoundEvent, SystemSoundPrefs, should_play};
-use tilo_desktop_surface::notifications::{
-    DEFAULT_DISMISS_AFTER, NotificationSeverity, PERSISTENT_DISMISS,
-};
 use tilo_notifications_service::{Caller, ImageData, Occurrence, Taken};
 use tilo_power_mgmt::inhibit::INHIBIT_IDLE;
+use tilo_session_core::desktop::notifications::{
+    DEFAULT_DISMISS_AFTER, NotificationSeverity, PERSISTENT_DISMISS,
+};
 use tilo_session_power::PowerLink;
 
 use super::*;

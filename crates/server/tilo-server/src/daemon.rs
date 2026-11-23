@@ -774,6 +774,16 @@ impl Server {
         })
     }
 
+    /// The relay this server's live session runs on: what a part of the host
+    /// that takes part in a workspace's calls joins, as the server's own device.
+    #[cfg(feature = "web")]
+    #[must_use]
+    pub fn live_relay(&self) -> Option<tilo_live::relay::Relay> {
+        self.live_origin
+            .as_ref()
+            .map(crate::web::live::LiveOrigin::origin)
+    }
+
     /// The shells whose terminal streams this host serves, once they run.
     #[cfg(feature = "agents")]
     pub(crate) const fn terminal_shells(&self) -> &crate::agents::TerminalShells {

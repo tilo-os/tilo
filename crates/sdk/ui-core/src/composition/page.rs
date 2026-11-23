@@ -38,6 +38,10 @@ pub struct Page {
     /// Widgets whose children their html places at rects instead of flowing
     /// them. The page flows them anyway; this is the HTML they still lack.
     pub placed: Vec<String>,
+    /// What the page's host shows in each well, by place ([`Composed::well`]): the markup
+    /// that stands where the compositor would show the place's window natively (a link to the
+    /// app's own page). A well the host fills with nothing stays empty.
+    pub wells: HashMap<String, String>,
 }
 
 /// One element replaced by its new HTML: what [`Page::patch`] answers.
@@ -197,11 +201,11 @@ impl Page {
         let mut body = Element::new("div");
         body.id = Some(self.id(""));
         body.attr("class", "tilo-view");
-        let mut root = self.node(&composition.root, None);
+        let mut root = self.node(&composition.root, None, None);
         root.attr("data-root", "");
         body.children.push(root);
         for layer in &composition.layers {
-            let mut layer = self.node(layer, None);
+            let mut layer = self.node(layer, None, None);
             layer.attr("data-layer", "");
             body.children.push(layer);
         }
@@ -216,7 +220,12 @@ impl Page {
         clippy::too_many_lines,
         reason = "one widget's element, read top to bottom as the page builds it"
     )]
-    fn node(&mut self, node: &Composed, parent_flows: Option<bool>) -> Element {
+    fn node(
+        &mut self,
+        node: &Composed,
+        parent_flows: Option<bool>,
+        placed_in: Option<[f64; 2]>,
+    ) -> Element {
         let role = node.semantics.as_ref().map(|access| access.role);
         let mut element = Element::new(tag_of(node, role));
         element.id = Some(self.id(&node.path));
@@ -234,10 +243,31 @@ impl Page {
         if parent_flows == Some(false) || parent_flows.is_none() && node.layout.is_none() {
             css.push_str("min-width:0;");
         }
-        if !node.flows && !node.children.is_empty() && node.own.is_none() {
+        // A canvas's child stands where the canvas placed it, from the canvas's corner, at the
+        // size it gave it: after its own style, which sizes it for a parent that flows it.
+        if let Some([x, y]) = placed_in {
+            let [at_x, at_y, width, height] = node.rect;
+            let _ = write!(
+                css,
+                "position:absolute;left:{}px;top:{}px;width:{}px;height:{}px;\
+                 min-width:0;min-height:0;max-width:none;max-height:none;flex:none;",
+                at_x - x,
+                at_y - y,
+                width,
+                height
+            );
+        }
+        if !node.flows && !node.places && !node.children.is_empty() && node.own.is_none() {
             self.placed.push(node.path.clone());
         }
-        if node.scroll.is_some() {
+        if node.places {
+            // What it places stands at points of its own, past its edges too: the box scrolls
+            // to them.
+            if placed_in.is_none() {
+                css.push_str("position:relative;");
+            }
+            css.push_str("overflow:auto;");
+        } else if node.scroll.is_some() {
             css.push_str("overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;");
         } else if node.clip.is_some() {
             css.push_str("overflow:clip;");
@@ -325,6 +355,12 @@ impl Page {
                 element.attr("data-t", target);
             }
         }
+        if let Some(place) = &node.well {
+            element.attr("data-well", place);
+            if let Some(shown) = self.wells.get(place) {
+                element.own.clone_from(shown);
+            }
+        }
         let path = node.path.clone();
         match &node.own {
             Some(Own::Text(look)) => element.own = escape(&look.text),
@@ -398,11 +434,12 @@ impl Page {
             }
         }
         let flows = node.flows;
+        let corner = node.places.then_some([node.rect[0], node.rect[1]]);
         for child in &node.children {
             if child.rect[2] <= 0.0 || child.rect[3] <= 0.0 {
                 continue;
             }
-            element.children.push(self.node(child, Some(flows)));
+            element.children.push(self.node(child, Some(flows), corner));
         }
         // What a view draws itself, a page has no paint for: a control whose
         // own paint is all it shows still says its name, which the

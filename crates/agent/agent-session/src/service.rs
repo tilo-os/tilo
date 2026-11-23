@@ -3,7 +3,7 @@
 //!
 //! [`AgentService`] owns an [`AgentSupervisor`] whose roster spawner opens one signing
 //! session per approved grant, on a thread of its own, joined to the grant's one workspace
-//! ([`AgentSessions`](crate::grants::AgentSessions)). A keeper thread settles expired
+//! ([`AgentSessions`](crate::grants::AgentSessions)). A keep thread settles expired
 //! grants (the host refuses their device) and writes the supervisor's snapshot to
 //! `agents.json` whenever it changed, sleeping until a change or the next expiry. The file
 //! holds the agents' device keys and is written owner-only.
@@ -87,11 +87,11 @@ struct Shared {
     /// The agents' sessions here, which sign a change an action made for each
     /// ([`crate::workspace_actions`]).
     agent_sessions: crate::grants::AgentSessions,
-    /// The wall clock the keeper judges grants by.
+    /// The wall clock the keep thread judges grants by.
     clock: HostClock,
 }
 
-/// How the host reads the wall clock. The keeper runs on its own thread,
+/// How the host reads the wall clock. The keep thread runs on its own thread,
 /// which a test's thread-scoped clock does not reach, so a test hands the
 /// host its pinned time instead of pinning the whole process.
 type HostClock = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -488,7 +488,7 @@ mod tests {
     fn the_idle_host_sleeps_until_its_state_changes_or_a_grant_expires() {
         // The wall clock stands still until the test moves it past the
         // grant's expiry, so a loaded runner cannot expire it early. The
-        // keeper reads the clock this test hands it: it runs on its own
+        // keep thread reads the clock this test hands it: it runs on its own
         // thread, which a thread-scoped pin does not reach.
         let start = tilo_clock::unix_now_ns();
         let pinned = Arc::new(std::sync::atomic::AtomicU64::new(start));
@@ -502,17 +502,17 @@ mod tests {
         #[cfg(target_os = "linux")]
         {
             use tilo_test_env::idle;
-            let (kept, keeper) = idle::spawned_thread("agent-host", || host.keep());
+            let (kept, keep_thread) = idle::spawned_thread("agent-host", || host.keep());
             kept.unwrap();
             // Its first write (a synced file and a rename) is work, not
             // idling: measure once it is done.
             let first = host.state_file();
             wait_until("the first state write", || first.exists());
-            idle::assert_stays_asleep(&keeper, "agent host with nothing to write");
+            idle::assert_stays_asleep(&keep_thread, "agent host with nothing to write");
             let window = Duration::from_secs(2);
-            let before = idle::asleep_runs(&keeper);
+            let before = idle::asleep_runs(&keep_thread);
             std::thread::sleep(window);
-            let woke = idle::asleep_runs(&keeper).saturating_sub(before);
+            let woke = idle::asleep_runs(&keep_thread).saturating_sub(before);
             eprintln!("agent host idle wakeups: {woke} in {window:?}");
             assert_eq!(woke, 0, "the idle agent host woke");
         }

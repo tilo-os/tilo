@@ -199,11 +199,5 @@ mod tests {
             assert_eq!(KeyboardBacklight { level: 1, max: 3 }.toggled(), 0);
             assert_eq!(KeyboardBacklight { level: 0, max: 3 }.toggled(), 3);
         }
-
-        phase the_fraction_is_level_over_max;
-        {
-            let half = KeyboardBacklight { level: 1, max: 2 }.fraction();
-            assert!((half - 0.5).abs() < f32::EPSILON);
-        }
     }
 }

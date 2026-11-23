@@ -32,7 +32,7 @@ pub fn bot() -> Actor {
 /// Unix milliseconds of an ISO-8601 time history gives; 0 for one it does not.
 fn millis(when: &str) -> i64 {
     when.parse::<jiff::Timestamp>()
-        .map_or(0, |at| at.as_millisecond())
+        .map_or(0, jiff::Timestamp::as_millisecond)
 }
 
 /// The workspace's reports as the moderation agent decides them: every report filed in Chat,

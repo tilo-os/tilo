@@ -562,77 +562,6 @@ pub enum Envelope {
         signature: [u8; 64],
     },
 
-    /// Open, start, end or moderate a call of a workspace the host governs (see
-    /// [`crate::voice`]). Requires an accepted `Subscribe`; opening a
-    /// channel's call takes a member, everything else the workspace's owner or an
-    /// administrator. Answered with [`Envelope::VoiceCallResult`].
-    /// Sent only to a host that advertised voice.
-    VoiceCall {
-        workspace_id: WorkspaceId,
-        /// Caller-chosen id echoed in the answer.
-        request: [u8; 16],
-        /// The change.
-        operation: crate::voice::CallOperation,
-    },
-
-    /// The outcome of [`Envelope::VoiceCall`] `request`.
-    VoiceCallResult {
-        workspace_id: WorkspaceId,
-        /// The request's id.
-        request: [u8; 16],
-        /// The call as governance now records it, or why the change was
-        /// refused.
-        result: Result<crate::voice::CallState, String>,
-    },
-
-    /// Join an active call, or with `participation`, repeat an earlier join
-    /// as its heartbeat. Requires an accepted `Subscribe`. Answered with
-    /// [`Envelope::VoiceGranted`] or [`Envelope::VoiceRefused`].
-    VoiceJoin {
-        workspace_id: WorkspaceId,
-        call: [u8; 32],
-        /// The participation to continue; `None` joins afresh.
-        participation: Option<[u8; 32]>,
-    },
-
-    /// A participation's current grant: the answer to a join, and sent
-    /// unasked when the call's roster or this participation's directions
-    /// change.
-    VoiceGranted {
-        workspace_id: WorkspaceId,
-        grant: Box<crate::voice::VoiceGrant>,
-    },
-
-    /// The device may not be in the call (any more).
-    VoiceRefused {
-        workspace_id: WorkspaceId,
-        call: [u8; 32],
-        /// Human-readable reason.
-        reason: String,
-    },
-
-    /// Leave a call.
-    VoiceLeave {
-        workspace_id: WorkspaceId,
-        call: [u8; 32],
-        /// The participation that ends.
-        participation: [u8; 32],
-    },
-
-    /// Ask for the calls of a workspace the host governs. Requires an accepted
-    /// `Subscribe`. Answered with [`Envelope::VoiceCallList`].
-    VoiceCalls {
-        /// Workspace id.
-        workspace_id: WorkspaceId,
-    },
-
-    /// A workspace's calls as its governance records them, with who is in each.
-    VoiceCallList {
-        workspace_id: WorkspaceId,
-        /// The calls, or why the workspace has none to list.
-        result: Result<Vec<crate::voice::CallSummary>, String>,
-    },
-
     /// One piece of a record's content for exactly one device of the
     /// workspace, which asked the workspace for it. Routed like
     /// [`Envelope::RemoteAction`] — to the addressed device's live
@@ -674,18 +603,6 @@ pub enum Envelope {
         /// The record's retained channel.
         channel: [u8; 32],
         answer: DocumentAnswer,
-    },
-
-    /// What `participation` shows besides its voice from now on (its
-    /// camera, a shared screen). The server records it on the participation
-    /// and tells the call's members and the workspace's call list when it
-    /// changed. Not answered.
-    VoiceShow {
-        workspace_id: WorkspaceId,
-        call: [u8; 32],
-        participation: [u8; 32],
-        /// What it shows.
-        showing: crate::voice::Showing,
     },
 
     /// One of the host's own operations (`tilo.host`: creating, listing,
@@ -880,18 +797,9 @@ impl Envelope {
             Self::CompactVolunteer { .. } => "CompactVolunteer",
             Self::CompactRequest { .. } => "CompactRequest",
             Self::Compacted { .. } => "Compacted",
-            Self::VoiceCall { .. } => "VoiceCall",
-            Self::VoiceCallResult { .. } => "VoiceCallResult",
-            Self::VoiceJoin { .. } => "VoiceJoin",
-            Self::VoiceGranted { .. } => "VoiceGranted",
-            Self::VoiceRefused { .. } => "VoiceRefused",
-            Self::VoiceLeave { .. } => "VoiceLeave",
-            Self::VoiceCalls { .. } => "VoiceCalls",
-            Self::VoiceCallList { .. } => "VoiceCallList",
             Self::DocumentContent { .. } => "DocumentContent",
             Self::OpenDocument { .. } => "OpenDocument",
             Self::DocumentOpened { .. } => "DocumentOpened",
-            Self::VoiceShow { .. } => "VoiceShow",
             Self::HostAction { .. } => "HostAction",
             // The kind names a key in the web envelope JSON, so it keeps the
             // spelling it was first written under.
@@ -941,15 +849,6 @@ impl Envelope {
             | Self::CompactVolunteer { workspace_id }
             | Self::CompactRequest { workspace_id, .. }
             | Self::Compacted { workspace_id, .. }
-            | Self::VoiceCall { workspace_id, .. }
-            | Self::VoiceCallResult { workspace_id, .. }
-            | Self::VoiceJoin { workspace_id, .. }
-            | Self::VoiceGranted { workspace_id, .. }
-            | Self::VoiceRefused { workspace_id, .. }
-            | Self::VoiceLeave { workspace_id, .. }
-            | Self::VoiceCalls { workspace_id }
-            | Self::VoiceCallList { workspace_id, .. }
-            | Self::VoiceShow { workspace_id, .. }
             | Self::OpenDocument { workspace_id, .. }
             | Self::DocumentOpened { workspace_id, .. }
             | Self::WorkspaceBootstrap { workspace_id, .. }
@@ -1073,43 +972,6 @@ mod tests {
             ];
             // The frame codec (length prefix) lives in `tilo-server-client`; the
             // payload bytes it carries are these postcard encodings.
-            for (envelope, payload) in cases {
-                assert_eq!(postcard::to_stdvec(&envelope).unwrap(), payload);
-                assert_eq!(
-                    postcard::from_bytes::<Envelope>(&payload).unwrap(),
-                    envelope
-                );
-            }
-        }
-
-        phase frozen_voice_envelope_bytes;
-        {
-            let cases = [
-                (
-                    Envelope::VoiceJoin {
-                        workspace_id: WorkspaceId::from_u128(7),
-                        call: [1; 32],
-                        participation: None,
-                    },
-                    [vec![25], id(7), vec![1; 32], vec![0]].concat(),
-                ),
-                (
-                    Envelope::VoiceJoin {
-                        workspace_id: WorkspaceId::from_u128(7),
-                        call: [1; 32],
-                        participation: Some([2; 32]),
-                    },
-                    [vec![25], id(7), vec![1; 32], vec![1], vec![2; 32]].concat(),
-                ),
-                (
-                    Envelope::VoiceLeave {
-                        workspace_id: WorkspaceId::from_u128(7),
-                        call: [1; 32],
-                        participation: [2; 32],
-                    },
-                    [vec![28], id(7), vec![1; 32], vec![2; 32]].concat(),
-                ),
-            ];
             for (envelope, payload) in cases {
                 assert_eq!(postcard::to_stdvec(&envelope).unwrap(), payload);
                 assert_eq!(

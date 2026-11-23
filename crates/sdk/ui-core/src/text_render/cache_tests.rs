@@ -78,8 +78,7 @@ tilo_test_env::scenario! {
         for key in keys {
             let mut hash = Capture::default();
             key.hash(&mut hash);
-            assert_eq!(hash.writes, 1);
-            assert_eq!(hash.bytes.len(), 5 * std::mem::size_of::<u64>());
+            assert_eq!(hash.writes, 1, "the whole key packs into one write");
             assert!(
                 encodings.insert(hash.bytes),
                 "distinct equality fields must not alias"
@@ -87,7 +86,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase colliding_text_and_style_keep_independent_values;
+    phase colliding_text_and_style_share_one_bucket_and_evict_with_it;
     {
         let plain = TextStyle::new(16.0);
         let tracked = plain.clone().with_letter_spacing(8.0);
@@ -96,7 +95,7 @@ tilo_test_env::scenario! {
         text_collision.fingerprint = first.fingerprint;
         let mut style_collision = CacheQuery::new("iii", &tracked);
         style_collision.fingerprint = first.fingerprint;
-        let mut cache = TextCache::new(4, 100_000);
+        let mut cache = TextCache::new(3, 100_000);
         cache.insert(first.key(None, 0, 1.0), 1, 0);
         cache.insert(text_collision.key(None, 0, 1.0), 2, 0);
         cache.insert(style_collision.key(None, 0, 1.0), 3, 0);
@@ -108,6 +107,30 @@ tilo_test_env::scenario! {
         assert!(cache.get(&first.key(None, 1, 1.0)).is_none());
         assert!(cache.get(&first.key(None, 0, 2.0)).is_none());
         assert!(cache.get(&first.key(Some(100.0), 0, 1.0)).is_none());
+        // One more entry evicts the whole bucket: both sides of every collision
+        // and their metadata go together.
+        let third = CacheQuery::new("third", &plain);
+        cache.insert(third.key(None, 0, 1.0), 4, 0);
+        assert!(cache.get(&first.key(None, 0, 1.0)).is_none());
+        assert!(cache.get(&text_collision.key(None, 0, 1.0)).is_none());
+        assert!(cache.get(&style_collision.key(None, 0, 1.0)).is_none());
+        assert_eq!(cache.get(&third.key(None, 0, 1.0)), Some(&4));
+        assert_eq!(cache.entries, 1);
+        assert_eq!(cache.clock.len(), 1);
+        assert_eq!(cache.buckets.len(), 1);
+        cache.clear();
+        assert_eq!(cache.entries, 0);
+        assert_eq!(cache.bytes, 0);
+        assert!(cache.clock.is_empty());
+        assert!(cache.buckets.is_empty());
+        // Admit by bytes, not merely by the entry limit.
+        let mut cache = TextCache::new(100, 1024);
+        for index in 0..50 {
+            let text = format!("payload {index}");
+            cache.insert(CacheQuery::new(&text, &plain).key(None, 0, 1.0), index, 500);
+            assert!(cache.bytes <= 1024);
+            assert_eq!(cache.entries, 1);
+        }
     }
 
     phase clock_protects_reused_text_during_cold_insert_churn;
@@ -142,38 +165,6 @@ tilo_test_env::scenario! {
         let large_text = "a".repeat(2048);
         cache.insert(CacheQuery::new(&large_text, &style).key(None, 0, 1.0), 9, 0);
         assert_eq!(cache.bytes, before);
-    }
-
-    phase byte_eviction_and_clear_remove_collision_bucket_metadata;
-    {
-        let style = TextStyle::new(16.0);
-        let first = CacheQuery::new("first", &style);
-        let mut sibling = CacheQuery::new("other", &style);
-        sibling.fingerprint = first.fingerprint;
-        let third = CacheQuery::new("third", &style);
-        let mut cache = TextCache::new(2, 100_000);
-        cache.insert(first.key(None, 0, 1.0), 1, 0);
-        cache.insert(sibling.key(None, 0, 1.0), 2, 0);
-        cache.insert(third.key(None, 0, 1.0), 3, 0);
-        assert!(cache.get(&first.key(None, 0, 1.0)).is_none());
-        assert!(cache.get(&sibling.key(None, 0, 1.0)).is_none());
-        assert_eq!(cache.get(&third.key(None, 0, 1.0)), Some(&3));
-        assert_eq!(cache.entries, 1);
-        assert_eq!(cache.clock.len(), 1);
-        assert_eq!(cache.buckets.len(), 1);
-        cache.clear();
-        assert_eq!(cache.entries, 0);
-        assert_eq!(cache.bytes, 0);
-        assert!(cache.clock.is_empty());
-        assert!(cache.buckets.is_empty());
-        // Admit by bytes, not merely by the entry limit.
-        let mut cache = TextCache::new(100, 1024);
-        for index in 0..50 {
-            let text = format!("payload {index}");
-            cache.insert(CacheQuery::new(&text, &style).key(None, 0, 1.0), index, 500);
-            assert!(cache.bytes <= 1024);
-            assert_eq!(cache.entries, 1);
-        }
     }
 
     phase custom_hyphenator_identity_and_version_are_independent;
@@ -552,7 +543,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase borrowed_operation_hashes_once_and_adopts_the_first_exact_match;
+    phase borrowed_and_prepared_operations_hash_once_and_adopt_the_first_exact_match;
     {
         let mut renderer = super::super::TextRenderer::new();
         let style = TextStyle::new(16.0);
@@ -561,17 +552,10 @@ tilo_test_env::scenario! {
         reset_work();
         renderer.measure_style(text, Some(1000.0), &style);
         assert_eq!(work(), (text.len(), text.len()));
-    }
-
-    phase prepared_adopts_an_existing_borrowed_entry_for_future_calls;
-    {
-        let mut renderer = super::super::TextRenderer::new();
-        let style = TextStyle::new(16.0);
-        renderer.measure_style("borrowed first", None, &style);
-        let input = PreparedText::new("borrowed first", style);
-        renderer.measure_prepared(&input, None);
+        let input = PreparedText::new(text, style);
+        renderer.measure_prepared(&input, Some(1000.0));
         reset_work();
-        renderer.measure_prepared(&input, None);
+        renderer.measure_prepared(&input, Some(1000.0));
         assert_eq!(
             work(),
             (0, 0),

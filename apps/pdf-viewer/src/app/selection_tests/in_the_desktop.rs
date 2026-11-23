@@ -2,7 +2,8 @@ use std::rc::Rc;
 
 use serial_test::serial;
 use tilo_desktop_model::{IdMinter, Tab, TileContent, Workspace};
-use tilo_desktop_surface::{DesktopSurface, TileSource, seed_tree};
+use tilo_desktop_surface::{DesktopSurface, TileSource};
+use tilo_session_core::desktop::seed_tree;
 use ui::application::{LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput};
 use ui::headless::FrameHarness;
 use ui::owner_wake::OwnerWakeQueue;

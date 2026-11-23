@@ -182,39 +182,6 @@ fn every_app_of_the_workspace_reads_and_adds_to_the_one_record_its_owner_keeps()
     assert_eq!(names(&in_notes), ["ship_it"]);
 }
 
-#[test]
-fn the_workspaces_grants_on_the_owners_resource_decide_from_any_app() {
-    let mut notes = TestApp::<NotesApp>::with_role(tilo_app::Role::Viewer).unwrap();
-    let record = notes
-        .shared_workspace::<WorkspaceEmoji>(emoji::OWNER)
-        .unwrap();
-    assert!(!record.may("add-emoji"), "a viewer adds none");
-    assert!(
-        record
-            .invoke(&WorkspaceEmoji::ADD_EMOJI.with(add("party")))
-            .is_err()
-    );
-    assert!(names(&record).is_empty());
-
-    // An editor adds and removes their own, but not someone else's.
-    let mut notes = TestApp::<NotesApp>::with_role(tilo_app::Role::Editor).unwrap();
-    let record = notes
-        .shared_workspace::<WorkspaceEmoji>(emoji::OWNER)
-        .unwrap();
-    assert!(record.may("add-emoji") && record.may("remove-emoji"));
-    assert!(
-        !record.may("remove-any-emoji"),
-        "removing another's is moderation"
-    );
-
-    // No app keeps it but its owner.
-    assert!(
-        notes
-            .shared_workspace::<WorkspaceEmoji>(NotesApp::ID)
-            .is_none()
-    );
-}
-
 /// The actions `app`'s window offers its member on `resource`, as a caller from outside is
 /// listed them: what the workspace's grants do not give the member is not among them.
 fn offered<A: ResourceApp>(app: &mut TestApp<A>, resource: &str) -> Vec<String> {
@@ -237,7 +204,7 @@ fn add_party() -> serde_json::Value {
 /// What its keeper's window holds of the workspace's emoji is offered to whoever reaches that
 /// window from outside (an agent, a script, another device), beside the app's own resource:
 /// its read, and every change the workspace's grants give the caller. No other app's window
-/// offers any of it.
+/// offers any of it, and the same grants decide what a member does with them from any app.
 #[test]
 fn the_keepers_window_offers_the_workspaces_emoji_to_callers_from_outside() {
     let mut chat = TestApp::<KeepingApp>::in_workspace(WORKSPACE).unwrap();
@@ -311,7 +278,8 @@ fn the_keepers_window_offers_the_workspaces_emoji_to_callers_from_outside() {
         .unwrap();
     assert_eq!(names(&added), ["party"]);
 
-    // Another app's window opens the same emoji and offers nothing of them.
+    // Another app's window opens the same emoji and offers nothing of them; no app keeps
+    // them but their owner.
     let mut notes = TestApp::<NotesApp>::in_workspace(WORKSPACE).unwrap();
     assert!(
         notes
@@ -319,12 +287,52 @@ fn the_keepers_window_offers_the_workspaces_emoji_to_callers_from_outside() {
             .is_some()
     );
     assert_eq!(offered(&mut notes, emoji::KIND), Vec::<String>::new());
+    assert!(
+        notes
+            .shared_workspace::<WorkspaceEmoji>(NotesApp::ID)
+            .is_none()
+    );
+
+    // The workspace's grants on the owner's resource decide from any app: a viewer adds none
+    // from Notes either, and an editor there adds and removes their own, not someone else's.
+    let mut notes = TestApp::<NotesApp>::with_role(tilo_app::Role::Viewer).unwrap();
+    let record = notes
+        .shared_workspace::<WorkspaceEmoji>(emoji::OWNER)
+        .unwrap();
+    assert!(!record.may("add-emoji"), "a viewer adds none");
+    assert!(
+        record
+            .invoke(&WorkspaceEmoji::ADD_EMOJI.with(add("party")))
+            .is_err()
+    );
+    assert!(names(&record).is_empty());
+    let mut notes = TestApp::<NotesApp>::with_role(tilo_app::Role::Editor).unwrap();
+    let record = notes
+        .shared_workspace::<WorkspaceEmoji>(emoji::OWNER)
+        .unwrap();
+    assert!(record.may("add-emoji") && record.may("remove-emoji"));
+    assert!(
+        !record.may("remove-any-emoji"),
+        "removing another's is moderation"
+    );
 }
 
-/// So are the workspace's agents, which Assistant keeps: an owner makes one and reads it
-/// back, and a viewer reads them and is neither offered nor let make one.
+/// So are the workspace's agents, which Assistant keeps, whoever made one: the workspace's grants
+/// alone decide who changes them. An owner makes one and reads it back; an editor names, chooses
+/// the model of, limits and retires an agent another member made, through the record's own
+/// actions as any caller reaches them; a viewer reads them and is offered none of those changes,
+/// and one asked for all the same is refused.
 #[test]
-fn the_keepers_window_offers_the_workspaces_agents_to_callers_from_outside() {
+#[allow(clippy::too_many_lines, reason = "one flow, read top to bottom")]
+fn the_workspaces_agents_are_offered_to_callers_and_changed_as_the_grants_say() {
+    use tilo_app::tilo_workspace_agent::{self as workspace_agent, WorkspaceAgents};
+    const CHANGES: [&str; 4] = [
+        "rename-agent",
+        "set-agent-model",
+        "set-agent-spend-limit",
+        "retire-agent",
+    ];
+
     let mut assistant = TestApp::<KeepingAgentsApp>::in_workspace(WORKSPACE).unwrap();
     let actions = offered(&mut assistant, AGENTS);
     for expected in ["create-agent", "read"] {
@@ -346,37 +354,6 @@ fn the_keepers_window_offers_the_workspaces_agents_to_callers_from_outside() {
         .expect("a read answers what is held");
     assert!(read.to_string().contains("Scout"), "{read}");
 
-    let mut viewer = TestApp::<KeepingAgentsApp>::with_role(tilo_app::Role::Viewer).unwrap();
-    assert_eq!(
-        offered(&mut viewer, AGENTS),
-        ["read"],
-        "a viewer reads the agents and makes none"
-    );
-    assert!(
-        viewer
-            .call_on(
-                AGENTS,
-                "create-agent",
-                serde_json::json!({ "name": "Not theirs" })
-            )
-            .is_err()
-    );
-}
-
-/// The agents are the workspace's, whoever made one: the workspace's grants alone decide who
-/// changes them. An editor names, chooses the model of, limits and retires an agent another
-/// member made, through the record's own actions as any caller reaches them; a viewer is offered
-/// none of those changes, and one asked for all the same is refused.
-#[test]
-fn an_editor_manages_an_agent_another_member_made_and_a_viewer_does_not() {
-    use tilo_app::tilo_workspace_agent::{self as workspace_agent, WorkspaceAgents};
-    const CHANGES: [&str; 4] = [
-        "rename-agent",
-        "set-agent-model",
-        "set-agent-spend-limit",
-        "retire-agent",
-    ];
-
     let mut editor = TestApp::<KeepingAgentsApp>::with_role(tilo_app::Role::Editor).unwrap();
     let agents = editor
         .shared_workspace::<WorkspaceAgents>(workspace_agent::OWNER)
@@ -393,7 +370,7 @@ fn an_editor_manages_an_agent_another_member_made_and_a_viewer_does_not() {
             }),
         )
         .unwrap();
-    assert_eq!(agents.get().agents[0].keeper, "grace");
+    assert_eq!(agents.get().agents[0].acts_for, "grace");
     // What the window offers on the agents and on each of them.
     let on_agents = |app: &mut TestApp<KeepingAgentsApp>| -> Vec<String> {
         app.actions()
@@ -445,8 +422,22 @@ fn an_editor_manages_an_agent_another_member_made_and_a_viewer_does_not() {
         .unwrap();
     assert!(!agents.get().agents[0].is_active(), "the editor retired it");
 
-    // A viewer reads the agents and changes none of them.
+    // A viewer reads the agents and changes none of them, nor makes one.
     let mut viewer = TestApp::<KeepingAgentsApp>::with_role(tilo_app::Role::Viewer).unwrap();
+    assert_eq!(
+        offered(&mut viewer, AGENTS),
+        ["read"],
+        "a viewer reads the agents and makes none"
+    );
+    assert!(
+        viewer
+            .call_on(
+                AGENTS,
+                "create-agent",
+                serde_json::json!({ "name": "Not theirs" })
+            )
+            .is_err()
+    );
     let offered_to_viewer = on_agents(&mut viewer);
     for change in CHANGES {
         assert!(

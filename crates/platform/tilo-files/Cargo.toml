@@ -53,6 +53,9 @@ rustix = { workspace = true, features = ["fs", "process", "std"] }
 libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+# `native::socket` re-exports it here too: its Windows arm answers Unsupported
+# until the local services speak named pipes.
+tilo-socket = { version = "0.1.0", path = "../tilo-socket" }
 # `path_identity`'s file URLs.
 url.workspace = true
 # `native::atomic`'s NTFS publication protocol.
@@ -91,7 +94,7 @@ tilo-files = { path = ".", features = ["test-support"] }
 tempfile.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 # Run in headless Chrome by `web/run.mjs`; natively an empty library.
 [[example]]

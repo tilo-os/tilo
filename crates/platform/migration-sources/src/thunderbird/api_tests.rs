@@ -161,6 +161,40 @@ fn a_profile_root_behind_the_packaged_application_link_is_read() {
     assert_eq!(profile.accounts.len(), 2);
 }
 
+/// A Windows home keeps its profiles under its roaming application data, and they are read there,
+/// as on a Windows computer or from a Windows disk.
+#[test]
+fn a_profile_where_windows_keeps_it_is_read() {
+    let staging = tempfile::tempdir().unwrap();
+    write_sample_profile(staging.path());
+    let home = tempfile::tempdir().unwrap();
+    let roaming = home.path().join("AppData/Roaming");
+    std::fs::create_dir_all(&roaming).unwrap();
+    std::fs::rename(
+        staging.path().join(".thunderbird"),
+        roaming.join("Thunderbird"),
+    )
+    .unwrap();
+
+    let scan = scan(home.path());
+    assert!(scan.problems.is_empty(), "{:?}", scan.problems);
+    assert_eq!(scan.reviewed.len(), 1);
+    let profile = scan.reviewed[0].profile();
+    assert_eq!(profile.accounts.len(), 2);
+    assert!(
+        profile
+            .accounts
+            .iter()
+            .any(|account| account.email.as_deref() == Some(WORK_EMAIL)
+                && account
+                    .folders
+                    .iter()
+                    .any(|folder| folder.hierarchy == ["INBOX"])),
+        "the Work account and its inbox are read: {:?}",
+        profile.accounts
+    );
+}
+
 /// A profile copied in from another Thunderbird location still names that
 /// place in `prefs.js`; its mail is in the profile itself, and is read.
 #[test]

@@ -482,13 +482,7 @@ fn read_bounded(
 
 fn registry_url(reg: &RegistryConfig, suffix: &str) -> Result<reqwest::Url, RegistryError> {
     let mut url = reqwest::Url::parse(&reg.base_url).map_err(|_| RegistryError::UnsafeEndpoint)?;
-    let loopback_http =
-        url.scheme() == "http" && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
-    if (url.scheme() != "https" && !loopback_http)
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.host_str().is_none()
-    {
+    if !tilo_net::secure_endpoint(&url) {
         return Err(RegistryError::UnsafeEndpoint);
     }
     url.set_query(None);
@@ -893,6 +887,53 @@ mod tests {
                     "http://127.0.0.1:8080/entries"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn registry_url_checks_secure_endpoint_and_strips_query_and_fragment() {
+        let config = |base_url: &str| RegistryConfig {
+            name: "test".into(),
+            base_url: base_url.into(),
+            owner_pubkey_hex: "11".repeat(32),
+            enabled: true,
+            channel: tilo_app_package::version::ReleaseChannel::Stable,
+        };
+        assert_eq!(
+            registry_url(&config("http://[::1]:8080/"), "entries")
+                .unwrap()
+                .as_str(),
+            "http://[::1]:8080/entries"
+        );
+        assert_eq!(
+            registry_url(&config("http://tilo.localhost:8080"), "entries")
+                .unwrap()
+                .as_str(),
+            "http://tilo.localhost:8080/entries"
+        );
+        assert_eq!(
+            registry_url(
+                &config("https://registry.test/base?next=https://evil.test#frag"),
+                "entries"
+            )
+            .unwrap()
+            .as_str(),
+            "https://registry.test/base/entries"
+        );
+        for unsafe_url in [
+            "http://registry.test/",
+            "http://localhost.registry.test/",
+            "https://placeholder:placeholder@registry.test/",
+            "http://placeholder:placeholder@[::1]:8080/",
+            "file:///tmp/registry",
+        ] {
+            assert!(
+                matches!(
+                    registry_url(&config(unsafe_url), "entries"),
+                    Err(RegistryError::UnsafeEndpoint)
+                ),
+                "unsafe registry URL was accepted: {unsafe_url}"
+            );
         }
     }
 

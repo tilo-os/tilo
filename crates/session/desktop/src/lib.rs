@@ -50,7 +50,8 @@ pub mod workspace_settings;
 // The workspace history pane, the notification stack and centre, the drill-in list and the
 // desktop's catalogue are portable: they live with the desktop surface, which the browser builds
 // too.
-pub use tilo_desktop_surface::{activity, drill_in, history_log, i18n, notifications};
+pub use tilo_desktop_surface::{drill_in, notifications};
+pub use tilo_session_core::desktop::{activity, history_log, i18n};
 // The host contract — the bar's snapshots, what a host answers the shell's rules, the asks the shell
 // leaves it — is portable: it lives with the desktop surface, which a page builds too.
 pub use tilo_desktop_surface::host::chrome;

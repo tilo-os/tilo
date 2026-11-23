@@ -58,9 +58,6 @@ pub enum PowerCommand {
     LockScreenDrawn,
     /// Settings changed on disk; replace the service's threshold and lid policy.
     UpdatePolicy(PowerPolicy),
-    /// Switch to the power profile `0` names, one of those [`PowerBridge::profiles`]
-    /// offers.
-    SetProfile(String),
 }
 
 #[derive(Default, Debug)]
@@ -219,11 +216,6 @@ impl PowerBridge {
 
     pub fn update_policy(&self, policy: PowerPolicy) {
         self.push_command(PowerCommand::UpdatePolicy(policy));
-    }
-
-    /// Ask the power service to switch to the power profile `profile` names.
-    pub fn set_profile(&self, profile: &str) {
-        self.push_command(PowerCommand::SetProfile(profile.to_owned()));
     }
 
     fn push_command(&self, command: PowerCommand) {

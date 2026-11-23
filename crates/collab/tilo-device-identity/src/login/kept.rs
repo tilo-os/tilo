@@ -81,6 +81,42 @@ impl Place {
     }
 }
 
+/// Whether a person's certificate names this computer's device key `device`: a login kept in
+/// `place`, or a certificate for the key among the device's certificates. A computer no
+/// certificate names yet is served with its key alone, and a ticket logs it in without its daemon.
+#[must_use]
+pub fn claimed(place: &Place, device: &[u8; 32]) -> bool {
+    place.logged_in() || !certified_by(place, device).is_empty()
+}
+
+/// The people, by their root keys, whose certificates among the device's certificates in `place`
+/// name `device`: none before anyone's does.
+#[must_use]
+pub fn certified_by(place: &Place, device: &[u8; 32]) -> Vec<[u8; 32]> {
+    let person_of = |path: &Path| {
+        read_device_cert(path)
+            .ok()
+            .filter(|cert| cert.device_public_key == *device)
+            .map(|cert| cert.user_public_key)
+    };
+    let mut people: Vec<[u8; 32]> = person_of(&place.keys.device_cert).into_iter().collect();
+    let filed = place.keys.device_cert_for_user(&[0; 32]);
+    let entries = filed
+        .parent()
+        .and_then(|certs| std::fs::read_dir(certs).ok())
+        .into_iter()
+        .flatten()
+        .flatten();
+    for entry in entries {
+        if let Some(person) = person_of(&entry.path())
+            && !people.contains(&person)
+        {
+            people.push(person);
+        }
+    }
+    people
+}
+
 /// A login: where this computer goes, and as which device of the person.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {

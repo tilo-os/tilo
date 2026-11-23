@@ -276,15 +276,14 @@ impl Waiting {
     }
 }
 
-/// Make the plan `choices` describes for the computer named `name` and mint its
-/// single-use token into a file only this account reads. The plan itself is
-/// published into the person's Servers workspace through the running session
-/// ([`publish`]), so every one of their devices reads it there.
+/// Make the plan `choices` describes for the computer named `name`, and name
+/// the file its single-use ticket goes to, which only this account reads. The
+/// plan itself is published into the person's Servers workspace through the
+/// running session ([`publish`]), so every one of their devices reads it there.
 ///
 /// # Errors
 ///
-/// This computer holds no identity that may admit a device, the plan is
-/// refused, or its token file cannot be written.
+/// This computer holds no identity, or the plan is refused.
 #[cfg(target_os = "linux")]
 pub(super) fn prepare(
     choices: &Choices,
@@ -292,11 +291,10 @@ pub(super) fn prepare(
     installer_url: &str,
 ) -> Result<Created, String> {
     let local = crate::handoff::local_identity_from_env()?;
-    let (token, named) = install_plan::mint(local.system)?;
+    let named = install_plan::token()?;
     let id = install_plan::new_id();
     let plan = choices.install(name).plan(&id, named)?;
     let token_file = install_plan::plans_dir(local.identity_dir).join(format!("{id}.token"));
-    install_plan::store_token(local.identity_dir, &id, &token, Some(&token_file))?;
     let commands = plan::commands(
         &plan,
         installer_url.trim_end_matches('/'),

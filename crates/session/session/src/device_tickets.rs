@@ -7,10 +7,15 @@
 //! person's root, held here, signs the computer's certificate. The person asked for the ticket
 //! themselves, so the computer that comes with it is approved as it arrives.
 //!
+//! A ticket for a planned machine (`tilo machine add`) names the plan: it lasts as long as the
+//! medium carrying it may sit on a shelf, it is served beside the ticket printed last, and the
+//! machine it certifies takes the plan's entry in the person's Servers workspace, which this
+//! device holds.
+//!
 //! The issue answers at once and the certification happens over the network, so a caller never
 //! waits on the new computer.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tilo_actions::remote::{Pending, device_tickets as wire};
 use tilo_actions::{
@@ -22,8 +27,11 @@ use tilo_device_identity::login;
 use tilo_device_identity::login::{
     Approval, Approved, Approver, Asked, Declined, Entry, SCOPE, Ticket,
 };
-use tilo_peer_state::new_device::ServedTicket;
+use tilo_lock::MutexRecover as _;
+use tilo_peer_state::new_device::{ServedTicket, ServedTickets};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, StatementSigner as _};
+use tilo_workspace_service::service::WorkspaceService;
+use tilo_workspace_service::workspaces::servers;
 
 use crate::device_actions::DeviceActions;
 
@@ -45,6 +53,10 @@ pub(crate) struct DeviceTickets {
     /// The workspace service this device holds its workspaces in: what a computer entering with
     /// this ticket reaches when there is no login naming another.
     service: tilo_workspace_service::service::ServiceSlot,
+    /// Every ticket this device serves now: planned machines' beside the one printed last.
+    served: ServedTickets,
+    /// The ticket printed last for a computer at hand, which a newer one replaces.
+    printed: Arc<Mutex<Option<ServedTicket>>>,
 }
 
 impl DeviceTickets {
@@ -57,12 +69,14 @@ impl DeviceTickets {
             endpoint,
             actions,
             service,
+            served: ServedTickets::default(),
+            printed: Arc::default(),
         }
     }
 
     /// Serve a ticket for a computer to join this device's, as the one string the person hands
-    /// on.
-    async fn issue(&self) -> Result<String, String> {
+    /// on; with `plan`, for the machine that plan describes.
+    async fn issue(&self, plan: Option<String>) -> Result<String, String> {
         let identity = crate::sync::device_identity().ok_or_else(|| {
             "This computer has no identity yet, so it cannot add a device: set this computer up \
              first."
@@ -85,6 +99,20 @@ impl DeviceTickets {
                     .to_owned()
             })?;
         let root = root_of(cert.user_public_key)?;
+        let admission = match plan {
+            Some(plan) => {
+                let service = self.service.service().ok_or_else(|| {
+                    "This computer holds no Servers workspace, so it cannot add a planned machine."
+                        .to_owned()
+                })?;
+                servers::read(service.workspaces())
+                    .await?
+                    .waiting_plan(&plan)?;
+                Some(Planned { plan, service })
+            }
+            None => None,
+        };
+        let planned = admission.is_some();
         let entry = self.entry(&endpoint).await?;
         let ticket = Ticket::new(tilo_api::daemon::enter::reached_of(&endpoint.addr()));
         let served = ServedTicket::new(
@@ -96,14 +124,26 @@ impl DeviceTickets {
                 root,
                 device: Arc::clone(&identity.signer),
                 cert,
+                admission,
             }),
             RevocationList::new(),
+            // A planned machine's medium may sit on a shelf before the machine installs from it.
+            if planned {
+                login::PLANNED_TICKET_LIFETIME_NS
+            } else {
+                login::TICKET_LIFETIME_NS
+            },
         );
-        // The one call this device now answers without a certificate is this ticket's certify.
-        // A newer ticket takes the slot: the code printed before it stops admitting a computer.
+        // The one call this device answers without a certificate is a served ticket's certify. A
+        // newer ticket printed for a computer at hand takes the place of the one printed before
+        // it, which stops admitting a computer; a planned machine's stays served beside it.
+        if !planned && let Some(replaced) = self.printed.lock_recover().replace(served.clone()) {
+            self.served.withdraw(&replaced);
+        }
+        self.served.serve(served);
         actions
             .action_service()
-            .admit_uncertified(SCOPE, Arc::new(served));
+            .admit_uncertified(SCOPE, Arc::new(self.served.clone()));
         Ok(ticket.encode())
     }
 
@@ -170,12 +210,21 @@ fn root_of(person: [u8; 32]) -> Result<Arc<tilo_enrollment::root::PersonSigner>,
     Ok(root)
 }
 
+/// The plan a ticket was served for, and the service holding the person's Servers workspace
+/// the machine's entry is taken in through.
+struct Planned {
+    plan: String,
+    service: Arc<WorkspaceService>,
+}
+
 /// The person's root approving a computer that came with a ticket: it signs the computer's
-/// certificate, and the approval with this device's own key, which the root certified.
+/// certificate, and the approval with this device's own key, which the root certified. A planned
+/// machine is approved once the plan's entry is its own.
 struct DeviceApprover {
     root: Arc<tilo_enrollment::root::PersonSigner>,
     device: Arc<dyn tilo_server_client::DeviceSigner>,
     cert: DeviceCert,
+    admission: Option<Planned>,
 }
 
 impl Approver for DeviceApprover {
@@ -184,10 +233,25 @@ impl Approver for DeviceApprover {
         let signed = tilo_user_identity::sign_device_cert(&mut cert, self.root.as_ref());
         let device = Arc::clone(&self.device);
         let approver = self.cert.clone();
+        let admission = self
+            .admission
+            .as_ref()
+            .map(|planned| (planned.plan.clone(), Arc::clone(&planned.service)));
         Box::pin(async move {
             signed.map_err(|error| {
                 Declined(format!("this computer's root could not sign: {error}"))
             })?;
+            // A planned machine that did not take its plan's entry would boot as nobody's
+            // server: it is told so, and its install stops with that reason.
+            if let Some((plan, service)) = admission {
+                servers::admit_planned(service.workspaces(), &plan, &cert.device_public_key)
+                    .await
+                    .map_err(|error| {
+                        Declined(format!(
+                            "the plan's entry did not take this machine: {error}"
+                        ))
+                    })?;
+            }
             let signature = device
                 .sign(asked.digest.to_vec())
                 .await
@@ -231,7 +295,12 @@ fn descriptor() -> ActionDescriptor {
             ..ActionContract::default()
         },
         input: tilo_actions::InputSpec::None,
-        params: Vec::new(),
+        params: vec![tilo_actions::ActionParam::optional(
+            "plan",
+            tilo_actions::ParamType::Text,
+            "The planned machine's entry in your Servers workspace, which the computer's \
+             certification takes into its own.",
+        )],
         view: None,
     }
 }
@@ -263,12 +332,24 @@ impl HostStepServices for DeviceTickets {
         if request.address.action != wire::ISSUE {
             return Err("no such device action".to_owned());
         }
+        let plan = request
+            .argument
+            .map(serde_json::from_str::<serde_json::Value>)
+            .transpose()
+            .map_err(|_| "a ticket is asked for with its arguments as an object".to_owned())?
+            .and_then(|args| {
+                args.get("plan")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .map(str::to_owned)
+            })
+            .filter(|plan| !plan.is_empty());
         let runtime = tokio::runtime::Handle::try_current()
             .map_err(|_| "this computer cannot serve a ticket right now".to_owned())?;
         let (done, asked) = tilo_actions::remote::pending();
         let tickets = self.clone();
         runtime.spawn(async move {
-            let answer = tickets.issue().await.map(|ticket| ActionOutput {
+            let answer = tickets.issue(plan).await.map(|ticket| ActionOutput {
                 value: Some(serde_json::json!({ "ticket": ticket })),
                 resources: Vec::new(),
             });
@@ -309,6 +390,7 @@ mod tests {
             argument: None,
             provider: None,
             group: None,
+            stop: std::sync::Arc::default(),
         };
         assert_eq!(
             tickets.descriptors()[0].address,

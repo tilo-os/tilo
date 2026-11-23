@@ -519,14 +519,21 @@ async fn a_scheduled_bot_runs_at_its_time_once_and_again_at_the_next() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_restarted_host_runs_a_missed_time_once_when_the_schedule_catches_up() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "a schedule's and a moment's missed fire time across one restart are one story"
+)]
+async fn a_restarted_host_fires_what_it_missed_once_whether_a_schedule_or_a_moment() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
+    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
+
+    // A schedule that catches up, down across a quarter hour of its times:
+    // they run once between them.
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("ticker.json");
-    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
     let mut runner = member_runner(
         &workspaces,
         &workspace,
@@ -538,10 +545,8 @@ async fn a_restarted_host_runs_a_missed_time_once_when_the_schedule_catches_up()
     runner.use_clock(manual.clone());
     assert!(runner.step().await.unwrap().is_empty());
     drop(runner);
-
-    // Down across a quarter hour of its times: they run once between them.
     let back_ms = FIRST_TICK_MS + 15 * 60_000;
-    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(back_ms));
+    manual.set(back_ms);
     let mut runner = member_runner(
         &workspaces,
         &workspace,
@@ -564,6 +569,86 @@ async fn a_restarted_host_runs_a_missed_time_once_when_the_schedule_catches_up()
         1,
         "the next time comes as scheduled"
     );
+    assert_eq!(
+        ticks(&workspaces, &workspace).await,
+        2,
+        "the bot posted twice"
+    );
+    drop(runner);
+    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
+
+    // A moment that passed while its host was down: it fires once, however
+    // late, where a schedule that skips would let the time go.
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let state = scratch.path().join("reminder.json");
+    let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        reminder(at_ms),
+        state.clone(),
+    )
+    .await;
+    runner.use_clock(manual.clone());
+    assert!(runner.step().await.unwrap().is_empty());
+    drop(runner);
+    let back_ms = FIRST_TICK_MS + 6 * 3_600_000;
+    manual.set(back_ms);
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        reminder(at_ms),
+        state.clone(),
+    )
+    .await;
+    runner.use_clock(manual.clone());
+    let reports = runner.step().await.unwrap();
+    assert_eq!(
+        reports.len(),
+        1,
+        "{reports:?}, not run: {:?}",
+        runner.dead_letters().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        reports[0].outcome,
+        tilo_automation::InvocationOutcome::Completed,
+        "{reports:?}"
+    );
+    assert!(runner.step().await.unwrap().is_empty());
+    drop(runner);
+    let mut runner = member_runner(&workspaces, &workspace, &cert, reminder(at_ms), state).await;
+    runner.use_clock(manual.clone());
+    assert!(
+        runner.step().await.unwrap().is_empty(),
+        "the next restart does not answer it again"
+    );
+    assert_eq!(
+        ticks(&workspaces, &workspace).await,
+        1,
+        "the bot posted once"
+    );
+
+    // A moment that had passed before its bot was installed at all (the
+    // host was down from the request on) fires in the first pass.
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        reminder(at_ms + 1_000),
+        scratch.path().join("installed-late.json"),
+    )
+    .await;
+    runner.use_clock(manual.clone());
+    assert_eq!(
+        runner.step().await.unwrap().len(),
+        1,
+        "not run: {:?}",
+        runner.dead_letters().collect::<Vec<_>>()
+    );
+    assert!(runner.step().await.unwrap().is_empty());
+    assert_eq!(ticks(&workspaces, &workspace).await, 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -683,84 +768,6 @@ async fn a_moment_fires_once_at_its_time_and_never_again() {
         1,
         "the bot posted once"
     );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_moment_that_passed_while_the_host_was_down_fires_once_when_it_is_back() {
-    let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
-    let workspaces = server.workspaces().clone();
-    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
-    let state = scratch.path().join("reminder.json");
-    let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
-    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
-    let mut runner = member_runner(
-        &workspaces,
-        &workspace,
-        &cert,
-        reminder(at_ms),
-        state.clone(),
-    )
-    .await;
-    runner.use_clock(manual.clone());
-    assert!(runner.step().await.unwrap().is_empty());
-    drop(runner);
-
-    // Down across the moment and for hours after it: it fires once, however
-    // late, where a schedule that skips would let the time go.
-    let back_ms = FIRST_TICK_MS + 6 * 3_600_000;
-    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(back_ms));
-    let mut runner = member_runner(
-        &workspaces,
-        &workspace,
-        &cert,
-        reminder(at_ms),
-        state.clone(),
-    )
-    .await;
-    runner.use_clock(manual.clone());
-    let reports = runner.step().await.unwrap();
-    assert_eq!(
-        reports.len(),
-        1,
-        "{reports:?}, not run: {:?}",
-        runner.dead_letters().collect::<Vec<_>>()
-    );
-    assert_eq!(
-        reports[0].outcome,
-        tilo_automation::InvocationOutcome::Completed,
-        "{reports:?}"
-    );
-    assert!(runner.step().await.unwrap().is_empty());
-    drop(runner);
-    let mut runner = member_runner(&workspaces, &workspace, &cert, reminder(at_ms), state).await;
-    runner.use_clock(manual.clone());
-    assert!(
-        runner.step().await.unwrap().is_empty(),
-        "the next restart does not answer it again"
-    );
-    assert_eq!(ticks(&workspaces, &workspace).await, 1);
-
-    // A moment that had passed before its bot was installed at all (the
-    // host was down from the request on) fires in the first pass.
-    let mut runner = member_runner(
-        &workspaces,
-        &workspace,
-        &cert,
-        reminder(at_ms + 1_000),
-        scratch.path().join("installed-late.json"),
-    )
-    .await;
-    runner.use_clock(manual.clone());
-    assert_eq!(
-        runner.step().await.unwrap().len(),
-        1,
-        "not run: {:?}",
-        runner.dead_letters().collect::<Vec<_>>()
-    );
-    assert!(runner.step().await.unwrap().is_empty());
-    assert_eq!(ticks(&workspaces, &workspace).await, 2);
 }
 
 /// A host whose assistant takes what programs hand it and whose model

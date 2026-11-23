@@ -19,8 +19,8 @@ pub(crate) struct PreparedEffect {
 
 fn terminal_update<'de, D: serde::Deserializer<'de>>(d: D) -> Result<InvocationUpdate, D::Error> {
     use serde::de::Error;
-    let raw = super::guarded::RawUpdate::deserialize(d)?;
-    raw.check_duplicates(true).map_err(D::Error::custom)?;
+    let raw = super::RawUpdate::deserialize(d)?;
+    raw.check_duplicates().map_err(D::Error::custom)?;
     let update: InvocationUpdate =
         serde_json::from_value(raw.value.clone()).map_err(D::Error::custom)?;
     if !update.is_terminal()
@@ -74,7 +74,6 @@ impl PreparedEffect {
                 .map_err(|_| "prepared update encoding")?
                 .len()
                 > 256 * 1024
-            || record.guarded.is_some()
             || record.intent.get("operation_kind")
                 != Some(
                     &serde_json::to_value(tilo_actions::OperationKind::Effect)

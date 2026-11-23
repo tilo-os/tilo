@@ -289,7 +289,7 @@ Read the ids the app publishes (`apps/tl/<app>/app.ids`) rather than its words; 
 - `session-e2e.py`, `canvas-e2e.py`, `files-clipboard-e2e.py` — whole flows, each on a session of its own
 - `tilolang-e2e.py`, `hosted-names-proof.py`, `agent-sessions-proof.py`, `session-lock-proof.py` — the proofs `tools/ci/session-proofs.sh` runs, as the t checks `e2e/tilolang`, `e2e/two-people`, `e2e/agent-sessions` and `e2e/session-lock`
 - `notes-persist-proof.py`, `notes-caret-proof.py`, `shell-restore-proof.py`, `audio-absent-proof.py` — proofs that need the tree's apps built (the restore proof checks that a session comes back to the layout it had)
-- `app-walk.py` — one app's first hour walked in both its Rust and its tilolang version, step files under `app-walks/`, every step snapshotted in both (`scripts/headless-examples/README.md`, "App walks")
+- `app-walk.py` — the first-hour walks: the shell and each app, walked in every version still in the tree (the Rust shell and the tilolang one, a Rust app and its port) and held to main's baseline; `scripts/headless-examples/walk.sh WALK` is the one command (`scripts/headless-examples/README.md`, "First-hour walks")
 
 `scripts/headless-examples/README.md` says what each proof asserts.
 
@@ -400,7 +400,7 @@ The same driver runs in Rust, which is how app tests are written: `HeadlessApp` 
 
 Assert on the record, not the widget: the body the store holds, the history entry's author, the undo that reaches the starting state. A test that reads internal fields of the widget proves nothing a user, a script or an agent can observe.
 
-`Driver::invoke_action` is the same call from Rust, and `Driver::deliver_external` delivers a `UserEvent::External` payload the way the live host does. `apps/imager/tests/destination_headless_wizard.rs` runs the whole installer wizard this way against a recording install backend.
+`Driver::invoke_action` is the same call from Rust, and `Driver::deliver_external` delivers a `UserEvent::External` payload the way the live host does. `apps/imager/src/setup/destination/installer_app/host_journeys_tests.rs` runs the installer's journeys this way, through the host API, against a recording install backend, a Wi-Fi backend and an account fixture.
 
 ## Layout checks on the build servers
 

@@ -83,7 +83,7 @@ PACKAGES = {'worker': 'apps/imager', 'runtime': 'crates/runtime/runtime-dylib', 
             'prepared_helper': 'apps/imager', 'control': 'crates/session/control-cli',
             'launcher': 'crates/packaging/launcher',
             'files': 'apps/file-explorer', 'writer': 'apps/word-processor', 'browser': 'apps/browser',
-            'app_package': 'crates/packaging/tilo-app-package-cli',
+            'app_package': 'tools/tilo-app-package-cli',
             'runtime_bundle': 'crates/packaging/runtime-bundle', 'install': 'crates/packaging/install',
             'installer': 'apps/imager'}
 TARGETS = {'worker': 'tilo-home-export', 'runtime': 'runtime_dylib', 'host': 'imager', 'imager_tests': 'imager', 'backend_tests': 'imager_backend', 'shell': 'tilo-session', 'fs': 'fs',

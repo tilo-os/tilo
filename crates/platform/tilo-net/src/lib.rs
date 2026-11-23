@@ -55,6 +55,16 @@ pub fn secure_origin(url: &Url) -> bool {
     }
 }
 
+/// Whether `url` is a credential-free endpoint on a [`secure_origin`]: `https`,
+/// or plain `http` on this machine, with a host and neither username nor password.
+#[must_use]
+pub fn secure_endpoint(url: &Url) -> bool {
+    secure_origin(url)
+        && url.host().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+}
+
 /// Whether `name` is a name of this machine: `localhost` and every name under it, which a
 /// browser resolves to loopback itself. The local stack serves the site as `tilo.localhost`.
 #[must_use]
@@ -65,7 +75,7 @@ pub fn loopback_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod secure_origin_tests {
-    use super::{Url, loopback_name, secure_origin};
+    use super::{Url, loopback_name, secure_endpoint, secure_origin};
 
     #[test]
     fn a_name_under_localhost_is_this_machine() {
@@ -88,6 +98,7 @@ mod secure_origin_tests {
             "https://tilo.sh",
             "https://eu1.tilo.sh:8443",
             "http://localhost:24110",
+            "http://localhost./",
             "http://tilo.localhost:24120",
             "http://127.0.0.1:24100",
             "http://127.1.2.3",
@@ -99,10 +110,48 @@ mod secure_origin_tests {
             "http://tilo.sh",
             "http://localhost.tilo.sh",
             "http://10.0.0.1",
+            "http://0.0.0.0/",
+            "http://[::]/",
+            "http://[::ffff:127.0.0.1]/",
             "ws://localhost",
             "ftp://localhost",
         ] {
             assert!(!secure_origin(&Url::parse(open).unwrap()), "{open}");
+        }
+    }
+
+    #[test]
+    fn secure_endpoints_allow_local_http_and_refuse_credentials() {
+        for safe in [
+            "https://tilo.sh",
+            "https://eu1.tilo.sh:8443/entries",
+            "http://localhost:24110/",
+            "http://localhost./",
+            "http://tilo.localhost:24120/",
+            "http://127.0.0.1:24100/",
+            "http://127.1.2.3:8080/",
+            "http://[::1]:8080/",
+        ] {
+            assert!(secure_endpoint(&Url::parse(safe).unwrap()), "{safe}");
+        }
+        for refused in [
+            "http://tilo.sh/",
+            "http://localhost.tilo.sh/",
+            "http://10.0.0.1/",
+            "http://0.0.0.0/",
+            "http://[::]/",
+            "http://[::ffff:127.0.0.1]/",
+            "https://placeholder:placeholder@tilo.sh/",
+            "https://placeholder@tilo.sh/",
+            "https://:placeholder@tilo.sh/",
+            "http://placeholder:placeholder@localhost:8080/",
+            "http://placeholder:placeholder@127.0.0.1:8080/",
+            "http://placeholder:placeholder@[::1]:8080/",
+            "file:///tmp/app.tapp",
+            "ws://localhost/",
+            "ftp://localhost/",
+        ] {
+            assert!(!secure_endpoint(&Url::parse(refused).unwrap()), "{refused}");
         }
     }
 }
@@ -146,6 +195,10 @@ mod send_check {
 /// from these functions.
 #[cfg(all(feature = "http", not(target_family = "wasm")))]
 pub mod http {
+    /// One resumable, verified download from a trusted origin.
+    #[cfg(feature = "blocking")]
+    pub mod fetch;
+
     /// The one blocking client a caller keeps for its requests: its own type, so
     /// a caller need not name `reqwest`.
     #[cfg(feature = "blocking")]

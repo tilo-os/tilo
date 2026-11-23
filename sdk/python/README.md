@@ -135,5 +135,7 @@ cargo run -p tilo-agent-session --example api-on-server -- env VISA_REVOKE_SERVE
 
 ```sh
 uv run --extra dev pytest         # against an in-process fake /v1 server
-TILO_TEST_API_URL=http://127.0.0.1:8080 TILO_TEST_KEY=tilo_sk_… uv run pytest tests/test_integration.py
 ```
+
+`docs/tilo-sh/` documents each round trip as a whole program this suite's
+example runner (`t test docs-examples`) runs against a real API server.

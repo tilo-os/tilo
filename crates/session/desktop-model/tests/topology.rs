@@ -468,3 +468,97 @@ tilo_test_env::scenario! {
         assert_eq!(group.focus_history, vec![300]);
     }
 }
+
+tilo_test_env::scenario! {
+    fn removing_an_empty_strip_keeps_active_strip_and_display_pointers_valid;
+
+    phase removing_the_active_empty_strip_falls_back_to_a_remaining_strip;
+    {
+        let mut tree = tree();
+        let ws_id = tree.workspaces[0].id();
+        tree.active_strip.insert(ws_id, StripId(2));
+        tree.set_active_group(StripId(2), 20);
+        tree.outputs
+            .shown
+            .insert(("monitor-a".into(), ws_id), StripId(2));
+        tree.outputs
+            .last_active
+            .insert(("monitor-a".into(), StripId(2)), 20);
+
+        // A strip that still holds windows stays, and nothing changes.
+        assert!(!tree.remove_empty_strip(StripId(2)));
+        assert_eq!(tree.workspaces[0].strips.len(), 2);
+        assert_eq!(tree.active_strip.get(&ws_id), Some(&StripId(2)));
+
+        // Once emptied, the strip goes and the workspace falls back to strip 1.
+        assert!(tree.remove_tab(200).is_some());
+        assert!(tree.remove_empty_strip(StripId(2)));
+        assert_eq!(
+            tree.workspaces[0]
+                .strips
+                .iter()
+                .map(|strip| strip.id)
+                .collect::<Vec<_>>(),
+            vec![StripId(1)]
+        );
+        assert_eq!(tree.active_strip.get(&ws_id), Some(&StripId(1)));
+        assert_eq!(tree.active_strip_id(), Some(StripId(1)));
+        assert_eq!(tree.active_group.get(&StripId(2)), None);
+        assert!(tree.outputs.shown.is_empty());
+        assert!(tree.outputs.last_active.is_empty());
+        // A second removal of the same id changes nothing.
+        assert!(!tree.remove_empty_strip(StripId(2)));
+    }
+
+    phase removing_the_only_empty_strip_clears_the_recorded_active_strip;
+    {
+        let mut tree = tree();
+        let ws_id = tree.workspaces[0].id();
+        tree.workspaces[0]
+            .strips
+            .retain(|strip| strip.id == StripId(2));
+        tree.active_strip.insert(ws_id, StripId(2));
+        tree.set_active_group(StripId(2), 20);
+        assert!(tree.remove_tab(200).is_some());
+
+        assert!(tree.remove_empty_strip(StripId(2)));
+        assert!(tree.workspaces[0].strips.is_empty());
+        assert_eq!(tree.active_strip.get(&ws_id), None);
+        assert_eq!(tree.active_strip_id(), None);
+        assert_eq!(tree.active_group.get(&StripId(2)), None);
+    }
+
+    phase removing_a_non_active_empty_strip_keeps_the_active_strip_unchanged;
+    {
+        let mut tree = tree();
+        let ws_id = tree.workspaces[0].id();
+        tree.active_strip.insert(ws_id, StripId(1));
+        assert!(tree.remove_tab(200).is_some());
+
+        assert!(tree.remove_empty_strip(StripId(2)));
+        assert_eq!(tree.active_strip.get(&ws_id), Some(&StripId(1)));
+        assert_eq!(tree.active_strip_id(), Some(StripId(1)));
+    }
+
+    phase remove_tab_clears_fullscreen_and_canvas_places_without_recording_reopen;
+    {
+        let mut tree = tree();
+        tree.set_active_group(StripId(1), 11);
+        assert!(tree.set_fullscreen(StripId(1), 11, true));
+        tree.workspaces[0]
+            .layout
+            .places
+            .insert(11, CanvasPlace::new(744, 0, 720, 520));
+
+        let removed = tree.remove_tab(110).expect("group 11 holds tab 110");
+        assert!(removed.group_removed);
+        assert_eq!(tree.fullscreen, None);
+        assert_eq!(tree.active_group.get(&StripId(1)), Some(&10));
+        assert_eq!(tree.active_group_for(StripId(1)), Some(10));
+        assert_eq!(tree.workspaces[0].layout.place_of(11), None);
+        assert!(
+            tree.workspaces[0].closed_tabs().is_empty(),
+            "structural removal records nothing to reopen"
+        );
+    }
+}

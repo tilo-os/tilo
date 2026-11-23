@@ -62,7 +62,7 @@ mod window_bar;
 /// calendar servers the app syncs with.
 pub use calendar_model::{account, ics, model, spans, timezone};
 
-pub use account::{AccountStore, CalDavConfig, CalendarAccount, RemoteCalendar};
+pub use account::{CalDavConfig, CalendarAccount, CalendarAccounts, RemoteCalendar};
 pub use app::CalendarApp;
 pub use calendar_model::resource::calendar::{
     AdoptRemoteEvent, AdoptRemoteTask, DropRemoteItem, ImportItems, Invite, NewEvent, NewProject,

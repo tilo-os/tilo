@@ -1544,6 +1544,138 @@
       ]
     },
     {
+      "kind": "vpn",
+      "label": "VPN",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "set-vpn",
+          "label": "Connect or disconnect a VPN",
+          "description": "Connect or disconnect a VPN profile.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "profile",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "import-vpn",
+          "label": "Add a VPN from a file",
+          "description": "Add a VPN from a configuration file's text: `WireGuard`, `OpenVPN` or a `NetworkManager` key file.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "kind",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "text",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "forget-vpn",
+          "label": "Remove the VPN",
+          "description": "Remove a VPN profile from this device.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "profile",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "profiles",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "VpnProfile"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "VpnProfile",
+          "doc": "One VPN profile.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "type": "text"
+            },
+            {
+              "name": "connected",
+              "type": "bool"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "kind": "battery",
       "label": "Battery",
       "version": 1,
@@ -2046,9 +2178,51 @@
           "params": []
         },
         {
+          "id": "reply",
+          "label": "Reply in a banner that offers a reply",
+          "description": "Reply in a banner that offers a reply: what the person typed reaches its sender, and the banner goes",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "notification",
+              "required": true,
+              "schema": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "type": "int"
+            },
+            {
+              "name": "text",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
           "id": "open-notice",
           "label": "Open",
           "description": "Open one of the notifications the centre kept",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "notification",
+              "required": true,
+              "schema": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "id": "hand-to-agent",
+          "label": "Hand the notification to your agent",
+          "description": "Hand a notification to the agent the person keeps: it works on what it was told, and its answer comes where their conversation with it is",
           "kind": "outside",
           "params": [
             {
@@ -2160,11 +2334,25 @@
           "readonly": true
         },
         {
+          "path": "banners",
+          "stored": "value",
+          "type": {
+            "list": "int"
+          },
+          "readonly": true
+        },
+        {
           "path": "banner",
           "stored": "value",
           "type": {
             "option": "int"
           },
+          "readonly": true
+        },
+        {
+          "path": "undo",
+          "stored": "value",
+          "type": "bool",
           "readonly": true
         }
       ],
@@ -2220,6 +2408,100 @@
               "type": "text"
             }
           ]
+        }
+      ]
+    },
+    {
+      "kind": "osd",
+      "label": "Osd",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "visible",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "kind",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "level",
+          "stored": "value",
+          "type": {
+            "option": "float"
+          },
+          "readonly": true
+        },
+        {
+          "path": "on",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "name",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "glyph",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "display",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ]
+    },
+    {
+      "kind": "night-light",
+      "label": "Night light",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "toggle",
+          "label": "Turn the night light on or off",
+          "description": "Turn the night light on or off",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "on",
+              "required": false,
+              "schema": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "bool"
+              }
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "on",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
         }
       ]
     },
@@ -2453,6 +2735,14 @@
             {
               "name": "menu",
               "type": "bool"
+            },
+            {
+              "name": "badge",
+              "type": "int"
+            },
+            {
+              "name": "attention",
+              "type": "bool"
             }
           ]
         }
@@ -2561,7 +2851,7 @@
       "types": [
         {
           "name": "Style",
-          "doc": "A style: a view of the layout an installed package declares (shell.md §6).",
+          "doc": "A style: a view of the layout an installed package declares (shell.md \u00a76).",
           "fields": [
             {
               "name": "style",

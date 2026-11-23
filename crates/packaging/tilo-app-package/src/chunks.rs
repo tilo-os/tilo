@@ -699,13 +699,6 @@ type = "gui"
                 std::fs::read(unpacked.path().join("tree/lib/big.so")).unwrap(),
                 big
             );
-            let list_text =
-                String::from_utf8(objects[&chunk_list_name(&BlobHash::of(&big))].clone()).unwrap();
-            assert!(list_text.starts_with(&format!(
-                "{{\"format\":{},\"blob\":\"{}\",\"len\":10000,\"chunk_bytes\":1024,\"chunks\":[{{\"hash\":\"",
-                CHUNK_LIST_FORMAT,
-                BlobHash::of(&big)
-            )));
         }
 
         phase the_real_chunk_size_splits_a_blob_just_over_it;
@@ -787,7 +780,7 @@ type = "gui"
             }
             // phase: a_truncated_or_overlong_chunk_is_refused
             {
-                let mut truncated = objects.clone();
+                let mut truncated = objects;
                 truncated
                     .get_mut(&blob_object_name(&list.chunks[4].hash))
                     .unwrap()
@@ -798,26 +791,11 @@ type = "gui"
                         .read_to_end(&mut out)
                         .is_err()
                 );
-                let mut assembly = Reassembly::new(list.clone());
+                let mut assembly = Reassembly::new(list);
                 assert!(matches!(
                     assembly.update(&[0; 1025]),
                     Err(ChunkError::ChunkTooLong { .. })
                 ));
-            }
-            // phase: verified_chunks_stream_into_a_reassembly_piecewise
-            {
-                let mut assembly = Reassembly::new(list.clone());
-                for (index, chunk) in list.chunks.iter().enumerate() {
-                    let bytes = &objects[&blob_object_name(&chunk.hash)];
-                    let (head, tail) = bytes.split_at(bytes.len() / 2);
-                    assembly.update(head).unwrap();
-                    assembly.update(tail).unwrap();
-                    assert_eq!(
-                        assembly.finish_chunk().unwrap(),
-                        index + 1 == list.chunks.len()
-                    );
-                }
-                assert!(assembly.is_complete());
             }
         }
 

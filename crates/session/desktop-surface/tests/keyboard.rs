@@ -13,8 +13,9 @@ use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{IdMinter, Layout, Tab, TileContent, WindowGroup, WindowWidth, Workspace};
 use tilo_desktop_surface::{
-    DesktopHandle, DesktopSurface, HostAction, SearchHost, SearchHostFeed, TileSource, seed_tree,
+    DesktopHandle, DesktopSurface, HostAction, SearchHost, SearchHostFeed, TileSource,
 };
+use tilo_session_core::desktop::seed_tree;
 use ui::application::{
     AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
     RestoreInput,
@@ -1050,12 +1051,14 @@ fn the_window_shown_first_and_a_window_just_opened_take_the_keyboard() {
 
     shell
         .handle
-        .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
-            app: APP.into(),
-            beside: None,
-            background: None,
-            float: None,
-        })
+        .dispatch(
+            tilo_session_core::desktop::navigation::ChromeEffect::OpenApp {
+                app: APP.into(),
+                beside: None,
+                background: None,
+                float: None,
+            },
+        )
         .unwrap();
     shell.settle();
     let opened = shell
@@ -1767,12 +1770,14 @@ fn keys_after_a_window_opens_never_reach_the_window_left() {
     let (mut shell, field) = typing_in_the_first_window();
     shell
         .handle
-        .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
-            app: NOTES.into(),
-            beside: None,
-            background: None,
-            float: None,
-        })
+        .dispatch(
+            tilo_session_core::desktop::navigation::ChromeEffect::OpenApp {
+                app: NOTES.into(),
+                beside: None,
+                background: None,
+                float: None,
+            },
+        )
         .unwrap();
     shell.settle();
     assert_eq!(shell.handle.input_owner().as_deref(), Some(NOTES));
@@ -1791,12 +1796,14 @@ fn the_window_left_has_its_field_back_on_return() {
     let (mut shell, field) = typing_in_the_first_window();
     shell
         .handle
-        .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
-            app: NOTES.into(),
-            beside: None,
-            background: None,
-            float: None,
-        })
+        .dispatch(
+            tilo_session_core::desktop::navigation::ChromeEffect::OpenApp {
+                app: NOTES.into(),
+                beside: None,
+                background: None,
+                float: None,
+            },
+        )
         .unwrap();
     shell.settle();
     shell.handle.open_search(Scope::Workspace, None);

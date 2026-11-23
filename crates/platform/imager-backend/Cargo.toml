@@ -42,7 +42,7 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-identity = { path = "../../runtime/tilo-identity" }
 tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 runtime-collab = { path = "../../runtime/runtime-collab" }
-tilo-test-env = { path = "../../dev/test-env", optional = true }
+tilo-test-env = { path = "../../../tools/test-env", optional = true }
 reqwest = { workspace = true, features = ["blocking"] }
 tilo-net = { workspace = true, features = ["blocking"] }
 tilo-seal = { path = "../../system/tilo-seal" }
@@ -105,7 +105,7 @@ tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-process = { path = "../../platform/tilo-process" }
 libc.workspace = true
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["process", "fs"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 block-devices = { path = "../../system/block-devices", features = ["udisks"] }
@@ -137,8 +137,8 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Stora
 # The destination namespace checks recognise the fixture roots the tests build in.
 migration-sources = { path = "../migration-sources", features = ["test-support"] }
 tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"] }
-test-http = { path = "../../dev/test-http" }
-tilo-test-env = { path = "../../dev/test-env" }
+test-http = { path = "../../../tools/test-http" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

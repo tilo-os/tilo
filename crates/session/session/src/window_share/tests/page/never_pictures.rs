@@ -216,7 +216,7 @@ fn a_window_shared_while_its_apps_offer_names_no_window_waits_for_its_page() {
     assert_eq!(waits["awaits_page"], true, "it waits for its page: {waits}");
     assert_eq!(
         waits["waiting_for"].as_str(),
-        Some(tilo_desktop_surface::i18n::t("session-window-share-page-unoffered").as_str()),
+        Some(tilo_session_core::desktop::i18n::t("session-window-share-page-unoffered").as_str()),
         "and says so in words"
     );
     assert!(
@@ -496,7 +496,7 @@ fn a_window_whose_package_says_it_is_its_page_waits_for_the_page_before_its_app_
     assert_eq!(waits["awaits_page"], true, "it waits for its page: {waits}");
     assert_eq!(
         waits["waiting_for"].as_str(),
-        Some(tilo_desktop_surface::i18n::t("session-window-share-page-unoffered").as_str())
+        Some(tilo_session_core::desktop::i18n::t("session-window-share-page-unoffered").as_str())
     );
 
     // The app offers its window's page.

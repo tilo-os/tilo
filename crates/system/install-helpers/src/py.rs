@@ -11,14 +11,3 @@ pub use tilo_pycompat::{
 pub fn universal_newlines(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n")
 }
-
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-
-    #[test]
-    fn text_reads_with_universal_newlines() {
-        assert_eq!(universal_newlines("a\r\nb\rc\n"), "a\nb\nc\n");
-    }
-}

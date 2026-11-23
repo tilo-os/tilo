@@ -2,7 +2,6 @@
 
 use super::*;
 use crate::TileSource;
-use crate::navigation::{ChromeEffect, LayoutEffect, Verb};
 use crate::surface::tests::{in_view, one_window_shell, play_frames, shell_with, tabbed_shell};
 use crate::surface::{DesktopHandle, DesktopSurface};
 use crate::surface::{WorkspaceShare, WorkspaceShares};
@@ -15,6 +14,7 @@ use tilo_desktop_model::width::{
 use tilo_desktop_model::{
     Display, IdMinter, Layout, TabId, TileContent, WindowWidth, Workspace, WorkspaceId,
 };
+use tilo_session_core::desktop::navigation::{ChromeEffect, LayoutEffect, Verb};
 use ui::widget::TabHolder;
 use ui::window_share::OpenWindow;
 
@@ -225,7 +225,10 @@ fn a_window_asking_for_the_person_offers_to_be_gone_to_first() {
         .expect("going to the window is offered");
     settle(&mut frame);
     assert_eq!(
-        handle.read(|tree| crate::navigation::active_route(tree).map(|route| route.tab)),
+        handle.read(
+            |tree| tilo_session_core::desktop::navigation::active_route(tree)
+                .map(|route| route.tab)
+        ),
         Some(tab),
         "the person is looking at it"
     );
@@ -927,7 +930,7 @@ fn shell_showing(salt: u16, tile: TileContent) -> (DesktopSurface, DesktopHandle
         view: String::new(),
         pinned: false,
     };
-    let tree = crate::seed_tree(&mut minter, "Shell", vec![tab]);
+    let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Shell", vec![tab]);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Apps));
     (surface, handle, id)
 }
@@ -1290,7 +1293,7 @@ fn only_a_host_windows_tab_offers_a_name() {
         command(&tree, &route, RENAME, None).is_none(),
         "a row without a name is no command"
     );
-    let long = "x".repeat(crate::navigation::MAX_NAME_CHARS.saturating_add(1));
+    let long = "x".repeat(tilo_session_core::desktop::navigation::MAX_NAME_CHARS.saturating_add(1));
     assert!(
         handle
             .choose_window_menu(route.tab, RENAME, Some(&long))

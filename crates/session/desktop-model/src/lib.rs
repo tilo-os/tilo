@@ -39,6 +39,7 @@ pub mod tree;
 mod view;
 pub mod width;
 pub mod window_share;
+pub mod window_state;
 pub mod workspace;
 
 pub use app::{APP_ID_PREFIX, AppId, AppKind};

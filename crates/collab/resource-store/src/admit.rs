@@ -134,6 +134,14 @@ const SEQ: &str = "#";
 /// value no scalar holds.
 type FieldWrite = (String, String, Option<ScalarValue>);
 
+/// The resources `change` touches in the store document `doc_id`, `doc` with it applied: what a
+/// reader of the store's changes (a trigger watching a kind) sees each change do. `None` when it
+/// writes where the store writes nothing.
+#[must_use]
+pub fn touches(doc: &Automerge, doc_id: &str, change: &AmChange) -> Option<Touched> {
+    touched(doc, doc_id, change).map(|(touched, _)| touched)
+}
+
 /// What `change` touches in `doc`, the document it is applied to, and each scalar it writes to a
 /// field; `None` when it writes where the store writes nothing.
 pub(crate) fn touched(

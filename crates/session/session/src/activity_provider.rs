@@ -24,9 +24,9 @@ use tilo_actions::{
     IRREVERSIBLE_TAG, InputSpec, InvocationId, OperationKind, RiskLevel,
 };
 use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices, LiveView};
-use tilo_desktop_surface::activity::{is_read, refused_to_agent};
-use tilo_desktop_surface::i18n::t;
 use tilo_desktop_surface::session::ActivityRequests;
+use tilo_session_core::desktop::activity::{is_read, refused_to_agent};
+use tilo_session_core::desktop::i18n::t;
 
 /// The broker's API to the activity the shell's model serves.
 pub(crate) struct ActivityWire {

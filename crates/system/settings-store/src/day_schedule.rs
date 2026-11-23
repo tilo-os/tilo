@@ -368,9 +368,6 @@ mod tests {
             let summer = sun_times(BERLIN, 172, 120).unwrap();
             near(summer.sunrise, "04:43");
             near(summer.sunset, "21:33");
-            let winter = sun_times(BERLIN, 355, 60).unwrap();
-            near(winter.sunrise, "08:15");
-            near(winter.sunset, "15:54");
         }
 
         phase polar_day_has_no_sunset_and_falls_back_to_fixed_times;

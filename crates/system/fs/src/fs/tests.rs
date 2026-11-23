@@ -944,7 +944,13 @@ mod availability_control_tests {
         drop(fs);
     }
 
+    /// A retry runs off the thread that asked for it and reports either the completed transfer or
+    /// one coarse failure a person can act on.
     #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each section keeps one former test's body verbatim"
+    )]
     async fn transfer_retries_run_off_thread_and_report_actionable_outcomes() {
         {
             let dir = tempfile::tempdir().unwrap();
@@ -1007,47 +1013,45 @@ mod availability_control_tests {
                 Residency::Resident { bytes: 0 }
             );
         }
-    }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Arc::new(ContentStore::memory());
+            let hydrator = Arc::new(Hydrator::new(store));
+            let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
+            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+            let registry = Arc::new(Mutex::new(
+                AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+            ));
+            let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
+                .with_availability(registry.clone());
+            let missing = Hash::from([9; 32]);
+            let ino = namespace
+                .lock_recover()
+                .create_file(ROOT_INO, "missing.txt", Some(&missing), 4, 1)
+                .unwrap();
+            let record = namespace.lock_recover().document_id_for(ino).unwrap();
 
-    #[tokio::test]
-    async fn retry_failure_is_coarse_and_actionable() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(store));
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let registry = Arc::new(Mutex::new(
-            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-        ));
-        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-            .with_availability(registry.clone());
-        let missing = Hash::from([9; 32]);
-        let ino = namespace
-            .lock_recover()
-            .create_file(ROOT_INO, "missing.txt", Some(&missing), 4, 1)
-            .unwrap();
-        let record = namespace.lock_recover().document_id_for(ino).unwrap();
-
-        fs.retry_transfer(ino).unwrap();
-        tilo_test_env::within("the retry failure event", async {
-            loop {
-                let failure = registry
-                    .lock()
-                    .unwrap()
-                    .get(record)
-                    .and_then(|state| state.transfer.last_error.clone());
-                if let Some(failure) = failure {
-                    assert_eq!(
-                        failure.message,
-                        "No available replica could provide this file"
-                    );
-                    assert!(!failure.message.contains(&missing.to_string()));
-                    break;
+            fs.retry_transfer(ino).unwrap();
+            tilo_test_env::within("the retry failure event", async {
+                loop {
+                    let failure = registry
+                        .lock()
+                        .unwrap()
+                        .get(record)
+                        .and_then(|state| state.transfer.last_error.clone());
+                    if let Some(failure) = failure {
+                        assert_eq!(
+                            failure.message,
+                            "No available replica could provide this file"
+                        );
+                        assert!(!failure.message.contains(&missing.to_string()));
+                        break;
+                    }
+                    tokio::task::yield_now().await;
                 }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await;
+            })
+            .await;
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1142,8 +1146,16 @@ mod thumb_tests {
         (namespace, store, fs)
     }
 
+    /// `thumbnail_for` is the exact code `getxattr(user.tilo.thumb)` runs: a photo's preview is
+    /// made once, verified, published for peers and cached across remounts; a replicated
+    /// preview is served before content; and neither is made for a file with no local content
+    /// or for one that is not an image.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn thumbnails_are_generated_verified_and_published() {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each section keeps one former test's body verbatim"
+    )]
+    async fn thumbnails_are_generated_verified_published_cached_and_served_before_content() {
         {
             let dir = tempfile::tempdir().unwrap();
             let (namespace, store, fs) = fixture(&dir.path().join("thumbs"));
@@ -1186,10 +1198,6 @@ mod thumb_tests {
                 "second request is a cache hit, identical bytes"
             );
         }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn thumbnails_survive_remounts_and_are_absent_without_content() {
         {
             let dir = tempfile::tempdir().unwrap();
             let png = solid_png(320, 240, [200, 60, 30]);
@@ -1222,12 +1230,36 @@ mod thumb_tests {
         }
         {
             let dir = tempfile::tempdir().unwrap();
-            let (namespace, _store, fs) = fixture(&dir.path().join("thumbs"));
+            let (namespace, store, fs) = fixture(&dir.path().join("thumbs"));
 
-            let projected = iroh_blobs::Hash::from([3u8; 32]);
+            let preview = thumbnail::encode_png(
+                &thumbnail::image_thumb(&solid_png(256, 256, [90, 200, 120]), 256).unwrap(),
+            )
+            .unwrap();
+            let thumb_blob = store.ingest(preview.clone()).await.unwrap();
+
+            let projected = iroh_blobs::Hash::from([5u8; 32]);
+            let ino = {
+                let mut ns = namespace.lock_recover();
+                let ino = ns
+                    .create_file(ROOT_INO, "big-photo.png", Some(&projected), 9_000_000, 1)
+                    .unwrap();
+                ns.set_thumb(ino, &thumb_blob);
+                ino
+            };
+
+            let served = fs
+                .thumbnail_for(ino)
+                .expect("a projected preview is served before content");
+            assert_eq!(
+                served, preview,
+                "the replicated thumbnail is served without local content"
+            );
+
+            let unthumbed = iroh_blobs::Hash::from([6u8; 32]);
             let img_ino = {
                 let mut ns = namespace.lock_recover();
-                ns.create_file(ROOT_INO, "remote.png", Some(&projected), 4096, 1)
+                ns.create_file(ROOT_INO, "remote.png", Some(&unthumbed), 4096, 1)
                     .unwrap()
             };
             assert!(
@@ -1237,7 +1269,7 @@ mod thumb_tests {
 
             let zip_ino = {
                 let mut ns = namespace.lock_recover();
-                ns.create_file(ROOT_INO, "bundle.zip", Some(&projected), 4096, 1)
+                ns.create_file(ROOT_INO, "bundle.zip", Some(&unthumbed), 4096, 1)
                     .unwrap()
             };
             assert!(
@@ -1245,36 +1277,6 @@ mod thumb_tests {
                 "a .zip is a badge, not a preview"
             );
         }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_replicated_thumbnail_is_served_before_content() {
-        let dir = tempfile::tempdir().unwrap();
-        let (namespace, store, fs) = fixture(&dir.path().join("thumbs"));
-
-        let preview = thumbnail::encode_png(
-            &thumbnail::image_thumb(&solid_png(256, 256, [90, 200, 120]), 256).unwrap(),
-        )
-        .unwrap();
-        let thumb_blob = store.ingest(preview.clone()).await.unwrap();
-
-        let projected = iroh_blobs::Hash::from([5u8; 32]);
-        let ino = {
-            let mut ns = namespace.lock_recover();
-            let ino = ns
-                .create_file(ROOT_INO, "big-photo.png", Some(&projected), 9_000_000, 1)
-                .unwrap();
-            ns.set_thumb(ino, &thumb_blob);
-            ino
-        };
-
-        let served = fs
-            .thumbnail_for(ino)
-            .expect("a projected preview is served before content");
-        assert_eq!(
-            served, preview,
-            "the replicated thumbnail is served without local content"
-        );
     }
 }
 
@@ -1960,12 +1962,15 @@ mod write_stage_tests {
         remote.close();
     }
 
+    /// A truncation of a remote file reads only the kept prefix, and never reads what it drops.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn truncate_to_zero_does_not_hydrate() {
+    async fn truncating_a_remote_file_reads_only_the_kept_prefix_and_nothing_it_drops() {
         let remote = Remote::new();
         let (unopened, _) = remote.file("big.iso", &pseudo(3 * 1024 * 1024, 1)).await;
         let (rewritten, _) = remote.file("notes.txt", &pseudo(300_000, 2)).await;
         let (open, _) = remote.file("open.bin", &pseudo(2 * 1024 * 1024, 3)).await;
+        let original = pseudo(6 * 1024 * 1024, 4);
+        let (kept, _) = remote.file("log.bin", &original).await;
 
         assert_eq!(remote.fs.truncate_inode(unopened, 0), Ok(()));
         assert_eq!(remote.fs.truncate_inode(rewritten, 0), Ok(()));
@@ -1975,27 +1980,19 @@ mod write_stage_tests {
         assert_eq!(remote.fs.presented_attr(open).unwrap().0.size, 0);
         assert_eq!(remote.fs.flush_inode(rewritten), Ok(()));
         assert_eq!(remote.fs.flush_inode(open), Ok(()));
-
         assert_eq!(remote.fetched(), 0, "no truncation read what it dropped");
-        assert_eq!(remote.fs.ns().hash_for(unopened), None);
-        assert_eq!(remote.fs.ns().getattr(unopened).unwrap().size, 0);
-        assert_eq!(remote.fs.ns().hash_for(open), None);
-        assert_eq!(remote.committed(rewritten).await, b"fresh");
-        remote.close();
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn truncating_an_unopened_remote_file_reads_only_the_kept_prefix() {
-        let remote = Remote::new();
-        let original = pseudo(6 * 1024 * 1024, 4);
-        let (ino, _) = remote.file("log.bin", &original).await;
-        assert_eq!(remote.fs.truncate_inode(ino, 1000), Ok(()));
+        assert_eq!(remote.fs.truncate_inode(kept, 1000), Ok(()));
         let fetched = remote.fetched();
         assert!(
             fetched <= u64::from(crate::content::MAX_CHUNK_LEN),
             "keeping 1000 bytes fetched {fetched}"
         );
-        assert_eq!(remote.committed(ino).await, &original[..1000]);
+
+        assert_eq!(remote.fs.ns().hash_for(unopened), None);
+        assert_eq!(remote.fs.ns().getattr(unopened).unwrap().size, 0);
+        assert_eq!(remote.fs.ns().hash_for(open), None);
+        assert_eq!(remote.committed(rewritten).await, b"fresh");
+        assert_eq!(remote.committed(kept).await, &original[..1000]);
         remote.close();
     }
 
@@ -2255,88 +2252,91 @@ mod read_lock_tests {
         namespace.lock_recover()
     }
 
+    /// A read is answered only where the caller's view and its own open handles reach: a
+    /// revoke, a rename out of view or an unlink makes it ENOENT, a directory read is EISDIR,
+    /// and moving back into view makes it readable again.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn read_after_acl_revoke_is_enoent() {
-        let Fixture { fs, file, .. } = fixture().await;
-        let handle = AclHandle::new(shared_read_policy());
-        let fs = fs.with_acl(handle.clone(), ME);
-        assert_eq!(read_all(&fs, file, 0), data());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each section keeps one former test's body verbatim"
+    )]
+    async fn a_read_sees_only_what_the_view_and_its_handles_reach() {
+        {
+            let Fixture { fs, file, .. } = fixture().await;
+            let handle = AclHandle::new(shared_read_policy());
+            let fs = fs.with_acl(handle.clone(), ME);
+            assert_eq!(read_all(&fs, file, 0), data());
 
-        handle.replace(WorkspaceAcl::new());
-        assert_eq!(read_all(&fs, file, 0), Reply::Errno(ENOENT));
-        assert_eq!(fs.attr_for_request(file, None).err(), Some(ENOENT));
-        drop(fs);
-    }
+            handle.replace(WorkspaceAcl::new());
+            assert_eq!(read_all(&fs, file, 0), Reply::Errno(ENOENT));
+            assert_eq!(fs.attr_for_request(file, None).err(), Some(ENOENT));
+            drop(fs);
+        }
+        {
+            let Fixture {
+                namespace,
+                fs,
+                shared,
+                file,
+            } = fixture().await;
+            let fs = fs.with_acl(shared_read_policy(), ME);
+            assert_eq!(read_all(&fs, file, 0), data());
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn read_after_rename_out_of_view_is_enoent() {
-        let Fixture {
-            namespace,
-            fs,
-            shared,
-            file,
-        } = fixture().await;
-        let fs = fs.with_acl(shared_read_policy(), ME);
-        assert_eq!(read_all(&fs, file, 0), data());
+            assert!(lock_namespace(&namespace).rename(shared, "a.txt", ROOT_INO, "a.txt", 2));
+            assert_eq!(read_all(&fs, file, 0), Reply::Errno(ENOENT));
+            assert_eq!(fs.attr_for_request(file, None).err(), Some(ENOENT));
 
-        assert!(lock_namespace(&namespace).rename(shared, "a.txt", ROOT_INO, "a.txt", 2));
-        assert_eq!(read_all(&fs, file, 0), Reply::Errno(ENOENT));
-        assert_eq!(fs.attr_for_request(file, None).err(), Some(ENOENT));
+            assert!(lock_namespace(&namespace).rename(ROOT_INO, "a.txt", shared, "a.txt", 3));
+            assert_eq!(
+                read_all(&fs, file, 0),
+                data(),
+                "moving back into the view makes the file readable again"
+            );
+            drop(fs);
+        }
+        {
+            let Fixture {
+                namespace,
+                fs,
+                file,
+                ..
+            } = fixture().await;
+            let fs = fs.with_acl(shared_read_policy(), ME);
+            let fh = 7;
+            fs.open_file_handles.lock_recover().insert(
+                fh,
+                OpenFileHandleState {
+                    ino: file,
+                    opened_path: "/shared/a.txt".to_string(),
+                    writable: false,
+                    append: false,
+                },
+            );
+            assert!(lock_namespace(&namespace).remove(file));
 
-        assert!(lock_namespace(&namespace).rename(ROOT_INO, "a.txt", shared, "a.txt", 3));
-        assert_eq!(
-            read_all(&fs, file, 0),
-            data(),
-            "moving back into the view makes the file readable again"
-        );
-        drop(fs);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn unlinked_file_reads_only_through_its_open_handle() {
-        let Fixture {
-            namespace,
-            fs,
-            file,
-            ..
-        } = fixture().await;
-        let fs = fs.with_acl(shared_read_policy(), ME);
-        let fh = 7;
-        fs.open_file_handles.lock_recover().insert(
-            fh,
-            OpenFileHandleState {
-                ino: file,
-                opened_path: "/shared/a.txt".to_string(),
-                writable: false,
-                append: false,
-            },
-        );
-        assert!(lock_namespace(&namespace).remove(file));
-
-        assert_eq!(
-            read_all(&fs, file, fh),
-            data(),
-            "the handle opened before the unlink keeps reading"
-        );
-        assert_eq!(
-            fs.attr_for_request(file, Some(fh)).map(|attr| attr.size),
-            Ok(BYTES.len() as u64)
-        );
-        assert_eq!(
-            read_all(&fs, file, 0),
-            Reply::Errno(ENOENT),
-            "no handle, no read"
-        );
-        assert_eq!(fs.attr_for_request(file, None).err(), Some(ENOENT));
-        drop(fs);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn read_of_a_directory_is_eisdir() {
-        let Fixture { fs, shared, .. } = fixture().await;
-        let fs = fs.with_acl(shared_read_policy(), ME);
-        assert_eq!(read_all(&fs, shared, 0), Reply::Errno(EISDIR));
-        drop(fs);
+            assert_eq!(
+                read_all(&fs, file, fh),
+                data(),
+                "the handle opened before the unlink keeps reading"
+            );
+            assert_eq!(
+                fs.attr_for_request(file, Some(fh)).map(|attr| attr.size),
+                Ok(BYTES.len() as u64)
+            );
+            assert_eq!(
+                read_all(&fs, file, 0),
+                Reply::Errno(ENOENT),
+                "no handle, no read"
+            );
+            assert_eq!(fs.attr_for_request(file, None).err(), Some(ENOENT));
+            drop(fs);
+        }
+        {
+            let Fixture { fs, shared, .. } = fixture().await;
+            let fs = fs.with_acl(shared_read_policy(), ME);
+            assert_eq!(read_all(&fs, shared, 0), Reply::Errno(EISDIR));
+            drop(fs);
+        }
     }
 
     /// A closed file's stage becomes its content entry by a link, and a write after that close

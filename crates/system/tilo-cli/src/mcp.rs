@@ -1,7 +1,7 @@
 //! `tilo mcp`: the agent's MCP server over stdio. On a Tilo desktop it is
 //! the desktop's own MCP server (`agent.sock`), which the person admits the
 //! agent at; elsewhere it is a connection to this computer's one daemon
-//! (`tilo-runtime --hold`), which serves as the device `tilo login` made of
+//! (`tilo-runtime`), which serves as the device `tilo login` made of
 //! this computer.
 //!
 //! What the daemon serves is the runtime's own projection of a workspace

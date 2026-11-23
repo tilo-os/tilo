@@ -75,10 +75,10 @@ pub fn certified_person_fixture_for_seeds(
         issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
-    let workspace_id = collab_types::personal_cluster(&certificate.user_public_key);
+    let workspace_id = collab_types::person_workspace(&certificate.user_public_key);
     let mut workspace = crate::apps::test_support::Workspace::new(
         tilo_desktop_model::WorkspaceId::parse(&workspace_id.to_string()).unwrap(),
-        "Synthetic personal cluster",
+        "Synthetic own workspace",
     );
     workspace.set_owner(hex::encode(certificate.user_public_key));
     let mut tree = crate::apps::test_support::WorkspaceTree::default();

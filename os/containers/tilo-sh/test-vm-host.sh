@@ -108,7 +108,7 @@ grep -q "guest kernel .*hosted-$(tr -d '[:space:]' < "$guest/digest" | sed 's/^s
 }
 member=$(podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups \
   --inh-caps=-all tilo-device-admin key \
-  --identity-root /var/lib/tilo-hosted/member/profile/identity 2>&1)
+  --identity-root /var/lib/tilo-hosted/member/identity 2>&1)
 printf '%s\n' "$member" >&2
 grep -q '"device"' <<<"$member" || die 'the host holds no member device key'
 
@@ -119,7 +119,7 @@ as_service() {
     --inh-caps=-all tilo-linux-vm hosted "$@"
 }
 in_vm() { # workspace script
-  as_service run --run /run/tilo-hosted --workspace "$1" --account acct-with-card --size small \
+  as_service run --run /run/tilo-hosted --workspace "$1" --account acct-tilo-sh --size small \
     -- /bin/sh -c "$2" 2>&1
 }
 hosted() { as_service "$@" --run /run/tilo-hosted; }
@@ -131,7 +131,8 @@ vm_dir() { printf '/var/lib/tilo-hosted/state/vms/%s' "$1"; }
 # each machine's later writes are its own. The branch's disk is all that is
 # copied, so it boots cold; the source runs on as it was.
 say 'setting up the source machine'
-in_vm ws-local 'set -e
+# Each line is echoed as it runs (set -x), so a setup that stops names the line.
+setup=$(in_vm ws-local 'set -ex
   echo written-in-the-source > "$HOME/branch-proof"
   printf "[user]\n\tname = Branch Proof\n" > "$HOME/.gitconfig"
   mkdir -p "$HOME/.ssh"
@@ -146,7 +147,9 @@ in_vm ws-local 'set -e
   echo not-a-real-key | sudo -n -u tilo-browser tee \
     /home/tilo-browser/.config/tilo/identity/device/keypair.bin >/dev/null
   echo not-a-real-cookie | sudo -n -u tilo-browser tee /home/tilo-browser/Default/Cookies >/dev/null
-  echo source-ready' | grep -qx source-ready || vm_failure 'the source VM did not take its setup'
+  echo source-ready') || true
+printf '%s\n' "$setup" >&2
+grep -qx source-ready <<<"$setup" || vm_failure 'the source VM did not take its setup'
 
 # What a branch must hold, and what it must not: one line per finding.
 branch_holds() { # workspace
@@ -169,7 +172,7 @@ check_branch() { # workspace findings
 
 [ "$(phase_of ws-local)" = Running ] || die "the source is $(phase_of ws-local) at the branch, not Running"
 say 'branching the running source'
-as_service branch --run /run/tilo-hosted --workspace ws-branch --account acct-with-card \
+as_service branch --run /run/tilo-hosted --workspace ws-branch --account acct-tilo-sh \
   --size small --from ws-local || vm_failure 'the running VM was not branched'
 [ "$(phase_of ws-local)" = Running ] || die 'the source does not run on after its branch'
 [ "$(phase_of ws-branch)" = Off ] || die "the branch is $(phase_of ws-branch), not a disk that boots cold"
@@ -202,7 +205,7 @@ in_vm ws-local 'set -e
   echo written' | grep -qx written || vm_failure 'the source did not write before its suspend'
 hosted suspend ws-local default || vm_failure 'the source did not suspend'
 [ "$(phase_of ws-local)" = Suspended ] || die "the source is $(phase_of ws-local), not Suspended"
-as_service branch --run /run/tilo-hosted --workspace ws-branch2 --account acct-with-card \
+as_service branch --run /run/tilo-hosted --workspace ws-branch2 --account acct-tilo-sh \
   --size small --from ws-local || vm_failure 'the suspended VM was not branched'
 [ "$(phase_of ws-local)" = Suspended ] || die 'the suspended source is not suspended again after its branch'
 seen=$(branch_holds ws-branch2)
@@ -213,7 +216,7 @@ grep -qx written-before-the-suspend <<<"$seen" || die 'the branch of a suspended
 grep -qx second-tool-ran <<<"$seen" || die 'the branch of a suspended VM lacks the tool it installed last'
 grep -qx later-source-write <<<"$seen" || die 'the branch of a suspended VM lacks what it wrote earlier'
 
-if out=$(as_service branch --run /run/tilo-hosted --workspace ws-none-branch --account acct-with-card \
+if out=$(as_service branch --run /run/tilo-hosted --workspace ws-none-branch --account acct-tilo-sh \
   --size small --from ws-none 2>&1); then
   die 'a workspace without a VM was branched'
 fi
@@ -237,6 +240,6 @@ hosted drain || vm_failure 'the machine did not drain'
 if out=$(in_vm ws-local 'true' 2>&1); then die 'a drained machine woke a VM'; fi
 grep -q 'is moving to another machine' <<<"$out" || die "a drained machine's wake said: $out"
 
-vm_host down
-[ ! -d "$state/vm" ] || die 'down left the state disk behind'
+vm_host down --wipe
+[ ! -d "$state/vm" ] || die 'down --wipe left the state disk behind'
 say 'a workspace VM ran on the local stack'"'"'s VM host, and it went down clean'

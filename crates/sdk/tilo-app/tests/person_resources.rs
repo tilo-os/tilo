@@ -32,7 +32,7 @@ pub struct Watched {
 #[resource(
     kind = "test.watched",
     app = "so.tilo.test-queue",
-    read_content = Watched::read_document,
+    read_content = tilo_app::tilo_resource::read::fields,
     catalogue = "tests/locales"
 )]
 impl Watched {
@@ -40,16 +40,6 @@ impl Watched {
     #[action]
     pub fn watch(&mut self, cx: &mut ActionCx, video: String) {
         self.videos.push(cx.id(), video);
-    }
-}
-
-impl Watched {
-    /// What was watched, as its fields.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_app::tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_app::tilo_resource::read::fields(self, item)
     }
 }
 

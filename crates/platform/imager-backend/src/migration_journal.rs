@@ -3,9 +3,9 @@ use super::migration::{self, CopyProgress, CopyReport, PinnedDirectory, changed}
 use super::{
     destination_security,
     migration_durability::{self as durability, Identity},
+    migration_store::NativePath,
     nofollow::metadata_nofollow,
 };
-use advisory_lock::FileLock;
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, Metadata, OpenOptions};
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,7 @@ enum Record {
     CommitOutcome,
 }
 
-use super::migration_journal_log::{read_record, write_record};
+use super::migration_journal_log::{Log, read_record, write_record};
 /// Internal classification travels with I/O errors; callers never infer persistence state from an
 /// error message or an ordinary per-file conflict.
 #[derive(Clone, Copy, Debug)]
@@ -128,57 +128,16 @@ struct JournalFailure {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "platform", content = "units", deny_unknown_fields)]
-enum NativeName {
-    Unix(Vec<u8>),
-    Windows(Vec<u16>),
-}
-impl NativeName {
-    fn encode(name: &OsStr) -> Self {
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStrExt;
-            Self::Unix(name.as_bytes().to_vec())
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::ffi::OsStrExt;
-            Self::Windows(name.encode_wide().collect())
-        }
-    }
-    fn decode(&self) -> io::Result<OsString> {
-        match self {
-            #[cfg(unix)]
-            Self::Unix(bytes) if !bytes.contains(&0) => {
-                use std::os::unix::ffi::OsStringExt;
-                Ok(OsString::from_vec(bytes.clone()))
-            }
-            #[cfg(windows)]
-            Self::Windows(units) if !units.contains(&0) => {
-                use std::os::windows::ffi::OsStringExt;
-                Ok(OsString::from_wide(units))
-            }
-            _ => Err(changed("journal path platform mismatch or NUL")),
-        }
-    }
-    fn len(&self) -> usize {
-        match self {
-            Self::Unix(v) => v.len(),
-            Self::Windows(v) => v.len(),
-        }
-    }
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RelativePath {
-    components: Vec<NativeName>,
+    components: Vec<NativePath>,
 }
 impl RelativePath {
     fn encode(path: &Path) -> io::Result<Self> {
         let components = path
             .components()
             .map(|c| match c {
-                Component::Normal(n) => Ok(NativeName::encode(n)),
+                Component::Normal(n) => Ok(NativePath::encode(Path::new(n))),
                 _ => Err(changed("non-normal relative path")),
             })
             .collect::<io::Result<Vec<_>>>()?;
@@ -194,12 +153,12 @@ impl RelativePath {
         }
         let mut path = PathBuf::new();
         for part in &self.components {
-            if part.len() == 0 || part.len() > 255 {
+            if part.is_empty() || part.len() > 255 {
                 return Err(changed("journal component exceeds bounds"));
             }
-            let name = part.decode()?;
-            let mut components = Path::new(&name).components();
-            if !matches!(components.next(), Some(Component::Normal(n)) if n == name)
+            let name = part.decode().map_err(|error| changed(&error))?;
+            let mut components = name.components();
+            if !matches!(components.next(), Some(Component::Normal(n)) if n == name.as_os_str())
                 || components.next().is_some()
             {
                 return Err(changed("journal component is not a single normal filename"));
@@ -322,8 +281,8 @@ struct Outcome {
 struct Document {
     version: u32,
     operation: String,
-    source: NativeName,
-    destination: NativeName,
+    source: NativePath,
+    destination: NativePath,
     source_identity: Identity,
     destination_parent_identity: Identity,
     #[serde(default)]
@@ -336,11 +295,7 @@ struct Document {
 pub struct MigrationJournal {
     document: Document,
     index: BTreeMap<PathBuf, usize>,
-    sequence: u64,
-    parent: Arc<PinnedDirectory>,
-    name: OsString,
-    file: FileLock,
-    identity: Metadata,
+    log: Log,
     resume: bool,
     seen: BTreeSet<PathBuf>,
     failure: Option<JournalFailure>,
@@ -348,13 +303,10 @@ pub struct MigrationJournal {
 }
 
 fn directory_identity(directory: &PinnedDirectory) -> io::Result<Identity> {
-    durability::identity(&durability::readable_directory(&directory.file)?)
+    durability::directory_identity(directory)
 }
-fn absolute(path: &NativeName) -> io::Result<PathBuf> {
-    if path.len() > 4096 {
-        return Err(changed("journal root exceeds bounds"));
-    }
-    let path = PathBuf::from(path.decode()?);
+fn absolute(path: &NativePath) -> io::Result<PathBuf> {
+    let path = path.decode().map_err(|error| changed(&error))?;
     if !path.is_absolute() {
         return Err(changed("journal root must be native absolute path"));
     }
@@ -421,8 +373,8 @@ impl MigrationJournal {
         let document = Document {
             version: 2,
             operation: format!("{}-{:?}", std::process::id(), std::time::SystemTime::now()),
-            source: NativeName::encode(source_path.as_os_str()),
-            destination: NativeName::encode(destination_path.as_os_str()),
+            source: NativePath::encode(source_path),
+            destination: NativePath::encode(destination_path),
             source_identity: directory_identity(&source)?,
             destination_parent_identity: directory_identity(&destination_parent)?,
             reviewed_revision: reviewed.map(|r| r.2),
@@ -431,7 +383,7 @@ impl MigrationJournal {
         };
         absolute(&document.source)?;
         absolute(&document.destination)?;
-        let (file, identity, sequence) = super::migration_journal_log::create_private(
+        let log = Log::create_in(
             &parent,
             &name,
             *MAGIC,
@@ -443,11 +395,7 @@ impl MigrationJournal {
         Ok(Self {
             document,
             index: BTreeMap::new(),
-            sequence,
-            parent,
-            name,
-            file,
-            identity,
+            log,
             resume: false,
             seen: BTreeSet::new(),
             failure: None,
@@ -466,12 +414,14 @@ impl MigrationJournal {
                 "unsupported journal format"
             }));
         }
+        let mut log = Log::from_open(parent, name, file, identity);
         let mut sequence = 0;
-        let Some(Record::Header { mut document }) = read_record(&mut file, sequence)? else {
+        let Some(Record::Header { mut document }) = read_record(&mut log.file, sequence)? else {
             return Err(changed("journal header missing"));
         };
         sequence += 1;
-        let mut end = file.stream_position()?;
+        log.sequence = sequence;
+        let mut end = log.file.stream_position()?;
         if document.version != 2 || !document.receipts.is_empty() || document.outcome.is_some() {
             return Err(changed("invalid journal header"));
         }
@@ -487,20 +437,17 @@ impl MigrationJournal {
             }
         }
         let mut pending = None;
-        while let Some(record) = read_record(&mut file, sequence)? {
+        while let Some(record) = read_record(&mut log.file, sequence)? {
             Self::replay_record(&mut document, &mut index, &mut pending, record)?;
             sequence += 1;
-            end = file.stream_position()?;
+            end = log.file.stream_position()?;
         }
+        log.sequence = sequence;
         Self::validate_outcome_paths(&document)?;
         let mut result = Self {
             document,
             index,
-            sequence,
-            parent,
-            name,
-            file,
-            identity,
+            log,
             resume: true,
             seen: BTreeSet::new(),
             failure: None,
@@ -508,13 +455,13 @@ impl MigrationJournal {
         };
         result.validate()?;
         result.load_reviewed_inventory()?;
-        if end != result.file.metadata()?.len() {
+        if end != result.log.file.metadata()?.len() {
             result.validate_recovery_location()?;
             #[cfg(test)]
             persistence_injection::fail_at("before_recover_tail")?;
-            super::migration_journal_log::repair(&mut result.file, end, || Ok(()))?;
+            result.log.repair(end, || Ok(()))?;
         }
-        result.file.seek(SeekFrom::Start(end))?;
+        result.log.file.seek(SeekFrom::Start(end))?;
         Ok(result)
     }
     fn load_reviewed_inventory(&mut self) -> io::Result<()> {
@@ -649,16 +596,16 @@ impl MigrationJournal {
                 "root identity changed; journal recovery requires review",
             ));
         }
-        if self.parent.contains_identity(&source.identity)
-            || source.contains_identity(&self.parent.identity)
+        if self.log.parent().contains_identity(&source.identity)
+            || source.contains_identity(&self.log.parent().identity)
         {
             return Err(changed(
                 "journal recovery must remain outside the source tree",
             ));
         }
         if let Ok(destination) = PinnedDirectory::open_absolute(&destination_path)
-            && (self.parent.contains_identity(&destination.identity)
-                || destination.contains_identity(&self.parent.identity))
+            && (self.log.parent().contains_identity(&destination.identity)
+                || destination.contains_identity(&self.log.parent().identity))
         {
             return Err(changed(
                 "journal recovery must remain outside the destination tree",
@@ -668,7 +615,7 @@ impl MigrationJournal {
     }
 
     fn validate(&self) -> io::Result<()> {
-        super::migration_journal_log::validate(&self.parent, &self.name, &self.file, &self.identity)
+        self.log.validate()
     }
     pub fn has_failed(&self) -> bool {
         self.failure.is_some()
@@ -731,18 +678,13 @@ impl MigrationJournal {
             #[cfg(test)]
             persistence_injection::fail_at("before_replace")?;
             boundary = PersistenceBoundary::JournalReplacementUncertain;
-            super::migration_journal_log::append_synced(
-                &mut self.file,
-                &mut self.sequence,
-                records,
-                || {
-                    #[cfg(test)]
-                    crash_injection::boundary("journal_after_replace");
-                    #[cfg(test)]
-                    persistence_injection::fail_at("after_replace")?;
-                    Ok(())
-                },
-            )
+            self.log.append_with(records, || {
+                #[cfg(test)]
+                crash_injection::boundary("journal_after_replace");
+                #[cfg(test)]
+                persistence_injection::fail_at("after_replace")?;
+                Ok(())
+            })
         })();
         persistence_result(result, boundary)
     }
@@ -838,8 +780,8 @@ impl MigrationJournal {
             }
             let metadata = metadata_nofollow(&parent.file, Path::new(name))?;
             let directory = parent.open_child(name, &metadata)?;
-            if self.parent.contains_identity(&source.identity)
-                || self.parent.contains_identity(&directory.identity)
+            if self.log.parent().contains_identity(&source.identity)
+                || self.log.parent().contains_identity(&directory.identity)
             {
                 return Err(changed(
                     "journal must remain outside both copied trees; move it back to private application data",
@@ -1216,7 +1158,7 @@ mod tests {
                 let clean = fs::read(&journal).unwrap();
                 for tail in [vec![1, 2, 3], {
                     let mut bytes = 100_u32.to_le_bytes().to_vec();
-                    let sequence = MigrationJournal::open(&journal).unwrap().sequence;
+                    let sequence = MigrationJournal::open(&journal).unwrap().log.sequence;
                     bytes.extend_from_slice(&sequence.to_le_bytes());
                     bytes.extend_from_slice(&[0; 32]);
                     bytes.extend_from_slice(b"incomplete");

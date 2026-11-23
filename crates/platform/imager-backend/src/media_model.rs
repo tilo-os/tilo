@@ -16,16 +16,11 @@ pub struct MediaPartitionBinding {
 }
 
 /// Fixed profile gap shared by capacity planning and the native writer.
-pub const PROFILE_BLOCK_SIZE: usize = 64 * 1024;
-
-// Compatibility names refer to the canonical frontend/native DTOs.
-pub use crate::imager_model::{
-    Source, SourceIdentity, SourceKind, TargetDrive, TargetKind, TargetPartition,
-};
+pub use install_profile_model::profile::PROFILE_BLOCK_SIZE;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::imager_model::{TargetDrive, TargetKind};
 
     #[test]
     fn media_eligibility_requires_external_facts_and_always_excludes_system_disks() {

@@ -42,9 +42,7 @@
 //! forwards `Envelope::Delta` bytes verbatim, exactly as it does for
 //! any workspace-directory delta.
 
-pub use tilo_server_client::coedit::{
-    AttributedPresence, CoeditError, CoeditPayload, Inbound, VoiceEvent,
-};
+pub use tilo_server_client::coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound};
 // The daemon classifies retained frames with these (`tilo_server::coedit::*`).
 #[cfg(not(target_arch = "wasm32"))]
 pub use tilo_server_client::coedit::{RetentionKind, retention_metadata, retention_view};
@@ -377,99 +375,6 @@ impl ServerCoeditSession {
             .map_err(|_| CoeditError::Disconnected)
     }
 
-    /// Ask the workspace's governor to change its calls; the answer arrives as
-    /// [`VoiceEvent::Result`] carrying `request`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
-    pub fn voice_call(
-        &self,
-        request: [u8; 16],
-        operation: tilo_server_protocol::voice::CallOperation,
-    ) -> Result<(), CoeditError> {
-        self.client
-            .send(Envelope::VoiceCall {
-                workspace_id: self.workspace_id,
-                request,
-                operation,
-            })
-            .map_err(|_| CoeditError::Disconnected)
-    }
-
-    /// Join `call`, or with `participation` repeat that join as its
-    /// heartbeat; answered with [`VoiceEvent::Granted`] or
-    /// [`VoiceEvent::Refused`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
-    pub fn voice_join(
-        &self,
-        call: [u8; 32],
-        participation: Option<[u8; 32]>,
-    ) -> Result<(), CoeditError> {
-        self.client
-            .send(Envelope::VoiceJoin {
-                workspace_id: self.workspace_id,
-                call,
-                participation,
-            })
-            .map_err(|_| CoeditError::Disconnected)
-    }
-
-    /// Ask for the workspace's calls with who is in each; answered with
-    /// [`VoiceEvent::Calls`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
-    pub fn voice_calls(&self) -> Result<(), CoeditError> {
-        self.client
-            .send(Envelope::VoiceCalls {
-                workspace_id: self.workspace_id,
-            })
-            .map_err(|_| CoeditError::Disconnected)
-    }
-
-    /// Say what `participation` in `call` shows besides its voice from now
-    /// on (its camera, a shared screen). Not answered: the call's next grant
-    /// and call list carry it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
-    pub fn voice_show(
-        &self,
-        call: [u8; 32],
-        participation: [u8; 32],
-        showing: tilo_server_protocol::voice::Showing,
-    ) -> Result<(), CoeditError> {
-        self.client
-            .send(Envelope::VoiceShow {
-                workspace_id: self.workspace_id,
-                call,
-                participation,
-                showing,
-            })
-            .map_err(|_| CoeditError::Disconnected)
-    }
-
-    /// End `participation` in `call`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
-    pub fn voice_leave(&self, call: [u8; 32], participation: [u8; 32]) -> Result<(), CoeditError> {
-        self.client
-            .send(Envelope::VoiceLeave {
-                workspace_id: self.workspace_id,
-                call,
-                participation,
-            })
-            .map_err(|_| CoeditError::Disconnected)
-    }
-
     /// Await the next inbound co-edit event, translating the host
     /// [`Envelope`] into the toolkit-facing [`Inbound`]. Keep-alives
     /// (`Ping`/`Pong`) and other non-co-edit frames are skipped; a
@@ -547,15 +452,24 @@ impl ServerCoeditSession {
                         documents_when_opened,
                     });
                 }
-                envelope @ (Envelope::LiveMember { .. }
-                | Envelope::DocumentOpened { .. }
-                | Envelope::VoiceCallResult { .. }
-                | Envelope::VoiceGranted { .. }
-                | Envelope::VoiceRefused { .. }
-                | Envelope::VoiceCallList { .. }) => {
-                    if let Some(inbound) = self.workspace_news(envelope) {
-                        return Some(inbound);
-                    }
+                // What the host tells this session about its workspace: a member joining or
+                // leaving the live session, a record opened. Another workspace's is not news here.
+                Envelope::LiveMember {
+                    workspace_id,
+                    device_public_key,
+                    active,
+                } if workspace_id == self.workspace_id => {
+                    return Some(Inbound::Member {
+                        device: device_public_key,
+                        active,
+                    });
+                }
+                Envelope::DocumentOpened {
+                    workspace_id,
+                    channel,
+                    answer,
+                } if workspace_id == self.workspace_id => {
+                    return Some(Inbound::DocumentOpened { channel, answer });
                 }
                 Envelope::Committed {
                     workspace_id, op, ..
@@ -602,56 +516,6 @@ impl ServerCoeditSession {
                 // keep waiting.
                 _ => {}
             }
-        }
-    }
-
-    /// What the host tells this session about its workspace: a member
-    /// joining or leaving the live session, a record opened, a call's news.
-    /// `None` for another workspace's.
-    fn workspace_news(&self, envelope: Envelope) -> Option<Inbound> {
-        match envelope {
-            Envelope::LiveMember {
-                workspace_id,
-                device_public_key,
-                active,
-            } if workspace_id == self.workspace_id => Some(Inbound::Member {
-                device: device_public_key,
-                active,
-            }),
-            Envelope::DocumentOpened {
-                workspace_id,
-                channel,
-                answer,
-            } if workspace_id == self.workspace_id => {
-                Some(Inbound::DocumentOpened { channel, answer })
-            }
-            Envelope::VoiceCallResult {
-                workspace_id,
-                request,
-                result,
-            } if workspace_id == self.workspace_id => {
-                Some(Inbound::Voice(VoiceEvent::Result { request, result }))
-            }
-            Envelope::VoiceGranted {
-                workspace_id,
-                grant,
-            } if workspace_id == self.workspace_id => {
-                Some(Inbound::Voice(VoiceEvent::Granted(grant)))
-            }
-            Envelope::VoiceRefused {
-                workspace_id,
-                call,
-                reason,
-            } if workspace_id == self.workspace_id => {
-                Some(Inbound::Voice(VoiceEvent::Refused { call, reason }))
-            }
-            Envelope::VoiceCallList {
-                workspace_id,
-                result,
-            } if workspace_id == self.workspace_id => {
-                Some(Inbound::Voice(VoiceEvent::Calls(result)))
-            }
-            _ => None,
         }
     }
 

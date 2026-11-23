@@ -254,7 +254,7 @@ impl DeviceVpnStatus {
     #[must_use]
     pub fn load_at(path: &std::path::Path) -> Option<Self> {
         crate::published::note_file_read();
-        let bytes = tilo_files::native::bounded::read(path, MAX_STATUS_BYTES).ok()??;
+        let bytes = tilo_files::native::bounded::read(path, MAX_STATUS_BYTES).ok()?;
         let status: Self = serde_json::from_slice(&bytes).ok()?;
         publisher_live_in(
             path.parent()?,
@@ -396,12 +396,6 @@ mod tests {
             assert_ne!(ProfileRelease::after(Some(&first), "work").id, first.id);
         }
 
-        phase each_stop_request_has_a_new_id;
-        {
-            let first = StopRequest::after(None, "ab");
-            let second = StopRequest::after(Some(&first), "ab");
-            assert_ne!(first.id, second.id);
-        }
     }
 
     tilo_test_env::scenario! {

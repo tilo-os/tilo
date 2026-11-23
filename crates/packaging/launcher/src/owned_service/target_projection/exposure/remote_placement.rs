@@ -4,7 +4,7 @@ use super::{
     io, kernel_stopped, mount_id, namespace, refused,
 };
 use crate::ordinary_child::{ManagedConsumingBootstrap, exposure_control::PlacementRecord};
-use std::sync::Mutex;
+use std::{os::unix::ffi::OsStrExt, sync::Mutex};
 
 pub(super) struct RemotePlacement {
     managed: Arc<Mutex<ManagedConsumingBootstrap>>,
@@ -171,44 +171,20 @@ struct Row {
 fn mounts(file: File) -> io::Result<Vec<Row>> {
     let mut bytes = Vec::new();
     file.take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
-    if bytes.len() > 4 * 1024 * 1024 {
-        return Err(refused("Remote mountinfo bound exceeded"));
-    }
     let mut result = Vec::new();
-    let number = |v: &[u8]| -> io::Result<u64> {
-        if v.is_empty() || !v.iter().all(u8::is_ascii_digit) {
-            return Err(refused("Remote mount ID malformed"));
-        }
-        std::str::from_utf8(v)
-            .map_err(io::Error::other)?
-            .parse()
-            .map_err(io::Error::other)
-    };
-    for row in bytes.split(|b| *b == b'\n').filter(|v| !v.is_empty()) {
-        let f: Vec<_> = row.split(|b| *b == b' ').collect();
-        let split = f
-            .iter()
-            .position(|v| *v == b"-")
-            .ok_or_else(|| refused("Remote mount row separator missing"))?;
-        if split < 6 || split.checked_add(4) != Some(f.len()) {
-            return Err(refused("Remote mount row malformed"));
-        }
-        let [mount, parent, _, _, path, options, ..] = f.as_slice() else {
-            return Err(refused("Remote mount row malformed"));
-        };
-        let id = number(mount)?;
-        let parent = number(parent)?;
-        if id == 0 || result.iter().any(|r: &Row| r.id == id) {
+    for row in crate::mountinfo::parse(&bytes, 4 * 1024 * 1024)
+        .map_err(|_| refused("Remote mount row malformed"))?
+    {
+        if row.id == 0 || result.iter().any(|r: &Row| r.id == row.id) {
             return Err(refused("Remote mount ID duplicate"));
         }
-        let options: Vec<_> = options.split(|b| *b == b',').collect();
+        let options: Vec<_> = row.options.split(|b| *b == b',').collect();
         result.push(Row {
-            id,
-            parent,
-            path: path.to_vec(),
-            private: !f
-                .get(6..split)
-                .ok_or_else(|| refused("Remote mount row malformed"))?
+            id: row.id,
+            parent: row.parent,
+            path: row.point.as_os_str().as_bytes().to_vec(),
+            private: !row
+                .optional
                 .iter()
                 .any(|v| v.starts_with(b"shared:") || v.starts_with(b"master:")),
             restricted: [b"nodev".as_slice(), b"nosuid", b"noexec"]

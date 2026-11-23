@@ -536,6 +536,35 @@ impl Shared {
         if let Some(questions) = self.asker.questions() {
             launch.lend_questions(questions.clone());
         }
+        // Where a workspace's resources open on the web, as its directory entry says: what a
+        // tilolang window's host mints its resources' links under. A workspace whose host serves
+        // no page lends nothing, and a copy link there is refused with the system's words.
+        let directory = std::rc::Rc::clone(&self.directory_store);
+        launch.lend_link_home(std::rc::Rc::new(move |workspace: &str| {
+            let listed = directory.listing(workspace)?;
+            let origin = listed.entry_url.as_ref()?.origin().ascii_serialization();
+            let web_entry = crate::platform::directory::community_site()
+                .map_or_else(|| format!("{origin}/"), |site| site.to_string());
+            let home = tilolang_tilo::share::LinkHome {
+                origin,
+                workspace: workspace.to_owned(),
+                host_device: String::new(),
+                web_entry,
+            };
+            match home.json() {
+                Ok(home) => Some(home),
+                Err(error) => {
+                    // Every field is text, so this cannot fail short of a bug: the window's
+                    // links are refused, and the log says why.
+                    tracing::warn!(
+                        %error,
+                        "a workspace's page does not write as JSON: its windows' resources have \
+                         no link"
+                    );
+                    None
+                }
+            }
+        }));
     }
 
     /// One anchored surface at a time, whichever side opened it.

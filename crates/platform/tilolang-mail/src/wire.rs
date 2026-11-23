@@ -15,6 +15,8 @@ use crate::connector::{AccountRef, Event, Outgoing, Request};
 /// included, fits many times over.
 pub const MAX_FRAME: usize = 64 << 20;
 
+const FRAMING: wire_frame::Framing = wire_frame::Framing::big_endian(MAX_FRAME);
+
 /// What the origin asks of the connector. Each request carries the id the origin knows it by;
 /// what the server answered names it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,6 +39,11 @@ pub enum ToConnector {
         key: String,
         mailbox: String,
     },
+    Purge {
+        request: Request,
+        account: String,
+        key: String,
+    },
     Search {
         request: Request,
         account: String,
@@ -49,6 +56,12 @@ pub enum ToConnector {
     },
     Watch {
         account: String,
+    },
+    /// The messages older than the oldest one held in a mailbox.
+    Older {
+        request: Request,
+        account: String,
+        mailbox: String,
     },
 }
 
@@ -68,49 +81,34 @@ pub enum FromConnector {
 /// # Errors
 /// The socket's error, or a message that does not encode or is larger than [`MAX_FRAME`].
 pub fn write<T: Serialize>(to: &mut impl Write, message: &T) -> io::Result<()> {
-    let body = serde_json::to_vec(message).map_err(io::Error::other)?;
-    if body.len() > MAX_FRAME {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "a mail connector message larger than a frame",
-        ));
-    }
-    let length = u32::try_from(body.len()).map_err(io::Error::other)?;
-    let mut frame = Vec::with_capacity(body.len().saturating_add(4));
-    frame.extend_from_slice(&length.to_be_bytes());
-    frame.extend_from_slice(&body);
-    to.write_all(&frame)?;
-    to.flush()
+    tilolang_tilo::origin::write_json_frame(FRAMING, to, message)
 }
 
-/// The next frame, waiting for it; `None` at the end of the stream.
+/// The next frame, waiting for it; `None` at a clean end of the stream.
 ///
 /// # Errors
-/// The socket's error, a frame larger than [`MAX_FRAME`], or one that does not decode.
+/// The socket's error, a truncated or oversized frame (past [`MAX_FRAME`]), or one that does not
+/// decode.
 pub fn read<T: for<'de> Deserialize<'de>>(from: &mut impl Read) -> io::Result<Option<T>> {
-    let mut length = [0_u8; 4];
-    match from.read_exact(&mut length) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(error) => return Err(error),
-    }
-    let length = usize::try_from(u32::from_be_bytes(length)).map_err(io::Error::other)?;
-    if length > MAX_FRAME {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "a mail connector frame larger than allowed",
-        ));
-    }
-    let mut body = vec![0_u8; length];
-    from.read_exact(&mut body)?;
-    serde_json::from_slice(&body)
-        .map(Some)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    tilolang_tilo::origin::read_json_frame(FRAMING, from)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_wire_fixture<T>(value: &T, expected: &[u8])
+    where
+        T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug,
+    {
+        let mut encoded = Vec::new();
+        write(&mut encoded, value).unwrap();
+        assert_eq!(encoded, expected);
+
+        let mut reading = expected;
+        assert_eq!(read::<T>(&mut reading).unwrap().as_ref(), Some(value));
+        assert_eq!(read::<T>(&mut reading).unwrap(), None);
+    }
 
     #[test]
     fn a_frame_reads_back_as_written_and_the_end_reads_as_none() {
@@ -146,6 +144,75 @@ mod tests {
         let mut bytes = u32::MAX.to_be_bytes().to_vec();
         bytes.extend_from_slice(b"{}");
         let error = read::<FromConnector>(&mut bytes.as_slice()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn wire_bytes_match_frozen_fixtures() {
+        // Literal bytes captured from main before migrating wire.rs to wire-frame.
+        const SEND_WIRE: &[u8] = b"\x00\x00\x00\xe5{\"Send\":{\"request\":\"01234567-89ab-4cde-8f01-23456789abcd\",\"account\":\"sam@rivera.example\",\"message\":{\"to\":\"ada@analytical.example\",\"cc\":\"\",\"subject\":\"Re: Launch plan\",\"body\":\"\",\"in_reply_to\":\"\",\"references\":\"\",\"calendar_ics\":\"\"}}}";
+        const WATCH_WIRE: &[u8] = b"\x00\x00\x00*{\"Watch\":{\"account\":\"sam@rivera.example\"}}";
+        const ACCOUNTS_WIRE: &[u8] = b"\x00\x00\x00P{\"Accounts\":[{\"id\":\"acc-1\",\"address\":\"sam@rivera.example\",\"name\":\"Sam Rivera\"}]}";
+        const ONLINE_WIRE: &[u8] = b"\x00\x00\x00\x08\"Online\"";
+        const ACCEPTED_WIRE: &[u8] =
+            b"\x00\x00\x00={\"Event\":{\"Accepted\":\"01234567-89ab-4cde-8f01-23456789abcd\"}}";
+
+        let id = uuid::Uuid::from_bytes([
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0x4c, 0xde, 0x8f, 0x01, 0x23, 0x45, 0x67, 0x89,
+            0xab, 0xcd,
+        ]);
+        assert_wire_fixture(
+            &ToConnector::Send {
+                request: id,
+                account: "sam@rivera.example".into(),
+                message: Outgoing {
+                    to: "ada@analytical.example".into(),
+                    subject: "Re: Launch plan".into(),
+                    ..Outgoing::default()
+                },
+            },
+            SEND_WIRE,
+        );
+        assert_wire_fixture(
+            &ToConnector::Watch {
+                account: "sam@rivera.example".into(),
+            },
+            WATCH_WIRE,
+        );
+        assert_wire_fixture(
+            &FromConnector::Accounts(vec![AccountRef {
+                id: "acc-1".into(),
+                address: "sam@rivera.example".into(),
+                name: "Sam Rivera".into(),
+                identities: Vec::new(),
+            }]),
+            ACCOUNTS_WIRE,
+        );
+        assert_wire_fixture(&FromConnector::Online, ONLINE_WIRE);
+        assert_wire_fixture(&FromConnector::Event(Event::Accepted(id)), ACCEPTED_WIRE);
+    }
+
+    #[test]
+    fn write_flushes_and_partial_prefix_or_body_errors() {
+        let mut writer = io::BufWriter::new(Vec::new());
+        write(&mut writer, &FromConnector::Online).unwrap();
+        assert!(writer.buffer().is_empty(), "write must flush the writer");
+
+        let mut empty = &b""[..];
+        assert_eq!(read::<FromConnector>(&mut empty).unwrap(), None);
+
+        for partial in [&[0_u8][..], &[0, 0][..], &[0, 0, 0][..]] {
+            let mut slice = partial;
+            let error = read::<FromConnector>(&mut slice).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        }
+
+        let mut truncated_body = &b"\x00\x00\x00\x08\"On"[..];
+        let error = read::<FromConnector>(&mut truncated_body).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+
+        let mut invalid_json = &b"\x00\x00\x00\x02{}"[..];
+        let error = read::<FromConnector>(&mut invalid_json).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 }

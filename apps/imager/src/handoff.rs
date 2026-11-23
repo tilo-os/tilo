@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::model::InstallProfile;
-use crate::profile::PROFILE_BLOCK_SIZE;
+use imager_backend::profile::PROFILE_BLOCK_SIZE;
 
 pub const SETUP_HANDOFF_HEADER_SIZE: u64 = 4096;
 pub const SETUP_HANDOFF_MAGIC: &str = "TILO_SETUP_HANDOFF_V1";

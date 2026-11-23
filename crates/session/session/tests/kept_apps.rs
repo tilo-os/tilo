@@ -709,12 +709,14 @@ fn a_kept_window_whose_id_differs_from_its_launch_takes_the_launchs_tab() {
     };
     pass.session
         .handle()
-        .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
-            app: launch.id(),
-            beside: None,
-            background: None,
-            float: None,
-        })
+        .dispatch(
+            tilo_session_core::desktop::navigation::ChromeEffect::OpenApp {
+                app: launch.id(),
+                beside: None,
+                background: None,
+                float: None,
+            },
+        )
         .expect("the person opens the app");
     let placed = shown_and_told(&rig, &mut pass, &["Only"]);
     for _ in 0..100 {

@@ -107,7 +107,7 @@ depends on review having happened.
 
 | Rule | Why | Check |
 | --- | --- | --- |
-| A `.tl` file is in the compiler's canonical form: the standard package and the example packages, whose form the compiler's tests hold. Formatting is the formatter's, never hand-wrapped. | A diff shows what changed, not how it was wrapped, and a change that only moves text does not fail the build. | Check: the pre-commit hook formats the staged packages (`tlc fmt`); `the_std_package_is_in_canonical_form` and `the_example_packages_are_in_canonical_form` in [`crates/lang/tilolang/tests/it/multifile.rs`](../crates/lang/tilolang/tests/it/multifile.rs). |
+| A `.tl` file is in the compiler's canonical form: the standard package and the example packages, whose form the compiler's tests hold. Formatting is the formatter's, never hand-wrapped. | A diff shows what changed, not how it was wrapped, and a change that only moves text does not fail the build. | Check: the pre-commit hook formats the staged packages (`tilolang fmt`); `the_std_package_is_in_canonical_form` and `the_example_packages_are_in_canonical_form` in [`crates/lang/tilolang/tests/it/multifile.rs`](../crates/lang/tilolang/tests/it/multifile.rs). |
 
 ## Architecture boundaries
 

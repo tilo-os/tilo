@@ -45,7 +45,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 tempfile.workspace = true
 tilo-history = { path = "../../crates/sdk/tilo-history" }
 # The restore's folder chooser and the job it runs wait on the test's bound.
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 
 [lints]
 workspace = true

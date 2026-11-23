@@ -39,8 +39,10 @@ pub fn mix8(a: Color, b: Color, t: f32) -> Color {
 const VALUE_FILL_STEP: f32 = 0.1;
 
 /// [`Intents::value_fill`] on `ground` beside `track` (the lift a bar's unfilled part
-/// is): the accent hue a step further from the ground than [`Intents::accent_ink`], then
-/// stepped on until it clears the non-text contrast floor against both.
+/// is): the accent hue a step from [`Intents::accent_ink`] toward the ground, where it is
+/// the accent's own brightness, so a slider, a progress bar and a finished step read as the
+/// same blue as the primary button. Where that misses the non-text contrast floor against
+/// either, a step the other way, stepped on until it clears it.
 pub(crate) fn value_fill_on(accent_ink: Color, ground: Color, track: Color) -> Color {
     use crate::a11y::contrast_ratio;
     let ink = Oklch::from_color(accent_ink);
@@ -53,6 +55,14 @@ pub(crate) fn value_fill_on(accent_ink: Color, ground: Color, track: Color) -> C
         contrast_ratio(fill, ground) >= NON_TEXT_MIN_CONTRAST
             && contrast_ratio(fill, track) >= NON_TEXT_MIN_CONTRAST
     };
+    let toward = oklch(
+        (ink.l - away * VALUE_FILL_STEP).clamp(0.0, 1.0),
+        ink.c,
+        ink.h,
+    );
+    if reads(toward) {
+        return toward;
+    }
     let mut lightness = ink.l + away * VALUE_FILL_STEP;
     let mut fill = oklch(lightness.clamp(0.0, 1.0), ink.c, ink.h);
     while !reads(fill) && (0.0..=1.0).contains(&lightness) {

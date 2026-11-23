@@ -47,11 +47,11 @@ impl VerifiedJoinIdentity {
         }
     }
 
-    /// Whether `cluster_id` is this identity's own personal cluster: the workspace
+    /// Whether `cluster_id` is this identity's own workspace: the workspace
     /// every device its root certified owns, and no other device enters.
-    pub(super) fn owns_personal_cluster(&self, cluster_id: &str) -> bool {
+    pub(super) fn owns_person_workspace(&self, cluster_id: &str) -> bool {
         uuid::Uuid::parse_str(cluster_id).is_ok_and(|workspace| {
-            collab_types::is_personal_cluster(&self.user_public_key, &workspace)
+            collab_types::is_person_workspace(&self.user_public_key, &workspace)
         })
     }
 }
@@ -282,9 +282,9 @@ impl AdmittedJoinIdentity {
         decide: impl FnOnce(&tilo_action_policy::MemberAccess) -> T,
     ) -> Result<T, String> {
         if (self.agent_id.is_none() || self.session_delegated)
-            && self.verified.owns_personal_cluster(workspace_id)
+            && self.verified.owns_person_workspace(workspace_id)
         {
-            // The personal cluster's devices are its owner's; a foreign one is
+            // The own workspace's devices are its owner's; a foreign one is
             // held to the foreign-device bound there as anywhere, and an
             // agent one of them was handed to, to that delegation too.
             let policy = WorkspacePolicy::new(workspace_id, self.actor_key.clone());
@@ -346,11 +346,11 @@ pub(super) fn admit_verified_join_at(
     now: u64,
 ) -> Result<AdmittedJoinIdentity, String> {
     let actor_key = person_id_for_root(verified.user_public_key);
-    // The personal cluster has no roster to consult: its members are, by the
+    // The person's own workspace's devices are its owner's, by the
     // workspace id's derivation, exactly the devices this root certified, each
     // acting as the workspace's owner — a foreign device with the foreign-device
     // cap's role, there as in any workspace. Any other workspace id is a workspace.
-    if verified.owns_personal_cluster(&route.cluster_id) {
+    if verified.owns_person_workspace(&route.cluster_id) {
         let role = CapRole::Owner;
         return Ok(AdmittedJoinIdentity {
             worker_registration: None,

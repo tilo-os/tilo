@@ -60,8 +60,6 @@ pub mod output;
 pub mod plan;
 pub mod routing;
 pub mod spawner;
-#[cfg(target_os = "linux")]
-pub mod tilolang_processes;
 pub mod workspace;
 
 pub use authority::Authority;

@@ -14,7 +14,6 @@ use cap_primitives::fs::{FollowSymlinks, MetadataExt, OpenOptions};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
     ffi::{CString, OsStr},
     fs::File,
     io::{self, BufRead, Read, Seek, Write},
@@ -245,8 +244,13 @@ fn roots(
     Ok((quarantine, home, journal))
 }
 impl PromotionReview {
-    #[cfg(feature = "test-support")]
-    pub fn move_one_without_checkpoint_for_test(&self, relative: &Path) -> Result<(), String> {
+    /// Moves one reviewed entry and stops before its checkpoint, the state a process crash leaves
+    /// behind. Test-only: the crash boundary itself is `adoption_moved_before_checkpoint`.
+    #[cfg(test)]
+    pub(crate) fn move_one_without_checkpoint_for_test(
+        &self,
+        relative: &Path,
+    ) -> Result<(), String> {
         let (q, h, j) = roots(&self.quarantine, &self.home, &self.journal)
             .map_err(|error| error.to_string())?;
         let name = self.journal.file_name().ok_or("Missing adoption journal")?;

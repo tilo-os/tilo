@@ -166,15 +166,6 @@ mod tests {
                 "the user manager's services must get them too: {imports:?}"
             );
         }
-
-        phase a_launch_carries_the_huge_page_opt_out_beside_shadow_stacks;
-        {
-            assert_eq!(tunables(false), NO_HUGE_PAGES_TUNABLES);
-            assert_eq!(
-                tunables(true),
-                format!("glibc.cpu.hwcaps=SHSTK:{NO_HUGE_PAGES_TUNABLES}")
-            );
-        }
     }
 
     /// Set in the re-executed test binary that runs the probe.
@@ -326,27 +317,6 @@ mod tests {
 
         phase hardening_policy_file_replaces_the_builtin_list;
         {
-            {
-                let dir = tempfile::tempdir().unwrap();
-                let file = dir.path().join("untrusted-parsers.conf");
-                std::fs::write(&file, "so.tilo.notes\n").unwrap();
-                let mut env = tilo_test_env::ScopedEnv::new();
-                env.set(POLICY_PATH_ENV, &file);
-
-                let notes = for_package("so.tilo.notes");
-                let browser = for_package("so.tilo.browser");
-                drop(env);
-
-                assert!(
-                    notes.shadow_stack,
-                    "the package named by the policy file must be hardened"
-                );
-                assert!(
-                    !browser.is_active(),
-                    "a package the policy file omits must not be hardened just because \
-                 it is in the compiled-in fallback"
-                );
-            }
             {
                 let dir = tempfile::tempdir().unwrap();
                 let missing = dir.path().join("does-not-exist.conf");

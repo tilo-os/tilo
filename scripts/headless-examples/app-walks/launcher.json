@@ -1,0 +1,88 @@
+{
+  "app": "launcher",
+  "said": "Find an app and open it",
+  "family": "shell",
+  "live": "rust",
+  "apps": "file-explorer chat settings terminal",
+  "rust": {},
+  "tl": {
+    "session_args": [
+      "--shell",
+      "screen"
+    ]
+  },
+  "steps": [
+    {
+      "id": "signed-in",
+      "said": "Sign in: the desktop is there, nothing open, nothing over it",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "state": {
+            "chrome.session_locked": false,
+            "chrome.overlays.search": false,
+            "chrome.overlays.overview": false,
+            "chrome.overlays.strips": false,
+            "chrome.overlays.quick-settings": false,
+            "chrome.overlays.centre": false
+          }
+        },
+        {
+          "windows": 0
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "find-settings",
+      "said": "Search for Settings: the app is among the results",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "desktop:shell",
+            "search",
+            {
+              "query": "Settings"
+            }
+          ]
+        },
+        {
+          "must": [
+            {
+              "rust": "Open Settings",
+              "tl": "Settings, so.tilo.settings"
+            }
+          ]
+        }
+      ],
+      "dark": true,
+      "budget_ms": 10000
+    },
+    {
+      "id": "open-settings",
+      "said": "Choose it: Settings opens and the search closes",
+      "ops": {
+        "rust": [
+          {
+            "choose_result": "Settings"
+          },
+          {
+            "window_of": "settings"
+          }
+        ],
+        "tl": [
+          {
+            "key": "Enter"
+          },
+          {
+            "window_of": "settings"
+          }
+        ]
+      },
+      "budget_ms": 30000
+    }
+  ]
+}

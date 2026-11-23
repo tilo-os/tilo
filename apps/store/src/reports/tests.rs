@@ -97,20 +97,28 @@ tilo_test_env::scenario! {
     // A draft names a well-formed app identity, trimmed; anything else is
     // refused and makes no report.
     {
-        // An identity is at most 255 characters.
+        // An identity is at most 255 bytes of non-empty `.`-separated segments
+        // (single segments and underscores for Flathub identifiers allowed).
         let longest = "a".repeat(255);
         let too_long = "a".repeat(256);
         for (app_id, drafted) in [
             (NOTES, Some(NOTES)),
             ("  so.tilo.notes  ", Some(NOTES)),
             ("org.gnome.Chess-2", Some("org.gnome.Chess-2")),
+            ("so.tilo_notes", Some("so.tilo_notes")),
+            ("org.example.My_App", Some("org.example.My_App")),
+            ("-org.example.App", Some("-org.example.App")),
+            ("notes", Some("notes")),
             (longest.as_str(), Some(longest.as_str())),
             (too_long.as_str(), None),
             ("", None),
             ("   ", None),
+            (".so.tilo", None),
+            ("so.tilo.", None),
+            ("so..tilo", None),
+            ("..", None),
             ("so.tilo/notes", None),
             ("so.tilo notes", None),
-            ("so.tilo_notes", None),
             ("so.tilo.n\u{f6}tes", None),
             ("so.tilo.notes\0", None),
         ] {
@@ -169,6 +177,9 @@ tilo_test_env::scenario! {
             (NOTES, "case-1", too_long_status.as_str(), None),
             (NOTES, "case-1", "", None),
             ("", "case-1", "Open", None),
+            ("so..tilo", "case-1", "Open", None),
+            (".so.tilo", "case-1", "Open", None),
+            ("so.tilo.", "case-1", "Open", None),
             ("../x", "case-1", "Open", None),
             (too_long_app.as_str(), "case-1", "Open", None),
         ] {
@@ -197,6 +208,105 @@ tilo_test_env::scenario! {
                 assert_eq!(after, before, "{row}");
             }
         }
+    }
+
+    phase stored_reports_do_not_block_new_drafts_or_edits;
+    // A shared document that already holds a report under a key main accepted
+    // (`notes` or a stored trailing-dot key like `foo.`) still takes new drafts,
+    // note edits, re-drafts and moderation cases for the stored key; a brand-new
+    // key outside the tighter grammar (`foo.`, `so..tilo`) is refused by both
+    // actions.
+    {
+        let mut doc = ui::tilo_resource::Doc::new();
+        <Reports as ui::tilo_resource::Resource>::initialize(&mut doc).unwrap();
+        let mut stored = Reports::default();
+        stored.reports.insert(
+            "notes".into(),
+            Report {
+                status: DRAFT_STATUS.into(),
+                note: "Existing report".into(),
+                case: None,
+            },
+        );
+        stored.reports.insert(
+            "foo.".into(),
+            Report {
+                status: DRAFT_STATUS.into(),
+                note: "Stored trailing-dot report".into(),
+                case: None,
+            },
+        );
+        <Reports as ui::tilo_resource::Fields>::write_fields(
+            &stored,
+            &mut doc,
+            &ui::tilo_resource::__private::ROOT,
+        )
+        .unwrap();
+        doc.commit();
+        let mut reports = Replica::<Reports>::from_doc(doc);
+
+        reports.apply(Reports::DRAFT_REPORT.with(NOTES)).unwrap();
+        edit(
+            &mut reports,
+            &Reports::note(NOTES).splice(0, 0, "Unsigned binary"),
+        )
+        .unwrap();
+        edit(
+            &mut reports,
+            &Reports::note("notes").splice(15, 0, " updated"),
+        )
+        .unwrap();
+        edit(
+            &mut reports,
+            &Reports::note("foo.").splice(0, 0, "Still editable: "),
+        )
+        .unwrap();
+        // Both actions accept a key the record already holds.
+        reports.apply(Reports::DRAFT_REPORT.with("foo.")).unwrap();
+        reports
+            .apply(
+                Reports::RECORD_MODERATION_CASE.with(reports::RecordModerationCase {
+                    app_id: "foo.".into(),
+                    case_id: "case-stored".into(),
+                    status: "Open".into(),
+                }),
+            )
+            .unwrap();
+        let state = reports.state().unwrap();
+        assert_eq!(note(&reports), "Unsigned binary");
+        assert_eq!(state.reports["notes"].note, "Existing report updated");
+        assert_eq!(
+            state.reports["foo."].note,
+            "Still editable: Stored trailing-dot report"
+        );
+        assert_eq!(state.reports["foo."].case_id(), Some("case-stored"));
+        assert_eq!(state.reports["foo."].status, "Open");
+
+        assert!(
+            reports.apply(Reports::DRAFT_REPORT.with("so..tilo")).is_err(),
+            "a new draft with empty segments is refused"
+        );
+        assert!(!reports.state().unwrap().reports.contains_key("so..tilo"));
+
+        // A new `foo.` key not already present in the record is refused by both actions.
+        let mut fresh = Replica::<Reports>::new();
+        assert!(
+            fresh.apply(Reports::DRAFT_REPORT.with("foo.")).is_err(),
+            "a new draft for `foo.` is refused"
+        );
+        assert!(
+            fresh
+                .apply(
+                    Reports::RECORD_MODERATION_CASE.with(reports::RecordModerationCase {
+                        app_id: "foo.".into(),
+                        case_id: "case-new".into(),
+                        status: "Open".into(),
+                    }),
+                )
+                .is_err(),
+            "a moderation case for a new `foo.` key is refused"
+        );
+        assert!(fresh.state().unwrap().reports.is_empty());
     }
 }
 

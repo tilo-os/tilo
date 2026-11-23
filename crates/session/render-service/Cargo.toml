@@ -36,5 +36,12 @@ runtime-bundle = { path = "../../packaging/runtime-bundle" }
 [dev-dependencies]
 rustix = { workspace = true, features = ["fs"] }
 
+# The service runs as a process of its own, started the way the session starts it: this target's
+# `main` is that process too, which `libtest` would not let it be.
+[[test]]
+name = "started"
+path = "tests/started.rs"
+harness = false
+
 [lints]
 workspace = true

@@ -1,0 +1,291 @@
+{
+  "app": "chat",
+  "said": "Chat",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.chat",
+    "package": "chat"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Chat: the conversation list is there",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "must": [
+            "Channels"
+          ]
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    },
+    {
+      "id": "channel",
+      "said": "Start a channel for the launch",
+      "ops": {
+        "tl": [
+          {
+            "must": {
+              "see": [
+                "New channel"
+              ],
+              "within": 10
+            }
+          },
+          {
+            "press": "New channel"
+          },
+          {
+            "must": {
+              "see": [
+                "new-channel"
+              ],
+              "within": 20
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "channel-from-search",
+      "said": "Start a channel through the desktop's search: the window's button ran nothing",
+      "ops": {
+        "tl": [
+          {
+            "key": "Escape"
+          },
+          {
+            "search": "New channel"
+          },
+          {
+            "result": "New channel"
+          },
+          {
+            "choose_result": "New channel"
+          },
+          {
+            "must": {
+              "see": [
+                "new-channel"
+              ],
+              "within": 20
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "send",
+      "said": "Say hello in the channel",
+      "ops": {
+        "tl": [
+          {
+            "press": "new-channel"
+          },
+          {
+            "click_any": [
+              {
+                "prefix": "Message #"
+              }
+            ]
+          },
+          {
+            "type": "Hello team"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "must": [
+              "Hello team"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "reply",
+      "said": "Answer the message",
+      "ops": {
+        "tl": [
+          {
+            "hover": {
+              "tl": {
+                "prefix": "Hello"
+              }
+            }
+          },
+          {
+            "press_any": [
+              "Reply"
+            ]
+          },
+          {
+            "click_any": [
+              {
+                "prefix": "Message #"
+              }
+            ]
+          },
+          {
+            "type": "Welcome to launch"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "must": [
+              "Welcome to launch"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "react",
+      "said": "React to the message",
+      "ops": [
+        {
+          "hover": {
+            "tl": {
+              "prefix": "Hello"
+            }
+          }
+        },
+        {
+          "press_any": [
+            "Add reaction"
+          ]
+        },
+        {
+          "press_any": [
+            {
+              "prefix": "\ud83c\udf89"
+            },
+            {
+              "prefix": "Choose party"
+            },
+            {
+              "prefix": "Choose"
+            }
+          ]
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "edit",
+      "said": "Fix what the message says",
+      "ops": [
+        {
+          "hover": {
+            "tl": {
+              "prefix": "Hello"
+            }
+          }
+        },
+        {
+          "press_any": [
+            "Edit",
+            "Edit message"
+          ]
+        },
+        {
+          "click_any": [
+            {
+              "prefix": "Edit message"
+            }
+          ]
+        },
+        {
+          "chord": [
+            "Control",
+            "a"
+          ]
+        },
+        {
+          "type": "Hello team!"
+        },
+        {
+          "press_any": [
+            "Save",
+            "Save message edit"
+          ]
+        },
+        {
+          "must": [
+            {
+              "tl": "Hello team!"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pin",
+      "said": "Pin the message so it is kept with the conversation",
+      "ops": [
+        {
+          "hover": {
+            "tl": {
+              "prefix": "Hello"
+            }
+          }
+        },
+        {
+          "press_any": [
+            "Pin",
+            "Pin message"
+          ]
+        },
+        {
+          "must": [
+            "Pinned"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "search",
+      "said": "Find the message through the system's search",
+      "ops": [
+        {
+          "search": "Hello"
+        },
+        {
+          "result": "Hello"
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "dark",
+      "said": "The conversation in the dark theme",
+      "ops": [
+        {
+          "key": "Escape"
+        },
+        {
+          "theme": true
+        }
+      ]
+    }
+  ]
+}

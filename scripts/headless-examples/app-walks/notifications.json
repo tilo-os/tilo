@@ -1,0 +1,158 @@
+{
+  "app": "notifications",
+  "said": "A notification arrives",
+  "family": "shell",
+  "live": "rust",
+  "apps": "file-explorer chat settings terminal",
+  "rust": {},
+  "tl": {
+    "session_args": [
+      "--shell",
+      "screen"
+    ]
+  },
+  "steps": [
+    {
+      "id": "signed-in",
+      "said": "Sign in: the desktop is there, nothing open, nothing over it",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "state": {
+            "chrome.session_locked": false,
+            "chrome.overlays.search": false,
+            "chrome.overlays.overview": false,
+            "chrome.overlays.strips": false,
+            "chrome.overlays.quick-settings": false,
+            "chrome.overlays.centre": false
+          }
+        },
+        {
+          "windows": 0
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "banner",
+      "said": "A notification arrives: its banner shows the title and the text",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "session:notifications",
+            "notify",
+            {
+              "title": "Lunch at one",
+              "body": "Table for four at the corner place",
+              "from": "Ada"
+            }
+          ]
+        },
+        {
+          "state": {
+            "notifications#len": 1
+          }
+        },
+        {
+          "must": [
+            "Lunch at one",
+            "Dismiss",
+            "Notifications, 1 unread"
+          ]
+        }
+      ],
+      "dark": true,
+      "budget_ms": 10000
+    },
+    {
+      "id": "centre",
+      "said": "Open the notification centre: the notification is listed",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "desktop:chrome",
+            "notifications",
+            {
+              "open": true
+            }
+          ]
+        },
+        {
+          "state": {
+            "rust": {
+              "chrome.overlays.centre": true
+            },
+            "tl": null
+          }
+        },
+        {
+          "must": [
+            {
+              "rust": "Clear all notifications",
+              "tl": "Clear all"
+            },
+            "Notifications"
+          ]
+        }
+      ],
+      "dark": true,
+      "budget_ms": 10000
+    },
+    {
+      "id": "dismiss",
+      "said": "Clear it: the centre is empty",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "session:notifications",
+            "clear"
+          ]
+        },
+        {
+          "state": {
+            "notifications#len": 0
+          }
+        }
+      ],
+      "budget_ms": 10000
+    },
+    {
+      "id": "centre-close",
+      "said": "Close the centre",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "desktop:chrome",
+            "notifications",
+            {
+              "open": false
+            }
+          ]
+        },
+        {
+          "state": {
+            "rust": {
+              "chrome.overlays.centre": false
+            },
+            "tl": null
+          }
+        },
+        {
+          "must_not": [
+            {
+              "rust": "Clear all notifications",
+              "tl": "Clear all"
+            }
+          ]
+        }
+      ],
+      "budget_ms": 10000
+    }
+  ]
+}

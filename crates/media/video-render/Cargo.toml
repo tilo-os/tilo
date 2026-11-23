@@ -50,7 +50,7 @@ tilo-sandbox = { path = "../../platform/tilo-sandbox" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 gstreamer-app = "0.24"
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 serial_test.workspace = true
 tempfile.workspace = true
 uuid.workspace = true

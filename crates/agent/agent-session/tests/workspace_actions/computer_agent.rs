@@ -105,7 +105,7 @@ async fn a_computers_agent_is_listed_once_where_it_acts() {
     let id = tilo_actions::remote::device_agent_id(&root.verifying_key().to_bytes(), NAME);
     let agent = listed(&hosted, &id, |_| true).await;
     assert_eq!(agent.name, NAME);
-    assert_eq!(agent.keeper, hex::encode(root.verifying_key().to_bytes()));
+    assert_eq!(agent.acts_for, hex::encode(root.verifying_key().to_bytes()));
     assert_eq!(agent.mcp_client.as_deref(), Some(NAME));
     assert!(agent.is_active(), "{agent:?}");
 

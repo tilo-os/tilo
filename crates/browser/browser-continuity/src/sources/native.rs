@@ -8,21 +8,21 @@
 #[path = "tests.rs"]
 mod tests;
 
-use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{self, Read};
+use std::io;
 use std::os::unix::fs::MetadataExt;
 
-use rusqlite::{Connection, OpenFlags};
-use tilo_files::native::atomic::{Privacy, StorageDirectory};
+use rusqlite::Connection;
+use tilo_files::native::atomic::StorageDirectory;
 
 use crate::imported_folders::{ImportedNode, ImportedTree, NodeKind};
+use crate::snapshot::{CapturedBytes, OpenedDatabase};
 
 use crate::imports::{
     BookmarkImport, HistoryImport, ImportBatch, ImportBundle, MAX_BUNDLE_BYTES, MAX_BUNDLE_ENTRIES,
 };
 
-use super::{CHROMIUM_EPOCH_MICROS, MAX_DATABASE_BYTES};
+use super::CHROMIUM_EPOCH_MICROS;
 
 /// A directory handle already granted by the owner through the host's file
 /// capability flow. Constructing this value does not itself request permission.
@@ -41,66 +41,10 @@ impl GrantedProfile {
         Ok(Self { directory, owner })
     }
 
-    fn read(&self, name: &str, limit: u64) -> io::Result<Capture> {
-        self.directory.validate_namespace_control()?;
-        let file = self
-            .directory
-            .open_read(OsStr::new(name), Privacy::Inherit)?;
-        let before = Stamp::of(&file.metadata()?);
-        if before.owner != self.owner || before.length > limit {
-            return Err(invalid("source ownership or size is unacceptable"));
-        }
-        let mut bytes = Vec::new();
-        file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > limit {
-            return Err(invalid("source exceeds the read limit"));
-        }
-        let current = self
-            .directory
-            .open_read(OsStr::new(name), Privacy::Inherit)?;
-        if before != Stamp::of(&current.metadata()?) || bytes.len() as u64 != before.length {
-            return Err(busy());
-        }
-        Ok(Capture {
-            stamp: before,
-            bytes,
-        })
+    fn read(&self, name: &str, limit: u64) -> io::Result<CapturedBytes> {
+        crate::snapshot::capture_file(&self.directory, self.owner, name, limit)?
+            .ok_or_else(|| invalid("source is missing"))
     }
-
-    fn optional_wal(&self, name: &str) -> io::Result<Option<Capture>> {
-        match self.read(name, MAX_DATABASE_BYTES) {
-            Ok(capture) => Ok(Some(capture)),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct Stamp {
-    device: u64,
-    inode: u64,
-    owner: u32,
-    length: u64,
-    modified: (i64, i64),
-    changed: (i64, i64),
-}
-impl Stamp {
-    fn of(metadata: &std::fs::Metadata) -> Self {
-        Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-            owner: metadata.uid(),
-            length: metadata.len(),
-            modified: (metadata.mtime(), metadata.mtime_nsec()),
-            changed: (metadata.ctime(), metadata.ctime_nsec()),
-        }
-    }
-}
-#[derive(PartialEq, Eq)]
-struct Capture {
-    stamp: Stamp,
-    bytes: Vec<u8>,
 }
 
 fn invalid(message: &'static str) -> io::Error {
@@ -173,13 +117,13 @@ fn read_chromium_bookmarks(profile: &GrantedProfile) -> io::Result<(ImportBatch,
         return Err(busy());
     }
     let document: serde_json::Value =
-        serde_json::from_slice(&capture.bytes).map_err(|_| invalid("invalid bookmarks JSON"))?;
+        serde_json::from_slice(capture.bytes()).map_err(|_| invalid("invalid bookmarks JSON"))?;
     let roots = document
         .get("roots")
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| invalid("missing bookmark roots"))?;
     let mut batch = ImportBatch {
-        source: fingerprint("chromium-bookmarks", &capture.bytes, None),
+        source: fingerprint("chromium-bookmarks", capture.bytes(), None),
         bookmarks: Vec::new(),
         history: Vec::new(),
     };
@@ -261,48 +205,11 @@ fn read_chromium_bookmarks(profile: &GrantedProfile) -> io::Result<(ImportBatch,
     Ok((batch, tree))
 }
 
-fn snapshot(
-    profile: &GrantedProfile,
-    name: &str,
-) -> io::Result<(tempfile::TempDir, Connection, [u8; 32])> {
-    let wal_name = format!("{name}-wal");
-    let first = profile.read(name, MAX_DATABASE_BYTES)?;
-    let wal = profile.optional_wal(&wal_name)?;
-    if first != profile.read(name, MAX_DATABASE_BYTES)? || wal != profile.optional_wal(&wal_name)? {
-        return Err(busy());
-    }
-    let source = fingerprint(
-        name,
-        &first.bytes,
-        wal.as_ref().map(|value| value.bytes.as_slice()),
-    );
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join(name);
-    private_write(&path, &first.bytes)?;
-    if let Some(wal) = wal {
-        private_write(&directory.path().join(wal_name), &wal.bytes)?;
-    }
-    let connection = Connection::open_with_flags(
-        &path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(sqlite_error)?;
-    connection
-        .execute_batch("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF; BEGIN;")
-        .map_err(sqlite_error)?;
-    let check: String = connection
-        .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
-        .map_err(sqlite_error)?;
-    if check != "ok" {
-        return Err(invalid("browser database integrity check failed"));
-    }
-    Ok((directory, connection, source))
-}
-
-fn private_write(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
-    use std::io::Write;
-    let mut file = tilo_files::native::private::create_new(path)?;
-    file.write_all(bytes)
+fn snapshot(profile: &GrantedProfile, name: &str) -> io::Result<(OpenedDatabase, [u8; 32])> {
+    let captured = crate::snapshot::capture_database(&profile.directory, profile.owner, name)?;
+    let source = fingerprint(name, captured.database(), captured.wal());
+    let opened = crate::snapshot::open_captured(name, &captured)?;
+    Ok((opened, source))
 }
 
 /// Read every HTTP(S) URL from an explicitly granted Chromium history source.
@@ -328,7 +235,7 @@ pub fn parse_chromium_history_bundle(profile: &GrantedProfile) -> io::Result<Imp
 }
 
 fn read_chromium_history(profile: &GrantedProfile) -> io::Result<ImportBatch> {
-    let (_directory, connection, source) = snapshot(profile, "History")?;
+    let (connection, source) = snapshot(profile, "History")?;
     let mut batch = ImportBatch {
         source,
         bookmarks: Vec::new(),
@@ -394,7 +301,7 @@ fn read_firefox_places(
     bookmarks: bool,
     history: bool,
 ) -> io::Result<(ImportBatch, Option<ImportedTree>)> {
-    let (_directory, connection, source) = snapshot(profile, "places.sqlite")?;
+    let (connection, source) = snapshot(profile, "places.sqlite")?;
     let mut batch = ImportBatch {
         source,
         bookmarks: Vec::new(),

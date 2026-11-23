@@ -4,7 +4,10 @@
 //! fails here. A new variant goes at the end of its enum; the `match`es
 //! without a wildcard ask for its bytes.
 
-use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, Lifetime, Role, TreePath};
+use tilo_action_policy::{
+    ActionKind, Answer, Authority, Change, Context, Grant, GrantId, Grantee, KindSet, Lifetime,
+    Role, TreePath, WorkspacePolicy,
+};
 
 fn read_as<T: serde::de::DeserializeOwned>(_: &T, bytes: &[u8]) -> postcard::Result<T> {
     postcard::from_bytes(bytes)
@@ -84,10 +87,15 @@ tilo_test_env::scenario! {
             (Grantee::bot("b"), &[0x00, 0x02, 0x01, b'b']),
             (Grantee::role(Role::Editor), &[0x01, 0x02]),
             (Grantee::app("n"), &[0x02, 0x01, b'n']),
+            (Grantee::AnyKey, &[0x04]),
         ];
         for (grantee, golden) in cases {
             match grantee {
-                Grantee::Member(_) | Grantee::Role(_) | Grantee::App(_) | Grantee::CustomRole(_) => {
+                Grantee::Member(_)
+                | Grantee::Role(_)
+                | Grantee::App(_)
+                | Grantee::CustomRole(_)
+                | Grantee::AnyKey => {
                     stored_as!(grantee, golden);
                 }
             }
@@ -130,5 +138,82 @@ tilo_test_env::scenario! {
         golden.push(0x03);
         golden.extend([0x00, 0x00, 0x01, b'c']);
         stored_as!(&grant, &golden);
+    }
+
+    // A membership operation signs its changes' bytes and a workspace keeps
+    // them: an ownership transfer that read as another variant, or not at all,
+    // would leave a kept workspace owned by whoever it was handed away from,
+    // and its state would no longer open as that owner's.
+    phase a_change_keeps_its_bytes;
+    {
+        let p = || "p".to_owned();
+        let cases: Vec<(Change, Vec<u8>)> = vec![
+            (Change::AddMember { person: p(), role: Role::Editor }, vec![0x00, 0x01, b'p', 0x02]),
+            (Change::RemoveMember { person: p() }, vec![0x01, 0x01, b'p']),
+            (Change::Ban { person: p() }, vec![0x02, 0x01, b'p']),
+            (Change::Unban { person: p() }, vec![0x03, 0x01, b'p']),
+            (Change::Restrict { person: p(), until_ms: 5 }, vec![0x04, 0x01, b'p', 0x05]),
+            (Change::Unrestrict { person: p() }, vec![0x05, 0x01, b'p']),
+            (Change::SetRole { person: p(), role: Role::Viewer }, vec![0x06, 0x01, b'p', 0x00]),
+            (Change::Revoke(GrantId::new("g")), vec![0x08, 0x01, b'g']),
+            (
+                Change::DefineRole { id: "i".into(), name: "n".into() },
+                vec![0x09, 0x01, b'i', 0x01, b'n'],
+            ),
+            (Change::RemoveRole { id: "i".into() }, vec![0x0a, 0x01, b'i']),
+            (
+                Change::RetiredSetMemberRoles { person: p(), roles: ["i".to_owned()].into() },
+                vec![0x0b, 0x01, b'p', 0x01, 0x01, b'i'],
+            ),
+            (
+                Change::SetMemberCustomRole { person: p(), role: "i".into(), assigned: true },
+                vec![0x0c, 0x01, b'p', 0x01, b'i', 0x01],
+            ),
+            (Change::TransferOwnership { person: p() }, vec![0x0d, 0x01, b'p']),
+            (
+                Change::AddAgent { agent: "a".into(), for_person: p(), by: None },
+                vec![0x0e, 0x01, b'a', 0x01, b'p', 0x00],
+            ),
+            (Change::RemoveAgent { agent: "a".into(), by: None }, vec![0x0f, 0x01, b'a', 0x00]),
+        ];
+        for (change, golden) in &cases {
+            match change {
+                Change::AddMember { .. }
+                | Change::RemoveMember { .. }
+                | Change::Ban { .. }
+                | Change::Unban { .. }
+                | Change::Restrict { .. }
+                | Change::Unrestrict { .. }
+                | Change::SetRole { .. }
+                | Change::Grant(_)
+                | Change::Revoke(_)
+                | Change::DefineRole { .. }
+                | Change::RemoveRole { .. }
+                | Change::RetiredSetMemberRoles { .. }
+                | Change::SetMemberCustomRole { .. }
+                | Change::TransferOwnership { .. }
+                | Change::AddAgent { .. }
+                | Change::RemoveAgent { .. } => stored_as!(change, golden),
+            }
+        }
+        let grant = Grant::new(
+            "g",
+            Grantee::person("p"),
+            TreePath::workspace("r"),
+            KindSet::ALL,
+            Answer::Allow,
+            Grantee::person("c"),
+        );
+        let mut golden = vec![0x07];
+        golden.extend(postcard::to_stdvec(&grant).unwrap());
+        stored_as!(&Change::Grant(grant), &golden);
+
+        // The whole-set assignment keeps its place and changes nothing.
+        let mut workspace = WorkspacePolicy::new("r", "a11ce");
+        let held = workspace.clone();
+        let owner = Authority::person(held.party("a11ce"));
+        let assignment = Change::RetiredSetMemberRoles { person: p(), roles: ["i".to_owned()].into() };
+        assert!(workspace.apply("a11ce", &owner, assignment, &Context::at(1), false).is_err());
+        assert_eq!(workspace, held);
     }
 }

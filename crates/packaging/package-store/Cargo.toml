@@ -32,6 +32,10 @@ store = [
     "dep:tilo-clock",
     "dep:tokio",
     "dep:tilo-user-identity",
+    "dep:cli-shim",
+    "dep:semver",
+    "dep:serde_json",
+    "dep:fnv",
 ]
 
 [dependencies]
@@ -58,13 +62,19 @@ iroh-blobs = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", optional = true }
 tokio = { workspace = true, features = ["rt"], optional = true }
+# The sidecar contract the PATH shims an install writes are read by.
+cli-shim = { version = "0.1.0", path = "../cli-shim", optional = true }
+semver = { workspace = true, optional = true }
+# Names an app's saved-data directory the way the launcher does.
+fnv = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 # Whose devices may publish images for the user: their identity's fleet.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity", optional = true }
 
 [dev-dependencies]
 libc.workspace = true
 tempfile.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [[test]]
 name = "it"

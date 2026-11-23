@@ -31,7 +31,7 @@ use crate::action::{Authorship, DynAction};
 use crate::authority::TiloAuthority;
 use crate::meta::MetaExt as _;
 use crate::publish::{Caller, PlanRequest, Planner};
-use crate::resources::ResourceStore;
+use crate::resources::{ResourceStore, Turn};
 use crate::schema::lookup;
 use tilo_action_policy::MemberAccess;
 
@@ -182,6 +182,9 @@ pub(crate) struct HostInner {
     returned: RefCell<HashMap<String, ResourceRef>>,
     /// When the packages' triggers next have something to run.
     triggers: crate::triggers::Schedule,
+    /// Whether a migration waits for its turn: another device runs it, or none may yet
+    /// ([`Host::migrate`]).
+    migrations_wait: Cell<bool>,
     /// What the asks made from mentions of agents follow ([`crate::asks`]).
     asking: crate::asks::Asking,
     /// The person and policy the runtime's members were last given from ([`Host::follow_members`]).
@@ -971,6 +974,7 @@ impl Host {
             stopped: RefCell::default(),
             returned: RefCell::default(),
             triggers,
+            migrations_wait: Cell::new(false),
             asking,
             members_from: RefCell::new(None),
             carried: Cell::new(false),
@@ -1417,10 +1421,13 @@ impl Host {
     /// (the app acting by itself), which records in the same change that it
     /// ran. A field the new build keeps as `RichText` where the old one kept `Text` has its
     /// text carried into rich text first, the same words ([`crate::store`]'s
-    /// `upgrade_plain_text`). Only the workspace's origin calls it (`Instance::set_origin`). Returns
-    /// how many migrations ran. A migration that is refused or fails leaves its resource as it
-    /// was, to be tried again the next time.
+    /// `upgrade_plain_text`). Each migration of a resource runs once in the workspace, on the
+    /// device whose turn it is ([`ResourceStore::take_turn`]): one another device runs, or none
+    /// may run yet, waits ([`Self::migrations_wait`]). Returns how many migrations ran here. A
+    /// migration that is refused or fails leaves its resource as it was, to be tried again the
+    /// next time.
     pub fn migrate(&self) -> usize {
+        self.inner.migrations_wait.set(false);
         // A package that takes over what a native app of its id kept carries it into its root
         // on this start: the root is made for it (not marked migrated, since what it starts as
         // is what that app left), and its migrations run on it below.
@@ -1484,6 +1491,17 @@ impl Host {
                 continue;
             }
             let at = Value::resource(&target_ref);
+            // The migration of this resource is the workspace's once: the device whose turn it is
+            // runs it, and the mark it writes in the resource tells every device it ran.
+            let address = format!("{}/{doc}#{}", package.meta.app, migration.id);
+            match self.inner.store.take_turn(&address, &Json::Null) {
+                Turn::Take => {}
+                Turn::Done(_) => continue,
+                Turn::Later => {
+                    self.inner.migrations_wait.set(true);
+                    continue;
+                }
+            }
             // The package updating its own documents, not the person at the window: the change
             // is the package version's, under the platform's migration actor.
             let by = Actor::App(AppId::from(package.meta.app.as_str()));
@@ -1501,7 +1519,14 @@ impl Host {
                 tracing::warn!(%error, "a migration that ran is not marked");
             }
             match outcome {
-                Ok(InvokeOutcome::Done(_)) => ran = ran.saturating_add(1),
+                Ok(InvokeOutcome::Done(answer)) => {
+                    self.inner.store.turn_done(
+                        &address,
+                        &Json::Null,
+                        crate::triggers::answer_json(&answer),
+                    );
+                    ran = ran.saturating_add(1);
+                }
                 other => tracing::warn!(
                     app = package.meta.app,
                     migration = migration.name,
@@ -1514,12 +1539,19 @@ impl Host {
         ran
     }
 
+    /// Whether a migration [`Self::migrate`] met waits for its turn: it is worth running again
+    /// a little later.
+    #[must_use]
+    pub fn migrations_wait(&self) -> bool {
+        self.inner.migrations_wait.get()
+    }
+
     /// Run what the packages declare comes due at `now` (seconds since the epoch): each
     /// trigger, for each document of its type, as the app's own invocation
     /// ([`crate::authority::trigger_actor`]), whose change documents in the same edit what
-    /// the trigger last did for the document. Only the workspace's origin calls it
-    /// (`Instance::sync`), so a trigger runs once across the workspace's devices; a run the
-    /// devices missed while all were off runs once when one comes up. Returns how many ran.
+    /// the trigger last did for the document. Each run is the workspace's once, on the device
+    /// whose turn it is ([`ResourceStore::take_turn`]); a run the devices missed while all were
+    /// off runs once when one comes up. Returns how many ran here.
     pub fn run_triggers(&self, now: i64) -> usize {
         crate::triggers::run_due(self, &self.inner.triggers, now)
     }

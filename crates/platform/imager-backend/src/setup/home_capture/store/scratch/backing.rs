@@ -475,11 +475,11 @@ impl BackingProof {
         ) {
             return Err(refused("Backing filesystem is unsupported"));
         }
-        let mut capacity: libc::statvfs = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstatvfs(directory.as_raw_fd(), &raw mut capacity) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if capacity.f_flag & libc::ST_RDONLY != 0 {
+        let capacity = rustix::fs::fstatvfs(&directory)?;
+        if capacity
+            .f_flag
+            .contains(rustix::fs::StatVfsMountFlags::RDONLY)
+        {
             return Err(refused("Backing granted filesystem is readonly"));
         }
         let sysfs = File::open("/sys")?;

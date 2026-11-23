@@ -1,6 +1,6 @@
 //! The platform's apps a tilolang view reads but this runtime does not run: the device (its
-//! sound, network, Bluetooth, battery, power and displays) and Settings (the person's
-//! appearance and notification settings).
+//! sound, network, Bluetooth, battery, power and displays), Settings (the person's
+//! appearance and notification settings) and Contacts (the workspace's contact directory).
 //!
 //! Each is a package read from the surface it publishes ([`crate::catalogue::package_of`]):
 //! its types are what its resources read as and its actions are their published verbs. Its
@@ -53,6 +53,10 @@ pub fn session_verbs()
 
 /// Settings' committed surface, the one its package ships.
 const SETTINGS_SURFACE: &str = include_str!("../../../../apps/settings/surface.toml");
+/// Contacts' app, whose directory is one record of the workspace ([`CONTACTS_ROOTS`]).
+pub use tilo_app_id::apps::CONTACTS as CONTACTS_APP;
+/// Contacts' committed surface, the one its package ships.
+const CONTACTS_SURFACE: &str = include_str!("../../../../apps/contacts/surface.toml");
 /// The settings service's own resource a view reads and changes: the agent
 /// model choice, over the device's provider section and the person's (its
 /// committed surface beside the service, written by its own test, as
@@ -72,6 +76,9 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("power", "Power", "power"),
     ("displays", "Displays", "session:displays"),
     ("notifications", "Notifications", "session:notifications"),
+    ("osd", "Osd", "session:osd"),
+    ("vpn", "Vpn", "vpn"),
+    ("night_light", "NightLight", "session:night-light"),
     ("time", "Time", "session:time"),
     ("apps", "Apps", "session:apps"),
     ("windows", "Windows", "session:windows"),
@@ -97,6 +104,16 @@ const SETTINGS_ROOTS: &[(&str, &str, &str)] = &[
         "settings:settings.agent-models",
     ),
 ];
+/// The contacts directory of the workspace, which Contacts keeps and Mail,
+/// Calendar, Messages and a tilolang view read: one record every member sees,
+/// its actions the ones Contacts publishes (`project-contact`,
+/// `confirm-endpoint`, `confirm-account`, and the rest), answered by the
+/// session's contacts service.
+const CONTACTS_ROOTS: &[(&str, &str, &str)] = &[(
+    "directory",
+    "Identities",
+    "contacts:tilo.contacts.identities",
+)];
 
 /// The platform's resources a view reads, each as the session publishes it (`power:battery`)
 /// and as the view's type names it (`so.tilo.device#Battery`): what the host reads for them.
@@ -109,6 +126,11 @@ pub fn platform_roots() -> Vec<(&'static str, String)> {
             SETTINGS_ROOTS
                 .iter()
                 .map(|(_, ty, published)| (*published, format!("{SETTINGS_APP}#{ty}"))),
+        )
+        .chain(
+            CONTACTS_ROOTS
+                .iter()
+                .map(|(_, ty, published)| (*published, format!("{CONTACTS_APP}#{ty}"))),
         )
         .collect()
 }
@@ -136,6 +158,25 @@ fn settings_surfaces() -> Result<Vec<Surface>, String> {
     let service: File =
         serde_json::from_str(AGENT_MODELS_SURFACE).map_err(|error| error.to_string())?;
     surfaces.extend(service.resources);
+    Ok(surfaces)
+}
+
+/// The kind of the workspace's contact directory, kept by Contacts and
+/// published by the session ([`CONTACTS_ROOTS`]).
+const CONTACTS_DIRECTORY_KIND: &str = "tilo.contacts.identities";
+
+/// Contacts' resources as its package publishes them: the directory of the
+/// workspace, with its type's fields and its verbs. The book Contacts keeps for
+/// its own window is not one: a view of another language names what the session
+/// publishes, and the session publishes the directory.
+fn contacts_surfaces() -> Result<Vec<Surface>, String> {
+    let surfaces: Vec<Surface> = parse_surfaces(CONTACTS_SURFACE)?
+        .into_iter()
+        .filter(|surface| surface.kind == CONTACTS_DIRECTORY_KIND)
+        .collect();
+    if surfaces.is_empty() {
+        return Err(format!("Contacts publishes no `{CONTACTS_DIRECTORY_KIND}`"));
+    }
     Ok(surfaces)
 }
 
@@ -177,10 +218,14 @@ fn read_packages() -> Result<Vec<PackageMeta>, String> {
         package_of(SETTINGS_APP, "Settings", &settings_surfaces()?),
         SETTINGS_ROOTS,
     )?;
+    let contacts = named(
+        package_of(CONTACTS_APP, "Contacts", &contacts_surfaces()?),
+        CONTACTS_ROOTS,
+    )?;
     // The session's own resources are described here, as the runtime loads them
     // ([`session_package`]): its actions keep the ids its surface names them by, which is what
     // the code calling them compiles to. An app's directory of the same name
     // (`apps/tl/session`) names them by its app (`so.tilo.session#place`), which no call the
     // runtime loads makes; the description here stands first, so a build reads it.
-    Ok(vec![device, settings, session_package()?])
+    Ok(vec![device, settings, contacts, session_package()?])
 }

@@ -6,13 +6,13 @@
 //! published through [`offer`] as every service's are.
 
 use tilo_actions::{ResourcePresentation, ResourceSpec};
-use tilo_desktop_surface::navigation::{
+use tilo_resource::words::RowType;
+use tilo_resource::{LiveRow, RowBindings, offer, typed_resource};
+use tilo_session_core::desktop::navigation::{
     Chrome, ChromeEffect, Display, Launchpad, LaunchpadCard, LayoutEffect, Search, SearchRow,
     Shell, Window,
 };
-use tilo_desktop_surface::window;
-use tilo_resource::words::RowType;
-use tilo_resource::{LiveRow, RowBindings, offer, typed_resource};
+use tilo_session_core::desktop::window;
 use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
 
 use crate::i18n::{t, t_args};
@@ -205,7 +205,7 @@ fn window_row(shown: &Shown, not_responding: &[u64]) -> ResourceSpec {
     let mut window = row.into_resource();
     // A window of another desktop has no surface of its own to ask what it shows: the shell
     // answers both read actions for it, and neither acts on it
-    // (`tilo_desktop_surface::window`).
+    // (`tilo_session_core::desktop::window`).
     if shown.foreign.is_some() {
         window = window
             .with_action(window::look(t_args("shell-look-window", names)))

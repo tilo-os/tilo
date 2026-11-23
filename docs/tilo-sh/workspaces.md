@@ -221,6 +221,17 @@ A deployment names its owner when it starts the host: `TILO_WORKSPACES_OWNERS` t
 key, and the host hands the workspace to them at its first start, staying in it as an administrator
 that keeps the deployment's settings. Everyone after them comes in through the actions above.
 
+## Pausing the host
+
+An operator sheds load without stopping a host by writing `spectator-only` or `back-soon` to the
+`mode` file in the workspace's state directory; `normal` opens it again. The file outlives a
+restart, so a host starts in the mode it was last left in. While paused the entry admits nobody new — a device of someone
+already in the workspace enters as it does at any other time — and answers a newcomer a `503` asking
+it to come back. `spectator-only` still serves the host's public directory listing; `back-soon`
+stops that too, so nothing of the host answers a stranger. `GET /mode` on the deployment's own
+listener says which mode is in force beside the host's state and revision, so a deployment can see
+the switch took.
+
 ## Where next
 
 - [Resources and actions](resources-and-actions.md): what is inside, and how to reach it.

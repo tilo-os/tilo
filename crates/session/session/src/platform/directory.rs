@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use tilo_desktop_surface::DesktopHandle;
-use tilo_desktop_surface::navigation::ChromeEffect;
+use tilo_session_core::desktop::navigation::ChromeEffect;
 use tilo_sheets::directory::Held;
 use tilo_workspace_directory::Person;
 

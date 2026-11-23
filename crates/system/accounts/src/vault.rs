@@ -1,5 +1,5 @@
-//! The encrypted **secret vault** — credentials at rest, never in the plain
-//! [`crate::AccountStore`] JSON.
+//! The encrypted **secret vault** — credentials at rest, never in the accounts
+//! record ([`crate::person::AccountList`]).
 //!
 //! Every credential an [`crate::Account`] needs is a long-lived bearer secret, sealed with
 //! **XChaCha20-Poly1305** (192-bit-nonce AEAD, audited `RustCrypto` stack) under a 256-bit key,

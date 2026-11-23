@@ -15,7 +15,7 @@ use super::fixtures::entry_join_as;
 use super::servers::{self, Servers};
 use super::tests::{governor, guest_device, test_host};
 use super::*;
-use crate::work::{HostJobs, HostLinux, Ineligible, Job, NotTaken, Turn, takes_turn};
+use crate::work::{HostJobs, HostLinux, Ineligible, Job, NotTaken, Turn, keep_done, takes_turn};
 
 /// The jobs a device runs, as a test sets them: whether it runs the transform,
 /// keeps the inputs and has room, and what each run was given.
@@ -171,12 +171,9 @@ async fn a_device_claims_a_turn_only_when_everything_it_needs_is_here() {
         async move {
             let taken = takes_turn(workspaces, &workspace, &turn).await;
             assert_eq!(taken.err(), Some(NotTaken::Ineligible(why)), "{why}");
-            let Turn::Invocation { id, .. } = turn else {
-                unreachable!("an invocation's turn")
-            };
             assert_eq!(
                 workspaces
-                    .lease_holder(&workspace, &format!("invocation/{}", id.0))
+                    .lease_holder(&workspace, &turn.lease())
                     .await
                     .unwrap(),
                 None,
@@ -209,10 +206,7 @@ async fn a_device_claims_a_turn_only_when_everything_it_needs_is_here() {
     unclaimed(&turn(&viewer), Ineligible::NotPermitted).await;
 
     let turn = turn(&editor);
-    let Turn::Invocation { id, .. } = &turn else {
-        unreachable!("an invocation's turn")
-    };
-    let lease = format!("invocation/{}", id.0);
+    let lease = turn.lease();
     let claim = takes_turn(workspaces, &workspace, &turn).await.unwrap();
     assert_eq!(
         workspaces.lease_holder(&workspace, &lease).await.unwrap(),
@@ -404,4 +398,332 @@ async fn a_member_device_asks_and_the_host_runs_its_turn() {
         endpoint.close().await;
     }
     host.shutdown().await;
+}
+
+/// A firing of the host's person's automation, started on `starter` `ago_ms` ago.
+fn firing(cert: &DeviceCert, starter: [u8; 32], ago_ms: i64) -> Turn {
+    Turn::Firing {
+        firing: format!("tidy/{}", uuid::Uuid::new_v4()),
+        saver: hex::encode(cert.user_public_key),
+        starter,
+        came_up_ms: tilo_clock::unix_now_ms_i64().saturating_sub(ago_ms),
+    }
+}
+
+/// `device`'s claim on `lease` of `workspace`, written as that device would, now.
+async fn claim_as(workspaces: &Workspaces, workspace: &str, device: &DeviceCert, lease: &str) {
+    let key = workspaces.inner.host.key.clone();
+    let now = system_time(tilo_clock::unix_now_ns());
+    let copy = workspaces.workspace(workspace).await.unwrap();
+    let claimed = copy
+        .lock()
+        .await
+        .change_held(
+            &key,
+            now,
+            |_, candidate| {
+                let claimed = candidate.workspace_mut().take_lease(
+                    device,
+                    lease,
+                    std::time::Duration::from_millis(1),
+                    tilo_peer_state::unranked(),
+                    now,
+                )?;
+                Ok((claimed.is_some(), true))
+            },
+            |record, _| Ok(record.collaboration.clone()),
+        )
+        .unwrap();
+    assert!(claimed, "the other device's claim is written");
+}
+
+/// A turn goes to the device that started it at once; an always-on server of
+/// the person waits a few seconds for the starter's claim and then takes it;
+/// any other device waits longer; a device that is not the saver's never takes
+/// a firing; and a firing kept done is never taken again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_firing_goes_to_its_starter_then_a_server_then_any_device() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let host = test_host(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces();
+    let workspace = workspaces.create("Home").await.unwrap().workspace;
+    let elsewhere = [9; 32];
+
+    let started_here = firing(&cert, cert.device_public_key, 0);
+    let claim = takes_turn(workspaces, &workspace, &started_here)
+        .await
+        .expect("the starter takes its turn at once");
+    keep_done(
+        workspaces,
+        &workspace,
+        &started_here,
+        serde_json::json!({ "run": 1 }),
+    )
+    .await
+    .unwrap();
+    claim.release().await;
+    assert_eq!(
+        takes_turn(workspaces, &workspace, &started_here)
+            .await
+            .err(),
+        Some(NotTaken::Done(serde_json::json!({ "run": 1 }))),
+        "a firing kept done is never taken again, and answers what it answered"
+    );
+
+    let Err(NotTaken::Waiting { at_ms }) =
+        takes_turn(workspaces, &workspace, &firing(&cert, elsewhere, 0)).await
+    else {
+        panic!("a device that is no server waits for the starter");
+    };
+    assert!(
+        at_ms >= tilo_clock::unix_now_ms_i64() + 20_000,
+        "it waits the longer grace: {at_ms}"
+    );
+    assert!(
+        takes_turn(workspaces, &workspace, &firing(&cert, elsewhere, 31_000))
+            .await
+            .is_ok(),
+        "once the longer grace passed, any eligible device takes it"
+    );
+
+    offer_compute(&host, &cert, false).await;
+    let Err(NotTaken::Waiting { at_ms }) =
+        takes_turn(workspaces, &workspace, &firing(&cert, elsewhere, 0)).await
+    else {
+        panic!("an always-on server waits a moment for the starter");
+    };
+    assert!(
+        at_ms <= tilo_clock::unix_now_ms_i64() + 10_000,
+        "a server waits only the short grace: {at_ms}"
+    );
+    assert!(
+        takes_turn(workspaces, &workspace, &firing(&cert, elsewhere, 6_000))
+            .await
+            .is_ok(),
+        "a server takes the turn the starter did not claim in time"
+    );
+
+    let (_, stranger) = guest_device();
+    let theirs = Turn::Firing {
+        firing: "theirs/1".into(),
+        saver: hex::encode(stranger.user_public_key),
+        starter: cert.device_public_key,
+        came_up_ms: tilo_clock::unix_now_ms_i64(),
+    };
+    assert_eq!(
+        takes_turn(workspaces, &workspace, &theirs).await.err(),
+        Some(NotTaken::Ineligible(Ineligible::NotTheSaver)),
+        "a device runs only its own person's automations"
+    );
+    host.shutdown().await;
+}
+
+/// The device that started a firing claimed it and went quiet: no other device
+/// claims over its live claim, and once it wrote nothing for a minute the next
+/// device takes the turn over.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_that_goes_quiet_loses_its_turn_to_the_next() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let host = test_host(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces();
+    let workspace = workspaces.create("Home").await.unwrap().workspace;
+    let (editor_key, editor) = guest_device();
+    entry_join_as(
+        workspaces,
+        &cert,
+        &workspace,
+        (&editor_key, &editor),
+        63,
+        Role::Editor,
+    )
+    .await;
+    let turn = firing(&cert, editor.device_public_key, 0);
+    claim_as(workspaces, &workspace, &editor, &turn.lease()).await;
+    assert_eq!(
+        takes_turn(workspaces, &workspace, &turn).await.err(),
+        Some(NotTaken::TakenBy(editor.device_public_key)),
+        "a live claim of another device is never claimed over"
+    );
+
+    // A minute and more later, read on this test's own thread.
+    let wall = tilo_clock::testing::SharedWall::default();
+    wall.pin(tilo_clock::wall() + std::time::Duration::from_secs(62));
+    wall.follow();
+    let taken = takes_turn(workspaces, &workspace, &turn).await;
+    let claimer = workspaces.lease_holder(&workspace, &turn.lease()).await;
+    wall.release();
+    assert!(
+        taken.is_ok(),
+        "the quiet device's turn is taken over: {:?}",
+        taken.err()
+    );
+    assert_eq!(claimer.unwrap(), Some(cert.device_public_key));
+    host.shutdown().await;
+}
+
+/// `device`'s row keeping `lease` of `workspace` done, written as that device would, now.
+#[cfg(feature = "apps")]
+async fn done_as(workspaces: &Workspaces, workspace: &str, device: &DeviceCert, lease: &str) {
+    let key = workspaces.inner.host.key.clone();
+    let now = system_time(tilo_clock::unix_now_ns());
+    let copy = workspaces.workspace(workspace).await.unwrap();
+    let kept = copy
+        .lock()
+        .await
+        .change_held(
+            &key,
+            now,
+            |_, candidate| {
+                let kept = candidate.workspace_mut().keep_done(
+                    device,
+                    lease,
+                    serde_json::json!("migrated"),
+                    now,
+                )?;
+                Ok((kept, true))
+            },
+            |record, _| Ok(record.collaboration.clone()),
+        )
+        .unwrap();
+    assert!(kept, "the other device's done row is written");
+}
+
+/// A package's migration of a resource, asked for by the app's process on each device as it
+/// opens (`Command::Turn`), runs once in the workspace: with two devices online the one that
+/// claimed it runs it and the other finds it done, and when the device that took it goes quiet
+/// mid-way the other takes it over once its claim lapsed, and runs it once. Every device that asks
+/// after it ran is given what it answered.
+#[cfg(feature = "apps")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_migration_runs_once_across_devices_and_once_more_after_a_takeover() {
+    use tilo_resource_store::wire::{Command, Reply, Turn as Answer};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let host = test_host(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces();
+    workspaces.set_member_device(Arc::new(MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    let workspace = workspaces.create("Home").await.unwrap().workspace;
+    let (editor_key, editor) = guest_device();
+    entry_join_as(
+        workspaces,
+        &cert,
+        &workspace,
+        (&editor_key, &editor),
+        64,
+        Role::Editor,
+    )
+    .await;
+    let app = "so.tilo.lang.notes";
+    let ask = |address: String, answer: Option<serde_json::Value>| {
+        let workspace = workspace.clone();
+        async move {
+            let reply = workspaces
+                .own_resource_command(
+                    &workspace,
+                    app,
+                    Command::Turn {
+                        address,
+                        inputs: serde_json::Value::Null,
+                        answer,
+                    },
+                )
+                .await
+                .expect("the service answers a turn");
+            let Reply::Turn(answer) = reply else {
+                panic!("a turn is answered as a turn: {reply:?}");
+            };
+            answer
+        }
+    };
+    let lease = |address: &str| {
+        Turn::Once {
+            address: address.to_owned(),
+            inputs: serde_json::Value::Null,
+        }
+        .lease()
+    };
+
+    // The editor's device opened the app first and took the migration of the first notebook.
+    let first = format!("{app}/notebook-1#migrate");
+    claim_as(workspaces, &workspace, &editor, &lease(&first)).await;
+    assert_eq!(
+        ask(first.clone(), None).await,
+        Answer::Later,
+        "another runs it"
+    );
+    done_as(workspaces, &workspace, &editor, &lease(&first)).await;
+    assert_eq!(
+        ask(first.clone(), None).await,
+        Answer::Done(serde_json::json!("migrated")),
+        "and once it ran, no device runs it again: each is given its answer"
+    );
+
+    // This device opened first for the second one: it runs it, and only once.
+    let second = format!("{app}/notebook-2#migrate");
+    assert_eq!(ask(second.clone(), None).await, Answer::Take);
+    assert_eq!(
+        ask(second.clone(), None).await,
+        Answer::Take,
+        "asking again while it runs keeps the turn"
+    );
+    let answer = serde_json::json!({ "notes": 3 });
+    let kept = ask(second.clone(), Some(answer.clone())).await;
+    assert_eq!(kept, Answer::Done(answer.clone()));
+    assert_eq!(ask(second.clone(), None).await, Answer::Done(answer));
+
+    // The editor's device took the third and went quiet mid-way: this device waits out its claim
+    // and then runs it, once.
+    let third = format!("{app}/notebook-3#migrate");
+    claim_as(workspaces, &workspace, &editor, &lease(&third)).await;
+    assert_eq!(ask(third.clone(), None).await, Answer::Later);
+    let wall = tilo_clock::testing::SharedWall::default();
+    wall.pin(tilo_clock::wall() + std::time::Duration::from_secs(62));
+    wall.follow();
+    let taken = ask(third.clone(), None).await;
+    let kept = ask(third.clone(), Some(serde_json::Value::Null)).await;
+    let again = ask(third.clone(), None).await;
+    wall.release();
+    assert_eq!(taken, Answer::Take, "the quiet device's turn is taken over");
+    assert_eq!(kept, Answer::Done(serde_json::Value::Null));
+    assert_eq!(again, kept);
+
+    // An app places only its own actions.
+    let refused = workspaces
+        .own_resource_command(
+            &workspace,
+            "so.tilo.lang.desk",
+            Command::Turn {
+                address: first,
+                inputs: serde_json::Value::Null,
+                answer: None,
+            },
+        )
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    host.shutdown().await;
+}
+
+/// The same inputs give a once-only action the same lease however they were written: in any key
+/// order, a whole number with or without a fraction.
+#[test]
+fn the_same_inputs_written_differently_lease_one_turn() {
+    let once = |inputs: &str| {
+        Turn::Once {
+            address: "so.tilo.notes/notebook-1#migrate".to_owned(),
+            inputs: serde_json::from_str(inputs).unwrap(),
+        }
+        .lease()
+    };
+    assert_eq!(
+        once(r#"{"run": 1, "of": {"b": [2.0], "a": "x"}}"#),
+        once(r#"{"of": {"a": "x", "b": [2]}, "run": 1.0}"#)
+    );
+    assert_ne!(once(r#"{"run": 1}"#), once(r#"{"run": 2}"#));
+    assert_ne!(once(r#"{"run": 1.5}"#), once(r#"{"run": 1}"#));
 }

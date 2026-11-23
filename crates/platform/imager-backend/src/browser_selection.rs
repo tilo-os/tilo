@@ -4,42 +4,8 @@ use std::sync::Arc;
 
 // Portable selection metadata shared with presentation clients; native source, activation and
 // completion authority stays in the backend actors.
-pub use browser_continuity::{PROFILES_DIRECTORY, Plan, Profile, Provider, sessions::Service};
-
-#[cfg(unix)]
 pub use browser_continuity::snapshot::{CapturedFile, Snapshot};
-#[cfg(not(unix))]
-pub use unsupported_capture::{CapturedFile, Snapshot};
-#[cfg(not(unix))]
-mod unsupported_capture {
-    pub struct CapturedFile {
-        name: &'static str,
-        bytes: Vec<u8>,
-    }
-    impl CapturedFile {
-        pub fn name(&self) -> &'static str {
-            self.name
-        }
-        pub fn bytes(&self) -> &[u8] {
-            &self.bytes
-        }
-    }
-    pub struct Snapshot {
-        files: Vec<CapturedFile>,
-        fingerprint: [u8; 32],
-    }
-    impl Snapshot {
-        pub fn files(&self) -> &[CapturedFile] {
-            &self.files
-        }
-        pub fn fingerprint(&self) -> [u8; 32] {
-            self.fingerprint
-        }
-        pub fn bytes(&self) -> u64 {
-            self.files.iter().map(|file| file.bytes.len() as u64).sum()
-        }
-    }
-}
+pub use browser_continuity::{PROFILES_DIRECTORY, Plan, Profile, Provider, sessions::Service};
 
 use crate::account_sources::Candidate;
 use crate::browser_inventory::{ProfileInventory, Report};
@@ -146,23 +112,14 @@ impl Selection {
                 inventory.push(item);
             } else {
                 inventory_incomplete = true;
-                let mut item = ProfileInventory::new(
+                inventory.push(ProfileInventory::unavailable(
                     source.profile.id.clone(),
                     source.browser,
                     source.installation,
                     source.browser.label().to_owned(),
                     source.label.clone(),
-                );
-                item.capabilities.bookmarks = crate::browser_inventory::Capability::Unsupported(
-                    "browser-inventory-unavailable",
-                );
-                item.capabilities.history = crate::browser_inventory::Capability::Unsupported(
-                    "browser-inventory-unavailable",
-                );
-                item.exportable = source.exportable;
-                item.bookmarks = crate::browser_inventory::Measure::Unknown;
-                item.history = crate::browser_inventory::Measure::Unknown;
-                inventory.push(item);
+                    source.exportable,
+                ));
             }
         }
         let choices = profiles
@@ -378,13 +335,6 @@ impl Selection {
 }
 
 #[cfg(unix)]
-pub(crate) fn check_cancel(cancel: &std::sync::atomic::AtomicBool) -> io::Result<()> {
-    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-        Err(io::Error::new(io::ErrorKind::Interrupted, "copy cancelled"))
-    } else {
-        Ok(())
-    }
-}
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {

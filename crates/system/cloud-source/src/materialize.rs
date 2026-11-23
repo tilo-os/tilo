@@ -294,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn drawings_use_advertised_svg_or_pdf_but_forms_and_sites_do_not() {
+    fn preferred_export_offers_only_supported_materialisations() {
         let mut drawing = NativeDocument {
             mime: "application/vnd.google-apps.drawing".into(),
             link_extension: "gdraw".into(),
@@ -320,10 +320,7 @@ mod tests {
                 Err(Error::Unsupported(_))
             ));
         }
-    }
 
-    #[test]
-    fn selects_only_advertised_office_mime_and_canonical_extension() {
         for (kind, subtype, extension) in [
             ("document", "wordprocessingml.document", "docx"),
             ("spreadsheet", "spreadsheetml.sheet", "xlsx"),

@@ -64,7 +64,12 @@ const WINDOWS: &[Window] = &[
         german: Some(("de-DE", catalogue!("/../desktop-search/locales/de-DE.ftl"))),
     },
     Window {
-        name: "the desktop surface's menus",
+        name: "the desktop's menus",
+        source: catalogue!("/../core/locales/en-US.ftl"),
+        german: Some(("de-DE", catalogue!("/../core/locales/de-DE.ftl"))),
+    },
+    Window {
+        name: "another device's window",
         source: catalogue!("/../desktop-surface/locales/en-US.ftl"),
         german: Some(("de-DE", catalogue!("/../desktop-surface/locales/de-DE.ftl"))),
     },

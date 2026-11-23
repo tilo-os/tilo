@@ -57,56 +57,26 @@ pub fn render(segments: &[Segment]) -> String {
 
 const MAX_HREF_BYTES: usize = 512;
 
-fn delimiters(mark: &MarkSpan) -> Option<(&'static str, String)> {
-    let on = !matches!(mark.value, MarkValue::Bool(false));
-    match (mark.name.as_str(), &mark.value) {
-        ("strong", _) if on => Some(("**", "**".into())),
-        ("em", _) if on => Some(("*", "*".into())),
-        ("strike", _) if on => Some(("~~", "~~".into())),
-        ("font" | "fontFamily", MarkValue::Str(font)) if font == "mono" => Some(("`", "`".into())),
-        ("link", MarkValue::Str(href)) if !href.is_empty() && href.len() <= MAX_HREF_BYTES => {
-            Some(("[", format!("]({href})")))
-        }
-        _ => None,
-    }
-}
-
-/// A block's text with its inline marks as Markdown. The delimiters are not part of
-/// the text: character offsets count the text alone.
+/// A block's text with its inline marks as Markdown, by the one inline dialect every read and
+/// write of a document uses. The delimiters are not part of the text: character offsets count
+/// the text alone. A link with no address, or one longer than a page's text can cost, stays its
+/// words.
 fn inline(segment: &Segment) -> String {
-    let mut spans: Vec<(usize, usize, &'static str, String)> = segment
+    let marks: Vec<MarkSpan> = segment
         .marks
         .iter()
-        .filter(|mark| mark.start < mark.end)
-        .filter_map(|mark| {
-            delimiters(mark).map(|(open, close)| (mark.start, mark.end, open, close))
+        .filter(|mark| {
+            mark.name != "link"
+                || matches!(&mark.value, MarkValue::Str(href)
+                    if !href.is_empty() && href.len() <= MAX_HREF_BYTES)
         })
+        .cloned()
         .collect();
-    spans.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
-    let mut text = String::with_capacity(segment.text.len());
-    let mut open: Vec<usize> = Vec::new();
-    let mut next = 0;
-    let mut chars = segment.text.chars();
-    let mut at = 0;
-    loop {
-        while let Some(depth) = open
-            .iter()
-            .rposition(|span| spans.get(*span).is_some_and(|(_, end, _, _)| *end <= at))
-        {
-            let span = open.remove(depth);
-            if let Some((_, _, _, close)) = spans.get(span) {
-                text.push_str(close);
-            }
-        }
-        let Some(c) = chars.next() else { break };
-        while let Some((_, _, opening, _)) = spans.get(next).filter(|span| span.0 <= at) {
-            text.push_str(opening);
-            open.push(next);
-            next += 1;
-        }
-        text.push(if c == '\n' { '↵' } else { c });
-        at += 1;
-    }
+    let mut text = tilo_doc_codecs::inline::render(
+        &segment.text,
+        &marks,
+        tilo_doc_codecs::inline::Style::READ,
+    );
     if !segment.complete {
         text.push('…');
     }

@@ -651,8 +651,8 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let page = Browser::open_at(&server, &browser, &server_device, &workspace).await;
-    let keeper = root.verifying_key().to_bytes();
-    let person = hex::encode(keeper);
+    let acts_for = root.verifying_key().to_bytes();
+    let person = hex::encode(acts_for);
     furnished(&page, &workspaces, &workspace, &person).await;
 
     // The person's own provider. The first call of a turn costs the look-round's whole day.
@@ -668,7 +668,7 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
                 name: "Google",
                 protocol: ProviderProtocol::OpenAiCompatible,
                 endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
-                key: Some("sk-the-keepers-own"),
+                key: Some("sk-the-persons-own"),
                 models: &["gemini-main"],
             },
             true,
@@ -677,7 +677,7 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
         .unwrap();
 
     // What the server's events hand a look's instruction to, and the look in front of it.
-    let me = Caller::authenticated(keeper, browser.cert.device_public_key)
+    let me = Caller::authenticated(acts_for, browser.cert.device_public_key)
         .in_workspace(workspace.clone());
     let hands = Arc::new(HandsOver {
         steps: assistant::steps_starting_turns(

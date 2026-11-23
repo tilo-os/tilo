@@ -181,29 +181,24 @@ tilo_test_env::scenario! {
     /// Each phase was a test of its own and builds its own fixture.
     fn attached_menus_place_what_a_view_and_the_system_offer;
 
-    phase a_views_menu_comes_first_and_the_system_adds_what_it_did_not_place;
+    phase the_views_menu_comes_first_and_the_system_adds_only_what_it_did_not_place;
     {
         let queue = crate::Intents::default();
+
+        // The view's order first; Pin is placed already, so only Delete is added
+        // after a rule.
         let (attached, offered) = message(&queue);
-        let menu = item_menu(attached.menu, offered);
         assert_eq!(
-            labels(&menu),
+            labels(&item_menu(attached.menu, offered)),
             ["emoji 👍🎉", "—", "Reply", "Pin", "—", "Delete"],
             "the view's order first; Pin is placed already, so only Delete is added after a rule"
         );
-    }
 
-    phase every_offered_action_stays_reachable_when_the_view_places_none;
-    {
-        let queue = crate::Intents::default();
+        // Every offered action stays reachable when the view places none.
         let (_, offered) = message(&queue);
-        let menu = item_menu(Vec::new(), offered);
-        assert_eq!(labels(&menu), ["Pin", "Delete"], "no leading rule");
-    }
+        assert_eq!(labels(&item_menu(Vec::new(), offered)), ["Pin", "Delete"], "no leading rule");
 
-    phase a_view_that_places_every_action_gets_nothing_added;
-    {
-        let queue = crate::Intents::default();
+        // A view that places every action gets nothing added.
         let placed = vec![
             MenuPart::Item(MenuItemProps {
                 label: "Pin".into(),
@@ -218,11 +213,8 @@ tilo_test_env::scenario! {
         ];
         let (_, offered) = message(&queue);
         assert_eq!(labels(&item_menu(placed, offered)), ["Pin", "Delete"]);
-    }
 
-    phase the_same_action_on_another_resource_is_not_placed;
-    {
-        let queue = crate::Intents::default();
+        // The same action on another resource is not placed.
         let placed = vec![MenuPart::Item(MenuItemProps {
             label: "Pin".into(),
             choose: bound("m2", "pin"),
@@ -233,6 +225,18 @@ tilo_test_env::scenario! {
             labels(&item_menu(placed, offered)),
             ["Pin", "—", "Pin", "Delete"]
         );
+
+        // A command the view runs itself is not added again by its name.
+        let (_, offered) = message(&queue);
+        let own = |label: &str| {
+            MenuPart::Item(MenuItemProps {
+                label: label.into(),
+                choose: Event::View(crate::component::Intent::new(&queue, label, "choose")),
+                ..MenuItemProps::default()
+            })
+        };
+        let menu = item_menu(vec![own("Pin")], offered);
+        assert_eq!(labels(&menu), ["Pin", "—", "Delete"], "Pin stands once");
     }
 
     phase a_menus_entries_drop_rules_at_either_end_and_doubled;
@@ -334,20 +338,5 @@ tilo_test_env::scenario! {
             Some("Today"),
             "a group of one command stays the command"
         );
-    }
-
-    phase a_command_the_view_runs_itself_is_not_added_again_by_its_name;
-    {
-        let queue = crate::Intents::default();
-        let (_, offered) = message(&queue);
-        let own = |label: &str| {
-            MenuPart::Item(MenuItemProps {
-                label: label.into(),
-                choose: Event::View(crate::component::Intent::new(&queue, label, "choose")),
-                ..MenuItemProps::default()
-            })
-        };
-        let menu = item_menu(vec![own("Pin")], offered);
-        assert_eq!(labels(&menu), ["Pin", "—", "Delete"], "Pin stands once");
     }
 }

@@ -182,12 +182,12 @@ def session(out: dict) -> None:
             line.startswith("notes ") and line.endswith("running") for line in text.splitlines()))
         out["apps_text"] = text_of(out["list_apps"])
         # A new note through the action Notes publishes, then found by its title. Notes
-        # lists as running before its directory carries its actions: wait for new-note,
+        # lists as running before its directory carries its actions: wait for new_note,
         # as an agent reading `tilo_ls notes` would.
         out["notes_listing"] = tool_until(client, "tilo_ls", {"path": "notes"},
-                                          lambda text: "#new-note" in text)
-        out["new_note_params"] = client.tool("tilo_ls", {"path": "notes#new-note"})
-        out["new_note"] = client.tool("tilo_do", {"path": "notes#new-note", "args": {"title": TITLE}})
+                                          lambda text: "#new_note" in text)
+        out["new_note_params"] = client.tool("tilo_ls", {"path": "notes#new_note"})
+        out["new_note"] = client.tool("tilo_do", {"path": "notes#new_note", "args": {"title": TITLE}})
         out["found_note"] = tool_until(client, "tilo_find", {"query": TITLE, "app": "notes"},
                                        lambda text: TITLE in text)
         # A refusal must reach the model as isError, carrying the reason.

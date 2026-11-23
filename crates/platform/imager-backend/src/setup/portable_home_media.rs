@@ -9,11 +9,10 @@ use super::{
 };
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, OpenOptions, OpenOptionsExt};
-use sha2::{Digest, Sha256};
 use std::{
     ffi::CString,
     fs::File,
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Read, Write},
     os::fd::AsRawFd,
     path::Path,
     sync::{
@@ -194,13 +193,6 @@ impl HomeSource {
         cancel: &AtomicBool,
     ) -> io::Result<Arc<Self>> {
         Self::review_media_preparation(home, exclusions, cancel, None)
-    }
-    pub fn review_media_with_working_storage(
-        home: &Path,
-        cancel: &AtomicBool,
-        storage: &dyn Fn() -> io::Result<Arc<super::migration_review::InventoryScratch>>,
-    ) -> io::Result<Arc<Self>> {
-        Self::review_media_preparation(home, &[], cancel, Some(storage))
     }
     /// Refuses unsafe grants, unavailable working storage and exclusions outside the Home.
     pub fn review_selected_media_with_working_storage(
@@ -1088,14 +1080,8 @@ fn filename(operation: &str) -> io::Result<String> {
     Expectation::filename(operation)
 }
 fn capacity(file: &File) -> io::Result<u64> {
-    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: live fd and writable complete native stat storage.
-    if unsafe { libc::fstatvfs(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: successful fstatvfs initialized storage.
-    let stat = unsafe { stat.assume_init() };
-    if stat.f_flag & libc::ST_RDONLY != 0 {
+    let stat = rustix::fs::fstatvfs(file)?;
+    if stat.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY) {
         return Err(changed("Granted media filesystem is readonly"));
     }
     let available = stat
@@ -1118,22 +1104,10 @@ fn capacity(file: &File) -> io::Result<u64> {
     })
 }
 fn ciphertext_digest(file: &mut File, cancel: &AtomicBool) -> io::Result<[u8; 32]> {
-    file.seek(SeekFrom::Start(0))?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0u8; 8192];
-    loop {
-        check_cancel(cancel)?;
-        let count = file.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        digest.update(
-            buffer
-                .get(..count)
-                .ok_or_else(|| changed("Invalid digest bound"))?,
-        );
-    }
-    Ok(digest.finalize().into())
+    let len = file.metadata()?.len();
+    crate::setup::file_digest::exact(file, len, Some(cancel), || {
+        changed("Ciphertext staging changed during hashing")
+    })
 }
 struct Temporary {
     parent: Arc<PinnedDirectory>,

@@ -45,16 +45,11 @@ pub struct AppActionConsentRequest {
     pub agent_session: Option<String>,
     /// The application whose action it wants to use.
     pub target_app: String,
-    /// The resource of `target_app` that publishes the action, as a grant
-    /// scopes it.
-    pub resource: String,
-    /// The action's id on `resource`, as a grant scopes it.
-    pub action: String,
     pub resource_label: String,
     pub action_label: String,
+    /// What the action does, as the catalogue that offers it says.
+    pub kind: tilo_actions::ActionKind,
     pub risk: tilo_actions::RiskLevel,
-    /// Whether each use still asks for confirmation, whatever is granted.
-    pub needs_confirmation: bool,
     /// The person confirms this one invocation, which `app_id` (an agent or
     /// an application) makes for them, rather than granting anything.
     pub confirming: bool,

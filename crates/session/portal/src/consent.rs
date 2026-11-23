@@ -3,7 +3,7 @@
 //!
 //! The person answers with one of the durations every prompt offers
 //! ([`Lifetime::offered`]). An answer that outlasts the session is kept in the
-//! person's own store, naming this device ([`DeviceGrants`]): it follows them
+//! person's own workspace, naming this device ([`DeviceGrants`]): it follows them
 //! to their other devices, where they can take it back, and answers on this
 //! device alone. A grant some member of a shared workspace recorded for an app
 //! never answers for them.
@@ -134,12 +134,7 @@ impl Consents {
     /// Take back what `app_id` was answered of `device` on the device whose key
     /// is `on` (in hex); `false` when it was answered nothing.
     pub fn forget(&self, on: &str, app_id: &str, device: DeviceCap) -> bool {
-        self.grants
-            .revoke(on, app_id, device)
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "the device answer was not taken back");
-                false
-            })
+        self.grants.revoke(on, app_id, device)
     }
 
     /// Decide whether `caller` may use `device`, which `question` asks
@@ -182,12 +177,8 @@ impl Consents {
             Lifetime::Until(_) | Lifetime::UntilRevoked if !may_remember => Lifetime::Once,
             lifetime => lifetime,
         };
-        if let Err(error) =
-            self.grants
-                .answer(app_id, device, tilo_action_policy::Answer::Allow, lifetime)
-        {
-            tracing::warn!(%error, "the device answer was not kept");
-        }
+        self.grants
+            .answer(app_id, device, tilo_action_policy::Answer::Allow, lifetime);
     }
 }
 
@@ -321,15 +312,12 @@ mod tests {
     async fn a_workspace_refusal_refuses_without_asking() {
         let questions = Questions::new();
         let consents = consents(questions.clone());
-        consents
-            .grants()
-            .answer(
-                "org.example.Recorder",
-                DeviceCap::Screen,
-                tilo_action_policy::Answer::Allow,
-                Lifetime::Session,
-            )
-            .unwrap();
+        consents.grants().answer(
+            "org.example.Recorder",
+            DeviceCap::Screen,
+            tilo_action_policy::Answer::Allow,
+            Lifetime::Session,
+        );
         consents.grants().refuse_in(
             [
                 (

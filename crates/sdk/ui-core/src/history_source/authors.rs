@@ -731,6 +731,8 @@ pub fn actor_label(actor: &tilo_actions::Actor) -> String {
             app.as_str(),
             crate::i18n::I18nManager::window_locale().as_str(),
         ),
+        // Someone with no identity in the workspace has no name in it.
+        Actor::Visitor(_) => crate::i18n::I18nManager::lookup_plain("history-author-visitor"),
     }
 }
 

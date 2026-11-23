@@ -1,6 +1,6 @@
 //! An agent a workspace made to run on its server works around the clock there: a person gives it
 //! an issue, and the server's agent works on it through the agent tools, as the person's agent, then
-//! answers in the issue's thread. Its keeper's daily limit stops it before it spends past it.
+//! answers in the issue's thread. Its person's daily limit stops it before it spends past it.
 use super::*;
 use std::sync::Mutex;
 use tilo_model_gateway::host_backend::protocol::{
@@ -127,7 +127,7 @@ pub(super) async fn make_agent(
     page.peer
         .write(route, &collab_types::DocumentMutation::Snapshot(bytes))
         .unwrap();
-    let deadline = tilo_test_env::hang_deadline();
+    let deadline = crate::harness::page::write_deadline();
     while workspaces
         .resource_document(workspace, ui::tilo_workspace_agent::OWNER, &record)
         .await
@@ -137,7 +137,8 @@ pub(super) async fn make_agent(
     {
         assert!(
             Instant::now() < deadline,
-            "the host never holds the agents record"
+            "the host never holds the agents record the page wrote: not within {:?}",
+            crate::harness::page::BARRIER_BOUND
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -297,8 +298,8 @@ async fn an_agent_on_the_host_works_with_its_workspaces_own_model() {
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let page = Browser::open_at(&server, &browser, &host, &workspace).await;
-    let keeper = root.verifying_key().to_bytes();
-    let person = hex::encode(keeper);
+    let acts_for = root.verifying_key().to_bytes();
+    let person = hex::encode(acts_for);
     let agents_record = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
     make_agent(&page, &workspaces, &workspace, &person, None).await;
     let tracker_id = file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
@@ -316,7 +317,7 @@ async fn an_agent_on_the_host_works_with_its_workspaces_own_model() {
                 name: "Google",
                 protocol: ProviderProtocol::OpenAiCompatible,
                 endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
-                key: Some("sk-the-keepers-own"),
+                key: Some("sk-the-persons-own"),
                 models: &["gemini-main"],
             },
             true,
@@ -341,13 +342,13 @@ async fn an_agent_on_the_host_works_with_its_workspaces_own_model() {
 
     assert!(
         unasked.lock().unwrap().is_empty(),
-        "the host's own model is not asked for a keeper who linked theirs"
+        "the host's own model is not asked for a person who linked theirs"
     );
     let asked = theirs.asked();
     assert_eq!(asked.len(), 2, "one call to look, one to answer");
     for call in &asked {
         assert_eq!(call.model, "gemini-main");
-        assert_eq!(call.key.as_deref(), Some("sk-the-keepers-own"));
+        assert_eq!(call.key.as_deref(), Some("sk-the-persons-own"));
     }
     assert!(
         asked[0]
@@ -370,7 +371,7 @@ async fn an_agent_on_the_host_works_with_its_workspaces_own_model() {
         "{said:?}"
     );
 
-    // What the keeper's provider charged is what the agent's day counts.
+    // What the person's provider charged is what the agent's day counts.
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let bytes = workspaces
@@ -400,11 +401,11 @@ async fn an_agent_on_the_host_works_with_its_workspaces_own_model() {
     }
 }
 
-/// A keeper who linked a provider is never answered by another model: one whose key is missing is
-/// told so, where they asked, and the server's own model stays unasked. A keeper who linked nothing
+/// A person who linked a provider is never answered by another model: one whose key is missing is
+/// told so, where they asked, and the server's own model stays unasked. A person who linked nothing
 /// on a server that runs no model is told what to link.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked() {
+async fn a_person_whose_agent_model_cannot_answer_is_told_and_no_other_model_is_asked() {
     use tilo_server::workspaces::person_model::ProviderProtocol;
     use tilo_server::workspaces::person_model::scripted::Linking;
 
@@ -423,8 +424,8 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let page = Browser::open_at(&server, &browser, &host, &workspace).await;
-    let keeper = root.verifying_key().to_bytes();
-    let person = hex::encode(keeper);
+    let acts_for = root.verifying_key().to_bytes();
+    let person = hex::encode(acts_for);
     make_agent(&page, &workspaces, &workspace, &person, None).await;
     let tracker_id = file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
 
@@ -489,7 +490,7 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
         WorkspaceId::parse(&workspace).unwrap(),
     );
     let asking =
-        tilo_actions::remote::Caller::authenticated(keeper, browser.cert.device_public_key)
+        tilo_actions::remote::Caller::authenticated(acts_for, browser.cert.device_public_key)
             .in_workspace(&workspace);
     let route = DocumentRoute {
         app_id: TASKS.into(),
@@ -627,7 +628,7 @@ async fn an_agent_on_the_host_works_on_the_issue_a_person_gives_it() {
         "answered once"
     );
 
-    // What its turns cost is counted on its record, for its keeper.
+    // What its turns cost is counted on its record, for its person.
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let bytes = workspaces
@@ -662,7 +663,7 @@ async fn an_agent_on_the_host_works_on_the_issue_a_person_gives_it() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_agent_on_the_host_stops_at_its_keepers_daily_limit() {
+async fn an_agent_on_the_host_stops_at_its_persons_daily_limit() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
@@ -1280,8 +1281,8 @@ async fn a_members_own_agent_on_the_host_works_for_them() {
         .await;
     let mut page =
         super::resource_support::open_admitted_peer(&server, &member_page, &host, &workspace).await;
-    let keeper = member.verifying_key().to_bytes();
-    let person = hex::encode(keeper);
+    let acts_for = member.verifying_key().to_bytes();
+    let person = hex::encode(acts_for);
     // The member makes an agent of their own, kept by them.
     make_agent(&page, &workspaces, &workspace, &person, None).await;
 
@@ -1361,7 +1362,7 @@ async fn a_members_own_agent_on_the_host_works_for_them() {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         if link
-            .roster_session_device(&server.roster.sessions, workspace_id, SCOUT, &keeper)
+            .roster_session_device(&server.roster.sessions, workspace_id, SCOUT, &acts_for)
             .await
             .is_some()
         {
@@ -1435,4 +1436,259 @@ async fn a_members_own_agent_on_the_host_works_for_them() {
         "the member's agent answers in their issue"
     );
     drop(approver);
+}
+
+/// The engines' recorded result pages, served to a turn's web tools from this machine.
+const BRAVE_RESULTS: &str =
+    include_str!("../../../../platform/tilo-web-search/tests/fixtures/brave.html");
+const BING_RESULTS: &str =
+    include_str!("../../../../platform/tilo-web-search/tests/fixtures/bing.html");
+
+/// Look `query` up with the turn's own `search_web`, then answer.
+fn searches_then_answers(query: &'static str, asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model {
+    Arc::new(move || {
+        Some(Box::new(Scripted {
+            answers: vec![
+                answer(
+                    vec![Content::ToolCall(ToolCall {
+                        id: "call-1".into(),
+                        name: "search_web".into(),
+                        input: serde_json::json!({ "query": query }),
+                        extra_content: None,
+                    })],
+                    StopReason::ToolCalls,
+                    0,
+                ),
+                answer(
+                    vec![Content::Text {
+                        text: format!("I looked up {query} on the web."),
+                    }],
+                    StopReason::EndTurn,
+                    0,
+                ),
+            ],
+            asked: Arc::clone(&asked),
+        }) as Box<dyn tilo_agent_session::model::PlanTurns>)
+    })
+}
+
+/// A turn's own web tools search the public web: the model calls `search_web`, the engines are
+/// asked at once and their merged results are what it read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_on_the_host_looks_things_up_on_the_web() {
+    use tilo_workspace_service::agents::Engine;
+    use tilo_workspace_service::agents::fixtures::{FixtureServer, Route};
+
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let server = crate::harness::hosted::start(
+        &root,
+        &host,
+        state.path(),
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
+    )
+    .await;
+    let actions = server.roster.actions.clone();
+    let workspaces = server.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let page = Browser::open_at(&server, &browser, &host, &workspace).await;
+    let keeper = root.verifying_key().to_bytes();
+    let person = hex::encode(keeper);
+    make_agent(&page, &workspaces, &workspace, &person, None).await;
+    let tracker_id = file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
+
+    let query = "rust borrow checker";
+    let fixtures = FixtureServer::serve(vec![
+        Route::new("/brave", "text/html", BRAVE_RESULTS),
+        Route::new("/bing", "text/html", BING_RESULTS),
+    ]);
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = server
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(searches_then_answers(query, Arc::clone(&asked)))
+        .web_looking_at(vec![
+            (Engine::Brave, fixtures.at("/brave")),
+            (Engine::Bing, fixtures.at("/bing")),
+        ]);
+    let turns = agents.turns(&workspace).await.unwrap();
+    assert_eq!(turns.len(), 1, "{turns:?}");
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        agents.answer(&workspace, &turns[0]),
+    )
+    .await
+    .expect("the turn ends")
+    .unwrap();
+
+    let (calls, results): (usize, Vec<String>) = {
+        let asked = asked.lock().unwrap();
+        let results = asked[1]
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|content| match content {
+                Content::ToolResult(result) => Some(result.content.clone()),
+                _ => None,
+            })
+            .collect();
+        (asked.len(), results)
+    };
+    assert_eq!(calls, 2, "one query, one answer");
+    assert_eq!(results.len(), 1, "the search answered");
+    assert!(
+        results[0].contains("\"results\"") && results[0].contains("Rust Programming Language"),
+        "the engines' merged results reached the model: {}",
+        results[0]
+    );
+    let seen = fixtures.requests();
+    assert!(
+        seen.iter()
+            .any(|request| request.parameter("q").as_deref() == Some(query)),
+        "the engines were asked the query: {seen:?}"
+    );
+
+    let answered = tracker(&workspaces, &workspace, &tracker_id).await;
+    assert!(
+        answered
+            .issues
+            .values()
+            .flat_map(|issue| issue.comments.values())
+            .any(
+                |message| message.author == Some(ui::tilo_resource::MemberId::agent(SCOUT))
+                    && message.text.contains("I looked up")
+            ),
+        "its answer is in the issue"
+    );
+}
+
+/// A turn on a model whose descriptor knows a small context keeps its conversation within it:
+/// the long answer of an earlier tool gives way before the next ask.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_sizes_its_conversation_to_a_small_models_context() {
+    use tilo_server::workspaces::person_model::ProviderProtocol;
+    use tilo_server::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
+    use tilo_workspace_service::agents::fixtures::{FixtureServer, Route};
+
+    // A page far longer than the model's context holds, marked so the test can tell whether a
+    // later ask still carries it.
+    const NEEDLE: &str = "UNIQUE-PAGE-NEEDLE";
+
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let server = crate::harness::hosted::start(
+        &root,
+        &host,
+        state.path(),
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
+    )
+    .await;
+    let actions = server.roster.actions.clone();
+    let workspaces = server.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let page = Browser::open_at(&server, &browser, &host, &workspace).await;
+    let keeper = root.verifying_key().to_bytes();
+    let person = hex::encode(keeper);
+    make_agent(&page, &workspaces, &workspace, &person, None).await;
+    let tracker_id = file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
+
+    let body = format!(
+        "<!doctype html><html><head><title>Long</title></head><body><main><p>{NEEDLE} {}</p>\
+         </main></body></html>",
+        "filler ".repeat(4_000)
+    );
+    let fixtures = FixtureServer::serve(vec![Route::new("/long", "text/html", body)]);
+    let url = fixtures.at("/long");
+    let theirs = ScriptedProvider::answering([
+        Reply::tool_call(
+            "call-1",
+            "read_page",
+            serde_json::json!({"url": url, "max_chars": 20_000}),
+        ),
+        Reply::tool_call("call-2", "tilo_ls", serde_json::json!({})),
+        Reply::text("I read the page."),
+    ]);
+    workspaces.answer_models_with(theirs.clone());
+    let provider = workspaces
+        .link_model_for(
+            &workspace,
+            &Linking {
+                name: "Local",
+                protocol: ProviderProtocol::OpenAiCompatible,
+                endpoint: "https://api.openai.com/v1",
+                key: Some("sk-the-keepers-own"),
+                models: &["tiny-context"],
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    // A window of 9000 tokens, 8192 of them its answers: the conversation keeps ~2.4k characters.
+    workspaces
+        .set_model_context_window(&workspace, &provider, "tiny-context", 9_000)
+        .unwrap();
+
+    let unasked = Arc::new(Mutex::new(Vec::new()));
+    let agents = server
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(never_asked(Arc::clone(&unasked)))
+        .web_looking_at(Vec::new());
+    let turns = agents.turns(&workspace).await.unwrap();
+    assert_eq!(turns.len(), 1, "{turns:?}");
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        agents.answer(&workspace, &turns[0]),
+    )
+    .await
+    .expect("the turn ends")
+    .unwrap();
+
+    assert!(
+        unasked.lock().unwrap().is_empty(),
+        "the linked model answered"
+    );
+    let calls = theirs.asked();
+    assert_eq!(calls.len(), 3, "read, look, answer");
+    let tool_answers = |call: &tilo_server::workspaces::person_model::scripted::Asked| {
+        call.request
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|content| match content {
+                Content::ToolResult(result) => Some(result.content.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let second = tool_answers(&calls[1]);
+    assert!(
+        second.iter().any(|answer| answer.contains(NEEDLE)),
+        "the page was read before the next ask: {second:?}"
+    );
+    let third = tool_answers(&calls[2]);
+    assert!(
+        !third.iter().any(|answer| answer.contains(NEEDLE)),
+        "a long earlier answer gave way: {third:?}"
+    );
+    assert!(
+        third.iter().any(|answer| answer.contains("left out")),
+        "what was left out says so: {third:?}"
+    );
+    let answered = tracker(&workspaces, &workspace, &tracker_id).await;
+    assert!(
+        answered
+            .issues
+            .values()
+            .flat_map(|issue| issue.comments.values())
+            .any(
+                |message| message.author == Some(ui::tilo_resource::MemberId::agent(SCOUT))
+                    && message.text.contains("I read the page")
+            ),
+        "its answer is in the issue"
+    );
 }

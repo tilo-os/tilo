@@ -1,32 +1,7 @@
 //! Native persistence and volume identity for durable copy receipts.
-use serde::{Deserialize, Serialize};
 use std::{fs::File, io};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Identity {
-    volume: Vec<u8>,
-    inode: u64,
-}
-
-impl Identity {
-    #[cfg(target_os = "linux")]
-    pub fn binds_filesystem(&self, filesystem_uuid: &str) -> bool {
-        let durable = (self.volume.len() == 17 && self.volume.first() == Some(&1))
-            || (self.volume.len() == 41 && self.volume.first() == Some(&3));
-        durable
-            && uuid::Uuid::parse_str(filesystem_uuid)
-                .is_ok_and(|id| self.volume.get(1..17) == Some(id.as_bytes().as_slice()))
-    }
-
-    pub fn binds_btrfs(&self, filesystem_uuid: &str, inode: u64) -> bool {
-        self.inode == inode
-            && self.volume.len() == 41
-            && self.volume.first() == Some(&3)
-            && uuid::Uuid::parse_str(filesystem_uuid)
-                .is_ok_and(|id| self.volume.get(1..17) == Some(id.as_bytes().as_slice()))
-    }
-}
+pub use staging_handoff_model::migration::Identity;
 
 pub fn supported() -> io::Result<()> {
     if cfg!(any(target_os = "macos", target_os = "linux")) {
@@ -43,10 +18,7 @@ pub fn supported() -> io::Result<()> {
 pub fn identity(file: &File) -> io::Result<Identity> {
     use cap_fs_ext::MetadataExt;
     let metadata = cap_primitives::fs::Metadata::from_file(file)?;
-    Ok(Identity {
-        volume: volume(file)?,
-        inode: metadata.ino(),
-    })
+    Ok(Identity::new(volume(file)?, metadata.ino()))
 }
 
 /// A literal link uses its containing volume identity and its own inode, inspected without opening
@@ -59,10 +31,10 @@ pub fn link_identity(directory: &File, name: &std::ffi::OsStr) -> io::Result<Ide
     if !metadata.is_symlink() {
         return Err(io::Error::other("Expected a literal symbolic link."));
     }
-    Ok(Identity {
-        volume: volume(&readable_directory(directory)?)?,
-        inode: metadata.ino(),
-    })
+    Ok(Identity::new(
+        volume(&readable_directory(directory)?)?,
+        metadata.ino(),
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -234,6 +206,13 @@ pub fn sync_directory(file: &File) -> io::Result<()> {
 
 pub use migration_sources::pinned::readable_directory;
 
+/// The persistent volume identity of a pinned directory itself.
+pub fn directory_identity(
+    directory: &migration_sources::pinned::PinnedDirectory,
+) -> io::Result<Identity> {
+    identity(&readable_directory(&directory.file)?)
+}
+
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod tests {
@@ -243,16 +222,13 @@ mod tests {
     fn malformed_volume_bindings_fail_closed_without_indexing() {
         let uuid = uuid::Uuid::from_u128(17);
         for length in 0..=42 {
-            let value = Identity {
-                volume: vec![0; length],
-                inode: 256,
-            };
+            let value = Identity::new(vec![0; length], 256);
             assert!(!value.binds_filesystem(&uuid.to_string()));
             assert!(!value.binds_btrfs(&uuid.to_string(), 256));
         }
         let mut volume = vec![1];
         volume.extend_from_slice(uuid.as_bytes());
-        let value = Identity { volume, inode: 256 };
+        let value = Identity::new(volume, 256);
         assert!(value.binds_filesystem(&uuid.to_string()));
         assert!(!value.binds_btrfs(&uuid.to_string(), 256));
         assert!(!value.binds_filesystem("not-a-uuid"));

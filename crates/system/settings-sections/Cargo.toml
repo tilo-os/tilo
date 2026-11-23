@@ -20,6 +20,7 @@ serde.workspace = true
 serde_json.workspace = true
 settings-store = { path = "../settings-store", features = ["model"] }
 tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settings", features = ["model"] }
+tilo-app-id.workspace = true
 tilo-locale = { path = "../../platform/tilo-locale" }
 # The shipped wallpapers a wallpaper choice is checked against.
 tilo-wallpapers = { version = "0.1.0", path = "../../platform/tilo-wallpapers" }

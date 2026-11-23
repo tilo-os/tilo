@@ -299,13 +299,11 @@ impl OriginalInventoryGrant {
     }
 }
 fn check_inventory_readonly(file: &File) -> io::Result<()> {
-    let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: retained file descriptor and writable statvfs output storage.
-    if unsafe { libc::fstatvfs(file.as_raw_fd(), status.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: successful fstatvfs initialized the complete structure.
-    if unsafe { status.assume_init() }.f_flag & libc::ST_RDONLY == 0 {
+    let status = rustix::fs::fstatvfs(file)?;
+    if !status
+        .f_flag
+        .contains(rustix::fs::StatVfsMountFlags::RDONLY)
+    {
         return Err(refused("Protected inventory is not kernel read-only"));
     }
     Ok(())

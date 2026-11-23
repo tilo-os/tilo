@@ -234,15 +234,17 @@ async fn moderation_http_is_signed_authorised_and_bounded() {
             &h.owner,
         )
         .unwrap();
+        let decided = client
+            .post(url(h.addr, "/moderation/mutations"))
+            .json(&owner_decision)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(decided.status(), reqwest::StatusCode::OK);
+        let decided: ModerationCase = decided.json().await.unwrap();
         assert_eq!(
-            client
-                .post(url(h.addr, "/moderation/mutations"))
-                .json(&owner_decision)
-                .send()
-                .await
-                .unwrap()
-                .status(),
-            reqwest::StatusCode::OK
+            decided.status,
+            registry_types::ModerationCaseStatus::ClosedNoAction
         );
     }
     {
@@ -988,12 +990,9 @@ async fn package_ids_must_lie_in_a_verified_namespace() {
         .await
         .expect("send");
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
-}
 
-/// An allowlisted publisher whose row names no namespace (a hand-written or pre-namespace
-/// `publishers.toml` row) owns nothing, so it cannot claim Tilo's own `so.tilo.store`.
-#[tokio::test]
-async fn publisher_without_namespace_cannot_add_so_tilo_entry() {
+    // An allowlisted publisher whose row names no namespace (a hand-written or pre-namespace
+    // `publishers.toml` row) owns nothing, so it cannot claim Tilo's own `so.tilo.store`.
     let h = spawn_server(true).await;
     std::fs::write(
         h.storage.publishers_path(),
@@ -1006,7 +1005,6 @@ async fn publisher_without_namespace_cannot_add_so_tilo_entry() {
     let row = h.storage.load_allowlist().unwrap().publishers[0].clone();
     assert!(row.can_add_new);
     assert!(row.namespaces.is_empty());
-
     let client = tilo_net::http::client().build().expect("http client");
     let mut store = sample_entry(&h.publisher, 100);
     store.package_id = "so.tilo.store".into();

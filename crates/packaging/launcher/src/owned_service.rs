@@ -95,7 +95,7 @@ mod delayed_filter;
 pub(crate) mod retained_io;
 mod retained_worker;
 mod workspace;
-pub use retained_worker::{RetainedWorkerConnector, RetainedWorkerProof};
+pub use retained_worker::RetainedWorkerProof;
 pub mod target_projection;
 pub use target_projection::{
     AdmittedTargetFuse, TargetFuseReady, TargetProjectionAdmission, TargetProjectionAuthority,
@@ -722,13 +722,8 @@ impl ServiceEndpoint {
         }
         let held = self.namespace.metadata()?;
         // PID namespace membership belongs to this exact process for its lifetime.
-        let stat = std::fs::read_to_string(format!("/proc/{}/stat", self.init_pid))?;
-        let start_ticks = stat
-            .rsplit_once(") ")
-            .and_then(|(_, fields)| fields.split_whitespace().nth(19))
-            .ok_or(io::ErrorKind::InvalidData)?
-            .parse()
-            .map_err(io::Error::other)?;
+        let start_ticks =
+            tilo_process::start_time(self.init_pid).ok_or(io::ErrorKind::InvalidData)?;
         self.authority.check()?;
         if self.cancellation.is_cancelled() || exited(&self.init)? {
             return Err(io::ErrorKind::Interrupted.into());
@@ -1212,15 +1207,7 @@ pub(crate) fn verify_init(pid: i32, parent: u32) -> io::Result<()> {
     Ok(())
 }
 fn exited(handle: &OwnedFd) -> io::Result<bool> {
-    let mut fd = libc::pollfd {
-        fd: handle.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    if unsafe { libc::poll(&raw mut fd, 1, 0) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(fd.revents & libc::POLLIN != 0)
+    crate::fd::pidfd_exited(handle)
 }
 struct ServiceChild {
     child: Child,

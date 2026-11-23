@@ -199,6 +199,11 @@ fn key_of(v: &Value) -> Result<String, String> {
         Value::Float(f) => Ok(f.to_string()),
         Value::Ref(r) => Ok(r.target.id_string()),
         Value::Actor(p) => Ok(crate::ids::actor_text(p)),
+        // A case is kept by its declaration id, which a rename of the case keeps.
+        Value::Enum(e) if e.fields.is_empty() => Ok(e.variant.clone()),
+        Value::Enum(_) => {
+            Err("a case that carries values cannot be a set element or map key".to_owned())
+        }
         other => Err(format!(
             "a {} cannot be a set element or map key",
             other.kind_name()
@@ -422,24 +427,22 @@ impl Core {
         let fv = match self.store.borrow().read(target, &spec(field)) {
             Ok(fv) => fv,
             // A root nobody opened yet reads as it would start (`root T` names it anywhere).
-            Err(crate::store::StoreError::NotFound(_)) if target.is_unmade_root() => {
-                match field.kind {
-                    FieldKind::Collection => FieldValue::Items(Vec::new()),
-                    FieldKind::Set => FieldValue::Keys(Vec::new()),
-                    FieldKind::Map => FieldValue::Entries(Vec::new()),
-                    FieldKind::Counter => FieldValue::Counter(0),
-                    FieldKind::Text => FieldValue::Text(
-                        field
-                            .default
-                            .as_ref()
-                            .and_then(Json::as_str)
-                            .unwrap_or_default()
-                            .to_owned(),
-                    ),
-                    FieldKind::RichText => FieldValue::Rich(crate::rich::RichValue::default()),
-                    FieldKind::Register => FieldValue::Absent,
-                }
-            }
+            Err(crate::store::StoreError::NotFound(_)) if self.unmade(target) => match field.kind {
+                FieldKind::Collection => FieldValue::Items(Vec::new()),
+                FieldKind::Set => FieldValue::Keys(Vec::new()),
+                FieldKind::Map => FieldValue::Entries(Vec::new()),
+                FieldKind::Counter => FieldValue::Counter(0),
+                FieldKind::Text => FieldValue::Text(
+                    field
+                        .default
+                        .as_ref()
+                        .and_then(Json::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                ),
+                FieldKind::RichText => FieldValue::Rich(crate::rich::RichValue::default()),
+                FieldKind::Register => FieldValue::Absent,
+            },
             Err(e) => return Err(e.to_string()),
         };
         self.field_value(target, field, fv, author)
@@ -460,6 +463,9 @@ impl Core {
     ) -> Result<Value, String> {
         match (field.kind, fv) {
             (FieldKind::Register, FieldValue::Absent) => {
+                if let Some(held) = self.held_ref(target, field) {
+                    return Ok(held);
+                }
                 declared_default(&field.ty, field.default.as_ref())
                     .map_err(|why| format!("`{}` of `{}`: {why}", field.name, target.id_string()))
             }
@@ -574,6 +580,7 @@ impl Core {
                         author: author.cloned(),
                     }))
                 }
+                Some(Ty::Enum(key)) => self.registry.borrow().enum_value(key, &k).map(Value::Enum),
                 _ => Ok(Value::Text(k)),
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -953,6 +960,26 @@ impl Core {
         let target = ctx.target.item(&id, item_ty.id.clone());
         self.touched(target.id_string());
         self.init_item(&ctx, &item_ty, &target, &rec)?;
+        // A record field the new item was not given holds a record of its own, made with it.
+        if crate::held::holds_any(&item_ty) {
+            let held = self.make_held(
+                &target,
+                &item_ty,
+                &|field| rec.fields.contains_key(field),
+                &|at, m| {
+                    self.journaled_apply(ctx.txn, at, m)
+                        .map_err(|fail| match fail {
+                            crate::engine::HostFail::Trap(why) => why,
+                            crate::engine::HostFail::Suspend => {
+                                "making a held record cannot wait".to_owned()
+                            }
+                        })
+                },
+            )?;
+            for id in held {
+                self.touched(id);
+            }
+        }
         let author = Some(self.module_of_frame()?);
         // What the item starts with is part of inserting it: its type's initial action writes in
         // this same change, when the package whose code this is declares the type.
@@ -1931,7 +1958,7 @@ fn whole_map(kind: FieldKind, value: Value) -> Value {
 
 /// The id of the item the key `key` names in the collection `field` of `holder`: the same on
 /// every device, and another for every collection and key.
-fn keyed_id(holder: &ResourceRef, field: &str, key: &str) -> String {
+pub(crate) fn keyed_id(holder: &ResourceRef, field: &str, key: &str) -> String {
     let mut hash = blake3::Hasher::new();
     for part in [holder.id_string().as_str(), field, key] {
         hash.update(&(part.len() as u64).to_le_bytes());

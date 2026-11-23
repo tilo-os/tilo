@@ -4,45 +4,16 @@
 
 use tilolang_runtime::{Actor, UiNode, Value, ViewInstance};
 
+use crate::fixtures::ShownSection;
 use crate::tasks::{
-    APP, ShownPlace, ShownSection, call, count, create, go_to, home_list_rows, key_of, node_of,
-    places, read, shown_count, shown_title, target, task, workspace,
+    APP, call, count, create, go_to, home_list_rows, key_of, places, read, shown_count,
+    shown_title, target, task, workspace,
 };
 use crate::tasks::{bound_key, task_page};
 
 /// The places under each heading of the sidebar, in order.
 fn sections(view: &ViewInstance) -> Vec<ShownSection> {
-    fn places_in(node: &UiNode, out: &mut Vec<ShownPlace>) {
-        if node.kind == "ui.NavItem"
-            && let Some(Value::Text(label)) = node.props.get("label")
-        {
-            let count = match node.props.get("count") {
-                Some(Value::Int(count)) => Some(*count),
-                _ => None,
-            };
-            out.push((label.clone(), count));
-        }
-        for child in &node.children {
-            places_in(child, out);
-        }
-    }
-    fn walk(node: &UiNode, out: &mut Vec<ShownSection>) {
-        if node.kind == "ui.NavSection" {
-            let title = match node.props.get("title") {
-                Some(Value::Text(title)) => title.clone(),
-                other => panic!("a section is headed: {other:?}"),
-            };
-            let mut places = Vec::new();
-            places_in(node, &mut places);
-            out.push((title, places));
-        }
-        for child in &node.children {
-            walk(child, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(view.tree(), &mut out);
-    out
+    crate::fixtures::sections(view.tree())
 }
 
 tilo_test_env::scenario! {
@@ -107,7 +78,7 @@ tilo_test_env::scenario! {
         let section = key_of(&view, "ui.NavSection", &|node| {
             node.props.get("title") == Some(&Value::text("Projects"))
         });
-        let add = node_of(view.tree(), &section)
+        let add = view.tree().find(&section)
             .and_then(|node| node.props.get("add"))
             .unwrap_or_else(|| panic!("the group offers an add"));
         let Value::Offered(add) = add else {
@@ -115,7 +86,7 @@ tilo_test_env::scenario! {
         };
         assert_eq!(add.label, "New project");
         assert!(
-            node_of(view.tree(), &section).is_some_and(|node| node.events.contains_key("add.0")),
+            view.tree().find(&section).is_some_and(|node| node.events.contains_key("add.0")),
             "pressing it runs the action"
         );
         assert_eq!(add.icon.as_deref(), Some("folder-plus"));
@@ -150,7 +121,7 @@ tilo_test_env::scenario! {
             node.props.get("selected") == Some(&want)
         });
         assert!(
-            node_of(view.tree(), &nav).is_some(),
+            view.tree().find(&nav).is_some(),
             "the window's place is the project's"
         );
         assert_eq!(
@@ -412,7 +383,7 @@ fn the_assignee_offers_the_workspaces_people_and_agents() {
         crate::fixtures::field_id(meta, "Task", "assignee")
     };
     let key = bound_key(page.tree(), &field).expect("the page binds its assignee");
-    let node = node_of(page.tree(), &key).expect("the bound node is drawn");
+    let node = page.tree().find(&key).expect("the bound node is drawn");
     assert_eq!(node.kind, "ui.PersonField");
     assert_eq!(
         node.props.get("people"),

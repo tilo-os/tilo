@@ -3,6 +3,7 @@
 //! workspace the server keeps as theirs, and somebody else shares a workspace with them. Every
 //! call goes through a whole turn of the assistant, with a model that calls the tools.
 use super::*;
+use tilo_server::workspaces::IssueInvitationRequest;
 
 /// What the server calls itself to the people it keeps workspaces for.
 const SITE: &str = "tilo.test";

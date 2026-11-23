@@ -8,9 +8,8 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -21,7 +20,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_render_protocol::broker as wire;
 use tilo_render_protocol::channel::Channel;
 use tilo_render_service::RENDER_NODE_ENV;
-use tilo_render_service::broker::{BROKER_FD_ENV, FromService, MODE, ToService};
+use tilo_render_service::broker::{FromService, MODE, ToService};
 
 use crate::app_wire::LayoutAuthority;
 
@@ -373,7 +372,6 @@ impl Inner {
         let mut command = std::process::Command::new(&self.exe);
         command
             .arg(MODE)
-            .env(BROKER_FD_ENV, "3")
             .env(
                 RENDER_NODE_ENV,
                 // Once the compositor gave its GPU up (`ui::gpu::recover`), a service started after
@@ -384,30 +382,23 @@ impl Inner {
                     .map(PathBuf::into_os_string)
                     .unwrap_or_default(),
             )
-            .stdin(std::process::Stdio::null());
+            // The service's socket, as its stdin, which it moves to the one descriptor it keeps:
+            // a descriptor placed anywhere else takes a `pre_exec` step, and that makes
+            // `Command::spawn` `fork()` the compositor (`runtime_portal::launch_hold`).
+            .stdin(std::process::Stdio::from(
+                theirs
+                    .as_fd()
+                    .try_clone_to_owned()
+                    .map_err(|error| error.to_string())?,
+            ));
         for variable in STRIPPED_ENV {
             command.env_remove(variable);
-        }
-        let fd = theirs.as_fd().as_raw_fd();
-        // SAFETY: only async-signal-safe calls between fork and exec: the
-        // service's socket is placed at descriptor 3, the one inherited
-        // descriptor the service keeps (it closes every other one first).
-        unsafe {
-            command.pre_exec(move || {
-                if fd == 3 {
-                    if libc::fcntl(3, libc::F_SETFD, 0) < 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                } else if libc::dup2(fd, 3) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
         }
         let child = command
             .spawn()
             .map_err(|error| format!("start the {key} render service: {error}"))?;
-        drop(theirs);
+        // The service's end goes with the command: only the service holds it from here.
+        drop((command, theirs));
         tracing::info!(%key, pid = child.id(), "render service started");
         let channel = Arc::new(ours);
         let ready = Arc::new((Mutex::new(None), Condvar::new()));

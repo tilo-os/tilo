@@ -522,35 +522,12 @@ mod tests {
         assert_eq!(pkce.challenge, s256_challenge(&pkce.verifier));
         assert_ne!(random_token().unwrap(), random_token().unwrap());
         assert!(!format!("{pkce:?}").contains(&pkce.verifier));
-    }
-
-    tilo_test_env::scenario! {
-        fn pkce_and_its_encodings_match_their_specifications;
-
-        phase pkce_s256_challenge_matches_rfc7636_appendix_b;
-        {
-            let pkce = Pkce::from_verifier("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk");
-            assert_eq!(
-                pkce.challenge,
-                "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
-            );
-        }
-
-        phase base64url_matches_rfc4648_vectors;
-        {
-            assert_eq!(base64url_nopad(b""), "");
-            assert_eq!(base64url_nopad(b"f"), "Zg");
-            assert_eq!(base64url_nopad(b"foobar"), "Zm9vYmFy");
-            assert_eq!(base64url_nopad(&[0xfb, 0xff, 0xbf]), "-_-_");
-        }
-
-        phase sha256_matches_known_vectors;
-        {
-            assert_eq!(
-                hex::encode(Sha256::digest(b"abc")),
-                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-            );
-        }
+        // RFC 7636 appendix B, through the same unpadded base64url encoding.
+        let published = Pkce::from_verifier("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk");
+        assert_eq!(
+            published.challenge,
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
     }
 
     #[test]

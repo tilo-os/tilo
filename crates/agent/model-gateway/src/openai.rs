@@ -1,6 +1,6 @@
 //! OpenAI-compatible chat completions shared by the gateway and host-side
-//! agents: which request fields a target accepts, function-tool turns,
-//! idempotency keys, and what a failed call means.
+//! agents: which request fields a target accepts, idempotency keys, and what a
+//! failed call means.
 //!
 //! Tilo Cloud's metered endpoint (`/api/machines/{id}/ai/v1/chat/completions`)
 //! is the one target that differs from a plain provider. It bills every
@@ -11,11 +11,10 @@
 
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 pub use tilo_model_client::failure::{Failure, Kind, OUT_OF_CREDITS};
-pub use tilo_model_client::validation::reasoning_content;
 
 /// The most output one metered completion may ask for.
 pub const CLOUD_MAX_OUTPUT_TOKENS: u64 = 2048;
@@ -119,124 +118,6 @@ pub fn turn_key(run: &[u8], turn: u32, body: &Value) -> String {
     idempotency_key(&[run, &turn.to_le_bytes(), body.to_string().as_bytes()])
 }
 
-/// One function call the model made.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ToolCall {
-    /// The call's id, echoed on its result.
-    pub id: String,
-    /// The function named.
-    pub name: String,
-    /// Its validated JSON object arguments; malformed calls are rejected.
-    pub input: Value,
-}
-
-/// One assistant turn of a tool conversation.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Turn {
-    /// The assistant message to send back on the next turn, holding only the
-    /// tool-call fields and optional provider reasoning metadata. Replay this
-    /// only within the conversation with the endpoint that produced it.
-    pub message: Value,
-    /// Its function calls, in order.
-    pub calls: Vec<ToolCall>,
-    /// Its text, if it said anything.
-    pub text: Option<String>,
-}
-
-/// The first choice of a chat-completions response.
-pub fn read_turn(response: &Value) -> Result<Turn, String> {
-    let message = response
-        .pointer("/choices/0/message")
-        .filter(|message| message.is_object())
-        .ok_or("the model's answer had no message")?;
-    if message.get("role").is_some_and(|role| role != "assistant")
-        || message
-            .get("content")
-            .is_some_and(|content| !content.is_null() && !content.is_string())
-    {
-        return Err("invalid model assistant message".into());
-    }
-    let text = message
-        .get("content")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    if response
-        .pointer("/choices/0/finish_reason")
-        .is_some_and(|reason| {
-            !matches!(
-                reason.as_str(),
-                Some("stop" | "tool_calls" | "length" | "content_filter")
-            )
-        })
-    {
-        return Err("invalid model finish reason".into());
-    }
-    let mut calls = Vec::new();
-    let mut echoed = Vec::new();
-    let mut ids = std::collections::BTreeSet::new();
-    let fragments = match message.get("tool_calls") {
-        None | Some(Value::Null) => &[][..],
-        Some(Value::Array(calls)) => calls.as_slice(),
-        _ => return Err("invalid model tool calls".into()),
-    };
-    for call in fragments {
-        let id = call
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or("a tool call had no id")?;
-        let name = call
-            .pointer("/function/name")
-            .and_then(Value::as_str)
-            .ok_or("a tool call had no function name")?;
-        let arguments = call
-            .pointer("/function/arguments")
-            .and_then(Value::as_str)
-            .ok_or("a tool call had no arguments")?;
-        let input: Value =
-            serde_json::from_str(arguments).map_err(|_| "invalid model tool arguments")?;
-        if id.trim().is_empty() || name.trim().is_empty() || !input.is_object() || !ids.insert(id) {
-            return Err("invalid or duplicate model tool call".into());
-        }
-        calls.push(ToolCall {
-            id: id.to_owned(),
-            name: name.to_owned(),
-            input,
-        });
-        let mut replay = json!({
-            "id": id,
-            "type": "function",
-            "function": { "name": name, "arguments": arguments },
-        });
-        // Gemini on Vertex AI signs each call and refuses a next turn
-        // whose replayed call lacks its `thought_signature`.
-        if let (Some(extra), Some(object)) = (
-            call.get("extra_content").filter(|extra| extra.is_object()),
-            replay.as_object_mut(),
-        ) {
-            object.insert("extra_content".into(), extra.clone());
-        }
-        echoed.push(replay);
-    }
-    let mut replay = if echoed.is_empty() {
-        json!({ "role": "assistant", "content": text.clone().unwrap_or_default() })
-    } else {
-        json!({ "role": "assistant", "content": text, "tool_calls": echoed })
-    };
-    if let Some(reasoning) = reasoning_content(message)?
-        && let Some(object) = replay.as_object_mut()
-    {
-        object.insert(
-            "reasoning_content".into(),
-            Value::String(reasoning.to_owned()),
-        );
-    }
-    Ok(Turn {
-        message: replay,
-        calls,
-        text,
-    })
-}
-
 /// A provider error body's `type`, `param` and `code`, each only when it is
 /// a short lowercase identifier: an API key or the provider's prose never
 /// passes. Empty when it names none.
@@ -291,6 +172,8 @@ pub fn backoff(retry: u32, asked_for: Option<Duration>) -> Duration {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     tilo_test_env::scenario! {
@@ -392,63 +275,6 @@ mod tests {
             let json_object = Target::CloudMetered
                 .shape(json!({"model": "m", "response_format": {"type": "json_object"}}));
             assert_eq!(json_object["response_format"]["type"], "json_object");
-        }
-    }
-
-    tilo_test_env::scenario! {
-        /// Reading a tool turn and sending it back in the next request.
-        fn tool_turns_and_reasoning_are_echoed_in_the_shape_the_provider_accepts;
-
-        phase a_tool_turn_is_read_and_echoed_in_the_accepted_shape;
-        {
-            let turn = read_turn(&json!({"choices": [{"message": {
-                "role": "assistant", "content": null, "refusal": null,
-                "tool_calls": [{"id": "c1", "type": "function", "index": 0,
-                    "function": {"name": "plan", "arguments": "{\"why\":\"x\"}"}}]
-            }, "finish_reason": "tool_calls"}]}))
-            .unwrap();
-            assert_eq!(turn.calls[0].name, "plan");
-            assert_eq!(turn.calls[0].input["why"], "x");
-            assert_eq!(
-                turn.message,
-                json!({"role": "assistant", "content": null, "tool_calls": [
-                    {"id": "c1", "type": "function", "function": {"name": "plan", "arguments": "{\"why\":\"x\"}"}}]})
-            );
-        }
-
-        phase a_signed_tool_call_is_echoed_with_its_signature;
-        // Vertex AI's Gemini signs each call; the signature is replayed with
-        // it, or the next turn is refused.
-        {
-            let signature = json!({"google": {"thought_signature": "c2ln"}});
-            let turn = read_turn(&json!({"choices": [{"message": {
-                "role": "assistant",
-                "tool_calls": [{"id": "c1", "type": "function", "extra_content": signature,
-                    "function": {"name": "plan", "arguments": "{}"}}]
-            }}]}))
-            .unwrap();
-            assert_eq!(turn.message["tool_calls"][0]["extra_content"], signature);
-        }
-
-        phase provider_reasoning_is_replayed_without_becoming_final_text;
-        {
-            let response = json!({"choices":[{"message":{"content":"done","reasoning_content":"provider reasoning","tool_calls":[]}}]});
-            let turn = read_turn(&response).unwrap();
-            assert_eq!(turn.text.as_deref(), Some("done"));
-            assert_eq!(turn.message["reasoning_content"], "provider reasoning");
-            assert_eq!(turn.message["content"], "done");
-            for invalid in [json!({}), json!([]), json!(true), json!(17)] {
-                let malformed =
-                    json!({"choices":[{"message":{"content":"done","reasoning_content":invalid}}]});
-                assert!(read_turn(&malformed).is_err());
-            }
-            for absent in [
-                json!({"content":"done"}),
-                json!({"content":"done","reasoning_content":null}),
-            ] {
-                let turn = read_turn(&json!({"choices":[{"message":absent}]})).unwrap();
-                assert!(turn.message.get("reasoning_content").is_none());
-            }
         }
     }
 }

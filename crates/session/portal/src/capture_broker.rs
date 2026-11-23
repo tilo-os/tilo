@@ -23,9 +23,11 @@ const MAX_PRIVACY_EVENTS: usize = MAX_LEASES * 4;
 pub const CAPTURE_AUTHORIZATION_TTL: Duration = Duration::from_secs(30);
 pub const CAPTURE_LEASE_TTL: Duration = Duration::from_secs(5 * 60);
 
-/// `ttl` after `now`; past the end of time, `now` (expired at once).
-fn later(now: Instant, ttl: Duration) -> Instant {
-    now.checked_add(ttl).unwrap_or(now)
+/// `ttl` after `now`, or [`CaptureBrokerError::ClockOverflow`] when the
+/// monotonic clock cannot represent that expiry.
+fn later(now: Instant, ttl: Duration) -> Result<Instant, CaptureBrokerError> {
+    now.checked_add(ttl)
+        .ok_or(CaptureBrokerError::ClockOverflow)
 }
 const OPAQUE_ID_BYTES: usize = 32;
 
@@ -375,6 +377,7 @@ impl CaptureBroker {
         if self.authorizations.len() >= MAX_AUTHORIZATIONS {
             return Err(CaptureBrokerError::Capacity);
         }
+        let expires_at = later(now, CAPTURE_AUTHORIZATION_TTL)?;
         let id = CaptureAuthorizationId {
             broker: self.instance,
             nonce: self.new_nonce(),
@@ -385,7 +388,7 @@ impl CaptureBroker {
                 binding: binding.clone(),
                 source_id: source_id.to_string(),
                 kind,
-                expires_at: later(now, CAPTURE_AUTHORIZATION_TTL),
+                expires_at,
             },
         );
         Ok(id)
@@ -421,6 +424,7 @@ impl CaptureBroker {
                 return Err(CaptureBrokerError::IncompleteAuthorizationSet);
             }
         }
+        let expires_at = later(now, CAPTURE_AUTHORIZATION_TTL)?;
         let mut ids = Vec::with_capacity(selections.len());
         for (source_id, kind) in selections {
             let id = CaptureAuthorizationId {
@@ -433,7 +437,7 @@ impl CaptureBroker {
                     binding: binding.clone(),
                     source_id: source_id.clone(),
                     kind: *kind,
-                    expires_at: later(now, CAPTURE_AUTHORIZATION_TTL),
+                    expires_at,
                 },
             );
             ids.push(id);
@@ -469,6 +473,7 @@ impl CaptureBroker {
         if self.leases.len() >= MAX_LEASES {
             return Err(CaptureBrokerError::Capacity);
         }
+        let expires_at = later(now, CAPTURE_LEASE_TTL)?;
         self.authorizations.remove(&authorization_id);
         let id = CaptureLeaseId {
             broker: self.instance,
@@ -481,7 +486,7 @@ impl CaptureBroker {
                 binding: binding.clone(),
                 source_id: source_id.to_string(),
                 kind,
-                expires_at: Some(later(now, CAPTURE_LEASE_TTL)),
+                expires_at: Some(expires_at),
             },
         );
         self.queue_event(CapturePrivacyEvent::Started {
@@ -547,6 +552,7 @@ impl CaptureBroker {
             return Err(CaptureBrokerError::IncompleteAuthorizationSet);
         }
 
+        let expires_at = later(now, CAPTURE_LEASE_TTL)?;
         let mut grants = Vec::with_capacity(validated.len());
         for (authorization_id, source_id, kind) in validated {
             self.authorizations.remove(&authorization_id);
@@ -561,7 +567,7 @@ impl CaptureBroker {
                     binding: binding.clone(),
                     source_id: source_id.clone(),
                     kind,
-                    expires_at: Some(later(now, CAPTURE_LEASE_TTL)),
+                    expires_at: Some(expires_at),
                 },
             );
             self.queue_event(CapturePrivacyEvent::Started {
@@ -625,9 +631,9 @@ impl CaptureBroker {
             .leases
             .get_mut(&lease_id)
             .ok_or(CaptureBrokerError::InvalidLease)?;
-        lease.expires_at = lease
-            .expires_at
-            .map(|expiry| now.checked_add(CAPTURE_LEASE_TTL).unwrap_or(expiry));
+        if lease.expires_at.is_some() {
+            lease.expires_at = Some(later(now, CAPTURE_LEASE_TTL)?);
+        }
         Ok(())
     }
 
@@ -932,6 +938,8 @@ pub enum CaptureBrokerError {
     InvalidLease,
     #[error("capture broker capacity is exhausted")]
     Capacity,
+    #[error("monotonic clock cannot represent the lease expiry")]
+    ClockOverflow,
 }
 
 #[cfg(test)]
@@ -1377,5 +1385,128 @@ mod tests {
                 }
             )));
         }
+
+        phase grants_and_renewals_fail_closed_when_the_clock_overflows;
+        {
+            let ceiling = clock_ceiling(Instant::now());
+            let owner = binding("meet", "work", "clock-edge");
+
+            {
+                let mut broker = broker();
+                assert_eq!(
+                    broker.authorize(&owner, "camera-front", CaptureKind::Camera, ceiling),
+                    Err(CaptureBrokerError::ClockOverflow),
+                    "authorize must fail closed when expiry overflows"
+                );
+                assert!(broker.authorizations.is_empty());
+                assert_eq!(
+                    broker.authorize_batch(
+                        &owner,
+                        &[
+                            ("mic-main".into(), CaptureKind::Microphone),
+                            ("camera-front".into(), CaptureKind::Camera),
+                        ],
+                        ceiling,
+                    ),
+                    Err(CaptureBrokerError::ClockOverflow),
+                    "authorize_batch must fail closed when expiry overflows"
+                );
+                assert!(broker.authorizations.is_empty());
+            }
+
+            {
+                let mut broker = broker();
+                let at_lease_edge = ceiling.checked_sub(Duration::from_secs(60)).unwrap();
+                assert!(at_lease_edge.checked_add(CAPTURE_AUTHORIZATION_TTL).is_some());
+                assert!(at_lease_edge.checked_add(CAPTURE_LEASE_TTL).is_none());
+
+                let camera_auth = broker
+                    .authorize(&owner, "camera-front", CaptureKind::Camera, at_lease_edge)
+                    .unwrap();
+                assert_eq!(
+                    broker.acquire(
+                        camera_auth,
+                        &owner,
+                        "camera-front",
+                        CaptureKind::Camera,
+                        at_lease_edge,
+                    ),
+                    Err(CaptureBrokerError::ClockOverflow),
+                    "acquire must fail closed when lease expiry overflows"
+                );
+                assert!(broker.live().is_empty());
+                assert!(broker.take_privacy_events().is_empty());
+
+                let mic_auth = broker
+                    .authorize(&owner, "mic-main", CaptureKind::Microphone, at_lease_edge)
+                    .unwrap();
+                assert_eq!(
+                    broker.acquire_required(
+                        &[camera_auth, mic_auth],
+                        &owner,
+                        &[CaptureKind::Camera, CaptureKind::Microphone],
+                        at_lease_edge,
+                    ),
+                    Err(CaptureBrokerError::ClockOverflow),
+                    "acquire_required must fail closed when lease expiry overflows"
+                );
+                assert!(broker.live().is_empty());
+                assert!(broker.take_privacy_events().is_empty());
+            }
+
+            {
+                let mut broker = broker();
+                let lease_start = ceiling
+                    .checked_sub(CAPTURE_LEASE_TTL)
+                    .unwrap()
+                    .checked_sub(Duration::from_secs(10))
+                    .unwrap();
+                let auth = broker
+                    .authorize(&owner, "camera-front", CaptureKind::Camera, lease_start)
+                    .unwrap();
+                let lease = broker
+                    .acquire(
+                        auth,
+                        &owner,
+                        "camera-front",
+                        CaptureKind::Camera,
+                        lease_start,
+                    )
+                    .unwrap();
+                let renew_now = lease_start + Duration::from_secs(20);
+                assert!(renew_now.checked_add(CAPTURE_LEASE_TTL).is_none());
+                assert!(broker.resolve(lease, &owner, renew_now).is_ok());
+                assert_eq!(
+                    broker.renew(lease, &owner, renew_now),
+                    Err(CaptureBrokerError::ClockOverflow),
+                    "renew must fail closed when extended expiry overflows"
+                );
+                let past_original = lease_start + CAPTURE_LEASE_TTL + Duration::from_secs(1);
+                broker.reap_expired(past_original);
+                assert!(matches!(
+                    broker.resolve(lease, &owner, past_original),
+                    Err(CaptureBrokerError::InvalidLease)
+                ));
+            }
+        }
+    }
+
+    fn clock_ceiling(base: Instant) -> Instant {
+        let mut lo = 0_u64;
+        let mut hi = u64::MAX;
+        while lo < hi {
+            let mid = lo.saturating_add(hi.saturating_sub(lo).div_ceil(2));
+            if base.checked_add(Duration::from_secs(mid)).is_some() {
+                lo = mid;
+            } else {
+                hi = mid.saturating_sub(1);
+            }
+        }
+        let whole = base.checked_add(Duration::from_secs(lo)).unwrap();
+        assert!(
+            whole.checked_add(Duration::from_secs(1)).is_none(),
+            "monotonic clock did not reach its ceiling"
+        );
+        whole
     }
 }

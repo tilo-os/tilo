@@ -46,6 +46,11 @@ impl VirtualRows {
     /// whether it opens where it stands is unknown — leaves the row held open as it is, and
     /// opens as its row arrives: a window that moves to another place to show an item names
     /// the item before the place's rows are there.
+    ///
+    /// A row that opens below the fold is scrolled into view: what a view asked to show stands
+    /// where its row does, so the window brings that row up — a page outside the window is a page
+    /// a person's typing goes nowhere in. Only a row that opens now moves the list; a row
+    /// already open stays where the person scrolled it.
     pub fn hold_open(&mut self, item: Option<&str>) {
         self.held_open = None;
         let Some(item) = item else {
@@ -53,12 +58,15 @@ impl VirtualRows {
             return;
         };
         let index = self
-            .model
-            .key_presenting(item)
+            .key_of_item(item)
             .and_then(|key| Some((self.model.index_of(&key)?, key)));
         match index {
             Some((index, key)) if matches!(self.model.row_state(index), Arrival::Ready(())) => {
-                self.set_open(Some(key));
+                let opening = self.open.as_ref() != Some(&key);
+                self.set_open(Some(key.clone()));
+                if opening && self.open.as_ref() == Some(&key) {
+                    self.scroll_to_key(&key);
+                }
             }
             Some(_) => self.held_open = Some(item.to_owned()),
             None if self.model.len() > 0 && self.model.key_at(0).is_none() => {

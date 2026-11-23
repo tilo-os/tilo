@@ -2,10 +2,13 @@
 //! when told something changed (or, where nothing can tell it, on the clock
 //! readers used to poll at).
 use super::{
-    Budget, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
-    UNANNOUNCED_RECHECK, hold_until_changed, next_unannounced_recheck, read_unchanged,
+    AwaitingDocument, Budget, ChainHeadAnswer, HeldRevision, NativeDocumentRead,
+    NativeDocumentReadContext, NativeDocumentReads, ResourceRead, UNANNOUNCED_RECHECK,
+    hold_until_changed, next_unannounced_recheck, read_unchanged,
 };
+use automerge::transaction::Transactable as _;
 use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -490,5 +493,217 @@ async fn a_sealed_read_waiting_for_its_key_ends_when_the_key_arrives() {
         tokio::time::timeout(Duration::from_secs(5), held).await,
         Ok(Ok(())),
         "keys arriving end the wait, with nothing written to the record"
+    );
+}
+
+/// The session's own document owner, with the checks the broker makes counted: one check is one
+/// wake of the broker's thread, so an idle reader's cost is the count. Every answer, the expiries
+/// it names included, is the service's own.
+struct CountedReads {
+    inner: Arc<dyn NativeDocumentReads>,
+    checks: Arc<AtomicUsize>,
+}
+
+impl CountedReads {
+    fn checked<T>(&self, answer: T) -> T {
+        self.checks.fetch_add(1, Ordering::AcqRel);
+        answer
+    }
+}
+
+impl NativeDocumentReads for CountedReads {
+    fn seals_documents(&self, workspace: &str) -> bool {
+        self.inner.seals_documents(workspace)
+    }
+    fn resource_read(&self, workspace: &str, app: &str, record: &str) -> ResourceRead {
+        self.inner.resource_read(workspace, app, record)
+    }
+    fn holds_resource(&self, workspace: &str, app: &str, record: &str) -> bool {
+        self.inner.holds_resource(workspace, app, record)
+    }
+    fn await_arriving_document(
+        &self,
+        context: &NativeDocumentReadContext,
+    ) -> Option<AwaitingDocument> {
+        self.inner.await_arriving_document(context)
+    }
+    fn chain_head_answer(&self, context: &NativeDocumentReadContext) -> Option<ChainHeadAnswer> {
+        self.inner.chain_head_answer(context)
+    }
+    fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
+        self.inner.authorize(context)
+    }
+    fn capture(
+        &self,
+        context: &NativeDocumentReadContext,
+        known_revision: Option<[u8; 32]>,
+        maximum: usize,
+    ) -> Result<NativeDocumentRead, String> {
+        self.checked(self.inner.capture(context, known_revision, maximum))
+    }
+    fn capture_since(
+        &self,
+        context: &NativeDocumentReadContext,
+        held: &HeldRevision,
+        maximum: usize,
+    ) -> Result<NativeDocumentRead, String> {
+        self.checked(self.inner.capture_since(context, held, maximum))
+    }
+    fn unchanged(
+        &self,
+        context: &NativeDocumentReadContext,
+        known_revision: Option<[u8; 32]>,
+    ) -> Result<Option<bool>, String> {
+        self.checked(self.inner.unchanged(context, known_revision))
+    }
+    fn next_change(
+        &self,
+        context: &NativeDocumentReadContext,
+        after: u64,
+    ) -> Result<Option<u64>, String> {
+        self.inner.next_change(context, after)
+    }
+}
+
+/// A workspace authority whose writes announce, as the session's does.
+struct Announcing(crate::apps::test_support::WorkspaceTreeHandle);
+
+impl crate::apps::services::WorkspaceAuthority for Announcing {
+    fn with_tree(&self, read: &mut dyn FnMut(&tilo_desktop_model::Layout)) -> Result<(), String> {
+        read(&self.0.read().desktop);
+        Ok(())
+    }
+
+    fn announces_policy_changes(&self) -> bool {
+        true
+    }
+}
+
+/// A read of a sealed record the session's own workspace service holds, with nothing written to
+/// it and no expiry near, waits on the signals it was given: a write reaching the record, a key
+/// arriving, or an announced policy change. It does not ask again on a clock, so the broker
+/// thread behind it stays asleep. This is the shared-workspace read an idle desktop holds open,
+/// and the check that it costs no wake. Nothing else in this crate runs beside it: another
+/// test's announcement is not this read's to hear.
+#[test]
+fn an_idle_held_read_of_a_sealed_record_asks_nothing_of_a_clock() {
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "an_idle_held_read_of_a_sealed_record_asks_nothing_of_a_clock",
+        || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("a runtime for the host and the broker's local set")
+                .block_on(an_idle_held_read_body());
+        },
+    );
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "the broker's channel handles are Rc-based and this future runs only on a LocalSet"
+)]
+async fn an_idle_held_read_body() {
+    const APP: &str = "so.tilo.notes";
+    const RECORD: &str = "note-1";
+    use crate::apps::route::CrdtRoute;
+    use crate::apps::test_support::{Workspace, WorkspaceTree};
+    use crate::workspaces::fixtures::{governor, test_host};
+    use std::time::Instant;
+
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = test_host(scratch.path(), &key, &cert).await;
+    let created = server.workspaces().create("Held").await.unwrap();
+    let workspace = created.workspace;
+    server
+        .workspaces()
+        .author_workspace_document(&workspace, &cert, (APP, RECORD), |doc| {
+            doc.put(automerge::ROOT, "text", "idle")
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .unwrap();
+
+    let checks = Arc::new(AtomicUsize::new(0));
+    let reads = Arc::new(CountedReads {
+        inner: server.host().document_reads(),
+        checks: Arc::clone(&checks),
+    });
+    let route = CrdtRoute::record(APP, workspace.clone(), RECORD);
+    let context = NativeDocumentReadContext::for_reader(route.clone(), cert.clone());
+    let NativeDocumentRead::Captured { revision, .. } =
+        reads.capture(&context, None, 1 << 20).unwrap()
+    else {
+        panic!("the service holds the record whole");
+    };
+    // What the idle wait costs, from here: the capture that learned the revision is not a wake.
+    checks.store(0, Ordering::Release);
+
+    // The workspace as the broker decides it: this device is its owner, its reads announced.
+    let mut held = Workspace::new(
+        crate::apps::test_support::WorkspaceId::parse(&workspace).expect("a workspace id"),
+        "Held",
+    );
+    held.set_owner(tilo_broker_core::person_id_for_root(cert.user_public_key));
+    let mut tree = WorkspaceTree::default();
+    tree.workspaces.push(held);
+    let membership = tree.shared();
+    let authority: crate::apps::services::WorkspaceAuthorityHandle =
+        Arc::new(Announcing(membership.clone()));
+    let (state, bridge) = super::super::AppBrokerState::test_state(
+        Some(Arc::clone(&authority)),
+        crate::apps::services::ProcessServices {
+            committed_documents: Some(reads.clone() as Arc<dyn NativeDocumentReads>),
+            ..crate::apps::services::ProcessServices::default()
+        },
+    );
+    state.ensure_channel(&route.channel_key());
+    let mut admitted = super::super::admit_verified_join(
+        &membership.read(),
+        &route,
+        super::super::VerifiedJoinIdentity::of(&cert, false),
+    )
+    .expect("the owner's device is admitted to its workspace");
+    admitted.certificate = Some(cert.clone());
+    let peer_id = state.next_peer_id();
+    let channel = Rc::new(super::super::JoinedChannel {
+        committed_read: Rc::new(std::cell::RefCell::new(super::Slot::default())),
+        state,
+        directories: Rc::new(super::super::LocalActionDirectoryRegistry::new(bridge)),
+        channel_id: route.channel_key(),
+        peer_id,
+        connection_id: peer_id,
+        verified_identity: admitted,
+        resource_type: None,
+        route_access: super::super::RouteAccess::Own,
+        lease: None,
+        _hold: None,
+    });
+
+    // What the held wait made of it over two seconds with nothing written: the first check, and
+    // nothing after it until a signal.
+    let ended = tokio::task::LocalSet::new()
+        .run_until(async move {
+            let started = Instant::now();
+            let _ = tokio::time::timeout(
+                Duration::from_secs(2),
+                channel.await_committed_change(Some(revision)),
+            )
+            .await;
+            started.elapsed()
+        })
+        .await;
+    assert!(
+        ended >= Duration::from_millis(1900),
+        "the read held, as an unchanged record should: {ended:?}"
+    );
+    let asked = checks.load(Ordering::Acquire);
+    assert!(
+        asked <= 2,
+        "the idle held read asked its owner {asked} times in two seconds: a read waiting on what \
+         announces its change asks once, not on a clock"
     );
 }

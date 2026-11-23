@@ -37,6 +37,7 @@
  * this page's own device: the sender its frames carry (peer.voice in
  * peer.mjs adapts the wasm peer).
  */
+import {hex} from './hex.mjs';
 import {audioInputs, createBrowserAudio} from './voice-audio.mjs';
 import {createPictureEncoder, createPictureInbox, openSource, pictureObject} from './voice-video.mjs';
 import {callIdOf} from './voice-controls.mjs';
@@ -701,11 +702,7 @@ export function createVoiceCall({
 }
 
 /** `bytes` in hex, as the live session's voice events carry an Opus frame. */
-export function hexOfBytes(bytes) {
-  let text = '';
-  for (const byte of bytes) text += byte.toString(16).padStart(2, '0');
-  return text;
-}
+export const hexOfBytes = hex;
 
 /** Bytes from hex, as the live session's voice events carry an Opus frame. */
 export function bytesOfHex(text) {

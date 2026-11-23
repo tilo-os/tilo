@@ -24,6 +24,10 @@
 //! listen on is said, and the mail servers go on without it.
 
 #[path = "../src/stand_in.rs"]
+#[allow(
+    dead_code,
+    reason = "the program serves; what a test reads of the mailbox is not read here"
+)]
 mod stand_in;
 
 use std::convert::Infallible;
@@ -108,6 +112,8 @@ fn stood_in() -> Result<Infallible, String> {
         oauth_token: None,
         imap,
         smtp,
+        layout: stand_in::Layout::Plain,
+        seeded: true,
     })?;
     std::fs::write(&certificate_file, stand_in::pem(&up.certificate))
         .map_err(|error| format!("cannot write {certificate_file}: {error}"))?;

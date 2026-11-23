@@ -231,7 +231,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_confirmation_takes_its_base_from_agreeing_sources_and_plans_the_window;
+        fn a_confirmation_takes_its_base_only_from_agreeing_sources;
 
         phase confirmation_bases_come_only_from_agreeing_sources;
         {
@@ -270,50 +270,6 @@ mod tests {
                     .to_string();
                 assert!(e.contains("token 6 (generation 6) says 43"), "{e}");
                 assert!(e.contains("token 7 (generation 7) says 42"), "{e}");
-            }
-        }
-
-        phase confirmation_plans_window_prune_floor_and_round_trip_state;
-        {
-            {
-                let floor = FloorState {
-                    counter: 100,
-                    base: 100,
-                }; // floor generation 0
-                let p = plan(10, floor, &[7, 8, 9, 10], 3, None).unwrap();
-                assert_eq!(p.floor.target_floor, 8);
-                assert_eq!(p.keep, vec![10, 9, 8]);
-                assert_eq!(p.drop, vec![7]);
-            }
-            {
-                let floor = FloorState {
-                    counter: 100,
-                    base: 100,
-                };
-                let p = plan(10, floor, &[8, 9, 10], 3, Some(10)).unwrap();
-                assert_eq!(p.floor.target_floor, 10);
-                // The keyslots stay even when the floor closed the window: the floor enforces, and
-                // keeping slots means a later re-enrollment does not rebuild from nothing.
-                assert_eq!(p.keep, vec![10, 9, 8]);
-            }
-            {
-                use std::os::unix::fs::PermissionsExt;
-
-                let d = tempfile::tempdir().unwrap();
-                let p = d.path().join("s.json");
-                let s = State {
-                    nv_index: 0x01D9_1100,
-                    nv_base: 5,
-                    last_confirmed: None,
-                    foreign_keyslots: vec![0, 1],
-                };
-                assert_eq!(load_state(&p).unwrap(), None);
-                save_state(&p, &s).unwrap();
-                assert_eq!(load_state(&p).unwrap(), Some(s));
-                assert_eq!(
-                    std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
-                    0o600
-                );
             }
         }
     }

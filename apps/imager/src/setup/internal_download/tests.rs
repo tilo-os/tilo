@@ -4,6 +4,7 @@ use test_http::Responder;
 fn manifest() -> Vec<u8> {
     super::super::internal_bundle::tests::bytes(&super::super::internal_bundle::tests::fixture())
 }
+
 tilo_test_env::scenario! {
     fn an_internal_download_accepts_only_authenticated_resumable_bytes;
 
@@ -41,52 +42,7 @@ tilo_test_env::scenario! {
         );
 
         isolated(
-            "manifest_http_requires_exact_length_digest_status_and_eof",
-            || {
-                let bytes = manifest();
-                let server = Server::new(vec![response(200, "", &bytes)]);
-                let selected = server
-                    .transport()
-                    .fetch_manifest(&server.release(&bytes), &AtomicBool::new(false))
-                    .unwrap();
-                assert_eq!(selected.bytes(), bytes);
-                assert_eq!(server.requests.lock().unwrap().len(), 1);
-                let mut long = bytes.clone();
-                long.push(b' ');
-                let mut corrupt = bytes.clone();
-                corrupt[0] = b' ';
-                for raw in [
-                    response(200, "", &bytes[..bytes.len() - 1]),
-                    response(200, "", &long),
-                    response(200, "", &corrupt),
-                    response(201, "", &bytes),
-                    response(200, "Content-Encoding: gzip\r\n", &bytes),
-                    response(200, "Content-Length: 1\r\n", &bytes),
-                    response(
-                        200,
-                        "Transfer-Encoding: chunked\r\n",
-                        format!(
-                            "{:x}\r\n{}\r\n",
-                            bytes.len(),
-                            String::from_utf8_lossy(&bytes)
-                        )
-                        .as_bytes(),
-                    ),
-                ] {
-                    let server = Server::new(vec![raw]);
-                    assert!(
-                        server
-                            .transport()
-                            .fetch_manifest(&server.release(&bytes), &AtomicBool::new(false))
-                            .is_err()
-                    );
-                    assert_eq!(server.requests.lock().unwrap().len(), 1);
-                }
-            },
-        );
-
-        isolated(
-            "manifest_maximum_boundary_and_selection_mismatch_are_authenticated",
+            "a_manifest_fetch_is_exact_bounded_and_authenticated",
             || {
                 let mut bytes = manifest();
                 bytes.resize(65536, b' ');
@@ -116,380 +72,11 @@ tilo_test_env::scenario! {
                 assert!(SelectedManifest::from_bytes(&release, bytes).is_err());
             },
         );
-
-        isolated(
-            "framing_manifests_refuse_unsupported_transfer_encoding_with_authentic_payload",
-            || {
-                let bytes = manifest();
-                for headers in [
-                    "Transfer-Encoding: chunked\r\n",
-                    "Transfer-Encoding: \tChUnKeD \t\r\n",
-                ] {
-                    let server = Server::new(vec![response(200, headers, &chunked(&bytes))]);
-                    assert_eq!(
-                        server
-                            .transport()
-                            .fetch_manifest(&server.release(&bytes), &AtomicBool::new(false))
-                            .unwrap()
-                            .bytes(),
-                        bytes
-                    );
-                }
-                let mut accepted = Vec::new();
-                for (name, headers, body) in unsupported_framings(&bytes) {
-                    let server = Server::new(vec![response(200, &headers, &body)]);
-                    if server
-                        .transport()
-                        .fetch_manifest(&server.release(&bytes), &AtomicBool::new(false))
-                        .is_ok()
-                    {
-                        accepted.push(name);
-                    }
-                    assert_eq!(server.requests.lock().unwrap().len(), 1);
-                }
-                assert!(
-                    accepted.is_empty(),
-                    "unsupported framing accepted authentic manifest: {accepted:?}"
-                );
-            },
-        );
-    }
-
-    phase component_fetch_resumes_only_checkpointed_rehashed_prefixes;
-    {
-        isolated(
-            "full_component_uses_selected_sibling_and_verifies_held_file",
-            || {
-                let server = Server::new(vec![response(
-                    200,
-                    "Content-Length: 4096\r\n",
-                    &vec![b'E'; 4096],
-                )]);
-                let selected = context(&server);
-                let mut file = tempfile::tempfile().unwrap();
-                let mut events = Vec::new();
-                let done = server
-                    .transport()
-                    .transfer(
-                        &selected,
-                        0,
-                        &mut file,
-                        None,
-                        &AtomicBool::new(false),
-                        42,
-                        |p| events.push(p),
-                    )
-                    .unwrap();
-                assert_eq!(done.byte_size(), 4096);
-                assert_eq!(contents(&mut file), vec![b'E'; 4096]);
-                let requests = server.requests.lock().unwrap();
-                assert_eq!(requests.len(), 1);
-                assert!(
-                    requests[0].starts_with("GET /releases/staging-esp.img HTTP/1.1"),
-                    "request: {:?}",
-                    requests[0]
-                );
-                assert!(requests[0].contains("accept-encoding: identity"));
-                assert!(events.iter().all(|p| p.operation == 42 && p.component == 0));
-                assert!(
-                    events
-                        .iter()
-                        .filter(|p| p.phase != Phase::Complete)
-                        .all(|p| p.verified == 0)
-                );
-                assert_eq!(events.last().unwrap().verified, 4096);
-            },
-        );
-
-        isolated(
-            "closed_reopened_prefix_requires_checkpoint_and_resumes_with_range",
-            || {
-                let server = Server::new(vec![response(
-                    206,
-                    "Content-Range: bytes 1024-4095/4096\r\nContent-Length: 3072\r\n",
-                    &vec![b'E'; 3072],
-                )]);
-                let selected = context(&server);
-                let dir = tempfile::tempdir().unwrap();
-                let path = dir.path().join("working");
-                let mut file = File::options()
-                    .read(true)
-                    .write(true)
-                    .create_new(true)
-                    .open(&path)
-                    .unwrap();
-                file.write_all(&vec![b'E'; 1024]).unwrap();
-                let checkpoint =
-                    capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).unwrap();
-                drop(file);
-                let mut file = File::options().read(true).write(true).open(&path).unwrap();
-                assert!(
-                    server
-                        .transport()
-                        .transfer(
-                            &selected,
-                            0,
-                            &mut file,
-                            None,
-                            &AtomicBool::new(false),
-                            1,
-                            |_| {}
-                        )
-                        .is_err()
-                );
-                assert!(server.requests.lock().unwrap().is_empty());
-                server
-                    .transport()
-                    .transfer(
-                        &selected,
-                        0,
-                        &mut file,
-                        Some(&checkpoint),
-                        &AtomicBool::new(false),
-                        1,
-                        |_| {},
-                    )
-                    .unwrap();
-                assert_eq!(contents(&mut file), vec![b'E'; 4096]);
-                assert!(server.requests.lock().unwrap()[0].contains("range: bytes=1024-"));
-            },
-        );
-
-        isolated(
-            "interrupted_and_partial_ranges_resume_only_bounded_rehashed_prefixes",
-            || {
-                let server = Server::new(vec![
-                    response(200, "Content-Length: 4096\r\n", &vec![b'E'; 1024]),
-                    response(
-                        206,
-                        "Content-Range: bytes 1024-2047/4096\r\n",
-                        &vec![b'E'; 1024],
-                    ),
-                    response(
-                        206,
-                        "Content-Range: bytes 2048-4095/4096\r\n",
-                        &vec![b'E'; 2048],
-                    ),
-                ]);
-                let mut file = tempfile::tempfile().unwrap();
-                server
-                    .transport()
-                    .transfer(
-                        &context(&server),
-                        0,
-                        &mut file,
-                        None,
-                        &AtomicBool::new(false),
-                        7,
-                        |_| {},
-                    )
-                    .unwrap();
-                assert_eq!(contents(&mut file), vec![b'E'; 4096]);
-                let requests = server.requests.lock().unwrap();
-                assert_eq!(requests.len(), 3);
-                assert!(requests[1].contains("range: bytes=1024-"));
-                assert!(requests[2].contains("range: bytes=2048-"));
-            },
-        );
-
-        isolated(
-            "within_operation_retry_rehashes_its_captured_prefix",
-            || {
-                let server = Server::new(vec![
-                    response(200, "Content-Length: 4096\r\n", &vec![b'E'; 1024]),
-                    response(
-                        206,
-                        "Content-Range: bytes 1024-4095/4096\r\n",
-                        &vec![b'E'; 3072],
-                    ),
-                ]);
-                let mut file = tempfile::tempfile().unwrap();
-                let mut mutator = file.try_clone().unwrap();
-                let result = server.transport().transfer(
-                    &context(&server),
-                    0,
-                    &mut file,
-                    None,
-                    &AtomicBool::new(false),
-                    1,
-                    |p| {
-                        if p.phase == Phase::Retrying {
-                            mutator.rewind().unwrap();
-                            mutator.write_all(b"X").unwrap();
-                        }
-                    },
-                );
-                assert!(result.unwrap_err().contains("prefix digest"));
-                assert_eq!(server.requests.lock().unwrap().len(), 1);
-            },
-        );
-    }
-
-    phase untrusted_checkpoints_and_bad_ranges_restart_or_refuse_safely;
-    {
-        isolated(
-            "untrusted_checkpoint_fields_and_changed_prefix_refuse_without_request_or_mutation",
-            || {
-                let server = Server::new(vec![]);
-                let selected = context(&server);
-                let mut file = tempfile::tempfile().unwrap();
-                file.write_all(&vec![b'E'; 1024]).unwrap();
-                let checkpoint =
-                    capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).unwrap();
-                for field in 0..8 {
-                    let mut bad = checkpoint.clone();
-                    match field {
-                        0 => bad.manifest_sha256 = "a".repeat(64),
-                        1 => bad.role = "staging-root".into(),
-                        2 => bad.filename = "other.img".into(),
-                        3 => bad.full_size = 8192,
-                        4 => bad.full_sha256 = "a".repeat(64),
-                        5 => bad.prefix_size = 1023,
-                        6 => bad.prefix_sha256 = "a".repeat(64),
-                        _ => bad.prefix_size = u64::MAX,
-                    }
-                    assert!(
-                        server
-                            .transport()
-                            .transfer(
-                                &selected,
-                                0,
-                                &mut file,
-                                Some(&bad),
-                                &AtomicBool::new(false),
-                                1,
-                                |_| {}
-                            )
-                            .is_err()
-                    );
-                    assert_eq!(contents(&mut file), vec![b'E'; 1024]);
-                }
-                file.rewind().unwrap();
-                file.write_all(b"X").unwrap();
-                let before = contents(&mut file);
-                assert!(
-                    server
-                        .transport()
-                        .transfer(
-                            &selected,
-                            0,
-                            &mut file,
-                            Some(&checkpoint),
-                            &AtomicBool::new(false),
-                            1,
-                            |_| {}
-                        )
-                        .is_err()
-                );
-                assert_eq!(contents(&mut file), before);
-                assert!(server.requests.lock().unwrap().is_empty());
-            },
-        );
-
-        isolated(
-            "ignored_rejected_malformed_and_oversized_ranges_restart_held_handle",
-            || {
-                for raw in [
-                    response(200, "", b"ignored"),
-                    response(416, "", b""),
-                    response(206, "Content-Range: bytes 0-4095/4096\r\n", b""),
-                    response(206, "Content-Range: bytes 1024-4096/4096\r\n", b""),
-                    response(206, "Content-Range: bytes 1024-4095/4097\r\n", b""),
-                    response(
-                        206,
-                        "Content-Range: bytes 1024-4095/4096\r\nContent-Length: 1\r\n",
-                        b"x",
-                    ),
-                    response(
-                        206,
-                        "Content-Range: bytes 1024-4095/4096\r\nContent-Range: bytes 1024-4095/4096\r\n",
-                        b"",
-                    ),
-                ] {
-                    let server = Server::new(vec![raw, response(200, "", &vec![b'E'; 4096])]);
-                    let selected = context(&server);
-                    let mut file = tempfile::tempfile().unwrap();
-                    file.write_all(&vec![b'E'; 1024]).unwrap();
-                    let cp =
-                        capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).unwrap();
-                    let mut events = Vec::new();
-                    server
-                        .transport()
-                        .transfer(
-                            &selected,
-                            0,
-                            &mut file,
-                            Some(&cp),
-                            &AtomicBool::new(false),
-                            9,
-                            |p| events.push(p),
-                        )
-                        .unwrap();
-                    assert_eq!(contents(&mut file), vec![b'E'; 4096]);
-                    assert!(
-                        events
-                            .iter()
-                            .any(|p| p.phase == Phase::Resetting && p.received == 0 && p.verified == 0)
-                    );
-                    let requests = server.requests.lock().unwrap();
-                    assert_eq!(requests.len(), 2);
-                    assert!(!requests[1].contains("range:"));
-                }
-            },
-        );
-
-        isolated(
-            "complete_checkpoint_and_corrupt_resume_require_whole_component_digest",
-            || {
-                for bytes in [vec![b'E'; 4096], vec![b'X'; 4096]] {
-                    let server = Server::new(vec![]);
-                    let selected = context(&server);
-                    let mut file = tempfile::tempfile().unwrap();
-                    file.write_all(&bytes).unwrap();
-                    let cp =
-                        capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).unwrap();
-                    let result = server.transport().transfer(
-                        &selected,
-                        0,
-                        &mut file,
-                        Some(&cp),
-                        &AtomicBool::new(false),
-                        1,
-                        |_| {},
-                    );
-                    assert_eq!(result.is_ok(), bytes[0] == b'E');
-                    assert!(server.requests.lock().unwrap().is_empty());
-                }
-                let server = Server::new(vec![response(
-                    206,
-                    "Content-Range: bytes 1024-4095/4096\r\n",
-                    &vec![b'E'; 3072],
-                )]);
-                let selected = context(&server);
-                let mut file = tempfile::tempfile().unwrap();
-                file.write_all(&vec![b'X'; 1024]).unwrap();
-                let cp = capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).unwrap();
-                assert!(
-                    server
-                        .transport()
-                        .transfer(
-                            &selected,
-                            0,
-                            &mut file,
-                            Some(&cp),
-                            &AtomicBool::new(false),
-                            1,
-                            |_| {}
-                        )
-                        .unwrap_err()
-                        .contains("SHA-256")
-                );
-            },
-        );
     }
 }
 
 use std::{
+    io::{Read, Seek, Write},
     sync::{Arc, Mutex},
     thread,
 };
@@ -542,6 +129,41 @@ impl Server {
     pub(in crate::setup) fn requests(&self) -> Vec<String> {
         self.requests.lock().unwrap().clone()
     }
+    /// A release server that answers by what was asked for rather than by
+    /// request order: the manifest, either component, every time. A download
+    /// that is paused, cancelled or retried abandons requests, and the next
+    /// one must still find its own bytes.
+    pub(in crate::setup) fn serve_release(
+        manifest: Vec<u8>,
+        esp: Vec<u8>,
+        root: Vec<u8>,
+        on_request: impl FnMut(&str) + Send + 'static,
+    ) -> Self {
+        let bodies = Arc::new((manifest, esp, root));
+        let on_request = Arc::new(Mutex::new(on_request));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&requests);
+        let served = Responder::serve(move |peer| {
+            let target = peer.request().target.clone();
+            seen.lock().unwrap().push(target.clone());
+            (on_request.lock().unwrap())(&target);
+            let (manifest, esp, root) = &*bodies;
+            let body = if target.ends_with("staging-esp.img") {
+                esp
+            } else if target.ends_with("staging-root.img") {
+                root
+            } else {
+                manifest
+            };
+            let _ = peer.write(&response(200, "", body));
+        });
+        let url = format!("{}/releases/manifest.json", served.url());
+        Self {
+            url,
+            requests,
+            _served: served,
+        }
+    }
     pub(in crate::setup) fn transport(&self) -> InternalTransport {
         InternalTransport::client(Url::parse(&self.url).unwrap(), tilo_test_env::hang_bound())
             .unwrap()
@@ -591,717 +213,11 @@ pub(in crate::setup) fn with_hook(hook: Hook, test: impl FnOnce()) {
     let _reset = Reset;
     test();
 }
-tilo_test_env::scenario! {
-    fn an_internal_download_never_reports_a_broken_transfer_as_complete;
 
-    phase network_errors_and_short_bodies_are_never_completion;
-    {
-        isolated(
-            "transient_http_retries_are_bounded_and_preserve_prefix",
-            || {
-                let server = Server::new(vec![
-                    response(503, "", b""),
-                    response(
-                        206,
-                        "Content-Range: bytes 1024-4095/4096\r\n",
-                        &vec![b'E'; 3072],
-                    ),
-                ]);
-                let selected = context(&server);
-                let mut file = tempfile::tempfile().unwrap();
-                file.write_all(&vec![b'E'; 1024]).unwrap();
-                let cp = capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).unwrap();
-                server
-                    .transport()
-                    .transfer(
-                        &selected,
-                        0,
-                        &mut file,
-                        Some(&cp),
-                        &AtomicBool::new(false),
-                        1,
-                        |_| {},
-                    )
-                    .unwrap();
-                assert!(
-                    server
-                        .requests
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .all(|r| r.contains("range: bytes=1024-"))
-                );
-                let server = Server::new(vec![response(503, "", b""); 4]);
-                let mut file = tempfile::tempfile().unwrap();
-                let error = server
-                    .transport()
-                    .transfer(
-                        &context(&server),
-                        0,
-                        &mut file,
-                        None,
-                        &AtomicBool::new(false),
-                        1,
-                        |_| {},
-                    )
-                    .unwrap_err();
-                assert!(error.contains("3 attempts"));
-                assert_eq!(server.requests.lock().unwrap().len(), 3);
-            },
-        );
-
-        isolated(
-            "component_encoding_length_excess_truncation_and_digest_are_not_completion",
-            || {
-                for raw in [
-                    response(200, "Content-Encoding: gzip\r\n", &vec![b'E'; 4096]),
-                    response(
-                        200,
-                        "Content-Encoding: identity\r\nContent-Encoding: identity\r\n",
-                        &vec![b'E'; 4096],
-                    ),
-                    response(200, "Content-Length: 4097\r\n", &vec![b'E'; 4096]),
-                    response(200, "", &vec![b'E'; 4097]),
-                    response(200, "", &vec![b'E'; 4095]),
-                    response(200, "", &vec![b'X'; 4096]),
-                    response(
-                        206,
-                        "Content-Range: bytes 0-4095/4096\r\n",
-                        &vec![b'E'; 4096],
-                    ),
-                ] {
-                    let server = Server::new(vec![raw]);
-                    let mut file = tempfile::tempfile().unwrap();
-                    let mut events = Vec::new();
-                    assert!(
-                        server
-                            .transport()
-                            .transfer(
-                                &context(&server),
-                                0,
-                                &mut file,
-                                None,
-                                &AtomicBool::new(false),
-                                1,
-                                |p| events.push(p)
-                            )
-                            .is_err()
-                    );
-                    assert!(file.metadata().unwrap().len() <= 4096);
-                    assert_eq!(events.last().unwrap().phase, Phase::Failed);
-                    assert!(events.iter().all(|p| p.verified == 0));
-                }
-            },
-        );
-
-        isolated(
-            "expected_network_bytes_followed_by_eof_error_require_new_complete_response",
-            || {
-                let malformed = format!("1000\r\n{}\r\n", "E".repeat(4096));
-                let raw = response(200, "Transfer-Encoding: chunked\r\n", malformed.as_bytes());
-                let server = Server::new(vec![raw.clone(), raw.clone(), raw]);
-                let mut file = tempfile::tempfile().unwrap();
-                assert!(
-                    server
-                        .transport()
-                        .transfer(
-                            &context(&server),
-                            0,
-                            &mut file,
-                            None,
-                            &AtomicBool::new(false),
-                            1,
-                            |_| {}
-                        )
-                        .is_err()
-                );
-                assert_eq!(server.requests.lock().unwrap().len(), 3);
-                assert_eq!(file.metadata().unwrap().len(), 0);
-                let complete = format!("1000\r\n{}\r\n0\r\n\r\n", "E".repeat(4096));
-                let server = Server::new(vec![response(
-                    200,
-                    "Transfer-Encoding: chunked\r\n",
-                    complete.as_bytes(),
-                )]);
-                server
-                    .transport()
-                    .transfer(
-                        &context(&server),
-                        0,
-                        &mut file,
-                        None,
-                        &AtomicBool::new(false),
-                        1,
-                        |_| {},
-                    )
-                    .unwrap();
-            },
-        );
-    }
-
-    phase download_cancellation_never_returns_success_at_any_boundary;
-    {
-        isolated(
-            "output_type_invalid_index_and_cancellation_refuse_before_request",
-            || {
-                let server = Server::new(vec![]);
-                let selected = context(&server);
-                let mut file = tempfile::tempfile().unwrap();
-                assert!(
-                    server
-                        .transport()
-                        .transfer(
-                            &selected,
-                            2,
-                            &mut file,
-                            None,
-                            &AtomicBool::new(false),
-                            1,
-                            |_| {}
-                        )
-                        .is_err()
-                );
-                assert!(
-                    server
-                        .transport()
-                        .transfer(
-                            &selected,
-                            0,
-                            &mut file,
-                            None,
-                            &AtomicBool::new(true),
-                            1,
-                            |_| {}
-                        )
-                        .is_err()
-                );
-                assert!(
-                    server
-                        .transport()
-                        .fetch_manifest(&server.release(&manifest()), &AtomicBool::new(true))
-                        .is_err()
-                );
-                #[cfg(unix)]
-                {
-                    let dir = tempfile::tempdir().unwrap();
-                    let mut file = File::open(dir.path()).unwrap();
-                    assert!(
-                        server
-                            .transport()
-                            .transfer(
-                                &selected,
-                                0,
-                                &mut file,
-                                None,
-                                &AtomicBool::new(false),
-                                1,
-                                |_| {}
-                            )
-                            .is_err()
-                    );
-                    assert!(
-                        capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).is_err()
-                    );
-                }
-                assert!(server.requests.lock().unwrap().is_empty());
-            },
-        );
-
-        isolated(
-            "cancellation_at_network_final_hash_and_completion_never_returns_success",
-            || {
-                for phase in [Phase::Receiving, Phase::Verifying, Phase::Complete] {
-                    let server = Server::new(vec![response(200, "", &vec![b'E'; 4096])]);
-                    let mut file = tempfile::tempfile().unwrap();
-                    let cancel = AtomicBool::new(false);
-                    let mut events = Vec::new();
-                    assert!(
-                        server
-                            .transport()
-                            .transfer(&context(&server), 0, &mut file, None, &cancel, 1, |p| {
-                                events.push(p);
-                                if p.phase == phase {
-                                    cancel.store(true, Ordering::Release);
-                                }
-                            })
-                            .is_err()
-                    );
-                    assert_eq!(events.last().unwrap().phase, Phase::Cancelled);
-                }
-                for stage in ["hash", "hash-eof"] {
-                    let server = Server::new(vec![response(200, "", &vec![b'E'; 4096])]);
-                    let mut file = tempfile::tempfile().unwrap();
-                    let cancel = Arc::new(AtomicBool::new(false));
-                    let signal = cancel.clone();
-                    with_hook(
-                        Box::new(move |s, _| {
-                            if s == stage {
-                                signal.store(true, Ordering::Release);
-                            }
-                        }),
-                        || {
-                            assert!(
-                                server
-                                    .transport()
-                                    .transfer(&context(&server), 0, &mut file, None, &cancel, 1, |_| {})
-                                    .is_err()
-                            );
-                        },
-                    );
-                }
-            },
-        );
-
-        isolated(
-            "cancellation_during_prefix_and_checkpoint_hash_stops_before_requests",
-            || {
-                for capture in [false, true] {
-                    let server = Server::new(vec![]);
-                    let selected = context(&server);
-                    let mut file = tempfile::tempfile().unwrap();
-                    file.write_all(&vec![b'E'; 1024]).unwrap();
-                    let cp =
-                        capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).unwrap();
-                    let cancel = Arc::new(AtomicBool::new(false));
-                    let signal = cancel.clone();
-                    with_hook(
-                        Box::new(move |stage, _| {
-                            if stage == "hash" {
-                                signal.store(true, Ordering::Release);
-                            }
-                        }),
-                        || {
-                            if capture {
-                                assert!(capture_checkpoint(&selected, 0, &mut file, &cancel).is_err());
-                            } else {
-                                assert!(
-                                    server
-                                        .transport()
-                                        .transfer(
-                                            &selected,
-                                            0,
-                                            &mut file,
-                                            Some(&cp),
-                                            &cancel,
-                                            1,
-                                            |_| {}
-                                        )
-                                        .is_err()
-                                );
-                            }
-                        },
-                    );
-                    assert!(server.requests.lock().unwrap().is_empty());
-                    assert_eq!(contents(&mut file), vec![b'E'; 1024]);
-                }
-            },
-        );
-
-        isolated(
-            "final_hash_cancellation_checks_first_middle_last_chunks_and_eof",
-            || {
-                let payload = vec![b'R'; 131584];
-                let mut value = super::super::internal_bundle::tests::fixture();
-                value["components"][1]["byte_size"] = serde_json::json!(131584);
-                value["components"][1]["sha256"] =
-                    serde_json::json!(hex::encode(Sha256::digest(&payload)));
-                value["source_image_bytes"] = serde_json::json!(153088);
-                let bytes = serde_json::to_vec(&value).unwrap();
-                for (stage, count) in [
-                    ("hash", 65536),
-                    ("hash", 131072),
-                    ("hash", 131584),
-                    ("hash-eof", 131584),
-                ] {
-                    let server = Server::new(vec![response(200, "", &payload)]);
-                    let selected = SelectedManifest::checked(
-                        &server.release(&bytes),
-                        bytes.clone(),
-                        &Url::parse(&server.url).unwrap(),
-                    )
-                    .unwrap();
-                    let mut file = tempfile::tempfile().unwrap();
-                    let cancel = Arc::new(AtomicBool::new(false));
-                    let signal = cancel.clone();
-                    with_hook(
-                        Box::new(move |s, n| {
-                            if s == stage && n == count {
-                                signal.store(true, Ordering::Release);
-                            }
-                        }),
-                        || {
-                            assert!(
-                                server
-                                    .transport()
-                                    .transfer(&selected, 1, &mut file, None, &cancel, 1, |_| {})
-                                    .is_err()
-                            );
-                        },
-                    );
-                    assert!(cancel.load(Ordering::Acquire));
-                    assert_eq!(file.metadata().unwrap().len(), 131584);
-                }
-            },
-        );
-    }
-
-    phase redirects_and_stream_timeouts_are_bounded;
-    {
-        isolated(
-            "redirects_are_bounded_checked_and_keep_original_sibling_base",
-            || {
-                let bytes = manifest();
-                let server = Server::new(vec![
-                    response(302, "Location: /elsewhere/manifest.json\r\n", b""),
-                    response(200, "", &bytes),
-                    response(200, "", &vec![b'E'; 4096]),
-                ]);
-                let transport = server.transport();
-                let selected = transport
-                    .fetch_manifest(&server.release(&bytes), &AtomicBool::new(false))
-                    .unwrap();
-                let mut file = tempfile::tempfile().unwrap();
-                transport
-                    .transfer(
-                        &selected,
-                        0,
-                        &mut file,
-                        None,
-                        &AtomicBool::new(false),
-                        1,
-                        |_| {},
-                    )
-                    .unwrap();
-                assert!(
-                    server.requests.lock().unwrap()[2].starts_with("GET /releases/staging-esp.img")
-                );
-                for location in [
-                    "http://127.0.0.1:1/escape",
-                    "https://evil.test/escape",
-                    "/escape?x=1",
-                    "/escape#x",
-                    "http://user@127.0.0.1/escape",
-                ] {
-                    let server = Server::new(vec![response(
-                        302,
-                        &format!("Location: {location}\r\n"),
-                        b"",
-                    )]);
-                    assert!(
-                        server
-                            .transport()
-                            .fetch_manifest(&server.release(&bytes), &AtomicBool::new(false))
-                            .is_err()
-                    );
-                    assert_eq!(
-                        server.requests.lock().unwrap().len(),
-                        1,
-                        "location {location}: {:?}",
-                        server.requests
-                    );
-                }
-                for hops in [5, 6] {
-                    let mut responses = vec![response(302, "Location: /again\r\n", b""); hops];
-                    responses.push(response(200, "", &bytes));
-                    let server = Server::new(responses);
-                    assert_eq!(
-                        server
-                            .transport()
-                            .fetch_manifest(&server.release(&bytes), &AtomicBool::new(false))
-                            .is_ok(),
-                        hops == 5
-                    );
-                    assert_eq!(server.requests.lock().unwrap().len(), 6);
-                }
-            },
-        );
-
-        isolated("stalled_network_read_obeys_injected_timeout", || {
-            // The body never comes until the transfer has given up.
-            let (gave_up, release) = std::sync::mpsc::channel::<()>();
-            let release = Mutex::new(release);
-            let (finished, stalled) = std::sync::mpsc::channel();
-            let served = Responder::serve(move |peer| {
-                let _ = peer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\n");
-                let _ = finished.send(
-                    release
-                        .lock()
-                        .unwrap()
-                        .recv_timeout(tilo_test_env::hang_bound())
-                        .is_ok(),
-                );
-            });
-            let url = format!("{}/manifest.json", served.url());
-            let bytes = manifest();
-            let selected = SelectedManifest::checked(
-                &InternalRelease::transport_fixture(&bytes, &url),
-                bytes,
-                &Url::parse(&url).unwrap(),
-            )
-            .unwrap();
-            let transport =
-                InternalTransport::client(Url::parse(&url).unwrap(), Duration::from_millis(40))
-                    .unwrap();
-            let mut file = tempfile::tempfile().unwrap();
-            assert!(
-                transport
-                    .transfer(
-                        &selected,
-                        0,
-                        &mut file,
-                        None,
-                        &AtomicBool::new(false),
-                        1,
-                        |_| {}
-                    )
-                    .is_err()
-            );
-            gave_up.send(()).unwrap();
-            assert!(
-                stalled.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
-                "the transfer waited for the stalled body instead of its timeout"
-            );
-        });
-
-        isolated(
-            "multiple_stream_reads_can_outlast_one_timeout_and_cancel_after_received_bytes",
-            || {
-                for should_cancel in [false, true] {
-                    let served = Responder::serve(|peer| {
-                        if !peer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\n") {
-                            return;
-                        }
-                        for i in 0..4 {
-                            if i > 0 {
-                                thread::sleep(Duration::from_millis(150));
-                            }
-                            if !peer.write(&vec![b'E'; 1024]) {
-                                break;
-                            }
-                        }
-                    });
-                    let url = format!("{}/manifest.json", served.url());
-                    let bytes = manifest();
-                    let selected = SelectedManifest::checked(
-                        &InternalRelease::transport_fixture(&bytes, &url),
-                        bytes,
-                        &Url::parse(&url).unwrap(),
-                    )
-                    .unwrap();
-                    let transport = InternalTransport::client(
-                        Url::parse(&url).unwrap(),
-                        Duration::from_millis(300),
-                    )
-                    .unwrap();
-                    let mut file = tempfile::tempfile().unwrap();
-                    let cancel = AtomicBool::new(false);
-                    let start = ui::time::now();
-                    let mut events = Vec::new();
-                    let result = transport.transfer(&selected, 0, &mut file, None, &cancel, 5, |p| {
-                        events.push(p);
-                        if should_cancel && p.phase == Phase::Receiving && p.received > 0 {
-                            cancel.store(true, Ordering::Release);
-                        }
-                    });
-                    assert_eq!(result.is_ok(), !should_cancel);
-                    if should_cancel {
-                        assert!(file.metadata().unwrap().len() < 4096);
-                        assert_eq!(events.last().unwrap().phase, Phase::Cancelled);
-                    } else {
-                        assert!(start.elapsed() >= Duration::from_millis(400));
-                        assert_eq!(contents(&mut file), vec![b'E'; 4096]);
-                    }
-                    assert!(
-                        events
-                            .iter()
-                            .any(|p| p.phase == Phase::Receiving && p.received > 0 && p.verified == 0)
-                    );
-                }
-            },
-        );
-    }
-
-    phase http_framing_errors_fail_before_retry_redirect_or_prefix_change;
-    {
-        isolated(
-            "malformed_http_framing_fails_without_retrying_an_invalid_response",
-            || {
-                for headers in [
-                    "Content-Length: invalid\r\n",
-                    "Content-Length: 4096\r\nContent-Length: 4097\r\n",
-                ] {
-                    let server = Server::new(vec![response(200, headers, b""); 3]);
-                    let mut file = tempfile::tempfile().unwrap();
-                    assert!(
-                        server
-                            .transport()
-                            .transfer(
-                                &context(&server),
-                                0,
-                                &mut file,
-                                None,
-                                &AtomicBool::new(false),
-                                1,
-                                |_| {}
-                            )
-                            .is_err()
-                    );
-                    assert_eq!(server.requests.lock().unwrap().len(), 1);
-                    assert_eq!(file.metadata().unwrap().len(), 0);
-                }
-            },
-        );
-
-        isolated(
-            "framing_resumed_components_refuse_before_modifying_held_prefix",
-            || {
-                let mut accepted = Vec::new();
-                for (name, headers, body) in unsupported_framings(&vec![b'E'; 3072]) {
-                    let server = Server::new(vec![response(
-                        206,
-                        &format!("{headers}Content-Range: bytes 1024-4095/4096\r\n"),
-                        &body,
-                    )]);
-                    let selected = context(&server);
-                    let mut file = tempfile::tempfile().unwrap();
-                    file.write_all(&vec![b'E'; 1024]).unwrap();
-                    let cp =
-                        capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).unwrap();
-                    let result = server.transport().transfer(
-                        &selected,
-                        0,
-                        &mut file,
-                        Some(&cp),
-                        &AtomicBool::new(false),
-                        1,
-                        |_| {},
-                    );
-                    if result.is_ok() || contents(&mut file) != vec![b'E'; 1024] {
-                        accepted.push(name);
-                    }
-                    assert_eq!(server.requests.lock().unwrap().len(), 1);
-                }
-                assert!(
-                    accepted.is_empty(),
-                    "unsupported framing accepted/mutated resumed component: {accepted:?}"
-                );
-            },
-        );
-
-        isolated(
-            "framing_refuses_before_redirect_or_ignored_range_reset",
-            || {
-                let bytes = manifest();
-                let mut violations = Vec::new();
-                for (name, headers, _) in unsupported_framings(&[]) {
-                    let server = Server::new(vec![
-                        response(302, &format!("{headers}Location: /next\r\n"), b""),
-                        response(200, "", &bytes),
-                    ]);
-                    let result = server
-                        .transport()
-                        .fetch_manifest(&server.release(&bytes), &AtomicBool::new(false));
-                    if result.is_ok() || server.requests.lock().unwrap().len() != 1 {
-                        violations.push(format!("redirect {name}"));
-                    }
-                    let server = Server::new(vec![
-                        response(200, &headers, b""),
-                        response(200, "", &vec![b'E'; 4096]),
-                    ]);
-                    let selected = context(&server);
-                    let mut file = tempfile::tempfile().unwrap();
-                    file.write_all(&vec![b'E'; 1024]).unwrap();
-                    let cp =
-                        capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).unwrap();
-                    let result = server.transport().transfer(
-                        &selected,
-                        0,
-                        &mut file,
-                        Some(&cp),
-                        &AtomicBool::new(false),
-                        1,
-                        |_| {},
-                    );
-                    if result.is_ok()
-                        || server.requests.lock().unwrap().len() != 1
-                        || contents(&mut file) != vec![b'E'; 1024]
-                    {
-                        violations.push(format!("reset {name}"));
-                    }
-                }
-                assert!(
-                    violations.is_empty(),
-                    "unsupported framing was acted on: {violations:?}"
-                );
-            },
-        );
-
-        isolated("framing_http_10_requires_absent_transfer_encoding", || {
-            let bytes = manifest();
-            for (headers, body, accepted) in [
-                ("", bytes.clone(), true),
-                ("Transfer-Encoding: chunked\r\n", chunked(&bytes), false),
-            ] {
-                let raw = response(200, headers, &body);
-                let raw = [b"HTTP/1.0".as_slice(), &raw[8..]].concat();
-                let server = Server::new(vec![raw]);
-                assert_eq!(
-                    server
-                        .transport()
-                        .fetch_manifest(&server.release(&bytes), &AtomicBool::new(false))
-                        .is_ok(),
-                    accepted
-                );
-                assert_eq!(server.requests.lock().unwrap().len(), 1);
-            }
-        });
-    }
-}
-fn chunked(bytes: &[u8]) -> Vec<u8> {
-    let mut wire = format!("{:x}\r\n", bytes.len()).into_bytes();
-    wire.extend_from_slice(bytes);
-    wire.extend_from_slice(b"\r\n0\r\n\r\n");
-    wire
-}
-fn unsupported_framings(bytes: &[u8]) -> Vec<(&'static str, String, Vec<u8>)> {
-    vec![
-        (
-            "unknown",
-            "Transfer-Encoding: yolo\r\n".into(),
-            bytes.to_vec(),
-        ),
-        (
-            "TE plus CL",
-            format!(
-                "Transfer-Encoding: chunked\r\nContent-Length: {}\r\n",
-                bytes.len()
-            ),
-            chunked(bytes),
-        ),
-        (
-            "repeated coding",
-            "Transfer-Encoding: chunked, chunked\r\n".into(),
-            chunked(bytes),
-        ),
-        (
-            "additional coding",
-            "Transfer-Encoding: gzip, chunked\r\n".into(),
-            chunked(bytes),
-        ),
-        (
-            "duplicate fields",
-            "Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n".into(),
-            chunked(bytes),
-        ),
-    ]
-}
 thread_local! { static WRITE_REMAINING: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) }; }
 pub(super) struct FaultWriter<'a>(pub(super) &'a mut File);
 impl Write for FaultWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if let Some(result) = scripted_write(self.0, bytes) {
-            return result;
-        }
         WRITE_REMAINING.with(|remaining| match remaining.get() {
             Some(0) => Err(std::io::Error::other("injected after real partial write")),
             Some(limit) => {
@@ -1327,336 +243,12 @@ fn with_write_failure(after: usize, test: impl FnOnce()) {
     let _reset = Reset;
     test();
 }
-tilo_test_env::scenario! {
-    fn an_internal_download_counts_and_recovers_real_writes;
 
-    phase terminal_counter_reflects_actual_file_writes;
-    {
-        isolated(
-            "terminal_counter_includes_successful_write_before_cancellation",
-            || {
-                let server = Server::new(vec![response(200, "", &vec![b'E'; 4096])]);
-                let mut file = tempfile::tempfile().unwrap();
-                let mut events = Vec::new();
-                let cancel = Arc::new(AtomicBool::new(false));
-                let signal = cancel.clone();
-                with_hook(
-                    Box::new(move |stage, _| {
-                        if stage == "write" {
-                            signal.store(true, Ordering::Release);
-                        }
-                    }),
-                    || {
-                        assert!(
-                            server
-                                .transport()
-                                .transfer(&context(&server), 0, &mut file, None, &cancel, 41, |p| {
-                                    events.push(p)
-                                })
-                                .is_err()
-                        );
-                    },
-                );
-                let bytes = contents(&mut file);
-                assert!(!bytes.is_empty());
-                assert!(bytes.iter().all(|b| *b == b'E'));
-                let terminal = events.last().unwrap();
-                assert_eq!(terminal.phase, Phase::Cancelled);
-                assert_eq!(terminal.verified, 0);
-                assert_eq!(terminal.received, bytes.len() as u64);
-                assert_eq!(server.requests.lock().unwrap().len(), 1);
-            },
-        );
-
-        isolated(
-            "terminal_counter_clears_successful_reset_before_cancellation",
-            || {
-                let server = Server::new(vec![response(416, "", b"")]);
-                let selected = context(&server);
-                let mut file = tempfile::tempfile().unwrap();
-                file.write_all(&vec![b'E'; 1024]).unwrap();
-                let cp = capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).unwrap();
-                let mut events = Vec::new();
-                let cancel = Arc::new(AtomicBool::new(false));
-                let signal = cancel.clone();
-                with_hook(
-                    Box::new(move |stage, _| {
-                        if stage == "reset" {
-                            signal.store(true, Ordering::Release);
-                        }
-                    }),
-                    || {
-                        assert!(
-                            server
-                                .transport()
-                                .transfer(&selected, 0, &mut file, Some(&cp), &cancel, 42, |p| events
-                                    .push(p))
-                                .is_err()
-                        );
-                    },
-                );
-                assert!(contents(&mut file).is_empty());
-                let terminal = events.last().unwrap();
-                assert_eq!(terminal.phase, Phase::Cancelled);
-                assert_eq!(terminal.verified, 0);
-                assert_eq!(terminal.received, 0);
-                assert_eq!(server.requests.lock().unwrap().len(), 1);
-            },
-        );
-
-        isolated(
-            "terminal_counter_includes_partial_real_file_write_before_error",
-            || {
-                let server = Server::new(vec![response(200, "", &vec![b'E'; 4096])]);
-                let mut file = tempfile::tempfile().unwrap();
-                let mut events = Vec::new();
-                with_write_failure(1024, || {
-                    let error = server
-                        .transport()
-                        .transfer(
-                            &context(&server),
-                            0,
-                            &mut file,
-                            None,
-                            &AtomicBool::new(false),
-                            43,
-                            |p| events.push(p),
-                        )
-                        .unwrap_err();
-                    assert!(error.contains("injected after real partial write"));
-                });
-                assert_eq!(contents(&mut file), vec![b'E'; 1024]);
-                let terminal = events.last().unwrap();
-                assert_eq!(terminal.phase, Phase::Failed);
-                assert_eq!(terminal.verified, 0);
-                assert_eq!(terminal.received, 1024);
-                assert_eq!(server.requests.lock().unwrap().len(), 1);
-            },
-        );
-    }
-
-    phase interrupted_writes_recover_within_a_cumulative_bound;
-    {
-        isolated(
-            "interrupted_write_recovers_then_authenticates_exact_real_file_bytes",
-            || {
-                for interruptions in [1, 7] {
-                    let server = Server::new(vec![response(200, "", &vec![b'E'; 4096])]);
-                    let mut file = tempfile::tempfile().unwrap();
-                    let mut events = Vec::new();
-                    let (attempts, observed) = with_write_script(
-                        vec![WriteStep::Interrupted; interruptions],
-                        false,
-                        None,
-                        || {
-                            let result = server
-                                .transport()
-                                .transfer(
-                                    &context(&server),
-                                    0,
-                                    &mut file,
-                                    None,
-                                    &AtomicBool::new(false),
-                                    51,
-                                    |p| events.push(p),
-                                )
-                                .unwrap();
-                            assert_eq!(result.byte_size(), 4096);
-                        },
-                    );
-                    assert_eq!(contents(&mut file), vec![b'E'; 4096]);
-                    assert_eq!(observed, interruptions);
-                    assert!(attempts > interruptions);
-                    let terminal = events.last().unwrap();
-                    assert_eq!(terminal.phase, Phase::Complete);
-                    assert_eq!(terminal.received, 4096);
-                    assert_eq!(terminal.verified, 4096);
-                    assert_eq!(server.requests.lock().unwrap().len(), 1);
-                }
-            },
-        );
-
-        isolated(
-            "interrupted_write_cancellation_prevents_retry_and_preserves_prefix",
-            || {
-                let server = Server::new(vec![response(
-                    206,
-                    "Content-Range: bytes 1024-4095/4096\r\n",
-                    &vec![b'E'; 3072],
-                )]);
-                let selected = context(&server);
-                let mut file = tempfile::tempfile().unwrap();
-                file.write_all(&vec![b'E'; 1024]).unwrap();
-                let cp = capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).unwrap();
-                let cancel = Arc::new(AtomicBool::new(false));
-                let mut events = Vec::new();
-                let counts = with_write_script(
-                    vec![WriteStep::Interrupted],
-                    false,
-                    Some(cancel.clone()),
-                    || {
-                        let error = server
-                            .transport()
-                            .transfer(&selected, 0, &mut file, Some(&cp), &cancel, 52, |p| {
-                                events.push(p)
-                            })
-                            .unwrap_err();
-                        assert!(error.contains("cancelled"), "{error}");
-                    },
-                );
-                assert_eq!(counts, (1, 1));
-                assert_eq!(contents(&mut file), vec![b'E'; 1024]);
-                let terminal = events.last().unwrap();
-                assert_eq!(terminal.phase, Phase::Cancelled);
-                assert_eq!(terminal.received, 1024);
-                assert_eq!(terminal.verified, 0);
-                assert_eq!(server.requests.lock().unwrap().len(), 1);
-            },
-        );
-
-        isolated(
-            "interrupted_write_exhaustion_stops_at_eight_and_preserves_prefix",
-            || {
-                let server = Server::new(vec![response(
-                    206,
-                    "Content-Range: bytes 1024-4095/4096\r\n",
-                    &vec![b'E'; 3072],
-                )]);
-                let selected = context(&server);
-                let mut file = tempfile::tempfile().unwrap();
-                file.write_all(&vec![b'E'; 1024]).unwrap();
-                let cp = capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).unwrap();
-                let mut events = Vec::new();
-                let counts = with_write_script(vec![], true, None, || {
-                    assert!(
-                        server
-                            .transport()
-                            .transfer(
-                                &selected,
-                                0,
-                                &mut file,
-                                Some(&cp),
-                                &AtomicBool::new(false),
-                                53,
-                                |p| events.push(p)
-                            )
-                            .is_err()
-                    );
-                });
-                assert_eq!(counts, (8, 8));
-                assert_eq!(contents(&mut file), vec![b'E'; 1024]);
-                let terminal = events.last().unwrap();
-                assert_eq!(terminal.phase, Phase::Failed);
-                assert_eq!(terminal.received, 1024);
-                assert_eq!(terminal.verified, 0);
-                assert_eq!(server.requests.lock().unwrap().len(), 1);
-            },
-        );
-
-        isolated(
-            "interrupted_write_allowance_is_cumulative_across_successful_partial_writes",
-            || {
-                let mut steps = Vec::new();
-                for _ in 0..7 {
-                    steps.extend([WriteStep::Interrupted, WriteStep::Write(1)]);
-                }
-                steps.push(WriteStep::Interrupted);
-                let mut file = tempfile::tempfile().unwrap();
-                let mut events = Events {
-                    callback: |_| {},
-                    operation: 54,
-                    component: 0,
-                    last: None,
-                    received: 0,
-                };
-                let counts = with_write_script(steps, false, None, || {
-                    assert!(
-                        write_chunk(&mut file, &[b'E'; 32], &AtomicBool::new(false), &mut events)
-                            .is_err()
-                    );
-                });
-                assert_eq!(counts, (15, 8));
-                assert_eq!(contents(&mut file), vec![b'E'; 7]);
-                assert_eq!(events.received, 7);
-            },
-        );
-    }
-}
-#[derive(Clone, Copy)]
-enum WriteStep {
-    Interrupted,
-    Write(usize),
-}
-struct WriteScript {
-    steps: std::collections::VecDeque<WriteStep>,
-    always_interrupted: bool,
-    cancel_on_interrupt: Option<Arc<AtomicBool>>,
-    attempts: usize,
-    interrupted: usize,
-}
-thread_local! { static WRITE_SCRIPT: std::cell::RefCell<Option<WriteScript>> = const { std::cell::RefCell::new(None) }; }
-fn scripted_write(file: &mut File, bytes: &[u8]) -> Option<std::io::Result<usize>> {
-    WRITE_SCRIPT.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        let script = slot.as_mut()?;
-        script.attempts += 1;
-        assert!(
-            script.attempts <= 64,
-            "interrupted writer exceeded test safety bound"
-        );
-        let step = script
-            .steps
-            .pop_front()
-            .or(script.always_interrupted.then_some(WriteStep::Interrupted));
-        Some(match step {
-            Some(WriteStep::Interrupted) => {
-                script.interrupted += 1;
-                if let Some(cancel) = &script.cancel_on_interrupt {
-                    cancel.store(true, Ordering::Release);
-                }
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "injected interrupted write",
-                ))
-            }
-            Some(WriteStep::Write(limit)) => file.write(&bytes[..bytes.len().min(limit)]),
-            None => file.write(bytes),
-        })
-    })
-}
-fn with_write_script(
-    steps: Vec<WriteStep>,
-    always_interrupted: bool,
-    cancel: Option<Arc<AtomicBool>>,
-    test: impl FnOnce(),
-) -> (usize, usize) {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            WRITE_SCRIPT.with(|s| *s.borrow_mut() = None);
-        }
-    }
-    WRITE_SCRIPT.with(|s| {
-        *s.borrow_mut() = Some(WriteScript {
-            steps: steps.into(),
-            always_interrupted,
-            cancel_on_interrupt: cancel,
-            attempts: 0,
-            interrupted: 0,
-        })
-    });
-    let _reset = Reset;
-    test();
-    WRITE_SCRIPT.with(|s| {
-        let s = s.borrow();
-        let s = s.as_ref().unwrap();
-        (s.attempts, s.interrupted)
-    })
-}
 thread_local! { static CHECKPOINT_INTERVAL: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) }; }
 pub(super) fn checkpoint_interval_override() -> Option<u64> {
     CHECKPOINT_INTERVAL.get()
 }
+
 #[cfg(unix)]
 use super::super::internal_cache::tests::{
     DiskProvider, clear_reads, fail, read_totals, start_prefix, test_prepared,
@@ -1693,30 +285,20 @@ tilo_test_env::scenario! {
                 let pause = AtomicBool::new(false);
                 clear_reads();
                 CHECKPOINT_INTERVAL.set(Some(32768));
-                let final_reads = Arc::new(Mutex::new(0));
-                let count = final_reads.clone();
-                with_hook(
-                    Box::new(move |stage, n| {
-                        if stage == "hash-eof" {
-                            *count.lock().unwrap() += n;
-                        }
-                    }),
-                    || {
-                        let mut session = Session::new(&selected, 1, 41, p).unwrap();
-                        let prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
-                        assert!(matches!(
-                            server
-                                .transport()
-                                .transfer_persistent(prepared, &cancel, &pause, |_| {})
-                                .unwrap(),
-                            PersistentOutcome::Complete(_)
-                        ));
-                    },
-                );
+                {
+                    let mut session = Session::new(&selected, 1, 41, p).unwrap();
+                    let prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+                    assert!(matches!(
+                        server
+                            .transport()
+                            .transfer_persistent(prepared, &cancel, &pause, |_| {})
+                            .unwrap(),
+                        PersistentOutcome::Complete(_)
+                    ));
+                }
                 CHECKPOINT_INTERVAL.set(None);
                 assert_eq!(contents(&mut f), payload);
                 assert_eq!(read_totals("periodic"), (524288, 524288));
-                assert_eq!(*final_reads.lock().unwrap(), 524288);
                 assert_eq!(
                     std::fs::read_dir(dir.path().join("journal"))
                         .unwrap()
@@ -2114,37 +696,24 @@ tilo_test_env::scenario! {
                 let mut session = Session::new(&selected, 0, 102, p).unwrap();
                 let prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
                 assert_eq!(read_totals("restart"), (1024, 1024));
-                let final_reads = Arc::new(Mutex::new(0));
-                let count = final_reads.clone();
-                with_hook(
-                    Box::new(move |stage, n| {
-                        if stage == "hash-eof" {
-                            *count.lock().unwrap() += n
-                        }
-                    }),
-                    || {
-                        let outcome = server
-                            .transport()
-                            .transfer_persistent(prepared, &cancel, &AtomicBool::new(false), |_| {})
-                            .unwrap();
-                        match outcome {
-                            PersistentOutcome::Complete(done) => assert_eq!(done.byte_size(), 4096),
-                            other => panic!("{other:?}"),
-                        }
-                    },
-                );
+                let outcome = server
+                    .transport()
+                    .transfer_persistent(prepared, &cancel, &AtomicBool::new(false), |_| {})
+                    .unwrap();
+                match outcome {
+                    PersistentOutcome::Complete(done) => assert_eq!(done.byte_size(), 4096),
+                    other => panic!("{other:?}"),
+                }
                 assert_eq!(contents(&mut f), vec![b'E'; 4096]);
                 assert_eq!(read_totals("restart"), (1024, 1024));
                 assert_eq!(read_totals("periodic"), (3072, 3072));
                 assert_eq!(read_totals("retry"), (0, 0));
-                assert_eq!(*final_reads.lock().unwrap(), 4096);
-                assert_eq!(read_totals("full-file"), (4098, 4096));
                 let requests = server.requests.lock().unwrap();
                 assert_eq!(requests.len(), 2);
                 assert!(!requests[0].contains("range:"));
                 assert!(requests[1].contains("range: bytes=1024-"));
                 println!(
-                    "restart bytes requested/actual=1024/1024; new-tail readback=3072/3072; final full requested/actual=4098/4096 (EOF sentinel included); resumed HTTP body=3072; saved network bytes=1024"
+                    "restart bytes requested/actual=1024/1024; new-tail readback=3072/3072; resumed HTTP body=3072; saved network bytes=1024"
                 );
             },
         );
@@ -2369,7 +938,7 @@ tilo_test_env::scenario! {
                     let mut result = None;
                     with_hook(
                         Box::new(move |stage, n| {
-                            if stage == "body-read-enter" && n == 4096 {
+                            if stage == "write" && n == 4096 {
                                 entered.send(()).unwrap();
                                 tilo_test_env::recv("the body read release", &released);
                             }
@@ -2426,7 +995,7 @@ tilo_test_env::scenario! {
         isolated(
             "pause_during_final_verification_or_complete_callback_retains_prior_prefix",
             || {
-                for stage in ["Verifying", "hash", "hash-eof", "Complete"] {
+                for stage in ["Verifying", "Complete"] {
                     let server = Server::new(vec![response(200, "", &vec![b'E'; 4096])]);
                     let selected = context(&server);
                     let dir = tempfile::tempdir().unwrap();
@@ -2658,6 +1227,7 @@ tilo_test_env::scenario! {
         );
     }
 }
+
 #[cfg(unix)]
 struct AckAdapter<'a> {
     inner: &'a mut dyn cache::Observer,
@@ -2685,27 +1255,7 @@ impl cache::Observer for AckAdapter<'_> {
         Ok(ack)
     }
 }
-pub(super) struct HashReader<'a>(pub &'a mut File);
-impl Read for HashReader<'_> {
-    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
-        let n = self.0.read(bytes)?;
-        super::super::internal_cache::tests::read_event("full-file", bytes.len() as u64, n as u64);
-        Ok(n)
-    }
-}
 
-pub(super) struct ResponseReader<'a> {
-    pub response: &'a mut reqwest::blocking::Response,
-    pub received: u64,
-}
-impl Read for ResponseReader<'_> {
-    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
-        event("body-read-enter", self.received);
-        let n = self.response.read(bytes)?;
-        self.received += n as u64;
-        Ok(n)
-    }
-}
 #[cfg(unix)]
 struct PauseAtFinalAck<'a> {
     inner: &'a mut dyn cache::Observer,

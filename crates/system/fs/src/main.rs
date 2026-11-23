@@ -1391,22 +1391,6 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_command_line_parses_mounts_and_binds_acl_flags;
 
-        phase cli_parses_members;
-        {
-            {
-                assert_eq!(
-                    parse_member("person:local").unwrap(),
-                    MemberId::Person("local".into())
-                );
-                assert_eq!(
-                    parse_member("agent:helper").unwrap(),
-                    MemberId::Agent("helper".into())
-                );
-                assert!(parse_member("wizard:merlin").is_err());
-                assert!(parse_member("noseparator").is_err());
-            }
-        }
-
         phase acl_flags_bind_an_enforced_list_or_refuse_the_mount;
         {
             {

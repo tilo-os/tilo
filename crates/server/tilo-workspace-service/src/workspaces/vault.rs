@@ -319,6 +319,63 @@ impl Workspaces {
         .map_err(|refusal| refusal.to_string())
     }
 
+    /// `document`, `source`'s vault forked into `branch`, with each entry and its uses sealed
+    /// again under the branch's vault keys. They were sealed under the source's, which none of
+    /// the branch's devices are handed unless they read the source too: forked as they were, the
+    /// branch's vault opened to nothing. Who reads the branch's vault is the branch's policy, as
+    /// for any of its documents. A record that is not the vault is left as it is.
+    ///
+    /// # Errors
+    /// Either vault's keys are not held here, or an entry does not open with the source's.
+    #[cfg(feature = "agents")]
+    pub(crate) async fn reseal_branched_vault(
+        &self,
+        (source, branch): (&str, &str),
+        (app, record): (&str, &str),
+        document: &mut Vec<u8>,
+    ) -> Result<(), String> {
+        if (app, record) != (APP, WORKSPACE_VAULT_DOCUMENT) {
+            return Ok(());
+        }
+        let keys = |workspace: &str, create: bool| {
+            let route = route(workspace);
+            async move {
+                Box::pin(self.own_route_keys(&route, create))
+                    .await
+                    .unwrap_or_else(|| Err("they are not held here".to_owned()))
+            }
+        };
+        let from = keys(source, false)
+            .await
+            .map_err(|why| format!("the source's vault keys: {why}"))?;
+        let to = keys(branch, true)
+            .await
+            .map_err(|why| format!("the branch's vault keys: {why}"))?;
+        let mut replica = in_passwords(
+            Replica::<WorkspaceVaultEntries>::load(document).map_err(|error| error.to_string())?,
+        );
+        replica.doc_mut().set_actor(automerge::ActorId::from(
+            self.inner.host.cert.device_public_key.to_vec(),
+        ));
+        let state = replica.state().map_err(|error| error.to_string())?;
+        let mut changes = Vec::new();
+        for (id, sealed) in state.entries() {
+            let entry = open_entry(&from, id, &sealed.0)?;
+            changes.push(VaultChange::Keep(entry));
+        }
+        for (id, sealed) in state.used.iter() {
+            let payload = from
+                .open_private_field(&uses_field(id.as_str()), &sealed.0)
+                .map_err(|error| error.to_string())?;
+            let uses: Vec<UseRecord> =
+                serde_json::from_slice(&payload).map_err(|error| error.to_string())?;
+            changes.push(VaultChange::Uses(SecretId(id.as_str().to_owned()), uses));
+        }
+        apply_changes(&mut replica, &to, changes)?;
+        *document = replica.doc_mut().save();
+        Ok(())
+    }
+
     /// Whether this service holds `workspace`'s own copy, governing it, rather than a member's.
     async fn holds_own_copy(&self, workspace: &str) -> bool {
         match collab_types::WorkspaceId::parse(workspace) {
@@ -363,13 +420,13 @@ pub(crate) enum VaultAt<'a> {
 #[derive(Default)]
 pub(crate) struct TestStores {
     items: std::sync::Mutex<VaultItems>,
-    accounts: std::sync::Mutex<accounts::person::PersonAccounts>,
+    accounts: std::sync::Mutex<accounts::person::AccountList>,
 }
 
 #[cfg(test)]
 impl TestStores {
     /// The workspace's accounts as they are now.
-    pub(crate) fn accounts_now(&self) -> accounts::person::PersonAccounts {
+    pub(crate) fn accounts_now(&self) -> accounts::person::AccountList {
         self.accounts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -478,7 +535,7 @@ impl VaultAt<'_> {
     ///
     /// # Errors
     /// As [`Workspaces::workspace_accounts`].
-    pub(crate) async fn accounts(&self) -> Result<accounts::person::PersonAccounts, String> {
+    pub(crate) async fn accounts(&self) -> Result<accounts::person::AccountList, String> {
         match self {
             Self::Workspace(workspaces, workspace) => {
                 workspaces.workspace_accounts(workspace).await

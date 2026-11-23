@@ -315,6 +315,22 @@ impl WidgetSurface {
         self.previews = previews;
     }
 
+    /// What the tree shows as a host that writes it as semantic HTML reads it
+    /// ([`ui::composition`]): each widget an element, what it shows of its own,
+    /// and where its children stand.
+    #[must_use]
+    pub fn composition(&self) -> ui::composition::Composition {
+        self.host.composition()
+    }
+
+    /// The scene the last drawn frame encoded: the surface's own pixels before any host
+    /// draws them, which a display with no working GPU replays on the CPU
+    /// (`tilo_cpu_raster`).
+    #[must_use]
+    pub fn scene(&self) -> &vello::Scene {
+        &self.scene
+    }
+
     /// Lay the tree out with the wells and the previews in effect, as `work`
     /// runs it: a placement made then reports to them, so a policy reading
     /// them in the same frame sees the windows where the tree just laid them
@@ -393,6 +409,22 @@ impl WidgetSurface {
     #[must_use]
     pub const fn host(&self) -> &FrameHarness {
         &self.host
+    }
+
+    /// Where the control assistive technology names `name` stands, in the desktop's logical
+    /// layout `(x, y, width, height)`: what a test or a tool presses it by.
+    pub fn control_bounds(&mut self, name: &str) -> Option<(f64, f64, f64, f64)> {
+        let rect = self
+            .host
+            .a11y_node(self.host.a11y_node_named(name)?)?
+            .bounds()?;
+        let (ox, oy) = self.placement.origin;
+        Some((
+            f64::from(ox) + rect.x0,
+            f64::from(oy) + rect.y0,
+            rect.width(),
+            rect.height(),
+        ))
     }
 
     /// Three fingers landed on the strip shown, `travel` pixels into the

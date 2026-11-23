@@ -40,10 +40,8 @@ fn consent(request: &TransferRequest) -> io::Result<Consent> {
         source: NativePath::encode(&request.source_home),
         destination: NativePath::encode(&request.target_home),
         journals: NativePath::encode(&request.private_journals),
-        source_identity: durability::identity(&durability::readable_directory(&source.file)?)?,
-        target_parent_identity: durability::identity(&durability::readable_directory(
-            &parent.file,
-        )?)?,
+        source_identity: durability::directory_identity(&source)?,
+        target_parent_identity: durability::directory_identity(&parent)?,
         copy_home: request.copy_home,
         copy_flatpak: request.copy_flatpak,
         system_refs: request.system_refs.clone(),

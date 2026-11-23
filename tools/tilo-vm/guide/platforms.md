@@ -1,0 +1,465 @@
+# Platforms
+
+A dev VM runs under the host's native hypervisor, so a human can open it in
+the native UI, and the host's native architecture by default. Emulating
+another architecture needs `--arch <arch> --emulated` and is many times slower.
+
+| Host | Adapter (default) | Humans watch it in | Builds | GPU in guest |
+|---|---|---|---|---|
+| Linux x86_64 / aarch64 | libvirt, `qemu:///session` (`virsh`, `qemu-img`, `passt`) | virt-manager, GNOME Boxes | VM or host | virgl with `--gl`, else llvmpipe |
+| macOS arm64 | UTM (`utmctl`, QEMU on Apple's hypervisor) | UTM | VM only | none (llvmpipe) |
+| Windows x86_64 / arm64 with Hyper-V | Hyper-V (PowerShell) | Hyper-V Manager | VM only | none (llvmpipe) |
+| Windows ARM64 Home | QEMU with WHPX | local VNC | VM only | none (llvmpipe) |
+| any, with `ssh` | `device`: a real machine on a dev image (`vm add`) | its own display | on the device, or host with an aarch64 cargo | the device's |
+
+In-VM builds sync the worktree with rsync over SSH, so the host needs
+`rsync` (on Windows: MSYS2 in `%USERPROFILE%\msys64\usr\bin`, or a native
+rsync on `PATH`). Headless and vkms
+accounts need no GPU, so every row runs them.
+
+## Which targets give a guest a real GPU
+
+A VM's graphics are chosen when it is made, and the default is software:
+
+| VM | Switch | What the guest renders on |
+|---|---|---|
+| Linux, libvirt (the default adapter) | `--gl` (or `gl = true` in its `vms.toml` entry) | virgl: a virtio GPU whose GL calls the host's Mesa driver runs on a `/dev/dri/renderD*` node (libvirt's `egl-headless` display with `accel3d`) |
+| Linux, `--hypervisor qemu` | `--gl` | the same; the render node comes from `tilo-vm qemu`, which skips NVIDIA (its EGL stack works poorly with virglrenderer), so such a host gets llvmpipe there |
+| Linux, either adapter | the default, no `--gl` | no GPU device: Mesa's llvmpipe in the guest |
+| macOS (UTM), Windows (Hyper-V, WHPX) | not offered | llvmpipe |
+| a device (`vm add`, `--ssh`) | — | the device's own GPU |
+
+`tilo-vm doctor` says whether the host has a render node. libvirt picks the
+node itself (in practice the machine's first GPU, NVIDIA included); the qemu
+adapter prefers a Mesa iGPU and uses llvmpipe when NVIDIA is the only node.
+
+Tilo's own CI never exercises a real driver: `tools/ci/os-vm.sh` boots every
+acceptance VM with `--2d`, and the build machines have no `/dev/dri`. A check
+that passes there says the software path works, not that a GPU path does.
+
+What the guest gets, from inside an account's session on a `--gl` VM:
+
+```sh
+# eglinfo comes from egl-utils. A bootc image installs nothing on its read-only
+# root, so the install goes in the same command as --transient (and needs --raw).
+# The script is one argument: vm ssh hands its words to the guest's login shell.
+tilo-vm vm ssh --raw <vm> -- '
+dnf install -y --transient egl-utils >/dev/null 2>&1
+u=$(loginctl list-users --no-legend | awk "{print \$2; exit}")
+uid=$(id -u "$u")
+exec runuser -u "$u" -- env XDG_RUNTIME_DIR=/run/user/$uid WAYLAND_DISPLAY=wayland-0 \
+  eglinfo 2>&1 | grep -E "EGL driver name|renderer" | head -6'
+```
+
+A guest with virgl prints `EGL driver name: virtio_gpu` and an
+`OpenGL ... renderer: virgl (<the host's GPU>)`; with the default it prints
+`llvmpipe`. Use `eglinfo`, not `glxinfo`: the latter needs an X server and a
+Wayland-only image may not run XWayland.
+
+Apps do not connect to the desktop compositor itself: each runs behind an app
+keeper (`crates/session/app-keeper`), which offers `zwp_linux_dmabuf_v1` at
+version 4 (the version that carries feedback) built from the desktop's own
+feedback. So `wayland-info` on the desktop's socket lists no dma-buf global,
+while a client inside an app gets one.
+
+### Vulkan (`--vulkan`)
+
+`--gl` gives the guest OpenGL on the host GPU but leaves Vulkan to Mesa's CPU
+driver (lavapipe), so `vkcube` and DXVK (Direct3D through Vulkan, which Proton
+and most Windows games use) render in software. `vm create <name> --gl --vulkan`
+adds virtio-gpu Venus: the guest's Mesa `virtio` Vulkan driver hands its calls
+to virglrenderer, which executes them on the same render node through the host's
+Vulkan driver (RADV on AMD). It needs QEMU 9.2 or newer and virglrenderer
+built with Venus (`strings /usr/lib64/libvirglrenderer.so.1 | grep -m1 venus`).
+
+Venus starts virglrenderer's render server (`/usr/libexec/virgl_render_server`)
+as a child process of QEMU. libvirt starts QEMU with a seccomp sandbox that
+forbids exactly that (`-sandbox ...,spawn=deny`), and the guest then has no
+Vulkan device at all. So under libvirt `--vulkan` needs `seccomp_sandbox = 0`
+in the daemon's `qemu.conf` (`~/.config/libvirt/qemu.conf` for
+`qemu:///session`), read when the daemon starts; `vm create` refuses with that
+fix while the setting is missing. `--hypervisor qemu` starts QEMU without that
+sandbox and needs no change.
+
+Check it from inside the guest (vulkan-tools is not on the image):
+
+```sh
+tilo-vm vm ssh --raw <vm> -- '
+dnf install -y --transient vulkan-tools >/dev/null 2>&1
+vulkaninfo --summary 2>&1 | grep -E "deviceName|driverName"'
+```
+
+A Venus guest lists `driverName = venus` with the host GPU's name
+(`Virtio-GPU Venus (AMD Radeon ...)`) beside `llvmpipe`; without it only
+`llvmpipe` appears.
+
+### Sound (`--sound`)
+
+`vm create <name> --sound` gives the guest a virtio sound card whose output
+QEMU writes to `<disk>.wav` beside the VM's disk, never to this computer's
+speakers or its PipeWire. QEMU appends to the file while the guest plays a
+stream, so whether sound kept playing is a measurement:
+
+```sh
+tilo-vm vm sound <vm>              # seconds written, loudness of the last 2 s
+tilo-vm vm sound <vm> --window 5
+```
+
+"The sound kept playing across a desktop restart" is: a measurement after the
+restart shows more seconds than one before it, and its newest stretch is not
+silent. The file is overwritten when the VM starts again and removed by
+`vm rm`.
+
+### A VM inside the VM (`--memory-mb`)
+
+Every libvirt and qemu VM gets the host CPU (`host-passthrough`), so when the
+host allows nested virtualisation (`/sys/module/kvm_amd/parameters/nested` or
+`kvm_intel`'s reads `1`, or `Y`) the guest has `/dev/kvm` and can start its own
+KVM guests, such as the Windows appliance Tilo starts through libvirt. That
+appliance wants about 4 GiB of its own, so give the VM memory for it and the
+desktop: `vm create <name> --gl --memory-mb 10240`. Check `free -g` on the
+host first; the guest's memory is taken from it while the VM is up. Inside the
+guest, `test -w /dev/kvm && echo kvm` confirms it.
+
+## Linux: libvirt's user session
+
+VMs live in libvirt's rootless per-user connection, `qemu:///session`: no
+root, no system daemon config. To watch one: virt-manager, File > Add
+Connection > QEMU/KVM user session (GNOME Boxes shows session VMs too).
+
+`vm create` writes the VM's libvirt domain XML itself, beside the VM disk
+(`<disk>.xml`), and registers it with `virsh define`. That needs only the
+libvirt client and libvirt's QEMU driver: no virt-install, and no libvirt
+storage or network driver (a broken `virtstoraged` does not matter). The
+domain is UEFI without Secure Boot, KVM with the host CPU (TCG with
+`--emulated`), a virtio disk, passt networking with the SSH port forwarded,
+and SPICE with virtio video for virt-manager.
+
+`tilo-vm doctor` checks `virsh`, the `qemu-img` beside it and `passt`; that
+you can open `/dev/kvm`; and that `virsh --connect qemu:///session
+capabilities` succeeds and lists a KVM guest for your architecture (when it
+fails, the fix quotes virsh's own error). It prints the install line for
+your host:
+
+- dnf: `sudo dnf install libvirt-daemon-kvm libvirt-client virt-manager qemu-img passt`
+- apt: `sudo apt install libvirt-daemon-system libvirt-clients virt-manager qemu-utils passt`
+- pacman: `sudo pacman -S libvirt virt-manager qemu-full passt`
+- zypper: `sudo zypper install libvirt-daemon-qemu libvirt-client virt-manager qemu-tools passt`
+- image-based (rpm-ostree): `rpm-ostree install libvirt-daemon-kvm libvirt-client virt-manager qemu-img passt`, then reboot
+
+virt-manager is only the viewer; tilo-vm does not run it.
+
+`doctor` prints the resolved path of every tool it will run. The `qemu-img`
+used is the one beside `virsh`; a `qemu-img` from elsewhere on `PATH` (an
+Android SDK's, say) is named and refused, never silently used.
+
+The raw `qemu` adapter (`--hypervisor qemu`) drives `os/dev/vm.sh` with that
+script's own conventions. It is the headless adapter for CI and scenario
+tests: its VMs do not appear in virt-manager or Boxes, so it is never the
+default, and it runs only from a Tilo worktree.
+
+Every QEMU command line, that script's included, comes from `tilo-vm qemu`:
+`qemu boot` starts a disk in the background with its monitor, serial log,
+console socket, variable store and software TPM in one run directory;
+`qemu run` boots in the foreground until the serial line matches `--ready`
+or `--fail` (with the kernel's own boot time under `--kernel-time`) and powers
+off; `qemu firmware` prints the OVMF/AAVMF build and variable store the
+settings resolve to, refusing a TPM on a firmware that cannot measure;
+`qemu args` prints the command line without starting anything. `tilo-vm qemu
+<command> --help` lists the machine options (architecture, accelerator,
+disks with serials, overlays and blank targets, display, input, TPM, Secure
+Boot keys, S3, port forwards, a second LAN NIC, audio capture, console and
+virtio-serial ports).
+
+If a builder exposes no `/dev/kvm`, explicitly request `--emulated` with
+libvirt to use TCG even for the host's own architecture. Creation still
+requires a working user-session QEMU driver advertising that architecture's
+`qemu` domain. `doctor` continues to report the missing native KVM capability;
+software emulation is not a repair or a hardware-performance result.
+
+Its registered CPU count, memory, architecture and resolution are passed to
+the same harness. It uses the software 2D display unless `--gl` requests virgl;
+`--emulated` explicitly selects TCG. Without `--emulated`, the harness probes
+KVM and warns if it must fall back to TCG. Record the actual accelerator and
+renderer with performance results: TCG timings cannot establish KVM or physical
+machine budgets. `--resolution` and `--gl` work with this adapter; multiple
+display heads require libvirt.
+
+Raw QEMU shutdown uses the monitor's ACPI power request, with the CLI's existing
+key-authenticated guest-poweroff escalation. It does not use the standalone
+script's password-based shutdown. The adapter reads the script's process status
+so `vm status` reports a stopped VM and shutdown waits for it to exit.
+
+Keep the same `TILO_RUN` for every command on a raw-QEMU VM: it selects the
+monitor and console sockets, not the evidence directory. `tilo-vm vm shot -o
+/path/to/checkpoint.png` captures through that monitor and moves the image to
+the requested path without changing the VM runtime. Use a private runtime
+per owned VM and a persistent disk/evidence directory on the builder. For a
+fresh baseline, stop and remove only the owned VM, then repeat `vm create
+--image <verified-base> --disk <owned-child>`; creation uses a fresh QCOW2
+child and leaves the base unchanged. This is a cold reset, not an installer
+or retained-other-OS proof.
+
+### One network for a host's VMs
+
+passt reaches out from the host, but not the host's other VMs, so two boxes
+on one machine could find each other only through an internet relay. So
+every libvirt VM tilo-vm makes also has a NIC on a network of its host's own:
+a branch is taken in by its source there (`vm branch`), and two boxes sync
+and reach each other's MCP server there, with no internet.
+
+- The network is QEMU's socket multicast on the host's loopback
+  (`239.255.84.76`, a port of your own from your home directory,
+  `localaddr=127.0.0.1`): its frames never leave the host, and it needs no
+  root, no bridge and no route. libvirt's `<interface type='mcast'>` cannot
+  keep it on the loopback, so the domain passes the NIC to QEMU in
+  `<qemu:commandline>`; `virsh dumpxml` shows it there.
+- The NIC's MAC starts `52:54:01:00` and is the VM's own (`lan` in
+  `vms.toml`; each branch gets another). The dev image names that NIC
+  `tilolan0`, NetworkManager leaves it alone, and `tilo-vm-lan.service`
+  gives it `198.18.<5th MAC byte>.<6th MAC byte>/16`: no DHCP, no gateway,
+  so it is never the default route and SSH keeps coming in through passt.
+  198.18.0.0/15 is set aside for benchmarking, so it overlaps none of the
+  host's own networks, which passt gives the guest.
+- A VM made before this gets its NIC at its next `vm start` (its domain is
+  defined again). `vm create --no-lan`, or `lan = "off"` in its entry, gives
+  a VM none; its branches have none either.
+- UTM's shared network already puts its VMs on one subnet of the host. WHPX
+  has none: `vm branch` there refuses to boot the branches to be taken in and
+  says so; branch with `--no-admit`.
+
+Check it from a guest: `tilo-vm vm ssh <vm> -- ip -4 addr show dev tilolan0`,
+and `ping 198.18.x.y` for another VM.
+
+## Windows ARM64 Home: QEMU with WHPX
+
+Install the MSYS2 CLANGARM64 QEMU package and enable **Windows Hypervisor
+Platform** in Windows Features, then reboot Windows. `tilo-vm doctor` finds
+`qemu-system-aarch64.exe`, its matching `qemu-img.exe`, and EDK2 firmware in
+`%USERPROFILE%\msys64\clangarm64` (or QEMU on `PATH`). On Windows ARM64 without
+the Hyper-V PowerShell module, `vm create` selects `whpx` automatically; use
+`--hypervisor whpx` to select it explicitly. It never falls back to software
+CPU emulation.
+
+For component swaps that build inside the VM, install MSYS2's `rsync` and
+`openssh` packages too (`pacman -S rsync openssh`). `tilo-vm` discovers their
+default per-user location without changing `PATH`, uses the matching MSYS2
+SSH transport, and passes the Windows worktree as an MSYS2 `/c/...` path so
+`rsync` treats it as a local source.
+
+The published QCOW2 remains unchanged. Each VM gets a small QCOW2 child and
+its own copy of the UEFI variables template beside that child. Before a
+download and before starting QEMU, at least 15 GiB must remain free on the
+respective volume. The guest gets the host CPU through WHPX, a PCI serial
+device for Linux `console=ttyS0`, a separate firmware UART, a user network
+with SSH forwarded to `127.0.0.1:<ssh_port>` (default 2222), and a local VNC
+display at `127.0.0.1:5900 + (<ssh_port> % 1000)`. The serial logs are
+`<disk>.ttyS0.log` and `<disk>.uart.log`. `vm stop` asks the guest to power off
+through SSH first, then uses the QMP power button if SSH is unavailable.
+
+For SSH-only development, pass `--headless` to `vm create`: WHPX omits the
+virtual GPU, USB devices and VNC. WHPX defaults to 3 GiB of guest RAM; use
+`--memory-mb 8192` when an in-guest build needs more. On a Snapdragon X Elite
+Windows ARM64 host, the same cached direct-boot disk reached SSH in 22 seconds
+with 3 GiB, versus 44 seconds with 8 GiB; a full stop and restart with 3 GiB
+took 28 seconds. A 2 GiB VM is suitable only for light service work. Neither option
+changes the disk image or the installer test path.
+
+### Direct kernel boot for a fast service VM
+
+WHPX can boot a development kernel and initrd directly, without EDK2. Prepare
+`Image`, `initrd` and the UKI's `.cmdline` from the **same dev disk** once,
+and read that disk's ESP GPT partition UUID. The dev-disk CI pipeline
+publishes the three checksum-listed companion files under `directBoot` in
+`tilo-vm-disk-aarch64.json`. On WHPX, `vm create` with a published disk
+downloads and verifies the matching companions automatically. The source
+revision, architecture, package URLs, file names and SHA-256 values must agree
+with the selected disk manifest. For a local disk, an operator may extract the
+same files from its UKI.
+The bundle JSON beside `Image` and `initrd` has this shape:
+
+```json
+{
+  "kernel": "Image",
+  "initrd": "initrd",
+  "cmdline": "<the complete UKI .cmdline section>",
+  "loader_partuuid": "<the source disk ESP partition UUID>"
+}
+```
+
+Create a published COW VM with direct boot automatically:
+
+```powershell
+tilo-vm vm create dev --hypervisor whpx --tag main-1a2b3c4 --headless --memory-mb 2048
+```
+
+For a local disk, pass `--direct-boot-bundle` to validate and register its
+manually prepared files before disk creation:
+
+```powershell
+tilo-vm vm create dev --hypervisor whpx --image C:\tilo-vm\disk.qcow2 --direct-boot-bundle C:\tilo-vm\boot\boot.json --headless --memory-mb 2048
+```
+
+Alternatively, add a `direct_kernel` table to an existing VM's
+`%APPDATA%\tilo-vm\vms.toml` entry:
+
+```toml
+[vms.dev.direct_kernel]
+kernel = 'C:\tilo-vm\boot\Image'
+initrd = 'C:\tilo-vm\boot\initrd'
+cmdline = 'root=tilo-auto composefs=<the UKI cmdline, unchanged>'
+loader_partuuid = '<the VM disk ESP partition UUID>'
+```
+
+`cmdline` must be the complete `.cmdline` section, not the abbreviated example
+above. `loader_partuuid` is the GPT **partition** UUID of the ESP in the
+source disk, not the disk GUID or FAT volume ID. WHPX passes it through
+`systemd.setenv=TILO_ROOT_LOADER_PARTUUID=...`, preserving Tilo's existing
+ESP-to-root binding when systemd-stub is absent. Without the correct value,
+Tilo root discovery stops in the initrd. This mode is for local development:
+it bypasses firmware and UKI boot verification, so installer and release
+acceptance still use the normal firmware boot. Remove the table to restore
+normal boot.
+
+## Creating a VM
+
+```sh
+tilo-vm vm create dev                        # newest published main/release disk
+tilo-vm vm create dev --tag main-1a2b3c4     # a specific one
+tilo-vm vm create dev --image ~/tilo-vm.qcow2 --disk ~/vms/dev.qcow2   # a local disk
+tilo-vm vm use dev            # this worktree (writes .tilo-vm)
+tilo-vm vm use dev --global   # the default for every worktree
+```
+
+`vm create` checks everything before it downloads or creates anything, and
+stops at the first missing piece with its fix: the hypervisor and its tools,
+an `--image` that exists, the published disk for the tag (for your
+architecture and format), a VM disk path that is not taken, and free space
+for the download and the VM. Then it downloads the tag's manifest for your
+architecture, `tilo-vm-disk-<arch>.json`, from the forge's generic packages,
+picks the disk (qcow2, or VHDX for Hyper-V), resumes an interrupted download,
+checks its SHA-256 and caches it. Each architecture's CI job publishes its
+disk on its own, so a new tag can hold one architecture before the other:
+without `--tag`, `vm create` takes the newest tag that has yours, and says
+so when none of the newest does.
+Last, it makes the VM's root SSH key and creates the VM
+([The root SSH key](#the-root-ssh-key)).
+
+The download needs a **forge token** with package read access:
+`FORGEJO_TOKEN`, or an fgj (`~/.config/fgj/config.yaml`) or tea login for
+code.tilo.so. That token is read only for disk downloads; image pulls
+(`swap --from ci:`/`sha:`, `vm upgrade`) come from the public registry.tilo.so
+and need no login (`tilo-vm guide troubleshooting`).
+
+### No disk published yet
+
+`tilo-vm doctor` says whether one is. If none is:
+
+- ask a human for a shared VM and use it: `tilo-vm vm use <name>`;
+- or build a disk of this worktree on t, `tilo-vm image build --disk`, and
+  pass the disk it names as `--image` (`tilo-vm guide images`).
+
+## A local disk, and throwaway VMs
+
+`--image` takes a qcow2 dev disk or a raw disk with a GPT, such as
+`os/dev/disk-image.sh --raw` writes. `vm create` reads the file's first bytes
+and refuses anything else (a blank or half-written disk) before it creates
+anything. The image is never written: the VM's disk is a qcow2 child of it,
+with a fresh UEFI variable store, so every VM made from one image is a clean
+boot of it. That makes a VM per attempt cheap:
+
+```sh
+tilo-vm vm create try1 --image ~/tilo-vm/media/disk.raw
+tilo-vm vm start try1         # waits up to 180s for SSH; an early-boot failure ends with its serial command
+tilo-vm vm serial try1
+tilo-vm vm rm try1 --force    # power off, unregister, delete its disk, variables, logs and key
+```
+
+`vm rm` keeps the image, and forgets a VM it did not create (one registered by
+hand) without touching its hypervisor, disk or key.
+
+On WHPX, an image on a network path (`\\wsl.localhost\...` from WSL, or an SMB
+share) is imported once into the cache (`tilo-vm/imports/` in the platform
+cache dir) and the VM is made from that copy: QEMU on Windows reads a backing
+file behind a UNC path unreliably. The import converts it to qcow2 and
+compares every guest-visible byte with the source before it is used; it is
+reused until the source's size or modification time changes.
+
+### Booting a candidate ESP
+
+To try a candidate UKI or boot loader without rebuilding the disk, build a
+small override ESP with `os/dev/make-boot-esp.sh` (`os/dev/local-boot-esp.md`)
+and attach it ahead of the VM's disk:
+
+```sh
+tilo-vm vm create esp1 --image base.raw --boot-esp tilo-boot-override.raw
+```
+
+The ESP is attached read-only with the first boot index, so firmware boots its
+loader and UKI, which mounts the root from the VM's disk. libvirt and WHPX
+support it; keep the ESP on a local drive.
+
+### WHPX monitor diagnostics
+
+`tilo-vm vm control` sends a QEMU monitor command through the VM's local QMP
+connection. It works before guest SSH is available:
+
+```sh
+tilo-vm vm control info status
+tilo-vm vm control info block
+```
+
+`tilo-vm vm shot` captures the real VM display. Use `tilo-vm control` for the
+running compositor's semantic actions; monitor commands manage the VM itself.
+
+## The root SSH key
+
+`tilo-vm` reaches the VM as root with a key, never a password. `vm create`
+makes one ed25519 key per VM, `keys/<name>_ed25519` beside `vms.toml` (an
+existing key is kept), records it as the VM's `key` in `vms.toml`, and uses
+it for every connection. The dev image installs root's `authorized_keys`
+from the systemd credential `ssh.authorized_keys.root`, so the key goes in
+at creation where the hypervisor has a channel for credentials:
+
+| Adapter | How the key gets in |
+|---|---|
+| libvirt | at creation: an SMBIOS type 11 OEM string in the domain XML (`<sysinfo type='smbios'><oemStrings><entry>io.systemd.credential.binary:ssh.authorized_keys.root=<base64></entry>`, with `<smbios mode='sysinfo'/>`) |
+| whpx | at boot: direct-kernel ARM64 passes the public key with `systemd.set_credential_binary=` on the kernel command line; firmware boots use QEMU's SMBIOS type 11 OEM string |
+| qemu | at boot: `os/dev/vm.sh` reads the registered `.pub` file through `TILO_VM_ROOT_KEY_FILE` and passes the same SMBIOS type 11 credential as libvirt; missing or empty public keys fail before starting QEMU |
+| UTM, Hyper-V | once, after the first boot (below). Apple Virtualization and Hyper-V offer no SMBIOS strings or fw_cfg, and the image has no cloud-init |
+
+The one-time step logs in with the dev account's password (`tester`,
+password `tilo`, from `os/account.env`) and appends the key for root:
+
+```sh
+tilo-vm vm start      # SSH refuses the key, and the error prints the exact command:
+ssh -t -p <port> tester@<vm address> 'sudo install -d -m 0700 /root/.ssh && echo <key, base64> | base64 -d | sudo tee -a /root/.ssh/authorized_keys >/dev/null && sudo restorecon -R /root/.ssh'
+```
+
+It asks for that password twice (SSH, then sudo). The same command fixes a
+libvirt VM created before keys were passed at creation.
+
+Each VM also has its own `known_hosts`, `keys/<name>_ed25519.known_hosts`,
+so local VMs that share `127.0.0.1` and a forwarded port never collide in
+`~/.ssh/known_hosts`; `vm create` clears it, since a new VM has new host
+keys. For a shell or one command as root: `tilo-vm vm ssh [<name>] [-- <command>]`.
+
+## Registry and files
+
+`vms.toml` sits in the platform config dir (`~/.config/tilo-vm/` on Linux,
+`~/Library/Application Support/tilo-vm/` on macOS, `%APPDATA%\tilo-vm\` on
+Windows); `tilo-vm vm list` prints its path. On UTM, `vm create --image
+<disk.qcow2>` (or the published disk) imports the disk once over UTM's
+AppleScript as the template VM `Tilo Dev (<name>)`, an aarch64 QEMU guest on
+Apple's hypervisor with UEFI, and clones it. It defaults to 16 GiB of memory
+and 8 CPU cores; `--memory-mb` and `--cpus` override those import settings.
+macOS asks once whether the terminal may control UTM. `--template '<a UTM VM>'` clones one imported
+before. `tilo-vm vm branch <vm> <new>` clones a set-up dev VM instead
+(`utmctl clone`, copy-on-write on APFS), gives the clone a new MAC over UTM's
+AppleScript, and checks that UTM gave it a new UUID (`tilo-vm guide
+concepts`). The VM's address comes from `utmctl ip-address` where the guest runs
+the QEMU guest agent, else from the lease macOS's DHCP server recorded for the
+VM's MAC address in `/var/db/dhcpd_leases` (UTM's shared network).
+
+`vm stop` waits for the VM lock, so it never cuts off a swap, gc or upgrade;
+`--force` skips that.

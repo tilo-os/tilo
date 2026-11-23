@@ -118,6 +118,106 @@ class Failed(Exception):
     """A step that could not be carried out; its item is reported failed with this reason."""
 
 
+KEYBOARD_ROWS = ["1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"]
+
+# Labels read at nearly the same height are on one row of the screen; the keyboard's key
+# rows are farther apart than this.
+ROW_TOLERANCE = 20
+
+
+def _read_bands(tsv: str) -> list[list[tuple[str, float, float]]]:
+    """Tesseract's single-character labels, grouped into bands of one screen row."""
+    labels: list[tuple[str, float, float]] = []
+    for line in tsv.splitlines()[1:]:
+        cols = line.split("\t")
+        if len(cols) == 12 and len(cols[11].strip()) == 1:
+            left, top, width, height = map(float, cols[6:10])
+            labels.append((cols[11].strip().lower(), left + width / 2, top + height / 2))
+    bands: list[list[tuple[str, float, float]]] = []
+    for label in sorted(labels, key=lambda label: label[2]):
+        if bands and label[2] - sum(b[2] for b in bands[-1]) / len(bands[-1]) <= ROW_TOLERANCE:
+            bands[-1].append(label)
+        else:
+            bands.append([label])
+    return bands
+
+
+def _band_y(band: list[tuple[str, float, float]]) -> float:
+    return sum(y for _, _, y in band) / len(band)
+
+
+def _keyboard_rows(bands: list[list[tuple[str, float, float]]]) -> list[list[tuple[str, float, float]]]:
+    """The bands that are rows of keys: several labels spread across the screen. A stray
+    single letter of the card (an avatar's "o", a word's first glyph) is not one."""
+    rows = []
+    for band in bands:
+        xs = [x for _, x, _ in band]
+        if len(band) >= 3 and max(xs) - min(xs) >= 3 * ROW_TOLERANCE:
+            rows.append(band)
+    return rows
+
+
+def _read_rows(bands: list[list[tuple[str, float, float]]]) -> str:
+    """What tesseract read, for a failure: each band's height and its labels."""
+    said = [f"y={_band_y(band):.0f}: {''.join(label for label, _, _ in band)}" for band in bands]
+    return "; ".join(said[:8]) + (f"; and {len(said) - 8} more" if len(said) > 8 else "")
+
+
+def key_positions(tsv: str) -> dict[str, tuple[int, int]]:
+    """Where the on-screen keyboard's keys are, from tesseract's TSV: the key labels it
+    finds, completed from the keyboard's layout (ui::passcode_keyboard: rows of equal keys,
+    each row centred, the digit row on top and Enter on the right of the last row).
+
+    Only single-character labels are keys, and the keyboard is the screen's block of rows
+    of them: the card's words are longer, its stray single letters are one or two, and the
+    bottom row's `?123` key can put a lone "1" below every letter."""
+    rows = KEYBOARD_ROWS
+    bands = _read_bands(tsv)
+    key_rows = _keyboard_rows(bands)
+    # The digit row is the key row with the most digits in it; the letter rows are the key
+    # rows below it, whichever of the layout's three their labels are.
+    def digits_of(band: list[tuple[str, float, float]]) -> list[tuple[int, float]]:
+        return [(rows[0].index(label), x) for label, x, _ in band if label in rows[0]]
+
+    digit_rows = [band for band in key_rows if len(digits_of(band)) >= 2]
+    if not digit_rows:
+        raise Failed("tesseract found no row of digit keys of the on-screen keyboard: "
+                     f"it read {_read_rows(bands) or 'nothing'}")
+    band = max(digit_rows, key=lambda band: len(digits_of(band)))
+    top_y = _band_y(band)
+    found = digits_of(band)
+    (i0, x0), (i1, x1) = min(found), max(found)
+    if i0 == i1:
+        raise Failed("tesseract found one digit key only in the on-screen keyboard's digit row: "
+                     f"it read {_read_rows(bands) or 'nothing'}")
+    pitch = (x1 - x0) / (i1 - i0)
+    centre = x0 - (i0 - 4.5) * pitch
+    # The layout's three letter rows hold different letters, so a row below the digits says
+    # which one it is, and its height gives the row pitch. The card's own single letters lie
+    # above the digit row and are not read here.
+    letter_rows = {}
+    for row_band in key_rows:
+        if _band_y(row_band) <= top_y + ROW_TOLERANCE:
+            continue
+        for r in (1, 2, 3):
+            if sum(1 for label, _, _ in row_band if label in rows[r]) >= 2:
+                letter_rows[r] = _band_y(row_band)
+    if not letter_rows:
+        raise Failed("tesseract found no letter row below the on-screen keyboard's digit row: "
+                     f"it read {_read_rows(bands) or 'nothing'}")
+    pitches = sorted((y - top_y) / r for r, y in letter_rows.items())
+    row_pitch = pitches[len(pitches) // 2]
+    keys = {}
+    for r, row in enumerate(rows):
+        for i, k in enumerate(row):
+            keys[k] = (round(centre + (i - (len(row) - 1) / 2) * pitch),
+                       round(top_y + r * row_pitch))
+    # Enter is two units wide at the right of the last row; its centre sits about 3.5 key
+    # pitches right of the middle whatever the gap between keys.
+    keys["\n"] = (round(centre + 3.5 * pitch), round(top_y + 4 * row_pitch))
+    return keys
+
+
 # The guest's memory, in MiB: TILO_MEM, or 8 GiB where the machine holds that beside what its own
 # QEMU and this check use; a check's VM can hold less (t books it from what its runs used), and a
 # guest asked for more than it holds never starts ("cannot set up guest memory").
@@ -1683,44 +1783,10 @@ cryptsetup close e2e-target
 
     def touch_keys(self, path: Path) -> dict[str, tuple[int, int]]:
         """Where the on-screen keyboard's keys are on a screenshot: the key labels tesseract
-        finds, completed from the keyboard's layout (ui::passcode_keyboard: rows of equal keys,
-        each row centred, the digit row on top and Enter on the right of the last row)."""
-        rows = ["1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"]
+        finds, completed from the keyboard's layout ([`key_positions`])."""
         tsv = subprocess.run(["tesseract", str(path), "stdout", "--psm", "11", "tsv"],
                              capture_output=True, text=True).stdout
-        found: dict[str, list[tuple[float, float]]] = {}
-        for line in tsv.splitlines()[1:]:
-            cols = line.split("\t")
-            if len(cols) == 12 and len(cols[11].strip()) == 1:
-                left, top, width, height = map(float, cols[6:10])
-                found.setdefault(cols[11].strip().lower(), []).append((left + width / 2,
-                                                                         top + height / 2))
-        # The digit row is the lowest row whose digits line up; letters lie below it.
-        digits = [(rows[0].index(k), at) for k in rows[0] for at in found.get(k, [])]
-        if len(digits) < 2:
-            raise Failed(f"tesseract found {len(digits)} of the on-screen keyboard's digit keys")
-        top_y = max(y for _, (_, y) in digits)
-        digits = [(i, (x, y)) for i, (x, y) in digits if abs(y - top_y) < 20]
-        (i0, (x0, _)), (i1, (x1, _)) = min(digits), max(digits)
-        if i0 == i1:
-            raise Failed("tesseract found one digit key only")
-        pitch = (x1 - x0) / (i1 - i0)
-        centre = x0 - (i0 - 4.5) * pitch
-        # Each letter's row is known, so every letter found gives the distance between rows.
-        pitches = sorted((y - top_y) / r for r in (1, 2, 3) for k in rows[r]
-                         for _, y in found.get(k, []) if y > top_y + pitch * 0.5)
-        if not pitches:
-            raise Failed("tesseract found no letter key below the digit row")
-        row_pitch = pitches[len(pitches) // 2]
-        keys = {}
-        for r, row in enumerate(rows):
-            for i, k in enumerate(row):
-                keys[k] = (round(centre + (i - (len(row) - 1) / 2) * pitch),
-                           round(top_y + r * row_pitch))
-        # Enter is two units wide at the right of the last row; its centre sits about 3.5 key
-        # pitches right of the middle whatever the gap between keys.
-        keys["\n"] = (round(centre + 3.5 * pitch), round(top_y + 4 * row_pitch))
-        return keys
+        return key_positions(tsv)
 
     @staticmethod
     def words_at(path: Path, *words: str) -> tuple[int, int] | None:

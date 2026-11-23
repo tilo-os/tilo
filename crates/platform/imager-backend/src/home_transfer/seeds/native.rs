@@ -5,23 +5,14 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::{
     io::Read,
-    os::{
-        fd::AsRawFd,
-        unix::fs::{MetadataExt as _, OpenOptionsExt as _},
-    },
+    os::unix::fs::{MetadataExt as _, OpenOptionsExt as _},
     path::PathBuf,
 };
 const PROOFS: &str = "/var/lib/tilo/firstboot-home-seeds";
 const SEED_LIMIT: u64 = 4 * 1024 * 1024;
 
 fn filesystem(home: &File) -> io::Result<u64> {
-    let mut result = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: fstatvfs initializes this output on success; the FD is live.
-    if unsafe { libc::fstatvfs(home.as_raw_fd(), result.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: successful fstatvfs initialized the output.
-    Ok(unsafe { result.assume_init() }.f_fsid)
+    Ok(rustix::fs::fstatvfs(home)?.f_fsid)
 }
 pub(super) fn read(home: &File) -> io::Result<Option<Authority>> {
     // SAFETY: geteuid only reads this process's credentials.

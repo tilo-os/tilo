@@ -26,9 +26,16 @@ pub const SERVERS: &str = "machine.servers";
 /// Take a machine that enrolled with a plan's token into its entry (`device`,
 /// `nonce`, and what it reported: `drives`, `ask`).
 pub const ADMIT: &str = "machine.admit";
+/// The disk recovery keys of the person's machines, as the vault of their Servers workspace
+/// keeps them: a list of `tilo_server_protocol::servers::RecoveryKey`. The person's alone, never
+/// an app's or an agent's.
+pub const RECOVERY_KEYS: &str = "machine.recovery-keys";
+/// Keep the disk recovery key (`key`) of the machine that asks, in the vault of the person's
+/// Servers workspace: the machine asks its host this itself, as it installs, and keeps no copy.
+pub const KEEP_RECOVERY_KEY: &str = "machine.keep-recovery-key";
 
 /// The steps, as the command and the window reach them.
-pub const STEPS: [&str; 5] = [PLAN, LIST, SHOW, SERVERS, ADMIT];
+pub const STEPS: [&str; 6] = [PLAN, LIST, SHOW, SERVERS, ADMIT, RECOVERY_KEYS];
 
 /// The parameters the step `step` takes.
 #[must_use]

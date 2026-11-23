@@ -1,0 +1,119 @@
+{
+  "app": "strips",
+  "said": "Strips: more room for more work",
+  "family": "shell",
+  "live": "rust",
+  "apps": "file-explorer chat settings terminal",
+  "rust": {},
+  "tl": {
+    "session_args": [
+      "--shell",
+      "screen"
+    ]
+  },
+  "steps": [
+    {
+      "id": "signed-in",
+      "said": "Sign in: the desktop is there, nothing open, nothing over it",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "state": {
+            "chrome.session_locked": false,
+            "chrome.overlays.search": false,
+            "chrome.overlays.overview": false,
+            "chrome.overlays.strips": false,
+            "chrome.overlays.quick-settings": false,
+            "chrome.overlays.centre": false
+          }
+        },
+        {
+          "windows": 0
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "open-files",
+      "said": "Open Files",
+      "ops": [
+        {
+          "open": "files"
+        }
+      ],
+      "budget_ms": 30000
+    },
+    {
+      "id": "new-strip",
+      "said": "Make a new strip, named: it starts empty",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "desktop:chrome",
+            "new-strip",
+            {
+              "name": "Errands"
+            }
+          ]
+        },
+        {
+          "must": [
+            {
+              "rust": "Show strips, now on Errands",
+              "tl": "Errands"
+            }
+          ]
+        }
+      ],
+      "dark": true,
+      "budget_ms": 10000
+    },
+    {
+      "id": "strips-list",
+      "said": "Show the strips: both are listed",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "desktop:chrome",
+            "show-strips"
+          ]
+        },
+        {
+          "must": [
+            "Errands",
+            {
+              "rust": "Strip 1",
+              "tl": "Strip 1"
+            }
+          ]
+        }
+      ],
+      "dark": true,
+      "budget_ms": 10000
+    },
+    {
+      "id": "step-back",
+      "said": "Step back to the first strip: Files is there",
+      "ops": [
+        {
+          "key": "Escape"
+        },
+        {
+          "do": [
+            "so.tilo.session",
+            "desktop:chrome",
+            "step-strip",
+            {
+              "steps": -1
+            }
+          ]
+        }
+      ],
+      "budget_ms": 10000
+    }
+  ]
+}

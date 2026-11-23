@@ -26,23 +26,14 @@ Restart=on-failure
 RestartSec=1s
 TimeoutStopSec=10s
 
-# The supervisor must retain user-namespace/mount functionality for bubblewrap
-# and must reach the environment records, its store and the images, but it has
-# no reason to mutate host kernel state or share IPC/keyring state with the
-# desktop session.
-PrivateTmp=yes
-PrivateIPC=yes
-# These directives create a systemd mount namespace that prevents this trusted
-# supervisor from constructing the nested Bubblewrap guest: `/proc` mounts fail
-# with EPERM and the `/usr` OverlayFS mount fails with EINVAL. The app never
-# receives those powers; Bubblewrap unshares the guest and ush immediately
-# installs seccomp and Landlock before starting its shell.
-ProtectControlGroups=yes
-ProtectClock=yes
-# Keep the supervisor out of the host UTS namespace while allowing Bubblewrap
-# to name its nested guest. `yes` also denies sethostname(2) to descendants and
-# makes ush exit before Terminal receives its first prompt.
-ProtectHostname=private
+# The supervisor reads the machine's device key, root-owned and shared through
+# the tilo-identity group, and proves it to the session. A user manager gives a
+# unit a user namespace of its own (PrivateUsers) for any mount, IPC, clock,
+# hostname or control-group protection, and in it root is unmapped: the key's
+# owner reads as 65534, the key reader refuses it, and the Terminal gets no
+# shell. So the unit sets no namespace directive: the supervisor runs as the
+# person with no capabilities and reaches nothing more without them. The guest
+# is confined by Bubblewrap, then ush's seccomp and Landlock, before its shell.
 RestrictRealtime=yes
 LockPersonality=yes
 RemoveIPC=yes

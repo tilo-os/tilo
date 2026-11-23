@@ -43,7 +43,8 @@ pub(crate) const WORKSPACE: &str = "6f0d7f0e-5a4b-4f6a-9f0a-2f3f6a0b9c11";
 
 pub(crate) fn personal_window() -> Result<TestApp<PasswordsShell>, ui::launch::LaunchError> {
     let person = "ad".repeat(32);
-    let workspace = ui::resource::personal_cluster_of(&person).expect("test person's cluster");
+    let workspace =
+        ui::resource::person_workspace_of(&person).expect("test person's own workspace");
     hold_vault_keys(&workspace.to_string());
     TestApp::for_person_in(&person, &workspace.to_string())
 }

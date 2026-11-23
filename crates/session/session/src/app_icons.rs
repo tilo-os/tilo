@@ -15,7 +15,6 @@
 //! ([`crate::lists::AppLists::icons`]), for the same reason.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -464,7 +463,7 @@ pub(crate) fn tray_raster(
         .find(name, device_px, 1)?,
         None => icon_theme::lookup(name, device_px, 1)?,
     };
-    let bytes = read_bounded(&file.path)?;
+    let bytes = read_icon_file(&file.path, MAX_SOURCE_BYTES)?;
     let pixels = match file.format {
         IconFormat::Png => rasterize_png(&bytes, device_px)?,
         IconFormat::Svg => rasterize_svg(&bytes, device_px)?,
@@ -476,7 +475,7 @@ pub(crate) fn tray_raster(
 /// decoded.
 fn resolve(name: &str, px: u32) -> Option<ui::peniko::ImageData> {
     let file = icon_theme::lookup(name, px, 1)?;
-    let bytes = read_bounded(&file.path)?;
+    let bytes = read_icon_file(&file.path, MAX_SOURCE_BYTES)?;
     let pixels = match file.format {
         IconFormat::Png => rasterize_png(&bytes, px)?,
         IconFormat::Svg => rasterize_svg(&bytes, px)?,
@@ -484,18 +483,14 @@ fn resolve(name: &str, px: u32) -> Option<ui::peniko::ImageData> {
     Some(ui::raster::rgba8(pixels.rgba, pixels.width, pixels.height))
 }
 
-/// The file's bytes, if it is one small enough to be an icon.
-fn read_bounded(path: &Path) -> Option<Vec<u8>> {
+/// The file's bytes, if it is a regular file small enough to be an icon.
+fn read_icon_file(path: &Path, limit: u64) -> Option<Vec<u8>> {
     let file = std::fs::File::open(path).ok()?;
     let metadata = file.metadata().ok()?;
-    if !metadata.is_file() || metadata.len() > MAX_SOURCE_BYTES {
+    if !metadata.is_file() || metadata.len() > limit {
         return None;
     }
-    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).ok()?);
-    file.take(MAX_SOURCE_BYTES.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .ok()?;
-    Some(bytes)
+    tilo_files::read_from(file, limit).ok()
 }
 
 /// Straight-alpha RGBA pixels, row-major.
@@ -824,5 +819,32 @@ mod tests {
             "no app answers for that name: the sender's own icon shows"
         );
         assert_eq!(layers(None), vec![Some("dialog-information".to_string())]);
+    }
+
+    #[test]
+    fn icon_reads_enforce_the_byte_bound_even_past_metadata() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(read_icon_file(&dir.path().join("missing"), 16), None);
+        assert_eq!(read_icon_file(dir.path(), 16), None);
+
+        let exact = dir.path().join("exact.svg");
+        std::fs::write(&exact, [b'a'; 16]).expect("exact");
+        assert_eq!(read_icon_file(&exact, 16).as_deref(), Some(&[b'a'; 16][..]));
+
+        let over = dir.path().join("over.svg");
+        std::fs::write(&over, [b'a'; 17]).expect("over");
+        assert_eq!(read_icon_file(&over, 16), None);
+
+        #[cfg(target_os = "linux")]
+        {
+            let stat = Path::new("/proc/self/stat");
+            assert!(std::fs::metadata(stat).expect("stat").is_file());
+            assert_eq!(std::fs::metadata(stat).expect("stat").len(), 0);
+            assert_eq!(
+                read_icon_file(stat, 16),
+                None,
+                "a source yielding more bytes than its metadata claimed must be refused"
+            );
+        }
     }
 }

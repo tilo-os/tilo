@@ -760,19 +760,33 @@ mod tests {
 
         phase store_links_name_only_a_stable_app_identity;
         {
-            // An identity is at most 255 characters.
+            // An identity is at most 255 bytes of non-empty `.`-separated
+            // segments (single segments and underscores for Flathub ids
+            // allowed; empty segments and leading or trailing dots refused).
             let longest = "a".repeat(255);
             let longest_link = format!("tilo-store:app/{longest}");
             let too_long_link = format!("tilo-store:app/{longest}a");
             for (link, app) in [
                 ("tilo-store:app/so.tilo.notes", Some("so.tilo.notes")),
-                ("tilo-store:app/a", Some("a")),
                 (
                     "tilo-store:app/org.gnome.Chess-2",
                     Some("org.gnome.Chess-2"),
                 ),
+                (
+                    "tilo-store:app/org.example.My_App",
+                    Some("org.example.My_App"),
+                ),
+                (
+                    "tilo-store:app/-org.example.App",
+                    Some("-org.example.App"),
+                ),
+                ("tilo-store:app/a", Some("a")),
                 (longest_link.as_str(), Some(longest.as_str())),
                 (too_long_link.as_str(), None),
+                ("tilo-store:app/.so.tilo", None),
+                ("tilo-store:app/so.tilo.", None),
+                ("tilo-store:app/so..tilo", None),
+                ("tilo-store:app/..", None),
                 ("tilo-store:app/", None),
                 ("tilo-store:app/so.tilo.notes?install=true", None),
                 ("tilo-store:remote/so.tilo.notes", None),
@@ -1085,11 +1099,17 @@ mod tests {
         let mut request = None;
         tilo_test_env::wait_until("the original channel carries the admitted launch", || {
             app.settle();
+            // The host takes the window's requests every frame it runs, and
+            // the test harness is that host here: what the Store asked of the
+            // original channel is what it took, whether it was taken in the
+            // frame the launch landed in or the one after.
             request = app
-                .with_surface::<StoreApp, _>(|surface| {
-                    surface.state().take_collab_requests().into_iter().next()
-                })
-                .flatten();
+                .harness()
+                .take_collaboration_requests()
+                .into_iter()
+                .find(|request| {
+                    matches!(request, CollabRequest::LaunchInstalledApplication { .. })
+                });
             request.is_some()
         });
         let Some(CollabRequest::LaunchInstalledApplication {

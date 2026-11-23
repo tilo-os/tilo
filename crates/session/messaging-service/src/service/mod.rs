@@ -269,13 +269,13 @@ impl Service {
     }
 
     /// The workspace's accounts record now. Blocks.
-    pub(crate) fn person_accounts(&self) -> Result<accounts::person::PersonAccounts, SendError> {
+    pub(crate) fn person_accounts(&self) -> Result<accounts::person::AccountList, SendError> {
         match self
             .session
             .call_blocking(session::Call::Person, Duration::from_secs(5))
         {
             Some(session::Reply::Person { accounts, .. }) => {
-                <accounts::person::PersonAccounts as tilo_resource::Model>::from_json(&accounts)
+                <accounts::person::AccountList as tilo_resource::Model>::from_json(&accounts)
                     .map_err(|_| SendError::Unavailable)
             }
             _ => Err(SendError::Unavailable),

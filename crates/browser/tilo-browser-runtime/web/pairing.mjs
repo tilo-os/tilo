@@ -19,6 +19,8 @@
  * and wait; a refusal is said in plain words (`pairingFailure`).
  */
 
+import {hex} from './hex.mjs';
+
 /** How long a pairing link works. */
 export const INVITE_TTL_MS = 10 * 60 * 1000;
 /** Said on the new device when its link was answered before: a link works once. */
@@ -162,8 +164,6 @@ export const PAIRING_SIGNING_IN = 'Signing you in…';
  * what gets it approved. */
 export const pairingStatus = code => `Pairing code ${code}. This tab is a new device of yours and waits for your approval. On a device where you are signed in, approve ${code} where it asks. If nothing asks, choose “Pair a new device” there on your own card (your picture, at the top right) or in search, and open its link in this tab.`;
 
-const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
-
 /** A new invite id: 16 random bytes as 32 hex characters. */
 export function newInvite(random = bytes => globalThis.crypto.getRandomValues(bytes)) {
   return hex(random(new Uint8Array(16)));
@@ -228,13 +228,6 @@ export function openInvites({now = () => Date.now(), ttl = INVITE_TTL_MS, random
     open() {
       const id = newInvite(random);
       const invite = {id, expiresAt: now() + ttl};
-      open.set(id, invite);
-      return invite;
-    },
-    /** An invite this page made before it was loaded again (`{id, expiresAt}`), open again until it expires. */
-    adopt({id, expiresAt}) {
-      if (typeof id !== 'string' || !id || !(expiresAt > now())) return null;
-      const invite = {id, expiresAt};
       open.set(id, invite);
       return invite;
     },

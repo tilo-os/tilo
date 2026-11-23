@@ -3,7 +3,7 @@
 //! grants is [`tilo_workspace_directory`]'s; what is the host's own — its site, the person a join
 //! is made as, the workspaces it holds and what joining one gives it — is its [`Host`].
 
-use tilo_desktop_surface::notifications::NotificationIconKind;
+use tilo_session_core::desktop::notifications::NotificationIconKind;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::directory::Held;
 use tilo_sheets::directory::{Directory, DirectoryEffect, DirectoryState, ListingAction};
@@ -226,13 +226,14 @@ fn join_listed(state: &DirectoryState, store: &Store, host: &dyn Host, key: &str
 /// workspace's news.
 pub(crate) fn workspace_notice(notices: &dyn Notices, words: (&str, Option<&str>), name: &str) {
     let (title, body) = words;
-    let name = tilo_desktop_surface::names::workspace(name);
+    let name = tilo_session_core::desktop::names::workspace(name);
     notices.show(
         &Notice::new(
             String::new(),
             1,
-            tilo_desktop_surface::i18n::t_args(title, &[("name", name.into())]),
-            body.map(tilo_desktop_surface::i18n::t).unwrap_or_default(),
+            tilo_session_core::desktop::i18n::t_args(title, &[("name", name.into())]),
+            body.map(tilo_session_core::desktop::i18n::t)
+                .unwrap_or_default(),
         )
         .about(NotificationIconKind::Workspace),
     );
@@ -253,11 +254,11 @@ pub(crate) fn awaiting_notice(notices: &dyn Notices, name: &str, host: &str) {
         &Notice::new(
             String::new(),
             1,
-            tilo_desktop_surface::i18n::t_args(
+            tilo_session_core::desktop::i18n::t_args(
                 "session-awaiting-admission",
                 &[("name", name.into())],
             ),
-            tilo_desktop_surface::i18n::t_args(
+            tilo_session_core::desktop::i18n::t_args(
                 "session-awaiting-admission-body",
                 &[("name", name.into()), ("host", host.into())],
             ),
@@ -272,7 +273,7 @@ fn failure_notice(notices: &dyn Notices, said: &str) {
     notices.show(&Notice::new(
         String::new(),
         2,
-        tilo_desktop_surface::i18n::t("session-join-failed-title"),
+        tilo_session_core::desktop::i18n::t("session-join-failed-title"),
         said,
     ));
 }

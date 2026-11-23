@@ -430,6 +430,58 @@ async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
     stop(server, serving).await;
 }
 
+/// The operator's kill switch on the host's public listing: a watch-only host still lets any
+/// site's page read who is here, a host paused entirely answers that nobody reads it and when
+/// to come back, and the mode file the operator writes takes effect without a restart.
+#[tokio::test]
+async fn a_back_soon_host_serves_its_public_listing_to_nobody() {
+    let root = SigningKey::from_bytes(&[126; 32]);
+    let host = host(&root, 127, tilo_user_identity::DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
+    let workspaces = server.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Plaza").await.unwrap().workspace;
+    workspaces
+        .publish(
+            &workspace,
+            &host.cert,
+            tilo_server_protocol::directory::Listing {
+                description: "Coffee and tea".into(),
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
+            },
+        )
+        .await
+        .unwrap();
+    workspaces.hold_mode(crate::workspaces::mode::HostMode::held(
+        state.path().to_owned(),
+        crate::workspaces::mode::Mode::Normal,
+    ));
+    let (addr, serving) = serve_web(Arc::new(web_of(&server, &host))).await;
+
+    let ask = format!(
+        "POST {API_PREFIX}/directory HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://someone.example\r\nContent-Length: 0\r\n\r\n"
+    );
+    for (written, served) in [
+        ("normal", 200_u16),
+        ("spectator-only", 200),
+        ("back-soon", 503),
+        ("normal", 200),
+    ] {
+        std::fs::write(state.path().join("mode"), written).unwrap();
+        let (status, head, _) = exchange(addr, &ask, b"").await;
+        assert_eq!(status, served, "{written}: {head}");
+        if served == 503 {
+            assert_eq!(
+                header_value(&head, "retry-after"),
+                Some("60"),
+                "a page is told when to come back: {head}"
+            );
+        }
+    }
+
+    stop(server, serving).await;
+}
+
 /// A page on any site that stops on its failure screen reaches its host's log
 /// with the cause it showed, through the entry's `errors` route, as a browser
 /// whose beacons send nothing sends it: a plain `no-cors` POST from another

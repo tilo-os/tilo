@@ -12,8 +12,10 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::io::{self, Read, Write};
 use std::rc::Rc;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tilolang_runtime::meta::Meta;
 use tilolang_runtime::{Delivery, OutsideSink};
@@ -209,4 +211,83 @@ pub fn served(name: &str) -> bool {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
         .any(|(registered, _)| *registered == name)
+}
+
+/// Write `message` as one JSON frame under `framing` and flush `to`.
+///
+/// # Errors
+/// The stream's error, or a message that does not encode or is larger than `framing`'s limit.
+pub fn write_json_frame<T: Serialize>(
+    framing: wire_frame::Framing,
+    to: &mut impl Write,
+    message: &T,
+) -> io::Result<()> {
+    let body = serde_json::to_vec(message).map_err(io::Error::other)?;
+    framing.write(to, &body).map_err(io::Error::from)?;
+    to.flush()
+}
+
+/// Read one JSON frame under `framing`; `None` at a clean end of the stream.
+///
+/// # Errors
+/// The stream's error, a truncated or oversized frame, or JSON that does not decode.
+pub fn read_json_frame<T: for<'de> Deserialize<'de>>(
+    framing: wire_frame::Framing,
+    from: &mut impl Read,
+) -> io::Result<Option<T>> {
+    let Some(body) = framing.read(from).map_err(io::Error::from)? else {
+        return Ok(None);
+    };
+    serde_json::from_slice(&body)
+        .map(Some)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_frame_flushes_enforces_limit_and_rejects_partial_prefix() {
+        let framing = wire_frame::Framing::big_endian(16);
+
+        let mut writer = io::BufWriter::new(Vec::new());
+        write_json_frame(framing, &mut writer, &"ok").unwrap();
+        assert!(writer.buffer().is_empty(), "write_json_frame must flush");
+        let wire = writer.into_inner().unwrap();
+        assert_eq!(wire, b"\x00\x00\x00\x04\"ok\"");
+
+        let mut reading = wire.as_slice();
+        assert_eq!(
+            read_json_frame::<String>(framing, &mut reading).unwrap(),
+            Some("ok".to_owned())
+        );
+        assert_eq!(
+            read_json_frame::<String>(framing, &mut reading).unwrap(),
+            None
+        );
+
+        let mut refused = Vec::new();
+        let too_big = write_json_frame(framing, &mut refused, &"0123456789abcdef").unwrap_err();
+        assert_eq!(too_big.kind(), io::ErrorKind::InvalidInput);
+        assert!(refused.is_empty());
+
+        for partial in [&[0_u8][..], &[0, 0][..], &[0, 0, 0][..]] {
+            let mut slice = partial;
+            let error = read_json_frame::<String>(framing, &mut slice).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        }
+
+        let mut truncated_body = &b"\x00\x00\x00\x04\"o"[..];
+        let error = read_json_frame::<String>(framing, &mut truncated_body).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+
+        let mut oversized = &b"\x00\x00\x00\x11\"0123456789abcde\""[..];
+        let error = read_json_frame::<String>(framing, &mut oversized).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+
+        let mut malformed = &b"\x00\x00\x00\x03not"[..];
+        let error = read_json_frame::<String>(framing, &mut malformed).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
 }

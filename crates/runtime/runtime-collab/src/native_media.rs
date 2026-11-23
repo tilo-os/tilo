@@ -426,6 +426,11 @@ pub struct Roster {
     /// them is muted too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deafened: Vec<String>,
+    /// The services a bridge carries this call to (`discord`), sorted and
+    /// distinct: everyone in the call is heard there too. A bridge is no
+    /// person, so it is in none of the lists above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bridges: Vec<String>,
 }
 
 impl Roster {
@@ -447,7 +452,17 @@ impl Roster {
                 .deafened
                 .iter()
                 .all(|person| self.muted.binary_search(person).is_ok())
+            && self.bridges.iter().all(|service| service_valid(service))
+            && self.bridges.is_sorted_by(|a, b| a < b)
     }
+}
+
+/// A service a bridge reaches, as its messages name it: `discord`.
+fn service_valid(service: &str) -> bool {
+    (1..=32).contains(&service.len())
+        && service
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 /// A person id: a user root key in lowercase hex.

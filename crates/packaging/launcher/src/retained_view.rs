@@ -11,12 +11,12 @@ use runtime_portal::process_binding::{self, ExecutingPeer};
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Read, Write},
     os::{
-        fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd},
+        fd::{AsFd, AsRawFd, OwnedFd, RawFd},
         unix::{
             ffi::OsStrExt,
-            fs::{FileExt, MetadataExt, OpenOptionsExt},
+            fs::{MetadataExt, OpenOptionsExt},
             net::UnixStream,
         },
     },
@@ -151,25 +151,10 @@ impl OriginalHomeAlias {
             bytes.extend(part);
             bytes.push(0);
         }
-        let descriptor = rustix::fs::memfd_create(
-            c"tilo-original-home-alias-args",
-            rustix::fs::MemfdFlags::CLOEXEC | rustix::fs::MemfdFlags::ALLOW_SEALING,
-        )?;
-        let mut file = File::from(descriptor);
-        file.write_all(&bytes)?;
-        file.seek(SeekFrom::Start(0))?;
-        rustix::fs::fcntl_add_seals(
-            &file,
-            rustix::fs::SealFlags::WRITE
-                | rustix::fs::SealFlags::GROW
-                | rustix::fs::SealFlags::SHRINK
-                | rustix::fs::SealFlags::SEAL,
-        )?;
-        Ok(file)
+        crate::fd::sealed_memfd(c"tilo-original-home-alias-args", &bytes)
     }
 }
 const LIMIT: usize = 16 * 1024;
-const SEALS: i32 = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
 
 fn refused(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
@@ -177,15 +162,7 @@ fn refused(message: &str) -> io::Error {
 fn sha(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
-fn digest(text: &str) -> bool {
-    text.len() == 64
-        && text
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
-fn uuid(text: &str) -> bool {
-    uuid::Uuid::parse_str(text).is_ok_and(|id| id.to_string() == text)
-}
+use crate::validate::{digest, uuid};
 
 struct QpeWorker {
     finished: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
@@ -560,18 +537,17 @@ impl RetainedLaunchAdmission {
         {
             return Err(refused("retained owned helper image differs"));
         }
-        let info =
-            std::fs::read_to_string(format!("/proc/self/fdinfo/{}", self.root_pidfd.as_raw_fd()))?;
-        let pid = info
-            .lines()
-            .find_map(|line| line.strip_prefix("Pid:"))
-            .and_then(|pid| pid.trim().parse::<u32>().ok());
+        let pid = crate::fd::fdinfo_u64(&self.root_pidfd, b"Pid:", 4096)
+            .ok()
+            .flatten();
         let mut poll = libc::pollfd {
             fd: self.root_pidfd.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         };
-        if pid != Some(self.expected.pid) || unsafe { libc::poll(&raw mut poll, 1, 0) } != 0 {
+        if pid != Some(u64::from(self.expected.pid))
+            || unsafe { libc::poll(&raw mut poll, 1, 0) } != 0
+        {
             return Err(refused("retained owned root child stopped or differs"));
         }
         Ok(())
@@ -669,25 +645,8 @@ fn check_executing_image(peer: &ExecutingPeer, expected: &File) -> io::Result<()
     Ok(())
 }
 fn protected_helper() -> io::Result<File> {
-    for path in ["/", "/usr", "/usr/libexec"] {
-        let metadata = std::fs::symlink_metadata(path)?;
-        if !metadata.is_dir() || !protected_owner(metadata.uid(), metadata.mode()) {
-            return Err(refused("retained helper ancestry is not protected"));
-        }
-    }
-    let helper = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(HELPER_PATH)?;
-    let metadata = helper.metadata()?;
-    if !metadata.is_file()
-        || !protected_owner(metadata.uid(), metadata.mode())
-        || metadata.mode() & 0o111 == 0
-        || metadata.len() == 0
-    {
-        return Err(refused("retained installed helper is not protected"));
-    }
-    Ok(helper)
+    crate::fd::protected_executable(&["/", "/usr", "/usr/libexec"], HELPER_PATH)
+        .map_err(|_| refused("retained installed helper is not protected"))
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -916,12 +875,7 @@ fn binding_for(
     ))
     .map_err(io::Error::other)?;
     let pid = std::process::id();
-    let process_stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
-    let start = process_stat
-        .rsplit_once(") ")
-        .and_then(|(_, fields)| fields.split_whitespace().nth(19))
-        .and_then(|value| value.parse().ok())
-        .ok_or(io::ErrorKind::InvalidData)?;
+    let start = tilo_process::start_time(pid).ok_or(io::ErrorKind::InvalidData)?;
     let binding = ConsumerLaunchBinding {
         operation_id: challenge.operation_id.clone(),
         shell_context_sha256: challenge.shell_context_sha256.clone(),
@@ -997,14 +951,10 @@ fn mount_id(view: &File) -> io::Result<u64> {
 }
 fn send_json<T: serde::Serialize>(io: &mut Handoff<'_>, value: &T) -> io::Result<()> {
     let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
-    if bytes.is_empty() || bytes.len() > LIMIT {
-        return Err(io::ErrorKind::InvalidData.into());
-    }
-    io.write_all(
-        &u32::try_from(bytes.len())
-            .map_err(io::Error::other)?
-            .to_be_bytes(),
-    )?;
+    let prefix = crate::services::json_framing(LIMIT)
+        .encode_prefix(bytes.len())
+        .map_err(io::Error::from)?;
+    io.write_all(&prefix)?;
     io.write_all(&bytes)
 }
 fn receive_json<T: serde::de::DeserializeOwned>(io: &mut Handoff<'_>) -> io::Result<T> {
@@ -1014,12 +964,11 @@ fn receive_json_bound<T: serde::de::DeserializeOwned>(
     io: &mut Handoff<'_>,
     limit: usize,
 ) -> io::Result<T> {
-    let mut length = [0; 4];
-    io.read_exact(&mut length)?;
-    let length = usize::try_from(u32::from_be_bytes(length)).map_err(io::Error::other)?;
-    if length == 0 || length > limit {
-        return Err(io::ErrorKind::InvalidData.into());
-    }
+    let mut prefix = [0; 4];
+    io.read_exact(&mut prefix)?;
+    let length = crate::services::json_framing(limit)
+        .decode_prefix(prefix)
+        .map_err(io::Error::from)?;
     let mut bytes = vec![0; length];
     io.read_exact(&mut bytes)?;
     serde_json::from_slice(&bytes).map_err(io::Error::other)
@@ -1037,24 +986,12 @@ fn receive_fd(io: &mut Handoff<'_>, index: u8) -> io::Result<std::os::fd::OwnedF
 }
 fn read_receipt(file: &std::os::fd::OwnedFd) -> io::Result<ViewReceipt> {
     let file = File::from(file.try_clone()?);
-    let metadata = file.metadata()?;
-    let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
-    let name = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
-    if !metadata.is_file()
-        || metadata.uid() != 0
-        || metadata.len() == 0
-        || metadata.len() > LIMIT as u64
-        || seals < 0
-        || seals & SEALS != SEALS
-        || !name
-            .as_os_str()
-            .as_bytes()
-            .starts_with(b"/memfd:tilo-retained-view-receipt")
-    {
-        return Err(refused("retained view lacks sealed root receipt"));
-    }
-    let mut bytes = vec![0; usize::try_from(metadata.len()).map_err(io::Error::other)?];
-    file.read_exact_at(&mut bytes, 0)?;
+    let bytes = crate::fd::read_sealed(
+        &file,
+        Some(b"/memfd:tilo-retained-view-receipt"),
+        LIMIT as u64,
+    )
+    .map_err(|_| refused("retained view lacks sealed root receipt"))?;
     serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
 
@@ -1311,21 +1248,7 @@ fn seal_receipt(receipt: &ViewReceipt) -> io::Result<File> {
     if bytes.is_empty() || bytes.len() > LIMIT {
         return Err(io::ErrorKind::InvalidData.into());
     }
-    let raw = unsafe {
-        libc::memfd_create(
-            c"tilo-retained-view-receipt".as_ptr(),
-            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-        )
-    };
-    if raw < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let mut file = unsafe { File::from_raw_fd(raw) };
-    file.write_all(&bytes)?;
-    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, SEALS) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(file)
+    crate::fd::sealed_memfd(c"tilo-retained-view-receipt", &bytes)
 }
 
 /// Root actor's already reviewed projection observation.
@@ -1841,7 +1764,7 @@ mod tests {
 #[cfg(test)]
 mod original_home_alias_tests {
     use super::*;
-    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::{ffi::OsStringExt, fs::FileExt};
     tilo_test_env::scenario! {
         fn a_native_home_alias_is_sealed_or_refused;
 
@@ -1866,8 +1789,8 @@ mod original_home_alias_tests {
             expected.push(0);
             assert_eq!(bytes, expected);
             assert_eq!(
-                unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) } & SEALS,
-                SEALS
+                unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) } & crate::fd::SEALS,
+                crate::fd::SEALS
             );
             assert!(file.write_at(b"changed", 0).is_err());
         }

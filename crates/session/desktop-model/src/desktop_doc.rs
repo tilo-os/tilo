@@ -7,6 +7,7 @@
 //! Shape: `{ active: workspace id,
 //! window_records_v1?: {tab id → record id}, window_authors_v1?: {strip or
 //! tab id → person}, window_opened_by_v1?: {tab id → json agent run},
+//! window_states_v1?: {tab id → json sealed state},
 //! view_v1: json, workspaces: [ { id: workspace id, name, owner?,
 //! members: {person → json role}, members_joined_v1: {person → json Unix ms}, grants: {id → json}, sandbox: {id → json},
 //! presets_v1: {key → json},
@@ -35,9 +36,7 @@ use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
 use crate::layout::{CanvasPlace, FloatPlace, LayoutKind, WorkspaceLayout};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::partition::OutputPartition;
-use crate::projection::{
-    WORKSPACE_AUTOMATIONS_KEY, WORKSPACE_EFFECT_RECEIPTS_KEY, WORKSPACE_SCHEDULE_CLAIMS_KEY,
-};
+use crate::projection::{WORKSPACE_AUTOMATIONS_KEY, WORKSPACE_EFFECT_RECEIPTS_KEY};
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::serde_ids::deserialize_id_map;
 use crate::tree::Layout;
@@ -61,6 +60,8 @@ const FLOATS_KEY: &str = "floats_v1";
 const RECORDS_KEY: &str = "window_records_v1";
 const WINDOW_AUTHORS_KEY: &str = "window_authors_v1";
 const OPENED_BY_KEY: &str = "window_opened_by_v1";
+/// Each window's own state, sealed to its readers, by tab ([`crate::window_state`]).
+const WINDOW_STATES_KEY: &str = "window_states_v1";
 
 /// The map key a named grant set is stored under: a digest of its case-folded name, so two
 /// spellings of one name share a key.
@@ -315,12 +316,6 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
         ws.shortcuts
             .iter()
             .map(|shortcut| (shortcut.id().to_owned(), shortcut)),
-    );
-    sync_blob_map(
-        doc,
-        entry,
-        WORKSPACE_SCHEDULE_CLAIMS_KEY,
-        ws.schedule_claims.iter().map(|claim| (claim.key(), claim)),
     );
     write_layout(doc, entry, &ws.layout);
     write_local(doc, entry, ws);
@@ -581,13 +576,17 @@ fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
                     .iter()
                     .position(|r| *r == role)
                     .unwrap_or(Role::ALL.len()),
-                Grantee::Member(_) | Grantee::App(_) | Grantee::CustomRole(_) => Role::ALL.len(),
+                Grantee::Member(_) | Grantee::App(_) | Grantee::CustomRole(_) | Grantee::AnyKey => {
+                    Role::ALL.len()
+                }
             }
         }
         fn role_index(grant: &Grant) -> Option<u64> {
             match grant.grantee {
                 Grantee::Role(_) => grant.id.0.rsplit(':').next()?.parse().ok(),
-                Grantee::Member(_) | Grantee::App(_) | Grantee::CustomRole(_) => None,
+                Grantee::Member(_) | Grantee::App(_) | Grantee::CustomRole(_) | Grantee::AnyKey => {
+                    None
+                }
             }
         }
         grants.compact_sort_by(|left, right| {
@@ -622,13 +621,6 @@ fn read_shortcuts(doc: &AutoCommit, entry: &ObjId) -> Vec<tilo_automation::Saved
             .unwrap_or_default();
     shortcuts.compact_sort_by(|left, right| left.id().cmp(right.id()));
     shortcuts
-}
-
-fn read_schedule_claims(doc: &AutoCommit, entry: &ObjId) -> Vec<tilo_automation::ScheduleClaim> {
-    let mut claims: Vec<tilo_automation::ScheduleClaim> =
-        read_blob_map(doc, entry, WORKSPACE_SCHEDULE_CLAIMS_KEY).unwrap_or_default();
-    claims.compact_sort_by_key(tilo_automation::ScheduleClaim::key);
-    claims
 }
 
 fn read_effect_receipts(doc: &AutoCommit, entry: &ObjId) -> Vec<WorkspaceEffectReceipt> {
@@ -690,7 +682,6 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut Layout) {
         }
         ws.effect_receipts = read_effect_receipts(doc, entry);
         ws.shortcuts = read_shortcuts(doc, entry);
-        ws.schedule_claims = read_schedule_claims(doc, entry);
         ws.layout = read_layout(doc, entry);
         if let Some(local) = read_local(doc, entry) {
             local.apply(&mut ws);
@@ -1050,6 +1041,93 @@ pub fn note_opened_by(
     doc.pending_ops() > before
 }
 
+/// The sealed state ([`crate::window_state`]) of each window, by tab, as its text, now (`None`)
+/// or as of `heads`. Each entry is its own, so a window's state changes only its own.
+pub(crate) fn window_states_at(
+    doc: &AutoCommit,
+    heads: Option<&[automerge::ChangeHash]>,
+) -> std::collections::BTreeMap<TabId, String> {
+    let get = |obj: &ObjId, key: &str| match heads {
+        Some(heads) => doc.get_at(obj, key, heads),
+        None => doc.get(obj, key),
+    };
+    let Ok(Some((Value::Object(ObjType::Map), map))) = get(&ROOT, WINDOW_STATES_KEY) else {
+        return std::collections::BTreeMap::new();
+    };
+    let keys: Vec<String> = match heads {
+        Some(heads) => doc.keys_at(&map, heads).collect(),
+        None => doc.keys(&map).collect(),
+    };
+    keys.into_iter()
+        .filter_map(|key| {
+            let Ok(Some((Value::Scalar(scalar), _))) = get(&map, &key) else {
+                return None;
+            };
+            let ScalarValue::Str(text) = scalar.as_ref() else {
+                return None;
+            };
+            Some((key.parse().ok()?, text.to_string()))
+        })
+        .collect()
+}
+
+/// Write `state` as window `tab`'s sealed state, or take it out (`None`). Whether the document
+/// changed; `None` when the layout holds no such window.
+pub(crate) fn put_window_state(
+    doc: &mut AutoCommit,
+    tab: TabId,
+    state: Option<&str>,
+) -> Option<bool> {
+    let mut tree = Layout::default();
+    rebuild(doc, &mut tree);
+    tree.tab(tab)?;
+    let before = doc.pending_ops();
+    match state {
+        Some(state) => {
+            let map = child_object(doc, &ROOT, WINDOW_STATES_KEY, ObjType::Map)?;
+            let _ = doc.put_str_if_changed(&map, tab.to_string(), state);
+        }
+        None => {
+            if let Some(map) = obj(doc, &ROOT, WINDOW_STATES_KEY) {
+                delete_if_present(doc, &map, &tab.to_string());
+            }
+        }
+    }
+    Some(doc.pending_ops() > before)
+}
+
+/// Keep the sealed states of the windows `tree` holds: `carried` (what a record written entry by
+/// entry held, as it becomes the layout's document) written in, and a closed window's taken out.
+fn keep_window_states(
+    doc: &mut AutoCommit,
+    tree: &Layout,
+    carried: std::collections::BTreeMap<TabId, String>,
+) {
+    let held = obj(doc, &ROOT, WINDOW_STATES_KEY);
+    if carried.is_empty() && held.is_none() {
+        return;
+    }
+    let Some(map) = child_object(doc, &ROOT, WINDOW_STATES_KEY, ObjType::Map) else {
+        return;
+    };
+    for (tab, state) in carried {
+        if tree.tab(tab).is_some() {
+            let _ = doc.put_str_if_changed(&map, tab.to_string(), &state);
+        }
+    }
+    let gone: Vec<String> = doc
+        .keys(&map)
+        .filter(|key| {
+            key.parse()
+                .ok()
+                .is_none_or(|tab: TabId| tree.tab(tab).is_none())
+        })
+        .collect();
+    for key in gone {
+        let _ = doc.delete(&map, key.as_str());
+    }
+}
+
 /// The root keys a workspace's desktop kept when every window was its own entry
 /// there, before the layout was one document.
 const ENTRY_KEYS: [&str; 3] = ["strips", "groups", "windows"];
@@ -1066,9 +1144,15 @@ pub fn write_shared(
     authors: &crate::ownership::Authors,
 ) -> bool {
     let before = doc.pending_ops();
+    let carried = if holds(doc) {
+        std::collections::BTreeMap::new()
+    } else {
+        crate::shared_resource::window_states(doc, None)
+    };
     write_workspaces(doc, tree);
     set_records(doc, records);
     set_window_authors(doc, authors);
+    keep_window_states(doc, tree, carried);
     for key in ENTRY_KEYS.into_iter().chain([ACTIVE_KEY, VIEW_KEY]) {
         if doc.get(&ROOT, key).ok().flatten().is_some() {
             let _ = doc.delete(&ROOT, key);

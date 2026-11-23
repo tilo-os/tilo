@@ -100,7 +100,7 @@ fn operation(layout: &crate::setup::OfflineLayout, caller: u32) -> io::Result<St
             }
         }
     }
-    Ok(plan.operation_id)
+    Ok(plan.0.operation_id)
 }
 pub fn validate_pending_caller(
     layout: &crate::setup::OfflineLayout,
@@ -392,7 +392,7 @@ mod tests {
             "home":{"volume":{"disk_guid":"11111111-1111-4111-8111-111111111111",
                 "disk_bytes":67108864,"sector_bytes":512,"partition_guid":"22222222-2222-4222-8222-222222222222",
                 "first_lba":2048,"last_lba":4095,"filesystem_uuid":"33333333-3333-4333-8333-333333333333","filesystem":"ext4"},
-                "relative":{"platform":"Unix","units":b"home/person".to_vec()},"inode":1234,"original_uid":caller}});
+                "relative":{"platform":"Unix","units":b"home/person".to_vec()},"inode":1234,"original_uid":caller,"subvolume":null}});
         let source =
             crate::setup::migration_handoff::Plan::parse(&serde_json::to_vec(&plan).unwrap())
                 .unwrap();

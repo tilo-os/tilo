@@ -14,10 +14,8 @@ use crate::headless::{self, FrameHarness};
 mod app_log;
 #[cfg(feature = "native")]
 mod capture_clock;
-mod capture_settings;
 #[cfg(feature = "native")]
 use app_log::init_app_log;
-pub use capture_settings::capture_appearance;
 #[cfg(feature = "native")]
 mod capture;
 #[cfg(feature = "native")]

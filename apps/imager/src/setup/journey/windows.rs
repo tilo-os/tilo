@@ -23,8 +23,10 @@ pub(super) struct Preparation {
     exclusion_reason: ui::LocalState<String>,
     hints_unavailable: bool,
     picker: Option<(Option<RootRole>, ui::PortalChannel)>,
-    worker: Option<std::sync::mpsc::Receiver<Result<crate::windows_media::WindowsMedia, String>>>,
-    prepared_media: Option<crate::windows_media::WindowsMedia>,
+    worker: Option<
+        std::sync::mpsc::Receiver<Result<imager_backend::windows_media::WindowsMedia, String>>,
+    >,
+    prepared_media: Option<imager_backend::windows_media::WindowsMedia>,
     source_worker: Option<std::sync::mpsc::Receiver<Result<Discovery, String>>>,
     exported: bool,
     failed: bool,
@@ -57,7 +59,7 @@ impl Default for Preparation {
 }
 
 impl Preparation {
-    pub(super) fn media_handoff(&self) -> Option<crate::windows_media::WindowsMedia> {
+    pub(super) fn media_handoff(&self) -> Option<imager_backend::windows_media::WindowsMedia> {
         self.exported.then(|| self.prepared_media.clone()).flatten()
     }
 

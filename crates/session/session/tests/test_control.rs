@@ -739,6 +739,32 @@ fn center((x, y, width, height): (f64, f64, f64, f64)) -> (f64, f64) {
     (x + width / 2.0, y + height / 2.0)
 }
 
+/// Each window's tab is named by the group that holds it, so a harness or an agent finds the
+/// window it sees even where two windows carry one title.
+#[test]
+fn each_windows_tab_is_named_by_the_group_that_holds_it() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let socket = root.path().join("test-control.sock");
+    let mut session = session_showing(shell(&[(20, "Alpha"), (21, "Beta")]), &socket);
+    let answer = ask(&mut session, &socket, &json!({"op": "list_targets"}));
+    let names: Vec<&str> = answer["targets"]
+        .as_array()
+        .expect("the targets are a list")
+        .iter()
+        .filter_map(|target| target["name"].as_str())
+        .collect();
+    for group in groups(&session).into_iter().map(|(group, _)| group) {
+        let tagged = format!("[{group}]");
+        assert!(
+            names
+                .iter()
+                .any(|name| name.starts_with("tab:") && name.ends_with(&tagged)),
+            "the window in group {group} names its tab: {names:?}"
+        );
+    }
+}
+
 /// The open search, as the shell publishes it.
 fn search(session: &Session) -> Option<tilo_actions::ResourceSpec> {
     fn find(

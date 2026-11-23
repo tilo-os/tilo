@@ -135,21 +135,6 @@ mod tests {
         (result == 0).then_some(scheduler.util_min)
     }
 
-    #[test]
-    fn game_hint_is_bounded_and_has_no_realtime_policy() {
-        let attr = game_sched_attr();
-        assert_eq!(attr.size as usize, std::mem::size_of::<SchedAttr>());
-        assert_eq!(attr.policy, 0);
-        assert_eq!(attr.priority, 0);
-        assert_eq!(attr.util_min, 256);
-        assert_eq!(attr.util_max, 1024);
-        assert_eq!(attr.util_min, 1024 / 4);
-        assert_eq!(GAME_TIMER_SLACK_NS, 1_000);
-        assert_eq!(GAME_IO_PRIORITY, 2);
-        assert_eq!(game_ioprio() >> IOPRIO_CLASS_SHIFT, 2);
-        assert_eq!(game_ioprio() & 7, 2);
-    }
-
     #[cfg(target_os = "linux")]
     #[test]
     #[allow(
@@ -238,6 +223,9 @@ mod tests {
                     };
                     assert_eq!(result, 0);
                     assert_eq!(scheduler.util_min, GAME_UTIL_MIN);
+                    // A boost, never a realtime policy: the thread stays SCHED_OTHER at priority 0.
+                    assert_eq!(scheduler.policy, 0);
+                    assert_eq!(scheduler.priority, 0);
                 } else {
                     assert_eq!(
                         uclamp_error.and_then(|error| error.raw_os_error()),

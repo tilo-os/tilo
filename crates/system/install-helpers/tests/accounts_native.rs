@@ -6,7 +6,8 @@
 #[cfg(test)]
 mod tests {
     use account_credentials::portable::{self, PortableBinding};
-    use accounts::{Account, AccountId, AccountStore, AccountTypeId, Secret, SecretVault};
+    use accounts::person::AccountList;
+    use accounts::{Account, AccountId, AccountTypeId, Secret, SecretVault};
     use std::fs;
     use std::io::Write;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -212,6 +213,15 @@ mod tests {
 
     type FileSnapshot = (PathBuf, Vec<u8>, u32, u64, i64, i64);
 
+    /// How many accounts `root`'s staged record holds.
+    fn staged_len(root: &Path) -> usize {
+        accounts::person::staged_in(root)
+            .unwrap()
+            .state()
+            .unwrap()
+            .len()
+    }
+
     fn snapshot(path: &Path) -> Vec<FileSnapshot> {
         let mut entries = Vec::new();
         for entry in fs::read_dir(path).unwrap() {
@@ -240,7 +250,7 @@ mod tests {
         if std::env::var(CHILD).as_deref() == Ok("verify") {
             assert_eq!(rustix::process::getuid().as_raw(), 1000);
             let destination = Path::new("/var/home/alice/.config/tilo");
-            assert_eq!(AccountStore::load_in(destination).len(), 1);
+            assert_eq!(staged_len(destination), 1);
             let vault = SecretVault::open_read_only_in(destination);
             assert_eq!(
                 vault.get(&AccountId::new("selected-native")).unwrap(),
@@ -295,14 +305,16 @@ mod tests {
         vault.put(&selected, &selected_secret());
         vault.put(&unselected, &Secret::password("must remain only at source"));
         vault.try_save().unwrap();
-        let mut store = AccountStore::new();
+        let mut record = accounts::person::staged_in(&source).unwrap();
         for id in [&selected, &unselected] {
-            store.upsert(Account::new(
-                id.clone(),
-                AccountTypeId::new(account_credentials::OAuthCloud::GoogleDrive.type_id()),
-            ));
+            record
+                .apply_confirmed(AccountList::saving(&Account::new(
+                    id.clone(),
+                    AccountTypeId::new(account_credentials::OAuthCloud::GoogleDrive.type_id()),
+                )))
+                .unwrap();
         }
-        store.save_in(&source).unwrap();
+        accounts::person::keep_staged_in(&source, &mut record).unwrap();
         let binding = PortableBinding::new(OPERATION, TARGET, USER, 1000).unwrap();
         let key = SymmetricKey::generate().unwrap();
         let sealed = portable::seal_selected_accounts(
@@ -320,6 +332,10 @@ mod tests {
         (source, frame)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the whole handoff, its guards and its retries are one fixture flow"
+    )]
     fn verify_handoff(fixture: &Fixture, source: &Path, frame: &[u8]) {
         // The source is deliberately writable by the destination UID: an ownership alias
         // regression must be caught by the guard, not by Unix permissions.
@@ -350,6 +366,19 @@ mod tests {
                 if stat.is_dir() { 0o700 } else { 0o600 }
             );
         }
+        // A truncated or overlong transport is not the frame the stage command sealed.
+        let consume = |bytes: &[u8]| {
+            fixture.run(
+                &["--accounts-consume", OPERATION, TARGET, USER, "1000"],
+                bytes,
+                1000,
+                false,
+            );
+        };
+        consume(&frame[..frame.len() - 1]);
+        consume(&[frame, &[0]].concat());
+        fixture.absent_destination();
+        assert_eq!(fs::read(&transport).unwrap(), frame);
         // Root must not be able to bypass the destination-user consumer boundary.
         fixture.run(
             &["--accounts-consume", OPERATION, TARGET, USER, "1000"],
@@ -391,7 +420,7 @@ mod tests {
         fs::remove_file(config.join("tilo")).unwrap();
         fixture.adopt(true);
         let destination = config.join("tilo");
-        assert_eq!(AccountStore::load_in(&destination).len(), 1);
+        assert_eq!(staged_len(&destination), 1);
         // Read canonical ownership as the installed user, not root: ownership readers
         // deliberately refuse keys owned by another real user.
         fs::copy(std::env::current_exe().unwrap(), fixture.path("verify")).unwrap();

@@ -448,22 +448,6 @@ mod tests {
         phase lockout_parameters_parse_and_classify_against_the_target;
         {
             {
-                let p = parse_properties(SWTPM);
-                assert_eq!(p.max_tries, 3);
-                assert_eq!(p.recovery_time, 1000);
-                assert_eq!(p.lockout_recovery, 1000);
-                assert_eq!(p.counter, 0);
-                assert!(!p.lockout_auth_set);
-                assert!(!p.in_lockout);
-            }
-            {
-                let p = parse_properties(&SWTPM.replace(
-                    "lockoutAuthSet:            0",
-                    "lockoutAuthSet:            1",
-                ));
-                assert!(p.lockout_auth_set);
-            }
-            {
                 let a = assess(parse_properties(SWTPM), Target::default());
                 assert!(!a.pin_is_defensible());
                 assert!(

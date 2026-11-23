@@ -385,6 +385,16 @@ mod tests {
         phase an_action_asks_for_a_dictation_and_never_consents_to_one;
         {
             let (mut service, link) = DictationService::start();
+            let actions: Vec<String> = service.resources()[0]
+                .actions
+                .iter()
+                .map(|spec| spec.id.clone())
+                .collect();
+            assert_eq!(
+                actions,
+                ["start", "finish", "cancel", "discard-transcript"],
+                "consent and copying stay on the person's own prompt"
+            );
             let started = service
                 .invoke(DICTATION, "start", &Map::new())
                 .expect("start is offered");

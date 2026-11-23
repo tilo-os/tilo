@@ -25,12 +25,14 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionFailure, InvocationUpdate};
 use tilo_workspace_agent::Agent;
 
+use super::calendar_connect::asked_in;
 use super::calendar_connect::{
     ASKED_FIRST, Asker, Asking, Carrier, DECLINED, PutAsk, TYPED, Typed, UNANSWERED,
-    ask_for_password, asked_in,
+    ask_for_password,
 };
 use super::turn_provider::{Ending, Rows};
 use super::{Reply, Turn, TurnProvider, WorkspaceId};
+use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::{
     HostedTurn, MAIL_CONNECT, MailAsk, MailCarried, TurnMailConnect,
 };
@@ -198,20 +200,15 @@ impl Carrier {
     /// Ask again about every mail account of `workspace` whose person this process does not
     /// ask about, as after a restart, and tell the agent of one this server stopped on while it
     /// signed it in. Costs one look at what this server keeps when nothing waits.
-    pub(super) fn settle_mail_connects(&self, workspace: &str) {
-        for ask in self.workspaces.open_mail_connects(workspace) {
-            if ask.interrupted {
-                self.workspaces.mail_connect_not_asked(&ask);
-                let this = self.clone();
-                tokio::spawn(async move {
-                    this.tell_of_password(&ask, &ask.named(), (TYPED, INTERRUPTED))
-                        .await;
-                });
-            } else if !ask.started {
-                let this = self.clone();
-                tokio::spawn(async move { this.ask_and_sign_in(ask).await });
-            }
-        }
+    pub(super) async fn settle_mail_connects(&self, workspace: &str) {
+        self.settle_password_asks(
+            self.workspaces.open_mail_connects(workspace),
+            INTERRUPTED,
+            Workspaces::mail_connect_not_asked,
+            MailAsk::named,
+            |this, ask| async move { this.ask_and_sign_in(ask).await },
+        )
+        .await;
     }
 
     /// Ask the person `open` names for the password, sign the account in with what they typed,

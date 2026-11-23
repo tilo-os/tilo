@@ -571,6 +571,43 @@ pub fn complete_enrolled_device(
     Ok(true)
 }
 
+/// Make the person of `cert`, the certificate a login with a ticket brought, this account's
+/// identity: the device's enrolment becomes theirs, replacing one of another person (the root a
+/// computer made for itself before it logged in, or an earlier login's), since the person just
+/// chose this one; and the account acts as them from now on.
+///
+/// # Errors
+/// The certificate is not one this device may take, or the identity cannot be written.
+pub fn adopt_login_certificate(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    cert: &tilo_user_identity::DeviceCert,
+    now_ns: u64,
+) -> io::Result<()> {
+    let install = || {
+        persist::install_device_cert(paths, cert, now_ns)
+            .map_err(|error| io::Error::other(error.to_string()))
+    };
+    match persist::install_device_cert(paths, cert, now_ns) {
+        Err(persist::PersistError::Io(error)) if error.kind() == io::ErrorKind::AlreadyExists => {
+            tracing::info!(person = %hex::encode(cert.user_public_key), "this computer logged in as another person than it was enrolled for: it is theirs now");
+            for path in [&paths.user_pubkey, &paths.device_cert] {
+                match fs::remove_file(path) {
+                    Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                    _ => {}
+                }
+            }
+            install()?;
+        }
+        installed => installed.map_err(|error| io::Error::other(error.to_string()))?,
+    }
+    complete_enrolled_device(identity_dir, paths, now_ns)?;
+    crate::store::set_active_identity(
+        identity_dir,
+        &public_record_id(&hex::encode(cert.user_public_key)),
+    )
+}
+
 fn public_record_id(identity_id: &str) -> String {
     let prefix: String = identity_id.chars().take(55).collect();
     format!("identity-{prefix}")

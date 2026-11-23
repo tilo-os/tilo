@@ -71,8 +71,6 @@
 "terminal" = 22   # 19.1 MB
 "themes" = 22   # 19.1 MB
 "tilolang" = 30   # not yet measured on a release build
-"tilolangc" = 2   # 1.5 MB, the compiler's command line
-"tlc" = 2   # 1.5 MB, the same program under its short name
 "tinker" = 2   # 1.1 MB
 "totp" = 25   # 21.6 MB
 "typst-editor" = 63   # 54.4 MB

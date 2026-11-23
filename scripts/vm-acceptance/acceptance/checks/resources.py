@@ -101,31 +101,59 @@ def _parse_sample(text: str) -> dict:
 COMPOSITOR_BIN = "/usr/bin/tilo-session"
 
 
+def _runs_compositor(procs: dict, pid: int) -> bool:
+    return procs[pid].get("exe") == COMPOSITOR_BIN
+
+
+def _under_compositor(procs: dict, pid: int) -> bool:
+    """Whether a process running `COMPOSITOR_BIN` is an ancestor of `pid`."""
+    seen = {pid}
+    pid = procs[pid]["ppid"]
+    while pid in procs and pid not in seen:
+        if _runs_compositor(procs, pid):
+            return True
+        seen.add(pid)
+        pid = procs[pid]["ppid"]
+    return False
+
+
 def compositor_pid(procs: dict) -> int | None:
     """The compositor among the account user's processes: the process running
-    `COMPOSITOR_BIN` (the login wrapper runs bash under the same process name).
+    `COMPOSITOR_BIN` (the login wrapper runs bash under the same process name) that no
+    other such process started.
 
-    A process started by the compositor from its own binary (the shell's public
-    shader-seed renderer, `--shader-seed-render`) has the compositor as an ancestor; the
-    busiest one could be such a child. Two roots would be two compositors, and which of
+    The compositor starts its own binary again for each render service (`render_services`),
+    so those run the same binary below it. Two roots would be two compositors, and which of
     them is the idle desktop cannot be said."""
-    def is_compositor(pid):
-        return procs[pid].get("exe") == COMPOSITOR_BIN
-
-    def has_compositor_ancestor(pid):
-        seen = {pid}
-        pid = procs[pid]["ppid"]
-        while pid in procs and pid not in seen:
-            if is_compositor(pid):
-                return True
-            seen.add(pid)
-            pid = procs[pid]["ppid"]
-        return False
-
-    roots = sorted(pid for pid in procs if is_compositor(pid) and not has_compositor_ancestor(pid))
+    roots = sorted(pid for pid in procs if _runs_compositor(procs, pid) and not _under_compositor(procs, pid))
     if len(roots) > 1:
         raise core.Unobservable(f"{len(roots)} compositor processes of the account user (pids {roots})")
     return roots[0] if roots else None
+
+
+def render_services(procs: dict) -> list[int]:
+    """The compositor's render services: its own binary started again below it
+    (`tilo-session __render-service`), one for the person's private workspaces and one per
+    workspace others may read. They draw the apps' frames, so an idle desktop's cost is
+    theirs as much as the compositor's."""
+    return sorted(pid for pid in procs if _runs_compositor(procs, pid) and _under_compositor(procs, pid))
+
+
+def session_role(procs: dict, pid: int, compositor: int | None) -> str | None:
+    """What a `tilo-session` process is: the compositor, one of its render services, or
+    the login wrapper (bash under the same name). None for any other process."""
+    if pid == compositor:
+        return "compositor"
+    if _runs_compositor(procs, pid):
+        return "render service" if _under_compositor(procs, pid) else "compositor"
+    if procs[pid]["comm"] == "tilo-session":
+        return "login wrapper"
+    return None
+
+
+def describe_process(p: dict) -> str:
+    """A process for a failure message: `tilo-session (render service) 77.5%`."""
+    return f"{p['comm']}{' (' + p['role'] + ')' if p.get('role') else ''} {p['cpu_pct']}%"
 
 
 def thread_rows(sample: dict, pid: int, seconds: float) -> dict:
@@ -198,6 +226,10 @@ def summarize(sample: dict, seconds: int) -> dict:
                           "ctxt_switches_per_s": round((p["cs"] - a[pid]["cs"]) / seconds, 1)})
     procs.sort(key=lambda p: -p["cpu_pct"])
     pid = compositor_pid(a)
+    for p in procs:
+        role = session_role(a, p["pid"], pid)
+        if role:
+            p["role"] = role
     shell = next((p for p in procs if p["pid"] == pid), None)
     threads = thread_rows(sample, pid, seconds) if shell else None
     groups = threads and thread_groups(threads["threads"])
@@ -232,6 +264,7 @@ def summarize(sample: dict, seconds: int) -> dict:
         "guest_cpu_pct": guest,
         "top": procs[:10],
         "ush": runtime_idle(sample, procs, seconds, "tilo-ush"),
+        "render_services": processes_idle(sample, procs, seconds, set(render_services(a))),
     }
 
 
@@ -240,7 +273,13 @@ def runtime_idle(sample: dict, procs: list[dict], seconds: float, comm: str) -> 
     all their threads, and each thread with its index and `new` flag. Terminal's shell
     runtime is two such processes (`tilo-ush serve`, and `tilo-ush run` per open
     session, which holds the guest's broker and egress stub). None when none ran."""
-    mine = [p for p in procs if p["comm"] == comm]
+    return processes_idle(sample, procs, seconds, {p["pid"] for p in procs if p["comm"] == comm})
+
+
+def processes_idle(sample: dict, procs: list[dict], seconds: float, pids: set[int]) -> dict | None:
+    """The processes `pids` over the window, summed as `runtime_idle` sums them. None
+    when none of them ran through the window."""
+    mine = [p for p in procs if p["pid"] in pids]
     if not mine:
         return None
     rows = {p["pid"]: thread_rows(sample, p["pid"], seconds) for p in mine}
@@ -746,15 +785,15 @@ def _open_several(ctx, apps: tuple[str, ...] = FOUR_APPS, name: str = "R"):
     if closed or failed:
         ctx.shot(f"{name}-apps-closed-after-open")
         pattern = "|".join(a.replace(".", "\\.") for a in [*closed, *failed])
-        # The compositor's own lines and the apps' ends, not their start-up chatter.
+        # The compositor's lines and the apps' ends, whole: an end quotes its last lines, the cause last.
         ctx.write(f"{name}-apps-closed-after-open.log", ctx.vm.exec(
             "sed 's/\\x1b\\[[0-9;]*m//g' \"$HOME/.local/state/tilo/session-logs/latest.log\" 2>/dev/null "
-            f"| grep -avE 'tilo-sandbox-exec|MESA|service socket connected|action contract validation' "
+            f"| grep -avE '\\] tilo-sandbox-exec|MESA|service socket connected|action contract validation' "
             f"| grep -aE '^[^\\[]|{pattern}' | grep -aiE '{pattern}|exit|signal|panic|close|kill|fail|launch|surface' "
-            "| tail -n 150 | cut -c1-400; echo ---; "
+            "| tail -n 150 | cut -c1-2000; echo ---; "
             f"journalctl --user -b --no-pager -o short-monotonic 2>/dev/null "
             f"| grep -aE 'scope|{pattern}' | grep -aiE 'stop|deactivat|fail|exit|kill|signal|consumed|dump' "
-            "| tail -n 60 | cut -c1-400; echo ---; coredumpctl --no-pager list 2>/dev/null | tail -n 10; true",
+            "| tail -n 60 | cut -c1-2000; echo ---; coredumpctl --no-pager list 2>/dev/null | tail -n 10; true",
             check=False))
     ctx.facts["apps_closed_after_open"] = closed
     ctx.facts["apps_failed_to_open"] = failed
@@ -814,7 +853,7 @@ def _budget_problems(m, budgets, prefix, software=False):
         problems.append(f"compositor loop woke {m['shell_loop_ticks_per_s']}/s > {budgets['idle_loop_ticks_per_s']}/s"
                         + (f" (woken by {woke})" if woke else ""))
     if m["user_cpu_pct_total"] > budgets[f"{prefix}_user_cpu_pct"]:
-        top = ", ".join(f"{p['comm']} {p['cpu_pct']}%" for p in m["top"][:4])
+        top = ", ".join(describe_process(p) for p in m["top"][:4])
         problems.append(f"session CPU {m['user_cpu_pct_total']}% > {budgets[f'{prefix}_user_cpu_pct']}% ({top})")
     return problems
 
@@ -1653,6 +1692,12 @@ def shared_idle(m: dict, budgets: dict) -> tuple[dict, list[str]]:
            "shovel_wakeups_per_s": round(sum(r["ctxt_switches_per_s"] for r in shovels), 2),
            "shovels": sum(r["threads"] for r in shovels),
            "shovel_processes": sorted({r["process"] or "?" for r in shovels})}
+    # The render services draw the open apps' frames, the shared workspace's own among them:
+    # idle, they have nothing to draw either.
+    render = m.get("render_services") or {}
+    out.update(render_service_processes=render.get("processes", 0),
+               render_service_cpu_pct=render.get("cpu_pct", 0.0),
+               render_service_wakeups_per_s=render.get("wakeups_per_s", 0.0))
     problems = []
     if out["broker_wakeups_per_s"] > budgets["idle_shared_broker_wakeups_per_s"]:
         problems.append(f"the compositor's collaboration broker woke {out['broker_wakeups_per_s']}/s > "
@@ -1699,6 +1744,9 @@ def idle_shared(ctx, res):
                    threads=judged["broker_threads"], **window)
         ctx.record("idle.wakeups_per_s.shared_shovels", "per_s", [judged["shovel_wakeups_per_s"]],
                    shovels=judged["shovels"], apps=",".join(opened), **window)
+        ctx.record("idle.wakeups_per_s.shared_render_services", "per_s",
+                   [judged["render_service_wakeups_per_s"]],
+                   services=judged["render_service_processes"], **window)
         expect(not problems, "; ".join(problems))
     finally:
         _leave_shared(ctx, res, home)

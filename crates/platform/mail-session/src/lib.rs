@@ -15,6 +15,7 @@
 //! whose words would not fit is answered by its start, and says so.
 
 mod leaving;
+pub mod server;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -22,15 +23,13 @@ use std::time::Duration;
 
 use tilo_actions::remote::person_accounts::{
     FetchMail, FetchedMail, FetchedMessage, FoundFolder, FoundMail, MAX_FOUND, MailAddress,
-    MailAttachment, MailFlag, MarkMail, ReadMail, SearchMail, SendMail, SentMail,
+    MailAttachment, MarkMail, ReadMail, SearchMail, SendMail, SentMail,
 };
 use tokio::time::timeout;
 use web_time::Instant;
 
 pub use crate::leaving::{Leaving, Recipient};
-
-/// The messages one read answers at most, newest first.
-const PAGE: u32 = 50;
+use crate::server::{ImapSession, PAGE, Raw};
 /// How far behind the reader's newest message a read still catches up one
 /// message at a time instead of starting the folder over.
 const CATCH_UP_LIMIT: u32 = 200;
@@ -57,8 +56,6 @@ const EXCERPT_WORDS: usize = 2 * 1024;
 /// The most messages a watch tells at once: one that was away for long tells
 /// the newest of what it missed.
 const WATCH_MOST: u32 = 200;
-
-type ImapSession = async_imap::Session<tilo_account_probe::imap::SecureStream>;
 
 /// What a host does with the accounts it keeps.
 pub trait MailSession: Send + Sync {
@@ -175,6 +172,10 @@ pub trait InboxHeard: Send + Sync {
 
     /// The watch lost its server for `reason`, and reaches for it again.
     fn lost(&self, reason: &str);
+
+    /// The server told of a change to the inbox that brought no message: one another client
+    /// read, starred, moved or removed. A reader that shows flags reads them again.
+    fn changed(&self) {}
 }
 
 /// A watch of one account's inbox, for as long as this is held: dropping it
@@ -313,6 +314,46 @@ impl LiveMailSession {
         self.pace = pace;
         self
     }
+
+    /// Run `work` on `account`'s signed-in session, and wait here for it: what a mail client
+    /// of its own asks of the server ([`server`]), with the session kept for its next request
+    /// as every request here keeps it.
+    ///
+    /// # Errors
+    /// The server could not be reached or refused the sign-in, or `work` failed.
+    pub fn on_session<T>(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+        work: impl AsyncFnOnce(&mut ImapSession) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.block(self.with_session(account, secret, work))
+    }
+
+    /// Hand the message `mime` holds to `account`'s server, for the recipients `envelope`
+    /// names, and wait here until it took it. Nothing is filed: that is
+    /// [`server::file_sent`].
+    ///
+    /// # Errors
+    /// No server answered, or it did not take the message.
+    pub fn hand_over(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+        envelope: lettre::address::Envelope,
+        mime: &[u8],
+    ) -> Result<(), SendFailure> {
+        self.started()
+            .map_err(SendFailure::Refused)?
+            .block_on(hand_over(
+                self.reach.as_ref(),
+                account,
+                secret,
+                envelope,
+                mime,
+                &self.smtp_trust,
+            ))
+    }
 }
 
 impl MailSession for LiveMailSession {
@@ -366,7 +407,8 @@ impl MailSession for LiveMailSession {
         self.block(async {
             let mime = write_mime(draft, files, invitation)?;
             self.with_session(account, secret, async |session: &mut ImapSession| {
-                keep_draft(session, &mime).await
+                let places = server::places(session).await?;
+                server::keep_draft(session, &places, &mime).await.map(drop)
             })
             .await
         })
@@ -382,20 +424,26 @@ impl MailSession for LiveMailSession {
     ) -> Result<SentMail, String> {
         self.block(async {
             let mime = write_leaving(sending, files, invitation)?;
-            send_message(
+            hand_over(
                 self.reach.as_ref(),
                 account,
                 secret,
-                sending,
+                sending.envelope()?,
                 &mime,
                 &self.smtp_trust,
             )
-            .await?;
+            .await
+            .map_err(SendFailure::into_words)?;
             // The message left. Its copy is told apart from that: a server
             // that will not take one does not unsend the message.
             let unfiled = self
                 .with_session(account, secret, async |session: &mut ImapSession| {
-                    file_sent(session, account, &mime).await
+                    let places = server::places(session).await?;
+                    let host = |name: &str| field(account, name).unwrap_or_default();
+                    let hosts = (host("imap_host"), host("smtp_host"));
+                    server::file_sent(session, &places, (&hosts.0, &hosts.1), &mime)
+                        .await
+                        .map(drop)
                 })
                 .await
                 .err();
@@ -411,7 +459,8 @@ impl MailSession for LiveMailSession {
     ) -> Result<(), String> {
         self.block(
             self.with_session(account, secret, async |session: &mut ImapSession| {
-                mark_message(session, marking).await
+                let places = server::places(session).await?;
+                server::mark(session, &places, marking).await
             }),
         )
     }
@@ -546,9 +595,7 @@ async fn sign_in(
         .filter(|named| !named.trim().is_empty())
         .ok_or_else(|| "account has no IMAP server".to_string())?;
     let port = port_of(account, "imap_port", 993);
-    let user = field(account, "username")
-        .or_else(|| field(account, "email"))
-        .ok_or_else(|| "account has no IMAP login name".to_string())?;
+    let user = login_of(account).ok_or_else(|| "account has no IMAP login name".to_string())?;
     if secret.password.is_empty() {
         return Err(no_sign_in(account));
     }
@@ -586,7 +633,8 @@ async fn sign_in(
         .map_err(|_| "IMAP server did not answer before the timeout".to_string())?
         .map_err(|(error, _)| match error {
             async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_) => {
-                "IMAP server rejected the saved credential".to_string()
+                "IMAP server rejected the saved credential. Check the username and password"
+                    .to_string()
             }
             _ => "IMAP server closed the connection unexpectedly".to_string(),
         })
@@ -648,76 +696,6 @@ fn login_name(value: &str) -> Result<&str, String> {
     Ok(value)
 }
 
-/// Where one of the app's folders lives on this account's server: its
-/// special-use mark first, then the names the common servers give it.
-fn folder_name(listing: &[(String, Vec<String>)], folder: &str) -> Option<String> {
-    let use_of = |wanted: &str| {
-        listing
-            .iter()
-            .find(|(_, uses)| uses.iter().any(|use_| use_ == wanted))
-            .map(|(name, _)| name.clone())
-    };
-    let named = |names: &[&str]| {
-        listing
-            .iter()
-            .find(|(name, _)| names.iter().any(|wanted| name.eq_ignore_ascii_case(wanted)))
-            .map(|(name, _)| name.clone())
-    };
-    match folder {
-        "inbox" | "starred" => Some("INBOX".to_owned()),
-        "sent" => use_of("Sent").or_else(|| {
-            named(&[
-                "Sent",
-                "Sent Items",
-                "Sent Messages",
-                "Sent Mail",
-                "[Gmail]/Sent Mail",
-            ])
-        }),
-        "drafts" => use_of("Drafts").or_else(|| named(&["Drafts", "Drafts", "[Gmail]/Drafts"])),
-        "archive" => {
-            use_of("Archive").or_else(|| named(&["Archive", "All Mail", "[Gmail]/All Mail"]))
-        }
-        "trash" => use_of("Trash").or_else(|| named(&["Trash", "Deleted Items", "[Gmail]/Trash"])),
-        "junk" => use_of("Junk").or_else(|| named(&["Junk", "Spam", "Junk Email", "[Gmail]/Spam"])),
-        _ => None,
-    }
-}
-
-async fn list_folders(session: &mut ImapSession) -> Result<Vec<(String, Vec<String>)>, String> {
-    use async_imap::types::NameAttribute;
-    use futures_util::TryStreamExt as _;
-    let stream = session
-        .list(Some(""), Some("*"))
-        .await
-        .map_err(|e| e.to_string())?;
-    stream
-        .map_ok(|listed| {
-            let uses = listed
-                .attributes()
-                .iter()
-                .filter_map(|attribute| match attribute {
-                    NameAttribute::All => Some("All"),
-                    NameAttribute::Archive => Some("Archive"),
-                    NameAttribute::Drafts => Some("Drafts"),
-                    NameAttribute::Junk => Some("Junk"),
-                    NameAttribute::Sent => Some("Sent"),
-                    NameAttribute::Trash => Some("Trash"),
-                    _ => None,
-                })
-                .map(str::to_owned)
-                .collect();
-            (listed.name().to_owned(), uses)
-        })
-        .try_collect()
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// The items a read asks the server for: the message whole, its position and
-/// its flags.
-const FETCH_ITEMS: &str = "(UID FLAGS INTERNALDATE BODY.PEEK[])";
-
 /// Read `asking`'s folder, answering as much of what its messages say as one
 /// answer carries.
 async fn fetch_folder(
@@ -734,200 +712,50 @@ async fn read_folder(session: &mut ImapSession, asking: &FetchMail) -> Result<Fe
     if asking.folder.is_empty() {
         return Err("a read names its folder".into());
     }
-    let listing = list_folders(session).await?;
-    let mailbox = folder_name(&listing, &asking.folder)
+    let places = server::places(session).await?;
+    let mailbox = places
+        .listed(&asking.folder)
         .ok_or_else(|| format!("this account's server has no {} folder", asking.folder))?;
-    let selected = session.select(&mailbox).await.map_err(|e| e.to_string())?;
-    let uid_validity = selected.uid_validity.unwrap_or(0);
-    let exists = selected.exists;
+    let page = match (
+        asking.before_uid,
+        asking.known_uid,
+        asking.known_uid_validity,
+    ) {
+        (Some(uid), _, Some(uid_validity)) => server::Page::Before { uid_validity, uid },
+        (None, Some(newest), Some(uid_validity)) => server::Page::Since {
+            uid_validity,
+            newest,
+            oldest: newest.saturating_sub(PAGE - 1).max(1),
+            catch_up: CATCH_UP_LIMIT,
+        },
+        _ => server::Page::Newest,
+    };
+    let read = server::read_page(session, mailbox, asking.folder == "starred", page).await?;
+    Ok(FetchedMail {
+        account: asking.account.clone(),
+        folder: asking.folder.clone(),
+        uid_validity: read.uid_validity,
+        newest_uid: read.newest_uid,
+        reset: read.reset,
+        has_older: read.has_older.unwrap_or(false),
+        messages: parse_all(read.messages),
+        flags: read.flags,
+    })
+}
+
+fn parse_all(raws: Vec<Raw>) -> Vec<FetchedMessage> {
     let now_min = web_time::SystemTime::now()
         .duration_since(web_time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs().cast_signed() / 60);
-    let mut fetched = FetchedMail {
-        account: asking.account.clone(),
-        folder: asking.folder.clone(),
-        uid_validity,
-        newest_uid: selected.uid_next.unwrap_or(0).saturating_sub(1),
-        ..FetchedMail::default()
-    };
-    if asking.folder == "starred" {
-        // Starred is the inbox seen through its flag: the newest flagged
-        // messages, as a page of their own.
-        fetched.reset = true;
-        let mut uids: Vec<u32> = session
-            .uid_search("FLAGGED")
-            .await
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .collect();
-        uids.sort_unstable();
-        let newest: Vec<u32> = uids.into_iter().rev().take(PAGE as usize).collect();
-        fetched.messages = fetch_uids(session, uid_validity, &newest, now_min).await?;
-        return Ok(fetched);
-    }
-    if exists == 0 {
-        fetched.reset = true;
-        return Ok(fetched);
-    }
-    if let Some(before) = asking.before_uid
-        && asking.known_uid_validity == Some(uid_validity)
-    {
-        // The page before the oldest message the reader holds: what the
-        // folder holds under that message's number, newest first. The
-        // message itself may be gone by now; its number still says where
-        // the reader got to.
-        let mut older: Vec<u32> = match before.checked_sub(1).filter(|last| *last > 0) {
-            Some(last) => session
-                .uid_search(format!("UID 1:{last}"))
-                .await
-                .map_err(|e| e.to_string())?
-                .into_iter()
-                .filter(|uid| *uid < before)
-                .collect(),
-            None => Vec::new(),
-        };
-        older.sort_unstable();
-        fetched.has_older = older.len() > PAGE as usize;
-        let page: Vec<u32> = older.into_iter().rev().take(PAGE as usize).collect();
-        fetched.messages = fetch_uids(session, uid_validity, &page, now_min).await?;
-        return Ok(fetched);
-    }
-    match (asking.known_uid, asking.known_uid_validity) {
-        (Some(known), Some(validity))
-            if validity == uid_validity
-                && fetched.newest_uid.saturating_sub(known) <= CATCH_UP_LIMIT =>
-        {
-            // What arrived since the newest message the reader holds.
-            // `n:*` always answers with the last message, so keep only the
-            // ones past the window.
-            let range = format!("{}:*", known.saturating_add(1));
-            fetched.messages = fetch_set(session, uid_validity, &range, now_min)
-                .await?
-                .into_iter()
-                .filter(|message| message.uid > known)
-                .collect();
-            fetched.flags =
-                fetch_flags(session, known.saturating_sub(PAGE - 1).max(1), known).await?;
-        }
-        _ => {
-            // Nothing held, the folder renumbered, or too much missed: the
-            // newest page, from the start.
-            fetched.reset = true;
-            let first = exists.saturating_sub(PAGE - 1).max(1);
-            fetched.messages = fetch_seq(session, uid_validity, first, exists, now_min).await?;
-            fetched.has_older = first > 1;
-        }
-    }
-    Ok(fetched)
-}
-
-async fn fetch_seq(
-    session: &mut ImapSession,
-    uid_validity: u32,
-    first: u32,
-    last: u32,
-    now_min: i64,
-) -> Result<Vec<FetchedMessage>, String> {
-    use futures_util::TryStreamExt as _;
-    let stream = session
-        .fetch(format!("{first}:{last}"), FETCH_ITEMS)
-        .await
-        .map_err(|e| e.to_string())?;
-    let fetches: Vec<async_imap::types::Fetch> =
-        stream.try_collect().await.map_err(|e| e.to_string())?;
-    Ok(parse_all(&fetches, uid_validity, now_min))
-}
-
-async fn fetch_set(
-    session: &mut ImapSession,
-    uid_validity: u32,
-    uid_set: &str,
-    now_min: i64,
-) -> Result<Vec<FetchedMessage>, String> {
-    use futures_util::TryStreamExt as _;
-    let stream = session
-        .uid_fetch(uid_set, FETCH_ITEMS)
-        .await
-        .map_err(|e| e.to_string())?;
-    let fetches: Vec<async_imap::types::Fetch> =
-        stream.try_collect().await.map_err(|e| e.to_string())?;
-    Ok(parse_all(&fetches, uid_validity, now_min))
-}
-
-async fn fetch_uids(
-    session: &mut ImapSession,
-    uid_validity: u32,
-    uids: &[u32],
-    now_min: i64,
-) -> Result<Vec<FetchedMessage>, String> {
-    if uids.is_empty() {
-        return Ok(Vec::new());
-    }
-    let set = uids
-        .iter()
-        .map(u32::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    fetch_set(session, uid_validity, &set, now_min).await
-}
-
-async fn fetch_flags(
-    session: &mut ImapSession,
-    oldest: u32,
-    newest: u32,
-) -> Result<Vec<MailFlag>, String> {
-    use futures_util::TryStreamExt as _;
-    if oldest > newest {
-        return Ok(Vec::new());
-    }
-    let stream = session
-        .uid_fetch(format!("{oldest}:{newest}"), "(UID FLAGS)")
-        .await
-        .map_err(|e| e.to_string())?;
-    let fetches: Vec<async_imap::types::Fetch> =
-        stream.try_collect().await.map_err(|e| e.to_string())?;
-    Ok(fetches
-        .iter()
-        .filter_map(|fetch| {
-            let uid = fetch.uid?;
-            if uid < oldest || uid > newest {
-                return None;
-            }
-            Some(MailFlag {
-                uid,
-                read: seen(fetch),
-                starred: flagged(fetch),
-            })
-        })
-        .collect())
-}
-
-fn seen(fetch: &async_imap::types::Fetch) -> bool {
-    fetch
-        .flags()
-        .any(|flag| matches!(flag, async_imap::types::Flag::Seen))
-}
-
-fn flagged(fetch: &async_imap::types::Fetch) -> bool {
-    fetch
-        .flags()
-        .any(|flag| matches!(flag, async_imap::types::Flag::Flagged))
-}
-
-fn parse_all(
-    fetches: &[async_imap::types::Fetch],
-    _uid_validity: u32,
-    now_min: i64,
-) -> Vec<FetchedMessage> {
-    fetches
-        .iter()
-        .filter_map(|fetch| {
-            let uid = fetch.uid?;
-            let body = fetch.body()?;
-            let internal = fetch
-                .internal_date()
-                .map_or(now_min, |date| date.timestamp() / 60);
-            parse_message(body, uid, seen(fetch), flagged(fetch), internal)
+    raws.into_iter()
+        .filter_map(|raw| {
+            parse_message(
+                &raw.body,
+                raw.uid,
+                raw.read,
+                raw.starred,
+                raw.minutes.unwrap_or(now_min),
+            )
         })
         .collect()
 }
@@ -1075,43 +903,22 @@ fn shorten(words: &mut String, most: usize) {
     words.truncate(end);
 }
 
-/// `text` as a quoted string a server is sent, when it can be one: plain
-/// letters without a control character.
-fn quoted(text: &str) -> Option<String> {
-    if text.is_empty() || !text.chars().all(|c| c.is_ascii() && !c.is_ascii_control()) {
-        return None;
-    }
-    let mut quoted = String::with_capacity(text.len().saturating_add(2));
-    quoted.push('"');
-    for c in text.chars() {
-        if c == '"' || c == '\\' {
-            quoted.push('\\');
-        }
-        quoted.push(c);
-    }
-    quoted.push('"');
-    Some(quoted)
-}
-
 /// Read the one message `reading` names. One too long for an answer is
 /// answered without its HTML part, then by the start of its words.
 async fn read_message(
     session: &mut ImapSession,
     reading: &ReadMail,
 ) -> Result<FetchedMessage, String> {
-    let listing = list_folders(session).await?;
-    let mailbox = folder_name(&listing, &reading.folder)
+    let places = server::places(session).await?;
+    let mailbox = places
+        .listed(&reading.folder)
         .ok_or_else(|| format!("this account's server has no {} folder", reading.folder))?;
-    let selected = session.select(&mailbox).await.map_err(|e| e.to_string())?;
+    let selected = session.select(mailbox).await.map_err(|e| e.to_string())?;
     let uid_validity = selected.uid_validity.unwrap_or(0);
     if uid_validity != reading.uid_validity {
         return Err("the folder changed; its messages are read again".into());
     }
-    let now_min = web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs().cast_signed() / 60);
-    let mut message = fetch_uids(session, uid_validity, &[reading.uid], now_min)
-        .await?
+    let mut message = parse_all(server::fetch_uids(session, &[reading.uid]).await?)
         .into_iter()
         .find(|message| message.uid == reading.uid)
         .ok_or_else(|| "that message is no longer in its folder".to_string())?;
@@ -1137,7 +944,7 @@ fn search_keys(searching: &SearchMail) -> Result<String, String> {
         let Some(wanted) = wanted.as_deref().map(str::trim).filter(|w| !w.is_empty()) else {
             continue;
         };
-        let wanted = quoted(wanted)
+        let wanted = server::quoted(wanted)
             .ok_or_else(|| "a mail server is searched in plain letters".to_string())?;
         keys.push(format!("{key} {wanted}"));
     }
@@ -1154,7 +961,7 @@ async fn search_mail(
     searching: &SearchMail,
 ) -> Result<FoundMail, String> {
     let keys = search_keys(searching)?;
-    let listing = list_folders(session).await?;
+    let places = server::places(session).await?;
     let everywhere = ["inbox".to_owned(), "archive".to_owned()];
     let folders = if searching.folders.is_empty() {
         &everywhere[..]
@@ -1162,28 +969,15 @@ async fn search_mail(
         &searching.folders[..]
     };
     let most = searching.limit.unwrap_or(MAX_FOUND).clamp(1, MAX_FOUND) as usize;
-    let now_min = web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs().cast_signed() / 60);
     let mut found = FoundMail::default();
     let mut room = ANSWER_WORDS;
     for folder in folders {
         // A server that keeps no such folder holds nothing there to find.
-        let Some(mailbox) = folder_name(&listing, folder) else {
+        let Some(mailbox) = places.listed(folder) else {
             continue;
         };
-        let selected = session.select(&mailbox).await.map_err(|e| e.to_string())?;
-        let uid_validity = selected.uid_validity.unwrap_or(0);
-        let mut uids: Vec<u32> = session
-            .uid_search(&keys)
-            .await
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .collect();
-        uids.sort_unstable();
-        let newest: Vec<u32> = uids.into_iter().rev().take(most).collect();
-        let mut messages = fetch_uids(session, uid_validity, &newest, now_min).await?;
-        messages.sort_by_key(|message| std::cmp::Reverse(message.uid));
+        let (uid_validity, raws) = server::search_folder(session, mailbox, &keys, most).await?;
+        let mut messages = parse_all(raws);
         fit(&mut messages, &mut room);
         found.folders.push(FoundFolder {
             folder: folder.clone(),
@@ -1194,181 +988,49 @@ async fn search_mail(
     Ok(found)
 }
 
-/// The name a Drafts folder is made under on a server that holds none.
-const DRAFTS: &str = "Drafts";
-
-/// Keep the draft `mime` holds in the account's Drafts folder, read and
-/// marked as a draft, making the folder where a server holds none.
-async fn keep_draft(session: &mut ImapSession, mime: &[u8]) -> Result<(), String> {
-    let listing = list_folders(session).await?;
-    let folder = if let Some(folder) = folder_name(&listing, "drafts") {
-        folder
-    } else {
-        session.create(DRAFTS).await.map_err(|e| {
-            format!("the server keeps no Drafts folder and would not make one: {e}")
-        })?;
-        DRAFTS.to_owned()
-    };
-    session
-        .append(&folder, Some("(\\Seen \\Draft)"), None, mime)
-        .await
-        .map_err(|e| format!("the draft was not kept in {folder}: {e}"))
+/// Why a message was not handed to its server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SendFailure {
+    /// No server answered where the account says it is: worth another try once the device
+    /// is online again.
+    Unreached(String),
+    /// The server answered and did not take the message, or the account cannot send.
+    Refused(String),
 }
 
-async fn mark_message(session: &mut ImapSession, marking: &MarkMail) -> Result<(), String> {
-    use futures_util::TryStreamExt as _;
-    let listing = list_folders(session).await?;
-    let mailbox = folder_name(&listing, &marking.folder)
-        .ok_or_else(|| format!("this account's server has no {} folder", marking.folder))?;
-    let selected = session.select(&mailbox).await.map_err(|e| e.to_string())?;
-    let placed = marking.uid != 0 && selected.uid_validity.unwrap_or(0) == marking.uid_validity;
-    let uid = if placed {
-        marking.uid
-    } else if let Some(search) = marking.message_id.as_deref().and_then(message_id_query) {
-        let found = session
-            .uid_search(search)
-            .await
-            .map_err(|e| e.to_string())?;
-        match found.into_iter().max() {
-            Some(uid) => uid,
-            // A copy to delete that is gone already is deleted.
-            None if marking.delete => return Ok(()),
-            None => return Err("the message is no longer on its server".into()),
+impl SendFailure {
+    /// What a person reads.
+    #[must_use]
+    pub fn into_words(self) -> String {
+        match self {
+            Self::Unreached(words) | Self::Refused(words) => words,
         }
-    } else {
-        return Err("the folder changed; its messages are read again".into());
-    };
-    let marking = &MarkMail {
-        uid,
-        ..marking.clone()
-    };
-    if let Some(read) = marking.read {
-        let flags = format!("{}SILENT (\\Seen)", if read { "+" } else { "-" });
-        let stored = session
-            .uid_store(marking.uid.to_string(), flags)
-            .await
-            .map_err(|e| e.to_string())?;
-        let _: Vec<_> = stored.try_collect().await.map_err(|e| e.to_string())?;
     }
-    if let Some(starred) = marking.starred {
-        let flags = format!("{}SILENT (\\Flagged)", if starred { "+" } else { "-" });
-        let stored = session
-            .uid_store(marking.uid.to_string(), flags)
-            .await
-            .map_err(|e| e.to_string())?;
-        let _: Vec<_> = stored.try_collect().await.map_err(|e| e.to_string())?;
-    }
-    if let Some(to) = &marking.to_folder {
-        let destination = folder_name(&listing, to)
-            .ok_or_else(|| format!("this account's server has no {to} folder"))?;
-        session
-            .uid_mv(marking.uid.to_string(), destination)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-    if marking.delete {
-        let deleted = session
-            .uid_store(marking.uid.to_string(), "+FLAGS.SILENT (\\Deleted)")
-            .await
-            .map_err(|e| e.to_string())?;
-        let _: Vec<_> = deleted.try_collect().await.map_err(|e| e.to_string())?;
-        let expunged = session
-            .uid_expunge(marking.uid.to_string())
-            .await
-            .map_err(|e| format!("server cannot safely expunge this message: {e}"))?;
-        let _: Vec<_> = expunged.try_collect().await.map_err(|e| e.to_string())?;
-    }
-    Ok(())
 }
 
-/// The name a Sent folder is made under on a server that holds none.
-const SENT: &str = "Sent";
-
-/// Keep a copy of a message that left in the account's Sent folder, read,
-/// as its writer has read it. A server that files what it sends is left to
-/// it, and a folder that already holds the message is not given it twice.
-async fn file_sent(
-    session: &mut ImapSession,
-    account: &accounts::Account,
-    mime: &[u8],
-) -> Result<(), String> {
-    let gmail = session
-        .capabilities()
-        .await
-        .map_err(|e| e.to_string())?
-        .has_str(accounts::email::GMAIL_CAPABILITY);
-    let host = |name: &str| field(account, name).unwrap_or_default();
-    if accounts::email::servers_file_sent(&host("imap_host"), &host("smtp_host"), gmail) {
-        return Ok(());
-    }
-    let listing = list_folders(session).await?;
-    let folder = if let Some(folder) = folder_name(&listing, "sent") {
-        if let Some(held) = message_id_search(mime) {
-            session.select(&folder).await.map_err(|e| e.to_string())?;
-            let found = session.uid_search(held).await.map_err(|e| e.to_string())?;
-            if !found.is_empty() {
-                return Ok(());
-            }
-        }
-        folder
-    } else {
-        // A plain server holds no Sent folder until a mail program makes one.
-        session
-            .create(SENT)
-            .await
-            .map_err(|e| format!("the server keeps no Sent folder and would not make one: {e}"))?;
-        SENT.to_owned()
-    };
-    session
-        .append(&folder, Some("(\\Seen)"), None, mime)
-        .await
-        .map_err(|e| format!("{folder} would not take the copy: {e}"))
-}
-
-/// The search that finds a message by the `Message-ID` its `mime` carries,
-/// when it carries one a server can be asked for.
-fn message_id_search(mime: &[u8]) -> Option<String> {
-    let parsed = mail_parser::MessageParser::default().parse(mime)?;
-    message_id_query(parsed.message_id()?)
-}
-
-/// The search that finds a message by its `Message-ID`, written with or
-/// without its angle brackets, when it is one a server can be asked for.
-fn message_id_query(id: &str) -> Option<String> {
-    let id = id.trim().trim_start_matches('<').trim_end_matches('>');
-    let askable = !id.is_empty()
-        && id
-            .chars()
-            .all(|c| c.is_ascii_graphic() && c != '"' && c != '\\');
-    askable.then(|| format!("HEADER MESSAGE-ID \"{id}\""))
-}
-
-/// Hand the message `mime` holds, written from `sending`, to the account's
-/// server.
-async fn send_message(
+/// Hand the message `mime` holds to the account's server, to the recipients `envelope` names.
+async fn hand_over(
     reach: Option<&tilo_account_probe::imap::Reach>,
     account: &accounts::Account,
     secret: &accounts::Secret,
-    sending: &Leaving,
+    envelope: lettre::address::Envelope,
     mime: &[u8],
     trust: &[rustls::pki_types::CertificateDer<'static>],
-) -> Result<(), String> {
+) -> Result<(), SendFailure> {
     use lettre::AsyncTransport as _;
     use lettre::transport::smtp::authentication::{Credentials, Mechanism};
     use lettre::transport::smtp::client::TlsParameters;
     use lettre::{AsyncSmtpTransport, Tokio1Executor};
 
+    let refused = SendFailure::Refused;
     let named = field(account, "smtp_host")
         .filter(|host| !host.trim().is_empty())
-        .ok_or_else(|| "account has no SMTP server".to_string())?;
+        .ok_or_else(|| refused("account has no SMTP server".to_string()))?;
     let port = port_of(account, "smtp_port", 465);
-    let user = field(account, "username")
-        .or_else(|| field(account, "email"))
-        .ok_or_else(|| "account has no SMTP login name".to_string())?;
+    let user = login_of(account).ok_or_else(|| refused("account has no SMTP login name".into()))?;
     if secret.password.is_empty() {
-        return Err(no_sign_in(account));
+        return Err(refused(no_sign_in(account)));
     }
-    let envelope = sending.envelope()?;
     // The server's name is looked up once, within what this session reaches,
     // and the transport is handed the address that answered: it looks nothing
     // up itself, and the certificate is still checked against the name.
@@ -1376,19 +1038,25 @@ async fn send_message(
         .cloned()
         .unwrap_or_else(tilo_account_probe::imap::Reach::any);
     let answered = tilo_account_probe::imap::reach(&reach, &named, port, NETWORK_TIMEOUT)
-        .await?
+        .await
+        .map_err(SendFailure::Unreached)?
         .peer_addr()
-        .map_err(|_| "the SMTP server's address could not be read".to_string())?;
+        .map_err(|_| {
+            SendFailure::Unreached("the SMTP server's address could not be read".into())
+        })?;
     let mut builder = TlsParameters::builder(named.clone());
     for certificate in trust {
-        let certificate =
-            lettre::transport::smtp::client::Certificate::from_der(certificate.to_vec())
-                .map_err(|error| format!("a trusted certificate is not readable: {error}"))?;
+        let certificate = lettre::transport::smtp::client::Certificate::from_der(
+            certificate.to_vec(),
+        )
+        .map_err(|error| refused(format!("a trusted certificate is not readable: {error}")))?;
         builder = builder.add_root_certificate(certificate);
     }
-    let params = builder
-        .build()
-        .map_err(|error| format!("could not prepare the secure SMTP connection: {error}"))?;
+    let params = builder.build().map_err(|error| {
+        refused(format!(
+            "could not prepare the secure SMTP connection: {error}"
+        ))
+    })?;
     let tls = match port {
         465 => lettre::transport::smtp::client::Tls::Wrapper(params),
         _ => lettre::transport::smtp::client::Tls::Required(params),
@@ -1406,13 +1074,46 @@ async fn send_message(
             .tls(tls)
             .credentials(Credentials::new(user, secret.password.clone()))
             .authentication(mechanisms)
+            // Each step of the exchange is bounded, not the whole: a message with large files
+            // takes as long as its words take to travel.
             .timeout(Some(NETWORK_TIMEOUT))
             .build();
-    timeout(NETWORK_TIMEOUT, transport.send_raw(&envelope, mime))
+    transport
+        .send_raw(&envelope, mime)
         .await
-        .map_err(|_| "SMTP server did not answer before the timeout".to_string())?
-        .map(|_| ())
-        .map_err(|error| format!("the message could not be sent: {error}"))
+        .map(drop)
+        .map_err(|error| refused(not_sent(&error)))
+}
+
+/// Why a server did not take a message, in words a person can act on.
+fn not_sent(error: &lettre::transport::smtp::Error) -> String {
+    let code = error.status().map(u16::from);
+    if matches!(code, Some(530 | 534 | 535)) {
+        return "SMTP server rejected the saved credential. Check the username and password".into();
+    }
+    if error.is_tls() {
+        let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(error);
+        while let Some(at) = cause {
+            if let Some(rustls::Error::InvalidCertificate(_)) = at.downcast_ref::<rustls::Error>() {
+                return "could not establish the secure SMTP connection: the server's certificate \
+                        is not trusted"
+                    .into();
+            }
+            cause = at.source();
+        }
+        return "could not establish the secure SMTP connection".into();
+    }
+    if error.is_timeout() {
+        return "SMTP server did not answer before the timeout".into();
+    }
+    format!("the message could not be sent: {error}")
+}
+
+/// The name an account signs in as: its user name, or its address where it names none.
+fn login_of(account: &accounts::Account) -> Option<String> {
+    field(account, "username")
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| field(account, "email"))
 }
 
 /// The MIME of a message that leaves: its head written from what `leaving`
@@ -1599,6 +1300,9 @@ impl Inbox {
             .map_err(|_| unanswered())?
             .map_err(|e| e.to_string())?
             .has_str("IDLE");
+        // A watch that comes back after a loss may have missed changes that
+        // brought no message, as one the server tells of while it idles.
+        let mut news = seen.is_some();
         loop {
             // Each round looks at the inbox afresh: what arrived while
             // nothing watched it, and what the wait just over heard of.
@@ -1606,12 +1310,15 @@ impl Inbox {
                 .await
                 .map_err(|_| unanswered())?
                 .map_err(|e| e.to_string())?;
-            timeout(
+            let told = timeout(
                 REQUEST_TIMEOUT,
                 take_arrivals(&mut session, &inbox, seen, heard),
             )
             .await
             .map_err(|_| unanswered())??;
+            if news && !told {
+                heard.changed();
+            }
             // The server answers: the next loss starts its waits over.
             *wait = self.pace.retry;
             if tells {
@@ -1624,26 +1331,31 @@ impl Inbox {
                 // it is time to say the watch still listens: either way the
                 // inbox is looked at again.
                 let (told, _stop) = idle.wait_with_timeout(self.pace.renew);
-                told.await.map_err(|e| e.to_string())?;
+                news = matches!(
+                    told.await.map_err(|e| e.to_string())?,
+                    async_imap::extensions::idle::IdleResponse::NewData(_)
+                );
                 session = timeout(NETWORK_TIMEOUT, idle.done())
                     .await
                     .map_err(|_| unanswered())?
                     .map_err(|e| e.to_string())?;
             } else {
                 tokio::time::sleep(self.pace.poll).await;
+                // A server that cannot tell is asked: what changed is read again.
+                news = true;
             }
         }
     }
 }
 
 /// Tell `heard` what reached the selected `inbox` after `seen`, and move
-/// `seen` past it.
+/// `seen` past it. Whether there was anything to tell.
 async fn take_arrivals(
     session: &mut ImapSession,
     inbox: &async_imap::types::Mailbox,
     seen: &mut Option<InboxSeen>,
     heard: &dyn InboxHeard,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let uid_validity = inbox.uid_validity.unwrap_or(0);
     // The newest number the folder has given out. A server that does not
     // say which comes next is asked for the numbers it holds.
@@ -1668,19 +1380,16 @@ async fn take_arrivals(
             };
             *seen = Some(mark);
             heard.arrived(Vec::new(), mark);
-            return Ok(());
+            return Ok(true);
         }
     };
     if newest <= after {
-        return Ok(());
+        return Ok(false);
     }
     let first = after
         .saturating_add(1)
         .max(newest.saturating_sub(WATCH_MOST.saturating_sub(1)));
-    let now_min = web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs().cast_signed() / 60);
-    let mut messages = fetch_set(session, uid_validity, &format!("{first}:*"), now_min).await?;
+    let mut messages = parse_all(server::fetch_set(session, &format!("{first}:*")).await?);
     messages.retain(|message| message.uid > after);
     messages.sort_by_key(|message| message.uid);
     let mark = InboxSeen {
@@ -1691,7 +1400,7 @@ async fn take_arrivals(
     };
     *seen = Some(mark);
     heard.arrived(messages, mark);
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -1777,6 +1486,8 @@ mod tests {
             smtp: "127.0.0.1:0".to_owned(),
             imap_wrapped: false,
             smtp_wrapped: false,
+            layout: tilo_account_probe::stand_in::Layout::Plain,
+            seeded: true,
         })
         .expect("the stand-in starts");
         let mut roots = rustls::RootCertStore::empty();
@@ -1815,7 +1526,7 @@ mod tests {
         let leaving = Leaving::read(SendMail {
             account: "ada@example.test".into(),
             from_address: "ada@example.test".into(),
-            to: "Bob <bob@example.test>".into(),
+            to: "Ada <ada@example.test>".into(),
             subject: "Hello".into(),
             body: "Hi".into(),
             ..SendMail::default()
@@ -1823,64 +1534,17 @@ mod tests {
         .expect("a message");
         let mime = write_leaving(&leaving, &[], None).expect("its text");
         runtime
-            .block_on(send_message(
+            .block_on(hand_over(
                 Some(&reach),
                 &account,
                 &secret,
-                &leaving,
+                leaving.envelope().expect("its envelope"),
                 &mime,
                 std::slice::from_ref(&up.certificate),
             ))
             .expect("the bearer token sends");
-        // The stand-in delivers what its SMTP server takes to the inbox.
+        // The stand-in delivers what its SMTP server takes for its login to the inbox.
         assert_eq!(inbox_holds(), before.saturating_add(1));
-    }
-
-    /// A folder is found by its special-use mark before its name, and a
-    /// server that marks nothing is still read by the names people know.
-    #[test]
-    fn a_folder_is_found_by_its_mark_then_its_name() {
-        let listing = |entries: &[(&str, &[&str])]| -> Vec<(String, Vec<String>)> {
-            entries
-                .iter()
-                .map(|(name, uses)| {
-                    (
-                        (*name).to_owned(),
-                        uses.iter().map(|u| (*u).to_owned()).collect(),
-                    )
-                })
-                .collect()
-        };
-        let gmail = listing(&[
-            ("INBOX", &[]),
-            ("[Gmail]/All Mail", &["All"]),
-            ("[Gmail]/Sent Mail", &["Sent"]),
-            ("[Gmail]/Spam", &["Junk"]),
-            ("[Gmail]/Trash", &["Trash"]),
-        ]);
-        assert_eq!(folder_name(&gmail, "inbox").as_deref(), Some("INBOX"));
-        assert_eq!(
-            folder_name(&gmail, "sent").as_deref(),
-            Some("[Gmail]/Sent Mail")
-        );
-        assert_eq!(folder_name(&gmail, "junk").as_deref(), Some("[Gmail]/Spam"));
-        assert_eq!(
-            folder_name(&gmail, "trash").as_deref(),
-            Some("[Gmail]/Trash")
-        );
-
-        let outlook = listing(&[
-            ("INBOX", &[]),
-            ("Sent Items", &[]),
-            ("Deleted Items", &[]),
-            ("Junk Email", &[]),
-        ]);
-        assert_eq!(folder_name(&outlook, "sent").as_deref(), Some("Sent Items"));
-        assert_eq!(
-            folder_name(&outlook, "trash").as_deref(),
-            Some("Deleted Items")
-        );
-        assert_eq!(folder_name(&outlook, "archive"), None);
     }
 
     /// Blind recipients reach the delivery envelope and no copy header.

@@ -54,7 +54,7 @@ impl TopBarChrome {
                 .iter()
                 .enumerate()
                 .find(|(_, (id, _))| *id == active)?;
-            Some(tilo_desktop_surface::names::strip_named(name, at))
+            Some(tilo_session_core::desktop::names::strip_named(name, at))
         });
     }
 

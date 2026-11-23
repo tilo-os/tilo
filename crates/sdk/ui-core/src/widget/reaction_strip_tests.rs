@@ -157,18 +157,6 @@ tilo_test_env::scenario! {
             tilo.rect.width() > thumbs.rect.width(),
             "a workspace emoji without a picture shows its :name:"
         );
-
-        let read_only = layout(
-            &groups,
-            Some(&tilo_actions::MemberId::person("me")),
-            false,
-            (Point::ZERO, 400.0),
-            &mut text,
-            &StripMetrics::of(&theme),
-        );
-        assert!(read_only.add_rect().is_none());
-        assert!(read_only.hit(read_only.pills()[0].rect.center()).is_none());
-        assert!(read_only.targets().is_empty());
     }
 
     phase the_tooltip_names_who_reacted_you_first;
@@ -238,6 +226,8 @@ tilo_test_env::scenario! {
         assert!(laid.add_rect().is_none());
         click(&mut widget, laid.pills()[0].rect.center());
         assert!(widget.take_toggles().is_empty());
+        assert!(laid.hit(laid.pills()[0].rect.center()).is_none());
+        assert!(laid.targets().is_empty());
         assert!(!widget.is_focusable());
     }
 
@@ -368,18 +358,9 @@ fn the_widget_toggles_your_reaction_from_a_click_and_the_keyboard() {
     );
     let tip = widget.tooltip_target_at(second).map(|(_, tip)| tip);
     assert_eq!(tip.as_deref(), Some("Bo reacted with party popper"));
-}
 
-#[test]
-fn the_add_button_opens_the_shared_picker_and_a_pick_reacts() {
-    let theme = Theme::dark();
+    // The same add button opens the shared picker, and a pick reacts.
     crate::emoji_catalogue::record_recent("🌮");
-    let mut widget = ReactionStripWidget::new(
-        vec![group("👍", &["ada"])],
-        Some(tilo_actions::MemberId::person("me")),
-    );
-    lay_out_and_draw(&mut widget, 600.0, &theme);
-    let add = widget.strip().laid_out().add_rect().expect("add");
     click(&mut widget, add.center());
     assert!(widget.is_picking(), "the add button opens the picker");
     let mut scene = Scene::new();

@@ -7,11 +7,14 @@
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    reason = "a failed unwrap or index in a test is its assertion"
+    clippy::too_many_lines,
+    reason = "a failed unwrap or index in a test is its assertion, and a journey reads as one flow"
 )]
 
 use settings_store::sign_in_comforts::SignInComforts;
 use std::collections::HashMap;
+use std::io::{BufRead as _, Write as _};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -21,7 +24,7 @@ use tilo_auth::daemon::volume::{Locate, SystemVolume};
 use tilo_auth::daemon::{Answer, Config, Daemon, Peer, server};
 use tilo_auth::handoff::{self, Handoff};
 use tilo_auth::luks;
-use tilo_auth::protocol::{Refusal, Reply, Request};
+use tilo_auth::protocol::{PendingSignIn, Refusal, Reply, Request};
 use tilo_auth::record::{Attention, Record, SecretKind, Store};
 use tilo_auth::recovery::RecoveryKey;
 use tilo_auth::rollback_set::RollbackSet;
@@ -38,6 +41,8 @@ use tilo_test_env::swtpm::Swtpm;
 use zeroize::Zeroizing;
 
 const DISK_PASSPHRASE: &str = "the installer's disk passphrase";
+/// A TCTI no TPM answers on: nothing listens on the discard port.
+const NO_TPM: &str = "swtpm:host=127.0.0.1,port=9";
 const ROOT: Peer = Peer { uid: 0 };
 const ADA: Peer = Peer { uid: 1000 };
 const BOB: Peer = Peer { uid: 1001 };
@@ -104,8 +109,7 @@ impl Machine {
     fn tcti(&self) -> String {
         match &self.tpm {
             Some(tpm) => tpm.tcti(),
-            // Nothing listens on the discard port, so every TPM call fails.
-            None => "swtpm:host=127.0.0.1,port=9".into(),
+            None => NO_TPM.into(),
         }
     }
 
@@ -142,22 +146,18 @@ impl Machine {
         }
     }
 
-    /// A deployment the machine can boot, with or without `pam_tilo`'s
-    /// service in its `/etc`.
-    fn deployment(&self, name: &str, pam_tilo: bool) {
-        let pam = self
-            .path("sysroot/ostree/deploy/default/deploy")
-            .join(name)
-            .join("etc/pam.d");
+    /// A deployment the machine can boot, at `at` under its sysroot, with or
+    /// without `pam_tilo`'s service in its `/etc`.
+    fn deployment(&self, at: &str, pam_tilo: bool) {
+        let pam = self.path("sysroot").join(at).join("etc/pam.d");
         std::fs::create_dir_all(&pam).unwrap();
         if pam_tilo {
             std::fs::write(pam.join("tilo-auth"), "auth sufficient pam_tilo.so\n").unwrap();
         }
     }
 
-    fn prune(&self, name: &str) {
-        std::fs::remove_dir_all(self.path("sysroot/ostree/deploy/default/deploy").join(name))
-            .unwrap();
+    fn prune(&self, at: &str) {
+        std::fs::remove_dir_all(self.path("sysroot").join(at)).unwrap();
     }
 
     fn daemon(&self) -> Daemon {
@@ -295,7 +295,8 @@ impl Machine {
     }
 }
 
-/// ada is the device admin; bob is not. The volume opens with the
+/// ada is the device admin, in wheel and tilo-identity; bob, in wheel alone,
+/// is not. The volume opens with the
 /// installer's disk passphrase in slot 0 and the recovery key in slot 1.
 fn machine(with_tpm: bool, old: &[(&str, &str)], ada_uid: u32) -> Option<Machine> {
     let tpm = if with_tpm {
@@ -320,14 +321,14 @@ fn machine(with_tpm: bool, old: &[(&str, &str)], ada_uid: u32) -> Option<Machine
         format!(
             "root:x:0:0:root:/root:/bin/bash\n\
              greetd:x:977:977::/var/lib/greetd:/sbin/nologin\n\
-             ada:x:{ada_uid}:{ada_uid}:Ada Lovelace:/home/ada:/bin/bash\n\
-             bob:x:1001:1001:Bob:/home/bob:/bin/bash\n"
+             ada:x:{ada_uid}:{ada_uid}:Ada Lovelace,,,:/home/ada:/bin/bash\n\
+             bob:x:1001:1001::/home/bob:/bin/bash\n"
         ),
     )
     .unwrap();
     std::fs::write(
         root.join("group"),
-        "wheel:x:10:ada\ntilo-identity:x:960:ada\n",
+        "wheel:x:10:ada,bob\ntilo-identity:x:960:ada\n",
     )
     .unwrap();
 
@@ -436,7 +437,7 @@ fn refused(refusal: Refusal) -> Reply {
 
 #[test]
 fn the_admin_moves_onto_the_tpm_and_gets_a_system_keyslot_on_first_sign_in() {
-    let m = machine!(true, &[("ada", "123456")]);
+    let m = machine!(true, &[("ada", "123456"), ("bob", "654321")]);
     m.throttle();
     m.leave_proof();
     let lockout_auth = lockout::new_reset_auth().unwrap();
@@ -446,6 +447,10 @@ fn the_admin_moves_onto_the_tpm_and_gets_a_system_keyslot_on_first_sign_in() {
     assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
 
     let record = m.record(ADA.uid).expect("a record");
+    assert_eq!(
+        record.display_name, "Ada Lovelace",
+        "the name before the GECOS commas"
+    );
     assert!(record.enrolled());
     assert!(record.has(Kind::Tpm));
     assert!(record.unlocks_system);
@@ -476,16 +481,53 @@ fn the_admin_moves_onto_the_tpm_and_gets_a_system_keyslot_on_first_sign_in() {
 
     let again = verify(&daemon, ADA, "ada", "000000");
     assert_eq!(again.error, Some(Refusal::Wrong));
-    assert_eq!(m.tries_used(), 1);
+    assert_eq!(m.tries_used(), 1, "the same wrong entry again costs no try");
     assert_eq!(
         verify(&daemon, ADA, "ada", "111111").error,
         Some(Refusal::Wrong)
     );
     assert_eq!(m.tries_used(), 2);
 
+    // What ada typed wrong is remembered for her alone: bob typing the same
+    // is a try of his own.
+    assert_eq!(verify(&daemon, BOB, "bob", "654321"), Reply::success());
+    let bobs = verify(&daemon, BOB, "bob", "000000");
+    assert_eq!(
+        (bobs.error, bobs.tries_left),
+        (Some(Refusal::Wrong), Some(2))
+    );
+    assert_eq!(m.tries_used(), 3);
+
     assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
     assert_eq!(m.slots().len(), 3);
     assert_eq!(luks::tokens(&runner, &m.device).unwrap(), tokens);
+    assert_eq!(
+        verify(&daemon, ADA, "ada", "000000").error,
+        Some(Refusal::Wrong),
+        "a right entry forgets what she typed wrong"
+    );
+    assert_eq!(m.tries_used(), 4);
+
+    // tilo-rollback's file is gone after ada's key wrapped the lockout
+    // authorisation: the recovery key's wrapping is made from hers, and
+    // recovering ends the tries used.
+    lockout::set_reset_auth(&runner, &lockout_auth, None, m.dir.path()).unwrap();
+    std::fs::remove_file(m.path("lockout-auth")).unwrap();
+    let recovery = secret(&m.recovery.formatted());
+    let add = Request::AddRecovery {
+        user: "ada".into(),
+        secret: secret("123456"),
+        recovery: recovery.clone(),
+    };
+    assert_eq!(reply(daemon.handle(ROOT, add)), Reply::success());
+    let recover = Request::SetSecret {
+        user: "ada".into(),
+        current: None,
+        recovery: Some(recovery),
+        new: secret("2468"),
+    };
+    assert_eq!(reply(daemon.handle(ROOT, recover)), Reply::success());
+    assert_eq!(m.tries_used(), 0);
 }
 
 #[test]
@@ -543,6 +585,10 @@ fn without_anything_that_opens_the_volume_the_keyslot_waits_for_a_later_sign_in(
     assert_eq!(record.system_keyslot, None);
     assert_eq!(record.attention, Some(Attention::SystemKeyslotPending));
     assert_eq!(m.slots(), ["0", "1"]);
+    assert!(
+        !m.path("lockout.json").exists(),
+        "a machine without the lockout file has nothing to wrap"
+    );
 
     m.leave_proof();
     assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
@@ -559,8 +605,15 @@ fn someone_who_is_not_the_admin_gets_no_keyslot() {
     let daemon = m.daemon();
     assert_eq!(verify(&daemon, BOB, "bob", "123456"), Reply::success());
     let record = m.record(BOB.uid).unwrap();
+    assert_eq!(
+        record.display_name, "bob",
+        "no GECOS name, so the account's"
+    );
     assert!(record.enrolled());
-    assert!(!record.unlocks_system);
+    assert!(
+        !record.unlocks_system,
+        "wheel without tilo-identity is no admin"
+    );
     assert_eq!(record.system_keyslot, None);
     assert_eq!(m.slots(), ["0", "1"]);
     let (runner, _) = m.runner();
@@ -570,10 +623,14 @@ fn someone_who_is_not_the_admin_gets_no_keyslot() {
 #[test]
 fn without_a_tpm_only_a_strong_password_stands_alone() {
     let m = machine!(
-        false,
+        true,
         &[("bob", "1234"), ("ada", "correct horse battery staple")]
     );
-    let daemon = m.daemon();
+    // The machine's TPM is not reached until the end.
+    let daemon = m.daemon_with(Config {
+        tcti: Some(NO_TPM.into()),
+        ..m.config()
+    });
 
     assert_eq!(verify(&daemon, BOB, "bob", "1234"), Reply::success());
     let record = m.record(BOB.uid).unwrap();
@@ -649,6 +706,26 @@ fn without_a_tpm_only_a_strong_password_stands_alone() {
         verify(&daemon, ADA, "ada", "violet ladder orbit pancake"),
         Reply::success()
     );
+
+    // Once the TPM answers, a new secret goes under it: the passphrase
+    // wrapper gives way to a TPM one, and a PIN is enough.
+    let with_tpm = m.daemon();
+    let to_pin = Request::SetSecret {
+        user: "ada".into(),
+        current: Some(secret("violet ladder orbit pancake")),
+        recovery: None,
+        new: secret("2468"),
+    };
+    assert_eq!(reply(with_tpm.handle(ADA, to_pin)), Reply::success());
+    let record = m.record(ADA.uid).unwrap();
+    assert!(record.has(Kind::Tpm) && !record.has(Kind::Passphrase));
+    assert_eq!(record.wrappers.len(), 1);
+    assert_eq!(record.secret, Some(SecretKind::Pin));
+    assert_eq!(
+        verify(&with_tpm, ADA, "ada", "violet ladder orbit pancake").error,
+        Some(Refusal::Wrong)
+    );
+    assert_eq!(verify(&with_tpm, ADA, "ada", "2468"), Reply::success());
 }
 
 /// The login screen's two questions about a person, over one machine and one
@@ -843,45 +920,190 @@ tilo_test_env::scenario! {
         }
         assert_eq!(m.record(ADA.uid), None, "asking leaves no record");
     }
+}
 
-    phase the_socket_answers_with_the_peers_own_rights;
-    {
-        let me = rustix::process::getuid().as_raw();
-        let m = machine!(false, &[("ada", "correct horse battery staple")], me);
-        let daemon = Arc::new(m.daemon_with(Config {
+/// A connection to a daemon serving `config` on its own socket, as the
+/// clients that write their lines by hand open one.
+struct Line(std::io::BufReader<UnixStream>);
+
+impl Line {
+    fn serve(m: &Machine, config: Config) -> Self {
+        let daemon = Arc::new(m.daemon_with(config));
+        let listener = server::bind(&daemon).unwrap();
+        let socket = daemon.config().socket.clone();
+        std::thread::spawn(move || server::serve(&daemon, &listener));
+        Self(std::io::BufReader::new(
+            UnixStream::connect(socket).unwrap(),
+        ))
+    }
+
+    fn ask(&mut self, line: &str) -> String {
+        writeln!(self.0.get_mut(), "{line}").unwrap();
+        let mut answer = String::new();
+        self.0.read_line(&mut answer).unwrap();
+        answer.trim_end().to_owned()
+    }
+}
+
+/// `pam_tilo`, the login screen and the boot sign-in write their requests
+/// and read the replies by hand, so every request, every refusal and every
+/// field of a reply is spoken here as they spell it, on the daemon's socket
+/// with the peer's own credentials.
+#[test]
+fn the_socket_speaks_the_lines_its_clients_write_by_hand() {
+    let me = rustix::process::getuid().as_raw();
+    let m = machine!(true, &[("ada", "123456")], me);
+    m.throttle();
+    m.leave_proof();
+    // The peer is ada here, and root is somebody else.
+    let mut ada = Line::serve(
+        &m,
+        Config {
             privileged_uid: u32::MAX,
             ..m.config()
-        }));
-        let listener = server::bind(&daemon).unwrap();
-        {
-            let daemon = Arc::clone(&daemon);
-            std::thread::spawn(move || server::serve(&daemon, &listener));
-        }
-        let socket: &Path = &m.path("socket");
-        let mut client = Client::connect(socket).unwrap();
-        assert_eq!(
-            client
-                .call(&Request::Verify {
-                    user: "ada".into(),
-                    secret: secret("correct horse battery staple"),
-                })
-                .unwrap(),
-            Reply::success()
-        );
-        assert_eq!(
-            client
-                .call(&Request::Status { user: "bob".into() })
-                .unwrap(),
-            refused(Refusal::NotPermitted)
-        );
-        assert_eq!(client.pending_sign_in().unwrap(), None);
-        assert_eq!(
-            client
-                .call(&Request::ClaimBootSignIn { user: "ada".into() })
-                .unwrap(),
-            refused(Refusal::NotPermitted)
-        );
+        },
+    );
+    let recovery = m.recovery.formatted();
+    for (line, answer) in [
+        (
+            r#"{"op":"set-secret","user":"ada","current":"123456","new":"2468"}"#.to_owned(),
+            r#"{"ok":false,"error":"not-enrolled"}"#,
+        ),
+        (
+            r#"{"op":"status","user":"ada"}"#.to_owned(),
+            r#"{"ok":true,"enrolled":false}"#,
+        ),
+        (
+            r#"{"op":"enroll","user":"ada","secret":"123456"}"#.to_owned(),
+            r#"{"ok":true}"#,
+        ),
+        (
+            r#"{"op":"verify","user":"ada","secret":"123456"}"#.to_owned(),
+            r#"{"ok":true}"#,
+        ),
+        (
+            r#"{"op":"status","user":"ada"}"#.to_owned(),
+            r#"{"ok":true,"enrolled":true,"factors":["password"]}"#,
+        ),
+        (
+            r#"{"op":"key-held","user":"ada"}"#.to_owned(),
+            r#"{"ok":true,"key_held":false}"#,
+        ),
+        (
+            r#"{"op":"secret-kind","user":"ada"}"#.to_owned(),
+            r#"{"ok":true,"secret":"pin"}"#,
+        ),
+        (
+            r#"{"op":"status","user":"bob"}"#.to_owned(),
+            r#"{"ok":false,"error":"not-permitted"}"#,
+        ),
+        (
+            format!(
+                r#"{{"op":"add-recovery","user":"ada","secret":"123456","recovery":"{}"}}"#,
+                *recovery
+            ),
+            r#"{"ok":false,"error":"not-permitted"}"#,
+        ),
+        (
+            format!(
+                r#"{{"op":"set-secret","user":"ada","recovery":"{}","new":"2468"}}"#,
+                *recovery
+            ),
+            r#"{"ok":false,"error":"not-permitted"}"#,
+        ),
+        (
+            r#"{"op":"claim-boot-sign-in","user":"ada"}"#.to_owned(),
+            r#"{"ok":false,"error":"not-permitted"}"#,
+        ),
+        (r#"{"op":"pending-sign-in"}"#.to_owned(), "null"),
+        (r#"{"op":"sign-in-comforts"}"#.to_owned(), "null"),
+        (
+            r#"{"op":"set-sign-in-comforts","comforts":{"screen_reader":true}}"#.to_owned(),
+            r#"{"ok":true}"#,
+        ),
+        (
+            r#"{"op":"set-secret","user":"ada","new":"2468"}"#.to_owned(),
+            r#"{"ok":false,"error":"bad-request"}"#,
+        ),
+        (
+            "not a request".to_owned(),
+            r#"{"ok":false,"error":"bad-request"}"#,
+        ),
+        (
+            r#"{"op":"set-secret","user":"ada","current":"123456","new":"2468"}"#.to_owned(),
+            r#"{"ok":true}"#,
+        ),
+        (
+            r#"{"op":"verify","user":"ada","secret":"000000"}"#.to_owned(),
+            r#"{"ok":false,"error":"wrong","tries_left":4}"#,
+        ),
+    ] {
+        assert_eq!(ada.ask(&line), answer, "{line}");
     }
+    let comforts: SignInComforts =
+        serde_json::from_str(&ada.ask(r#"{"op":"sign-in-comforts"}"#)).unwrap();
+    assert!(comforts.screen_reader);
+    for wrong in ["1", "2", "3", "4"] {
+        ada.ask(&format!(
+            r#"{{"op":"verify","user":"ada","secret":"{wrong}"}}"#
+        ));
+    }
+    assert_eq!(
+        ada.ask(r#"{"op":"verify","user":"ada","secret":"2468"}"#),
+        r#"{"ok":false,"error":"locked-out","tries_left":0,"retry_in_s":600}"#
+    );
+
+    // Her record is hers alone to read, and one filed under another uid is
+    // refused rather than believed.
+    let mode = |path: &Path| {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    };
+    let file = m.path("users").join(format!("{me}.json"));
+    assert_eq!((mode(&m.path("users")), mode(&file)), (0o700, 0o600));
+    std::fs::copy(&file, m.path("users/1001.json")).unwrap();
+
+    // The peer is root, and no TPM answers.
+    let mut root = Line::serve(
+        &m,
+        Config {
+            socket: m.path("root-socket"),
+            privileged_uid: me,
+            tcti: Some(NO_TPM.into()),
+            ..m.config()
+        },
+    );
+    for (line, answer) in [
+        (
+            r#"{"op":"claim-boot-sign-in","user":"ada"}"#,
+            r#"{"ok":false,"error":"no-boot-sign-in"}"#,
+        ),
+        (
+            r#"{"op":"set-secret","user":"ada","current":"2468","new":"1"}"#,
+            r#"{"ok":false,"error":"weak-secret"}"#,
+        ),
+        (
+            r#"{"op":"status","user":"bob"}"#,
+            r#"{"ok":false,"error":"unavailable"}"#,
+        ),
+    ] {
+        assert_eq!(root.ask(line), answer, "{line}");
+    }
+    // The client the session's own tools use reads the same lines.
+    let mut client = Client::connect(&m.path("socket")).unwrap();
+    assert_eq!(client.pending_sign_in().unwrap(), None);
+    assert_eq!(
+        client
+            .call(&Request::Status { user: "bob".into() })
+            .unwrap(),
+        refused(Refusal::NotPermitted)
+    );
+    // A boot sign-in waiting for its session is answered by name; only a
+    // boot that left one (the keyring tests) has it to answer.
+    assert_eq!(
+        serde_json::to_string(&Some(PendingSignIn { name: "ada".into() })).unwrap(),
+        r#"{"name":"ada"}"#
+    );
 }
 
 #[test]
@@ -944,11 +1166,30 @@ fn a_secret_changes_with_the_current_one_or_with_the_recovery_key_as_root() {
         Reply::success()
     );
     assert!(m.record(ADA.uid).unwrap().has(Kind::Recovery));
+    // A factor a newer build enrolled, which this one does not know.
+    let file = m.path("users/1000.json");
+    let mut stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    stored["wrappers"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({"kind": "fido2"}));
+    std::fs::write(&file, serde_json::to_vec(&stored).unwrap()).unwrap();
+
+    // A new secret replaces only the wrapper a secret opens, and one typed
+    // composed or decomposed is the same secret.
     assert_eq!(
-        change(ROOT, None, Some(&recovery), "1357"),
+        change(ROOT, None, Some(&recovery), "caf\u{e9}"),
         Reply::success()
     );
-    assert_eq!(verify(&daemon, ADA, "ada", "1357"), Reply::success());
+    let record = m.record(ADA.uid).unwrap();
+    assert!(record.has(Kind::Tpm) && record.has(Kind::Recovery));
+    assert_eq!(record.wrappers.len(), 3, "the unknown factor stays");
+    assert_eq!(verify(&daemon, ADA, "ada", "cafe\u{301}"), Reply::success());
+    assert_eq!(
+        verify(&daemon, ADA, "ada", "cafe").error,
+        Some(Refusal::Wrong)
+    );
 }
 
 /// A recovery key that is not the machine's is refused and leaves the record
@@ -1245,11 +1486,17 @@ mod keyring {
     }
 }
 
+const OSTREE_DEPLOY: &str = "ostree/deploy/default/deploy";
+const OSTREE_A: &str = "ostree/deploy/default/deploy/aaaa.0";
+const OSTREE_B: &str = "ostree/deploy/default/deploy/bbbb.0";
+
+/// A machine that is not image based (every other test's) locks the old hash
+/// on the first sign-in; one that is keeps it while it might still be needed.
 #[test]
 fn the_old_password_hash_stays_while_an_image_before_pam_tilo_can_boot() {
     let m = machine!(true, &[("ada", "123456")]);
-    m.deployment("aaaa.0", false);
-    m.deployment("bbbb.0", true);
+    m.deployment(OSTREE_A, false);
+    m.deployment(OSTREE_B, true);
     let daemon = m.daemon();
 
     assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
@@ -1282,7 +1529,12 @@ fn the_old_password_hash_stays_while_an_image_before_pam_tilo_can_boot() {
     );
     assert!(m.old.locked().is_empty());
 
-    m.prune("aaaa.0");
+    // The composefs backend's deployments count as ostree's do.
+    m.prune(OSTREE_A);
+    m.deployment("state/deploy/2222", false);
+    m.daemon().settle_old_passwords();
+    assert!(m.old.locked().is_empty());
+    m.prune("state/deploy/2222");
     m.daemon().settle_old_passwords();
     assert_eq!(m.old.locked(), ["ada"]);
     m.daemon().settle_old_passwords();
@@ -1293,7 +1545,11 @@ fn the_old_password_hash_stays_while_an_image_before_pam_tilo_can_boot() {
 #[test]
 fn the_old_password_hash_stays_until_the_booted_update_is_confirmed() {
     let m = machine!(true, &[("ada", "123456")]);
-    m.deployment("bbbb.0", true);
+    m.deployment(OSTREE_B, true);
+    // A generation the command line does not spell keeps the hash.
+    std::fs::write(m.path("cmdline"), "root=/dev/vda3 tilo.generation=x\n").unwrap();
+    assert_eq!(verify(&m.daemon(), ADA, "ada", "123456"), Reply::success());
+    assert!(m.old.locked().is_empty());
     std::fs::write(m.path("cmdline"), "root=/dev/vda3 tilo.generation=8\n").unwrap();
     let state = |confirmed| tilo_rollback::confirm::State {
         nv_index: 0x0150_0016,
@@ -1316,9 +1572,13 @@ fn the_old_password_hash_stays_until_the_booted_update_is_confirmed() {
 #[test]
 fn a_hash_back_after_rolling_back_and_forward_locks_again() {
     let m = machine!(true, &[("ada", "123456")]);
-    m.deployment("bbbb.0", true);
+    // An image-based machine where no deployment is found keeps the hash.
+    std::fs::create_dir_all(m.path("sysroot").join(OSTREE_DEPLOY)).unwrap();
     let daemon = m.daemon();
     assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
+    assert!(m.old.locked().is_empty());
+    m.deployment(OSTREE_B, true);
+    m.daemon().settle_old_passwords();
     assert_eq!(m.old.locked(), ["ada"]);
 
     m.old
@@ -1346,7 +1606,8 @@ fn set_comforts(daemon: &Daemon, peer: Peer, comforts: serde_json::Value) -> Rep
     reply(daemon.handle(peer, Request::SetSignInComforts { comforts }))
 }
 
-fn token_types(device: &Path) -> Vec<String> {
+/// The header's comforts tokens by id, as the initrd's login screen reads them.
+fn comforts_tokens(device: &Path) -> Vec<(String, serde_json::Value)> {
     let out = Command::new("cryptsetup")
         .args(["luksDump", "--dump-json-metadata"])
         .arg(device)
@@ -1356,9 +1617,32 @@ fn token_types(device: &Path) -> Vec<String> {
     meta["tokens"]
         .as_object()
         .unwrap()
-        .values()
-        .filter_map(|t| t["type"].as_str().map(str::to_owned))
+        .iter()
+        .filter(|(_, t)| t["type"] == luks::COMFORTS_TOKEN_TYPE)
+        .map(|(id, t)| (id.clone(), t.clone()))
         .collect()
+}
+
+/// A token someone else wrote into the header at `id`.
+fn import_token(dir: &Path, device: &Path, id: &str, token: &serde_json::Value) {
+    let file = dir.join("token.json");
+    std::fs::write(&file, token.to_string()).unwrap();
+    assert!(
+        Command::new("cryptsetup")
+            .args([
+                "token",
+                "import",
+                "--token-replace",
+                "--token-id",
+                id,
+                "--json-file"
+            ])
+            .arg(&file)
+            .arg(device)
+            .status_locked()
+            .unwrap()
+            .success()
+    );
 }
 
 #[test]
@@ -1387,6 +1671,21 @@ fn the_sign_in_comforts_reach_the_header_only_when_they_change() {
         luks::comforts(&runner, &m.device).unwrap(),
         Some(on.clone())
     );
+    let tokens = comforts_tokens(&m.device);
+    assert_eq!(
+        tokens.iter().map(|(_, t)| t).collect::<Vec<_>>(),
+        [&serde_json::json!({
+            "type": "tilo-comforts",
+            "keyslots": [],
+            "screen_reader": true,
+            "screen_reader_rate": 200,
+            "screen_reader_voice": "system",
+            "text_scale": 1.0,
+            "high_contrast": false,
+        })],
+        "the token in its contract shape"
+    );
+    let id = tokens[0].0.clone();
 
     // The same comforts again leave the header alone: what was written
     // there since stays.
@@ -1411,11 +1710,42 @@ fn the_sign_in_comforts_reach_the_header_only_when_they_change() {
     assert_eq!(comforts(&daemon, ADA), Some(larger.clone()));
     assert_eq!(luks::comforts(&runner, &m.device).unwrap(), Some(larger));
     assert_eq!(
-        token_types(&m.device)
+        comforts_tokens(&m.device)
             .iter()
-            .filter(|t| *t == luks::COMFORTS_TOKEN_TYPE)
-            .count(),
-        1,
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>(),
+        [id.as_str()],
         "one comforts token, rewritten in place"
+    );
+
+    // Whoever holds the disk can write the header: a token of theirs is read
+    // clamped, and of two, the first.
+    import_token(
+        m.dir.path(),
+        &m.device,
+        &id,
+        &serde_json::json!({
+            "type": "tilo-comforts",
+            "keyslots": [],
+            "screen_reader": true,
+            "screen_reader_rate": 900,
+            "text_scale": "huge",
+            "language": "de-DE\u{202e}",
+            "xkb_layout": "us,ru",
+        }),
+    );
+    import_token(
+        m.dir.path(),
+        &m.device,
+        "7",
+        &serde_json::json!({"type": "tilo-comforts", "keyslots": [], "high_contrast": true}),
+    );
+    assert_eq!(
+        luks::comforts(&runner, &m.device).unwrap(),
+        Some(SignInComforts {
+            screen_reader: true,
+            screen_reader_rate: 200,
+            ..SignInComforts::default()
+        })
     );
 }

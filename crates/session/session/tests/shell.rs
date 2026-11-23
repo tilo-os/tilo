@@ -366,7 +366,7 @@ tilo_test_env::scenario! {
         let before = keep(&mut session, "shell-bar-bell");
         session
             .notices()
-            .post_quiet(tilo_desktop_surface::notifications::Notification::new(
+            .post_quiet(tilo_session_core::desktop::notifications::Notification::new(
                 "New mail", "From Ada",
             ));
         until(&mut session, |session| {
@@ -875,27 +875,27 @@ fn the_overviews_search_finds_a_window_of_another_workspace() {
     );
     show(&mut session, "overview");
     let field = OVERVIEW_SEARCH;
+    // The window's row, as a reader meets it: the app it shows, then its name.
+    let row = "so.tilo.notes, Notes";
     until(&mut session, |session| {
         session.shell_control(field).is_some()
     });
     assert!(
-        session.shell_control("so.tilo.notes").is_none(),
+        session.shell_control(row).is_none(),
         "the workspace in front has no window to show: {:?}",
         session.accessible_labels()
     );
     press(&mut session, field);
     type_text(&mut session, "notes");
     // It is found; its row names the workspace it is in.
-    until(&mut session, |session| {
-        session.shell_control("so.tilo.notes").is_some()
-    });
+    until(&mut session, |session| session.shell_control(row).is_some());
     assert!(
         session.shell_says(&behind),
         "the row names the workspace behind: {:?}",
         session.accessible_labels()
     );
     // Choosing it goes there.
-    press(&mut session, "so.tilo.notes");
+    press(&mut session, row);
     until(&mut session, |session| shell(session).workspace == behind);
     assert!(
         crate::common::windows(&session)
@@ -959,8 +959,11 @@ fn the_notification_centre_lists_a_notice_and_it_dismisses() {
     until(&mut session, |session| says(session, &time(session).clock));
     // The session posts a notice of its own, as an app's would arrive.
     session.notices().post(
-        tilo_desktop_surface::notifications::Notification::new("Backup finished", "12 GB safe")
-            .with_app_name("Settings"),
+        tilo_session_core::desktop::notifications::Notification::new(
+            "Backup finished",
+            "12 GB safe",
+        )
+        .with_app_name("Settings"),
     );
     until(&mut session, |session| !centre(session).notices.is_empty());
     assert_eq!(centre(&session).notices[0].title, "Backup finished");
@@ -998,8 +1001,11 @@ fn a_press_on_the_centres_dismiss_takes_the_notice_away() {
     let mut session = session();
     until(&mut session, |session| says(session, &time(session).clock));
     session.notices().post(
-        tilo_desktop_surface::notifications::Notification::new("Backup finished", "12 GB safe")
-            .with_app_name("Settings"),
+        tilo_session_core::desktop::notifications::Notification::new(
+            "Backup finished",
+            "12 GB safe",
+        )
+        .with_app_name("Settings"),
     );
     until(&mut session, |session| !centre(session).notices.is_empty());
     // A notice that arrives is unseen: the shell counts what the person has not seen, and its
@@ -2267,7 +2273,7 @@ fn a_press_on_the_centres_clear_all_empties_it() {
         ("Update ready", "Restart"),
     ] {
         session.notices().post(
-            tilo_desktop_surface::notifications::Notification::new(title, body)
+            tilo_session_core::desktop::notifications::Notification::new(title, body)
                 .with_app_name("Settings"),
         );
     }
@@ -2283,6 +2289,93 @@ fn a_press_on_the_centres_clear_all_empties_it() {
         "{:?}",
         session.shell_refusals()
     );
+}
+
+/// The centre's Undo brings back what a Clear all took, through the centre's `undo-clear`: the
+/// notices return and the cleared band goes.
+#[test]
+fn a_press_on_the_centres_undo_brings_the_cleared_notices_back() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &time(session).clock));
+    for (title, body) in [
+        ("Backup finished", "12 GB safe"),
+        ("Update ready", "Restart"),
+    ] {
+        session.notices().post(
+            tilo_session_core::desktop::notifications::Notification::new(title, body)
+                .with_app_name("Settings"),
+        );
+    }
+    until(&mut session, |session| centre(session).notices.len() == 2);
+    show(&mut session, "centre");
+    until(&mut session, |session| {
+        session.shell_control("Clear all").is_some()
+    });
+    press(&mut session, "Clear all");
+    until(&mut session, |session| {
+        centre(session).notices.is_empty()
+            && centre(session).undo
+            && session.shell_control("Undo").is_some()
+    });
+    press(&mut session, "Undo");
+    until(&mut session, |session| centre(session).notices.len() == 2);
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// Four banners are a stack: three stand, and one row names the one waiting behind them, which
+/// opens the centre.
+#[test]
+fn the_banners_stack_and_say_how_many_wait() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &time(session).clock));
+    for index in 0..4 {
+        session.notices().post(
+            tilo_session_core::desktop::notifications::Notification::new(
+                format!("Notice {index}"),
+                "Something happened",
+            )
+            .with_app_name("Settings"),
+        );
+    }
+    until(&mut session, |session| {
+        centre(session).banners.len() == 4 && says(session, "1 more notification")
+    });
+}
+
+/// The quick settings' Night light tile runs the night light's own `toggle`: the published night
+/// light turns from what it was.
+#[test]
+fn quick_settings_night_light_toggles_the_published_night_light() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_with_devices(WIDTH, HEIGHT);
+    until_settled(&mut session, |session| says(session, &time(session).clock));
+    press_at_rest(&mut session, "Volume, 40%");
+    until_settled(&mut session, |session| here(session) == "quick-settings");
+    until_settled(&mut session, |session| {
+        session.shell_control("Night light").is_some()
+    });
+    let was = night_light(&session);
+    press_at_rest(&mut session, "Night light");
+    until_settled(&mut session, |session| night_light(session) != was);
+    assert!(
+        session.shell_refusals().is_empty(),
+        "the tile's press reached the night light: {:?}",
+        session.shell_refusals()
+    );
+}
+
+/// Whether the screen's night light is on, as the session publishes it.
+fn night_light(session: &Session) -> bool {
+    session
+        .read("session:night-light")
+        .and_then(|reading| reading["on"].as_bool())
+        .unwrap_or_default()
 }
 
 /// A workspace named in the workspaces surface is made and in front: the chrome's `new-workspace`

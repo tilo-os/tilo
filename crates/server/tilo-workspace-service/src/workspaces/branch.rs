@@ -357,7 +357,12 @@ mod copy {
             forked: Vec<(Route, Vec<u8>)>,
             person: [u8; 32],
         ) -> Result<(), NotMade> {
-            let forked = self.copy_branch_content(source, branch, forked).await?;
+            let mut forked = self.copy_branch_content(source, branch, forked).await?;
+            for ((app, record), document) in &mut forked {
+                self.reseal_branched_vault((source, branch), (app, record), document)
+                    .await
+                    .map_err(NotMade::record(app, record))?;
+            }
             for ((app, record), document) in &forked {
                 self.found_branched(branch, (app, record), document)
                     .await

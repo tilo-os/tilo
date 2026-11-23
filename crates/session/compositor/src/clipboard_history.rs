@@ -305,6 +305,9 @@ pub struct Pull {
     started: Instant,
     mime: String,
     bytes: Vec<u8>,
+    /// The most bytes one read may take: a copy the history keeps is held to
+    /// [`MAX_COPY_BYTES`], an image an app pasted to what the clipboard takes in.
+    limit: usize,
 }
 
 /// What one read of the selection has come to.
@@ -328,6 +331,15 @@ impl Pull {
     /// # Errors
     /// The read end could not be made non-blocking.
     pub fn new(reader: std::io::PipeReader, mime: &str) -> std::io::Result<Self> {
+        Self::bounded(reader, mime, MAX_COPY_BYTES)
+    }
+
+    /// Read what the owner of `mime` writes, up to `limit` bytes: what a paste of an image an app
+    /// asked for holds, which is larger than a copy the history keeps.
+    ///
+    /// # Errors
+    /// The read end could not be made non-blocking.
+    pub fn bounded(reader: std::io::PipeReader, mime: &str, limit: usize) -> std::io::Result<Self> {
         rustix::fs::fcntl_setfl(&reader, rustix::fs::OFlags::NONBLOCK)
             .map_err(std::io::Error::from)?;
         Ok(Self {
@@ -335,6 +347,7 @@ impl Pull {
             started: Instant::now(),
             mime: mime.to_owned(),
             bytes: Vec::new(),
+            limit,
         })
     }
 
@@ -354,7 +367,7 @@ impl Pull {
                     if let Some(arrived) = chunk.get(..read) {
                         self.bytes.extend_from_slice(arrived);
                     }
-                    if self.bytes.len() > MAX_COPY_BYTES {
+                    if self.bytes.len() > self.limit {
                         return Pulled::Lost;
                     }
                 }

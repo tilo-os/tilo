@@ -87,7 +87,7 @@ pub struct ImagerApp {
     /// The host session's Wi-Fi passphrase: it never enters the document.
     wifi_psk: String,
     ssh_public_key: LocalState<String>,
-    windows_preparation: Option<crate::windows_media::WindowsMedia>,
+    windows_preparation: Option<imager_backend::windows_media::WindowsMedia>,
     targets: Vec<TargetDrive>,
     releases: Vec<TiloRelease>,
     selected: Option<usize>,
@@ -575,7 +575,7 @@ impl ImagerApp {
         if source.size == 0 {
             return None;
         }
-        crate::media_capacity::required(
+        imager_backend::media_capacity::required(
             source.size,
             self.prepared_delivery.reserved_data_bytes(),
             self.prepared_delivery.requires_data_partition(),
@@ -1591,7 +1591,7 @@ impl ImagerApp {
             self.set_status("File selection cancelled.");
             return Ok(Effected::done());
         };
-        if let Some(source) = crate::probe::inspect_source(&path) {
+        if let Some(source) = imager_backend::probe::inspect_source(&path) {
             self.select_source(&source);
             Ok(Effected::done())
         } else {
@@ -1921,7 +1921,7 @@ impl ImagerApp {
     #[cfg(feature = "installation")]
     pub(crate) fn with_windows_preparation(
         mut self,
-        preparation: Option<crate::windows_media::WindowsMedia>,
+        preparation: Option<imager_backend::windows_media::WindowsMedia>,
     ) -> Self {
         self.windows_preparation = preparation;
         self
@@ -2441,7 +2441,7 @@ impl ImagerApp {
     }
     fn do_rescan(&mut self) -> bool {
         if self.live {
-            let Some(t) = crate::probe::probe() else {
+            let Some(t) = imager_backend::probe::probe() else {
                 self.set_status("Drive rescan failed. Check the system disk tools and try again.");
                 self.dirty = true;
                 return false;
@@ -2482,7 +2482,7 @@ impl ImagerApp {
                             "installer-original-complete-failed",
                         ));
                     }
-                    let target = crate::probe::probe()
+                    let target = imager_backend::probe::probe()
                         .and_then(|drives| {
                             drives
                                 .into_iter()
@@ -3042,7 +3042,7 @@ impl ImagerApp {
                     dispatcher.effect(&ImagerEffect::ChooseImage);
                 }
             }
-            Command::Dropped(path) => match crate::probe::inspect_source(&path) {
+            Command::Dropped(path) => match imager_backend::probe::inspect_source(&path) {
                 Some(source) => self.select_source(&source),
                 None => self.fail("That file is not a readable disk image."),
             },
@@ -3219,7 +3219,7 @@ impl Widget for ImagerApp {
         self.renew_prepared_artifact();
         if !self.seeded {
             if self.live {
-                self.targets = crate::probe::probe().unwrap_or_default();
+                self.targets = imager_backend::probe::probe().unwrap_or_default();
             }
             if self.live {
                 self.reconcile_persisted_write_state();

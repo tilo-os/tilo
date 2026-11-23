@@ -164,7 +164,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         }
         CollabRequest::ResourceCommand { command, .. } => meter.bytes(command),
         CollabRequest::OpenResources { query, .. } => meter.bytes(query),
-        CollabRequest::DecideHeldElsewhere { records } => serialized_bytes(records, &mut meter),
+        CollabRequest::DecideShownActions { actions } => serialized_bytes(actions, &mut meter),
         CollabRequest::ReportHandoff { message } => {
             meter.bytes(message);
         }
@@ -633,9 +633,9 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             }
             "ResourcePage"
         }
-        CollabEvent::HeldElsewhereVerdicts { verdicts } => {
+        CollabEvent::ActionVerdicts { verdicts } => {
             serialized_bytes(verdicts, &mut meter);
-            "HeldElsewhereVerdicts"
+            "ActionVerdicts"
         }
         CollabEvent::RealtimeCommandResult { result, .. } => {
             match result {

@@ -15,6 +15,7 @@ use tilolang_runtime::{Actor, InvokeOutcome};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::host::{Host, RootView};
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
+use tilolang_tilo::resources::Turn;
 use tilolang_tilo::runtime::NameHost;
 
 use crate::fixtures::{Replica, action_id};
@@ -271,7 +272,7 @@ tilo_test_env::scenario! {
         let bo = ada.fork("bo", &packages());
         let at = ResourceRef::root(board.clone(), type_id(&ada, "Board"));
 
-        assert_eq!(ada.host.run_triggers(now), 1, "the origin runs it");
+        assert_eq!(ada.host.run_triggers(now), 1, "the first device runs it");
         ada.commit();
         let tick = action_id(&meta(&ada), "tick");
         // Its run is one change of the board, after the one that made it.
@@ -294,11 +295,11 @@ tilo_test_env::scenario! {
         assert_eq!(counted(&ada, &board, "Board", "ticks"), 1);
     }
 
-    phase only_the_origin_runs_triggers_from_its_frame;
+    phase a_window_runs_a_trigger_only_when_its_device_takes_the_turn;
     {
         let noon = "2026-10-27T12:00:00Z";
 
-        let (mut origin, board) = window(noon, true);
+        let (mut origin, board) = window(noon, Turn::Take);
         origin.sync();
         origin.sync();
         let at = ResourceRef::root(board, type_id_of(&origin, "Board"));
@@ -307,7 +308,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             versions.iter().filter(|version| version.action == tick).count(),
             1,
-            "the origin runs the trigger: {versions:#?}"
+            "the device whose turn it is runs the trigger: {versions:#?}"
         );
         assert_eq!(
             versions
@@ -317,14 +318,27 @@ tilo_test_env::scenario! {
             Some(tilolang_tilo::runtime::Actor::App("t.trig".into()))
         );
 
-        let (mut reader, board) = window(noon, false);
+        let (mut reader, board) = window(noon, Turn::Later);
         reader.sync();
         reader.sync();
         let at = ResourceRef::root(board, type_id_of(&reader, "Board"));
         let versions = reader.host().unwrap().store().versions(&at).unwrap();
         assert!(
             versions.iter().all(|version| version.action != tick),
-            "a replica that does not govern the workspace runs none: {versions:#?}"
+            "a device whose turn it is not runs none: {versions:#?}"
+        );
+        assert!(
+            reader.wakes_in().is_some_and(|wait| wait.as_secs() <= 5),
+            "and asks again a little later"
+        );
+
+        let (mut late, board) = window(noon, Turn::Done(serde_json::Value::Null));
+        late.sync();
+        let at = ResourceRef::root(board, type_id_of(&late, "Board"));
+        let versions = late.host().unwrap().store().versions(&at).unwrap();
+        assert!(
+            versions.iter().all(|version| version.action != tick),
+            "nor one that finds it ran on another device: {versions:#?}"
         );
     }
 
@@ -332,7 +346,7 @@ tilo_test_env::scenario! {
     {
         // Frames over a store that did not move read nothing new: the window's view draws again
         // without the store moving.
-        let (mut window, _board) = window("2026-10-27T12:00:00Z", true);
+        let (mut window, _board) = window("2026-10-27T12:00:00Z", Turn::Take);
         window.sync();
         let watch = window.host().expect("the window opened").store().watch();
         let _ = watch.take();
@@ -377,18 +391,43 @@ impl NameHost for Alone {
 }
 
 /// A window of the app over a store of its own: no broker, so nothing of it is sent anywhere.
-fn window(now: &str, origin: bool) -> (Instance, String) {
+/// A store whose device's turn to run an action that runs once is always `turn`.
+struct Turns {
+    store: tilolang_tilo::resources::LocalPort,
+    turn: Turn,
+}
+
+impl tilolang_tilo::resources::Port for Turns {
+    fn command(
+        &self,
+        command: tilo_resource_store::wire::Command,
+    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        match command {
+            tilo_resource_store::wire::Command::Turn { answer: None, .. } => {
+                Ok(tilo_resource_store::wire::Reply::Turn(self.turn.clone()))
+            }
+            other => self.store.command(other),
+        }
+    }
+}
+
+/// A window of the board app, its clock at `now`, on a device whose turn to run a trigger is
+/// `turn`.
+fn window(now: &str, turn: Turn) -> (Instance, String) {
     let (app_end, _window) = pair();
     let platform = Rc::new(Trig {
         now: RefCell::new(now.to_owned()),
     });
-    let mut instance = Instance::new(
+    let instance = Instance::new(
         Config {
             app: APP.to_owned(),
             me: "ada".into(),
             mode: Mode::Live,
             device: None,
-            store: tilolang_tilo::resources::ResourceStore::in_memory(),
+            store: tilolang_tilo::resources::ResourceStore::new(Rc::new(Turns {
+                store: tilolang_tilo::resources::LocalPort::in_memory(),
+                turn,
+            })),
             root: RootView::default(),
             sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
         },
@@ -396,7 +435,6 @@ fn window(now: &str, origin: bool) -> (Instance, String) {
         Rc::new(Alone),
         Box::new(app_end),
     );
-    instance.set_origin(origin);
     (instance, "root-".to_owned() + &type_id_board())
 }
 

@@ -472,6 +472,34 @@ pub async fn test_host_holding(
     .await
 }
 
+/// [`test_host`] whose device takes part in its workspaces' key groups as a device does: through
+/// its own key service, which settles each group with the key services of the workspace's other
+/// devices. A test that says who holds which keys, or what a device can open, runs on these, not
+/// on [`TestGroupKeys`], whose devices share one set of keys.
+///
+/// # Panics
+///
+/// The key service or the host cannot open.
+#[cfg(feature = "device-keys")]
+pub async fn test_host_keyed(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+) -> (TestHost, crate::own_device::KeyService) {
+    let signer: Arc<dyn collab_types::signer::DeviceSigner> = Arc::new(key.clone());
+    let keys = crate::own_device::KeyService::open(
+        "test-groups",
+        &state_root.join("groups"),
+        key_group::VaultKey::new([5; 32]),
+        signer,
+        Arc::new(tilo_workspace_keys::NoSealChecks),
+    )
+    .expect("the device's key service opens");
+    let host = host_on(state_root, key, cert, keys.groups(), None).await;
+    keys.attach(host.workspaces());
+    (host, keys)
+}
+
 /// `cert`'s device hosting under `state_root`, taking part in the workspaces'
 /// channels through `channels`.
 async fn host_on(
@@ -773,51 +801,6 @@ pub async fn entry_join_as(
     let response = service.handle(endpoint, complete.clone()).await;
     drop(service);
     (complete, response)
-}
-
-/// `peer`'s device joins `call` in `workspace` as the workspace's voice entry joins
-/// it, renewing `participation` when it names one; its grants come on
-/// `outbound`.
-///
-/// # Errors
-///
-/// The workspace refuses the device the call.
-pub async fn voice_join(
-    workspaces: &Workspaces,
-    workspace: &str,
-    peer: &tilo_server_protocol::AuthenticatedPeer,
-    call: [u8; 32],
-    participation: Option<[u8; 32]>,
-    outbound: tokio::sync::mpsc::Sender<tilo_server_protocol::Envelope>,
-) -> Result<tilo_server_protocol::voice::VoiceGrant, String> {
-    workspaces
-        .voice_join(workspace, peer, call, participation, outbound)
-        .await
-}
-
-/// `workspace`'s calls as `peer`'s device lists them through the voice entry; the
-/// list's changes come on `outbound`.
-///
-/// # Errors
-///
-/// The workspace refuses the device its calls.
-pub async fn voice_calls(
-    workspaces: &Workspaces,
-    workspace: &str,
-    peer: &tilo_server_protocol::AuthenticatedPeer,
-    outbound: tokio::sync::mpsc::Sender<tilo_server_protocol::Envelope>,
-) -> Result<Vec<tilo_server_protocol::voice::CallSummary>, String> {
-    workspaces.voice_calls(workspace, peer, outbound).await
-}
-
-/// `peer`'s device ends `participation` in `call`, as the voice entry ends it.
-pub fn voice_leave(
-    workspaces: &Workspaces,
-    peer: &tilo_server_protocol::AuthenticatedPeer,
-    call: [u8; 32],
-    participation: [u8; 32],
-) {
-    workspaces.voice_leave(peer, call, participation);
 }
 
 /// Admit `key`, a key its person made, to `workspace`, as redeeming its

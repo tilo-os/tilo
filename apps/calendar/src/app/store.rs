@@ -17,7 +17,7 @@ use ui::widget::toast::ToastKind;
 
 use super::CalendarApp;
 use super::opens::Opened;
-use crate::account::AccountStore;
+use crate::account::CalendarAccounts;
 use crate::actions::CalendarCollectionResource;
 use crate::display::CalendarDisplay;
 use crate::ics;
@@ -66,7 +66,7 @@ pub(crate) struct Store {
 pub(crate) type Shared = Rc<RefCell<Store>>;
 
 impl Store {
-    pub(super) fn new(anchor: Date, accounts: AccountStore) -> Self {
+    pub(super) fn new(anchor: Date, accounts: CalendarAccounts) -> Self {
         Self {
             live: None,
             device_accounts: Rc::new(RefCell::new(accounts)),
@@ -439,13 +439,10 @@ pub(crate) fn window(cx: &ViewCx<Calendar>, mut app: CalendarApp) -> Element {
     }
     let live = cx.mode().is_live();
     let sample = cx.fixture::<SampleAccounts>();
-    let accounts = if let Some(sample) = &sample {
-        Some(sample.0.clone())
-    } else if live {
-        Some(app.bind_profile(cx.storage().config_root()))
-    } else {
-        None
-    };
+    let accounts = sample.as_ref().map(|sample| sample.0.clone());
+    if live {
+        app.bind_profile(cx.storage().config_root());
+    }
     app.follow_display(cx.settings::<CalendarDisplay>());
     if live {
         crate::outbox::drain(cx, app.device_accounts());
@@ -453,9 +450,9 @@ pub(crate) fn window(cx: &ViewCx<Calendar>, mut app: CalendarApp) -> Element {
     app.attach_framework(cx.dispatcher(), accounts, sample.is_some());
     if live {
         app.notify_with(ui::process::current().notifications, cx.waker());
-        if let Some(accounts) = cx.shared_workspace::<accounts::person::PersonAccounts>(
-            accounts::person::PersonAccounts::OWNER,
-        ) {
+        if let Some(accounts) = cx
+            .shared_workspace::<accounts::person::AccountList>(accounts::person::AccountList::OWNER)
+        {
             app.follow_person_accounts(accounts);
         }
         app.state()

@@ -868,7 +868,7 @@ async fn drive(
             publisher,
             &want,
             ClientState::Connected {
-                since_unix_ms: unix_ms(SystemTime::now()),
+                since_unix_ms: tilo_clock::unix_now_ms(),
             },
         );
         let ended = tokio::select! {

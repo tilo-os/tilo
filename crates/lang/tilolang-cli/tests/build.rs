@@ -50,17 +50,17 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
             "it runs on the tilolang runtime bundle"
         );
         assert_eq!(entrypoint.bin, Path::new(package::RUNTIME_BIN));
-        // It runs where the runtime bundle runs, which is a Linux binary: a device offering it
-        // elsewhere is told so rather than failing to start it.
+        // It runs where the runtime bundle runs: a device the runtime is not built for is told so
+        // rather than failing to start it.
         assert_eq!(
             manifest.package.platforms(),
-            [Platform::Linux, Platform::Web],
+            [Platform::Linux, Platform::Macos, Platform::Web],
             "{} names the platforms its runtime runs on",
             app.app
         );
         assert!(
-            manifest.package.platform_reason.is_some(),
-            "a narrowed list says why"
+            manifest.package.platform_reason.is_none(),
+            "a list that narrows nothing gives no reason"
         );
         assert_eq!(manifest.package.icon.as_deref(), Some("icon.svg"));
         assert!(app.payload.join("icon.svg").is_file());
@@ -259,10 +259,6 @@ fn the_platforms_a_package_names_are_the_runtimes() {
         .map(|platform| format!("\"{}\"", platform.as_str()))
         .collect();
     assert_eq!(format!("[{}]", named.join(", ")), package::PLATFORMS);
-    assert_eq!(
-        runtime.package.platform_reason.as_deref(),
-        Some(package::PLATFORM_REASON)
-    );
 }
 
 #[test]
@@ -357,4 +353,234 @@ fn the_launcher_runs_a_built_app_on_the_runtime_binary_over_its_payload() {
         setenv(&argv, "TILO_SURFACE").is_some(),
         "its surface: {argv:?}"
     );
+}
+
+/// Write a Fluent comment large enough to push a tilolang package's `.tapp`
+/// archive past [`tilo_app_package::MAX_APP_TAPP_BYTES`] without touching its
+/// manifest or breaking compilation.
+fn bloat_locale_past_app_limit(package_dir: &Path) {
+    let locale_dir = package_dir.join("locales");
+    std::fs::create_dir_all(&locale_dir).unwrap();
+    let line = format!("# {}\n", "a".repeat(1020));
+    let lines = usize::try_from(tilo_app_package::MAX_APP_TAPP_BYTES)
+        .unwrap()
+        .div_ceil(line.len())
+        .saturating_add(1);
+    std::fs::write(locale_dir.join("zz-ZZ.ftl"), line.repeat(lines)).unwrap();
+}
+
+fn dir_entries(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+fn run_tilolang_build(dir: &Path, out: &Path, identity: &Path) -> std::process::Output {
+    use tilo_test_env::SpawnUnderEnvLock as _;
+    std::process::Command::new(env!("CARGO_BIN_EXE_tilolang"))
+        .args(["build"])
+        .arg(dir)
+        .arg("--out")
+        .arg(out)
+        .arg("--identity")
+        .arg(identity)
+        .output_locked()
+        .expect("run tilolang build")
+}
+
+#[test]
+fn an_oversized_tilolang_app_is_refused_and_leaves_nothing_behind() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("tl/counter");
+    copy_package(&packages().join("counter"), &source);
+    let identity_path = scratch.path().join("publisher.json");
+    let _ = tilolang_cli::identity_at(&identity_path).unwrap();
+
+    // First build a valid package into `prior_out` so we can confirm a later
+    // failing build leaves an existing output untouched.
+    let prior_out = scratch.path().join("prior-out");
+    let ok = run_tilolang_build(&source, &prior_out, &identity_path);
+    assert!(
+        ok.status.success(),
+        "valid build failed: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let prior_tapp = std::fs::read(prior_out.join("counter.tapp")).unwrap();
+    let prior_manifest = std::fs::read(prior_out.join("counter/manifest.toml")).unwrap();
+    let prior_entries = dir_entries(&prior_out);
+
+    // Push the app's payload past its manifest's size limit.
+    bloat_locale_past_app_limit(&source);
+
+    // 1. Fresh non-existent output directory: refused and not created.
+    let fresh_out = scratch.path().join("fresh-out");
+    let failed = run_tilolang_build(&source, &fresh_out, &identity_path);
+    assert!(
+        !failed.status.success(),
+        "oversized app must be refused: stdout={}",
+        String::from_utf8_lossy(&failed.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        stderr.contains("limit") && stderr.contains("bytes"),
+        "expected size limit error on stderr, got: {stderr}"
+    );
+    assert!(
+        !fresh_out.exists(),
+        "failed build must not leave behind {}",
+        fresh_out.display()
+    );
+
+    // 2. Existing empty output directory: refused and still completely empty.
+    let empty_out = scratch.path().join("empty-out");
+    std::fs::create_dir(&empty_out).unwrap();
+    let failed_empty = run_tilolang_build(&source, &empty_out, &identity_path);
+    assert!(!failed_empty.status.success());
+    assert!(
+        dir_entries(&empty_out).is_empty(),
+        "failed build left files behind: {:?}",
+        dir_entries(&empty_out)
+    );
+
+    // 3. Existing output directory with a prior valid build: untouched and clean.
+    let failed_prior = run_tilolang_build(&source, &prior_out, &identity_path);
+    assert!(!failed_prior.status.success());
+    assert_eq!(dir_entries(&prior_out), prior_entries);
+    assert_eq!(
+        std::fs::read(prior_out.join("counter.tapp")).unwrap(),
+        prior_tapp,
+        "prior valid .tapp must stay untouched"
+    );
+    assert_eq!(
+        std::fs::read(prior_out.join("counter/manifest.toml")).unwrap(),
+        prior_manifest,
+        "prior valid manifest must stay untouched"
+    );
+}
+
+#[test]
+fn a_multi_package_build_that_fails_leaves_nothing_in_the_output_directory() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("tl");
+    for name in with_used(&["notes"]) {
+        copy_package(&packages().join(&name), &source.join(&name));
+    }
+    // `notes` uses `discussion`, so `discussion` is delivered before `notes`.
+    // Bloating `notes` must not leave `discussion` behind in `out`.
+    bloat_locale_past_app_limit(&source.join("notes"));
+    let identity_path = scratch.path().join("publisher.json");
+    let _ = tilolang_cli::identity_at(&identity_path).unwrap();
+
+    let out = scratch.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    let failed = run_tilolang_build(&source.join("notes"), &out, &identity_path);
+    assert!(
+        !failed.status.success(),
+        "oversized multi-package build must fail"
+    );
+    assert!(
+        dir_entries(&out).is_empty(),
+        "failed multi-package build left files behind: {:?}",
+        dir_entries(&out)
+    );
+}
+
+#[test]
+fn a_valid_tilolang_package_has_verified_exact_archive_bytes() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("tl/counter");
+    copy_package(&packages().join("counter"), &source);
+    let identity = tilo_app_package::SigningIdentity::from_seed(&[0x22; 32]);
+    let options = BuildOptions {
+        dir: source,
+        search: Vec::new(),
+        out: scratch.path().join("out"),
+        tilo_runtime: "tilo-runtime/2026.07".into(),
+        tilolang_runtime: "tilolang/0.1.0+tilolang".into(),
+        version: "0.1.0".into(),
+    };
+    let apps = package::build(&options, &identity).unwrap();
+    let [counter] = apps.as_slice() else {
+        panic!("one app: {apps:?}");
+    };
+    let on_disk = std::fs::read(&counter.tapp).unwrap();
+    let manifest =
+        Manifest::from_toml_str(&std::fs::read_to_string(&counter.manifest).unwrap()).unwrap();
+    let repacked = tilo_app_package::pack::pack(&counter.payload, &manifest, &identity).unwrap();
+    let expected = tilo_app_package::tapp::to_bytes(&repacked.meta, Some(&repacked)).unwrap();
+    assert_eq!(
+        on_disk, expected,
+        "built .tapp bytes must match the canonical archive encoding"
+    );
+    let decoded =
+        tilo_app_package::tapp::read(on_disk.as_slice(), &mut tilo_app_package::DiscardBlobs)
+            .unwrap();
+    assert!(decoded.is_complete());
+    assert!(matches!(
+        tilo_app_package::verify(&decoded.meta, &[identity.public_key_bytes()]),
+        tilo_app_package::Verification::Trusted { .. }
+    ));
+
+    // A failure during staging (such as an unknown icon) leaves nothing behind
+    // in the output directory.
+    let bad_source = scratch.path().join("tl/bad-icon");
+    copy_package(&packages().join("counter"), &bad_source);
+    let app_tl = bad_source.join("app.tl");
+    let text = std::fs::read_to_string(&app_tl).unwrap();
+    std::fs::write(
+        &app_tl,
+        text.replace("icon: .hash", "icon: .not_a_real_platform_icon"),
+    )
+    .unwrap();
+    let bad_out = scratch.path().join("bad-out");
+    std::fs::create_dir(&bad_out).unwrap();
+    let bad_options = BuildOptions {
+        dir: bad_source,
+        out: bad_out.clone(),
+        ..options
+    };
+    assert!(package::build(&bad_options, &identity).is_err());
+    assert!(
+        dir_entries(&bad_out).is_empty(),
+        "staging failure left files behind: {:?}",
+        dir_entries(&bad_out)
+    );
+}
+
+/// An app that opens links of a URI scheme declares it, as a native app's manifest claims one:
+/// the video app claims `tube`, so the session opens a `tube:` link in it.
+#[test]
+fn an_app_that_claims_a_uri_scheme_declares_it_in_its_manifest() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("tl");
+    for name in with_used(&["tube"]) {
+        copy_package(&packages().join(&name), &source.join(&name));
+    }
+    let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
+    let options = BuildOptions {
+        dir: source.join("tube"),
+        search: Vec::new(),
+        out: scratch.path().join("out"),
+        tilo_runtime: "tilo-runtime/2026.07".into(),
+        tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
+        version: "0.1.0".into(),
+    };
+    let apps = package::build(&options, &identity).unwrap();
+    let tube = apps
+        .iter()
+        .find(|app| app.app == "so.tilo.tube")
+        .expect("the package declares an app");
+    let text = std::fs::read_to_string(&tube.manifest).unwrap();
+    let manifest = Manifest::from_toml_str(&text).unwrap();
+    assert_eq!(
+        manifest.providers.schemes,
+        ["tube"],
+        "the scheme its `app` declaration claims"
+    );
+    // What the session reads to decide which app opens a link of a scheme.
+    let view = tilo_app_package::view::ManifestView::from_toml_str(&text).unwrap();
+    assert_eq!(view.opens_schemes, ["tube"]);
 }

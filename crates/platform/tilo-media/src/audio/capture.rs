@@ -220,12 +220,7 @@ fn verify_process(
 }
 
 fn valid_app_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 255
-        && value.contains('.')
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    tilo_app_id::AppId::is_valid(value)
 }
 
 #[cfg(unix)]
@@ -369,6 +364,68 @@ mod tests {
                 }],
                 "one running camera stream: not a suspended one, not a playback one, not another user's"
             );
+        }
+    }
+
+    #[test]
+    fn flatpak_portal_app_ids_follow_canonical_app_id_grammar() {
+        use std::os::unix::fs::symlink;
+
+        let proc = tempfile::tempdir().unwrap();
+        let process = proc.path().join("4242");
+        std::fs::create_dir_all(&process).unwrap();
+        std::fs::write(process.join("status"), "Uid:\t1000\t1000\t1000\t1000\n").unwrap();
+        symlink("/app/bin/chat", process.join("exe")).unwrap();
+
+        let longest = format!("a.{}", "b".repeat(253));
+        let too_long = format!("a.{}", "b".repeat(254));
+        for (id, expected) in [
+            ("org.example.Chat", true),
+            ("org.example.My_App-2", true),
+            ("-org.example.Chat", true),
+            (longest.as_str(), true),
+            (too_long.as_str(), false),
+            ("", false),
+            ("chat", false),
+            (".org.Chat", false),
+            ("org.Chat.", false),
+            ("org..Chat", false),
+            ("..", false),
+            ("org/example.Chat", false),
+            ("org.example Chat", false),
+        ] {
+            let json = serde_json::json!([
+                {
+                    "id": 7,
+                    "type": "PipeWire:Interface:Client",
+                    "info": {
+                        "props": {
+                            "pipewire.sec.pid": 4242,
+                            "pipewire.sec.flatpak": "true",
+                            "pipewire.access.portal.app_id": id,
+                        }
+                    }
+                },
+                {
+                    "id": 9,
+                    "type": "PipeWire:Interface:Node",
+                    "info": {
+                        "state": "running",
+                        "props": {
+                            "client.id": 7,
+                            "media.class": "Stream/Input/Video",
+                        }
+                    }
+                }
+            ])
+            .to_string();
+            let uses = from_dump(&json, proc.path(), 1000).unwrap();
+            if expected {
+                assert_eq!(uses.len(), 1, "{id:?}");
+                assert_eq!(uses[0].app_id, format!("flatpak:{id}"), "{id:?}");
+            } else {
+                assert!(uses.is_empty(), "{id:?} gave {uses:?}");
+            }
         }
     }
 }

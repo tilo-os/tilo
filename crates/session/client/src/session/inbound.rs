@@ -351,6 +351,13 @@ impl Task {
                     None => _ = status.workspace_devices.remove(&workspace),
                 });
             }
+            let calls = self.replicas.call_rules(workspace_id);
+            if self.reports.status().workspace_calls.get(&workspace) != calls.as_ref() {
+                self.reports.change(|status| match calls {
+                    Some(calls) => _ = status.workspace_calls.insert(workspace.clone(), calls),
+                    None => _ = status.workspace_calls.remove(&workspace),
+                });
+            }
             let names = self.replicas.member_names(workspace_id);
             if self.reports.status().workspace_names.get(&workspace) != names.as_ref() {
                 self.reports.change(|status| match names {

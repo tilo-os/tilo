@@ -110,9 +110,8 @@ impl StripFrame {
             return Self::empty(content);
         };
         let focused_strip = tree
-            .active_strip
-            .get(&workspace.id())
-            .and_then(|id| workspace.strips.iter().position(|s| s.id == *id))
+            .active_strip_for(workspace)
+            .and_then(|id| workspace.strips.iter().position(|s| s.id == id))
             .unwrap_or(0);
         let strip = workspace.strips.get(focused_strip);
         let groups = strip.map_or(&[][..], |strip| strip.window_groups.as_slice());

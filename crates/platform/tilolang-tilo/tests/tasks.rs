@@ -3,10 +3,9 @@
 //! they are asked; a quick add that adds what was typed and nothing for an empty entry; and two
 //! people changing one task at once.
 
-use crate::fixtures::Workspace;
 use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 
-use crate::fixtures::Replica;
+use crate::fixtures::{Replica, ShownPlace, Workspace};
 
 pub(crate) const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 pub(crate) const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
@@ -108,32 +107,9 @@ pub(crate) fn shown_count(view: &ViewInstance) -> Option<i64> {
     }
 }
 
-/// A place as the sidebar draws it: its label, and the count the sidebar itself works out for
-/// the places it counts (the inbox's and today's).
-pub(crate) type ShownPlace = (String, Option<i64>);
-
-/// A heading of the sidebar with the places under it, in the order they stand.
-pub(crate) type ShownSection = (String, Vec<ShownPlace>);
-
 /// The sidebar's places as the window shows them.
 pub(crate) fn places(view: &ViewInstance) -> Vec<ShownPlace> {
-    fn walk(node: &UiNode, out: &mut Vec<ShownPlace>) {
-        if node.kind == "ui.NavItem"
-            && let Some(Value::Text(label)) = node.props.get("label")
-        {
-            let count = match node.props.get("count") {
-                Some(Value::Int(count)) => Some(*count),
-                _ => None,
-            };
-            out.push((label.clone(), count));
-        }
-        for child in &node.children {
-            walk(child, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(view.tree(), &mut out);
-    out
+    crate::fixtures::places_in(view.tree())
 }
 
 /// What the sidebar counts at `place`: a count only where the place's filter asks for one.
@@ -707,13 +683,13 @@ tilo_test_env::scenario! {
         assert!(!rows[done].3, "and not folded away into the Done group");
 
         let view = task_page(&ada, &post);
-        let node = node_of(view.tree(), &row_of(&view, &draft)).expect("the draft's node");
+        let node = view.tree().find(&row_of(&view, &draft)).expect("the draft's node");
         assert_eq!(
             node.props.get("progress"),
             Some(&Value::text("1/3")),
             "the outline says the same count of the same subtasks"
         );
-        let subtask = node_of(view.tree(), &row_of(&view, &task(&ada, "Outline"))).expect("its node");
+        let subtask = view.tree().find(&row_of(&view, &task(&ada, "Outline"))).expect("its node");
         assert_eq!(
             subtask.props.get("parent").and_then(target),
             target(&draft),
@@ -737,19 +713,16 @@ tilo_test_env::scenario! {
 /// The count the tasks window shows over its list: the list is the window's content, so the
 /// count stands beside the content's title.
 fn list_count(view: &ViewInstance) -> Option<i64> {
-    fn walk(node: &UiNode, out: &mut Option<i64>) {
-        if node.kind == "ui.NavShell"
-            && let Some(Value::Int(count)) = node.props.get("count")
-        {
-            *out = Some(*count);
-        }
-        for child in &node.children {
-            walk(child, out);
-        }
+    match view
+        .tree()
+        .of_kind("ui.NavShell")
+        .last()?
+        .props
+        .get("count")
+    {
+        Some(Value::Int(count)) => Some(*count),
+        _ => None,
     }
-    let mut out = None;
-    walk(view.tree(), &mut out);
-    out
 }
 
 /// A task a person checks off where it is the last of its place leaves the list with the list:
@@ -812,44 +785,34 @@ type List = (Option<String>, Option<i64>, Vec<Option<String>>);
 
 /// The lists of a board as its window shows them, in the order they stand.
 fn lists(view: &ViewInstance) -> Vec<List> {
-    fn walk(node: &UiNode, out: &mut Vec<List>) {
-        if node.kind == "ui.BoardList" {
-            let title = list_title(node);
-            let count = match node.props.get("count") {
+    view.tree()
+        .of_kind("ui.BoardList")
+        .into_iter()
+        .map(|list| {
+            let count = match list.props.get("count") {
                 Some(Value::Int(count)) => Some(*count),
                 None | Some(Value::Unit | Value::Opt(None)) => None,
                 other => panic!("a list's count: {other:?}"),
             };
-            let mut cards = Vec::new();
-            let mut stack: Vec<&UiNode> = node.children.iter().rev().collect();
-            while let Some(n) = stack.pop() {
-                if n.kind == "ui.BoardCard" {
-                    cards.push(n.props.get("item").and_then(target));
-                } else {
-                    stack.extend(n.children.iter().rev());
-                }
-            }
-            out.push((title, count, cards));
-            return;
-        }
-        for child in &node.children {
-            walk(child, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(view.tree(), &mut out);
-    out
+            let cards = list
+                .of_kind("ui.BoardCard")
+                .into_iter()
+                .map(|card| card.props.get("item").and_then(target))
+                .collect();
+            (list_title(list), count, cards)
+        })
+        .collect()
 }
 
 /// The key of the node of `kind` that `holds` holds of, in the window `view` shows.
 pub(crate) fn key_of(view: &ViewInstance, kind: &str, holds: &dyn Fn(&UiNode) -> bool) -> String {
-    fn walk(node: &UiNode, kind: &str, holds: &dyn Fn(&UiNode) -> bool) -> Option<String> {
-        if node.kind == kind && holds(node) {
-            return Some(node.key.clone());
-        }
-        node.children.iter().find_map(|c| walk(c, kind, holds))
-    }
-    walk(view.tree(), kind, holds).unwrap_or_else(|| panic!("no {kind}"))
+    view.tree()
+        .of_kind(kind)
+        .into_iter()
+        .find(|node| holds(node))
+        .unwrap_or_else(|| panic!("no {kind}"))
+        .key
+        .clone()
 }
 
 #[test]
@@ -938,16 +901,17 @@ fn row_of(view: &ViewInstance, item: &Value) -> String {
 
 /// The tree a page's row stands in: the outline the page draws, whose moves are the tree's.
 fn outline_of(view: &ViewInstance, row: &str) -> String {
-    fn holds(node: &UiNode, row: &str) -> bool {
-        node.key == row || node.children.iter().any(|child| holds(child, row))
-    }
-    fn walk(node: &UiNode, row: &str) -> Option<String> {
-        if node.kind == "ui.TreeView" && node.children.iter().any(|child| holds(child, row)) {
-            return Some(node.key.clone());
-        }
-        node.children.iter().find_map(|child| walk(child, row))
-    }
-    walk(view.tree(), row).unwrap_or_else(|| panic!("no tree holding {row}"))
+    view.tree()
+        .of_kind("ui.TreeView")
+        .into_iter()
+        .find(|tree| {
+            crate::fixtures::nodes(tree)
+                .iter()
+                .any(|node| node.key == row)
+        })
+        .unwrap_or_else(|| panic!("no tree holding {row}"))
+        .key
+        .clone()
 }
 
 /// Move a task in a page's outline, as the tree reports it: `event` is how it lands — `drop`
@@ -957,14 +921,6 @@ fn move_in_outline(view: &ViewInstance, moved: &Value, event: &str, at: &Value) 
     let tree = outline_of(view, &row_of(view, at));
     let carried = Value::List(vec![moved.clone(), Value::some(at.clone())]);
     view.fire_with(&tree, event, Some(&carried)).unwrap();
-}
-
-/// The drawn node with this key, at any depth.
-pub(crate) fn node_of<'a>(node: &'a UiNode, key: &str) -> Option<&'a UiNode> {
-    if node.key == key {
-        return Some(node);
-    }
-    node.children.iter().find_map(|child| node_of(child, key))
 }
 
 /// The task with this title.
@@ -1074,7 +1030,7 @@ tilo_test_env::scenario! {
             "it stands where it landed, under its new parent"
         );
         let key = row_of(&view, &outline);
-        let node = node_of(view.tree(), &key).unwrap();
+        let node = view.tree().find(&key).unwrap();
         assert_eq!(
             node.props.get("parent").and_then(target),
             target(&draft),
@@ -1165,7 +1121,7 @@ tilo_test_env::scenario! {
         );
         let view = task_page(&ada, &parent);
         let key = row_of(&view, &shots);
-        let node = node_of(view.tree(), &key).unwrap();
+        let node = view.tree().find(&key).unwrap();
         assert_eq!(
             node.props.get("parent").and_then(target),
             target(&draft),
@@ -1730,18 +1686,14 @@ pub(crate) fn bound_key(node: &UiNode, field: &str) -> Option<String> {
 
 /// Every text the tree shows.
 pub(crate) fn texts(node: &UiNode) -> Vec<String> {
-    fn walk(node: &UiNode, out: &mut Vec<String>) {
-        if let Some(Value::Text(text)) = node.props.get("label").or_else(|| node.props.get("value"))
-        {
-            out.push(text.clone());
-        }
-        for child in &node.children {
-            walk(child, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(node, &mut out);
-    out
+    crate::fixtures::nodes(node)
+        .into_iter()
+        .filter_map(|node| node.props.get("label").or_else(|| node.props.get("value")))
+        .filter_map(|value| match value {
+            Value::Text(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A task made by Ada in a workspace of Ada and Ben, and the page showing it: the list the
@@ -1808,7 +1760,7 @@ tilo_test_env::scenario! {
     // "No one" and the workspace's people, and shows each pick.
     {
         let (ada, task, mut page, key) = a_task_whose_assignee_the_page_shows();
-        let node = node_of(page.tree(), &key).expect("the bound node is drawn");
+        let node = page.tree().find(&key).expect("the bound node is drawn");
         assert_eq!(
             node.kind, "ui.PersonField",
             "the assignee is one person field, not two buttons"
@@ -1854,16 +1806,21 @@ tilo_test_env::scenario! {
         );
 
         // The picks fold into one step of the task's history with its making, the way one person's
-        // changes made in a row do, and a step that made the task says so whatever followed it.
-        // The page itself draws the assignee as a chip, with no label beside it.
+        // changes made in a row do: the step says whose they are and how many, and each says what
+        // it did where the step is opened. The page itself draws the assignee as a chip, with no
+        // label beside it.
         let shown = history_texts(&ada, &task);
         assert!(
-            shown.join(" ").contains("You created it"),
-            "the step that made the task leads with its making: {shown:?}"
+            // The words where the host reads its catalogue, the phrase's key where not.
+            shown
+                .iter()
+                .any(|text| text.ends_with(" changes") || text == "tilolang-history-changes"),
+            "the step says how many changes it holds: {shown:?}"
         );
         assert!(
-            !shown.join(" ").contains("You unassigned it"),
-            "the picks after the making stand under it, not in its lead: {shown:?}"
+            !shown.join(" ").contains("You unassigned it")
+                && !shown.join(" ").contains("You created it"),
+            "the step's heading repeats none of its changes: {shown:?}"
         );
         pick_the_assignee(&ada, &mut page, &key, &pick("ben"));
         let shown = texts(page.tree());
@@ -1915,7 +1872,7 @@ tilo_test_env::scenario! {
             crate::fixtures::field_id(meta, "Task", "priority")
         };
         let key = bound_key(page.tree(), &field).expect("the page binds its priority");
-        let node = node_of(page.tree(), &key).expect("the bound node is drawn");
+        let node = page.tree().find(&key).expect("the bound node is drawn");
         assert_eq!(node.kind, "ui.EnumField", "the priority is one case field");
         let declared = ada
             .host

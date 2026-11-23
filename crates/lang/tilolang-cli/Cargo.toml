@@ -66,7 +66,7 @@ tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 
 [dev-dependencies]
 tilo-rich-edit = { path = "../../sdk/tilo-rich-edit" }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 # What an agent's action is, as the frame draws it on the control that runs it.
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 collab-types = { path = "../../collab/collab-types" }

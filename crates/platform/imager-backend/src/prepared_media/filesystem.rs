@@ -1,6 +1,6 @@
 //! Mounted-media authority. Unsupported platforms refuse rather than accepting
 //! arbitrary paths or treating caller-supplied metadata as a grant.
-use crate::media_model::TargetDrive;
+use crate::imager_model::TargetDrive;
 #[cfg(not(target_os = "linux"))]
 use std::path::Path;
 use std::{io, sync::atomic::AtomicBool};

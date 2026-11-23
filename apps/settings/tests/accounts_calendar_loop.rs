@@ -16,9 +16,63 @@ fn response(href: &str, props: &str) -> String {
 fn scratch_root(config_root: &std::path::Path) -> Result<(Window, AccountRoot), String> {
     let mut window = Window::new().map_err(|error| error.to_string())?;
     let record = window
-        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+        .shared_workspace::<accounts::person::AccountList>(accounts::person::ACCOUNTS_OWNER)
         .ok_or("Settings keeps the workspace's accounts")?;
     Ok((window, AccountRoot::at(config_root).with_person(record)))
+}
+
+/// The vault entry the test's session keeps an account's password in.
+const ITEM: &str = "vault.item:0123456789abcdef0123456789abcdef";
+
+/// What Settings asked the session for: each password it kept, as (account, password, username,
+/// servers), and each entry whose secret it was released.
+#[derive(Default)]
+struct Asked {
+    kept: Vec<(String, String, String, Vec<String>)>,
+    released: Vec<String>,
+}
+
+/// The session as the test answers it: it keeps a typed password in the workspace's vault under
+/// [`ITEM`], and releases `secret` for that entry, writing down what it was asked.
+fn session(
+    secret: &'static str,
+) -> (
+    ui::collaboration::browser_service_sessions::Client,
+    std::sync::Arc<std::sync::Mutex<Asked>>,
+) {
+    use ui::collaboration::browser_service_sessions::{
+        BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply, Client,
+    };
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Asked::default()));
+    let log = std::sync::Arc::clone(&asked);
+    let client = Client::answering(move |command| match command {
+        Command::StoreAccountSecret {
+            account,
+            password,
+            username,
+            servers,
+        } => {
+            log.lock().unwrap().kept.push((
+                account.clone(),
+                password.as_str().to_owned(),
+                username,
+                servers,
+            ));
+            Ok(Reply::AccountSecretStored {
+                account,
+                item: ITEM.into(),
+            })
+        }
+        Command::ReleaseAccountSecret { item } => {
+            log.lock().unwrap().released.push(item.clone());
+            Ok(Reply::AccountSecret {
+                item,
+                secret: secret.to_owned().into(),
+            })
+        }
+        other => Err(format!("the session was asked {other:?}")),
+    });
+    (client, asked)
 }
 
 tilo_test_env::scenario! {
@@ -45,7 +99,8 @@ tilo_test_env::scenario! {
         ]);
         let root = tempfile::tempdir().unwrap();
         let (_window, account_root) = scratch_root(root.path()).unwrap();
-        let mut pane = AccountsPane::in_root(account_root.clone());
+        let (session, asked) = session("");
+        let mut pane = AccountsPane::in_root(account_root.clone()).with_session_secrets(session);
         pane.command(AccountViewCommand::Add(AccountKind::CalDav));
         // The responder listens on 127.0.0.1 only. A `localhost` URL would let
         // the client try [::1] first, where another test's server may hold the
@@ -88,11 +143,19 @@ tilo_test_env::scenario! {
         pane.submit_form_for_test();
         assert!(pane.finish_form_submission_for_test(tilo_test_env::hang_bound()));
         assert!(!pane.form_open());
-        let loaded = calendar::account::AccountStore::load_from_settings_in(root.path());
+        let loaded = calendar::account::CalendarAccounts::from_shared(&account_root.store());
         assert_eq!(loaded.len(), 1);
         let account = &loaded.accounts[0];
         assert_eq!(account.config.username, "login@example.test");
-        assert_eq!(account.config.password, "private-app-password");
+        // The password is the workspace's vault's, typed once into Settings and kept through
+        // the session: the account names its entry, and this device keeps nothing of it.
+        let kept = std::mem::take(&mut asked.lock().unwrap().kept);
+        assert_eq!(kept.len(), 1, "the password is kept once: {:?}", kept.iter().map(|k| &k.0).collect::<Vec<_>>());
+        assert_eq!(kept[0].1, "private-app-password");
+        assert_eq!(kept[0].2, "login@example.test");
+        assert_eq!(account.config.password_item.as_deref(), Some(ITEM));
+        assert!(account.config.password.is_empty(), "Calendar holds no password of its own");
+        assert!(account_root.vault().is_empty(), "the device's vault keeps nothing");
         assert_eq!(
             account.calendars.len(),
             1,
@@ -101,8 +164,12 @@ tilo_test_env::scenario! {
         assert_eq!(account.calendars[0].id, holidays);
         assert_eq!(account.calendars[0].name, "Holidays");
         assert!(account.calendars[0].read_only);
-        let json = std::fs::read_to_string(accounts::store_path_in(root.path())).unwrap();
-        assert!(!json.contains("private-app-password"));
+        assert!(
+            !serde_json::to_string(&account_root.store().all())
+                .unwrap()
+                .contains("private-app-password"),
+            "a sign-in never reaches the workspace's accounts"
+        );
         assert_eq!(
             account_root.store().len(),
             1,
@@ -138,22 +205,21 @@ tilo_test_env::scenario! {
                 "username": "different-login@example.test", "use_files": use_files,
                 "use_calendar": false, "use_mail": false, "future_setting": "keep"
             });
+            // Its sign-in is the workspace's vault's entry, which the session releases.
+            accounts::email::set_password_item(&mut account.config, Some(ITEM));
             let mut shared = account_root.store();
-            shared.upsert(account.clone());
+            shared.keep(&account).unwrap();
             account_root.save_store(&shared).unwrap();
-            let mut vault = account_root.vault();
-            vault.put(
-                &account.id,
-                &accounts::Secret::password("existing-nextcloud-password"),
-            );
-            vault.try_save().unwrap();
-            let vault_path = accounts::vault_dir_in(root.path()).join("vault.enc");
-            let ciphertext = std::fs::read(&vault_path).unwrap();
-            let mut pane = AccountsPane::in_root(account_root.clone());
+            let (session, asked) = session("existing-nextcloud-password");
+            let mut pane =
+                AccountsPane::in_root(account_root.clone()).with_session_secrets(session);
             pane.connect_nextcloud_calendars(account.id.as_str())
                 .unwrap();
             assert!(pane.finish_form_submission_for_test(tilo_test_env::hang_bound()));
-            assert_eq!(account_root.store().get(&account.id), Some(&account));
+            assert_eq!(
+                account_root.store().get(&account.id),
+                Some(account.clone())
+            );
             let href = format!(
                 "http://127.0.0.1:{}/cloud/calendars/opaque-id/personal/",
                 server.port()
@@ -169,21 +235,19 @@ tilo_test_env::scenario! {
             assert_eq!(saved.config["use_mail"], false);
             assert_eq!(saved.config["use_calendar"], true);
             assert_eq!(saved.config["future_setting"], "keep");
-            assert_eq!(
-                std::fs::read(&vault_path).unwrap(),
-                ciphertext,
+            let Asked { kept, released } = std::mem::take(&mut *asked.lock().unwrap());
+            assert_eq!(released, [ITEM], "the calendars are found with its sign-in");
+            assert!(
+                kept.is_empty(),
                 "calendar setup must not rewrite or copy the canonical sign-in"
             );
-            let loaded = calendar::account::AccountStore::load_from_settings_in(root.path());
+            assert!(account_root.vault().is_empty(), "the device's vault keeps nothing");
+            let loaded = calendar::account::CalendarAccounts::from_shared(&account_root.store());
             assert_eq!(loaded.len(), 1);
             assert_eq!(loaded.accounts[0].id, account.id.as_str());
             assert_eq!(loaded.accounts[0].config.display_name, "My cloud");
-            assert_eq!(
-                loaded.accounts[0].config.password,
-                "existing-nextcloud-password"
-            );
+            assert_eq!(loaded.accounts[0].config.password_item.as_deref(), Some(ITEM));
             assert_eq!(loaded.accounts[0].calendars[0].id, href);
-            loaded.persist_in(root.path()).unwrap();
             let round_trip = account_root.store();
             let round_trip = round_trip.get(&account.id).unwrap();
             assert_eq!(round_trip.config["use_files"], use_files);
@@ -202,11 +266,12 @@ tilo_test_env::scenario! {
                     .as_str(),
                 "nextcloud"
             );
-            assert_eq!(std::fs::read(&vault_path).unwrap(), ciphertext);
+            assert!(account_root.vault().is_empty());
             assert!(
-                !std::fs::read_to_string(accounts::store_path_in(root.path()))
+                !serde_json::to_string(&account_root.store().all())
                     .unwrap()
-                    .contains("existing-nextcloud-password")
+                    .contains("existing-nextcloud-password"),
+                "a sign-in never reaches the workspace's accounts"
             );
         }
     }

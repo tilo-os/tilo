@@ -615,6 +615,60 @@ view thread(c: Conversation) {{
         assert!(!got.is_empty(), "a bar chart is given no size: {got:#?}");
     }
 
+    phase every_shape_chart_is_placed_from_values;
+    // A distribution's samples, a polar area's directions, a radar's axes and shapes, and a
+    // funnel's stages are cases of the toolkit's own sets: a view gives readings and where they
+    // lie, never a colour or a size.
+    {
+        let c = compile_body(&with_note(
+            r#"view stats(n: Note) {
+    ui.DistributionChart(
+        [
+            .samples(values: [4.0, 5.0, 6.0], label: "Before"),
+            .samples(values: [3.0, 4.0, 3.5], label: "After"),
+        ],
+        title: .some(n.title),
+        kind: .violin,
+    )
+    ui.PolarAreaChart(
+        [.area(label: "Jan", value: 12.0), .area(label: "Feb", value: 9.0)],
+        title: .some("Sign-ups"),
+    )
+    ui.RadarChart(
+        [
+            .axis(label: "Speed", max: 100.0),
+            .axis(label: "Cost", max: 30.0),
+            .axis(label: "Quality", max: 100.0),
+        ],
+        series: [.series(values: [70.0, 12.0, 88.0], label: "This week")],
+    )
+    ui.FunnelChart(
+        [
+            .stage(label: "Visited", value: 1200.0),
+            .stage(label: "Signed up", value: 340.0),
+        ],
+        direction: .pyramid,
+    )
+}"#,
+        ));
+        validate(&c.wasm);
+        let strings = String::from_utf8_lossy(&c.wasm).into_owned();
+        for name in [
+            "ui.DistributionChart",
+            "ui.PolarAreaChart",
+            "ui.RadarChart",
+            "ui.FunnelChart",
+        ] {
+            assert!(strings.contains(name), "{name} is placed");
+        }
+        let got = errors(&with_note(
+            r#"view stats(n: Note) {
+    ui.FunnelChart([.stage(label: "Visited", value: 1200.0, color: "red")])
+}"#,
+        ));
+        assert!(!got.is_empty(), "a stage is given no colour: {got:#?}");
+    }
+
     phase a_list_maps_with_each_items_place;
     // `map` and `flat_map` give the lambda the item's place from 0 as its second name, so a
     // drawing lays its shapes out by where each reading stands.
@@ -756,3 +810,154 @@ const REACTED: &str = r"type Post {
     reactions: Map<Set<Actor>>
 }
 ";
+
+const CALCULATIONS: &str = r#"type Calculation {
+    expr: Text
+    result: Text
+}
+
+type Calculator {
+    past: Collection<Calculation>
+}
+
+view calculation(x: Calculation) {
+    ui.Text("{x.expr} = {x.result}")
+}
+
+default view calculation for Calculation
+
+fn expression_of(x: Calculation) -> Text {
+    x.expr
+}
+
+action rerun(x: Calculation, expr: Text) {
+    x.expr = expr
+}
+
+/// The calculations as a list beside an editor; `HANDLER` is what activating one does.
+view home(c: Calculator) {
+    state expr: Text = ""
+    state fresh: Bool = true
+    ui.TextInput(bind: expr, placeholder: "Expression")
+    ui.VirtualList {
+        on activate(x: Calculation): HANDLER
+        for x in c.past {
+            ui.ListItem(item: x) {
+                ui.Text(x.expr)
+            }
+        }
+    }
+}
+"#;
+
+fn calculations(handler: &str) -> String {
+    CALCULATIONS.replace("HANDLER", handler)
+}
+
+tilo_test_env::scenario! {
+    /// What an event carries may set the view's own state through a pure expression: the editor
+    /// loads the calculation a person activates. Anything that changes a resource still takes the
+    /// value as it is, and nothing but a function computes the state's new value.
+    fn an_event_value_sets_view_state_through_a_pure_expression;
+
+    phase a_field_or_a_function_of_the_value_sets_the_views_state;
+    {
+        for handler in [
+            "set(expr, x.expr).then(set(fresh, false))",
+            "set(expr, expression_of(x))",
+            "set(fresh, x.result == \"\").then(open(x))",
+        ] {
+            let got = errors(&calculations(handler));
+            assert!(got.is_empty(), "`{handler}` is accepted: {got:#?}");
+        }
+    }
+
+    phase an_action_on_a_resource_still_takes_the_value_as_it_is;
+    {
+        let (code, message) = one_error(&calculations("rerun(x, x.expr)"));
+        assert_eq!(code, "E063");
+        assert!(message.contains("set(state, f(x))"), "{message}");
+        let (code, _) = one_error(&calculations("set(expr, \"\").then(rerun(x, x.expr))"));
+        assert_eq!(code, "E063", "a step of a chain that changes a resource");
+    }
+
+    phase the_state_set_is_the_views_own;
+    {
+        let (code, _) = one_error(&calculations("set(c, x.expr)"));
+        assert_eq!(code, "E063", "the view's parameter is no state of its own");
+    }
+
+    phase the_new_value_is_computed_without_acting;
+    {
+        let got = errors(&calculations("set(expr, rerun(x, \"\"))"));
+        assert!(
+            got.iter().any(|(code, _)| code == "E043"),
+            "the value is a function's, which uses no action: {got:#?}"
+        );
+    }
+}
+
+const CLOCKS: &str = r#"type Stopwatch {
+    elapsed: Int = 0
+    running: Bool = false
+    laps: List<Int>
+}
+
+type Clocks {
+    stopwatch: Stopwatch
+    NEXT
+}
+
+root Clocks
+
+view clocks(c: Clocks) {
+    ui.Text("{c.stopwatch.elapsed}")
+}
+
+default view clocks for Clocks
+"#;
+
+fn clocks(next: &str, more: &str) -> String {
+    format!("{}\n{more}", CLOCKS.replace("NEXT", next))
+}
+
+tilo_test_env::scenario! {
+    /// A record field a resource is made without starts as a record of its own, from its fields'
+    /// defaults: the checker refuses one that cannot start that way where the field is left out,
+    /// never a read that finds nothing.
+    fn a_record_field_left_out_starts_from_its_defaults;
+
+    phase a_record_of_defaults_is_held_by_a_root;
+    {
+        let got = errors(&clocks("", ""));
+        assert!(got.is_empty(), "{got:#?}");
+    }
+
+    phase a_held_record_with_a_field_without_a_default_is_refused;
+    {
+        let got = errors(&clocks("alarm: Alarm", "type Alarm {\n    rings: Actor\n}"));
+        assert!(
+            got.iter().any(|(code, m)| code == "E019"
+                && m.contains("without `alarm`")
+                && m.contains("the `rings` of a `Alarm` has no default")),
+            "{got:#?}"
+        );
+    }
+
+    phase a_held_record_that_holds_itself_again_is_refused;
+    {
+        let got = errors(&clocks("alarm: Alarm", "type Alarm {\n    clocks: Clocks\n}"));
+        assert!(
+            got.iter().any(|(code, m)| code == "E019" && m.contains("would never end")),
+            "{got:#?}"
+        );
+    }
+
+    phase a_record_given_where_it_is_made_is_a_reference_as_before;
+    {
+        let more = "type Alarm {\n    rings: Actor\n}\n\ntype Ring {\n    alarm: Alarm\n}\n\ntype Rings {\n    rings: Collection<Ring>\n}\n\naction ring(r: Rings, a: Alarm) {\n    r.rings.insert(Ring(alarm: a))\n}\n\naction loose(r: Rings) {\n    r.rings.insert(Ring())\n}";
+        let got = errors(&clocks("", more));
+        assert_eq!(got.len(), 1, "only the making that leaves it out: {got:#?}");
+        assert!(got[0].1.contains("a `Ring` made without `alarm`"), "{got:#?}");
+    }
+}

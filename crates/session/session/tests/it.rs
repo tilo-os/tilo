@@ -105,6 +105,8 @@ mod files_tree;
 mod find_off_loop;
 #[path = "find_records.rs"]
 mod find_records;
+#[path = "first_app.rs"]
+mod first_app;
 #[path = "firstboot.rs"]
 mod firstboot;
 #[path = "float_windows.rs"]
@@ -163,6 +165,8 @@ mod network_unlock_enrolment;
 mod no_locale_leaks;
 #[path = "no_view_call.rs"]
 mod no_view_call;
+#[path = "notification_agent.rs"]
+mod notification_agent;
 #[path = "offline_start.rs"]
 mod offline_start;
 #[path = "origin_connector.rs"]
@@ -183,8 +187,8 @@ mod panel_services;
 mod part_view;
 #[path = "people.rs"]
 mod people;
-#[path = "personal_store.rs"]
-mod personal_store;
+#[path = "person_workspace.rs"]
+mod person_workspace;
 #[path = "placed_apps.rs"]
 mod placed_apps;
 #[path = "portal_link.rs"]
@@ -239,8 +243,12 @@ mod sheets;
 mod sheets_placement;
 #[path = "shell.rs"]
 mod shell;
+#[path = "shell_a11y.rs"]
+mod shell_a11y;
 #[path = "shell_displays.rs"]
 mod shell_displays;
+#[path = "shell_platform.rs"]
+mod shell_platform;
 #[path = "shell_record_persists.rs"]
 mod shell_record_persists;
 #[path = "shell_screen.rs"]

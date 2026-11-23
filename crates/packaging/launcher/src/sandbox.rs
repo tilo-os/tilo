@@ -479,9 +479,7 @@ fn is_plain_absolute_path(value: &str) -> bool {
         })
 }
 
-/// The variable that tells a runtime's binary where the package it runs is mounted (see
-/// [`ManifestView::entrypoint`]'s `runtime`).
-pub const APP_MODULE_ENV: &str = "TILO_APP_MODULE";
+pub use crate::manifest::APP_MODULE_ENV;
 
 /// The sandbox directory the entrypoint's binary paths are relative to: the mount of the runtime bundle
 /// `[entrypoint].runtime` names, else the package's own payload.
@@ -1017,9 +1015,13 @@ mod tests {
         std::fs::write(&file, policy).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(crate::hardening::POLICY_PATH_ENV, &file);
-        let m = mk_manifest("off");
+        plain_argv(&mk_manifest("off"))
+    }
+
+    /// The argv a launch of `m` gets with no runtime, services, bus or grants.
+    fn plain_argv(m: &ManifestView) -> Vec<String> {
         build_bwrap_argv(
-            &m,
+            m,
             Path::new("/host/pkg"),
             None,
             &[],
@@ -1138,13 +1140,7 @@ mod tests {
             m.required_runtimes = vec!["tilolang/0.1.0".to_string()];
             m.entrypoint.bin = "bin/tilolang".to_string();
             m.entrypoint.runtime = Some("tilolang/0.1.0".to_string());
-            let argv = build_bwrap_argv(
-                &m,
-                Path::new("/host/pkg"),
-                None,
-                &[],
-                None,
-                &CapabilityPlan::empty());
+            let argv = plain_argv(&m);
             assert_eq!(
                 argv.last().map(String::as_str),
                 Some("/run/tilo-runtime/0.1.0/bin/tilolang")
@@ -1158,13 +1154,7 @@ mod tests {
                 Some("com.example.notes")
             );
             // An ordinary app runs its own binary and hears of no module.
-            let argv = build_bwrap_argv(
-                &mk_manifest("off"),
-                Path::new("/host/pkg"),
-                None,
-                &[],
-                None,
-                &CapabilityPlan::empty());
+            let argv = plain_argv(&mk_manifest("off"));
             assert_eq!(
                 argv.last().map(String::as_str),
                 Some("/var/tilo-apps/com.example.notes/bin/notes")
@@ -1259,20 +1249,27 @@ mod tests {
         phase argv_layout_covers_namespaces_payload_runtime_profile_and_entrypoint;
         {
             {
-                let m = mk_manifest("off");
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    &CapabilityPlan::empty());
+                // A plain app: its own namespaces, its name, no icon, no bus, and its own binary
+                // last. What it binds is `baseline_binds`, asserted as an equality in
+                // `workspace_capabilities_decide_filesystem_and_camera_binds`.
+                let argv = plain_argv(&mk_manifest("off"));
                 assert!(argv.iter().any(|a| a == "--unshare-all"));
                 assert!(argv.iter().any(|a| a == "--die-with-parent"));
                 assert!(!argv.iter().any(|a| a == "--share-net"));
                 assert!(argv.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == "/tmp"));
                 assert!(argv.windows(2).any(|w| w[0] == "--proc" && w[1] == "/proc"));
                 assert!(argv.windows(2).any(|w| w[0] == "--dev" && w[1] == "/dev"));
+                assert_eq!(setenv_value(&argv, "TILO_APP_NAME"), Some("Notes"));
+                // No icon art: no TILO_APP_ICON, so the toolkit draws its default.
+                assert_eq!(setenv_value(&argv, "TILO_APP_ICON"), None);
+                assert!(
+                    !argv.iter().any(|a| a == "DBUS_SESSION_BUS_ADDRESS"),
+                    "bus must not leak into sandbox without a plan: {argv:?}"
+                );
+                assert_eq!(
+                    argv.last().map(String::as_str),
+                    Some("/var/tilo-apps/com.example.notes/bin/notes")
+                );
             }
             {
                 // `host` outside the image is the most the app may ask for: it shares the network
@@ -1288,22 +1285,6 @@ mod tests {
                     ..CapabilityPlan::empty()
                 };
                 assert!(argv(&granted).iter().any(|a| a == "--share-net"));
-            }
-            {
-                let m = mk_manifest("off");
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    &CapabilityPlan::empty());
-                let pos = argv
-                    .iter()
-                    .position(|a| a == "/host/pkg")
-                    .expect("payload host path in argv");
-                assert_eq!(argv[pos - 1], "--ro-bind");
-                assert_eq!(argv[pos + 1], "/var/tilo-apps/com.example.notes");
             }
             {
                 let m = mk_manifest("off");
@@ -1344,36 +1325,6 @@ mod tests {
                 );
             }
             {
-                let _env = tilo_test_env::lock();
-                let m = mk_manifest("off");
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    &CapabilityPlan::empty());
-                for entry in crate::profile::SYSTEM_READ_PATHS {
-                    assert!(
-                        argv.windows(3)
-                            .any(|w| w[0] == "--ro-bind-try" && w[1] == *entry && w[2] == *entry),
-                        "profile entry {entry} missing from argv: {argv:?}"
-                    );
-                }
-                // The payload mount stays a hard `--ro-bind`: a package whose own payload is missing
-                // genuinely cannot run.
-                assert!(
-                    argv.windows(3)
-                        .any(|w| w[0] == "--ro-bind" && w[1] == "/host/pkg"),
-                    "payload bind must stay non-try: {argv:?}"
-                );
-                // Nothing writable comes out of this builder.
-                assert!(
-                    !argv.iter().any(|a| a == "--bind" || a == "--bind-try"),
-                    "the manifest layer must produce no writable bind: {argv:?}"
-                );
-            }
-            {
                 let m = mk_manifest("off");
                 let argv = build_bwrap_argv(
                     &m,
@@ -1400,28 +1351,11 @@ mod tests {
                     !argv.iter().any(|arg| arg.ends_with("/libgcc_s.so.1")),
                     "ordinary shared libraries must resolve through LD_LIBRARY_PATH, not symlink-hostile file rebinds: {argv:?}"
                 );
-                let ld_pos = argv
-                    .windows(3)
-                    .position(|w| {
-                        w[0] == "--setenv"
-                            && w[1] == "LD_LIBRARY_PATH"
-                            && w[2] == "/run/tilo-runtime/1/lib"
-                    })
-                    .expect("LD_LIBRARY_PATH setenv");
-                let _ = ld_pos;
-            }
-            {
-                let m = mk_manifest("off");
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    &CapabilityPlan::empty());
-                assert_eq!(
-                    argv.last().map(String::as_str),
-                    Some("/var/tilo-apps/com.example.notes/bin/notes")
+                assert!(
+                    argv.windows(3).any(|w| w[0] == "--setenv"
+                        && w[1] == "LD_LIBRARY_PATH"
+                        && w[2] == "/run/tilo-runtime/1/lib"),
+                    "LD_LIBRARY_PATH setenv: {argv:?}"
                 );
             }
             {
@@ -1443,13 +1377,7 @@ mod tests {
                 // bwrap reads everything after the entrypoint token as the child's argv — a `--setenv`
                 // spliced after it silently becomes a command-line arg instead of an env var.
                 let m = mk_manifest("off");
-                let mut argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    &CapabilityPlan::empty());
+                let mut argv = plain_argv(&m);
                 let entry = argv.pop().expect("argv non-empty");
                 push_workspace_id(&mut argv, "3f2b1c00-0000-4000-8000-000000000001");
                 argv.push(entry);
@@ -1478,13 +1406,7 @@ mod tests {
                     .set("VELLO_GPU_DISPATCH_TIMESTAMPS", value)
                     .set("VELLO_GPU_TIMESTAMPS", value)
                     .set("TILO_PROFILE_GPU_STAGES", value);
-                let argv = build_bwrap_argv(
-                    &mk_manifest("off"),
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    &CapabilityPlan::empty());
+                let argv = plain_argv(&mk_manifest("off"));
                 assert!(argv.iter().any(|arg| arg == "--clearenv"));
                 assert_eq!(
                     setenv_value(&argv, "TILO_PROFILE_PRESENTATION"),
@@ -1538,13 +1460,7 @@ mod tests {
                     .set("TILO_CONTINUITY_RESUME_SCHEMA", "7")
                     .set("TILO_CONTINUITY_RESUME_HEX", "7b7d")
                     .set(tilo_process::environment::REVEAL_ENV, REVEAL);
-                let argv = build_bwrap_argv(
-                    &mk_manifest("off"),
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    &CapabilityPlan::empty());
+                let argv = plain_argv(&mk_manifest("off"));
                 drop(env);
                 assert_eq!(setenv_value(&argv, "TILO_CONTINUITY_INSTANCE"), Some("42"));
                 assert_eq!(
@@ -1567,13 +1483,7 @@ mod tests {
                     "TILO_STARTUP_METRICS_PATH",
                     "/run/tilo/app/.local/state/startup-42-dead_beef.json",
                 );
-                let argv = build_bwrap_argv(
-                    &mk_manifest("off"),
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    &CapabilityPlan::empty());
+                let argv = plain_argv(&mk_manifest("off"));
                 assert_eq!(
                     setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"),
                     Some("/run/tilo/app/.local/state/startup-42-dead_beef.json")
@@ -1584,77 +1494,30 @@ mod tests {
                     "TILO_STARTUP_METRICS_PATH",
                     "/run/tilo/app/startup-42-dead_beef.json",
                 );
-                let argv = build_bwrap_argv(
-                    &mk_manifest("off"),
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    &CapabilityPlan::empty());
+                let argv = plain_argv(&mk_manifest("off"));
                 assert_eq!(setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"), None);
 
                 env.set("TILO_STARTUP_METRICS_PATH", "/home/user/metrics.json");
-                let argv = build_bwrap_argv(
-                    &mk_manifest("off"),
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    &CapabilityPlan::empty());
+                let argv = plain_argv(&mk_manifest("off"));
                 drop(env);
                 assert_eq!(setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"), None);
-            }
-            {
-                let m = mk_manifest("off");
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    &CapabilityPlan::empty());
-                assert_eq!(setenv_value(&argv, "TILO_APP_NAME"), Some("Notes"));
             }
             {
                 // A manifest with no `[package].name` exports nothing.
                 let mut m = mk_manifest("off");
                 m.name = None;
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    &CapabilityPlan::empty());
+                let argv = plain_argv(&m);
                 assert_eq!(setenv_value(&argv, "TILO_APP_NAME"), None);
             }
             {
                 // Icon art named payload-relative; builder resolves it to the in-sandbox payload mount.
                 let mut m = mk_manifest("off");
                 m.icon = Some("assets/icon.png".to_string());
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    &CapabilityPlan::empty());
+                let argv = plain_argv(&m);
                 assert_eq!(
                     setenv_value(&argv, "TILO_APP_ICON"),
                     Some("/var/tilo-apps/com.example.notes/assets/icon.png"),
                 );
-            }
-            {
-                // No icon art: no TILO_APP_ICON, so the toolkit draws its default.
-                let m = mk_manifest("off");
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    &CapabilityPlan::empty());
-                assert_eq!(setenv_value(&argv, "TILO_APP_ICON"), None);
             }
         }
 
@@ -1746,13 +1609,7 @@ mod tests {
             // player from that identity.
             let mut m = mk_manifest("off");
             m.capabilities = vec![crate::dbus_proxy::MEDIA_SESSION_CAPABILITY.to_string()];
-            let argv = build_bwrap_argv(
-                &m,
-                Path::new("/host/pkg"),
-                None,
-                &[],
-                None,
-                &CapabilityPlan::empty());
+            let argv = plain_argv(&m);
             let app = tilo_process::environment::ProcessIdentity {
                 app_id: setenv_value(&argv, "TILO_PACKAGE_ID").map(str::to_owned),
                 ..Default::default()
@@ -1846,32 +1703,12 @@ mod tests {
                 );
             }
             {
-                let m = mk_manifest("off");
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    &CapabilityPlan::empty());
-                assert!(
-                    !argv.iter().any(|a| a == "DBUS_SESSION_BUS_ADDRESS"),
-                    "bus must not leak into sandbox without a plan: {argv:?}"
-                );
-            }
-            {
                 // `Deny`-only portals means the caller passes `None`, the same as no portals.
                 let mut m = mk_manifest("off");
                 m.sandbox
                     .portals
                     .insert("screencast".to_string(), PortalPolicy::Deny);
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    &CapabilityPlan::empty());
+                let argv = plain_argv(&m);
                 assert!(
                     !argv.iter().any(|a| a == "DBUS_SESSION_BUS_ADDRESS"),
                     "bus must stay out when caller passes no plan: {argv:?}"
@@ -2191,13 +2028,7 @@ mod tests {
                 let _env = tilo_test_env::lock();
                 let baseline = argv_with_caps("com.example.notes", &[], 1_000);
                 let m = mk_manifest("off");
-                let manifest_only = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    &CapabilityPlan::empty());
+                let manifest_only = plain_argv(&m);
                 assert_eq!(
                     baseline, manifest_only,
                     "an app granted nothing must get byte-identical argv to a manifest-only launch"

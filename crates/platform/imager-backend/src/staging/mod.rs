@@ -43,4 +43,4 @@ pub use crate::{ESP_TYPE, is_guid, random_guid, same_guid};
 pub use crate::{efi, plan, platform};
 
 /// GPT type reserved for the temporary installer root.
-pub const STAGING_ROOT_TYPE: &str = "d4c4daf6-f72c-43ee-b8e3-5ba32550311d";
+pub const STAGING_ROOT_TYPE: &str = staging_handoff_model::gpt::TILO_STAGING_ROOT;

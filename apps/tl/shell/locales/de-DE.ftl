@@ -644,18 +644,32 @@ d-clgbrhsn = Hinweise
     .w-nothing-matches-that = Nichts passt dazu
     .w-clear-the-search-to-see-every = Lösche die Suche, um jeden Hinweis zu sehen
 
+d-ytz24ncc = Rückgängig-Leiste
+    .w-notifications-cleared = Benachrichtigungen gelöscht
+    .w-undo = Rückgängig
+
 d-wud3t5ro = Hinweisgruppe
 
 d-t3ywtwqj = Hinweiszeile
+    .w-hand-to-agent = An Agent übergeben
     .w-dismiss = Verwerfen
 
 d-yyk2izra = Banner
+    .w-1-more-notification = Noch 1 Benachrichtigung
+    .w-more-notifications = Noch { $more } Benachrichtigungen
 
 d-gke2gvrj = Banner ganz
     .w-open = Öffnen
 
 d-wh7n4fhq = Bannerzeile
     .w-dismiss = Verwerfen
+
+d-76zs5p4r = Antwortzeile
+    .w-reply = Antworten
+    .w-send = Senden
+    .w-write-a-reply-first = Schreib zuerst eine Antwort
+
+d-ny7ms2ry = Anzeige der Hardwaretasten
 
 d-rcjzvfxp = Übersicht
     .w-overview = Übersicht
@@ -716,6 +730,8 @@ d-uhzjvuan = Personenknopf
     .w-and-others-are-here = { $name } und { $others } weitere sind hier
 
 d-uvwnwa4d = Agenten-Chip
+    .w-new = { $name }, { $unseen } neu
+    .w-show-who-is-here = Zeigen, wer hier ist
     .w-stop = Stopp
 
 d-teccuwja = Schnelleinstellungen
@@ -729,15 +745,67 @@ d-d5wzqn37 = Bluetooth-Kachel
     .w-bluetooth = Bluetooth
     .w-this-device-has-no-bluetooth = Dieses Gerät hat kein Bluetooth
 
+d-hnvxrx3k = VPN umschalten
+    .doc = Schaltet das VPN über sein erstes Profil ein oder über das verbundene aus: der eine Druck auf die Kachel, egal in welche Richtung.
+
+d-hnvxrx3k-v = V
+
+d-6va3umd4 = VPN-Kachel
+    .w-vpn = VPN
+
 d-uzi5ah2q = Dunkel-Kachel
     .w-dark-mode = Dunkler Modus
 
 d-s66oqjwe = Ruhe-Kachel
     .w-do-not-disturb = Nicht stören
 
+d-fabhsxf6 = Nachtlicht-Kachel
+    .w-night-light = Nachtlicht
+
+d-vr3zx6ry = Flugmodus-Kachel
+    .w-airplane-mode = Flugmodus
+
+d-72cehcnn = Mobilfunk-Kachel
+    .w-mobile-data = Mobile Daten
+
+d-ntsyqtrw = Energiemodus-Kachel
+    .w-power-saver = Energiesparen
+    .w-balanced = Ausgewogen
+    .w-performance = Leistung
+
 d-w3fe7tjv = Pegel
+    .w-unmute = Stummschaltung aufheben
+    .w-mute = Stummschalten
     .w-volume = Lautstärke
-    .w-brightness = Helligkeit
+
+d-wvxjuiww = Tonbereich
+    .w-sound = Ton
+    .w-unmute-the-microphone = Mikrofon einschalten
+    .w-mute-the-microphone = Mikrofon stummschalten
+    .w-microphone = Mikrofon
+
+d-thduakjg = Netzwerkbereich
+    .w-wi-fi = WLAN
+    .w-wired-network = Kabelnetzwerk
+    .w-connected = Verbunden
+    .w-cable-unplugged = Kabel nicht angeschlossen
+    .w-wi-fi-is-off = WLAN ist aus
+    .w-scanning-for-networks = Netzwerke werden gesucht …
+    .w-enter-the-password-for = Gib das Passwort für { $password_for } ein
+    .w-password = Passwort
+    .w-join = Verbinden
+    .w-cancel = Abbrechen
+    .w-hidden-network = Verborgenes Netzwerk
+    .w-join-a-network-that-does-not = Einem Netzwerk beitreten, das seinen Namen nicht sendet
+    .w-network-name = Netzwerkname
+    .w-saved-networks = Gespeicherte Netzwerke
+
+d-zjz5sskl = Bluetooth-Bereich
+    .w-bluetooth = Bluetooth
+    .w-bluetooth-is-off = Bluetooth ist aus
+    .w-stop-looking = Suche beenden
+    .w-look-for-devices = Nach Geräten suchen
+    .w-no-devices-found = Keine Geräte gefunden
 
 d-lcjohgdk = Akkulinie
 
@@ -1007,6 +1075,11 @@ d-dgtjjxex = Menü der Person
     .w-join-a-workspace = Einem Arbeitsbereich beitreten
     .w-workspace-settings = Einstellungen des Arbeitsbereichs
     .w-overview = Übersicht
+
+d-zlo3t3an = Aufnahmeanzeige
+    .w-watching = { $label } sieht zu
+    .w-watching-and-more = { $label } und { $more } weitere sehen zu
+    .w-watching-2 = Sieht zu
 
 d-fcxy4mu5 = Shell-Ansicht
 

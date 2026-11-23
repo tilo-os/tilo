@@ -342,6 +342,8 @@ fn assert_copies(run: &Run, scale: f64, label: &str) {
 
 #[test]
 fn a_scroll_in_an_embedded_app_copies_and_matches_a_full_render() {
+    // A member's pointer over the list: their mark repaints where it is and
+    // where the copy took it.
     let host = Host {
         peer: Some(Point::new(320.0, 260.0)),
         ..Host::default()
@@ -354,20 +356,19 @@ fn a_scroll_in_an_embedded_app_copies_and_matches_a_full_render() {
             assert_copies(&runs[1], scale, &format!("{name} {scale}x up"));
         }
     }
-}
 
-#[test]
-fn what_the_host_draws_over_the_app_outside_its_parts_is_repainted_and_matches() {
-    let host = Host {
-        badge: true,
-        ..Host::default()
-    };
-    let runs = scroll(&Theme::light(), host, 1.0, &[(40.0, 15)]);
+    // A badge the host draws over the app outside every damage part.
+    let runs = scroll(
+        &Theme::light(),
+        Host {
+            badge: true,
+            ..Host::default()
+        },
+        1.0,
+        &[(40.0, 15)],
+    );
     assert_copies(&runs[0], 1.0, "badge");
-}
 
-#[test]
-fn a_tile_inside_a_part_around_it_still_copies_and_matches() {
     // What the section draws after the tile (the tile's clip closing, its
     // edge, the mark) is over the list only where it paints: the section's
     // bounds cover the tile too, so they say nothing about what is over it.
@@ -380,32 +381,32 @@ fn a_tile_inside_a_part_around_it_still_copies_and_matches() {
         let runs = scroll(&Theme::dark(), host, scale, &[(40.0, 15)]);
         assert_copies(&runs[0], scale, &format!("section {scale}x"));
     }
-}
 
-#[test]
-fn a_step_of_part_of_a_device_pixel_repaints_and_matches() {
+    // Half a device pixel cannot be copied; at 200 % the same half logical
+    // pixel is a whole device pixel, and the app plans its copies in the
+    // host's device pixels: it copies.
     let runs = scroll(&Theme::dark(), Host::default(), 1.0, &[(40.5, 10)]);
     assert_eq!(
         runs[0].copied_frames, 0,
         "half a pixel cannot be copied ({runs:?})"
     );
-    // At 200 % the same half logical pixel is a whole device pixel, and the
-    // app plans its copies in the host's device pixels: it copies.
     for (name, theme) in THEMES {
         let doubled = scroll(&theme(), Host::default(), 2.0, &[(40.5, 10), (-0.5, 6)]);
         eprintln!("{name} at 2x, half-pixel steps: {doubled:?}");
         assert_copies(&doubled[0], 2.0, &format!("{name} 2x, 40.5 px steps"));
         assert_copies(&doubled[1], 2.0, &format!("{name} 2x, 0.5 px steps"));
     }
-}
 
-#[test]
-fn a_tile_under_a_translucent_layer_copies_nothing_and_matches() {
-    let host = Host {
-        translucent: true,
-        ..Host::default()
-    };
-    let runs = scroll(&Theme::high_contrast(), host, 1.0, &[(40.0, 10)]);
+    // A tile under a translucent layer copies nothing.
+    let runs = scroll(
+        &Theme::high_contrast(),
+        Host {
+            translucent: true,
+            ..Host::default()
+        },
+        1.0,
+        &[(40.0, 10)],
+    );
     assert_eq!(runs[0].copied_frames, 0, "{runs:?}");
 }
 

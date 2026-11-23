@@ -544,7 +544,7 @@ tilo_test_env::scenario! {
 
     phase a_pulled_event_is_adopted_without_an_upload;
     {
-        let accounts = crate::AccountStore::sample();
+        let accounts = crate::CalendarAccounts::sample();
         let remote = accounts
             .all_calendars()
             .next()
@@ -619,7 +619,7 @@ tilo_test_env::scenario! {
     phase undoing_a_delete_the_server_took_uploads_the_event_again;
     {
         let mut app = ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
-        let accounts = crate::AccountStore::sample();
+        let accounts = crate::CalendarAccounts::sample();
         let remote = accounts
             .all_calendars()
             .next()

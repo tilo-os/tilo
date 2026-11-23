@@ -54,10 +54,7 @@ impl InventoryScratch {
         let before = directory.metadata()?;
         verify(&directory)?;
         let mount = fs_native::snapshot_lease::mount_id(&directory)?;
-        let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstatvfs(directory.as_raw_fd(), &raw mut stats) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        let stats = rustix::fs::fstatvfs(&directory)?;
         let free = stats
             .f_bavail
             .checked_mul(stats.f_frsize)

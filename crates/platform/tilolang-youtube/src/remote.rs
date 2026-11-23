@@ -7,7 +7,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::service::{ChannelPage, SearchPage, Service, ServiceError, TrendingPage};
+use crate::service::{ChannelPage, PlaylistPage, SearchPage, Service, ServiceError, TrendingPage};
 use crate::wire::{self, Ask, FromConnector};
 
 /// [`Service`] over the socket to the YouTube connector process.
@@ -96,6 +96,19 @@ impl Service for RemoteService {
             },
             |answer| match answer {
                 FromConnector::Channel { page, .. } => Some(page),
+                _ => None,
+            },
+        )
+    }
+
+    fn playlist(&self, key: &str) -> Result<PlaylistPage, ServiceError> {
+        self.answered(
+            &Ask::Playlist {
+                request: self.next.fetch_add(1, Ordering::Relaxed),
+                key: key.to_owned(),
+            },
+            |answer| match answer {
+                FromConnector::Playlist { page, .. } => Some(page),
                 _ => None,
             },
         )

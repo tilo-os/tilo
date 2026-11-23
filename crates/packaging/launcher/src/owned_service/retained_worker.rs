@@ -164,14 +164,7 @@ impl RetainedWorkerProof {
         }
         self.program.check()?;
         let namespace = self.namespace.metadata()?;
-        let process_status =
-            std::fs::read_to_string(format!("/proc/{}/stat", self.ownership.init_pid))?;
-        let start = process_status
-            .rsplit_once(") ")
-            .and_then(|(_, f)| f.split_whitespace().nth(19))
-            .ok_or(io::ErrorKind::InvalidData)?
-            .parse::<u64>()
-            .map_err(io::Error::other)?;
+        let start = tilo_process::start_time(self.ownership.init_pid).ok_or_else(refused)?;
         if start != self.ownership.start_ticks
             || namespace.dev() != self.ownership.namespace_dev
             || namespace.ino() != self.ownership.namespace_ino
@@ -180,35 +173,6 @@ impl RetainedWorkerProof {
         }
         self.authority.check()?;
         if self.cancellation.is_cancelled() || exited(&self.init)? {
-            return Err(refused());
-        }
-        Ok(())
-    }
-    /// Observe only the already-held source task/program/namespace for teardown.
-    pub fn check_retirement_ownership(&self) -> io::Result<()> {
-        if rustix::process::getuid().as_raw() != 0
-            || rustix::process::geteuid().as_raw() != 0
-            || exited(&self.init)?
-        {
-            return Err(refused());
-        }
-        self.program.check()?;
-        let namespace = self.namespace.metadata()?;
-        let process_status =
-            std::fs::read_to_string(format!("/proc/{}/stat", self.ownership.init_pid))?;
-        let start = process_status
-            .rsplit_once(") ")
-            .and_then(|(_, f)| f.split_whitespace().nth(19))
-            .ok_or(io::ErrorKind::InvalidData)?
-            .parse::<u64>()
-            .map_err(io::Error::other)?;
-        if start != self.ownership.start_ticks
-            || namespace.dev() != self.ownership.namespace_dev
-            || namespace.ino() != self.ownership.namespace_ino
-        {
-            return Err(refused());
-        }
-        if exited(&self.init)? {
             return Err(refused());
         }
         Ok(())
@@ -224,16 +188,6 @@ impl RetainedWorkerProof {
     }
     pub fn gid(&self) -> u32 {
         self.gid
-    }
-    /// Clone only the held signed installation ELF for an independently enrolled daemon receiver.
-    pub fn held_program(&self) -> io::Result<File> {
-        self.check()?;
-        let file = self.program.file.try_clone()?;
-        self.check()?;
-        Ok(file)
-    }
-    pub fn program_identity(&self) -> [u64; 2] {
-        [self.program.facts[0], self.program.facts[1]]
     }
 }
 pub(super) fn same_worker_peer(
@@ -292,57 +246,6 @@ impl ServiceEndpoint {
         };
         proof.check()?;
         Ok((stream, proof))
-    }
-}
-
-/// Narrow derivative of one genuine retained provider endpoint.
-pub struct RetainedWorkerConnector {
-    endpoint: ServiceEndpoint,
-    ownership: ServiceOwnership,
-}
-impl RetainedWorkerConnector {
-    /// Refuses current authority/cancellation, namespace or held init changes.
-    pub fn ownership(&self) -> io::Result<ServiceOwnership> {
-        let actual = self.endpoint.ownership()?;
-        if actual != self.ownership {
-            return Err(refused());
-        }
-        Ok(actual)
-    }
-    /// Fresh unread same-provider stream with actual signed ELF/peer proof.
-    pub fn connect_unread(&self) -> io::Result<(UnixStream, RetainedWorkerProof)> {
-        self.ownership()?;
-        let value = self.endpoint.connect_pending_worker()?;
-        self.ownership()?;
-        Ok(value)
-    }
-}
-impl ServiceEndpoint {
-    /// Retain only this genuine signed worker endpoint before moving its supervisor into projection
-    /// ownership.
-    pub fn retain_worker_connector(&self) -> io::Result<RetainedWorkerConnector> {
-        let before = self.ownership()?;
-        let program = self.retained_program.as_ref().ok_or_else(refused)?.clone();
-        program.check()?;
-        let gid = self.retained_gid.ok_or_else(refused)?;
-        let endpoint = ServiceEndpoint {
-            retained_program: Some(program),
-            retained_gid: Some(gid),
-            path: self.path.clone(),
-            namespace: self.namespace.try_clone()?,
-            init: self.init.try_clone()?,
-            init_pid: self.init_pid,
-            expected_uid: self.expected_uid,
-            authority: self.authority.clone(),
-            cancellation: self.cancellation.clone(),
-        };
-        if self.ownership()? != before || endpoint.ownership()? != before {
-            return Err(refused());
-        }
-        Ok(RetainedWorkerConnector {
-            endpoint,
-            ownership: before,
-        })
     }
 }
 

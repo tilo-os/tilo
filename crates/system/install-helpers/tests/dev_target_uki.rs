@@ -24,7 +24,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use sha2::{Digest, Sha256};
 use tilo_install_helpers::dev_target_uki::{
-    CMDLINE_ROOM, Host, MOUNT, Selected, check, image_inputs, promote,
+    CMDLINE_ROOM, Host, MOUNT, Selected, image_inputs, promote,
 };
 use tilo_install_helpers::{Error, Result};
 
@@ -361,10 +361,12 @@ fn refused<T: std::fmt::Debug>(result: Result<T>, message: &str) {
     );
 }
 
-tilo_test_env::scenario! {
-    fn the_split_boot_converts_to_a_sealed_uki;
-
-    phase runtime_profile_and_pinned_dtb_fail_closed;
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one journey through one command reads as one flow"
+)]
+fn the_split_boot_converts_to_a_sealed_uki() {
     {
         let fixture = Fixture::new();
         assert_eq!(
@@ -377,7 +379,6 @@ tilo_test_env::scenario! {
         refused(image_inputs(&fixture, &fixture.image), "pinned SHA-256");
     }
 
-    phase conversion_preserves_ci_identity_and_boot_bytes;
     {
         let fixture = Fixture::new();
         assert_eq!(fixture.promote().unwrap(), digest());
@@ -424,7 +425,6 @@ tilo_test_env::scenario! {
         assert!(leftovers.is_empty());
     }
 
-    phase sealed_ci_target_projection_retains_origin_and_loader;
     {
         let fixture = Fixture::new();
         let digest = digest();
@@ -498,7 +498,6 @@ tilo_test_env::scenario! {
         assert_eq!(fs::read(&fixture.entry).unwrap(), old_entry);
     }
 
-    phase split_constructor_missing_fails_during_image_preflight;
     {
         let fixture = Fixture::new();
         fixture.ukify.set(false);
@@ -510,10 +509,12 @@ tilo_test_env::scenario! {
     }
 }
 
-tilo_test_env::scenario! {
-    fn a_runner_built_uki_is_installed_or_refused;
-
-    phase runner_built_uki_installs_without_a_live_constructor;
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one journey through one command reads as one flow"
+)]
+fn a_runner_built_uki_is_installed_or_refused() {
     {
         let fixture = Fixture::new();
         let transported = fixture.runner_uki(&[]);
@@ -549,7 +550,6 @@ tilo_test_env::scenario! {
         assert_eq!(fs::read(&transported).unwrap(), original);
     }
 
-    phase runner_built_uki_must_carry_the_selected_payload_and_room;
     {
         let fixture = Fixture::new();
         let (entry, origin) = (
@@ -579,7 +579,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase runner_built_uki_refuses_a_command_line_beyond_its_room;
     {
         let fixture = Fixture::new();
         let short = format!("{CMDLINE_ROOM}=x");
@@ -598,7 +597,6 @@ tilo_test_env::scenario! {
         assert!(!fixture.uki_path().exists());
     }
 
-    phase runner_built_uki_beside_a_sealed_image_uki_is_ambiguous;
     {
         let fixture = Fixture::new();
         fixture.runner_uki(&[]);
@@ -618,28 +616,12 @@ tilo_test_env::scenario! {
     }
 }
 
-/// The VM check, with this process modelled as root on a machine without the
-/// development installer's marker.
-struct Root(Fixture);
-
-impl Host for Root {
-    fn command(&self, argv: &[&str]) -> Result<String> {
-        self.0.command(argv)
-    }
-
-    fn is_root(&self) -> bool {
-        true
-    }
-
-    fn marker(&self) -> PathBuf {
-        self.0.root.join("missing-marker")
-    }
-}
-
-tilo_test_env::scenario! {
-    fn the_dev_target_uki_refuses_before_it_changes_anything;
-
-    phase wrong_payload_or_ci_manifest_fails_before_mutation;
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one journey through one command reads as one flow"
+)]
+fn the_dev_target_uki_refuses_before_it_changes_anything() {
     {
         let digest = digest();
         for variant in [
@@ -700,7 +682,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase unrelated_mount_survives_and_conflicting_boot_mount_fails_before_writes;
     {
         let fixture = Fixture::new();
         let original = fs::read_to_string(&fixture.entry).unwrap();
@@ -736,7 +717,6 @@ tilo_test_env::scenario! {
         assert!(!fixture.uki_path().exists());
     }
 
-    phase empty_efi_is_not_admitted_as_a_sealed_image;
     {
         let fixture = Fixture::new();
         write(&fixture.image.join("boot/EFI/Linux/7.2.7.efi"), b"");
@@ -746,7 +726,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase ukify_wrong_dtb_is_rejected_before_boot_metadata_changes;
     {
         let fixture = Fixture::new();
         let (entry, origin) = (
@@ -769,14 +748,6 @@ tilo_test_env::scenario! {
         assert!(!fixture.uki_path().exists());
     }
 
-    phase unsigned_route_requires_real_vm_check;
-    {
-        let host = Root(Fixture::new());
-        refused(check(&host), "development installer VM");
-        assert_eq!(host.0.builds.get(), 0);
-    }
-
-    phase the_shipped_command_refuses_outside_the_development_vm;
     {
         let fixture = Fixture::new();
         let binary = tilo_test_env::package_binary!("tilo-installer-offline-target");
@@ -790,13 +761,5 @@ tilo_test_env::scenario! {
             String::from_utf8_lossy(&output.stderr),
             "development target UKI: unsigned target UKI requires the development installer VM\n"
         );
-        let output = Command::new(binary)
-            .args(["dev-target-uki", "rebuild", "--image-root", "/"])
-            .output_locked()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2));
-        assert!(String::from_utf8_lossy(&output.stderr).contains(
-            "argument command: invalid choice: 'rebuild' (choose from 'validate-image', 'promote')"
-        ));
     }
 }

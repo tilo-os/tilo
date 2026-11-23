@@ -12,14 +12,13 @@ pub fn read_bounded(
     limit: u64,
     exceeded: impl FnOnce() -> io::Error,
 ) -> io::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    reader
-        .take(limit.saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > limit {
-        return Err(exceeded());
-    }
-    Ok(bytes)
+    tilo_files::read_from(reader, limit).map_err(|error| {
+        if error.kind() == io::ErrorKind::FileTooLarge {
+            exceeded()
+        } else {
+            error
+        }
+    })
 }
 
 /// [`read_bounded`] for UTF-8 text.
@@ -34,4 +33,35 @@ pub fn read_bounded_string(
 ) -> io::Result<String> {
     String::from_utf8(read_bounded(reader, limit, exceeded)?)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_bounded_enforces_limit_and_reports_caller_error() {
+        let too_large = || io::Error::new(io::ErrorKind::InvalidData, "too large");
+
+        assert_eq!(
+            read_bounded(&b"abcd"[..], 4, too_large).ok().as_deref(),
+            Some(&b"abcd"[..])
+        );
+
+        let over = read_bounded(&b"abcde"[..], 4, too_large).err();
+        assert_eq!(
+            over.as_ref().map(io::Error::kind),
+            Some(io::ErrorKind::InvalidData)
+        );
+        assert_eq!(
+            over.as_ref().map(ToString::to_string).as_deref(),
+            Some("too large")
+        );
+
+        let infinite = read_bounded(io::repeat(b'x'), 16, too_large).err();
+        assert_eq!(
+            infinite.as_ref().map(io::Error::kind),
+            Some(io::ErrorKind::InvalidData)
+        );
+    }
 }

@@ -25,16 +25,37 @@ use crate::common::{
     place_the_inbox, placed, placed_resources, private_home, seeded_session, show_preset, until,
 };
 
-/// The headless session with the shell as the screen and a notebook kept by the notes app
-/// published, one note in it titled [`NOTE_TITLE`], made through the app's own actions; its sockets
-/// at `root` ([`api_options`]). Answers the session and the note.
+/// The headless session with the shell as the screen and the seeded apps kept in the workspace,
+/// a note titled [`NOTE_TITLE`] among the notes app's; its sockets at `root` ([`api_options`]).
+/// Answers the session and that note.
 fn session(root: &std::path::Path) -> (Session, String) {
-    let (notebook, notes) = crate::common::notebook(&[NOTE_TITLE]);
-    let session = crate::common::headless(Options {
-        services: vec![Box::new(notebook)],
+    let session = kept_seeded(root);
+    let note = note_titled(&session, NOTE_TITLE);
+    (session, note)
+}
+
+/// The headless session with the seeded apps, once what they keep is in the workspace: a program
+/// finds and places what the workspace keeps, and a record placed before the seed moved there
+/// names one nobody shows.
+fn kept_seeded(root: &std::path::Path) -> Session {
+    let mut session = crate::common::headless(Options {
+        services: crate::common::seeded_apps(),
         ..api_options(root)
     });
-    (session, notes.into_iter().next().expect("a note"))
+    crate::common::kept_in_workspace(&mut session);
+    session
+}
+
+/// The id of the note the session publishes under `title`.
+fn note_titled(session: &Session, title: &str) -> String {
+    fn find(resources: &[tilo_actions::ResourceSpec], title: &str) -> Option<String> {
+        resources.iter().find_map(|resource| {
+            (resource.kind.ends_with(".Note") && resource.label == title)
+                .then(|| resource.id.as_str().to_owned())
+                .or_else(|| find(&resource.children, title))
+        })
+    }
+    find(&session.resources(), title).unwrap_or_else(|| panic!("a note titled {title}"))
 }
 
 /// An action read as a value, rather than called: what it says of how it is called.
@@ -520,11 +541,7 @@ fn showing_the_overview_is_no_step_and_a_refused_undo_holds_no_other_step() {
 fn a_placed_record_is_drawn_through_its_own_apps_view() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
-    let apps = crate::common::seeded_apps();
-    let mut session = crate::common::headless(Options {
-        services: apps,
-        ..api_options(root.path())
-    });
+    let mut session = kept_seeded(root.path());
     show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS).is_some()

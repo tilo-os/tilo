@@ -103,7 +103,7 @@ fn the_persons_own_workspace_is_proved_when_a_route_there_joins() {
     let (fd, captures, thread) = stand_up_fake_broker(FakeBroker::default());
     let root = [1_u8; 32];
     let launch = Uuid::new_v4();
-    let personal = collab_types::personal_cluster(&root);
+    let personal = collab_types::person_workspace(&root);
     let joins = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut manager = certified_manager(
         fd,

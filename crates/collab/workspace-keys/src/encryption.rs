@@ -277,8 +277,8 @@ pub trait KeyDirectory: collab_types::signer::MaybeSendSync {
     /// cannot tell: the workspace's governance is unknown here, and it then admits and removes no
     /// one.
     ///
-    /// A personal cluster ([`collab_types::personal_cluster`]) is read by the devices of the
-    /// identity it derives from (certified, not revoked).
+    /// The person's own workspace ([`collab_types::person_workspace`]) is read by the devices
+    /// of its person (certified, not revoked).
     fn allowed_devices(
         &self,
         workspace: WorkspaceId,

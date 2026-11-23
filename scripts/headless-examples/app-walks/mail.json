@@ -1,0 +1,102 @@
+{
+  "app": "mail",
+  "said": "Mail",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.mail",
+    "package": "mail"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Mail for the first time, letting it reach the network when it asks",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": {
+            "wait": false
+          }
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "prefix": "Allow"
+            }
+          }
+        },
+        {
+          "press_any": [
+            {
+              "prefix": "Allow"
+            }
+          ]
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "offered": [
+            "New message"
+          ]
+        },
+        {
+          "must_not": [
+            "New message"
+          ]
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 60000
+    },
+    {
+      "id": "compose",
+      "said": "Write a message",
+      "ops": [
+        {
+          "offered": [
+            "New message"
+          ]
+        },
+        {
+          "press_any": [
+            "New message"
+          ]
+        },
+        {
+          "must": {
+            "see": [
+              {
+                "prefix": "Subject"
+              }
+            ],
+            "within": 15
+          }
+        }
+      ]
+    },
+    {
+      "id": "drafts",
+      "said": "The message waits in Drafts",
+      "ops": [
+        {
+          "offered": [
+            "Drafts"
+          ]
+        },
+        {
+          "select_row": "Drafts"
+        }
+      ],
+      "dark": true
+    }
+  ]
+}

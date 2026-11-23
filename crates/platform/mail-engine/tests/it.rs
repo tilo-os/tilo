@@ -12,7 +12,5 @@
 
 #[path = "account_engine_loop.rs"]
 mod account_engine_loop;
-#[path = "host_mail_session.rs"]
-mod host_mail_session;
 #[path = "recipient_headers.rs"]
 mod recipient_headers;

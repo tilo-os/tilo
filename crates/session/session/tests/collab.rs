@@ -274,9 +274,9 @@ fn shell_of_two() -> Layout {
 
 /// The window in front of the shell `session` shows.
 fn front(session: &Session) -> Option<TabId> {
-    session
-        .handle()
-        .read(|tree| tilo_desktop_surface::navigation::active_route(tree).map(|route| route.tab))
+    session.handle().read(|tree| {
+        tilo_session_core::desktop::navigation::active_route(tree).map(|route| route.tab)
+    })
 }
 
 /// `device`'s page says where its windows are, and that the person works in `app`.
@@ -339,6 +339,7 @@ fn channel_call() -> String {
     ui::CallPresence {
         channel: CHANNEL.to_owned(),
         name: "Standup".to_owned(),
+        bridge: None,
     }
     .encode()
 }
@@ -591,6 +592,7 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
                 ui::CallPresence {
                     channel: "c_standup".to_owned(),
                     name: "Standup".to_owned(),
+                    bridge: None,
                 }
                 .encode(),
             ),

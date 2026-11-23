@@ -128,12 +128,10 @@ impl AppBrokerState {
                 .as_ref()
                 .map(|session| session.as_str().to_owned()),
             target_app: String::new(),
-            resource: String::new(),
-            action: String::new(),
             resource_label: String::new(),
             action_label: String::new(),
+            kind: tilo_actions::ActionKind::Undoable,
             risk: tilo_actions::RiskLevel::None,
-            needs_confirmation: false,
             confirming: false,
             moderation: None,
             scope: caller.agent_name().map(str::to_owned),

@@ -38,6 +38,9 @@ mod agent_views;
 #[path = "workspace_actions/api.rs"]
 mod api;
 #[cfg(test)]
+#[path = "workspace_actions/api_agent.rs"]
+mod api_agent;
+#[cfg(test)]
 #[path = "workspace_actions/api_apps.rs"]
 mod api_apps;
 #[cfg(test)]
@@ -110,6 +113,9 @@ mod chain_parts_restart;
 #[path = "workspace_actions/delete_workspace.rs"]
 mod delete_workspace;
 #[cfg(test)]
+#[path = "workspace_actions/desktop_page.rs"]
+mod desktop_page;
+#[cfg(test)]
 #[path = "workspace_actions/device_issue_create.rs"]
 mod device_issue_create;
 #[cfg(test)]
@@ -127,6 +133,9 @@ mod files_put_by_key;
 #[cfg(test)]
 #[path = "workspace_actions/files_window_view.rs"]
 mod files_window_view;
+#[cfg(test)]
+#[path = "workspace_actions/flow_customer_workspaces.rs"]
+mod flow_customer_workspaces;
 #[cfg(test)]
 #[path = "workspace_actions/governed_agent.rs"]
 mod governed_agent;
@@ -1277,10 +1286,7 @@ async fn a_persons_request_carrying_an_appearance_is_refused_and_runs_nothing() 
     assert!(!names.contains(&"Budget".to_owned()));
 }
 
-/// How long a page waits for its host to answer a barrier. A healthy host answers within a second
-/// even on a loaded runner; a barrier still open after this holds a write the host never took, and
-/// every test of a shard waiting the whole shared hang bound on one kept a runner busy for an hour.
-const BARRIER_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+pub use crate::harness::page::BARRIER_BOUND;
 
 /// The host's answer to a page's barrier: whether every write it asked after is saved. A barrier
 /// the host never answers fails here by name within [`BARRIER_BOUND`], instead of holding a

@@ -522,9 +522,6 @@ impl Server {
         let Some(live) = self.live_origin.as_ref() else {
             return Err(failed("the server runs no live session".into()));
         };
-        if let Some(workspaces) = self.workspaces() {
-            let _ = context.server.carried_calls.set(workspaces.downgrade());
-        }
         let server_cert = context.server.identity.cert.clone();
         // Where a page dials this host: its endpoint's key and addresses, and
         // the relay it is reached through — which the endpoint names from the
@@ -1320,6 +1317,16 @@ async fn route(
             let workspaces = web.workspaces.as_ref().ok_or_else(|| {
                 status(StatusCode::NOT_FOUND, "this server governs no workspaces")
             })?;
+            // The operator's kill switch: a host paused entirely serves its listing to nobody,
+            // while one kept watch-only still lets a page read who is here. Either way the
+            // people already in it work on.
+            let mode = workspaces.mode();
+            if !mode.allows_spectators() {
+                return Err(refused(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "the host is paused; back soon",
+                ));
+            }
             let online = web.presence.devices().into_keys().collect();
             Ok(json(&tilo_server_protocol::directory::DirectoryPage {
                 host: Some(web.current_host_info().for_site()),

@@ -8,6 +8,7 @@ mod call;
 mod component;
 mod enums;
 mod expr;
+mod held;
 mod methods;
 mod native;
 mod optional;
@@ -159,6 +160,9 @@ struct FnState {
     /// The locals holding a scalar an event carries (`at` of `on drop(moved: T, at: Int)`), boxed
     /// until the event puts the value there.
     event_scalars: std::collections::HashSet<LocalId>,
+    /// The locals holding what an event carries, scalar or not: an argument of `set` computed from
+    /// one (`set(expr, x.expr)`) runs when the event fires, with the value in place.
+    event_values: std::collections::HashSet<LocalId>,
     /// Whether the code computes one argument of an action a view applies, which runs when that
     /// action is invoked: it may read the clock, and what it reads is recorded there.
     press: bool,
@@ -433,6 +437,7 @@ fn lower(
         funcs.push(c.run_default(action, d.param, written));
     }
     initial_cycle(c.diags, &initials);
+    c.check_held_roots(module);
     c.check_proposals(module);
     c.check_one_command();
     let mut views = Vec::new();

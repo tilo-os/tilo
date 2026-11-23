@@ -70,6 +70,9 @@ tilolang-mail = { path = "../tilolang-mail", default-features = false }
 tilo-content = { version = "0.1.0", path = "../../system/content" }
 tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }
 tilo-dialogs = { version = "0.1.0", path = "../tilo-dialogs" }
+# The person's clipboard, over the connection the session opens for each instance: what an app
+# copies and pastes, since its process holds no display of its own.
+tilo-clipboard = { version = "0.1.0", path = "../tilo-clipboard" }
 # Presence as every window decodes it: who is where in a document, and who is writing there.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 
@@ -82,7 +85,7 @@ tilolang-process = { path = ".", features = ["test-support"] }
 tilo-clock = { version = "0.1.0", path = "../tilo-clock", features = ["test-support"] }
 # A named zone read from the database built into Tilo, as the runtime resolves the host's zone.
 tilo-recurrence = { version = "0.1.0", path = "../../sdk/tilo-recurrence" }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["test-support", "broker-transport", "native"] }
 tilolang = { path = "../../lang/tilolang" }
 # The session's persistent search index, and the source a search reads it through: a tilolang

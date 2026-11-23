@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use tilolang_runtime::meta::Meta;
 use tilolang_runtime::value::Value;
-use tilolang_runtime::{Actor, ResourceRef, ViewInstance};
+use tilolang_runtime::{Actor, ResourceRef, UiNode, ViewInstance};
 use tilolang_tilo::action::DynAction;
 use tilolang_tilo::host::{Host, Package};
 use tilolang_tilo::publish::PlanRequest;
@@ -350,6 +350,58 @@ impl Replica {
             .redo_last(Some(&tilolang_tilo::personal::actor(&self.name)))
             .unwrap()
     }
+}
+
+/// A place as a sidebar draws it, the shape its tests read: its label, and the count the
+/// sidebar itself works out for the places it counts.
+pub type ShownPlace = (String, Option<i64>);
+
+/// A heading of a sidebar with the places under it, in the order they stand.
+pub type ShownSection = (String, Vec<ShownPlace>);
+
+/// The places a sidebar node holds, in the order the tree stands them: each place's label and
+/// the count it shows, where its filter asks for one.
+pub fn places_in(node: &UiNode) -> Vec<ShownPlace> {
+    nodes(node)
+        .into_iter()
+        .filter(|node| node.kind == "ui.NavItem")
+        .filter_map(|node| match node.props.get("label") {
+            Some(Value::Text(label)) => {
+                let count = match node.props.get("count") {
+                    Some(Value::Int(count)) => Some(*count),
+                    _ => None,
+                };
+                Some((label.clone(), count))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The headings of a sidebar with their places, in the order the tree stands them.
+pub fn sections(node: &UiNode) -> Vec<ShownSection> {
+    node.of_kind("ui.NavSection")
+        .into_iter()
+        .map(|section| {
+            let title = match section.props.get("title") {
+                Some(Value::Text(title)) => title.clone(),
+                other => panic!("a section is headed: {other:?}"),
+            };
+            (title, places_in(section))
+        })
+        .collect()
+}
+
+/// Every node of a drawn tree, depth first, `node` itself included: what a test reads the
+/// drawn view through, whether it looks for a kind, a prop or every text.
+pub fn nodes(node: &UiNode) -> Vec<&UiNode> {
+    let mut out = Vec::new();
+    let mut at = vec![node];
+    while let Some(node) = at.pop() {
+        out.push(node);
+        at.extend(node.children.iter().rev());
+    }
+    out
 }
 
 /// The key of the control in `view` bound to the field `field` (a field id).

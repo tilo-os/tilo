@@ -323,7 +323,6 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
     let registries = host.join("registries.toml");
     let state = host.join("state.json");
     let settings = home.data().join("so.tilo.settings-device/state.automerge");
-    let accounts = host.join("accounts/store.json");
     let root_secret = host.join("identity/secrets/0123abcd.key");
     let active = host.join("identity/active");
     let identity_record = host.join("identity/primary.json");
@@ -336,7 +335,6 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
         (&registries, "# registries"),
         (&state, r#"{"workspaces":[]}"#),
         (&settings, r#"{"region":{"units":"metric"}}"#),
-        (&accounts, r#"{"accounts":[]}"#),
     ] {
         std::fs::create_dir_all(path.parent().expect("parent")).expect("config dir");
         std::fs::write(path, contents).expect("config file");
@@ -419,17 +417,6 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
         std::fs::read_to_string(&settings).expect("settings"),
         r#"{"region":{"units":"metric"}}"#,
         "only the shell writes the settings document"
-    );
-
-    let wrote = run(&[
-        "writeabs",
-        &format!("{config}/accounts/store.json"),
-        r#"{"accounts":[1]}"#,
-    ]);
-    assert!(wrote.starts_with("WROTE "), "{wrote}");
-    assert_eq!(
-        std::fs::read_to_string(&accounts).expect("accounts"),
-        r#"{"accounts":[1]}"#
     );
 
     // On the host, nothing outside those parts changed.

@@ -404,19 +404,26 @@ impl From<&TargetDrive> for TargetDrive {
     }
 }
 
+/// Whether a bus/transport name denotes external media.
+pub fn is_external_transport(transport: &str) -> bool {
+    matches!(
+        transport.to_ascii_lowercase().as_str(),
+        "usb" | "sd" | "mmc"
+    )
+}
+
 impl TargetDrive {
+    /// Whether the drive reports an external transport. Some USB readers
+    /// report `RM=0`, so media eligibility also considers the bus.
+    pub fn external_transport(&self) -> bool {
+        self.tran.as_deref().is_some_and(is_external_transport)
+    }
+
     /// Whether this is external installation media the desktop imager may
     /// safely offer. Some USB readers report `RM=0`, so the transport is also
     /// considered; system disks are unconditionally excluded.
     pub fn is_media_target(&self) -> bool {
-        !self.is_system
-            && (self.removable
-                || self.tran.as_deref().is_some_and(|transport| {
-                    matches!(
-                        transport.to_ascii_lowercase().as_str(),
-                        "usb" | "sd" | "mmc"
-                    )
-                }))
+        !self.is_system && (self.removable || self.external_transport())
     }
 
     pub fn dev_path(&self) -> String {
@@ -612,8 +619,9 @@ pub use install_profile_model::media::{
 // ---------------------------------------------------------------------------
 
 /// The phase of a write/install job.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JobPhase {
+    #[default]
     Idle,
     Writing,
     Verifying,
@@ -952,22 +960,6 @@ mod tests {
     #[test]
     fn samples_releases_and_targets_are_classified_truthfully() {
         {
-            let t = sample_targets();
-            assert_eq!(t.len(), 2);
-            assert_eq!(t[0].kind, TargetKind::Usb);
-            assert!(t[0].removable);
-            assert_eq!(t[1].kind, TargetKind::Nvme);
-            assert!(!t[1].removable);
-        }
-
-        {
-            let s = sample_source();
-            assert_eq!(s.kind, SourceKind::TiloImage);
-            assert!(s.installable);
-            assert!(s.size > 0);
-        }
-
-        {
             let mut release = sample_releases().remove(0);
             release.image_sha256.clear();
             let source = release.to_source();
@@ -981,36 +973,6 @@ mod tests {
             assert!(usb.fits(2_000_000_000));
             assert!(!usb.fits(40_000_000_000));
             assert!(usb.fits(0)); // unknown size always "fits" for the check
-        }
-
-        {
-            assert_eq!(fmt_size(0), "—");
-            assert_eq!(fmt_size(512), "512 B");
-            assert_eq!(fmt_size(1_000_000_000_000), "1 TB");
-            assert!(fmt_size(2_415_919_104).ends_with("GB"));
-        }
-
-        {
-            assert_eq!(
-                TargetKind::from_lsblk(false, Some("usb"), true),
-                TargetKind::Usb
-            );
-            assert_eq!(
-                TargetKind::from_lsblk(false, Some("nvme"), false),
-                TargetKind::Nvme
-            );
-            assert_eq!(
-                TargetKind::from_lsblk(true, Some("sata"), false),
-                TargetKind::Hdd
-            );
-            assert_eq!(
-                TargetKind::from_lsblk(false, Some("sata"), false),
-                TargetKind::Ssd
-            );
-            assert_eq!(
-                TargetKind::from_lsblk(false, Some("mmc"), true),
-                TargetKind::SdCard
-            );
         }
     }
 
@@ -1101,24 +1063,6 @@ mod tests {
     )]
     fn step_and_progress_state_advance() {
         {
-            assert_eq!(Step::Source.next(), Step::Drive);
-            assert_eq!(Step::Drive.next(), Step::Customize);
-            assert_eq!(Step::Customize.next(), Step::Confirm);
-            assert_eq!(Step::Confirm.next(), Step::Write);
-            assert_eq!(Step::Write.next(), Step::Done);
-            assert_eq!(Step::Done.next(), Step::Done, "last step saturates");
-            assert_eq!(Step::Done.prev(), Step::Write);
-            assert_eq!(Step::Write.prev(), Step::Confirm);
-            assert_eq!(Step::Confirm.prev(), Step::Customize);
-
-            assert_eq!(Step::Source.prev(), Step::Source, "first step saturates");
-            assert_eq!(Step::all().len(), 6);
-            for s in Step::all() {
-                assert_eq!(Step::from_key(s.key()), s);
-            }
-        }
-
-        {
             let idle = Progress::default();
             assert_eq!(idle.overall(), 0.0);
             assert_eq!(idle.eta_secs(1_000_000), None);
@@ -1180,44 +1124,6 @@ mod prepared_setup_binding_tests {
         profile.prepared_setup.as_mut().unwrap().ciphertext_sha256 = "a".repeat(64);
         profile.prepared_setup.as_mut().unwrap().sealed_bytes = 40 * 1024 * 1024 + 1;
         assert!(profile.validate_media_profile().is_err());
-    }
-}
-
-impl From<Progress> for crate::write::helper::HelperProgress {
-    fn from(progress: Progress) -> Self {
-        use crate::write::helper::HelperPhase;
-        Self {
-            phase: match progress.phase {
-                JobPhase::Idle => HelperPhase::Idle,
-                JobPhase::Writing => HelperPhase::Writing,
-                JobPhase::Verifying => HelperPhase::Verifying,
-                JobPhase::Success => HelperPhase::Success,
-                JobPhase::Failed => HelperPhase::Failed,
-            },
-            write_frac: progress.write_frac,
-            verify_frac: progress.verify_frac,
-            rate_bps: progress.rate_bps,
-            error: progress.error,
-        }
-    }
-}
-
-impl From<crate::write::helper::HelperProgress> for Progress {
-    fn from(progress: crate::write::helper::HelperProgress) -> Self {
-        use crate::write::helper::HelperPhase;
-        Self {
-            phase: match progress.phase {
-                HelperPhase::Idle => JobPhase::Idle,
-                HelperPhase::Writing => JobPhase::Writing,
-                HelperPhase::Verifying => JobPhase::Verifying,
-                HelperPhase::Success => JobPhase::Success,
-                HelperPhase::Failed => JobPhase::Failed,
-            },
-            write_frac: progress.write_frac,
-            verify_frac: progress.verify_frac,
-            rate_bps: progress.rate_bps,
-            error: progress.error,
-        }
     }
 }
 

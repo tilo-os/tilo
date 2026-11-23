@@ -25,6 +25,9 @@ d-hzbwof46 = Geholt
 d-jxc5rufs = Signatur
     .doc = Womit die Nachrichten des Kontos enden: die eigene der Person, je Konto, wie jedes Mailprogramm eine Nachricht signiert.
 
+d-yinmk5zb = Identitäten
+    .doc = Die weiteren Namen und Adressen, unter denen das Konto sendet, neben seiner eigenen, je eine Zeile `Name <address>`: das, wovon eine Person schreibt, wenn sie als Rolle statt als sie selbst schreibt.
+
 d-ehmoyzk2 = Postfächer
 
 d-qybqg4dl = Unterhaltungen
@@ -50,9 +53,14 @@ d-dtd4czyv = Ungelesen
 
 d-rxoe5vzb = Gesamt
 
+d-al2vjuet = Mehr
+    .doc = Ob der Server des Kontos Nachrichten hält, die älter sind als die, die dieser Arbeitsbereich hält: das, wofür „Ältere Nachrichten anzeigen“ die Seite davor liest.
+
 d-ecbhcqdr-filter-unread = Ungelesen
 
 d-ecbhcqdr-filter-total = Gesamt
+
+d-ecbhcqdr-filter-more = Mehr
 
 d-xnczt27x = Unterhaltung
     .doc = Eine Unterhaltung: Nachrichten, die einander antworten, die neueste zuletzt.
@@ -182,9 +190,15 @@ d-lidkonvr = Entwurf
 
 d-m2g6zrle = Von
 
+d-zx2b4ax2 = Absenderadresse
+    .doc = Die Identität des Absenders (`from`), eine der eigenen des Kontos (`Name <address>`): leer für die eigene Adresse des Kontos und für eine, unter der es nicht mehr sendet.
+
 d-hd3o4gkq = An
 
 d-cwukhrvn = Cc
+
+d-ib44zkec = Bcc
+    .doc = Empfänger einer Blindkopie: sie sehen die Nachricht, werden in ihr aber nicht genannt.
 
 d-tyxmravh = Betreff
 
@@ -244,6 +258,9 @@ d-546ahgq6-seconds = Sekunden
 d-arnkrvgw = Jetzt abrufen
     .doc = Fragt jetzt den Server des Kontos nach seiner Mail: was eine Person drückt, wenn das Fenster sagt, der Server sei nicht erreichbar gewesen oder was es geholt hat, habe sich nicht sichern lassen.
 
+d-wgbxl4or = Ältere Nachrichten anzeigen
+    .doc = Bittet den Server des Kontos um die Nachrichten, die älter sind als die älteste, die dieser Arbeitsbereich im Postfach hält, damit sich ein Ordner, der länger als eine Seite ist, bis zu seiner ersten Nachricht zurücklesen lässt.
+
 d-eon6gbrn = Neue Nachricht
     .doc = Beginnt eine Nachricht von dem Konto.
 
@@ -295,6 +312,21 @@ d-grphua5j-parts = Teile
 
 d-grphua5j-attachments = Anhänge
 
+d-tr43xnyj = Als Markdown exportieren
+    .doc = Die Nachricht als Markdown-Datei: was eine Person exportiert, um sie anderswo zu lesen oder zu behalten.
+
+d-shpafbd7 = Als JSON exportieren
+    .doc = Die Nachricht als JSON-Datei: woraus ein Skript oder ein Agent ihren Datensatz liest.
+
+d-ydo5gq5e = Als .eml exportieren
+    .doc = Die Nachricht als `.eml`-Datei, die jedes Mailprogramm öffnet.
+
+d-3vrmj56n = Eine Nachrichtendatei öffnen
+    .doc = Öffnet eine Nachricht, die als Datei eines Mailprogramms vorliegt (`.eml`, eine einzelne Nachricht einer mbox oder Apples `.emlx`): ihre Kopfzeilen werden gelesen, und sie wird zu der Mail gelegt, die außerhalb der Konten gehalten wird, gelesen, im Posteingang.
+    .w-the-file-holds-no-message = Die Datei enthält keine Nachricht
+
+d-3vrmj56n-file = Datei
+
 d-hirareiw = Antworten
     .doc = Beantwortet die neueste Nachricht der Unterhaltung an wen sie geschrieben hat und zitiert sie unter dem Geschriebenen.
 
@@ -330,6 +362,11 @@ d-taywgw3n-to = Nach
 d-xytb2lle = Löschen
     .doc = Löscht die Unterhaltung: ihre Nachrichten gehen in den Papierkorb.
     .w-it-is-in-the-trash = Sie ist im Papierkorb
+
+d-pz2ntes2 = Endgültig löschen
+    .doc = Löscht die gelöschten Nachrichten der Unterhaltung endgültig, auch von ihrem Server, und mit ihnen die Unterhaltung, wenn keine Nachricht von ihr mehr übrig ist.
+    .w-it-is-not-in-the-trash = Sie ist nicht im Papierkorb
+    .w-nothing-of-it-is-in-the = Nichts von ihr ist im Papierkorb
 
 d-le4lvs2c = Markieren
     .doc = Markiert die Unterhaltung oder nimmt die Markierung zurück.
@@ -419,6 +456,12 @@ d-7zk6ua6p = Senden von
 
 d-7zk6ua6p-a = A
 
+d-naegttbl = Senden als
+    .doc = Sendet die Nachricht unter einem anderen Namen oder einer anderen Adresse ihres Kontos, `Name <address>`: das, was eine Person wählt, die als Rolle statt als sie selbst schreibt.
+    .w-this-message-went-already = Diese Nachricht ist schon rausgegangen
+
+d-naegttbl-identity = Identität
+
 d-qrcwx7a6 = Entwurf löschen
     .doc = Wirft eine Nachricht im Schreiben weg.
 
@@ -464,6 +507,8 @@ d-7jf4pn3j = Kalendereinladung vorbereiten~present
 
 d-s2qkkueu = Nachricht zustellen~present
 
+d-vdfbsj4a = Nachrichtendatei öffnen~present
+
 d-bj7uen6f = Archivieren~present
 
 d-bs42bxdn = In den Posteingang~present
@@ -471,6 +516,8 @@ d-bs42bxdn = In den Posteingang~present
 d-wfvq5lde = Verschieben nach~present
 
 d-efageosr = Löschen~present
+
+d-djmtvfs7 = Endgültig löschen~present
 
 d-cvmtfflh = Markieren~present
 
@@ -490,6 +537,8 @@ d-xnse2xt5 = Als gelesen markieren~present
 
 d-iv7e7g52 = Senden von~present
 
+d-5kuylc3o = Senden als~present
+
 d-czouixzd = Senden~present
 
 d-i3cueozg = Senden rückgängig~present
@@ -498,6 +547,7 @@ d-4hds3dwy = Antworten~present
 
 d-5wix2354 = Verfassen
     .w-to = An { $to }
+    .w-bcc = Bcc { $bcc }
 
 d-dhradxj7 = Kontohinweis
     .w-can-t-save-what-fetched = Was { $name } geholt hat, lässt sich nicht sichern
@@ -521,14 +571,19 @@ d-3k7hkyhl = Übernommene Mail
 
 d-m5y6nl2m = Alle Posteingänge
     .w-add-a-mail-account-in-settings = Füge in den Einstellungen ein Mailkonto hinzu
+    .w-is-inbox = is:inbox
+
+d-s7tarqlp = Unterhaltungen der Konten
 
 d-tfom3oeo = Unterhaltungen des Kontos
+    .w-show-older-messages = Ältere Nachrichten anzeigen
 
 d-gka45our = Postfächer
     .w-all-mail = Alle Mails
     .w-labels = Labels
 
 d-zp2cy2sc = Posteingang
+    .w-is = is:{ $key }
     .w-nothing-here = Nichts hier
 
 d-jgdzx3la = Unterhaltungsliste
@@ -553,6 +608,9 @@ d-n2xgxnbw = Nachricht
     .w-show-quoted-text = Zitierten Text anzeigen
     .w-attached = Angehängt: { $attachments }
 
+d-nxayphhi = Nachrichtendatei
+    .w-message = Nachricht
+
 d-oqpazwvc = Schreiben
     .w-status = Status
     .w-sending = Wird gesendet
@@ -564,7 +622,15 @@ d-oqpazwvc = Schreiben
     .w-to = An
     .w-name-example-org = name@example.org
     .w-cc = Cc
+    .w-bcc = Bcc
     .w-subject = Betreff
+    .w-bold = Fett
+    .w-italic = Kursiv
+    .w-underline = Unterstrichen
+    .w-bulleted-list = Aufzählung
+    .w-link = Link
+    .w-https-example-org = https://example.org
+    .w-add-link = Link hinzufügen
     .w-write-your-message = Schreib deine Nachricht
     .w-send = Senden
 

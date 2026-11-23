@@ -58,12 +58,16 @@ mod view;
 pub(super) mod watch;
 use answer::{action_named, action_row, actions_named, answer_of, outcome, text_result};
 use render::{action_line, action_page, block_line, parse_read_cursor, read_answer, strip_blank};
+#[cfg(unix)]
+pub use tilo::TaskHosts;
+#[cfg(unix)]
+pub(super) use tilo::TaskLink;
+pub use tilo::TaskProgram;
 use tilo::actions_note;
 /// A person's own line in a run's conversation, run in the task's host as they are
 /// (shell.md §8.1): what the API's `person_line` hands on.
 pub use tilo::{PersonStep, literals_in};
-pub(super) use tilo::{ProgramForms, Programs, TaskLink};
-pub use tilo::{TaskHosts, TaskProgram};
+pub(super) use tilo::{ProgramForms, Programs};
 
 #[cfg(test)]
 use super::CatalogueRow;

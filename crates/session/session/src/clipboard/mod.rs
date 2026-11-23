@@ -576,14 +576,26 @@ impl Clipboard {
     /// Put `text` on the clipboard as a copy of the person's own: what they asked to copy, here or
     /// in an app of theirs, so the history keeps it as it keeps what they copied.
     fn copy_text(&self, compositor: &mut Compositor, text: String) -> bool {
-        if let Err(error) = compositor.set_selection(
-            Selection::Clipboard,
-            vec![(
-                tilo_compositor::clipboard_history::TEXT_MIME.to_owned(),
-                text.into_bytes(),
-            )],
-        ) {
-            tracing::warn!(%error, "the text could not be put on the clipboard");
+        self.copy_bytes(
+            compositor,
+            tilo_compositor::clipboard_history::TEXT_MIME,
+            text.into_bytes(),
+        )
+    }
+
+    /// Put `mime` and `bytes` on the clipboard as a copy of the person's own: what a tilolang
+    /// app's `clipboard.copy` offers, and what an image pasted anywhere offers, so the history
+    /// keeps it as it keeps what the person copied in an app.
+    pub(crate) fn copy_bytes(
+        &self,
+        compositor: &mut Compositor,
+        mime: &str,
+        bytes: Vec<u8>,
+    ) -> bool {
+        if let Err(error) =
+            compositor.set_selection(Selection::Clipboard, vec![(mime.to_owned(), bytes)])
+        {
+            tracing::warn!(%error, "the copy could not be put on the clipboard");
             return false;
         }
         // The history reads it back on its next pass, as it reads a copy of any app's.

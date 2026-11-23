@@ -26,7 +26,6 @@ iroh.workspace = true
 # `relay`: a relay of the owner's own (or a test harness's) to use instead of
 # the public ones.
 iroh-relay = { version = "1.0.3", features = ["server"] }
-postcard = { workspace = true, features = ["alloc"] }
 serde.workspace = true
 serde_json.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
@@ -34,6 +33,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tokio = { workspace = true, features = ["io-std", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+wire-frame = { path = "../../system/wire-frame", features = ["tokio", "postcard"] }
 zeroize.workspace = true
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
@@ -44,7 +44,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 tempfile.workspace = true
 # The end-to-end route test's relay is a loopback one no other test shares.
-tilo-test-env = { path = "../test-env", features = ["iroh-relay"] }
+tilo-test-env = { path = "../../../tools/test-env", features = ["iroh-relay"] }
 
 [[test]]
 name = "it"

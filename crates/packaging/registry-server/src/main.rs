@@ -2733,19 +2733,20 @@ mod tests {
         let entry = publisher_entry(&publisher);
         storage.save_entry(&entry).unwrap();
 
-        // The published snapshot was signed by a build at an earlier format,
-        // which this build cannot verify.
+        // The published snapshot was signed by a build at a format this build no longer reads.
+        let unreadable = registry_types::READABLE_CATALOGUE_FORMATS
+            .first()
+            .unwrap()
+            .saturating_sub(1);
         let mut earlier =
             build_signed_snapshot(&storage, None, vec![entry.clone()], &owner, 3_600).unwrap();
-        earlier.protocol = PACKAGE_FORMAT_VERSION - 1;
+        earlier.protocol = unreadable;
         let writer = storage.lock_snapshot().unwrap();
         writer.publish(&earlier).unwrap();
         drop(writer);
         assert_eq!(
             registry_types::verify_snapshot(&earlier, &owner_hex, earlier.issued_at_unix),
-            Err(registry_types::SnapshotError::Protocol {
-                served: PACKAGE_FORMAT_VERSION - 1
-            })
+            Err(registry_types::SnapshotError::Protocol { served: unreadable })
         );
 
         let key_file = dir.path().join("owner.seed");

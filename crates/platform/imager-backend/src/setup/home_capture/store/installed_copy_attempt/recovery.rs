@@ -529,20 +529,9 @@ fn measured_file(
     if flags & libc::O_ACCMODE != libc::O_RDONLY {
         return Err(failure("Installed recovery artifact is not readonly"));
     }
-    let mut hash = sha2::Sha256::new();
-    let mut offset = 0u64;
-    let mut buffer = [0u8; 65536];
-    while offset < m.len() {
-        let count = (m.len() - offset).min(buffer.len() as u64) as usize;
-        file.read_exact_at(&mut buffer[..count], offset)?;
-        hash.update(&buffer[..count]);
-        offset += count as u64;
-    }
-    let mut extra = [0];
-    if file.read_at(&mut extra, m.len())? != 0 {
-        return Err(failure("Installed recovery artifact grew"));
-    }
-    let digest: [u8; 32] = hash.finalize().into();
+    let digest = crate::setup::file_digest::exact(file, m.len(), None, || {
+        failure("Installed recovery artifact changed")
+    })?;
     let after = file.metadata()?;
     if digest != facts.ciphertext_digest
         || (

@@ -31,9 +31,9 @@ use sha2::{Digest as _, Sha256};
 use tilo_lock::MutexRecover as _;
 use tilo_net::{HeaderValue, Url};
 
-use super::address::{Address, literal_inside, reached_by, site_of};
+use super::address::{Address, reached_by, site_of};
 use super::said;
-use super::wire::{Ask, Destinations, Problem, Reach, Wire};
+use super::wire::{Ask, Destinations, Problem, Reach, Wire, is_non_public_literal};
 
 /// How long a step of a sign-in may take the service.
 const STEP_WAIT: Duration = Duration::from_secs(20);
@@ -182,7 +182,7 @@ fn form(pairs: &[(&str, &str)]) -> Vec<u8> {
 fn endpoint(named: &str, destinations: Destinations) -> Option<Url> {
     let url = Url::parse(named).ok()?;
     let plain_inside =
-        url.scheme() == "http" && destinations == Destinations::Any && literal_inside(&url);
+        url.scheme() == "http" && destinations == Destinations::Any && is_non_public_literal(&url);
     (named.len() <= MAX_RETURN_BYTES
         && (url.scheme() == "https" || plain_inside)
         && url.username().is_empty()
@@ -848,8 +848,21 @@ mod tests {
             "https://ada:secret@accounts.orchard.example/token",
             "https://accounts.orchard.example/token#x",
             "javascript:alert(1)",
+            "blob:http://127.0.0.1/x",
+            "redis://127.0.0.1/",
+            "file://127.0.0.1/etc/passwd",
         ] {
             assert!(endpoint(other, Destinations::Public).is_none(), "{other}");
+        }
+        for non_http in [
+            "blob:http://127.0.0.1/x",
+            "redis://127.0.0.1/",
+            "file://127.0.0.1/etc/passwd",
+        ] {
+            assert!(
+                endpoint(non_http, Destinations::Any).is_none(),
+                "{non_http} (any)"
+            );
         }
     }
 }

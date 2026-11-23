@@ -6,10 +6,11 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_desktop_model::{IdMinter, Tab, TileContent, WindowWidth, Workspace};
-use tilo_desktop_surface::navigation::{ChromeEffect, LayoutEffect, Route, Verb};
 use tilo_desktop_surface::{
-    DesktopHandle, DesktopSurface, TileSource, TypedInsertion, TypedRefusal, seed_tree,
+    DesktopHandle, DesktopSurface, TileSource, TypedInsertion, TypedRefusal,
 };
+use tilo_session_core::desktop::navigation::{ChromeEffect, LayoutEffect, Route, Verb};
+use tilo_session_core::desktop::seed_tree;
 use ui::search::Scope;
 use ui::widget::TileHost;
 
@@ -1696,7 +1697,7 @@ fn find<'a>(
     node.children.iter().find_map(|child| find(child, widget))
 }
 
-fn labels(snapshot: &tilo_desktop_surface::navigation::Snapshot) -> Vec<String> {
+fn labels(snapshot: &tilo_session_core::desktop::navigation::Snapshot) -> Vec<String> {
     snapshot.entries.iter().map(|e| e.label.clone()).collect()
 }
 
@@ -2362,7 +2363,7 @@ fn a_windows_new_tab_control_asks_which_app_and_opens_it_there() {
     let mut chrome = chrome_at(&handle, (1200, 800));
     let before = handle.snapshot("g", vec![]);
     let group = before.active.clone().unwrap().group;
-    let windows = |snapshot: &tilo_desktop_surface::navigation::Snapshot| {
+    let windows = |snapshot: &tilo_session_core::desktop::navigation::Snapshot| {
         snapshot
             .entries
             .iter()

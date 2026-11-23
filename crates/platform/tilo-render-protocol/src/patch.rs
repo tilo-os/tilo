@@ -40,7 +40,7 @@ use crate::WireError;
 
 pub mod diff;
 pub mod local;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub mod unix;
 pub mod validate;
 
@@ -559,42 +559,6 @@ pub struct Form {
     pub tree: Node,
 }
 
-/// The actions an app offers the person at its window, as its action directory lists them:
-/// what the window's command palette shows. They travel as the descriptor JSON the directory
-/// carries, one array per message.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum ActionCatalogue {
-    /// Every action the app offers the window, in the order it offers them. Carried as bytes,
-    /// not a byte at a time: a catalogue is large, and goes out with every change of it.
-    All(#[serde(with = "serde_bytes")] Vec<u8>),
-    /// The actions of the resources whose labels moved, from an app of an earlier build: they
-    /// replace those resources' actions in the window.
-    Relabeled(#[serde(with = "serde_bytes")] Vec<u8>),
-    /// What changed of the catalogue, at the cost of what changed rather than of the whole
-    /// surface: every action of each resource that joined or changed (`actions`), which
-    /// replace what the window holds of those resources, and every resource the app offers
-    /// actions on, in the order it offers them (`resources`): the window drops the actions of
-    /// any other, and holds the rest in that order.
-    Changed {
-        #[serde(with = "serde_bytes")]
-        actions: Vec<u8>,
-        resources: Vec<String>,
-    },
-}
-
-impl ActionCatalogue {
-    /// The bytes it carries.
-    #[must_use]
-    pub fn bytes(&self) -> usize {
-        match self {
-            Self::All(actions) | Self::Relabeled(actions) => actions.len(),
-            Self::Changed { actions, resources } => resources
-                .iter()
-                .fold(actions.len(), |n, r| n.saturating_add(r.len())),
-        }
-    }
-}
-
 /// What an app sends its window.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ToUi {
@@ -665,9 +629,12 @@ pub enum ToUi {
     /// they opened before this. What the person typed after a press goes to the app once it
     /// ran it, into the field focused then.
     Took { fired: u64 },
-    /// The actions the app offers the person at this window, as their command palette lists
-    /// them: the app's published actions, with the keys, icons and labels it gives them.
-    Actions(ActionCatalogue),
+    /// What changed of the actions the app offers the person at this window, as their command
+    /// palette lists them: the change of its published surface the broker takes (a
+    /// `SurfaceDelta`, JSON), so each action's description crosses once per resource type
+    /// and a resource as its address and what differs for it. Bytes, not a byte at a time: the
+    /// first one holds every shape.
+    Actions(#[serde(with = "serde_bytes")] Vec<u8>),
     /// The language the window reads in now (`de-DE`): the person chose another in Settings while
     /// it is open. Its own chrome relabels in it, as the app's words the app sends do.
     Speak(String),
@@ -874,17 +841,6 @@ mod tests {
         let mut node = Node::empty("ui.Text", key);
         node.props.insert("value".to_owned(), Value::text(value));
         node
-    }
-
-    /// A catalogue's bytes travel as a length and the bytes, as a list of bytes did: a window
-    /// and an app of different builds read each other's catalogues.
-    #[test]
-    fn a_catalogue_travels_as_its_length_and_bytes() {
-        let sent =
-            postcard::to_allocvec(&ActionCatalogue::Relabeled(vec![7, 8, 9])).expect("encodes");
-        assert_eq!(sent, [1, 3, 7, 8, 9]);
-        let read: ActionCatalogue = postcard::from_bytes(&sent).expect("decodes");
-        assert_eq!(read, ActionCatalogue::Relabeled(vec![7, 8, 9]));
     }
 
     #[test]

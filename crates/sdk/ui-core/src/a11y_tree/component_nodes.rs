@@ -497,6 +497,7 @@ pub(super) fn resource_semantic_node(
         durable_identity,
         role: Role::Group,
         name: Some(resource.label.clone()),
+        title: None,
         value: None,
         description: None,
         state: AccessState::default(),

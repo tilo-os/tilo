@@ -26,38 +26,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_member_is_configured_by_the_server_it_serves;
-    {
-        let device = hex::encode([0x22; 32]);
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove(SERVER_DEVICE_ENV);
-        assert_eq!(
-            Server::from_env().unwrap(),
-            None,
-            "a profile that is no member takes no work"
-        );
-        env.set(SERVER_DEVICE_ENV, "not hex");
-        assert!(
-            Server::from_env().is_err(),
-            "a server named by something that is no device key"
-        );
-        env.set(SERVER_DEVICE_ENV, &device);
-        env.remove(SERVER_ENDPOINT_ENV);
-        let server = Server::from_env().unwrap().unwrap();
-        assert_eq!(server.device(), [0x22; 32]);
-        let endpoint = public(3);
-        env.set(SERVER_ENDPOINT_ENV, hex::encode(endpoint));
-        let server = Server::from_env().unwrap().unwrap();
-        assert_eq!(
-            server.device(),
-            [0x22; 32],
-            "requests are still the device's"
-        );
-        assert_eq!(server.endpoint, endpoint);
-        env.set(SERVER_ENDPOINT_ENV, "not hex");
-        assert!(Server::from_env().is_err(), "an endpoint id that is no key");
-    }
-
     phase a_tilo_servers_requests_come_from_its_endpoint_and_are_its_devices;
     {
         // A Tilo server keys its endpoint apart from its device: its requests come
@@ -116,32 +84,9 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase only_a_profile_whose_server_is_named_takes_work;
-    // A profile takes work when its server is named.
-    {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove(SERVER_DEVICE_ENV);
-        assert!(
-            crate::device::services::taking_work(None)
-                .unwrap()
-                .is_none()
-        );
-        env.set(SERVER_DEVICE_ENV, "127.0.0.1:7703");
-        assert!(
-            crate::device::services::taking_work(None).is_err(),
-            "a server is named by its device key, never by where it is"
-        );
-        env.set(SERVER_DEVICE_ENV, hex::encode([0x33; 32]));
-        assert!(
-            crate::device::services::taking_work(None)
-                .unwrap()
-                .is_some()
-        );
-    }
-
     phase a_members_endpoint_listens_where_its_relay_reaches_it;
     // The endpoint a member's server reaches it at: keyed by the member's device
-    // key, listening on the port the server's members file names.
+    // key, listening on the port its entry among its person's servers names.
     {
         let key = ed25519_dalek::SigningKey::from_bytes(&[0x44; 32]);
         let endpoint = crate::device::services::listen_endpoint(&key, Some(0)).unwrap();

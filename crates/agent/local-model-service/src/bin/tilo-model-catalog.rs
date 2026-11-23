@@ -26,7 +26,7 @@ use local_model_service::catalog::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use system_extension::{
+use tilo_extension::system_extension::{
     AcceptedExtension, ArtifactReceipt, ExtensionKind, ExtensionManifest, ImageConstraint,
     PinnedArtifact as ExtensionArtifact, SignedExtensionManifest,
 };
@@ -229,7 +229,7 @@ fn compile_mode(
             developer_offline,
         )?;
         let manifest = ExtensionManifest {
-            schema_version: system_extension::SCHEMA_VERSION,
+            schema_version: tilo_extension::system_extension::SCHEMA_VERSION,
             id: runtime.id.clone(),
             kind: ExtensionKind::LocalModelRuntime,
             version: runtime.version.clone(),

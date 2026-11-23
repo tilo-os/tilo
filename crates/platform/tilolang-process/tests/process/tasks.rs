@@ -252,11 +252,13 @@ tilo_test_env::scenario! {
         let path = published
             .strip_prefix(&format!("tl:{app}:"))
             .unwrap_or(&published);
-        let entry = tilolang_tilo::search::index_entry_at(
+        let entry = tilolang_tilo::search::index_entries_at(
             &hosted.instance().host().expect("the runtime"),
             &hosted.bundle().meta,
             path,
         )
+        .into_iter()
+        .next()
         .unwrap_or_else(|| panic!("the task is found by its name: {published}"));
         let open = entry.action.expect("a hit opens what it names");
         let published_open = |resource: &str| {

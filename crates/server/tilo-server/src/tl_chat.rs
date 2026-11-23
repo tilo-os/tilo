@@ -369,8 +369,8 @@ pub fn new_channel(
     (name, topic): (&str, &str),
     category: Option<&ResourceRef>,
 ) -> Result<ResourceRef, String> {
-    let made = match category {
-        Some(category) => call(
+    let made = if let Some(category) = category {
+        call(
             opened,
             who,
             "add_channel",
@@ -379,21 +379,20 @@ pub fn new_channel(
                 Value::Text(name.into()),
                 Value::Text(topic.into()),
             ],
-        )?,
-        None => {
-            // The first channel of a new workspace founds Chat's root.
-            let all = opened.open_root()?;
-            call(
-                opened,
-                who,
-                "new_channel",
-                vec![
-                    Value::resource(&all),
-                    Value::Text(name.into()),
-                    Value::Text(topic.into()),
-                ],
-            )?
-        }
+        )?
+    } else {
+        // The first channel of a new workspace founds Chat's root.
+        let all = opened.open_root()?;
+        call(
+            opened,
+            who,
+            "new_channel",
+            vec![
+                Value::resource(&all),
+                Value::Text(name.into()),
+                Value::Text(topic.into()),
+            ],
+        )?
     };
     made_ref(&made, "new_channel")
 }

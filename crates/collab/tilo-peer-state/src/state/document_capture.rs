@@ -26,13 +26,37 @@ pub enum PeerDocumentReadError {
     Incomplete,
     Capacity,
     Opening(String),
+    /// A write this device opened was refused as a received change is: the
+    /// refusal names the write, and nothing of it is applied or projected.
+    Refused(Box<crate::ChangeRefused>),
 }
 impl std::fmt::Display for PeerDocumentReadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "document read refusal: {self:?}")
+        match self {
+            Self::Refused(refused) => write!(f, "document read refusal: {refused}"),
+            other => write!(f, "document read refusal: {other:?}"),
+        }
     }
 }
 impl std::error::Error for PeerDocumentReadError {}
+
+/// Why a sealed write this device opened cannot be applied or projected.
+pub(crate) enum OpenedRefusal {
+    /// The workspace's rules refuse the write, as they refuse a change it
+    /// received in the clear.
+    Refused(Box<crate::ChangeRefused>),
+    /// This device cannot decide the write here and now.
+    CannotDecide(String),
+}
+
+impl std::fmt::Display for OpenedRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(refused) => f.write_str(&refused.reason),
+            Self::CannotDecide(reason) => f.write_str(reason),
+        }
+    }
+}
 
 /// Complete history bytes and heads from one currently permitted read.
 /// It carries data only, with no owner credential or mutable peer.
@@ -284,6 +308,126 @@ impl Opened {
 }
 
 impl StatePeer {
+    /// Decide a sealed `write` this device opened as `mutation` before it is
+    /// applied or projected: the checks admission runs on the same write in
+    /// the clear, including the invocation a change made for a caller keeps.
+    /// A refusal names the write as a received change's is named, so the
+    /// reader tells its author.
+    pub(crate) fn check_opened_write(
+        &self,
+        (app, record): (&str, &str),
+        write: &SignedOp,
+        mutation: &collab_types::DocumentMutation,
+    ) -> Result<(), OpenedRefusal> {
+        // A write small enough to carry as itself is decided whole, as
+        // admission decides the same write in the clear.
+        if let Ok(payload) = mutation.encode() {
+            let mut opened = write.clone();
+            opened.payload = payload;
+            opened.encryption = None;
+            // A cleartext op names each change's action in the change itself;
+            // the sealed envelope's claims were what a device without the key
+            // decided.
+            opened.claims.clear();
+            return self.decide_opened(app, record, write, &opened);
+        }
+        // A write past what one mutation carries: what its changes say of who
+        // asked still stands to be checked, and its author's claims were
+        // decided when it was admitted sealed.
+        let Some(changes) = tilo_failure::ignored!(
+            "change bytes that do not parse name no caller",
+            collab_types::claim::parse_changes(mutation.data()).ok()
+        ) else {
+            return Ok(());
+        };
+        let names_a_caller = changes.iter().any(|change| {
+            change
+                .message()
+                .and_then(tilo_actions::ActionContext::from_change_message)
+                .and_then(|context| context.invoker)
+                .is_some_and(|invoker| invoker.device.is_some())
+        });
+        if !names_a_caller {
+            return Ok(());
+        }
+        let Some(member) = self
+            .written_as(app, record, write, write.timestamp)
+            .map_err(|error| OpenedRefusal::CannotDecide(error.to_string()))?
+            .map(|(member, _)| member)
+        else {
+            return Err(OpenedRefusal::CannotDecide(
+                "the opened write's author is not decided yet".into(),
+            ));
+        };
+        self.callers_named_in(
+            app,
+            record,
+            write.author.as_bytes(),
+            write,
+            &changes,
+            &member,
+            write.timestamp,
+        )
+        .map(drop)
+        .map_err(|refusal| match refusal {
+            super::authority::AuthorizeRefusal::Rules(refusal, said) => {
+                OpenedRefusal::Refused(Box::new(crate::ChangeRefused::of(
+                    self.core.workspace.clone(),
+                    self.core.workspace.clone(),
+                    app,
+                    record,
+                    write,
+                    &refusal,
+                    said,
+                )))
+            }
+            super::authority::AuthorizeRefusal::Denied(reason) => {
+                OpenedRefusal::CannotDecide(reason.to_string())
+            }
+        })
+    }
+
+    /// Decide the opened change `opened` of `write` as admission decides a
+    /// change it received in the clear.
+    fn decide_opened(
+        &self,
+        app: &str,
+        record: &str,
+        write: &SignedOp,
+        opened: &SignedOp,
+    ) -> Result<(), OpenedRefusal> {
+        match self.authorize_document_as(
+            write.author.as_bytes(),
+            app,
+            record,
+            write,
+            opened,
+            write.timestamp,
+            true,
+        ) {
+            Ok(super::authority::Authorized::Admit { .. }) => Ok(()),
+            Ok(super::authority::Authorized::Hold(waiting)) => Err(OpenedRefusal::CannotDecide(
+                format!("the opened write waits for {waiting}"),
+            )),
+            Err(super::authority::AuthorizeRefusal::Rules(refusal, said)) => {
+                Err(OpenedRefusal::Refused(Box::new(crate::ChangeRefused::of(
+                    self.core.workspace.clone(),
+                    self.core.workspace.clone(),
+                    app,
+                    record,
+                    opened,
+                    &refusal,
+                    said,
+                ))))
+            }
+            Err(super::authority::AuthorizeRefusal::Denied(reason)) => {
+                Err(OpenedRefusal::CannotDecide(reason.to_string()))
+            }
+        }
+    }
+}
+
+impl StatePeer {
     /// Capture `app`'s `record` for the device `reader` under its current
     /// membership and Read permission, at most `maximum` bytes of it. An
     /// encrypted record is refused without `open`; with it, its retained
@@ -363,7 +507,7 @@ impl StatePeer {
             Err(error) => return Err(error),
         };
         match (document.encryption_required, open) {
-            (true, Some(open)) => open_history(document, open, maximum, kept),
+            (true, Some(open)) => open_history(self, (app, record), document, open, maximum, kept),
             (true, None) => Err(PeerDocumentReadError::Encrypted),
             (false, _) => {
                 kept.forget();
@@ -461,6 +605,8 @@ impl StatePeer {
 /// of it before. A history that does not open leaves nothing kept; one that waits for the rest
 /// of a write's segments keeps what opened.
 fn open_history<'a>(
+    peer: &StatePeer,
+    (app, record): (&str, &str),
     document: &PeerDocument,
     open: OpenSealed<'_>,
     maximum: usize,
@@ -542,6 +688,13 @@ fn open_history<'a>(
             .take(*op.author.as_bytes(), &plaintext)
             .map_err(PeerDocumentReadError::Opening)?
         {
+            // A write is decided as admission decides the same write in the
+            // clear before any of it is merged into what the reader reads.
+            peer.check_opened_write((app, record), op, &mutation)
+                .map_err(|refusal| match refusal {
+                    OpenedRefusal::Refused(refused) => PeerDocumentReadError::Refused(refused),
+                    OpenedRefusal::CannotDecide(reason) => PeerDocumentReadError::Opening(reason),
+                })?;
             writes.push((index, mutation));
             fresh = fresh.saturating_add(1);
         }

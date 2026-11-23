@@ -326,12 +326,14 @@ impl Files {
 #[cfg(not(target_arch = "wasm32"))]
 impl PeerStates for Files {
     fn read(&self, workspace: WorkspaceId) -> Result<Option<Vec<u8>>> {
-        let too_large = Error::InvalidState("sealed peer state is too large".into());
-        tilo_files::native::bounded::read_or(
-            &self.path(workspace),
-            MAX_PEER_STATE as u64,
-            too_large,
-        )
+        match tilo_files::native::bounded::read(&self.path(workspace), MAX_PEER_STATE as u64) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+                Err(Error::InvalidState("sealed peer state is too large".into()))
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     fn write(&self, workspace: WorkspaceId, sealed: &[u8]) -> Result<()> {

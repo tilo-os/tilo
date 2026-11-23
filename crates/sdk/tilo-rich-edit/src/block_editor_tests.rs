@@ -330,516 +330,321 @@ fn layout_and_draw_editor(editor: &mut BlockEditor, theme: &Theme) {
 }
 
 tilo_test_env::scenario! {
-    /// Block kinds and lists under Enter, Backspace, prefixes, conversion and indent.
-    /// Each phase was a test of its own and builds its own fixture.
-    fn blocks_split_merge_convert_and_indent_by_kind;
+    /// A person writing a note: the keys split and join lines, markers restyle
+    /// them, and lists step in and out.
+    fn a_writer_splits_joins_and_restyles_lines;
 
-    phase enter_on_empty_list_outdents_then_exits_and_numbered_lists_continue;
+    phase typing_enter_and_backspace_write_split_and_join_lines;
     {
-        fn enter_on_empty_top_level_list_exits_to_paragraph() {
-            let mut editor = BlockEditor::new();
-            editor.set_blocks(vec![Block::checklist(0, false, "")]);
-            editor.apply_signal(0, &LineSignal::Enter { split_at: 0 });
-            assert_eq!(editor.blocks().len(), 1);
-            assert!(matches!(editor.blocks()[0].kind, BlockKind::Paragraph));
-        }
+        use ui::synthetic_input::named_key;
 
-        fn enter_on_empty_nested_list_outdents_before_exiting() {
-            let mut editor = BlockEditor::new();
-            editor.set_blocks(vec![Block::bullet(2, "")]);
-            editor.apply_signal(0, &LineSignal::Enter { split_at: 0 });
-            assert!(matches!(
-                editor.blocks()[0].kind,
-                BlockKind::Bullet { indent: 1 }
-            ));
-            editor.apply_signal(0, &LineSignal::Enter { split_at: 0 });
-            assert!(matches!(
-                editor.blocks()[0].kind,
-                BlockKind::Bullet { indent: 0 }
-            ));
-            editor.apply_signal(0, &LineSignal::Enter { split_at: 0 });
-            assert!(matches!(editor.blocks()[0].kind, BlockKind::Paragraph));
-        }
+        // A new note is one empty line to write on.
+        let mut e = BlockEditor::new();
+        assert_eq!(e.blocks().len(), 1);
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Paragraph));
+        assert_eq!(e.blocks()[0].text(), "");
+        e.focus_block(0, CursorPlacement::Start);
+        type_keys(&mut e, "abcdefg");
+        assert_eq!(e.blocks()[0].text(), "abcdefg");
 
-        fn enter_continues_a_numbered_list() {
-            // Pressing Enter mid-numbered-item continues the list: the suffix
-            // becomes a NEW numbered item at the same indent (the renderer
-            // then numbers it 2).
-            let mut e = BlockEditor::new();
-            e.blocks[0] = Block::numbered(0, "first");
-            e.focused = Some(0);
-            e.split_at_cursor(0, 5); // caret at end of "first"
-            assert_eq!(e.blocks().len(), 2);
-            assert!(matches!(
-                e.blocks()[1].kind,
-                BlockKind::Numbered { indent: 0 }
-            ));
-            assert_eq!(numbered_ordinals(e.blocks()), vec![1, 2]);
-        }
+        // Enter in the middle splits the line at the caret.
+        e.focus_block(0, CursorPlacement::Byte(3));
+        dispatch(&mut e, &named_key(NamedKey::Enter));
+        assert_eq!(e.blocks().len(), 2);
+        assert_eq!(e.blocks()[0].text(), "abc");
+        assert_eq!(e.blocks()[1].text(), "defg");
+        assert!(matches!(e.blocks()[1].kind, BlockKind::Paragraph));
+        assert_eq!(e.focused_index(), Some(1));
+        assert!(e.blocks()[1].line.cursor_at_start());
 
-        fn enter_on_an_empty_item_continues_the_item_above_then_leaves_the_list() {
-            let mut editor = BlockEditor::new();
-            editor.set_blocks(vec![Block::numbered(0, "first"), Block::numbered(0, "")]);
-            editor.focus_block(1, CursorPlacement::Start);
-            editor.apply_signal(1, &LineSignal::Enter { split_at: 0 });
-            assert!(matches!(editor.blocks()[1].kind, BlockKind::Paragraph));
-            assert_eq!(editor.blocks()[1].indent(), 1, "a line inside item 1");
-            editor.blocks_mut()[1].line.set_text("more about first");
-            editor.blocks_mut().push(Block::numbered(0, "second"));
-            assert_eq!(numbered_ordinals(editor.blocks()), vec![1, 0, 2]);
+        // Enter at the end opens an empty line below it.
+        e.focus_block(1, CursorPlacement::End);
+        dispatch(&mut e, &named_key(NamedKey::Enter));
+        assert_eq!(e.blocks().len(), 3);
+        assert_eq!(e.blocks()[1].text(), "defg");
+        assert_eq!(e.blocks()[2].text(), "");
+        assert_eq!(e.focused_index(), Some(2));
 
-            let mut editor = BlockEditor::new();
-            editor.set_blocks(vec![Block::bullet(1, "inner"), Block::bullet(1, "")]);
-            editor.apply_signal(1, &LineSignal::Enter { split_at: 0 });
-            assert_eq!(
-                (editor.blocks()[1].kind.clone(), editor.blocks()[1].indent()),
-                (BlockKind::Paragraph, 2)
-            );
-            editor.apply_signal(1, &LineSignal::Enter { split_at: 0 });
-            assert_eq!(
-                (editor.blocks()[1].kind.clone(), editor.blocks()[1].indent()),
-                (BlockKind::Paragraph, 0),
-                "a second Enter leaves the list"
-            );
-        }
+        // Backspace on the empty line removes it and focus returns above.
+        dispatch(&mut e, &named_key(NamedKey::Backspace));
+        assert_eq!(e.blocks().len(), 2);
+        assert_eq!(e.blocks()[1].text(), "defg");
+        assert_eq!(e.focused_index(), Some(1));
+        assert_eq!(e.blocks()[1].line.cursor_pos(), 4);
 
-        enter_on_empty_top_level_list_exits_to_paragraph();
-        enter_on_empty_nested_list_outdents_before_exiting();
-        enter_on_an_empty_item_continues_the_item_above_then_leaves_the_list();
-        enter_continues_a_numbered_list();
+        // Backspace at the start of a line joins it to the line above, at the join.
+        e.focus_block(1, CursorPlacement::Start);
+        dispatch(&mut e, &named_key(NamedKey::Backspace));
+        assert_eq!(e.blocks().len(), 1);
+        assert_eq!(e.blocks()[0].text(), "abcdefg");
+        assert_eq!(e.blocks()[0].line.cursor_pos(), 3);
+        assert_eq!(e.focused_index(), Some(0));
+
+        // At the very start of the note there is nothing to join.
+        e.focus_block(0, CursorPlacement::Start);
+        dispatch(&mut e, &named_key(NamedKey::Backspace));
+        assert_eq!(e.blocks().len(), 1);
+        assert_eq!(e.blocks()[0].text(), "abcdefg");
+
+        // Backspace on an empty line in the middle removes it and returns focus above.
+        let mut e = BlockEditor::new();
+        e.set_blocks(vec![
+            Block::paragraph("first"),
+            Block::paragraph(""),
+            Block::paragraph("third"),
+        ]);
+        e.focus_block(1, CursorPlacement::Start);
+        dispatch(&mut e, &named_key(NamedKey::Backspace));
+        assert_eq!(e.blocks().len(), 2);
+        assert_eq!(e.blocks()[0].text(), "first");
+        assert_eq!(e.blocks()[1].text(), "third");
+        assert_eq!(e.focused_index(), Some(0));
+        assert_eq!(e.blocks()[0].line.cursor_pos(), 5);
+
+        // The last line stays even when it is empty.
+        let mut e = BlockEditor::new();
+        e.focus_block(0, CursorPlacement::Start);
+        dispatch(&mut e, &named_key(NamedKey::Backspace));
+        assert_eq!(e.blocks().len(), 1);
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Paragraph));
+        assert_eq!(e.blocks()[0].text(), "");
+
+        // Focus past the end lands on the last line.
+        e.blocks_mut().push(Block::paragraph("second"));
+        e.focus_block(99, CursorPlacement::End);
+        assert_eq!(e.focused_index(), Some(1));
+
+        // Enter on an empty checklist item ends the list.
+        let mut e = BlockEditor::new();
+        e.set_blocks(vec![Block::checklist(0, false, "")]);
+        e.focus_block(0, CursorPlacement::Start);
+        dispatch(&mut e, &named_key(NamedKey::Enter));
+        assert_eq!(e.blocks().len(), 1);
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Paragraph));
+
+        // A nested item steps out one level per Enter, then leaves the list.
+        let mut e = BlockEditor::new();
+        e.set_blocks(vec![Block::bullet(2, "")]);
+        e.focus_block(0, CursorPlacement::Start);
+        dispatch(&mut e, &named_key(NamedKey::Enter));
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Bullet { indent: 1 }));
+        dispatch(&mut e, &named_key(NamedKey::Enter));
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Bullet { indent: 0 }));
+        dispatch(&mut e, &named_key(NamedKey::Enter));
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Paragraph));
+
+        // Enter in a numbered item starts the next number.
+        let mut e = BlockEditor::new();
+        e.set_blocks(vec![Block::numbered(0, "first")]);
+        e.focus_block(0, CursorPlacement::End);
+        dispatch(&mut e, &named_key(NamedKey::Enter));
+        assert_eq!(e.blocks().len(), 2);
+        assert!(matches!(
+            e.blocks()[1].kind,
+            BlockKind::Numbered { indent: 0 }
+        ));
+        assert_eq!(numbered_ordinals(e.blocks()), vec![1, 2]);
+
+        // Enter on an empty numbered item writes under the item, then leaves the list.
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::numbered(0, "first"), Block::numbered(0, "")]);
+        editor.focus_block(1, CursorPlacement::Start);
+        dispatch(&mut editor, &named_key(NamedKey::Enter));
+        assert!(matches!(editor.blocks()[1].kind, BlockKind::Paragraph));
+        assert_eq!(editor.blocks()[1].indent(), 1, "a line inside item 1");
+        editor.blocks_mut()[1].line.set_text("more about first");
+        editor.blocks_mut().push(Block::numbered(0, "second"));
+        assert_eq!(numbered_ordinals(editor.blocks()), vec![1, 0, 2]);
+
+        // The same in a nested bullet.
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::bullet(1, "inner"), Block::bullet(1, "")]);
+        editor.focus_block(1, CursorPlacement::Start);
+        dispatch(&mut editor, &named_key(NamedKey::Enter));
+        assert_eq!(
+            (editor.blocks()[1].kind.clone(), editor.blocks()[1].indent()),
+            (BlockKind::Paragraph, 2)
+        );
+        dispatch(&mut editor, &named_key(NamedKey::Enter));
+        assert_eq!(
+            (editor.blocks()[1].kind.clone(), editor.blocks()[1].indent()),
+            (BlockKind::Paragraph, 0),
+            "a second Enter leaves the list"
+        );
     }
 
-    phase split_and_merge_blocks_move_the_caret_and_continue_lists;
+    phase typed_markers_restyle_the_line_and_keep_what_was_written;
     {
-        fn new_has_one_empty_paragraph() {
-            let e = BlockEditor::new();
-            assert_eq!(e.blocks().len(), 1);
-            assert!(matches!(e.blocks()[0].kind, BlockKind::Paragraph));
-            assert_eq!(e.blocks()[0].text(), "");
-        }
-
-        fn split_inside_text_produces_two_blocks() {
+        // "# ", "## " and "### " make a heading of that level and keep the words.
+        for (prefix, level) in [("# ", 1), ("## ", 2), ("### ", 3)] {
             let mut e = BlockEditor::new();
-            e.blocks[0].line.set_text("abcdefg");
-            e.focused = Some(0);
-            e.split_at_cursor(0, 3);
-            assert_eq!(e.blocks().len(), 2);
-            assert_eq!(e.blocks()[0].text(), "abc");
-            assert_eq!(e.blocks()[1].text(), "defg");
-            assert!(matches!(e.blocks()[1].kind, BlockKind::Paragraph));
-            assert_eq!(e.focused_index(), Some(1));
-            assert!(e.blocks()[1].line.cursor_at_start());
-        }
-
-        fn split_at_end_creates_empty_block_below() {
-            let mut e = BlockEditor::new();
-            e.blocks[0].line.set_text("hello");
-            e.focused = Some(0);
-            e.split_at_cursor(0, 5);
-            assert_eq!(e.blocks().len(), 2);
-            assert_eq!(e.blocks()[0].text(), "hello");
-            assert_eq!(e.blocks()[1].text(), "");
-            assert_eq!(e.focused_index(), Some(1));
-        }
-
-        fn merge_joins_and_lands_cursor_at_join() {
-            let mut e = BlockEditor::new();
-            e.blocks[0].line.set_text("abc");
-            e.blocks.push(Block::paragraph("def"));
-            e.focused = Some(1);
-            e.merge_with_previous(1);
-            assert_eq!(e.blocks().len(), 1);
-            assert_eq!(e.blocks()[0].text(), "abcdef");
-            // Caret lands at byte 3 — the join point.
-            assert_eq!(e.blocks()[0].line.cursor_pos(), 3);
-            assert_eq!(e.focused_index(), Some(0));
-        }
-
-        fn merge_at_index_zero_is_noop() {
-            let mut e = BlockEditor::new();
-            e.blocks[0].line.set_text("abc");
-            e.focused = Some(0);
-            e.merge_with_previous(0);
-            assert_eq!(e.blocks().len(), 1);
-            assert_eq!(e.blocks()[0].text(), "abc");
-        }
-
-        fn split_bullet_continues_list_at_same_indent() {
-            let mut e = BlockEditor::new();
-            e.blocks[0] = Block::bullet(2, "first");
-            e.focused = Some(0);
-            e.split_at_cursor(0, 5);
-            assert_eq!(e.blocks().len(), 2);
-            match &e.blocks()[1].kind {
-                BlockKind::Bullet { indent } => assert_eq!(*indent, 2),
-                k => panic!("expected Bullet at indent 2, got {k:?}"),
-            }
-        }
-
-        fn split_checklist_creates_unchecked_followup() {
-            let mut e = BlockEditor::new();
-            e.blocks[0] = Block::checklist(1, true, "first");
-            e.focused = Some(0);
-            e.split_at_cursor(0, 5);
-            assert_eq!(e.blocks().len(), 2);
-            match &e.blocks()[1].kind {
-                BlockKind::Checklist { indent, done } => {
-                    assert_eq!(*indent, 1);
-                    assert!(!*done, "new checklist item should default to unchecked");
-                }
-                k => panic!("expected Checklist, got {k:?}"),
-            }
-        }
-
-        new_has_one_empty_paragraph();
-        split_inside_text_produces_two_blocks();
-        split_at_end_creates_empty_block_below();
-        merge_joins_and_lands_cursor_at_join();
-        merge_at_index_zero_is_noop();
-        split_bullet_continues_list_at_same_indent();
-        split_checklist_creates_unchecked_followup();
-    }
-
-    phase deleting_empty_blocks_shifts_focus_and_keeps_one_block;
-    {
-        fn delete_empty_mid_list_shifts_focus_back() {
-            let mut e = BlockEditor::new();
-            e.blocks[0].line.set_text("first");
-            e.blocks.push(Block::paragraph(""));
-            e.blocks.push(Block::paragraph("third"));
-            e.focused = Some(1);
-            e.delete_empty(1);
-            assert_eq!(e.blocks().len(), 2);
-            assert_eq!(e.blocks()[0].text(), "first");
-            assert_eq!(e.blocks()[1].text(), "third");
-            assert_eq!(e.focused_index(), Some(0));
+            e.focus_block(0, CursorPlacement::Start);
+            type_keys(&mut e, prefix);
+            type_keys(&mut e, "title");
+            assert_eq!(e.blocks()[0].kind, BlockKind::Heading(level), "{prefix:?}");
+            assert_eq!(e.blocks()[0].text(), "title");
             assert_eq!(e.blocks()[0].line.cursor_pos(), 5);
         }
 
-        fn delete_empty_first_block_keeps_at_least_one() {
-            let mut e = BlockEditor::new();
-            e.focused = Some(0);
-            e.delete_empty(0);
-            assert_eq!(e.blocks().len(), 1);
-            assert!(matches!(e.blocks()[0].kind, BlockKind::Paragraph));
-            assert_eq!(e.blocks()[0].text(), "");
-        }
+        // "> " starts a quote and the caret keeps typing in it.
+        let mut e = BlockEditor::new();
+        e.focus_block(0, CursorPlacement::Start);
+        type_keys(&mut e, "> ");
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Quote));
+        assert_eq!(e.blocks()[0].text(), "");
+        assert!(e.blocks()[0].line.is_focused());
 
-        fn focus_block_clamps_to_range() {
-            let mut e = BlockEditor::new();
-            e.blocks.push(Block::paragraph("second"));
-            e.focus_block(99, CursorPlacement::End);
-            assert_eq!(e.focused_index(), Some(1));
-        }
-
-        fn divider_is_not_editable() {
-            assert!(!BlockKind::Divider.is_editable());
-            assert!(BlockKind::Paragraph.is_editable());
-            assert!(BlockKind::CodeBlock { lang: None }.is_editable());
-        }
-
-        delete_empty_mid_list_shifts_focus_back();
-        delete_empty_first_block_keeps_at_least_one();
-        focus_block_clamps_to_range();
-        divider_is_not_editable();
+        // Words without a prefix stay prose, and a heading never promotes again.
+        let mut e = BlockEditor::new();
+        e.focus_block(0, CursorPlacement::Start);
+        type_keys(&mut e, "hello");
+        assert!(!e.try_promote_to_heading(0));
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Paragraph));
+        e.set_blocks(vec![Block::heading(1, "# hi")]);
+        assert!(!e.try_promote_to_heading(0));
     }
 
-    phase markdown_prefix_promotion_converts_only_prefixed_paragraphs;
+    phase menu_commands_change_a_lines_kind_and_keep_its_words;
     {
-        fn promote_to_h1_from_hash_space() {
-            let mut e = BlockEditor::new();
-            e.blocks[0].line.set_text("# x");
-            e.focused = Some(0);
-            let promoted = e.try_promote_to_heading(0);
-            assert!(promoted);
-            assert!(matches!(e.blocks()[0].kind, BlockKind::Heading(1)));
-            assert_eq!(e.blocks()[0].text(), "x");
-            assert_eq!(e.blocks()[0].line.cursor_pos(), 0);
-        }
+        // A line changes kind without losing what was written on it.
+        let mut e = BlockEditor::new();
+        e.set_blocks(vec![Block::paragraph("hello")]);
+        assert!(e.try_convert_to(0, BlockKind::Heading(1)));
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Heading(1)));
+        assert_eq!(e.blocks()[0].text(), "hello");
 
-        fn promote_to_quote_strips_marker_and_keeps_typing_focus() {
-            let mut editor = BlockEditor::new();
-            editor.set_blocks(vec![Block::paragraph("> ")]);
-            editor.focus_block(0, CursorPlacement::End);
+        // Asking for the kind it already is changes nothing.
+        assert!(!e.try_convert_to(0, BlockKind::Heading(1)));
 
-            assert!(editor.try_promote_to_quote(0));
-            assert!(matches!(editor.blocks()[0].kind, BlockKind::Quote));
-            assert_eq!(editor.blocks()[0].text(), "");
-            assert!(editor.blocks()[0].line.is_focused());
-        }
+        // A heading becomes a top-level list item, words kept.
+        assert!(e.try_convert_to(0, BlockKind::Bullet { indent: 0 }));
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Bullet { indent: 0 }));
+        assert_eq!(e.blocks()[0].text(), "hello");
 
-        fn promote_to_h2_and_h3() {
-            let mut e = BlockEditor::new();
-            e.blocks[0].line.set_text("## title");
-            e.focused = Some(0);
-            e.try_promote_to_heading(0);
-            assert!(matches!(e.blocks()[0].kind, BlockKind::Heading(2)));
-            assert_eq!(e.blocks()[0].text(), "title");
+        // Numbered item and prose keep the words too.
+        assert!(e.try_convert_to(0, BlockKind::Numbered { indent: 0 }));
+        assert!(matches!(
+            e.blocks()[0].kind,
+            BlockKind::Numbered { indent: 0 }
+        ));
+        assert_eq!(e.blocks()[0].text(), "hello");
+        assert!(e.try_convert_to(0, BlockKind::Paragraph));
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Paragraph));
+        assert_eq!(e.blocks()[0].text(), "hello");
 
-            let mut e = BlockEditor::new();
-            e.blocks[0].line.set_text("### sub");
-            e.try_promote_to_heading(0);
-            assert!(matches!(e.blocks()[0].kind, BlockKind::Heading(3)));
-            assert_eq!(e.blocks()[0].text(), "sub");
-        }
+        // Dividing a focused line leaves a line to write on below it.
+        e.set_focus(true);
+        e.focus_block(0, CursorPlacement::Start);
+        assert!(e.try_convert_to(0, BlockKind::Divider));
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Divider));
+        assert_eq!(e.blocks().len(), 2);
+        assert!(matches!(e.blocks()[1].kind, BlockKind::Paragraph));
+        assert_eq!(e.focused_index(), Some(1));
 
-        fn promote_does_nothing_without_prefix() {
-            let mut e = BlockEditor::new();
-            e.blocks[0].line.set_text("hello");
-            assert!(!e.try_promote_to_heading(0));
-            assert!(matches!(e.blocks()[0].kind, BlockKind::Paragraph));
-        }
-
-        fn promote_does_nothing_on_existing_heading() {
-            let mut e = BlockEditor::new();
-            e.blocks[0] = Block::heading(1, "# hi");
-            assert!(!e.try_promote_to_heading(0));
-        }
-
-        promote_to_h1_from_hash_space();
-        promote_to_quote_strips_marker_and_keeps_typing_focus();
-        promote_to_h2_and_h3();
-        promote_does_nothing_without_prefix();
-        promote_does_nothing_on_existing_heading();
-    }
-
-    phase try_convert_changes_kind_preserving_text;
-    {
-        fn try_convert_paragraph_to_h1() {
-            let mut e = BlockEditor::new();
-            e.blocks[0].line.set_text("hello");
-            assert!(e.try_convert_to(0, BlockKind::Heading(1)));
-            assert!(matches!(e.blocks()[0].kind, BlockKind::Heading(1)));
-            assert_eq!(e.blocks()[0].text(), "hello");
-        }
-
-        fn try_convert_h1_to_bullet_preserves_text_resets_indent() {
-            let mut e = BlockEditor::new();
-            e.blocks[0] = Block::heading(1, "task");
-            assert!(e.try_convert_to(0, BlockKind::Bullet { indent: 0 }));
-            match &e.blocks()[0].kind {
-                BlockKind::Bullet { indent } => assert_eq!(*indent, 0),
-                k => panic!("expected Bullet, got {k:?}"),
-            }
-            assert_eq!(e.blocks()[0].text(), "task");
-        }
-
-        fn try_convert_paragraph_to_numbered() {
-            let mut e = BlockEditor::new();
-            e.blocks[0].line.set_text("step");
-            assert!(e.try_convert_to(0, BlockKind::Numbered { indent: 0 }));
-            assert!(matches!(
-                e.blocks()[0].kind,
-                BlockKind::Numbered { indent: 0 }
-            ));
-            assert_eq!(e.blocks()[0].text(), "step");
-        }
-
-        fn try_convert_bullet_to_paragraph() {
-            let mut e = BlockEditor::new();
-            e.blocks[0] = Block::bullet(2, "item");
-            assert!(e.try_convert_to(0, BlockKind::Paragraph));
-            assert!(matches!(e.blocks()[0].kind, BlockKind::Paragraph));
-            assert_eq!(e.blocks()[0].text(), "item");
-        }
-
-        fn try_convert_to_same_kind_is_noop() {
-            let mut e = BlockEditor::new();
-            assert!(!e.try_convert_to(0, BlockKind::Paragraph));
-        }
-
-        fn try_convert_to_divider_appends_trailing_paragraph_when_focused() {
-            let mut e = BlockEditor::new();
-            e.focused = Some(0);
-            e.blocks[0].line.set_focus(true);
-            e.is_focused = true;
-            assert!(e.try_convert_to(0, BlockKind::Divider));
-            assert!(matches!(e.blocks()[0].kind, BlockKind::Divider));
-            assert_eq!(e.blocks().len(), 2);
-            assert!(matches!(e.blocks()[1].kind, BlockKind::Paragraph));
-            assert_eq!(e.focused_index(), Some(1));
-        }
-
-        fn try_convert_written_block_to_divider_keeps_the_writing_under_it() {
-            let mut e = BlockEditor::new();
-            e.blocks[0].line.set_text("body");
-            e.focus_block(0, CursorPlacement::End);
-            assert!(e.try_convert_to(0, BlockKind::Divider));
-            assert_eq!(e.blocks().len(), 2);
-            assert!(matches!(e.blocks()[0].kind, BlockKind::Divider));
-            assert_eq!(
-                e.blocks()[1].text(),
-                "body",
-                "converting never deletes text"
-            );
-            assert_eq!(e.focused_index(), Some(1), "the caret stays in it");
-        }
-
-        try_convert_paragraph_to_h1();
-        try_convert_h1_to_bullet_preserves_text_resets_indent();
-        try_convert_paragraph_to_numbered();
-        try_convert_bullet_to_paragraph();
-        try_convert_to_same_kind_is_noop();
-        try_convert_to_divider_appends_trailing_paragraph_when_focused();
-        try_convert_written_block_to_divider_keeps_the_writing_under_it();
+        // Dividing a written line keeps the writing under the divider.
+        let mut e = BlockEditor::new();
+        e.set_blocks(vec![Block::paragraph("body")]);
+        e.set_focus(true);
+        e.focus_block(0, CursorPlacement::End);
+        assert!(e.try_convert_to(0, BlockKind::Divider));
+        assert_eq!(e.blocks().len(), 2);
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Divider));
+        assert_eq!(e.blocks()[1].text(), "body", "converting never deletes text");
+        assert_eq!(e.focused_index(), Some(1), "the caret stays in it");
     }
 
     phase numbered_ordinals_count_reset_and_resume_within_runs;
     {
-        fn numbered_ordinals_count_within_run() {
-            let blocks = vec![
+        // A run counts up.
+        assert_eq!(
+            numbered_ordinals(&[
                 Block::numbered(0, "a"),
                 Block::numbered(0, "b"),
                 Block::numbered(0, "c"),
-            ];
-            assert_eq!(numbered_ordinals(&blocks), vec![1, 2, 3]);
-        }
-
-        fn numbered_ordinals_reset_after_interruption() {
-            let blocks = vec![
+            ]),
+            vec![1, 2, 3]
+        );
+        // A paragraph between items restarts the count.
+        assert_eq!(
+            numbered_ordinals(&[
                 Block::numbered(0, "a"),
                 Block::numbered(0, "b"),
                 Block::paragraph("break"),
                 Block::numbered(0, "c"),
-            ];
-            // The paragraph breaks the run; the third item restarts at 1.
-            assert_eq!(numbered_ordinals(&blocks), vec![1, 2, 0, 1]);
-        }
-
-        fn numbered_ordinals_nested_restart_and_resume() {
-            let blocks = vec![
+            ]),
+            vec![1, 2, 0, 1]
+        );
+        // A nested level counts on its own; the outer run resumes after it.
+        assert_eq!(
+            numbered_ordinals(&[
                 Block::numbered(0, "one"),
                 Block::numbered(1, "inner a"),
                 Block::numbered(1, "inner b"),
                 Block::numbered(0, "two"),
-            ];
-            // Outer: 1 … 2; inner level restarts at 1,2; outer resumes at 2.
-            assert_eq!(numbered_ordinals(&blocks), vec![1, 1, 2, 2]);
-        }
-
-        numbered_ordinals_count_within_run();
-        numbered_ordinals_reset_after_interruption();
-        numbered_ordinals_nested_restart_and_resume();
+            ]),
+            vec![1, 1, 2, 2]
+        );
     }
 
-    phase try_indent_steps_clamps_and_respects_block_kind;
+    phase indenting_and_checking_lists_steps_clamps_and_keeps_state;
     {
-        fn try_indent_numbered_steps_up_and_down() {
-            let mut e = BlockEditor::new();
-            e.blocks[0] = Block::numbered(0, "a");
-            assert!(e.try_indent(0, 1));
-            assert_eq!(e.blocks()[0].kind.indent(), 1);
-            assert!(e.try_indent(0, -1));
-            assert_eq!(e.blocks()[0].kind.indent(), 0);
-        }
+        // A numbered item steps one level in and back out.
+        let mut e = BlockEditor::new();
+        e.set_blocks(vec![Block::numbered(0, "a")]);
+        assert!(e.try_indent(0, 1));
+        assert_eq!(e.blocks()[0].kind.indent(), 1);
+        assert!(e.try_indent(0, -1));
+        assert_eq!(e.blocks()[0].kind.indent(), 0);
 
-        fn try_indent_bullet_steps_up_and_down() {
-            let mut e = BlockEditor::new();
-            e.blocks[0] = Block::bullet(0, "a");
-            assert!(e.try_indent(0, 1));
-            assert_eq!(e.blocks()[0].kind.indent(), 1);
-            assert!(e.try_indent(0, 1));
-            assert_eq!(e.blocks()[0].kind.indent(), 2);
-            assert!(e.try_indent(0, -1));
-            assert_eq!(e.blocks()[0].kind.indent(), 1);
-        }
+        // A bullet climbs two levels and comes down one.
+        e.set_blocks(vec![Block::bullet(0, "a")]);
+        assert!(e.try_indent(0, 1));
+        assert_eq!(e.blocks()[0].kind.indent(), 1);
+        assert!(e.try_indent(0, 1));
+        assert_eq!(e.blocks()[0].kind.indent(), 2);
+        assert!(e.try_indent(0, -1));
+        assert_eq!(e.blocks()[0].kind.indent(), 1);
 
-        fn try_indent_clamps_at_max_and_zero() {
-            let mut e = BlockEditor::new();
-            e.blocks[0] = Block::bullet(MAX_LIST_INDENT, "deep");
-            assert!(!e.try_indent(0, 1));
-            assert_eq!(e.blocks()[0].kind.indent(), MAX_LIST_INDENT);
+        // The deepest level and the top are the ends of the range.
+        e.set_blocks(vec![Block::bullet(MAX_LIST_INDENT, "deep")]);
+        assert!(!e.try_indent(0, 1));
+        assert_eq!(e.blocks()[0].kind.indent(), MAX_LIST_INDENT);
+        e.set_blocks(vec![Block::bullet(0, "top")]);
+        assert!(!e.try_indent(0, -1));
+        assert_eq!(e.blocks()[0].kind.indent(), 0);
 
-            let mut e = BlockEditor::new();
-            e.blocks[0] = Block::bullet(0, "top");
-            assert!(!e.try_indent(0, -1));
-            assert_eq!(e.blocks()[0].kind.indent(), 0);
-        }
+        // Prose does not indent, but prose under an item joins that item's level.
+        e.set_blocks(vec![Block::paragraph("body")]);
+        assert!(!e.try_indent(0, 1));
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Paragraph));
+        e.set_blocks(vec![Block::numbered(0, "item"), Block::paragraph("detail")]);
+        assert!(e.try_indent(1, 1));
+        assert_eq!(e.blocks()[1].nesting, 1);
 
-        fn try_indent_on_paragraph_is_noop() {
-            let mut e = BlockEditor::new();
-            e.blocks[0].line.set_text("body");
-            assert!(!e.try_indent(0, 1));
-            assert!(matches!(e.blocks()[0].kind, BlockKind::Paragraph));
-        }
-
-        fn try_indent_paragraph_joins_the_preceding_outline() {
-            let mut e = BlockEditor::new();
-            e.set_blocks(vec![Block::numbered(0, "item"), Block::paragraph("detail")]);
-            assert!(e.try_indent(1, 1));
-            assert_eq!(e.blocks()[1].nesting, 1);
-        }
-
-        fn try_indent_on_checklist_preserves_done() {
-            let mut e = BlockEditor::new();
-            e.blocks[0] = Block::checklist(0, true, "task");
-            assert!(e.try_indent(0, 1));
-            match &e.blocks()[0].kind {
-                BlockKind::Checklist { indent, done } => {
-                    assert_eq!(*indent, 1);
-                    assert!(*done, "toggling indent must not change done");
-                }
-                k => panic!("expected Checklist, got {k:?}"),
+        // Indenting a checked item keeps it checked, and a check flips in place.
+        e.set_blocks(vec![Block::checklist(0, true, "task")]);
+        assert!(e.try_indent(0, 1));
+        match &e.blocks()[0].kind {
+            BlockKind::Checklist { indent, done } => {
+                assert_eq!(*indent, 1);
+                assert!(*done, "indenting must not change done");
             }
+            k => panic!("expected Checklist, got {k:?}"),
         }
-
-        fn supports_indent_predicate() {
-            assert!(BlockKind::Bullet { indent: 0 }.supports_indent());
-            assert!(
-                BlockKind::Checklist {
-                    indent: 0,
-                    done: false
-                }
-                .supports_indent()
-            );
-            assert!(!BlockKind::Paragraph.supports_indent());
-            assert!(!BlockKind::Heading(1).supports_indent());
-            assert!(!BlockKind::CodeBlock { lang: None }.supports_indent());
-            assert!(!BlockKind::Divider.supports_indent());
+        e.set_blocks(vec![Block::checklist(0, false, "task")]);
+        assert_eq!(e.try_toggle_check(0), Some(true));
+        match &e.blocks()[0].kind {
+            BlockKind::Checklist { done, .. } => assert!(*done),
+            _ => panic!("expected Checklist"),
         }
+        assert_eq!(e.try_toggle_check(0), Some(false));
+        e.set_blocks(vec![Block::paragraph("body")]);
+        assert_eq!(e.try_toggle_check(0), None);
 
-        fn parse_indent_two_spaces_per_level() {
-            let (l, rest) = parse_list_indent("    item");
-            assert_eq!(l, 2);
-            assert_eq!(rest, "item");
-            let (l, rest) = parse_list_indent("\t\titem");
-            assert_eq!(l, 2);
-            assert_eq!(rest, "item");
-            let (l, rest) = parse_list_indent("no indent");
-            assert_eq!(l, 0);
-            assert_eq!(rest, "no indent");
-        }
-
-        try_indent_numbered_steps_up_and_down();
-        try_indent_bullet_steps_up_and_down();
-        try_indent_clamps_at_max_and_zero();
-        try_indent_on_paragraph_is_noop();
-        try_indent_paragraph_joins_the_preceding_outline();
-        try_indent_on_checklist_preserves_done();
-        supports_indent_predicate();
-        parse_indent_two_spaces_per_level();
-    }
-
-    phase try_toggle_check_flips_only_checklists;
-    {
-        fn try_toggle_check_flips_done_flag() {
-            let mut e = BlockEditor::new();
-            e.blocks[0] = Block::checklist(0, false, "task");
-            assert_eq!(e.try_toggle_check(0), Some(true));
-            match &e.blocks()[0].kind {
-                BlockKind::Checklist { done, .. } => assert!(*done),
-                _ => panic!("expected Checklist"),
-            }
-            assert_eq!(e.try_toggle_check(0), Some(false));
-        }
-
-        fn try_toggle_check_on_paragraph_is_none() {
-            let mut e = BlockEditor::new();
-            assert_eq!(e.try_toggle_check(0), None);
-        }
-
-        try_toggle_check_flips_done_flag();
-        try_toggle_check_on_paragraph_is_none();
+        // A pasted list's indentation is two spaces or a tab per level.
+        assert_eq!(parse_list_indent("    item"), (2, "item"));
+        assert_eq!(parse_list_indent("\t\titem"), (2, "item"));
+        assert_eq!(parse_list_indent("no indent"), (0, "no indent"));
     }
 }
 
@@ -2327,16 +2132,9 @@ tilo_test_env::scenario! {
             assert!(code.x0 >= prefix_gutter_for(&editor.blocks[1].kind) * 2.0);
         }
 
-        fn font_size_per_kind() {
-            assert!(BlockKind::Heading(1).font_size() > BlockKind::Heading(2).font_size());
-            assert!(BlockKind::Heading(2).font_size() > BlockKind::Heading(3).font_size());
-            assert!(BlockKind::Heading(3).font_size() > BlockKind::Paragraph.font_size());
-        }
-
         code_block_cells_render_monospace();
         heading_paragraph_inline_code_and_numbered_prefix_scale_once();
         high_text_checklist_and_code_rows_leave_full_scaled_line_bands();
-        font_size_per_kind();
     }
 
     phase rich_link_hits_track_drawn_shaped_and_bidi_ranges;

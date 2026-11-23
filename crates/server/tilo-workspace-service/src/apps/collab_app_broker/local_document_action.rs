@@ -5,7 +5,8 @@ use super::{
     PublishedAction, Rc, admission_request_digest, invocation_journal,
 };
 use crate::apps::BrokerError;
-use crate::apps::local_document_action::Request;
+use crate::apps::local_document_action;
+use runtime_collab::LocalDocumentActionReport;
 
 /// Retry acceleration only. Durability belongs to the SDK's private receipt
 /// history checkpoint, not the execution journal. Eviction is safe because the
@@ -104,7 +105,7 @@ impl ReceiptCache {
 
 /// Recovery provenance must match the live authenticated channel, not replace it.
 fn validate_report_ownership(
-    request: &Request,
+    request: &LocalDocumentActionReport,
     route: &CrdtRoute,
     current: &AdmittedJoinIdentity,
 ) -> Result<(), BrokerError> {
@@ -138,7 +139,7 @@ fn validate_report_ownership(
 fn cached_receipt(
     channel: &JoinedChannel,
     route: &CrdtRoute,
-    request: &Request,
+    request: &LocalDocumentActionReport,
 ) -> Result<Option<ReceiptRecord>, BrokerError> {
     let state = &channel.state;
     if !state.is_accepting() {
@@ -242,7 +243,10 @@ fn observation(
     })
 }
 
-fn validate_report_offer(request: &Request, action: &PublishedAction) -> Result<(), String> {
+fn validate_report_offer(
+    request: &LocalDocumentActionReport,
+    action: &PublishedAction,
+) -> Result<(), String> {
     if !action
         .operation_kind
         .reports_a_change(action.contract.need().kind)
@@ -253,7 +257,7 @@ fn validate_report_offer(request: &Request, action: &PublishedAction) -> Result<
             "local action report requires authenticated document or read-only admission".into(),
         );
     }
-    request.typed_arguments(&action.params)?;
+    local_document_action::typed_arguments(request, &action.params)?;
     Ok(())
 }
 
@@ -293,7 +297,7 @@ pub(super) fn admit(
 ) -> impl std::future::Future<Output = Result<runtime_collab::PublishedInvocationObservation, BrokerError>>
 {
     let parsed = (|| {
-        let request = Request::decode(&report).map_err(rejected)?;
+        let request = local_document_action::decode(&report).map_err(rejected)?;
         if request.bound_invocation().map_err(rejected)? != request.invocation {
             return Err(rejected(
                 "local report invocation does not bind capture".into(),

@@ -62,7 +62,7 @@ class TestCargo(unittest.TestCase):
     def test_the_shared_test_support_crate_is_test_code(self):
         self.assertEqual(
             found("pub fn bin(p: &str) { Command::new(cargo()).arg(p).output(); }",
-                  "crates/dev/test-env/src/binary.rs"),
+                  "tools/test-env/src/binary.rs"),
             [1],
         )
 
@@ -73,6 +73,12 @@ class TestCargo(unittest.TestCase):
                 [(Path("tools/web/wasm-split/tests/it.rs"), 'fn t() { Command::new("cargo").spawn(); }')],
             ),
             [],
+        )
+
+    def test_a_fixture_payload_under_tests_still_cannot_run_cargo(self):
+        source = 'fn main() { Command::new("cargo").arg("build").output().unwrap(); }'
+        self.assertEqual(
+            found(source, "crates/x/tests/fixtures/payload/src/main.rs"), [1]
         )
 
 

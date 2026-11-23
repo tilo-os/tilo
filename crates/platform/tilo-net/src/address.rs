@@ -84,18 +84,37 @@ fn public_v6(address: Ipv6Addr) -> bool {
 
 /// The address `url` writes out where a name would stand, if it writes one:
 /// `https://10.0.0.7/` and `https://[::1]/` do, `https://example.com/` does
-/// not. Such an address is never looked up, so whoever keeps a request to the
-/// public internet judges it ([`is_public`]) before anything is sent; a name
-/// is judged where it is looked up.
+/// not. Reads the parsed host (`Host::Ipv4`, `Host::Ipv6`, or a non-special
+/// scheme's opaque `Host::Domain` whose text parses as an `IpAddr`), and for a
+/// URL without a host (such as `blob:http://127.0.0.1/…`) reads the origin
+/// tuple's host. Such an address is never looked up, so whoever keeps a
+/// request to the public internet judges it ([`is_public`]) before anything is
+/// sent; a name is judged where it is looked up.
 #[must_use]
 pub fn written_out(url: &url::Url) -> Option<IpAddr> {
-    let url::Origin::Tuple(_, named, _) = url.origin() else {
-        return None;
-    };
-    literal(&named.to_string())
+    match url.host() {
+        Some(url::Host::Ipv4(address)) => Some(IpAddr::V4(address)),
+        Some(url::Host::Ipv6(address)) => Some(IpAddr::V6(address)),
+        Some(url::Host::Domain(text)) => text.parse::<IpAddr>().ok(),
+        None => match url.origin() {
+            url::Origin::Tuple(_, url::Host::Ipv4(address), _) => Some(IpAddr::V4(address)),
+            url::Origin::Tuple(_, url::Host::Ipv6(address), _) => Some(IpAddr::V6(address)),
+            url::Origin::Tuple(_, url::Host::Domain(text), _) => text.parse::<IpAddr>().ok(),
+            url::Origin::Opaque(_) => None,
+        },
+    }
+}
+
+/// Whether `url` writes out a literal address ([`written_out`]) that is not on
+/// the public internet ([`is_public`]). A domain name or a URL that names no
+/// address is never one.
+#[must_use]
+pub fn is_non_public_literal(url: &url::Url) -> bool {
+    written_out(url).is_some_and(|address| !is_public(address))
 }
 
 /// `name` as the address it writes out, in brackets or not.
+#[cfg(not(target_family = "wasm"))]
 fn literal(name: &str) -> Option<IpAddr> {
     name.strip_prefix('[')
         .and_then(|inner| inner.strip_suffix(']'))
@@ -450,5 +469,223 @@ mod tests {
         assert!(!found.is_empty() && found.iter().all(IpAddr::is_loopback));
         let refused = public_addresses(&system, "localhost").await.unwrap_err();
         assert!(not_public(&refused), "{refused}");
+    }
+
+    /// Verbatim test-only copies of every literal-address reading that existed
+    /// before `written_out` unified them.
+    mod superseded_readings {
+        use std::net::IpAddr;
+
+        /// `crates/platform/tilo-net/src/proxy/host.rs` (`check_target`).
+        pub(super) fn proxy_match(url: &url::Url) -> Option<IpAddr> {
+            match url.host() {
+                None | Some(url::Host::Domain(_)) => None,
+                Some(url::Host::Ipv4(address)) => Some(IpAddr::V4(address)),
+                Some(url::Host::Ipv6(address)) => Some(IpAddr::V6(address)),
+            }
+        }
+
+        /// Previous `crates/platform/tilo-net/src/address.rs` (`written_out`).
+        pub(super) fn previous_written_out(url: &url::Url) -> Option<IpAddr> {
+            let url::Origin::Tuple(_, named, _) = url.origin() else {
+                return None;
+            };
+            let name = named.to_string();
+            name.strip_prefix('[')
+                .and_then(|inner| inner.strip_suffix(']'))
+                .unwrap_or(&name)
+                .parse()
+                .ok()
+        }
+
+        /// `crates/server/tilo-workspace-service/src/workspaces/hosted_use/web_call.rs`
+        /// (`literal_inside`, returning the parsed address before `!is_public`).
+        pub(super) fn web_call_slicing(url: &url::Url) -> Option<IpAddr> {
+            if url.domain().is_some() {
+                return None;
+            }
+            let origin = url.origin().ascii_serialization();
+            let at = origin.split_once("://").map_or("", |(_, at)| at);
+            let literal = at.strip_prefix('[').map_or_else(
+                || at.rsplit_once(':').map_or(at, |(address, _)| address),
+                |inside| inside.split(']').next().unwrap_or_default(),
+            );
+            literal.parse::<IpAddr>().ok()
+        }
+
+        /// `crates/server/tilo-workspace-service/src/connections/address.rs`
+        /// (`literal_inside`, returning the parsed address before `!is_public`).
+        pub(super) fn connections_address_trim(url: &url::Url) -> Option<IpAddr> {
+            url.host_str().and_then(|literal| {
+                literal
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<IpAddr>()
+                    .ok()
+            })
+        }
+
+        /// `crates/server/tilo-workspace-service/src/workspaces/person_settings/calendars/connect.rs`
+        /// (`literal`).
+        pub(super) fn calendars_slicing(url: &url::Url) -> Option<IpAddr> {
+            if url.domain().is_some() {
+                return None;
+            }
+            let origin = url.origin().ascii_serialization();
+            let at = origin.split_once("://").map_or("", |(_, at)| at);
+            let address = at.strip_prefix('[').map_or_else(
+                || at.rsplit_once(':').map_or(at, |(address, _)| address),
+                |inside| inside.split(']').next().unwrap_or_default(),
+            );
+            address.parse::<IpAddr>().ok()
+        }
+
+        /// `crates/agent/model-gateway/src/host_backend.rs` (`public_endpoint`,
+        /// literal branch after its `url.domain().is_some()` guard).
+        pub(super) fn model_gateway_trim(url: &url::Url) -> Option<IpAddr> {
+            if url.domain().is_some() {
+                return None;
+            }
+            url.host_str()
+                .map(|host| host.trim_start_matches('[').trim_end_matches(']'))
+                .and_then(|host| host.parse::<IpAddr>().ok())
+        }
+    }
+
+    const COMPARISON_TABLE: &[(&str, Option<&str>)] = &[
+        // Plain IPv4: loopback, unspecified, private, CGNAT, link-local, Azure, public.
+        ("http://127.0.0.1/", Some("127.0.0.1")),
+        ("https://127.255.255.254/", Some("127.255.255.254")),
+        ("https://0.0.0.0/", Some("0.0.0.0")),
+        ("https://10.0.0.1/", Some("10.0.0.1")),
+        ("https://100.64.0.1/", Some("100.64.0.1")),
+        (
+            "https://169.254.169.254/latest/meta-data/",
+            Some("169.254.169.254"),
+        ),
+        ("https://168.63.129.16/", Some("168.63.129.16")),
+        ("https://172.16.0.1/", Some("172.16.0.1")),
+        ("https://192.168.1.1/", Some("192.168.1.1")),
+        ("https://1.1.1.1/", Some("1.1.1.1")),
+        // Bracketed IPv6 and IPv4-mapped / IPv4-compatible IPv6.
+        ("http://[::1]/", Some("::1")),
+        ("https://[0:0:0:0:0:0:0:1]/", Some("::1")),
+        ("https://[fe80::1]/", Some("fe80::1")),
+        ("https://[fc00::1]/", Some("fc00::1")),
+        ("https://[fd12:3456::1]/", Some("fd12:3456::1")),
+        (
+            "https://[2606:4700:4700::1111]/",
+            Some("2606:4700:4700::1111"),
+        ),
+        ("http://[::ffff:127.0.0.1]/", Some("::ffff:127.0.0.1")),
+        ("https://[::ffff:7f00:1]/", Some("::ffff:127.0.0.1")),
+        ("https://[::ffff:10.0.0.7]/", Some("::ffff:10.0.0.7")),
+        ("https://[::ffff:1.1.1.1]/", Some("::ffff:1.1.1.1")),
+        ("https://[::127.0.0.1]/", Some("::127.0.0.1")),
+        // Unusual IPv4 spellings as `url` normalises them.
+        ("http://2130706433/", Some("127.0.0.1")),
+        ("http://0x7f000001/", Some("127.0.0.1")),
+        ("http://0x7f.1/", Some("127.0.0.1")),
+        ("http://0177.0.0.1/", Some("127.0.0.1")),
+        ("http://127.1/", Some("127.0.0.1")),
+        ("http://10.0.1/", Some("10.0.0.1")),
+        ("http://0/", Some("0.0.0.0")),
+        ("http://%31%32%37.0.0.1/", Some("127.0.0.1")),
+        (
+            "http://\u{ff11}\u{ff12}\u{ff17}.\u{ff10}.\u{ff10}.\u{ff11}/",
+            Some("127.0.0.1"),
+        ),
+        // Trailing dot, credentials, and ports.
+        ("http://127.0.0.1./", Some("127.0.0.1")),
+        ("https://10.0.0.1.:8443/", Some("10.0.0.1")),
+        ("https://1.1.1.1./", Some("1.1.1.1")),
+        ("http://user:pass@127.0.0.1/", Some("127.0.0.1")),
+        ("https://user:pass@[::1]:8443/", Some("::1")),
+        ("http://1.1.1.1@127.0.0.1/", Some("127.0.0.1")),
+        ("http://127.0.0.1@1.1.1.1/", Some("1.1.1.1")),
+        ("http://127.0.0.1:8080/", Some("127.0.0.1")),
+        ("https://[::1]:443/", Some("::1")),
+        // Schemes where the superseded readings disagreed.
+        ("blob:http://127.0.0.1/x", Some("127.0.0.1")),
+        ("blob:http://[::1]/x", Some("::1")),
+        ("blob:https://1.1.1.1/x", Some("1.1.1.1")),
+        ("redis://127.0.0.1/", Some("127.0.0.1")),
+        ("redis://1.1.1.1/", Some("1.1.1.1")),
+        ("file://127.0.0.1/etc/passwd", Some("127.0.0.1")),
+        ("file://[::1]/etc/passwd", Some("::1")),
+        ("gopher://[::1]/", Some("::1")),
+        // Real domains and domains that only look like an address.
+        ("https://example.com/", None),
+        ("https://example.com./", None),
+        ("https://127.0.0.1.example.com/", None),
+        ("https://127-0-0-1.nip.io/", None),
+        ("https://0x7f.example/", None),
+        ("file:///etc/passwd", None),
+    ];
+
+    /// `written_out` reports an address whenever any of the six superseded
+    /// readings reports one, and reports the exact same address.
+    #[test]
+    fn written_out_covers_every_superseded_literal_address_reading() {
+        type Reading = (&'static str, fn(&url::Url) -> Option<IpAddr>);
+        let old_readings: [Reading; 6] = [
+            ("proxy_match", superseded_readings::proxy_match),
+            (
+                "previous_written_out",
+                superseded_readings::previous_written_out,
+            ),
+            ("web_call_slicing", superseded_readings::web_call_slicing),
+            (
+                "connections_address_trim",
+                superseded_readings::connections_address_trim,
+            ),
+            ("calendars_slicing", superseded_readings::calendars_slicing),
+            (
+                "model_gateway_trim",
+                superseded_readings::model_gateway_trim,
+            ),
+        ];
+
+        let mut disagreed = Vec::new();
+        for &(raw, expected) in COMPARISON_TABLE {
+            let url = url::Url::parse(raw).unwrap();
+            let expected: Option<IpAddr> = expected.map(|text| text.parse().unwrap());
+            let unified = written_out(&url);
+            assert_eq!(unified, expected, "{raw}");
+            assert_eq!(
+                is_non_public_literal(&url),
+                unified.is_some_and(|address| !is_public(address)),
+                "{raw}"
+            );
+            let old_answers: Vec<(&str, Option<IpAddr>)> = old_readings
+                .iter()
+                .map(|(name, read)| (*name, read(&url)))
+                .collect();
+            for (name, answer) in &old_answers {
+                if let Some(address) = *answer {
+                    assert_eq!(
+                        unified,
+                        Some(address),
+                        "{raw}: {name} reported {address}, unified reported {unified:?}"
+                    );
+                }
+            }
+            if old_answers.iter().any(|(_, a)| *a != old_answers[0].1) {
+                disagreed.push(raw);
+            }
+        }
+        assert_eq!(
+            disagreed,
+            vec![
+                "blob:http://127.0.0.1/x",
+                "blob:http://[::1]/x",
+                "blob:https://1.1.1.1/x",
+                "redis://127.0.0.1/",
+                "redis://1.1.1.1/",
+                "file://127.0.0.1/etc/passwd",
+                "file://[::1]/etc/passwd",
+                "gopher://[::1]/",
+            ]
+        );
     }
 }

@@ -14,16 +14,7 @@ pub struct SharedHomeApplicationsDeclaration {
     staging_plan: staging::plan::Plan,
     applications: OriginalCopyDeclaration,
 }
-#[derive(Clone, Debug, Serialize)]
-pub struct ComputerApplicationsScope {
-    schema: u32,
-    source_operation: String,
-    applications_operation: String,
-    staging_operation: String,
-    staging_plan_sha256: String,
-    setup_binding: String,
-    identity_public_key: [u8; 32],
-}
+pub use staging_handoff_model::ComputerApplicationsScope;
 fn operation(value: &str) -> io::Result<()> {
     if !crate::is_operation_id(value) {
         return Err(invalid());
@@ -51,8 +42,8 @@ impl SharedHomeApplicationsDeclaration {
         apps.validate_staging_copy(applications.source())?;
         let value = Self {
             schema: 1,
-            source_operation: original.operation_id,
-            applications_review_operation: apps.source_plan().operation_id,
+            source_operation: original.0.operation_id,
+            applications_review_operation: apps.source_plan().0.operation_id,
             staging_operation: applications.source().operation_id.clone(),
             staging_plan: staging_plan.clone(),
             applications,

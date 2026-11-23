@@ -119,3 +119,86 @@ tilo_test_env::scenario! {
         }
     }
 }
+
+/// The compiler's own commands are the tool's: `check`, `fmt` and `ids` reach the compiler's code
+/// through `tilolang`, which is the one binary a person runs.
+#[test]
+fn the_compiler_commands_run_from_the_one_tool() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let dir = scratch.path().join("t");
+    std::fs::create_dir(&dir).expect("package directory");
+    let source = "app t.lock \"Lock\"\ntype C {\n    n: Int\n}\nroot C\ndefault view v for C\nview v(c: C) {\n  text(\"{c.n}\")\n}\n";
+    let file = dir.join("app.tl");
+    std::fs::write(&file, source).expect("source");
+    let path = dir.to_string_lossy().into_owned();
+
+    let help = tilolang(&["check", "--help"]);
+    assert_eq!(help.status.code(), Some(0), "check --help succeeds");
+    let usage = String::from_utf8_lossy(&help.stderr);
+    assert!(
+        usage.contains("tilolang check") && usage.contains("tilolang ids"),
+        "the compiler commands' usage printed: {usage}"
+    );
+
+    let check = tilolang(&["check", &path, "--write-ids"]);
+    assert!(
+        check.status.success(),
+        "check writes the lock: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    assert!(dir.join("app.ids").is_file(), "the ids lock is written");
+
+    let formatted = tilolang(&["fmt", &path]);
+    assert!(
+        formatted.status.success(),
+        "fmt rewrites the package: {}",
+        String::from_utf8_lossy(&formatted.stderr)
+    );
+    let canonical = std::fs::read_to_string(&file).expect("canonical source");
+    assert_ne!(canonical, source, "the two-space body was rewritten");
+    assert_eq!(
+        tilolang(&["fmt", &path, "--check"]).status.code(),
+        Some(0),
+        "the canonical form passes --check"
+    );
+
+    std::fs::write(&file, source).expect("source");
+    let stale = tilolang(&["fmt", &path, "--check"]);
+    assert_eq!(
+        stale.status.code(),
+        Some(1),
+        "a hand-wrapped file fails --check"
+    );
+    assert!(
+        String::from_utf8_lossy(&stale.stderr).contains("not in canonical form"),
+        "{}",
+        String::from_utf8_lossy(&stale.stderr)
+    );
+    assert!(tilolang(&["fmt", &path]).status.success());
+    assert_eq!(
+        std::fs::read_to_string(&file).expect("canonical source"),
+        canonical,
+        "fmt writes the canonical text"
+    );
+
+    let lock = tilolang(&["ids", &path]);
+    assert!(
+        lock.status.success(),
+        "ids prints the lock: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+    let printed = String::from_utf8_lossy(&lock.stdout);
+    assert!(printed.contains("C.n = "), "the lock printed: {printed}");
+
+    let renamed = tilolang(&["ids", &path, "--rename", "C.n", "C.m"]);
+    assert!(
+        renamed.status.success(),
+        "ids renames: {}",
+        String::from_utf8_lossy(&renamed.stderr)
+    );
+    let written = std::fs::read_to_string(dir.join("app.ids")).expect("lock");
+    assert!(
+        written.contains("C.m = "),
+        "the rename reached the lock: {written}"
+    );
+}

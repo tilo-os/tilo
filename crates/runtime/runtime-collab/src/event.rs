@@ -258,12 +258,12 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
         query_id: u64,
         page: Result<Vec<u8>, String>,
     },
-    /// What the workspaces holding the records the app last named
-    /// (`CollabRequest::DecideHeldElsewhere`) say of their actions now, replacing what they said
-    /// before. Sent again whenever one of those workspaces' grants changes. They decide how the
-    /// window shows its controls only; the host admits each invocation itself.
-    HeldElsewhereVerdicts {
-        verdicts: Vec<crate::held_elsewhere::HeldDecision>,
+    /// What the host says of the actions the window last named
+    /// (`CollabRequest::DecideShownActions`) now, replacing what it said before. Sent again
+    /// whenever grants change one. They decide how the window shows its controls only; the host
+    /// admits each invocation itself when it is called.
+    ActionVerdicts {
+        verdicts: Vec<crate::shown_actions::ActionDecision>,
     },
 }
 

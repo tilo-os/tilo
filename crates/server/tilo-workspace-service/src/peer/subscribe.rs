@@ -37,6 +37,22 @@ pub(super) async fn handle_subscribe(
         );
     }
     drop(wr);
+    // A page builds its replica of the workspace from the membership answer its
+    // host sends as it subscribes: the roster and the governance every record it
+    // reads or writes is decided against. Sent before `Ready`, so what the session
+    // asks for as soon as it is admitted is decided on a workspace it holds.
+    if let Some(admin) = session.admin
+        && let Some(bootstrap) = admin.subscriber_bootstrap(workspace_id, &peer.cert).await
+    {
+        session
+            .outbound
+            .send(Envelope::WorkspaceBootstrap {
+                workspace_id,
+                bootstrap,
+            })
+            .await
+            .map_err(|_| PeerError::Protocol("the session's writer ended".into()))?;
+    }
     // A channel's governance reaches this session from its start, whether or not
     // it opened a record, as a link hands it to the devices linked to it: sent
     // before `Ready`, so a page that writes its first sealed record now has the
@@ -49,6 +65,29 @@ pub(super) async fn handle_subscribe(
             session.disconnect,
         );
         for envelope in admin.channel_governance(workspace_id, peer.device_public_key) {
+            session
+                .outbound
+                .send(envelope)
+                .await
+                .map_err(|_| PeerError::Protocol("the session's writer ended".into()))?;
+        }
+        // A device over its link is replayed the workspace's records it may read, less those it
+        // is sent when it opens them. A session that stands in for one is sent the same, and
+        // holds each record from then on, so a record a page never opened is still one it
+        // follows.
+        for (envelope, holds) in admin
+            .eager_records(workspace_id, peer.device_public_key)
+            .await
+        {
+            for channel in holds {
+                admin.watch_record(
+                    workspace_id,
+                    peer.device_public_key,
+                    session.outbound,
+                    session.disconnect,
+                    channel,
+                );
+            }
             session
                 .outbound
                 .send(envelope)

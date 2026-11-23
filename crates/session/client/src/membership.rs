@@ -44,11 +44,17 @@ impl<'a> Membership<'a> {
     }
 
     /// The changes `edit` made to `workspace` , as the workspace's governance writes them: the
-    /// people whose role it set or who it took in, those it removed, and the grants it made and
-    /// took away. What the sandbox holds is the workspace's own, not part of who its people are.
-    /// Who is already in the workspace is the workspace's roster here that says: naming a role for
-    /// someone it does not have adds them, and one it has has their role set.
-    pub fn changes(&self, workspace: &Workspace, edit: &PolicyEdit) -> Vec<Change> {
+    /// people whose role it set or who it took in, those it removed, the grants it made and took
+    /// away, and what it let the workspace's apps reach or took back. What an app may reach is
+    /// the workspace's, so every member's device starts the app with it; one that ends with this
+    /// session stays on this device. Who is already in the workspace is the workspace's roster
+    /// here that says: naming a role for someone it does not have adds them, and one it has has
+    /// their role set.
+    pub fn changes(
+        &self,
+        workspace: &Workspace,
+        edit: &PolicyEdit,
+    ) -> Vec<WorkspaceMembershipCommand> {
         let mut changes = Vec::new();
         for person in &edit.members {
             changes.push(match workspace.policy.members.get(person) {
@@ -74,7 +80,31 @@ impl<'a> Membership<'a> {
         for id in &edit.revoked {
             changes.push(Change::Revoke(id.clone()));
         }
-        changes
+        let mut commands: Vec<_> = changes
+            .into_iter()
+            .map(|change| WorkspaceMembershipCommand::Member { change })
+            .collect();
+        for id in &edit.sandbox_granted {
+            if let Some(capability) = workspace
+                .sandbox
+                .iter()
+                .find(|capability| &capability.id == id && capability.is_durable())
+            {
+                commands.push(WorkspaceMembershipCommand::Settings(
+                    SettingsChange::GrantSandbox {
+                        capability: capability.clone(),
+                    },
+                ));
+            }
+        }
+        for id in &edit.sandbox_revoked {
+            commands.push(WorkspaceMembershipCommand::Settings(
+                SettingsChange::RevokeSandbox {
+                    capability: id.clone(),
+                },
+            ));
+        }
+        commands
     }
 
     /// Whether the workspace has `person` in it, as its own governance here says. A workspace this
@@ -97,9 +127,9 @@ impl<'a> Membership<'a> {
     ///
     /// # Errors
     /// The workspace refused a change, or this device could not publish it.
-    pub async fn write(&self, changes: &[Change]) -> Result<(), String> {
+    pub async fn write(&self, changes: &[WorkspaceMembershipCommand]) -> Result<(), String> {
         for change in changes {
-            self.commit(change).await?;
+            self.command(change.clone()).await?;
         }
         Ok(())
     }
@@ -223,19 +253,6 @@ impl<'a> Membership<'a> {
             share: share.to_owned(),
         })
         .await
-    }
-
-    /// Revoke this device's delegation of its person's work to the server
-    /// `server`: the member's own device signed it, so only this one can take
-    /// it back, and every holder refuses the server's work for the person from
-    /// then on.
-    ///
-    /// # Errors
-    /// This device signed no live delegation to `server`, or the workspace
-    /// could not publish the revocation.
-    pub async fn revoke_delegation(&self, server: [u8; 32]) -> Result<(), String> {
-        self.command(WorkspaceMembershipCommand::RevokeWorkDelegation { server })
-            .await
     }
 
     /// Write `command` into the workspace's governance as this device, signed by its ownership,

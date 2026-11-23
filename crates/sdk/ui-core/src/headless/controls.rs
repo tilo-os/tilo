@@ -35,6 +35,9 @@ pub struct Control {
     pub role: Role,
     /// Accessible name, already localized.
     pub name: Option<String>,
+    /// The row title an accessible name starts with, for a list row named by
+    /// its title and its secondary line: the line a person finds it by.
+    pub title: Option<String>,
     /// A field's contents, a slider's readout.
     pub value: Option<String>,
     /// Where it is on the surface, in logical pixels.
@@ -446,6 +449,7 @@ impl FrameHarness {
 
     /// Every operable control the exported accessibility tree carries now, in tree order.
     pub fn controls(&self) -> Vec<Control> {
+        let titles: std::collections::HashMap<_, _> = self.a11y_row_titles().into_iter().collect();
         self.a11y_nodes()
             .into_iter()
             .filter(|(_, node)| node.role() != Role::Window)
@@ -462,6 +466,7 @@ impl FrameHarness {
                     id: id.0.to_string(),
                     role: node.role(),
                     name: node.label().map(str::to_owned),
+                    title: titles.get(&id).cloned(),
                     value: node.value().map(str::to_owned),
                     bounds: node.bounds().map(|b| Rect::new(b.x0, b.y0, b.x1, b.y1)),
                     focused: false,

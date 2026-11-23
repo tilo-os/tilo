@@ -13,7 +13,9 @@ use ui::widget::Element;
 
 use crate::area::AreaContext;
 use crate::i18n::{english, t, t_args};
-use crate::prefs::{MUTE_OPTIONS, NotificationPrefs, mute_shown, valid_app_id};
+use crate::prefs::{
+    MUTE_OPTIONS, NotificationPrefs, mute_shown, valid_app_id, valid_stored_app_id,
+};
 use crate::resource::Settings;
 use crate::sections::Sections;
 use crate::settings_app::SettingsApp;
@@ -82,11 +84,11 @@ fn installed_notification_apps_from(
             desktop_entry::EntrySource::Flatpak { app_id } => app_id.clone(),
             desktop_entry::EntrySource::Host => entry.id.clone(),
         };
-        if valid_app_id(&id) {
+        if valid_app_id(&id) || (existing.contains_key(&id) && valid_stored_app_id(&id)) {
             apps.entry(id).or_insert_with(|| entry.name.clone());
         }
     }
-    for id in existing.keys().filter(|id| valid_app_id(id)) {
+    for id in existing.keys().filter(|id| valid_stored_app_id(id)) {
         apps.entry(id.clone())
             .or_insert_with(|| package_store::display_name_for_package_id(id));
     }
@@ -981,5 +983,79 @@ mod tests {
         );
         let explains = t("notif-app-banners-desc");
         assert_eq!(switches[0].description(), Some(explains.as_str()));
+    }
+
+    #[test]
+    fn stored_rule_is_listed_allows_dnd_and_removal_while_new_bad_key_is_refused() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        // Seed a stored rule under `foo.`, which main accepted (for example
+        // from a host desktop file named `foo..desktop`).
+        app.settings::<NotificationPrefs>()
+            .update(|prefs| {
+                prefs.per_app.insert(
+                    "foo.".into(),
+                    settings_store::notification_policy::AppNotificationRule {
+                        banners: Some(false),
+                        ..Default::default()
+                    },
+                );
+            })
+            .unwrap();
+
+        let prefs = app.settings::<NotificationPrefs>().get();
+        let listed = installed_notification_apps_from(&prefs.per_app, &[]);
+        assert!(
+            listed.iter().any(|entry| entry.id == "foo."),
+            "stored rule under `foo.` remains listed: {listed:?}"
+        );
+
+        // Switching Do Not Disturb still succeeds through both the verb and field-edit.
+        invoke_section(
+            &mut app,
+            NOTIFICATIONS,
+            "set-do-not-disturb",
+            serde_json::json!({ "on": true }),
+        )
+        .expect("set-do-not-disturb must still work with stored `foo.`");
+        assert!(app.settings::<NotificationPrefs>().get().do_not_disturb);
+        edit_field(&mut app, NOTIFICATIONS, "do_not_disturb", false)
+            .expect("field-edit on do_not_disturb must still work with stored `foo.`");
+        assert!(!app.settings::<NotificationPrefs>().get().do_not_disturb);
+
+        // Adding a new rule under `a..b` via `mute-app` is refused.
+        assert!(
+            invoke_section(
+                &mut app,
+                NOTIFICATIONS,
+                "mute-app",
+                serde_json::json!({ "app": "a..b", "duration": "For 1 hour" }),
+            )
+            .is_err(),
+            "muting a new rule under `a..b` must be refused"
+        );
+        assert!(
+            !app.settings::<NotificationPrefs>()
+                .get()
+                .per_app
+                .contains_key("a..b")
+        );
+
+        // Removing the stored `foo.` rule succeeds.
+        app.call_on(
+            "settings:settings.notifications",
+            "field-edit",
+            serde_json::json!({ "edit": {
+                "path": [{ "field": "per_app" }],
+                "op": "remove-key",
+                "key": "foo.",
+            }}),
+        )
+        .expect("removing stored `foo.` must succeed");
+        assert!(
+            !app.settings::<NotificationPrefs>()
+                .get()
+                .per_app
+                .contains_key("foo.")
+        );
     }
 }

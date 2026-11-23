@@ -3,7 +3,7 @@
 
 use super::tests::shell_with;
 use super::*;
-use crate::navigation::{ChromeEffect, Route};
+use tilo_session_core::desktop::navigation::{ChromeEffect, Route};
 use ui::widget::{TileContent, TileHost};
 
 /// The apps this shell runs, each opening a tab named by its id.
@@ -205,7 +205,7 @@ fn a_float_opened_beside_the_last_window_of_a_full_strip_stands_clear_of_its_car
     let (mut frame, handle) = mount();
     let last = handle.snapshot("g", vec![]).entries[1].route.clone();
     handle
-        .dispatch(crate::navigation::LayoutEffect::Focus { tab: last.tab })
+        .dispatch(tilo_session_core::desktop::navigation::LayoutEffect::Focus { tab: last.tab })
         .unwrap();
     frame.relayout();
     floats_beside(&mut frame, &handle);

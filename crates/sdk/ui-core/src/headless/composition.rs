@@ -132,6 +132,8 @@ impl<'a> Walk<'a> {
             let flows = self.flows(node, (x, y), &children);
             return Composed {
                 flows,
+                places: false,
+                well: None,
                 surfaces: Vec::new(),
                 children,
                 tag: None,
@@ -171,6 +173,8 @@ impl<'a> Walk<'a> {
                 own: None,
                 focusable: false,
                 flows: false,
+                places: false,
+                well: None,
                 surfaces: Vec::new(),
                 children: Vec::new(),
             };
@@ -229,6 +233,8 @@ impl<'a> Walk<'a> {
                 own: None,
                 focusable: widget.is_focusable(),
                 flows: false,
+                places: false,
+                well: None,
                 surfaces: Vec::new(),
                 children: Vec::new(),
             },
@@ -296,6 +302,8 @@ impl FrameHarness {
                 own: None,
                 focusable: false,
                 flows: false,
+                places: false,
+                well: None,
                 surfaces: Vec::new(),
                 children: Vec::new(),
             }

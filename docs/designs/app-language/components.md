@@ -77,8 +77,11 @@ view contact_row(c: Contact) {
   `on links_query(text)`) and answers it with a query of what is typed,
   `links: if linking { nb.notes.matching(text).take(48) } else { [] }`, so a keystroke in the
   document reads no note and the picker reads the page it offers. `commands:` adds the view's
-  own `/` commands, each reported as `command` by its label when chosen; `headings` is told the
-  document's headings as they change — their words, and the level each stands at beside them, so
+  own `/` commands, each reported as `command` by its label when chosen, and `slash:` names the
+  ones only the editor can carry out (`image`, `page`), reported as `slash_image` and
+  `slash_page`: the view chooses the file, or makes the page the block's words name;
+  `headings` is told the document's headings as they change — their words, and the level each
+  stands at beside them, so
   a heading reads as its words and never as the `#`s a writer typed — and `reveal` (`"3:1"`: the
   heading's place among the document's headings, then a count the view changes with each ask)
   shows that heading and puts the caret at its start — what a map of the headings

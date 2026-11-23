@@ -32,12 +32,14 @@ capture-failed-not-written-folder = there's no folder at { $folder }
 capture-failed-not-written-other = the system wouldn't let Tilo write to { $folder }
 capture-failed-not-copied = A screenshot was saved, but not copied: { $why }
 capture-failed-not-read = A screenshot was not copied: { $why }
+capture-failed-not-marked = Couldn't open the screenshot for marking up: { $why }
 capture-failed-clip-not-saved = A clip of what just happened was not saved: { $why }
 capture-failed-not-opened = { $path } could not be opened: { $why }
 
 ## Actions
 
 desktop-capture-studio = Capture studio
+so-tilo-capture-studio-annotate = Annotate the last screenshot
 so-tilo-capture-studio-open = Open Capture studio
 so-tilo-capture-studio-pause-recording = Pause recording
 so-tilo-capture-studio-record = Record the screen

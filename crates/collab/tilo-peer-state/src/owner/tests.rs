@@ -182,22 +182,20 @@ tilo_test_env::scenario! {
     phase a_joined_workspace_is_kept_in_its_own_private_file_and_reopens;
     {
         let joined = enrolled();
-        let policy_calls = |owner: &NativeWorkspaceOwner| {
+        let basis = |owner: &NativeWorkspaceOwner| {
             owner
                 .with_current(joined.workspace, |view| {
-                    Ok(view
-                        .peer()
-                        .validated_media_policy()?
-                        .ok_or("missing admitted policy")?
-                        .calls
-                        .len())
+                    view.peer()
+                        .security_basis()
+                        .ok_or("missing admitted workspace")?
+                        .map_err(|error| error.to_string())
                 })
                 .unwrap()
         };
-        assert_eq!(policy_calls(&joined.owner), 1);
+        let held = basis(&joined.owner);
         drop(joined.owner);
         let reopened = open_file(&joined.path).unwrap();
-        assert_eq!(policy_calls(&reopened), 1);
+        assert_eq!(basis(&reopened), held, "the reopened file holds the same governance");
         assert_eq!(reopened.workspaces(), vec![joined.workspace]);
         #[cfg(unix)]
         {

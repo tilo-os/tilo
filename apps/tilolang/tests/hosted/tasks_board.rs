@@ -67,7 +67,9 @@ fn cards(app: &mut TestApp<TlApp>) -> Vec<(String, [f64; 4])> {
     all.into_iter()
         .filter(|node| node.widget == "ListRow")
         .filter_map(|node| {
-            let name = node.semantics.as_ref()?.name.clone()?;
+            let access = node.semantics.as_ref()?;
+            // A card is its row's title; the row is named by more than it.
+            let name = access.shown_name()?.to_owned();
             Some((name, node.rect))
         })
         .collect()
@@ -486,18 +488,15 @@ fn accessible(app: &mut TestApp<TlApp>) -> Vec<ui::a11y::AccessNode> {
         .collect()
 }
 
-/// Click the sidebar's item whose accessible name begins with `label` (its count after). A
-/// list's heading over a day is named the same way and folds its group rather than choosing
-/// the place, so the item clicked is the one the sidebar holds: the tree's.
+/// Click the sidebar's item titled `label`, as a person does: a list's heading over a day
+/// shares the label and folds its group, so the item clicked is the one the sidebar holds:
+/// the tree's.
 fn click_item(app: &mut TestApp<TlApp>, label: &str) {
     let all = accessible(app);
-    let found = all.iter().find_map(|node| {
-        node.name
-            .as_deref()
-            .filter(|name| name.starts_with(label))
-            .filter(|_| node.role == ui::a11y::Role::TreeItem)
-            .and(node.bounds)
-    });
+    let found = all
+        .iter()
+        .find(|node| node.role == ui::a11y::Role::TreeItem && node.answers_to(label))
+        .and_then(|node| node.bounds);
     let Some(b) = found else {
         let named: Vec<(&str, &ui::a11y::Role)> = all
             .iter()

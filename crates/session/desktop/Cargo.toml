@@ -57,8 +57,8 @@ jiff.workspace = true
 tilo-system-stats = { path = "../../system/system-stats" }
 
 [dev-dependencies]
-tilo-test-env = { path = "../../dev/test-env" }
-tilo-copy-lint = { path = "../../dev/copy-lint" }
+tilo-test-env = { path = "../../../tools/test-env" }
+tilo-copy-lint = { path = "../../../tools/copy-lint" }
 word-processor = { path = "../../../apps/word-processor" }
 # The six windows the browser's launch demo opens, for the typing measurement
 # (`tests/typing_desktop`, `examples/typing_perf`): what a keystroke in one of

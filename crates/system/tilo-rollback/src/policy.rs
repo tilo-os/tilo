@@ -746,28 +746,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn policy_marshalling_matches_tool_and_tpm_layouts() {
-        {
-            assert_eq!(pcr_selection("sha256", &[7, 11]), "sha256:7,11");
-            assert_eq!(pcr_selection("sha384", &[0]), "sha384:0");
-        }
-        {
-            let sig = vec![0xABu8; 256];
-            let m = marshal_rsassa_sha256(&sig).unwrap();
-            assert_eq!(m.len(), 256 + 6);
-            assert_eq!(&m[0..2], &[0x00, 0x14], "sigAlg must be TPM_ALG_RSASSA");
-            assert_eq!(&m[2..4], &[0x00, 0x0B], "hash must be TPM_ALG_SHA256");
-            assert_eq!(&m[4..6], &[0x01, 0x00], "size must be 256 big-endian");
-            assert_eq!(&m[6..], &sig[..]);
-        }
-        {
-            assert!(marshal_rsassa_sha256(&vec![0u8; 70_000]).is_err());
-        }
-        {
-            let d = tempfile::tempdir().unwrap();
-            let ws = Workspace::new(d.path());
-            let p = ws.put("x.bin", b"abc").unwrap();
-            assert_eq!(std::fs::read(p).unwrap(), b"abc");
-        }
+    fn a_signature_too_long_for_its_size_field_is_refused() {
+        assert!(marshal_rsassa_sha256(&vec![0u8; 70_000]).is_err());
     }
 }

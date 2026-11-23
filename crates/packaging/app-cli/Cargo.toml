@@ -71,7 +71,7 @@ rustix = { workspace = true, features = ["fs"] }
 [dev-dependencies]
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 tempfile.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 # The tests confine a checkpoint write with the launcher's Landlock plan and
 # resolve an installed app's service binds the way a launch does. The library
 # reads manifests through tilo-app-package and never links the launcher.

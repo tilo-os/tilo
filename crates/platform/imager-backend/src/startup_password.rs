@@ -9,58 +9,14 @@ pub fn validate_on_destination(secret: &str, tpm_pin: bool) -> Result<(), &'stat
 }
 
 /// Presentation-independent rejection of a prepared installation password.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ValidationError {
-    SurroundingSpaces,
-    PassphraseTooShort,
-    PassphraseCommon,
-    NumericPassphraseTooShort,
-    PassphraseRepetitive,
-    PassphraseRepeatedPattern,
-    Invalid,
-}
-
-impl std::fmt::Display for ValidationError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::SurroundingSpaces => "Do not begin or end the disk passphrase with spaces",
-            Self::PassphraseTooShort => "Use at least 15 characters for the disk passphrase",
-            Self::PassphraseCommon => {
-                "That passphrase is too easy to guess; use several unrelated words"
-            }
-            Self::NumericPassphraseTooShort => {
-                "Use at least 20 digits for an all-numeric disk passphrase"
-            }
-            Self::PassphraseRepetitive => {
-                "That passphrase is too repetitive; use several unrelated words"
-            }
-            Self::PassphraseRepeatedPattern => {
-                "That passphrase is a repeated pattern; use several unrelated words"
-            }
-            Self::Invalid => "Choose a valid disk passphrase",
-        })
-    }
-}
-
-impl std::error::Error for ValidationError {}
+pub use tilo_unlock_protocol::startup_secret::ValidationError;
 
 /// Admit a password for preparing identity, account and media artifacts.
 ///
 /// # Errors
 /// Returns the failed disk-passphrase requirement, without retaining the secret.
 pub fn validate(password: &str) -> Result<(), ValidationError> {
-    use tilo_unlock_protocol::startup_secret::{self, ValidationError as PolicyError};
-    startup_secret::validate_typed(password, false).map_err(|reason| match reason {
-        PolicyError::SurroundingSpaces => ValidationError::SurroundingSpaces,
-        PolicyError::PassphraseTooShort => ValidationError::PassphraseTooShort,
-        PolicyError::PassphraseCommon => ValidationError::PassphraseCommon,
-        PolicyError::NumericPassphraseTooShort => ValidationError::NumericPassphraseTooShort,
-        PolicyError::PassphraseRepetitive => ValidationError::PassphraseRepetitive,
-        PolicyError::PassphraseRepeatedPattern => ValidationError::PassphraseRepeatedPattern,
-        PolicyError::PinTooShort | PolicyError::PinNotNumeric | PolicyError::PinPredictable => {
-            ValidationError::Invalid
-        }
-    })
+    tilo_unlock_protocol::startup_secret::validate_typed(password, false)
 }
 
 #[cfg(test)]

@@ -1411,7 +1411,7 @@ fn another_member_edits(mut reopened: SharedDesktop, member: &str) -> SharedDesk
 fn window_in_front(session: &Session) -> Option<TabId> {
     session.handle().read(|tree| {
         let workspace = tree.active_workspace()?;
-        let strip = tilo_desktop_surface::navigation::active_strip(tree, workspace)?;
+        let strip = tree.active_strip_for(workspace)?;
         workspace
             .strips
             .iter()

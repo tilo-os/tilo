@@ -53,7 +53,7 @@ struct Told(DesktopNotifications);
 impl Notices for Told {
     fn show(&self, notice: &Notice) {
         self.0
-            .post(tilo_desktop_surface::notifications::Notification::of_notice(notice));
+            .post(tilo_session_core::desktop::notifications::Notification::of_notice(notice));
     }
 
     fn withdraw(&self, _tag: &str) {}

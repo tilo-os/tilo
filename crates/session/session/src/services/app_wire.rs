@@ -13,7 +13,7 @@ use ui::host_operation::ResourceOperationStart;
 use tilo_workspace_service::apps::collab_broker::FanoutState;
 
 use crate::app_wire::AppWire;
-use crate::app_wire::{LayoutAuthority, Sealed, ShortcutLibrary};
+use crate::app_wire::{LayoutAuthority, Sealed};
 use crate::{
     AppSocket, Options, Service, Services, activity, activity_provider, app_wire, surfaces,
 };
@@ -230,7 +230,6 @@ pub(crate) fn start_app_wire(
     options: &Options,
     live_activities: &std::sync::Arc<runtime_collab::LiveActivities>,
     handle: &DesktopHandle,
-    shortcuts: std::sync::Arc<ShortcutLibrary>,
     activity: &activity::Activity,
     services: Knitted,
     collaboration: Collaboration<'_>,
@@ -256,7 +255,7 @@ pub(crate) fn start_app_wire(
     };
     let agents_service = service.clone();
     let link = app_wire::Link::new(options.wake.handle());
-    let layout = layout_authority(options, handle, revocations);
+    let layout = layout_authority(options, handle, revocations, engine.clone());
     // The workspace's activity as this session's apps read it: the shell's own model.
     let activity_wire = activity_provider::wire(activity.requests());
     activity.serve_apps(std::sync::Arc::clone(&activity_wire));
@@ -280,13 +279,6 @@ pub(crate) fn start_app_wire(
     let file_clipboard = std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
         options.wake.handle(),
     ));
-    // The person's own records this session keeps, open to their other devices: what the broker
-    // keeps them in as well as the desktop, and what a sibling's writes reach this session's apps
-    // through.
-    let personal = sync
-        .and_then(crate::sync::Client::personal)
-        .map(|own| own.sync().clone());
-    let channels = std::sync::Arc::clone(&sealed.broker);
     // What Browser's asks for vault items are answered with: kept here as well, so a session
     // that holds a workspace's Browser can say so and name who asks its server.
     let item_lending = std::sync::Arc::new(crate::item_lending::ItemLending::default());
@@ -304,7 +296,6 @@ pub(crate) fn start_app_wire(
             content: Some(std::sync::Arc::clone(&options.content)),
             records,
             layout: std::sync::Arc::clone(&layout),
-            shortcuts,
             activity: activity_wire,
             agents: services.agents,
             agent_sessions: services.agent_sessions,
@@ -340,29 +331,16 @@ pub(crate) fn start_app_wire(
             // What a person copies or cuts in Files, pasted here, and what the loop puts on the
             // desktop's clipboard for another app.
             file_clipboard: std::sync::Arc::clone(&file_clipboard),
-            personal,
             item_lending: std::sync::Arc::clone(&item_lending),
             fanout: std::sync::Arc::clone(&fanout),
         },
     )?;
-    // The store's link is answered by this session's own endpoint, in `sync` : this session takes
-    // it from there, once the broker is up to hand what a sibling writes to the apps that have the
-    // record open.
-    let personal = match (sync, sync.and_then(crate::sync::Client::endpoint)) {
-        (Some(sync), Some(endpoint)) => sync.personal().map(|personal| {
-            // The person's other devices are dialled as this session's siblings too: the session
-            // between two of their sessions tells each the workspaces the other holds.
-            personal.serve(
-                tilo_rt::app().handle(),
-                endpoint,
-                channels,
-                std::sync::Arc::clone(&fanout),
-                sync.sibling_dials(),
-                options.wake.handle(),
-            )
-        }),
-        _ => None,
-    };
+    // The person's other devices are dialled as this session's siblings, and the session's pass
+    // wakes when their own workspace moves: the session between two of theirs is where they tell
+    // each other what they hold, and what their device fabric says.
+    if let Some(sync) = sync {
+        sync.follow_person(tilo_rt::app().handle(), options.wake.handle());
+    }
     // What arrives on this device's app wire is answered by the broker that now serves: another
     // of the person's devices runs nothing here the person in front of it could not.
     if let (Some(actions), Some(broker)) = (actions, broker.app_action_broker()) {
@@ -396,7 +374,6 @@ pub(crate) fn start_app_wire(
         calls_service,
         carets: crate::carets::Carets::new(fanout, options.wake.handle()),
         file_clipboard,
-        _personal: personal,
         _files_tree: files_tree,
         item_lending,
         hosting,
@@ -445,20 +422,25 @@ fn serve_files_tree(
 }
 
 /// What the broker decides against, from this pass on: the shell as it is
-/// before the person touches anything, and every shell it shows after.
+/// before the person touches anything, and every shell it shows after — and,
+/// beside it, every workspace this device holds that no shell shows.
 fn layout_authority(
     options: &Options,
     handle: &DesktopHandle,
     revocations: crate::engine::Revocations,
+    held: Option<std::sync::Arc<crate::engine::Engine>>,
 ) -> std::sync::Arc<LayoutAuthority> {
-    std::sync::Arc::new(LayoutAuthority::new(
-        handle.read(Clone::clone),
-        revocations,
-        crate::app_wire::Names {
-            person: options.person.clone(),
-            earlier: options.earlier.clone(),
-        },
-    ))
+    std::sync::Arc::new(
+        LayoutAuthority::new(
+            handle.read(Clone::clone),
+            revocations,
+            crate::app_wire::Names {
+                person: options.person.clone(),
+                earlier: options.earlier.clone(),
+            },
+        )
+        .holding(held),
+    )
 }
 
 /// The calls the apps reach on this session's peer network, or none when it has no endpoint.

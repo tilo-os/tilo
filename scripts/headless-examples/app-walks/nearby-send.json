@@ -1,0 +1,136 @@
+{
+ "app": "nearby-send",
+ "said": "Send a file from the laptop to the phone nearby",
+ "family": "devices",
+ "devices": [
+  "laptop",
+  "phone"
+ ],
+ "live": "rust",
+ "apps": "file-explorer tasks settings",
+ "rust": {},
+ "tl": {
+  "session_args": [
+   "--shell",
+   "screen"
+  ]
+ },
+ "steps": [
+  {
+   "id": "files-on-laptop",
+   "said": "Open Files on the laptop, where the trip plan is",
+   "ops": [
+    {
+     "file": {
+      "name": "trip-plan.txt",
+      "text": "Leave at 7. Bring the tent.\n"
+     }
+    },
+    {
+     "open": "file-explorer"
+    }
+   ]
+  },
+  {
+   "id": "phone-is-near",
+   "said": "The trip plan's row offers to send it to the phone",
+   "ops": [
+    {
+     "published": {
+      "kind": "files.entry",
+      "action": "send-to",
+      "label": "trip-plan.txt",
+      "within": 30
+     }
+    }
+   ]
+  },
+  {
+   "id": "send",
+   "said": "Send the trip plan to the phone from its row's menu",
+   "ops": [
+    {
+     "right_click": "trip-plan.txt"
+    },
+    {
+     "wait_for": {
+      "shown": {
+       "menuitem": "Send to nearby device…"
+      }
+     }
+    },
+    {
+     "click": {
+      "menuitem": "Send to nearby device…"
+     }
+    },
+    {
+     "wait_for": {
+      "shown": "Send to phone"
+     }
+    },
+    {
+     "click": "Send to phone"
+    }
+   ]
+  },
+  {
+   "id": "phone-is-offered",
+   "said": "The phone's Files offers to save the incoming file",
+   "on": "phone",
+   "ops": [
+    {
+     "open": "file-explorer"
+    },
+    {
+     "published": {
+      "kind": "files.nearby-transfer",
+      "action": "accept-nearby",
+      "within": 30
+     }
+    }
+   ]
+  },
+  {
+   "id": "accept",
+   "said": "Save it on the phone, in the first folder offered",
+   "on": "phone",
+   "ops": [
+    {
+     "use": {
+      "kind": "files.nearby-transfer",
+      "action": "accept-nearby",
+      "args": {
+       "destination": "{choice:destination}"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "on-the-phone",
+   "said": "The phone holds the trip plan, the same bytes",
+   "on": "phone",
+   "ops": [
+    {
+     "has_file": {
+      "name": "trip-plan.txt",
+      "text": "Leave at 7. Bring the tent.\n"
+     }
+    }
+   ]
+  },
+  {
+   "id": "sent-on-laptop",
+   "said": "The laptop's Files says the transfer is done",
+   "ops": [
+    {
+     "use": {
+      "kind": "files.nearby-transfer",
+      "action": "status"
+     }
+    }
+   ]
+  }
+ ]
+}

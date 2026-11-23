@@ -413,6 +413,7 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
                         ..base.resource_fields()
                     },
                     template,
+                    unavailable: Vec::new(),
                 };
             let surface = || {
                 workspace
@@ -466,15 +467,40 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
                 ..SurfaceDelta::default()
             };
             assert!(handle.publish_action_surface(&unknown).await.is_err());
-            let invalid = SurfaceDelta {
+            assert_eq!(surface().unwrap().len(), 2);
+
+            // A resource published without a label is left out on its own: the rest of the
+            // surface is installed.
+            let unnamed = SurfaceDelta {
                 reset: true,
                 shapes: vec![(shape_id, base.shape())],
                 templates: vec![(template, vec![shape_id])],
-                resources: vec![resource("workspace:a", " ", template)],
+                resources: vec![
+                    resource("workspace:a", " ", template),
+                    resource("workspace:b", "Page", template),
+                ],
                 removed: Vec::new(),
             };
-            assert!(handle.publish_action_surface(&invalid).await.is_err());
-            assert_eq!(surface().unwrap().len(), 2);
+            handle.publish_action_surface(&unnamed).await.unwrap();
+            assert_eq!(surface().unwrap(), vec![expanded("workspace:b", "Page")]);
+
+            // An address carrying the separator refuses the whole surface and changes nothing.
+            let bad_address = SurfaceDelta {
+                reset: true,
+                shapes: vec![(shape_id, base.shape())],
+                templates: vec![(template, vec![shape_id])],
+                resources: vec![
+                    resource("workspace:a", "Page", template),
+                    resource(
+                        &format!("workspace{}c", tilo_actions::KEY_SEP),
+                        "C",
+                        template,
+                    ),
+                ],
+                removed: Vec::new(),
+            };
+            assert!(handle.publish_action_surface(&bad_address).await.is_err());
+            assert_eq!(surface().unwrap(), vec![expanded("workspace:b", "Page")]);
 
             // A whole-surface publication supersedes the delta state: a delta
             // that leans on an earlier template is refused, a reset is

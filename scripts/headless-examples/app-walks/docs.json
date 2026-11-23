@@ -1,0 +1,143 @@
+{
+  "app": "docs",
+  "said": "Docs",
+  "family": "apps",
+  "live": "rust",
+  "rust": {
+    "id": "so.tilo.word-processor",
+    "native": "word-processor"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Docs on a blank document",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "must": [
+            "Format",
+            "Insert",
+            "Document editor"
+          ]
+        },
+        {
+          "click": "Document editor"
+        },
+        {
+          "focused": "word-processor"
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    },
+    {
+      "id": "heading",
+      "said": "Type a title and make it a heading",
+      "ops": [
+        {
+          "type": "Q3 Planning"
+        },
+        {
+          "chord": [
+            "Control",
+            "1"
+          ]
+        },
+        {
+          "read": {
+            "app": "so.tilo.word-processor",
+            "operation": "read-text",
+            "contains": "# Q3 Planning",
+            "within": 10
+          }
+        }
+      ]
+    },
+    {
+      "id": "paragraph",
+      "said": "Start a paragraph under it and type it",
+      "ops": [
+        {
+          "key": "Enter"
+        },
+        {
+          "type": "Book the venue"
+        },
+        {
+          "read": {
+            "app": "so.tilo.word-processor",
+            "operation": "read-text",
+            "contains": "Book the venue",
+            "within": 10
+          }
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "bold",
+      "said": "Select the paragraph and make it bold",
+      "ops": [
+        {
+          "chord": [
+            "Shift",
+            "Home"
+          ]
+        },
+        {
+          "chord": [
+            "Control",
+            "b"
+          ]
+        },
+        {
+          "read": {
+            "app": "so.tilo.word-processor",
+            "operation": "read-text",
+            "contains": "**Book the venue**"
+          }
+        }
+      ]
+    },
+    {
+      "id": "restart-app",
+      "said": "Quit Docs and open it again: the person's document is still there",
+      "ops": [
+        {
+          "restart": "app"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "read": {
+            "app": "so.tilo.word-processor",
+            "operation": "read-text"
+          }
+        },
+        {
+          "read": {
+            "app": "so.tilo.word-processor",
+            "operation": "read-text",
+            "contains": "# Q3 Planning",
+            "within": 10
+          }
+        }
+      ]
+    }
+  ]
+}

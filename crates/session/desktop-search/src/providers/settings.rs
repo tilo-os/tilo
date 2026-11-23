@@ -6,9 +6,10 @@
 //! desktop finds Network). A setting people look for by name ("keyboard
 //! layout", "tap to click") is a row of its own, offered where it matches
 //! better than its page. Both come from the one index Settings' own sidebar
-//! reads ([`settings_store::index`]). A row runs Settings' `open` at the
-//! page's or the setting's anchor, by address, the app launched first when
-//! it is closed.
+//! reads ([`settings_store::index`]). A page's row runs the `open-pane` of the
+//! page's own row of Settings, and a setting's runs Settings' `show-setting`,
+//! told which setting it is: an action Settings publishes, at the address it
+//! publishes it on, with the app launched first when it is closed.
 //!
 //! What a setting is set to is not this source's: a switch or a value the
 //! settings service publishes is an action of its own, found and flipped
@@ -22,12 +23,20 @@ use ui::search::system::{ResourceKind, provider_score};
 use crate::model::{Hit, InvokeTarget, Source, Target};
 
 pub use ui::shell::SETTINGS_APP;
-/// The resource Settings' window publishes, whose `open` shows a page.
+/// The resource Settings' window publishes: what its `show-setting` is on,
+/// and where an anchor with no row of its own opens.
 pub const SETTINGS_ROOT: &str = "settings.root";
 /// The anchor of a page of Settings, by its slug.
 const PAGE_ANCHOR: &str = "settings.section:";
 /// The anchor of one setting, by its id.
 const SETTING_ANCHOR: &str = "settings.setting:";
+/// The action a page's own row offers to show it; the row binds its pane, so
+/// it takes no arguments.
+const OPEN_PANE_ACTION: &str = "open-pane";
+/// The action Settings publishes to show a setting, and the parameter naming
+/// it.
+const SHOW_SETTING_ACTION: &str = "show-setting";
+const SETTING_ARGUMENT: &str = "setting";
 
 /// Settings the desktop offers as quick actions under the same name
 /// ("Wi-Fi", "Volume"): typing the name does the thing there, so a row
@@ -244,11 +253,19 @@ impl Settings {
     }
 }
 
-/// Settings' `open` in `workspace`, showing `anchor`: a page, a setting.
-/// The pages are no resources of their own: Settings publishes its `open`
-/// on its window's resource.
+/// The action of Settings that shows `anchor`, run in `workspace`: a page is a
+/// row of Settings' own (`settings.section:<slug>`), which its `open-pane`
+/// shows, and a setting is shown by Settings' `show-setting`, told which
+/// setting it is. An anchor neither names opens through Settings' `open`.
 #[must_use]
 pub fn opening(workspace: &str, anchor: &str) -> InvokeTarget {
+    if anchor.starts_with(PAGE_ANCHOR) {
+        return InvokeTarget::action(SETTINGS_APP, workspace, anchor, OPEN_PANE_ACTION);
+    }
+    if let Some(setting) = anchor.strip_prefix(SETTING_ANCHOR) {
+        return InvokeTarget::action(SETTINGS_APP, workspace, SETTINGS_ROOT, SHOW_SETTING_ACTION)
+            .with_argument(SETTING_ARGUMENT, setting);
+    }
     InvokeTarget::open(SETTINGS_APP, workspace, SETTINGS_ROOT, anchor)
 }
 
@@ -327,25 +344,30 @@ mod tests {
         assert!(found("toasts"), "a word people use for it: {keywords:?}");
     }
 
-    fn opens(hit: &Hit) -> (String, String) {
+    /// The target of `hit`, as (resource, action, argument) of the action it runs.
+    fn opens(hit: &Hit) -> (String, String, Option<(String, String)>) {
         let Target::Invoke(target) = &hit.target else {
-            panic!("a settings row opens Settings by address");
+            panic!("a settings row runs one of Settings' actions by address");
         };
         assert_eq!(target.app, SETTINGS_APP);
-        assert_eq!(target.address.action, crate::model::OPEN_ACTION);
         (
             target.address.resource.clone(),
-            target.arguments[crate::model::OPEN_ANCHOR]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned(),
+            target.address.action.clone(),
+            target
+                .arguments
+                .iter()
+                .next()
+                .map(|(name, value)| (name.clone(), value.as_str().unwrap_or_default().to_owned())),
         )
     }
 
     tilo_test_env::scenario! {
-        fn settings_pages_and_settings_are_found_by_name_and_open_where_they_stand;
+        fn settings_pages_and_settings_are_found_by_name_and_run_their_own_actions;
 
-        phase a_page_is_found_by_its_name_in_any_language_and_opens_at_its_anchor;
+        phase a_page_is_found_by_its_name_in_any_language_and_its_row_shows_it;
+        // A page is a row of Settings' own, and shows through the action that
+        // row publishes: nothing is asked of Settings' `open`, which a page
+        // does not offer.
         {
             let settings = Settings::new("workspace");
             for needle in ["network", "wlan"] {
@@ -357,17 +379,18 @@ mod tests {
                 assert_eq!(
                     opens(page),
                     (
-                        "settings.root".to_owned(),
-                        "settings.section:network".to_owned()
+                        "settings.section:network".to_owned(),
+                        OPEN_PANE_ACTION.to_owned(),
+                        None
                     ),
-                    "the page is no resource of its own: Settings' `open` shows it"
+                    "the page's own row shows it, and takes no arguments"
                 );
                 assert_eq!(page.icon, Some(ui::icons::Icon::Wifi));
             }
             assert!(settings.query("").is_empty());
         }
 
-        phase a_setting_named_leads_its_page_and_opens_at_the_setting;
+        phase a_setting_named_leads_its_page_and_settings_shows_it;
         {
             let settings = Settings::new("workspace");
             let hits = settings.query("keyboard layout");
@@ -380,7 +403,11 @@ mod tests {
                 opens(best),
                 (
                     "settings.root".to_owned(),
-                    "settings.setting:keyboard.layout".to_owned()
+                    SHOW_SETTING_ACTION.to_owned(),
+                    Some((
+                        SETTING_ARGUMENT.to_owned(),
+                        "keyboard.layout".to_owned()
+                    ))
                 )
             );
             assert!(

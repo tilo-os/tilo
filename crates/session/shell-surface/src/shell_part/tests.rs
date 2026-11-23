@@ -302,7 +302,7 @@ fn the_bars_status_reads_the_devices_published_resources() {
     link.publish_reading(
         "power:battery",
         "so.tilo.device#Battery",
-        serde_json::json!({"present": true, "percentage": 71, "state": "discharging", "on-battery": true}),
+        serde_json::json!({"present": true, "percentage": 71, "state": "discharging", "on_battery": true}),
     );
     for _ in 0..6 {
         part.prepare_frame();
@@ -318,7 +318,7 @@ fn the_bars_status_reads_the_devices_published_resources() {
     link.publish_reading(
         "power:battery",
         "so.tilo.device#Battery",
-        serde_json::json!({"present": true, "percentage": 71, "state": "charging", "on-battery": false}),
+        serde_json::json!({"present": true, "percentage": 71, "state": "charging", "on_battery": false}),
     );
     for _ in 0..6 {
         part.prepare_frame();
@@ -1068,14 +1068,14 @@ fn moving_a_window_to_another_strip_names_the_strip_by_its_id() {
             .and_then(serde_json::Value::as_str),
         Some(tab)
     );
-    let to: tilo_desktop_surface::navigation::Destination =
+    let to: tilo_session_core::desktop::navigation::Destination =
         serde_json::from_value(asked.arguments.get("to").cloned().expect("the destination"))
             .unwrap_or_else(|why| {
                 panic!("the destination reads as the chrome's: {why}: {asked:?}")
             });
     assert_eq!(
         to,
-        tilo_desktop_surface::navigation::Destination {
+        tilo_session_core::desktop::navigation::Destination {
             strip: Some(strip.to_owned()),
             ..Default::default()
         }

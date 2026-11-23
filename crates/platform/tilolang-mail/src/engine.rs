@@ -2,7 +2,8 @@
 //! the network and the credentials are. It runs in the process the system starts for the app
 //! ([`crate::serve`]).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 
 use mail_engine::engine::{EngineEvent, EngineRequest, EngineRequestKind};
@@ -20,6 +21,19 @@ pub fn message_key(m: &Message) -> String {
         .clone()
         .filter(|id| !id.is_empty())
         .unwrap_or_else(|| m.id.to_string())
+}
+
+/// Where the OS installer keeps the mail it brought over from another mail program, a file an
+/// account: `~/.cache/so.tilo.mail/mail`, as it wrote it there and as the engine's store reads
+/// it.
+fn kept_mail_root() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(
+        PathBuf::from(home)
+            .join(".cache")
+            .join("so.tilo.mail")
+            .join("mail"),
+    )
 }
 
 /// A message of the engine as the connector shows it.
@@ -98,6 +112,13 @@ pub struct EngineConnector {
     /// Every request not answered yet: what it is, the account it is for, and for a move the
     /// mailbox the message went to, whose changes say where the server put it.
     pending: BTreeMap<Request, (EngineRequestKind, String, Option<String>)>,
+    /// What is answered before the engine is asked: the mail another mail program kept on this
+    /// computer, which the OS installer brought over.
+    ready: Vec<Event>,
+    /// The account's mailboxes whose kept mail was taken in already, so it is taken in once.
+    kept_taken: HashSet<(String, String)>,
+    /// Where the installer keeps the mail it brought over, as it wrote it there.
+    kept_root: Option<PathBuf>,
 }
 
 impl EngineConnector {
@@ -116,6 +137,9 @@ impl EngineConnector {
             held: HashMap::new(),
             keys: HashMap::new(),
             pending: BTreeMap::new(),
+            ready: Vec::new(),
+            kept_taken: HashSet::new(),
+            kept_root: kept_mail_root(),
         }
     }
 
@@ -131,7 +155,18 @@ impl EngineConnector {
             held: HashMap::new(),
             keys: HashMap::new(),
             pending: BTreeMap::new(),
+            ready: Vec::new(),
+            kept_taken: HashSet::new(),
+            kept_root: kept_mail_root(),
         }
+    }
+
+    /// The connector taking its kept mail from `root` instead of the installer's own place:
+    /// what a test of the import hands it.
+    #[must_use]
+    pub fn keeping(mut self, root: Option<PathBuf>) -> Self {
+        self.kept_root = root;
+        self
     }
 
     fn config(&self, account: &str) -> Option<AccountConfig> {
@@ -176,9 +211,74 @@ impl EngineConnector {
         Some(id)
     }
 
+    /// The mail `mailbox` of `account` holds of what the OS installer kept on this computer,
+    /// taken in once: the messages an imported account shows before its sign-in is given, its
+    /// server gone or never signed in to. None once they were taken, or for an account the
+    /// settings say was not imported.
+    fn take_in_kept(&mut self, account: &str, mailbox: &str) -> Option<Vec<ImapMessage>> {
+        if !self
+            .kept_taken
+            .insert((account.to_owned(), mailbox.to_owned()))
+        {
+            return None;
+        }
+        if !self.config(account)?.import_pending {
+            return None;
+        }
+        let folder = Folder::from_key(mailbox)?;
+        let kept: Vec<Message> = mail_engine::store::Store::at(self.kept_root.clone()?)
+            .load(account)
+            .into_iter()
+            .filter(|message| message.folder == folder)
+            .collect();
+        if kept.is_empty() {
+            return None;
+        }
+        Some(self.take_in(account, folder, &kept))
+    }
+
     fn held_message(&self, account: &str, key: &str) -> Option<Message> {
         let id = self.keys.get(&(account.to_owned(), key.to_owned()))?;
         self.held.get(account)?.get(*id).cloned()
+    }
+
+    /// The messages held of `folder` that the server no longer has: every one of them that the
+    /// answer does not carry when it starts the folder over (a renumbered folder, or too much
+    /// missed), else the ones inside the window the answer reports and does not name.
+    fn gone_messages(
+        &self,
+        account: &str,
+        folder: Folder,
+        synced: &mail_engine::sync::Synced,
+    ) -> (Vec<String>, Vec<mail_engine::model::MessageId>) {
+        let Some(held) = self.held.get(account) else {
+            return (Vec::new(), Vec::new());
+        };
+        let here = |m: &Message| {
+            m.account == account
+                && m.folder == folder
+                && m.server.is_some_and(|at| at.folder == folder)
+        };
+        let mut gone: Vec<(String, mail_engine::model::MessageId)> = Vec::new();
+        if synced.reset {
+            let fresh: BTreeSet<String> = synced.messages.iter().map(message_key).collect();
+            for m in held.messages.values().filter(|m| here(m)) {
+                if !fresh.contains(&message_key(m)) {
+                    gone.push((message_key(m), m.id));
+                }
+            }
+        } else if let Some((oldest, newest)) = synced.window {
+            let reported: BTreeSet<u32> = synced.flags.iter().map(|(uid, ..)| *uid).collect();
+            for m in held.messages.values().filter(|m| here(m)) {
+                let Some(at) = m.server else { continue };
+                if at.uid >= oldest && at.uid <= newest && !reported.contains(&at.uid) {
+                    gone.push((message_key(m), m.id));
+                }
+            }
+        }
+        let keys = gone.iter().map(|(key, _)| key.clone()).collect();
+        let ids = gone.into_iter().map(|(_, id)| id).collect();
+        (keys, ids)
     }
 
     fn take_in(&mut self, account: &str, folder: Folder, messages: &[Message]) -> Vec<ImapMessage> {
@@ -212,11 +312,24 @@ impl MailConnector for EngineConnector {
                     c.display_name
                 },
                 address: c.email,
+                identities: c.identities,
             })
             .collect()
     }
 
     fn changes(&mut self, account: &str, mailbox: &str) -> Option<Request> {
+        if let Some(kept) = self.take_in_kept(account, mailbox) {
+            // Answered as the server's own answer is, without asking a server: the account's
+            // mail is here, and the account says it needs its sign-in before a server can be
+            // asked again.
+            self.ready.push(Event::Changes(Changes {
+                account: account.to_owned(),
+                mailbox: mailbox.to_owned(),
+                messages: kept,
+                ..Changes::default()
+            }));
+            return Some(uuid::Uuid::new_v4());
+        }
         let config = self.config(account)?;
         let folder = Folder::from_key(mailbox)?;
         let known = self
@@ -227,6 +340,20 @@ impl MailConnector for EngineConnector {
             config,
             folder,
             Want::Latest { known },
+        ))
+    }
+
+    fn older(&mut self, account: &str, mailbox: &str) -> Option<Request> {
+        let config = self.config(account)?;
+        let folder = Folder::from_key(mailbox)?;
+        let known = self
+            .held
+            .get(account)
+            .and_then(|held| Window::of(held, account, folder))?;
+        self.request(EngineRequest::fetch_wanting(
+            config,
+            folder,
+            Want::Older { known },
         ))
     }
 
@@ -269,6 +396,19 @@ impl MailConnector for EngineConnector {
         )
     }
 
+    fn purge(&mut self, account: &str, key: &str) -> Option<Request> {
+        let config = self.config(account)?;
+        let m = self.held_message(account, key)?;
+        // It leaves the workspace's mail as it leaves the server: what is held here no longer
+        // names it, so no flag or move a person's next change asks for is sent for it.
+        if let Some(id) = self.keys.remove(&(account.to_owned(), key.to_owned()))
+            && let Some(held) = self.held.get_mut(account)
+        {
+            held.purge(id);
+        }
+        self.request(EngineRequest::purge(config, Box::new(m)))
+    }
+
     fn search(&mut self, account: &str, text: &str) -> Option<Request> {
         let config = self.config(account)?;
         self.request(EngineRequest::search(config, text.to_owned()))
@@ -279,10 +419,20 @@ impl MailConnector for EngineConnector {
         let mut draft = Draft {
             to: message.to,
             cc: message.cc,
+            bcc: message.bcc,
             subject: message.subject,
             body: message.body,
             ..Draft::default()
         };
+        if !message.from.is_empty() {
+            draft.sender = Some(mail_engine::model::DraftSender {
+                account: account.to_owned(),
+                email: message.from,
+            });
+        }
+        if !message.html_body.is_empty() {
+            draft.html_body = Some(message.html_body);
+        }
         if !message.in_reply_to.is_empty() {
             draft.wire.in_reply_to = Some(message.in_reply_to);
         }
@@ -308,7 +458,7 @@ impl MailConnector for EngineConnector {
     }
 
     fn events(&mut self) -> Vec<Event> {
-        let mut out = Vec::new();
+        let mut out = self.take_ready();
         while let Some(event) = self.next_event(&mut out) {
             self.engine_event(event, &mut out);
         }
@@ -362,7 +512,9 @@ impl EngineConnector {
                     request,
                     reason: WHY.to_owned(),
                 },
-                EngineRequestKind::StoreFlag | EngineRequestKind::Move => Event::Refused {
+                EngineRequestKind::StoreFlag
+                | EngineRequestKind::Move
+                | EngineRequestKind::Purge => Event::Refused {
                     request,
                     reason: WHY.to_owned(),
                 },
@@ -376,6 +528,12 @@ impl EngineConnector {
 }
 
 impl EngineConnector {
+    /// What the connector answered without asking the engine — the mail the installer kept on
+    /// this computer — taken so it is said once.
+    pub fn take_ready(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.ready)
+    }
+
     /// Whether the engine still works on a request of this connector's.
     #[must_use]
     pub fn is_waiting(&self) -> bool {
@@ -388,6 +546,50 @@ impl EngineConnector {
         self.pending.contains_key(request)
     }
 
+    /// What a fetch of a mailbox brought: the messages taken in, the flags it reported of the
+    /// messages held, and the messages the server no longer has; added to `out` as its changes.
+    fn took_fetched(
+        &mut self,
+        account_id: String,
+        folder: Folder,
+        synced: &mail_engine::sync::Synced,
+        out: &mut Vec<Event>,
+    ) {
+        // What the server no longer has, found before what it brought is taken in.
+        let (removed, gone) = self.gone_messages(&account_id, folder, synced);
+        let messages = self.take_in(&account_id, folder, &synced.messages);
+        if let Some(held) = self.held.get_mut(&account_id) {
+            for id in gone {
+                held.remove(id);
+            }
+        }
+        for key in &removed {
+            self.keys.remove(&(account_id.clone(), key.clone()));
+        }
+        let mut flags = Vec::new();
+        if let Some(held) = self.held.get_mut(&account_id) {
+            for (uid, seen, flagged) in &synced.flags {
+                let found = held.messages.values_mut().find(|m| {
+                    m.server
+                        .is_some_and(|at| at.folder == folder && at.uid == *uid)
+                });
+                if let Some(m) = found {
+                    m.read = *seen;
+                    m.starred = *flagged;
+                    flags.push((message_key(m), !*seen, *flagged));
+                }
+            }
+        }
+        out.push(Event::Changes(Changes {
+            account: account_id,
+            mailbox: folder.as_key().to_owned(),
+            messages,
+            flags,
+            removed,
+            more: synced.has_older,
+        }));
+    }
+
     /// Take in what the engine said, adding what it means to `out`.
     pub fn engine_event(&mut self, event: EngineEvent, out: &mut Vec<Event>) {
         match event {
@@ -396,29 +598,7 @@ impl EngineConnector {
                 folder,
                 synced,
                 ..
-            } => {
-                let messages = self.take_in(&account_id, folder, &synced.messages);
-                let mut flags = Vec::new();
-                if let Some(held) = self.held.get_mut(&account_id) {
-                    for (uid, seen, flagged) in &synced.flags {
-                        let found = held.messages.values_mut().find(|m| {
-                            m.server
-                                .is_some_and(|at| at.folder == folder && at.uid == *uid)
-                        });
-                        if let Some(m) = found {
-                            m.read = *seen;
-                            m.starred = *flagged;
-                            flags.push((message_key(m), !*seen, *flagged));
-                        }
-                    }
-                }
-                out.push(Event::Changes(Changes {
-                    account: account_id,
-                    mailbox: folder.as_key().to_owned(),
-                    messages,
-                    flags,
-                }));
-            }
+            } => self.took_fetched(account_id, folder, &synced, out),
             EngineEvent::Found {
                 account_id,
                 messages,
@@ -456,7 +636,8 @@ impl EngineConnector {
                     }
                     EngineRequestKind::Send
                     | EngineRequestKind::StoreFlag
-                    | EngineRequestKind::Move => out.push(Event::Refused {
+                    | EngineRequestKind::Move
+                    | EngineRequestKind::Purge => out.push(Event::Refused {
                         request: request_id,
                         reason: message,
                     }),
@@ -476,6 +657,7 @@ impl EngineConnector {
                     EngineRequestKind::Send
                         | EngineRequestKind::StoreFlag
                         | EngineRequestKind::Move
+                        | EngineRequestKind::Purge
                 ) {
                     out.push(Event::Accepted(request_id));
                 }

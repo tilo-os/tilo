@@ -34,7 +34,7 @@ RUNNER = "tools/ci/vm-acceptance.sh"
 # area; B04 (layout) and W17 (typing into Terminal) are the older checks on the same path.
 INPUT = "input,B04,W17"
 FEATURES = [
-    (re.compile(r"^crates/dev/tilo-vm[a-z-]*/"), INPUT),
+    (re.compile(r"^tools/tilo-vm[a-z-]*/"), INPUT),
     (re.compile(r"^crates/session/compositor/src/(input|client_input\.rs|lock_|backend/drm/)"), INPUT),
     (re.compile(r"^os/usr/lib/udev/"), INPUT),
     (re.compile(r"^os/hardware/profiles/lenovo-83ed/input/"), INPUT),

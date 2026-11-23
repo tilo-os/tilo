@@ -320,7 +320,7 @@ mod tests {
             let time = origin.capture().unwrap();
             let held = clock.clone();
             assert!(
-                std::panic::catch_unwind(move || {
+                tilo_rt::panic_boundary::isolate(move || {
                     let _guard = held.0.state.lock().unwrap();
                     panic!("test poison");
                 })

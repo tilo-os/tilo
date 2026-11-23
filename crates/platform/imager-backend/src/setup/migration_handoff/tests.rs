@@ -19,7 +19,7 @@ tilo_test_env::scenario! {
         assert!(Plan::parse(&serde_json::to_vec(&raw).unwrap()).is_err());
         let mut bad = plan;
         for path in ["/home/person", "home/../person", ""] {
-            bad.home.relative = NativePath::encode(Path::new(path));
+            set_home_relative(&mut bad.home, NativePath::encode(Path::new(path)));
             assert!(bad.bytes().is_err(), "{path}");
         }
     }
@@ -71,6 +71,32 @@ fn durable_plan_is_private_immutable_and_does_not_adopt_symlinks() {
     symlink(&outside, &path).unwrap();
     assert!(Plan::read_private(&private, &plan.operation_id).is_err());
     assert_eq!(std::fs::read(outside).unwrap(), plan.bytes().unwrap());
+
+    // A private migration file carrying both pending_computer_applications_scope and
+    // home_exclusions round-trips through Plan::read_private.
+    let mut scoped = sample();
+    scoped.operation_id = "0f0e0d0c-0b0a-4908-8706-050403020100".into();
+    scoped.categories = Categories {
+        home: true,
+        flatpak: false,
+        accounts: false,
+    };
+    scoped.home_policy = HomePolicy::AccessReadWrite;
+    scoped.home_exclusions = vec![NativePath::encode(Path::new("Documents/Private"))];
+    scoped.pending_computer_applications_scope = Some(ComputerApplicationsScope {
+        schema: 1,
+        source_operation: scoped.operation_id.clone(),
+        applications_operation: "44444444-4444-4444-8444-444444444444".into(),
+        staging_operation: "55555555-5555-4555-8555-555555555555".into(),
+        staging_plan_sha256: "a".repeat(64),
+        setup_binding: "owned setup fixture".into(),
+        identity_public_key: [7; 32],
+    });
+    scoped.write_private(&private).unwrap();
+    assert_eq!(
+        Plan::read_private(&private, &scoped.operation_id).unwrap(),
+        scoped
+    );
 }
 
 /// Synthetic public metadata only; no source mount, native grant, namespace,
@@ -227,7 +253,7 @@ tilo_test_env::scenario! {
         let parsed = crate::setup::flatpak_transfer::HandoffInventory::parse(&bytes).unwrap();
         assert_eq!(
             serde_json::to_value(parsed).unwrap(),
-            inline.flatpak_inventory.unwrap(),
+            inline.0.flatpak_inventory.unwrap(),
             "every source and public record survives normalization"
         );
         let compact_wire = compact.bytes().unwrap();

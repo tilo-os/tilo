@@ -44,14 +44,17 @@ audio = { package = "tilo-audio-service", path = "../audio-service", default-fea
 connectivity = { package = "tilo-connectivity-service", path = "../connectivity-service" }
 os-actions = { path = "../../system/os-actions" }
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
+# What the battery and the sleep policy are, as the power service publishes them.
+power = { package = "tilo-session-power", path = "../power-service", default-features = false }
 serde.workspace = true
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
-# The readings the power service publishes are the battery's and the sleep
-# policy's own shapes.
-tilo-power-mgmt = { path = "../../system/power", features = ["service"] }
+# Battery snapshot, state and time-remaining types shown by the panel.
+tilo-power-mgmt = { path = "../../system/power", default-features = false }
+# What the system update is, as the system service publishes it.
+tilo-system-resources = { path = "../../platform/tilo-system-resources" }
 # The one now-playing reading, which the shell's music widget, the lock
 # screen's card and the bar's pill show as this panel does.
-tilo-desktop-surface = { path = "../desktop-surface", default-features = false }
+tilo-session-core = { path = "../core" }
 tracing.workspace = true
 # A framework app: the panel's resource, effects and views.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
@@ -66,12 +69,13 @@ audio = { package = "tilo-audio-service", path = "../audio-service", features = 
 image = { workspace = true, features = ["png"] }
 serde_json.workspace = true
 tilo-actions = { path = "../../collab/actions" }
+tilo-color-pipeline = { path = "../color-pipeline" }
 tilo-compositor = { path = "../compositor" }
 tilo-quick-settings = { path = ".", features = ["test-support"] }
 tilo-service = { path = "../service" }
 # The session that starts the panel, and the headless presentation it runs.
 tilo-session = { path = "../session" }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 # What an external reader asks the panel's accessibility tree over AT-SPI2,
 # and the buses and processes the test reads it across.

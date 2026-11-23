@@ -25,6 +25,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use std::sync::Arc;
+
 use accesskit::Role;
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -36,7 +38,7 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::video_player::PlayerSetting;
-use tilo_ui::widget::{CaptureMode, CaptureStudio, VideoPlayer, Widget};
+use tilo_ui::widget::{CaptureMode, CaptureStudio, ScreenshotMarkup, VideoPlayer, Widget};
 
 /// HIG §9.6: minimum pointer target.
 const MIN_TARGET: f64 = 32.0;
@@ -54,6 +56,21 @@ fn evidence(name: &str, width: u32, height: u32, rgba: &[u8]) {
 
 fn harness_evidence(harness: &FrameHarness, name: &str, viewport: (u32, u32)) {
     evidence(name, viewport.0, viewport.1, &harness.render_rgba());
+}
+
+/// A 640×400 two-tone gradient so the markup editor has a real capture to
+/// frame; the content is irrelevant, the geometry around it is the point.
+fn capture_rgba(w: u32, h: u32) -> Arc<[u8]> {
+    let mut px = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            px.push((x * 255 / w) as u8);
+            px.push((y * 255 / h) as u8);
+            px.push(160);
+            px.push(255);
+        }
+    }
+    Arc::from(px)
 }
 
 #[allow(
@@ -228,6 +245,22 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
             let rgba = OffscreenRenderer::new(w, h)
                 .render_resilient(&scene, theme.tokens.colors.surfaces.content);
             evidence(&format!("presence-pills-{scale}x"), w, h, &rgba);
+        }
+    }
+
+    {
+        for (name, viewport) in [
+            ("wide", (1200_u32, 800_u32)),
+            ("narrow", (440_u32, 700_u32)),
+        ] {
+            let markup = ScreenshotMarkup::new(capture_rgba(640, 400), 640, 400);
+            let harness = FrameHarness::new_with_theme(
+                State::new(),
+                Box::new(markup),
+                viewport,
+                Theme::dark().with_reduce_motion(true),
+            );
+            harness_evidence(&harness, &format!("screenshot-markup-{name}"), viewport);
         }
     }
 

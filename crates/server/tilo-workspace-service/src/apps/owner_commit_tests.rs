@@ -54,7 +54,6 @@ mod owner_commit_tests {
             state.ensure_channel(&route.channel_key());
             let mut subscriber = state.subscribe_ops(&route.channel_key(), 2);
             let client = wire_channel(JoinedChannel {
-                as_app: None,
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state, directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
                 channel_id: route.channel_key(), peer_id: 1, connection_id: 1, verified_identity: admitted,
@@ -477,7 +476,6 @@ mod owner_commit_tests {
         fanout.attach_app_broker(state.clone());
         state.ensure_channel(&route.channel_key());
         let channel = Rc::new(JoinedChannel {
-            as_app: None,
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
             state: state.clone(),
             directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
@@ -527,7 +525,11 @@ mod owner_commit_tests {
             collab_types::OpKind::Change,
             SystemTime::now(),
             1000,
-        );
+        )
+        // The surface the owner signs its app's changes with, as the broker
+        // names it before signing: a process that runs the app with a
+        // surface holds a change that names another.
+        .with_surface(f.owner.peer().signed_surface(&f.route.app_id));
         sign_op(&mut envelope, &key).unwrap();
         envelope
     }

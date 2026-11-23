@@ -31,6 +31,10 @@ tilo_test_env::scenario! {
         );
         assert!(emoji_ranges(":ti lo: :TILO: :tilo-x:", &emoji).is_empty());
         assert!(emoji_ranges(":tilo:", &WorkspaceEmoji::default()).is_empty());
+        // A name the workspace has no picture for stays text on the row too.
+        let missing = split_spans(vec![RichSpan::new("ok :missing: go")], &emoji);
+        assert!(missing.iter().all(|span| !span.workspace_emoji));
+        assert!(shaped(&missing, None).inline_emoji_squares().is_empty());
     }
 
     phase spans_split_around_each_emoji_and_keep_their_bytes_and_style;
@@ -129,15 +133,6 @@ tilo_test_env::scenario! {
         }
         assert_eq!(layout.inline_emoji_squares().len(), 2);
     }
-
-    phase a_missing_emoji_stays_text;
-    {
-        let text = "ok :missing: go";
-        let spans = split_spans(vec![RichSpan::new(text)], &workspace());
-        assert!(spans.iter().all(|span| !span.workspace_emoji));
-        let layout = shaped(&spans, None);
-        assert!(layout.inline_emoji_squares().is_empty());
-    }
 }
 
 fn shaped(spans: &[RichSpan], width: Option<f32>) -> RichTextLayout {
@@ -154,10 +149,9 @@ fn shaped(spans: &[RichSpan], width: Option<f32>) -> RichTextLayout {
 }
 
 #[test]
-fn the_renderer_paints_the_picture_in_place_of_the_name() {
-    let draw = |text: &str| {
-        let mut renderer =
-            TextRenderer::with_font_system(crate::font_catalog::fixture_font_system());
+fn a_renderer_measures_and_paints_the_picture_in_place_of_the_name() {
+    let mut renderer = TextRenderer::with_font_system(crate::font_catalog::fixture_font_system());
+    let draw = |renderer: &mut TextRenderer, text: &str| {
         let spans = split_spans_in_window(vec![RichSpan::new(text)]);
         let layout = RichTextLayout::shape_styled(
             &mut renderer.font_system,
@@ -176,22 +170,12 @@ fn the_renderer_paints_the_picture_in_place_of_the_name() {
             encoding.draw_tags.contains(&vello_encoding::DrawTag::IMAGE),
         )
     };
-    assert_eq!(draw("ab :tilo:"), (9, false), "no window: the name is text");
-
-    let scope = crate::wake::WakeScope::new();
-    let _entry = scope.enter();
-    crate::workspace_emoji::register(&scope.handle(), Rc::new(Fixed::new(workspace())));
     assert_eq!(
-        draw("ab :tilo:"),
-        (3, true),
-        "the name's glyphs are left out for its picture"
+        draw(&mut renderer, "ab :tilo:"),
+        (9, false),
+        "no window: the name is text"
     );
-    assert_eq!(draw("ab :nope:"), (9, false));
-}
 
-#[test]
-fn a_label_measures_and_paints_its_emoji_as_pictures() {
-    let mut renderer = TextRenderer::with_font_system(crate::font_catalog::fixture_font_system());
     let style = TextStyle::new(14.0);
     let label = "Topic: ship it :party_parrot:";
     let paint = |renderer: &mut TextRenderer| {
@@ -215,6 +199,12 @@ fn a_label_measures_and_paints_its_emoji_as_pictures() {
     let scope = crate::wake::WakeScope::new();
     let _entry = scope.enter();
     crate::workspace_emoji::register(&scope.handle(), Rc::new(Fixed::new(workspace())));
+    assert_eq!(
+        draw(&mut renderer, "ab :tilo:"),
+        (3, true),
+        "the name's glyphs are left out for its picture"
+    );
+    assert_eq!(draw(&mut renderer, "ab :nope:"), (9, false));
     let (width, height) = renderer.measure_style(label, None, &style);
     assert!(width < text_width - 14.0, "{width} vs {text_width}");
     assert!(

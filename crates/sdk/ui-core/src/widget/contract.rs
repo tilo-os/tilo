@@ -359,6 +359,14 @@ pub trait Widget {
         Vec::new()
     }
 
+    /// The text field this widget presents without the tree's focus reaching it — a search card
+    /// the shell draws over its windows, which takes the keys by its own rule. An input method
+    /// serves it as it serves a focused field's: the caret it draws is where composition stands.
+    /// `None` when this widget presents no such field.
+    fn ime_field(&self) -> Option<crate::ime::ImeWindowState> {
+        None
+    }
+
     /// The rectangle this widget occupies.
     fn get_rect(&self) -> vello::kurbo::Rect {
         vello::kurbo::Rect::ZERO

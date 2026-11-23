@@ -344,6 +344,7 @@ impl UdpSocket {
             };
             let (socket, state) = guard.try_get_connected()?;
 
+            #[allow(deprecated)]
             let res = socket.try_io(Interest::WRITABLE, || state.send(socket.into(), transmit));
 
             match res {
@@ -374,6 +375,7 @@ impl UdpSocket {
                     return Poll::Pending;
                 }
                 Poll::Ready(Ok(())) => {
+                    #[allow(deprecated)]
                     let res =
                         socket.try_io(Interest::WRITABLE, || state.send(socket.into(), transmit));
                     if let Err(err) = res {
@@ -983,6 +985,7 @@ impl UdpSender {
             result?;
 
             let (socket, state) = guard.try_get_connected()?;
+            #[allow(deprecated)]
             let result = socket.try_io(Interest::WRITABLE, || state.send(socket.into(), transmit));
 
             match result {
@@ -998,6 +1001,7 @@ impl UdpSender {
     }
 
     /// Best effort sending
+    #[allow(deprecated)]
     pub fn try_send(&self, transmit: &noq_udp::Transmit) -> io::Result<()> {
         self.socket.maybe_rebind()?;
 
@@ -1040,6 +1044,7 @@ impl Future for SendFutNoq<'_, '_> {
                     return Poll::Pending;
                 }
                 Poll::Ready(Ok(())) => {
+                    #[allow(deprecated)]
                     let res = socket.try_io(Interest::WRITABLE, || {
                         state.send(socket.into(), self.transmit)
                     });

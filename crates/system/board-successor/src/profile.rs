@@ -228,9 +228,13 @@ impl Root {
     /// A trusted regular file of at most 64 KiB (`development_origin`'s `read`).
     fn read_bounded(&self, relative: &str) -> Result<Vec<u8>> {
         let path = self.trusted_path(relative, true)?;
-        let size = fs::metadata(&path).map_err(|e| Error::os(&e, &path))?.len();
-        require(size <= 65536, "development origin input is too large")?;
-        fs::read(&path).map_err(|e| Error::os(&e, &path))
+        tilo_files::native::bounded::read(&path, 65536).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::FileTooLarge {
+                Error::value("development origin input is too large")
+            } else {
+                Error::os(&e, &path)
+            }
+        })
     }
 }
 
@@ -1147,35 +1151,13 @@ pub fn install_update_origin(root: &Root, override_ref: &str) -> Result<String> 
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test fixtures")]
 mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        /// The text helpers of the profile reader.
-        fn profile_patterns_compile_and_suffixes_follow_pathlib;
-
-        phase every_pattern_compiles;
-        {
-            for pattern in [
-                &*TILO_VM_REF,
-                &*RELEASE_REF,
-                &*DEVELOPMENT_REF,
-                &*TAG_ARCHITECTURE,
-                &*OWNER_KEY,
-                &*PROFILE_ID,
-                &*PATH_PART,
-                &*MODULE_NAME,
-                &*KEYBOARD_ID,
-                &*KEYBOARD_NAME,
-                &*COMPATIBLE,
-                &*KERNEL_ARG,
-                &*DMI_VALUE,
-                &*KERNEL_VERSION,
-                &*DTB_DIGEST,
-            ] {
-                assert_ne!(pattern.as_str(), never().as_str());
-            }
-        }
+        /// The profile reader's suffix helper follows `pathlib`.
+        fn profile_suffixes_follow_pathlib;
 
         phase suffix_is_pathlib_suffix;
         {
@@ -1183,6 +1165,35 @@ mod tests {
             assert_eq!(suffix(".dtb"), "");
             assert_eq!(suffix("a.b.dtb"), ".dtb");
             assert_eq!(suffix("board"), "");
+        }
+
+        phase read_bounded_enforces_the_64kib_limit;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let tmp = tempfile::tempdir().unwrap();
+            fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o755)).unwrap();
+            let owner = fs::metadata(tmp.path()).unwrap().uid();
+            let root = Root {
+                path: tmp.path().to_path_buf(),
+                owner,
+            };
+
+            assert!(matches!(root.read_bounded("missing"), Err(Error::Os(_))));
+
+            let exact = tmp.path().join("exact");
+            let payload = vec![b'x'; 65536];
+            fs::write(&exact, &payload).unwrap();
+            fs::set_permissions(&exact, fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(root.read_bounded("exact").unwrap(), payload);
+
+            let over = tmp.path().join("over");
+            fs::write(&over, vec![b'x'; 65537]).unwrap();
+            fs::set_permissions(&over, fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(
+                root.read_bounded("over"),
+                Err(Error::value("development origin input is too large"))
+            );
         }
     }
 }

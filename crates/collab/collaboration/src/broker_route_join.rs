@@ -28,7 +28,7 @@ pub(super) struct JoinInputs {
     pub(super) key_signals: tokio_mpsc::UnboundedSender<KeySignal>,
     pub(super) client: runtime_collab::CollabClient,
     pub(super) presentation: Vec<u8>,
-    pub(super) person: Option<std::rc::Rc<super::PersonalCluster>>,
+    pub(super) person: Option<std::rc::Rc<super::PersonWorkspace>>,
     pub(super) member_handle: Option<String>,
     pub(super) member_kind: &'static str,
     pub(super) inbound_tx: InboundBridge,
@@ -194,7 +194,7 @@ pub(super) async fn join_route(
             presence: None,
             workspace_controls: std::collections::HashMap::new(),
             resource_queries: std::collections::HashMap::new(),
-            held_elsewhere: None,
+            shown_actions: None,
             committed: false,
         });
     }
@@ -361,7 +361,7 @@ pub(super) async fn join_route(
         presence,
         workspace_controls: std::collections::HashMap::new(),
         resource_queries: std::collections::HashMap::new(),
-        held_elsewhere: None,
+        shown_actions: None,
         committed,
     })
 }

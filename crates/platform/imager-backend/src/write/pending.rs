@@ -1,6 +1,6 @@
 //! Bind pending migration plans to native target identity before destructive I/O.
 use super::{attest_target_descriptor, io, revalidate_target};
-use crate::media_model::TargetDrive;
+use crate::imager_model::TargetDrive;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 
 /// Revalidate a reviewed device before and after checking its independent sources.

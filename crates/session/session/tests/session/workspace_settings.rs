@@ -567,7 +567,7 @@ fn workspace_settings_lists_an_apps_grant_under_apps_and_revokes_it() {
             tab: "permissions".to_owned(),
         },
     );
-    let apps = tilo_desktop_surface::i18n::t("workspace-settings-section-apps");
+    let apps = tilo_session_core::desktop::i18n::t("workspace-settings-section-apps");
     let section = session
         .workspace_settings()
         .expect("workspace settings")
@@ -1084,18 +1084,18 @@ fn held_by_chat(
     }
 }
 
-/// Every name the sheet says, with what it says of it, as a screen reader reads it.
+/// Every name the sheet says, with what it says of it, as a screen reader reads it. A list row
+/// is named by its title and its secondary line; it is said here by the line it is titled with.
 fn said(app: &mut HeadlessApp<WorkspaceSettingsApp>) -> Vec<(String, String)> {
+    let titles: std::collections::HashMap<_, _> =
+        app.harness().a11y_row_titles().into_iter().collect();
     app.harness()
         .a11y_nodes()
         .into_iter()
-        .filter_map(|(_, node)| {
-            node.label().map(|label| {
-                (
-                    label.to_owned(),
-                    node.value().unwrap_or_default().to_owned(),
-                )
-            })
+        .filter_map(|(id, node)| {
+            let label = node.label()?;
+            let said = titles.get(&id).cloned().unwrap_or_else(|| label.to_owned());
+            Some((said, node.value().unwrap_or_default().to_owned()))
         })
         .collect()
 }

@@ -236,6 +236,7 @@ session-bluetooth-timed-out = The move took too long.
 session-bluetooth-unknown = That is not a Bluetooth address.
 session-notifications = Notification centre
 session-time = Time
+
 session-windows = Windows
 session-tray = Tray
 session-invite = Invite
@@ -246,7 +247,9 @@ session-notifications-dismiss = Dismiss the notification
 session-notifications-act = Run the notification's action
 session-notifications-clear = Clear the notification centre
 session-notifications-undo-clear = Bring back the cleared notifications
+session-notifications-reply = Reply in the notification
 session-notifications-open = Open the notification
+session-notifications-hand-to-agent = Hand the notification to your agent
 ## A notification another of the person's devices projected here: the app it
 ## came from and the device that showed it first.
 notification-from-device = { $app } from { $device }
@@ -398,6 +401,7 @@ capture-replay-save = Save
 capture-replay-stop = Stop
 capture-shot-title = Screenshot
 capture-shot-copy = Copy
+capture-shot-mark = Mark up
 capture-shot-open = Open
 capture-shot-reveal = Show in folder
 capture-shot-dismiss = Done
@@ -555,6 +559,7 @@ so-tilo-session-notifications-act = Choose an action
 so-tilo-session-notifications-clear = Clear all
 so-tilo-session-notifications-dismiss = Dismiss
 so-tilo-session-notifications-notify = Post a notification
+so-tilo-session-notifications-hand-to-agent = Hand to agent
 so-tilo-session-notifications-open-notice = Open
 so-tilo-session-notifications-set-quiet = Hold banners back
 so-tilo-session-notifications-undo-clear = Bring back the cleared notifications
@@ -580,3 +585,23 @@ machines-waiting-decline = Deny
 session-toggle-touchpad-on = Whether the touchpad is on; leave out to switch it
 session-night-light-toggle-on = Whether the night light is on; leave out to switch it
 session-apps-uninstall-app = The app's name
+
+## Handing a file to a receiver that is not one of your own devices.
+
+airdrop-verify-title = Verify AirDrop receiver
+airdrop-verify-detail = File: { $name }
+    Size: { $bytes } bytes
+    Receiver: { $endpoint }
+    Enter the receiver's SHA-256 certificate fingerprint as 64 hexadecimal digits from its trusted console or another independently verified channel. This sends the staged file once, only if the fingerprint matches. Cancel if you cannot verify the receiver.
+airdrop-verify-send-once = Send once
+airdrop-verify-cancel = Cancel
+airdrop-error-unavailable = AirDrop requires file-transfer permission and current Files access.
+airdrop-error-source = AirDrop accepts one readable regular file up to 16 MiB.
+airdrop-error-busy = Another AirDrop attempt is still running. Cancel it before starting another.
+airdrop-error-failed = AirDrop transfer failed. Verify the receiver again before a new attempt.
+airdrop-error-declined = AirDrop transfer was cancelled before sending.
+airdrop-error-verification = Fingerprint differs. Check the receiver; nothing sent.
+airdrop-error-fresh-consent = Start a new AirDrop attempt to verify the receiver and approve this file again.
+
+so-tilo-session-notifications-reply = Reply in a banner that offers a reply
+session-osd = Readout

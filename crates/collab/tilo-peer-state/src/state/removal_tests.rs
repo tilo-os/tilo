@@ -534,8 +534,8 @@ tilo_test_env::scenario! {
             report.primary()
         );
         assert_eq!(
-            super::sealed_tests::held(&joiner),
-            super::sealed_tests::held(&governor)
+            super::sealed_compaction_tests::held(&joiner),
+            super::sealed_compaction_tests::held(&governor)
         );
         // Its next number, sealed after the removal, joins no history.
         let earlier = now.checked_sub(Duration::from_secs(1000)).unwrap();
@@ -549,7 +549,7 @@ tilo_test_env::scenario! {
                 assert!(refused.contains("revoked"), "{refused}");
             }
         }
-        assert_eq!(super::sealed_tests::held(&joiner).len(), 1);
+        assert_eq!(super::sealed_compaction_tests::held(&joiner).len(), 1);
     }
 
     phase a_removed_devices_compaction_is_history_only_as_the_one_the_workspace_had_taken;

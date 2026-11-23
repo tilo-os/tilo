@@ -27,10 +27,10 @@ pub(super) enum RouteAccess {
 pub(super) fn attested_route_access(
     app: &str,
     route: &CrdtRoute,
-    personal_cluster: bool,
+    own_workspace: bool,
     reads_resource: impl FnOnce() -> bool,
 ) -> Result<RouteAccess, String> {
-    if personal_cluster {
+    if own_workspace {
         person_document_join(app, route)?;
     }
     if route.app_id.is_empty() || route.app_id == app {
@@ -41,7 +41,7 @@ pub(super) fn attested_route_access(
     if collab_types::shared_workspace_document(&route.app_id, &route.document_id).is_some() {
         return Ok(RouteAccess::Own);
     }
-    if !personal_cluster && !collab_types::app_surface::reads_app(app, &route.app_id) {
+    if !own_workspace && !collab_types::app_surface::reads_app(app, &route.app_id) {
         return Err(format!(
             "{app} declares no read of {}'s resources; it changes another app's \
              resources only by invoking its actions",
@@ -97,7 +97,7 @@ mod tests {
     fn person_route(app: &str, record: &str) -> CrdtRoute {
         CrdtRoute {
             app_id: app.into(),
-            cluster_id: collab_types::personal_cluster(&[7; 32]).to_string(),
+            cluster_id: collab_types::person_workspace(&[7; 32]).to_string(),
             document_id: record.into(),
         }
     }

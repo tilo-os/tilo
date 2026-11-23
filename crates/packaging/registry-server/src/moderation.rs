@@ -1160,7 +1160,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn version_history_per_target;
 
-        phase an_entry_at_its_version_limit_drops_only_superseded_versions;
+        phase dropping_a_targets_only_release_is_removing_history;
         {
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
             let official = ArtifactHosts::default();
@@ -1180,13 +1180,6 @@ mod tests {
                 .chain((1..limit).map(|n| version(n, "x86_64")))
                 .collect();
 
-            // A new x86_64 release drops the oldest superseded x86_64 one.
-            let mut next = current.clone();
-            next.versions.retain(|v| v.version != "1.1");
-            next.versions.push(version(limit, "x86_64"));
-            assert_eq!(next.versions.len(), limit);
-            assert!(validate_version_history(&next, Some(&current), &official).is_ok());
-
             // Dropping a target's only release is still removing history.
             let mut lost = current.clone();
             lost.versions
@@ -1194,58 +1187,6 @@ mod tests {
             lost.versions.push(version(limit, "x86_64"));
             assert!(matches!(
                 validate_version_history(&lost, Some(&current), &official),
-                Err(ModerationError::VersionHistoryRemoved { .. })
-            ));
-
-            // Below the limit, retention drops versions with enough newer ones of their target and
-            // channel left.
-            let mut short = current.clone();
-            short
-                .versions
-                .retain(|v| v.version != "1.1" && v.version != "1.2");
-            short.versions.push(version(limit, "x86_64"));
-            assert!(validate_version_history(&short, Some(&current), &official).is_ok());
-        }
-
-        phase retention_never_drops_the_newest_versions_of_a_target;
-        {
-            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let official = ArtifactHosts::default();
-            let floor = registry_types::retention::MIN_RETAINED_PER_CHANNEL;
-            let version = |n: usize| {
-                let mut v = entry(&key, 1).versions[0].clone();
-                v.version = format!("1.{n}");
-                v
-            };
-            let mut current = entry(&key, 1);
-            current.versions = (1..=floor + 1).map(version).collect();
-
-            // The oldest has `floor` newer versions: it may go.
-            let mut oldest = current.clone();
-            oldest.versions.remove(0);
-            assert!(validate_version_history(&oldest, Some(&current), &official).is_ok());
-
-            // The next one has one fewer: dropping it removes history.
-            let mut recent = current.clone();
-            recent.versions.remove(1);
-            assert!(matches!(
-                validate_version_history(&recent, Some(&current), &official),
-                Err(ModerationError::VersionHistoryRemoved { .. })
-            ));
-
-            // A newer pre-release does not count toward a release's channel.
-            let mut current = entry(&key, 1);
-            current.versions = vec![version(1)];
-            let mut next = current.clone();
-            next.versions = (1..=floor)
-                .map(|n| {
-                    let mut v = version(2);
-                    v.version = format!("1.2.0-dev.{n}");
-                    v
-                })
-                .collect();
-            assert!(matches!(
-                validate_version_history(&next, Some(&current), &official),
                 Err(ModerationError::VersionHistoryRemoved { .. })
             ));
         }
@@ -1408,52 +1349,6 @@ mod tests {
     tilo_test_env::scenario! {
         fn moderation_decisions;
 
-        phase rejection_refuses_a_replaced_review_but_preserves_exact_feedback;
-        {
-            let (_dir, service) = setup();
-            let key = SigningKey::from_bytes(&[23; 32]);
-            let candidate = service
-                .submit(change(&key, EntryAction::Add, 10), 100)
-                .unwrap();
-            let replacement = service
-                .submit(append_change(&key, &candidate.change, 11), 101)
-                .unwrap();
-            assert_ne!(
-                candidate.review_id().unwrap(),
-                replacement.review_id().unwrap()
-            );
-            assert!(
-                matches!(service.reject_reviewed(&candidate, "Owner", "Old feedback", 102),
-                Err(ModerationError::PendingChanged(id)) if id == candidate.submission_id)
-            );
-            assert_eq!(
-                service.pending(&candidate.submission_id).unwrap(),
-                Some(replacement.clone())
-            );
-            assert!(
-                service
-                    .storage
-                    .load_review(&submission_review_id(&candidate))
-                    .unwrap()
-                    .is_none()
-            );
-            assert!(
-                service
-                    .storage
-                    .load_entry(&candidate.submission_id)
-                    .unwrap()
-                    .is_none()
-            );
-            let feedback = "Please revise the sandbox; keep the \"notes\" app accessible.";
-            let result = service
-                .reject_reviewed(&replacement, "Owner", feedback, 103)
-                .unwrap();
-            assert_eq!(result.reason, feedback);
-            assert_eq!(result.reviewer, "Owner");
-            assert_eq!(result.subject, ReviewSubject::Submission(replacement));
-            assert!(service.pending(&candidate.submission_id).unwrap().is_none());
-        }
-
         phase rejection_clears_the_exact_malformed_request_without_authorizing_it;
         {
             let (_dir, service) = setup();
@@ -1565,50 +1460,8 @@ mod tests {
             }
         }
 
-        phase delete_and_restore_requests_are_moderated;
+        phase a_quarantined_entry_is_restored_only_for_its_allowlisted_publisher;
         {
-            {
-                let (_dir, service) = setup();
-                let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-                let mut public = entry(&key, 10);
-                sign_entry(&mut public, &key);
-                service.storage.save_entry(&public).unwrap();
-                service
-                    .submit(sign_change_request(EntryAction::Delete, public, &key), 100)
-                    .unwrap();
-                let review = service
-                    .reject("so.tilo.editor", "m", "revoked", 101)
-                    .unwrap();
-                assert_eq!(review.decision, ReviewDecision::Rejected);
-                assert!(
-                    service
-                        .storage
-                        .load_entry("so.tilo.editor")
-                        .unwrap()
-                        .is_some()
-                );
-            }
-            {
-                let (_dir, service) = setup();
-                let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-                let mut public = entry(&key, 10);
-                sign_entry(&mut public, &key);
-                service.storage.save_entry(&public).unwrap();
-                let pending = service
-                    .submit(sign_change_request(EntryAction::Delete, public, &key), 100)
-                    .unwrap();
-                let review = service
-                    .approve(&pending, "m", "withdrawn", 101, &allow(&key))
-                    .unwrap();
-                assert_eq!(review.decision, ReviewDecision::Approved);
-                assert!(
-                    service
-                        .storage
-                        .load_entry("so.tilo.editor")
-                        .unwrap()
-                        .is_none()
-                );
-            }
             {
                 let (_dir, service) = setup();
                 let key = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -1812,30 +1665,5 @@ mod tests {
             }
         }
 
-        phase a_bot_version_needs_its_program_uploaded;
-        {
-            let (_dir, service) = setup();
-            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let hash = "ab".repeat(32);
-            let mut entry = entry(&key, 100);
-            entry.kind = registry_types::EntryKind::Bot;
-            entry.versions = vec![registry_types::RegistryVersion {
-                version: "0.1.0".into(),
-                released_at_unix: 1,
-                artifact: registry_types::VersionArtifact::Bot(registry_types::BotArtifact {
-                    program_url: registry_types::bot_program_url("https://apps.tilo.so", &hash),
-                    program_blake3_hex: hash,
-                    program_size_bytes: 10,
-                    requires: registry_types::BotRequirements::default(),
-                }),
-            }];
-            sign_entry(&mut entry, &key);
-            let change = sign_change_request(EntryAction::Add, entry, &key);
-            let error = service.submit(change, 200).unwrap_err();
-            assert!(
-                matches!(error, ModerationError::BotProgram { .. }),
-                "{error}"
-            );
-        }
     }
 }

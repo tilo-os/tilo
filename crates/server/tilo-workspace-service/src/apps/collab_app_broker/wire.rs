@@ -367,11 +367,7 @@ impl JoinedChannel {
         verify_session_author(&current_identity, envelope.author)
             .map_err(|error| BrokerError::failed(format!("send: {error}")))?;
         state.authorize_certified_document(&route, &current_identity, &envelope)?;
-        // A record of the person's own scope is kept by their own store, which holds it durably
-        // and carries it to their other devices; no workspace's owner holds it, so nothing of one
-        // commits it.
-        let owner_required = state.personal_route(&route).is_none()
-            && (state.durable_owner_required || state.publisher.has_owner());
+        let owner_required = state.durable_owner_required || state.publisher.has_owner();
         let _owner_order = if owner_required {
             Some(state.owner_commit_order.lock().await)
         } else {
@@ -401,7 +397,6 @@ impl JoinedChannel {
         let current_identity = state.revalidate_admission(&route, &self.verified_identity)?;
         let authorized =
             state.authorize_certified_document(&route, &current_identity, &envelope)?;
-        state.keep_personally(&route, &envelope)?;
         handle_authorized_signed_op_send(
             state,
             self.connection_id,
@@ -1311,7 +1306,12 @@ impl JoinedChannel {
         table.apply(delta).map_err(|reason| {
             BrokerError::failed(format!("action surface delta refused: {reason}"))
         })?;
-        let actions = validate_published_surface(table.actions()).map_err(BrokerError::failed)?;
+        let valid = validate_published_surface(table.actions()).map_err(BrokerError::failed)?;
+        // A row left out is the app's own to fix; the rest of what it offers is offered.
+        for refused in &valid.refused {
+            tracing::warn!(app = %route.app_id, refused, "a published action is not offered");
+        }
+        let actions = valid.actions;
         let surface = PublishedSurface {
             peer_id,
             app_id: route.app_id.clone(),
@@ -2178,10 +2178,10 @@ impl WireConnection {
                             },
                         ))
                     }
-                    Topic::HeldElsewhere(records) => {
-                        let feed = session.held_elsewhere(records).map_err(failed)?;
+                    Topic::ShownActions(actions) => {
+                        let feed = session.shown_actions(actions).map_err(failed)?;
                         tokio::task::spawn_local(pump(feed, id, frames, |decisions| {
-                            Some(Event::HeldElsewhere(decisions))
+                            Some(Event::ShownActions(decisions))
                         }))
                     }
                     Topic::Resources(query) => {

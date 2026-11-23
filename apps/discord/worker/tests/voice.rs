@@ -245,7 +245,7 @@ fn bob() -> User {
 
 /// The share of the energy at `hz` in what `frames` decode to, past the
 /// codec's warm-up.
-fn tone_share(frames: &[Vec<u8>], hz: f32) -> f32 {
+pub(super) fn tone_share(frames: &[Vec<u8>], hz: f32) -> f32 {
     let samples = tone::decode(frames);
     let skip = (tone::FRAME_SAMPLES * 5).min(samples.len());
     tone::share(&samples[skip..], hz)
@@ -254,7 +254,7 @@ fn tone_share(frames: &[Vec<u8>], hz: f32) -> f32 {
 /// The share of the energy at `hz` in what a receiver of `frames` hears, past
 /// the codec's warm-up: a sequence number the sender spent without a packet
 /// is concealed, as a receiver does when the sender drops audio.
-fn tone_share_received(frames: &[Heard], hz: f32) -> f32 {
+pub(super) fn tone_share_received(frames: &[Heard], hz: f32) -> f32 {
     let samples = tone::decode_received(frames);
     let skip = (tone::FRAME_SAMPLES * 5).min(samples.len());
     tone::share(&samples[skip..], hz)

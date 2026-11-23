@@ -1,0 +1,516 @@
+//! Workspace history presentation shared by native and admitted portable hosts. The host owns
+//! persistence and effects; reviewing cloned causal documents is local presentation. Missing
+//! services stay unavailable.
+use automerge::AutoCommit;
+use std::{
+    collections::HashMap,
+    ops::{Deref, DerefMut},
+};
+use tilo_desktop_model::{Layout, WorkspaceId};
+
+pub mod describer;
+pub mod index;
+pub mod morning;
+mod pane;
+mod replay;
+#[cfg(test)]
+mod testing;
+pub use index::*;
+pub use pane::{
+    ActivityView, Period, ServedTree, WorkspaceActivityOutcome, WorkspaceActivityPane,
+    WorkspaceScope, is_document_write, is_personal, is_read, refused_to_agent,
+};
+
+/// What the signed values a workspace's governance keeps say: its membership operations and its
+/// device rows, which only the workspace's engine reads and verifies. The host that keeps the
+/// workspace hands one to its history ([`ActivityTree::governance_reader`]), so those changes are
+/// named by what they did.
+pub trait GovernanceReader {
+    /// What the membership operation stored as `op` does, when it proves its writer.
+    fn membership(&self, op: &[u8]) -> Option<MembershipWrite>;
+    /// The name the device row stored as `row` gives its device, when it is one.
+    fn device_label(&self, row: &[u8]) -> Option<String>;
+}
+
+/// What one membership operation of a workspace does, as its history words it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MembershipWrite {
+    /// Changes to who is in the workspace and what they may do, in the order they were made.
+    Changes(Vec<tilo_action_policy::Change>),
+    /// `person` (as the workspace names its members) came in through an invitation.
+    Admitted { person: String },
+    /// Which parts of the workspace's governance another change wrote: a record of that change,
+    /// which its own row names, and nothing anyone did.
+    Recorded,
+}
+
+/// A causal document paired with its admitted desktop projection. Implementors retain native
+/// mutation/persistence authority; the default snapshot is read-only.
+pub trait ActivityTree: Clone + Deref<Target = Layout> + DerefMut {
+    fn document(&self) -> &AutoCommit;
+    fn document_mut(&mut self) -> &mut AutoCommit;
+    /// Rebuild the desktop projection from the causal document.
+    fn resync_activity_cache(&mut self) -> Result<(), String>;
+    fn replay_presentation_note(&self) -> Option<String> {
+        None
+    }
+    /// The delegated agents on the workspaces' rosters whose person's root signed the delegation
+    /// for exactly that device, as the host verified them: the changes their own keys signed read
+    /// as theirs, on behalf of their person. A host that verifies none leaves those changes
+    /// unknown.
+    fn roster_agents(&self) -> Vec<ui::history_source::RosterAgent> {
+        Vec::new()
+    }
+    fn commit_activity_change(&mut self) {}
+    /// The workspace's own document — its governance, and the layout it keeps at its root — where
+    /// the document [`Self::document`] reads is another record of the same workspace.
+    fn governance_document(&self) -> Option<&AutoCommit> {
+        None
+    }
+    /// What reads the signed values the workspace's governance keeps, where the host has one.
+    fn governance_reader(&self) -> Option<std::rc::Rc<dyn GovernanceReader>> {
+        None
+    }
+    /// The workspace whose layout the document holds, where it holds one workspace's: every change
+    /// of it is that workspace's, whichever part of the record it wrote.
+    fn document_workspace(&self) -> Option<WorkspaceId> {
+        None
+    }
+}
+
+/// What takes the layout a committing snapshot wrote back to where it is kept.
+type Commit = std::rc::Rc<dyn Fn(&Layout)>;
+
+/// Read-only admitted history of the layout. Construct from the actual admitted owner document, never
+/// from a re-encoded desktop cache. The supplied document is owned so `HistorySource` 's
+/// `AutoCommit` cursor cannot touch the live owner.
+#[derive(Clone)]
+pub struct ActivitySnapshot {
+    pub desktop: Layout,
+    pub doc: AutoCommit,
+    /// The workspace whose document this is, or `None` when the document is the layout's own.
+    workspace: Option<tilo_desktop_model::WorkspaceId>,
+    /// What the document holds the layout as.
+    shape: Shape,
+    /// The workspace's own document, where this document is one of its records: what it governs —
+    /// who owns it, who it is shared with, what it grants — is read from there.
+    governance: Option<AutoCommit>,
+    /// What reads the signed values in [`Self::governance`].
+    reader: Option<std::rc::Rc<dyn GovernanceReader>>,
+    /// The workspace whose layout the document holds, where it holds one workspace's.
+    owning: Option<tilo_desktop_model::WorkspaceId>,
+    /// What takes a change the model wrote back to the layout it came from: a host that keeps the
+    /// workspace's own layout applies it here, and a host whose history is read only keeps none.
+    commit: Option<Commit>,
+}
+/// What a snapshot's document holds the layout as.
+#[derive(Clone, Copy)]
+enum Shape {
+    /// The device's whole layout, as [`tilo_desktop_model::desktop_doc`] keeps it.
+    Devices,
+    /// One workspace's layout, as the workspace's
+    /// [`tilo_desktop_model::shared_resource`] holds it.
+    Layout,
+}
+
+impl ActivitySnapshot {
+    /// Snapshot the active workspace of `desktop` from its admitted owner document.
+    pub fn new(desktop: Layout, doc: AutoCommit) -> Result<Self, String> {
+        let workspace = desktop
+            .active_workspace()
+            .ok_or("active workspace unavailable")?
+            .id();
+        let mut snapshot = Self {
+            desktop,
+            doc,
+            workspace: Some(workspace),
+            shape: Shape::Devices,
+            governance: None,
+            reader: None,
+            owning: None,
+            commit: None,
+        };
+        tilo_desktop_model::projection::apply_admitted_workspace(
+            &mut snapshot.desktop,
+            workspace,
+            &snapshot.doc,
+        )?;
+        Ok(snapshot)
+    }
+
+    /// Snapshot the whole layout of `desktop` from the device's own document of it: every workspace,
+    /// in the one document this device keeps, whose changes are what happened to it and who did it.
+    #[must_use]
+    pub fn of_desktop(desktop: Layout, doc: AutoCommit) -> Self {
+        let mut snapshot = Self {
+            desktop,
+            doc,
+            workspace: None,
+            shape: Shape::Devices,
+            governance: None,
+            reader: None,
+            owning: None,
+            commit: None,
+        };
+        let _ = snapshot.resync_activity_cache();
+        snapshot
+    }
+
+    /// Snapshot the layout of `desktop` from `workspace_id`'s record: the strips, window groups and
+    /// windows it holds, and the changes of it a history lists.
+    #[must_use]
+    pub fn of_layout(
+        desktop: Layout,
+        workspace_id: tilo_desktop_model::WorkspaceId,
+        doc: AutoCommit,
+    ) -> Self {
+        let mut snapshot = Self {
+            desktop,
+            doc,
+            workspace: None,
+            shape: Shape::Layout,
+            governance: None,
+            reader: None,
+            owning: Some(workspace_id),
+            commit: None,
+        };
+        let _ = snapshot.resync_activity_cache();
+        snapshot
+    }
+
+    /// Hand every change the model writes to `commit` , with the workspace as the change left it: a
+    /// host that keeps the workspace's layout writes it back, so undoing or restoring a change
+    /// reaches the layout itself.
+    #[must_use]
+    pub fn committing(mut self, commit: std::rc::Rc<dyn Fn(&Layout)>) -> Self {
+        self.commit = Some(commit);
+        self
+    }
+
+    /// Read the workspace's governance from `document` , the workspace's own: this document is one
+    /// of its records, and what the workspace governs is not written there.
+    #[must_use]
+    pub fn governing(mut self, document: AutoCommit) -> Self {
+        self.governance = Some(document);
+        self
+    }
+
+    /// Read the signed values the workspace's governance keeps with `reader`.
+    #[must_use]
+    pub fn reading_governance(mut self, reader: std::rc::Rc<dyn GovernanceReader>) -> Self {
+        self.reader = Some(reader);
+        self
+    }
+}
+impl Deref for ActivitySnapshot {
+    type Target = Layout;
+    fn deref(&self) -> &Layout {
+        &self.desktop
+    }
+}
+impl DerefMut for ActivitySnapshot {
+    fn deref_mut(&mut self) -> &mut Layout {
+        &mut self.desktop
+    }
+}
+impl ActivityTree for ActivitySnapshot {
+    fn document(&self) -> &AutoCommit {
+        &self.doc
+    }
+    fn document_mut(&mut self) -> &mut AutoCommit {
+        &mut self.doc
+    }
+    fn governance_document(&self) -> Option<&AutoCommit> {
+        self.governance.as_ref()
+    }
+    fn governance_reader(&self) -> Option<std::rc::Rc<dyn GovernanceReader>> {
+        self.reader.clone()
+    }
+    fn document_workspace(&self) -> Option<WorkspaceId> {
+        self.owning
+    }
+    fn replay_presentation_note(&self) -> Option<String> {
+        // A workspace document records which windows the workspace holds and how they are arranged,
+        // never how wide they are or which is in front: those are the device's. The device's own
+        // document of the layout records the view it was left in too, so there is nothing to note.
+        self.workspace
+            .map(|_| crate::desktop::i18n::t("activity-replay-layout-not-recorded"))
+    }
+    fn resync_activity_cache(&mut self) -> Result<(), String> {
+        let Some(workspace) = self.workspace else {
+            match self.shape {
+                // The whole layout, out of the device's document: its topology, and the view it was
+                // left in.
+                Shape::Devices => {
+                    tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
+                    tilo_desktop_model::desktop_doc::rebuild_view(&self.doc, &mut self.desktop);
+                }
+                // The layout one workspace holds, and no other: what it says is what the window
+                // showed then.
+                Shape::Layout => {
+                    let Some(layout) = tilo_desktop_model::shared_resource::read(&self.doc, None)
+                    else {
+                        return Ok(());
+                    };
+                    for held in &mut self.desktop.workspaces {
+                        if let Some(found) = layout
+                            .tree
+                            .workspaces
+                            .iter()
+                            .find(|found| found.id() == held.id())
+                        {
+                            held.strips.clone_from(&found.strips);
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        };
+        // A historical projection must not retain tabs that only exist in the current cache.
+        // Workspace documents do not record local width or active-tab selection, so reconstructed
+        // groups use neutral presentation defaults.
+        self.desktop.workspaces.retain(|w| w.id() == workspace);
+        for workspace in &mut self.desktop.workspaces {
+            workspace.strips.clear();
+        }
+        tilo_desktop_model::projection::apply_admitted_workspace(
+            &mut self.desktop,
+            workspace,
+            &self.doc,
+        )
+        .map(|_| ())
+    }
+    fn commit_activity_change(&mut self) {
+        // What the model wrote is a change of the document: left open, nothing after it reads.
+        let _ = tilo_resource::history::commit_stamped(&mut self.doc);
+        let Some(commit) = self.commit.clone() else {
+            return;
+        };
+        // The change was written into the document: what the layout becomes is what that document
+        // projects, not the tree it projected before.
+        let _ = self.resync_activity_cache();
+        commit(&self.desktop);
+    }
+}
+
+/// Optional host services. Browser hosts install only real admitted adapters. Resource opening and
+/// narration use the pane's existing outcome/request APIs.
+pub trait ActivityHost {
+    fn local_user(&self) -> String {
+        String::new()
+    }
+    fn local_author(&self, _authors: &mut ui::AuthorDirectory, _actor: &str) -> Option<String> {
+        None
+    }
+    fn morning_sources_available(&self) -> bool {
+        false
+    }
+    /// Presently admitted provider data only; no implicit refresh or account connection.
+    fn morning_payload(
+        &self,
+        _workspace: &str,
+        _source: &morning::MorningSource,
+    ) -> Option<morning::MorningPayload> {
+        None
+    }
+    /// Submit a chosen source command through the existing admitted action session.
+    fn submit_morning_command(
+        &self,
+        _workspace: &str,
+        _source: &morning::MorningSource,
+        _command: morning::MorningCommand,
+    ) -> Result<(), String> {
+        Err(crate::desktop::i18n::t(
+            "activity-morning-command-unavailable",
+        ))
+    }
+    fn morning_command_status(
+        &self,
+        _workspace: &str,
+        _source: &morning::MorningSource,
+    ) -> Option<String> {
+        None
+    }
+    fn load_morning_sources(&self) -> HashMap<WorkspaceId, morning::MorningPreferences> {
+        HashMap::new()
+    }
+    fn save_morning_sources(&self, _sources: &HashMap<WorkspaceId, morning::MorningPreferences>) {}
+    fn load_frontiers(&self) -> HashMap<WorkspaceId, WorkspaceSeenFrontier> {
+        HashMap::new()
+    }
+    fn save_frontiers(&self, _frontiers: &HashMap<WorkspaceId, WorkspaceSeenFrontier>) {}
+    /// When this device last left each workspace, for the away recap. Private to the device, like
+    /// the seen frontiers.
+    fn load_departures(&self) -> HashMap<WorkspaceId, WorkspaceDeparture> {
+        HashMap::new()
+    }
+    fn save_departures(&self, _departures: &HashMap<WorkspaceId, WorkspaceDeparture>) {}
+    fn mutations_available(&self) -> bool {
+        false
+    }
+    /// Whether the host can write `origin` 's history back: undo a change of it, restore it to an
+    /// earlier state. A host that keeps the workspace's own layout writes that one; a record only
+    /// where the host holds the writer it is kept by. What it cannot write, the pane does not
+    /// offer.
+    fn writable(&self, _origin: &index::HistoryOrigin) -> bool {
+        self.mutations_available()
+    }
+    fn all_workspaces_available(&self) -> bool {
+        false
+    }
+    fn app_display_name(&self, _app: &str) -> Option<String> {
+        None
+    }
+    /// The bytes `app` keeps in `workspace` under the content hash `hash` (lower-case hex), when
+    /// this device holds them: what a command run's record names as its output.
+    fn document_content(&self, _workspace: &str, _app: &str, _hash: &str) -> Option<Vec<u8>> {
+        None
+    }
+    /// The devices that refused writes in `workspace` , each with what it refused: one verdict per
+    /// write, the highest sequence.
+    fn refusals(&self, _workspace: &str) -> Vec<tilo_actions::remote::workspace_activity::Refusal> {
+        Vec::new()
+    }
+    /// Undo an agent's run of task `task`: each document in `steps` (its
+    /// app and record) undoes the changes grouped under the task, through
+    /// its own history, as the person at the screen.
+    ///
+    /// # Errors
+    /// The host cannot undo here, or refused to start.
+    fn undo_task_run(&self, _undo: TaskRunUndo) -> Result<(), String> {
+        Err(crate::desktop::i18n::t("activity-undo-task-unavailable"))
+    }
+    /// How the undo `invocation` ended: the records it was carried out in,
+    /// or why nothing was undone. `None` while it runs.
+    fn poll_task_run_undo(
+        &self,
+        _invocation: uuid::Uuid,
+    ) -> Option<Result<Vec<TaskRunDocument>, String>> {
+        None
+    }
+}
+
+/// One document an undo of an agent's task was carried out in: the step's app and record, so the
+/// task view reports what came back and what did not.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TaskRunDocument {
+    pub app: String,
+    pub record: String,
+}
+
+/// An agent's run of a task to undo as one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskRunUndo {
+    pub workspace: String,
+    pub invocation: uuid::Uuid,
+    pub task_id: String,
+    /// The documents the run changed: each step's app and record.
+    pub steps: Vec<(String, String)>,
+}
+pub struct UnavailableActivityHost;
+impl ActivityHost for UnavailableActivityHost {}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ActivityDeepLink {
+    pub author: Option<String>,
+    pub group_id: Option<String>,
+    pub entry_id: Option<[u8; 16]>,
+    pub resource_id: Option<String>,
+    pub resource_version: Option<[u8; 16]>,
+}
+#[cfg(test)]
+mod admitted_history_tests {
+    use super::*;
+    use automerge::{ROOT, transaction::Transactable};
+    use tilo_desktop_model::projection::WORKSPACE_ID_KEY;
+    use tilo_desktop_model::{Workspace, WorkspaceId};
+
+    #[test]
+    fn workspace_activity_real_workspace_topology_enters_pane_feed_and_replay() {
+        use tilo_desktop_model::{
+            AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
+        };
+        let workspace = Workspace::new(WorkspaceId::from_u128(9), "Actual workspace");
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
+            .unwrap();
+        doc.put(ROOT, "name", "Actual workspace").unwrap();
+        doc.commit();
+        let mut strips = vec![Strip {
+            id: StripId((5 << 48) | 1),
+            name: "Main".into(),
+            window_groups: vec![WindowGroup {
+                id: (5 << 48) | 2,
+                active_tab: (5 << 48) | 3,
+                width: WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+                tabs: vec![Tab {
+                    id: (5 << 48) | 3,
+                    title: "Before".into(),
+                    tile: TileContent::AppPlaceholder {
+                        kind: AppKind::Other("so.tilo.notes".into()),
+                        label: "Notes".into(),
+                    },
+                    app_title: None,
+                    view: String::new(),
+                    pinned: false,
+                }],
+            }],
+        }];
+        let write = |doc: &mut AutoCommit, strips: &[Strip]| {
+            let mut layout = workspace.clone();
+            layout.strips = strips.to_vec();
+            tilo_desktop_model::shared_resource::device::write(
+                doc,
+                workspace.id(),
+                &layout,
+                &tilo_desktop_model::shared_resource::device::Writer {
+                    person: Some("ada"),
+                    mine: &|id| id >> 48 == 5,
+                    records: tilo_desktop_model::shared_resource::device::Writer::NOTHING_NOTED,
+                },
+            )
+            .unwrap();
+            doc.commit();
+        };
+        write(&mut doc, &strips);
+        strips[0].window_groups[0].tabs[0].title = "After".into();
+        write(&mut doc, &strips);
+        let mut snapshot = ActivitySnapshot::new(
+            Layout {
+                active: workspace.id(),
+                workspaces: vec![workspace],
+                ..Default::default()
+            },
+            doc,
+        )
+        .unwrap();
+        let heads = snapshot.doc.get_heads();
+        let mut pane = WorkspaceActivityPane::new();
+        pane.begin_view(tilo_desktop_model::WorkspaceId::from_u128(9));
+        pane.refresh(&mut snapshot);
+        // The window opened and the title change are listed; setup and layout commits are not.
+        let summaries = pane
+            .entries()
+            .iter()
+            .map(|entry| entry.summary.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(summaries.len(), 2, "{summaries:?}");
+        assert!(summaries.contains(&"Opened Before"), "{summaries:?}");
+        let labels = pane
+            .replay_frames
+            .iter()
+            .flat_map(|frame| &frame.workspaces)
+            .flat_map(|workspace| &workspace.groups)
+            .flat_map(|group| &group.tabs)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            labels.iter().any(|s| s == "Before"),
+            "actual causal topology was lost: {labels:?}"
+        );
+        assert!(labels.iter().any(|s| s == "After"));
+        assert_eq!(snapshot.doc.get_heads(), heads);
+    }
+}

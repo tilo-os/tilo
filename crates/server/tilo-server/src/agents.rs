@@ -125,17 +125,17 @@ impl ServerAgentLink {
         sessions: &tilo_agent_session::AgentSessions,
         workspace: WorkspaceId,
         agent: &str,
-        keeper: &[u8; 32],
+        acts_for: &[u8; 32],
     ) -> Option<[u8; 32]> {
         let workspaces = self.workspaces.as_ref()?;
         let entry = workspaces
-            .hosted_roster_agent(workspace, agent, keeper, None)
+            .hosted_roster_agent(workspace, agent, acts_for, None)
             .await?;
         let device = self
-            .approved_session_device(sessions, workspace, agent, keeper)
+            .approved_session_device(sessions, workspace, agent, acts_for)
             .await?;
         sessions
-            .matches_roster(&device, workspace, agent, keeper, entry.created_at)
+            .matches_roster(&device, workspace, agent, acts_for, entry.created_at)
             .then_some(device)
     }
 
@@ -145,12 +145,12 @@ impl ServerAgentLink {
         sessions: &tilo_agent_session::AgentSessions,
         workspace: WorkspaceId,
         agent: &str,
-        keeper: &[u8; 32],
+        acts_for: &[u8; 32],
     ) -> Option<[u8; 32]> {
         let device = self
             .workspaces
             .as_ref()?
-            .approved_agent_device(workspace, agent, keeper)
+            .approved_agent_device(workspace, agent, acts_for)
             .await?;
         let link = sessions.link(&device)?;
         let status = link.status();
@@ -164,7 +164,7 @@ impl ServerAgentLink {
 
     fn enqueue_approval(
         &self,
-        keeper: [u8; 32],
+        acts_for: [u8; 32],
         key: &SigningKey,
         proposal: &DelegateProposal,
     ) -> Result<([u8; 32], String), String> {
@@ -173,7 +173,7 @@ impl ServerAgentLink {
         getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
         let request = CertificationRequest {
             version: CERTIFICATION_SCHEMA_VERSION,
-            user_public_key: keeper,
+            user_public_key: acts_for,
             device_public_key: key.verifying_key().to_bytes(),
             device_label: format!("Agent: {}", proposal.label),
             requested: DeviceCapabilities::nothing(),

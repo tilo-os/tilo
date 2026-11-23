@@ -81,14 +81,6 @@ pub fn request_id(server: &str, generation: u64) -> Id {
 }
 
 impl Floor {
-    /// What the resource holds, read as any resource is.
-    ///
-    /// # Errors
-    /// A named item is not this read's to answer.
-    pub fn read_document(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-
     fn pending(&mut self, id: &Id, by: &str) -> Result<&mut FloorRequest, Refusal> {
         let request = self
             .requests
@@ -104,7 +96,7 @@ impl Floor {
     }
 }
 
-#[resource(kind = "tilo.servers.floor", read_content = Floor::read_document)]
+#[resource(kind = "tilo.servers.floor", read_content = tilo_resource::read::fields)]
 impl Floor {
     /// Keep the person's floor key: its public half, its private half sealed
     /// to their secret-sync key, and their root's signature over the public

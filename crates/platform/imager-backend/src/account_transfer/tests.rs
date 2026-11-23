@@ -74,7 +74,7 @@ tilo_test_env::scenario! {
         let account = store.get(id.as_str()).unwrap().unwrap();
         assert_eq!(account.type_id.as_str(), "webdav");
         assert_eq!(account.config["username"], "ada");
-        let metadata = std::fs::read_to_string(accounts::store_path_in(&root)).unwrap();
+        let metadata = String::from_utf8_lossy(&std::fs::read(accounts::person::staged_path_in(&root)).unwrap()).into_owned();
         assert!(!metadata.contains("PRIVATE_APP_PASSWORD"));
         let vault = SecretVault::open_in(&root);
         assert_eq!(
@@ -131,7 +131,7 @@ tilo_test_env::scenario! {
     {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("target");
-        let path = accounts::store_path_in(&root);
+        let path = accounts::person::staged_path_in(&root);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "broken-existing-accounts").unwrap();
         assert_eq!(
@@ -381,7 +381,7 @@ tilo_test_env::scenario! {
         }
         let source_vault = accounts::vault_dir_in(&source).join("vault.enc");
         let original_vault = std::fs::read(&source_vault).unwrap();
-        let original_store = std::fs::read(accounts::store_path_in(&source)).unwrap();
+        let original_store = std::fs::read(accounts::person::staged_path_in(&source)).unwrap();
         let connector = Connector::new(target.clone());
         let target_ownership = CredentialStore::for_root(Some(target.clone()));
         for (slot, capability, token) in [
@@ -406,10 +406,10 @@ tilo_test_env::scenario! {
         }
         assert_eq!(std::fs::read(source_vault).unwrap(), original_vault);
         assert_eq!(
-            std::fs::read(accounts::store_path_in(&source)).unwrap(),
+            std::fs::read(accounts::person::staged_path_in(&source)).unwrap(),
             original_store
         );
-        let target_metadata = std::fs::read_to_string(accounts::store_path_in(&target)).unwrap();
+        let target_metadata = String::from_utf8_lossy(&std::fs::read(accounts::person::staged_path_in(&target)).unwrap()).into_owned();
         assert!(!target_metadata.contains("private-source-"));
         assert!(!target_metadata.contains("private-refresh-"));
     }
@@ -630,7 +630,10 @@ music_streaming = ["streaming", "user-read-private"]
         std::fs::read(accounts::vault_dir_in(&stage).join("vault.enc")).unwrap(),
         source_vault
     );
-    let metadata = std::fs::read_to_string(accounts::store_path_in(&destination)).unwrap();
+    let metadata = String::from_utf8_lossy(
+        &std::fs::read(accounts::person::staged_path_in(&destination)).unwrap(),
+    )
+    .into_owned();
     assert!(!metadata.contains("refresh_token"));
     assert!(!metadata.contains("access_token"));
 }

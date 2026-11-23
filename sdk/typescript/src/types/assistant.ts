@@ -22,12 +22,12 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.assistant@234f619a24e3cb4e";
+export const SURFACE = "so.tilo.assistant@b0e2f9cf0312fc07";
 
 export interface Agent {
   id: string;
   name: string;
-  keeper: string;
+  acts_for: string;
   model: string | null;
   mcp_client: string | null;
   bound: Bound[];

@@ -917,7 +917,7 @@ mod tests {
                 );
                 assert!(labels.contains(&"Downloaded to this device from the formats' publishers. You can turn it off here at any time."), "{scenario}: {labels:?}");
                 assert!(
-                    labels.contains(&"Status"),
+                    app.harness().a11y_node_named("Status").is_some(),
                     "{scenario}: the status field is rendered"
                 );
                 let values: Vec<_> = nodes.iter().filter_map(|(_, node)| node.value()).collect();

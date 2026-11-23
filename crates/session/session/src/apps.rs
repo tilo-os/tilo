@@ -26,7 +26,7 @@ use tilo_broker_core::services::LaunchPlace;
 use tilo_desktop_search::LaunchPlace as OpenPlace;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
-use tilo_desktop_surface::outcome::{Closed, Outcome};
+use tilo_session_core::desktop::outcome::{Closed, Outcome};
 use tilo_workspace_service::apps::collab_app_broker::AppBrokerState;
 
 mod launch;
@@ -51,13 +51,16 @@ struct AppConnections {
     content: Option<std::os::fd::OwnedFd>,
     /// Its connection to the person's chooser, when this session serves one.
     chooser: Option<std::os::fd::OwnedFd>,
+    /// Its connection to the person's clipboard, when this session serves one.
+    clipboard: Option<std::os::fd::OwnedFd>,
     /// What the person may do in the app.
     access: Option<tilo_action_policy::MemberAccess>,
 }
 
 use crate::search::AppActions;
 
-/// The answer for `asked` that did not open, and `why`, with trying again as its button.
+/// The answer for `asked` that did not open, and `why`, with trying again as its button and
+/// `details`, what the launch itself said, behind the card's Details.
 /// `title` names the launch when the asked string is an internal one (a Windows program's entry):
 /// a person reads the name the manager started it by, never an id.
 fn not_opened(
@@ -65,17 +68,15 @@ fn not_opened(
     asked: &str,
     title: Option<&str>,
     why: &str,
+    details: &str,
 ) -> Outcome {
-    use tilo_desktop_surface::i18n::{t, t_args};
     // The name its launch was started with is what a person knows it by; the shell's own name
     // for an asked string can be derived from an internal id.
     let name = match title {
         Some(title) => title.to_owned(),
         None => policy.name_of(asked),
     };
-    Outcome::new(t_args("answer-app-not-opened", &[("app", name.into())]))
-        .saying(why)
-        .retryable(t("answer-try-again"))
+    Outcome::not_built_because(&name, why, details)
 }
 
 /// Why a launch this session planned starts nothing, said where a person reads it: an app this
@@ -106,6 +107,10 @@ pub struct Apps {
     state: RefCell<State>,
     /// Why a workspace's apps may not start yet, once the session lent it ([`Self::lend_admission`]).
     admission: RefCell<Option<Admission>>,
+    /// Where each workspace's resources open on the web, as JSON, once the session lent it
+    /// ([`Self::lend_link_home`]): what a tilolang window's host mints a resource's `share-link`
+    /// under ([`Self::link_home`]).
+    link_home: RefCell<Option<LinkHomeOf>>,
     /// What the person is asked about an app's network before it first starts ([`reach`]).
     reach: reach::Reach,
     /// The deliveries whose answer a caller waits for, admitted and not settled yet: the broker
@@ -123,6 +128,10 @@ struct Awaited {
 
 /// Why the apps of a workspace, by its id, may not start yet: `None` once they may.
 pub(crate) type Admission = Rc<dyn Fn(&str) -> Option<String>>;
+
+/// The page a workspace's resources open under, by its id, as JSON: the home a tilolang host
+/// mints links under (`tilolang_tilo::share::LinkHome`), and nothing where its host serves none.
+pub(crate) type LinkHomeOf = Rc<dyn Fn(&str) -> Option<String>>;
 
 /// What starting an app needs besides the launch itself.
 struct State {
@@ -192,7 +201,7 @@ struct State {
     wake: Option<tilo_service::Wake>,
     /// The tilolang processes, once the session lent its links: one per workspace and author, running
     /// the instances of the tilolang apps' windows.
-    processes: Option<Arc<tilo_app_launch::tilolang_processes::Processes>>,
+    processes: Option<Arc<tilo_runtime::device::processes::Processes>>,
     /// The connectors of the apps' outside services: what a hosted instance reaches its origin by.
     connectors: Option<Rc<crate::connectors::ConnectorHost>>,
     /// The files apps are handed, while the session serves them where a launcher binds each app's
@@ -347,6 +356,7 @@ impl Apps {
             desktop: RefCell::new(None),
             device_answers: RefCell::new(None),
             admission: RefCell::new(None),
+            link_home: RefCell::new(None),
             reach: reach::Reach::default(),
             awaited: Arc::default(),
             state: RefCell::new(State {
@@ -476,6 +486,19 @@ impl Apps {
     /// connection to the session's services is admitted for the launch that made it.
     /// Lend what says why a workspace's apps may not start yet: the reason, while this device
     /// waits for the workspace's host to admit it ([`crate::mcp_server::awaited_reason`]).
+    /// Lend where each workspace's resources open on the web: the home a tilolang window's host
+    /// mints its resources' links under, as the session reads it from the workspace's directory
+    /// entry.
+    pub(crate) fn lend_link_home(&self, home: LinkHomeOf) {
+        *self.link_home.borrow_mut() = Some(home);
+    }
+
+    /// Where `workspace`'s resources open on the web, as JSON, when this session knows.
+    fn link_home(&self, workspace: &str) -> Option<String> {
+        let home = self.link_home.borrow().clone()?;
+        home(workspace)
+    }
+
     pub(crate) fn lend_admission(&self, awaited: Admission) {
         *self.admission.borrow_mut() = Some(awaited);
     }
@@ -624,7 +647,7 @@ impl Apps {
         state.processes = state
             .launcher
             .clone()
-            .map(tilo_app_launch::tilolang_processes::Processes::new);
+            .map(tilo_runtime::device::processes::Processes::new);
         state.links = Some(links);
         state.connectors = Some(connectors);
     }
@@ -657,7 +680,7 @@ impl Apps {
             return false;
         }
         drop(state);
-        tilo_app_launch::tilolang_processes::runs_in_process(app)
+        tilo_runtime::device::package_runs::runs_in_process(app)
     }
 
     /// The connections and grants a tilolang instance of `app` in `workspace` runs with, opened
@@ -679,7 +702,7 @@ impl Apps {
         };
         // An app whose types hold an outside service's resources reaches its connector, which
         // holds the network and ownership the host has none of.
-        let origin = match tilo_app_launch::tilolang_processes::origin_of(app)? {
+        let origin = match tilo_runtime::device::package_runs::origin_of(app)? {
             None => None,
             Some((origin, _)) => {
                 let Some(connectors) = connectors else {
@@ -710,6 +733,21 @@ impl Apps {
                 None
             }
         };
+        // The person's clipboard, over the session's own socket: what `clipboard.copy` and
+        // `clipboard.paste` reach, since an instance's process holds no display to offer or read
+        // a selection on.
+        let clipboard = launcher::services::socket_for(launcher::services::CLIPBOARD_SERVICE);
+        let clipboard = if clipboard.exists() {
+            match tilo_files::native::socket::connect(&clipboard) {
+                Ok(stream) => Some(std::os::fd::OwnedFd::from(stream)),
+                Err(error) => {
+                    tracing::warn!(%error, "the clipboard service refused connection");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         // What the person may do in the app, as a launched app of it reads it: the instance's
         // views offer and refuse by it.
         let access = tilo_app_launch::authority::access(&self.workspace_named(workspace), app);
@@ -719,6 +757,7 @@ impl Apps {
             origin,
             content,
             chooser,
+            clipboard,
             access,
         })
     }
@@ -754,7 +793,8 @@ impl Apps {
                 return;
             }
         };
-        processes.hand_over(tilo_app_launch::tilolang_processes::Instance {
+        let link_home = self.link_home(&workspace);
+        processes.hand_over(tilo_runtime::device::processes::Instance {
             access: resources.access,
             app,
             workspace,
@@ -766,8 +806,18 @@ impl Apps {
             origin: resources.origin,
             content: resources.content,
             chooser: resources.chooser,
-            opens: hosted.opens,
+            clipboard: resources.clipboard,
+            document: hosted.opens.record,
+            reveal: hosted.opens.reveal,
+            open: hosted
+                .opens
+                .content
+                .map(|content| runtime_portal::process_link::OpenedFile {
+                    hash: content.hash,
+                    name: content.name,
+                }),
             locale: Self::person_locale(),
+            link_home,
         });
     }
 
@@ -1031,7 +1081,9 @@ impl Apps {
             }
             // The windows whose instances a tilolang host runs are told on its link.
             if let Some(processes) = &processes {
-                processes.policy_changed(&workspace);
+                processes.policy_changed(&workspace.id, |app| {
+                    tilo_app_launch::authority::access(&workspace, app)
+                });
             }
         }
     }
@@ -1130,7 +1182,7 @@ impl Apps {
                     asked.tab,
                     &asked.app,
                     None,
-                    &tilo_desktop_surface::i18n::t("answer-why-unknown-app"),
+                    &tilo_session_core::desktop::i18n::t("answer-why-unknown-app"),
                 );
                 continue;
             };
@@ -1447,11 +1499,23 @@ impl Apps {
     /// and shows the answer, with the button that asks for the app again. A launch no tab holds is
     /// answered by whoever asked for it.
     fn could_not_open(&self, tab: Option<u64>, asked: &str, title: Option<&str>, why: &str) {
+        self.could_not_open_saying(tab, asked, title, why, "");
+    }
+
+    /// [`Self::could_not_open`] with `details`, what the launch said, behind the card's Details.
+    fn could_not_open_saying(
+        &self,
+        tab: Option<u64>,
+        asked: &str,
+        title: Option<&str>,
+        why: &str,
+        details: &str,
+    ) {
         let Some(tab) = tab else {
             return;
         };
         self.answer_in_tabs(|policy| {
-            let outcome = not_opened(policy, asked, title, why);
+            let outcome = not_opened(policy, asked, title, why, details);
             policy.failed_at(tab, asked, outcome);
         });
     }
@@ -1461,7 +1525,7 @@ impl Apps {
     fn close_tab(&self, tab: u64) {
         self.answer_in_tabs(|policy| {
             let _ = policy.handle().dispatch(
-                tilo_desktop_surface::navigation::LayoutEffect::CloseTab {
+                tilo_session_core::desktop::navigation::LayoutEffect::CloseTab {
                     tab: tab.to_string(),
                 },
             );
@@ -1993,7 +2057,7 @@ impl Apps {
         }
         planned
             .args
-            .push(tilo_app_launch::tilolang_processes::PROCESS_ARG.to_owned());
+            .push(tilo_runtime::device::processes::PROCESS_ARG.to_owned());
         Ok(())
     }
 
@@ -2054,7 +2118,7 @@ impl Apps {
                 ))
             })?;
         processes
-            .hand_over_now(tilo_app_launch::tilolang_processes::Instance {
+            .hand_over_now(tilo_runtime::device::processes::Instance {
                 access: resources.access,
                 app: app.to_owned(),
                 workspace: workspace.id.clone(),
@@ -2066,8 +2130,12 @@ impl Apps {
                 origin: resources.origin,
                 content: resources.content,
                 chooser: resources.chooser,
-                opens: tilo_app_launch::Opens::default(),
+                clipboard: resources.clipboard,
+                document: None,
+                reveal: None,
+                open: None,
                 locale: Self::person_locale(),
+                link_home: self.link_home(&workspace.id),
             })
             .map_err(|error| ApiError::Failed(error.to_string()))?;
         Ok(())

@@ -103,6 +103,14 @@ impl MailConnector for RemoteConnector {
         })
     }
 
+    fn older(&mut self, account: &str, mailbox: &str) -> Option<Request> {
+        self.ask(account, |request| ToConnector::Older {
+            request,
+            account: account.to_owned(),
+            mailbox: mailbox.to_owned(),
+        })
+    }
+
     fn flag(&mut self, account: &str, key: &str, unread: bool, flagged: bool) -> Option<Request> {
         self.ask(account, |request| ToConnector::Flag {
             request,
@@ -119,6 +127,14 @@ impl MailConnector for RemoteConnector {
             account: account.to_owned(),
             key: key.to_owned(),
             mailbox: mailbox.to_owned(),
+        })
+    }
+
+    fn purge(&mut self, account: &str, key: &str) -> Option<Request> {
+        self.ask(account, |request| ToConnector::Purge {
+            request,
+            account: account.to_owned(),
+            key: key.to_owned(),
         })
     }
 

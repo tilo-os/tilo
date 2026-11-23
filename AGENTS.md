@@ -9,11 +9,12 @@
 | Work                  | Read first                                                           |
 | --------------------- | -------------------------------------------------------------------- |
 | Architecture/security | `docs/architecture/workspace.md`, `docs/security/README.md`           |
+| Product flows         | `docs/architecture/flows.md`                                         |
 | Collaboration         | `docs/architecture/workspace.md`                                     |
 | Compositor            | `docs/headless-testing.md`                                           |
 | Apps/UI               | `crates/sdk/ui-core/HIG.md`, `docs/design-language.md`               |
 | tilolang              | `docs/designs/app-language/README.md`                                |
-| Dev VM/device         | `tilo device guide quickstart` (source: `crates/dev/tilo-vm/guide/`) |
+| Dev VM/device         | `tilo device guide quickstart` (source: `tools/tilo-vm/guide/`) |
 
 ## What Tilo is
 
@@ -21,7 +22,10 @@ The [architecture overview](docs/architecture/README.md) states these; work keep
 
 - A workspace spans devices and has members: people and agents. It has one set of resources,
   shared under the permissions its owners set; only identity is per person.
-- One identity system. Your devices share your identity, and it controls them.
+- One identity system. Your devices share your identity, and it controls them. It is also
+  your login at tilo.sh; there is no separate account. Your existing accounts (mail, cloud
+  storage, calendars and others) connect to a workspace, to bring their data over or to keep
+  using them there.
 - Decentralized first: a server is a device that stores more. tilo.sh is our cloud offering.
 - Compute is shared: a program goes wherever it fits, and a Linux VM exists only when one is
   needed. Apps are untrusted packages.
@@ -29,6 +33,21 @@ The [architecture overview](docs/architecture/README.md) states these; work keep
   scripts and automations call the same actions, and every view of a resource shows the change.
 - Views compose, can be shown again anywhere, and can be written quickly, also by an agent in a
   chat. The shell is a view.
+
+- The default apps are enough for 95% of people: real Files, Writer, Ebooks, Settings, a video
+  editor, never proofs of concept. Their UX is polished: Settings, Writer, the video editor and
+  the rest have custom interactive animations and visualizations on their pages. None of this
+  is optional.
+- Tilo feels immediate: an app opens in under 100 ms when it's already on the device, and
+  under 500 ms when it first has to be installed. Apps are small, and the web version loads
+  about 1 MB of WASM and HTML.
+- The shell is a view a person can replace entirely. It can look like Windows 95 or work like
+  a Miro or Figma canvas, and tilolang is powerful enough to write either.
+- Any program can be a Tilo app, a Minecraft launcher or a CAD program included. Apps climb
+  a ladder from tilolang to fully hand-written Rust. Each step allows more customization, and
+  every step keeps actions callable from anywhere and tied to views, history and undo,
+  identity, permissions, views that can be shown elsewhere, coherent UX and good animation.
+  Those are the default experience, never something an app opts into.
 
 Apps are written in Rust or tilolang against one app interface. Every system service reaches
 both through the same path; a second path for one language is a duplicate to remove.

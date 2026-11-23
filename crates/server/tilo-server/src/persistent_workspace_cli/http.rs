@@ -6,7 +6,10 @@
 //! The listener answers from the moment the process starts: `/mode` says
 //! `starting` (503) while the host opens its workspaces, and `up` (200) once
 //! people can get in, so a deployment tells a host that is loading from one
-//! that is gone.
+//! that is gone. It also says the operator's kill switch: `normal`,
+//! `spectator-only`, or `back-soon`, from the `mode` file in the state
+//! directory, which the workspace's entry reads so a paused host admits nobody new without a
+//! restart.
 //!
 //! Plain HTTP: the ingress in front of it holds the certificate and the
 //! public address, and the health check reads the same address a person's
@@ -23,6 +26,7 @@ use hyper::body::Incoming;
 use hyper::{Method, Request, Response, StatusCode, header};
 use tilo_connector::ConnectorProcess;
 use tilo_server_protocol::public_avatars::{MAX_AVATAR_BYTES, is_avatar_name, sniff};
+use tilo_workspace_service::workspaces::mode::HostMode;
 
 use super::bots::hand_to_discord;
 use super::discord_sign_in::{self, Failed, SignIn};
@@ -79,11 +83,12 @@ impl Drop for Handle {
 }
 
 /// Listen on `listen` until the returned [`Handle`] is dropped: `/mode`
-/// says the host is starting until [`Handle::serve`].
+/// says the host is starting until [`Handle::serve`], and names the operator's kill
+/// switch from the mode `mode` reads.
 ///
 /// # Errors
 /// The address cannot be bound.
-pub(super) async fn listen(listen: SocketAddr) -> anyhow::Result<Handle> {
+pub(super) async fn listen(listen: SocketAddr, mode: Arc<HostMode>) -> anyhow::Result<Handle> {
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .with_context(|| format!("listen on {listen} for /mode, /avatars and /discord/callback"))?;
@@ -93,6 +98,7 @@ pub(super) async fn listen(listen: SocketAddr) -> anyhow::Result<Handle> {
     let routes = Arc::new(Routes {
         revision: source_revision(),
         serving: std::sync::OnceLock::new(),
+        mode,
     });
     tracing::info!(%addr, "answering /mode, /avatars and /discord/callback");
     Ok(Handle {
@@ -107,6 +113,8 @@ struct Routes {
     revision: String,
     /// What the routes answer from, once the workspace serves.
     serving: std::sync::OnceLock<Http>,
+    /// The operator's kill switch, as `/mode` reports it now.
+    mode: Arc<HostMode>,
 }
 
 struct Http {
@@ -145,6 +153,7 @@ async fn handle<B>(routes: &Routes, request: Request<B>) -> Response<Full<Bytes>
         // Still opening its workspaces: not ready for people, but alive.
         let mut starting = json(&serde_json::json!({
             "server": "starting",
+            "mode": routes.mode.current().as_str(),
             "revision": routes.revision,
         }));
         *starting.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
@@ -162,6 +171,8 @@ async fn handle<B>(routes: &Routes, request: Request<B>) -> Response<Full<Bytes>
         ["mode"] => json(&serde_json::json!({
             // The server serves: its workspaces are open and people get in.
             "server": "up",
+            // The operator's kill switch: what the entry admits under right now.
+            "mode": routes.mode.current().as_str(),
             "revision": routes.revision,
         })),
         ["avatars", name] => avatar(http, name).await,
@@ -326,6 +337,7 @@ fn parse_revision(value: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use http_body_util::BodyExt as _;
+    use tilo_workspace_service::workspaces::mode::Mode;
 
     use super::*;
 
@@ -368,22 +380,27 @@ mod tests {
 
     #[tokio::test]
     async fn mode_says_starting_until_the_workspace_serves_and_only_get_is_answered() {
+        let state = tempfile::tempdir().unwrap();
+        let held = HostMode::held(state.path().to_owned(), Mode::Normal);
         let http = Routes {
             revision: UNKNOWN_REVISION.to_owned(),
             serving: std::sync::OnceLock::new(),
+            mode: Arc::clone(&held),
         };
-        let mode = || {
+        let probe = || {
             Request::builder()
                 .uri("/mode")
                 .body(Full::new(Bytes::new()))
                 .unwrap()
         };
-        let response = handle(&http, mode()).await;
+        let response = handle(&http, probe()).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(
             String::from_utf8(body.to_vec()).unwrap(),
-            format!("{{\"server\":\"starting\",\"revision\":\"{UNKNOWN_REVISION}\"}}")
+            format!(
+                "{{\"server\":\"starting\",\"mode\":\"normal\",\"revision\":\"{UNKNOWN_REVISION}\"}}"
+            )
         );
         assert!(
             http.serving
@@ -416,8 +433,34 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(
             String::from_utf8(body.to_vec()).unwrap(),
-            format!("{{\"server\":\"up\",\"revision\":\"{UNKNOWN_REVISION}\"}}")
+            format!(
+                "{{\"server\":\"up\",\"mode\":\"normal\",\"revision\":\"{UNKNOWN_REVISION}\"}}"
+            )
         );
+
+        // The operator turns the kill switch by writing the mode file: `/mode` says which of the
+        // three names is in force, so a deployment that paused the host can see it took.
+        let up = || {
+            Request::builder()
+                .uri("/mode")
+                .body(Full::new(Bytes::new()))
+                .unwrap()
+        };
+        for (written, said) in [
+            ("spectator-only", "spectator-only"),
+            ("back-soon", "back-soon"),
+            ("normal", "normal"),
+        ] {
+            std::fs::write(state.path().join("mode"), written).unwrap();
+            let response = handle(&http, up()).await;
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            assert!(
+                body.contains(&format!("\"mode\":\"{said}\"")),
+                "{written}: {body}"
+            );
+        }
+        assert_eq!(held.current(), Mode::Normal);
         for path in [
             "/",
             "/wait-list",

@@ -67,15 +67,14 @@ ENV RUNTIME_RELEASE=${RUNTIME_RELEASE}
 # The tilolang runtime bundle is baked here too, when the image's app set names a
 # tilolang package: beside the Tilo runtime, at `/usr/lib/tilo-runtime/<version>`,
 # signed by the same runtime publisher, so one trust root covers both. It is the
-# binaries alone (tools/apps/tilolang_packages.sh), which run on the app's Tilo
-# runtime.
+# binaries alone (tools/apps/tilolang_packages.sh), run on the Tilo runtime.
 ARG SOURCE_DATE_EPOCH=0
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # libstd is not on the system loader path, so it is included by name. The
-# bundle's other libraries are the native closure of the runtime and the thin
-# apps (os/scripts/collect-runtime-dependencies.py, with /out on the loader's
-# path), including GLib and GStreamer, which the runtime loads on first use
-# rather than at exec. The closure check then loads every bundled
+# bundle's other libraries are the native closure of the runtime, the thin apps
+# and the tilolang host (os/scripts/collect-runtime-dependencies.py, with /out
+# on the loader's path), including GLib and GStreamer, which the runtime loads
+# on first use rather than at exec. The closure check then loads every bundled
 # object and thin app the way the launcher does, with only the bundle's lib/
 # on LD_LIBRARY_PATH.
 RUN --mount=type=secret,id=publisher_identity \
@@ -117,10 +116,10 @@ RUN --mount=type=secret,id=publisher_identity \
           --identity /out/runtime-bundle-identity.json \
           --out-root /usr/lib/tilo-runtime \
           --version-out /out/runtime-version); \
-        engines=(); \
-        while IFS= read -r engine; do engines+=("/out/$engine"); args+=(--include "/out/$engine"); done </out/runtime-engines; \
+        objects=(); [ ! -f /out/tilolang-process ] || objects=(/out/tilolang-process); \
+        while IFS= read -r engine; do objects+=("/out/$engine"); args+=(--include "/out/$engine"); done </out/runtime-engines; \
         dependencies="$(python3 /usr/local/libexec/tilo-collect-runtime-dependencies.py \
-          --library-dir /out /out/libruntime_dylib.so /out/tilo-runtime-account-capability "${engines[@]}" /out/thin-apps/*)"; \
+          --library-dir /out /out/libruntime_dylib.so /out/tilo-runtime-account-capability "${objects[@]}" /out/thin-apps/*)"; \
         while IFS= read -r dependency; do args+=(--include "$dependency"); done <<<"$dependencies"; \
         "${args[@]}"' bundle "${RUST_LIBSTD}" \
       && /out/tilo-runtime-bundle key pubkey \
@@ -130,7 +129,7 @@ RUN --mount=type=secret,id=publisher_identity \
         "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
       && bash /usr/local/libexec/tilo-verify-runtime-bundle-closure.sh \
-        "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" /out/tilo-runtime-account-capability /out/thin-apps/* \
+        "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" /out/tilo-runtime-account-capability /out/thin-apps/* $(find /out -maxdepth 1 -name tilolang-process) \
       && tilolang_packages="$(python3 -I -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("tilolang", [])))' /out/app-plan.json 2>/dev/null || echo 0)" \
       && if [ "$tilolang_packages" != 0 ]; then \
            . /build/tools/apps/tilolang_packages.sh \

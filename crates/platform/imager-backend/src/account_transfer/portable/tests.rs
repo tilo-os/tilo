@@ -34,7 +34,7 @@ tilo_test_env::scenario! {
             "Existing target",
             "existing-target-private-password",
         );
-        let source_store = std::fs::read(accounts::store_path_in(&source)).unwrap();
+        let source_store = std::fs::read(accounts::person::staged_path_in(&source)).unwrap();
         let source_key = std::fs::read(accounts::vault_dir_in(&source).join("vault.key")).unwrap();
         let source_cipher = std::fs::read(accounts::vault_dir_in(&source).join("vault.enc")).unwrap();
         let key = SymmetricKey::generate().unwrap();
@@ -78,7 +78,7 @@ tilo_test_env::scenario! {
             source_key
         );
         assert_eq!(
-            std::fs::read(accounts::store_path_in(&source)).unwrap(),
+            std::fs::read(accounts::person::staged_path_in(&source)).unwrap(),
             source_store
         );
         assert_eq!(
@@ -149,7 +149,7 @@ tilo_test_env::scenario! {
         existing.display_name = "Changed by target owner".into();
         record.keep(&existing).unwrap();
         record.project(&target).unwrap();
-        let before = std::fs::read(accounts::store_path_in(&target)).unwrap();
+        let before = std::fs::read(accounts::person::staged_path_in(&target)).unwrap();
         let key = SymmetricKey::generate().unwrap();
         let source_connector = Connector::new(source.clone());
         let sealed = source_connector
@@ -160,7 +160,7 @@ tilo_test_env::scenario! {
             Err(ConnectionError::AlreadyPresent)
         );
         assert_eq!(
-            std::fs::read(accounts::store_path_in(&target)).unwrap(),
+            std::fs::read(accounts::person::staged_path_in(&target)).unwrap(),
             before
         );
         assert!(
@@ -221,7 +221,7 @@ tilo_test_env::scenario! {
                 .password,
             "existing-private-password"
         );
-        let metadata = std::fs::read(accounts::store_path_in(&target)).unwrap();
+        let metadata = std::fs::read(accounts::person::staged_path_in(&target)).unwrap();
         let corrupt = accounts::vault_dir_in(&target).join("vault.enc");
         std::fs::write(&corrupt, b"corrupt-existing-vault").unwrap();
         assert_eq!(
@@ -230,7 +230,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(std::fs::read(&corrupt).unwrap(), b"corrupt-existing-vault");
         assert_eq!(
-            std::fs::read(accounts::store_path_in(&target)).unwrap(),
+            std::fs::read(accounts::person::staged_path_in(&target)).unwrap(),
             metadata
         );
         std::fs::write(

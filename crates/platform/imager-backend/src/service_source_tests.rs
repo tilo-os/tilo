@@ -9,24 +9,24 @@ use zeroize::Zeroizing;
 use crate::account_store::Accounts;
 use crate::migration_store::MigrationStore;
 use accounts::AccountId;
-use accounts::person::PersonAccounts;
+use accounts::person::AccountList;
 use migration_sources::service::*;
 use tilo_resource::Replica;
 
 /// The destination's accounts record, read so a landed edit can be kept and projected, as the
 /// page does for the workspace whose session has not started yet.
-fn record(config_root: &Path) -> Replica<PersonAccounts> {
-    let mut record = Replica::<PersonAccounts>::new();
+fn record(config_root: &Path) -> Replica<AccountList> {
+    let mut record = Replica::<AccountList>::new();
     for account in Accounts::read(config_root).unwrap().all().unwrap() {
         record
-            .apply_confirmed(PersonAccounts::saving(&account))
+            .apply_confirmed(AccountList::saving(&account))
             .unwrap();
     }
     record
 }
 
-fn project(config_root: &Path, record: &mut Replica<PersonAccounts>) {
-    record.state().unwrap().project_in(config_root).unwrap();
+fn project(config_root: &Path, record: &mut Replica<AccountList>) {
+    accounts::person::keep_staged_in(config_root, record).unwrap();
 }
 
 fn connect(config_root: &Path, address: ServiceAddress) -> Result<AccountId, ServiceError> {

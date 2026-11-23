@@ -5,7 +5,8 @@ use std::{
     rc::Rc,
 };
 use tilo_desktop_model::{IdMinter, Tab, TileContent, Workspace};
-use tilo_desktop_surface::{DesktopSurface, TileSource, seed_tree};
+use tilo_desktop_surface::{DesktopSurface, TileSource};
+use tilo_session_core::desktop::seed_tree;
 use ui::application::{
     AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
     RestoreInput,
@@ -194,7 +195,7 @@ fn inactive_retained_workspace_services_only_its_exact_current_checked_owner_bef
         .unwrap()
         .route;
     handle
-        .dispatch(tilo_desktop_surface::navigation::LayoutEffect::Focus { tab: route.tab })
+        .dispatch(tilo_session_core::desktop::navigation::LayoutEffect::Focus { tab: route.tab })
         .unwrap();
     driver.relayout();
     driver.service_pending_owner_models().unwrap();

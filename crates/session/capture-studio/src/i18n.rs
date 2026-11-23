@@ -64,6 +64,9 @@ pub(crate) fn failed(failure: &Failure) -> String {
             t_args("capture-failed-not-copied", &[("why", why.as_str().into())])
         }
         Failure::NotRead(why) => t_args("capture-failed-not-read", &[("why", why.as_str().into())]),
+        Failure::NotMarked(why) => {
+            t_args("capture-failed-not-marked", &[("why", why.as_str().into())])
+        }
         Failure::ClipNotSaved(why) => t_args(
             "capture-failed-clip-not-saved",
             &[("why", why.as_str().into())],
@@ -271,6 +274,10 @@ mod tests {
             assert_eq!(
                 failed(&Failure::NotRead("gone".to_owned())),
                 "A screenshot was not copied: gone"
+            );
+            assert_eq!(
+                failed(&Failure::NotMarked("gone".to_owned())),
+                "Couldn't open the screenshot for marking up: gone"
             );
             assert_eq!(
                 failed(&Failure::ClipNotSaved("the worker stopped".to_owned())),

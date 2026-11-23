@@ -1,11 +1,10 @@
 //! Installed original-copy archives over the existing Shell/root-helper socket. Public
 //! declarations are shape only.
 use super::{
-    Arc, AsRawFd, Duration, ExecutingPeer, File, FromRawFd, Handoff, LIMIT, MetadataExt, OwnedFd,
-    RetainedLaunchAdmission, RootConsumerChannel, RootRole, SEALS, ServiceAuthority,
-    ServiceCancellation, UnixStream, Write, check_executing_image, io, own_helper,
-    protected_helper, protected_program, receive_fd, receive_json, receive_json_bound, refused,
-    send_json,
+    Arc, AsRawFd, Duration, ExecutingPeer, File, Handoff, LIMIT, MetadataExt, OwnedFd,
+    RetainedLaunchAdmission, RootConsumerChannel, RootRole, ServiceAuthority, ServiceCancellation,
+    UnixStream, check_executing_image, io, own_helper, protected_helper, protected_program,
+    receive_fd, receive_json, receive_json_bound, refused, send_json,
 };
 use std::os::fd::AsFd;
 
@@ -103,18 +102,14 @@ impl WireReceipt {
 
 fn check_secret(file: &File) -> io::Result<()> {
     let metadata = file.metadata()?;
-    let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
     let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
-    if !metadata.is_file()
-        || metadata.uid() != 0
-        || metadata.mode() & 0o777 != 0o600
-        || metadata.nlink() != 0
+    crate::fd::check_sealed(file, None, 128)
+        .map_err(|_| refused("installed Copy secret lacks sealed anonymous root ownership"))?;
+    if metadata.mode() & 0o777 != 0o600
         || !(16..=128).contains(&metadata.len())
         || flags < 0
         || flags & libc::O_PATH != 0
         || flags & libc::O_ACCMODE != libc::O_RDONLY
-        || seals < 0
-        || seals & SEALS != SEALS
     {
         return Err(refused(
             "installed Copy secret lacks sealed anonymous root ownership",
@@ -124,19 +119,8 @@ fn check_secret(file: &File) -> io::Result<()> {
 }
 
 fn peer_stopped(peer: &ExecutingPeer) -> io::Result<bool> {
-    let mut poll = libc::pollfd {
-        fd: peer.pidfd().as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let count = unsafe { libc::poll(&raw mut poll, 1, 0) };
-    if count < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if poll.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
-        return Err(refused("Copy receiver kernel death cannot be observed"));
-    }
-    Ok(count > 0 && poll.revents & libc::POLLIN != 0)
+    crate::fd::pidfd_exited(&peer.pidfd())
+        .map_err(|_| refused("Copy receiver kernel death cannot be observed"))
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -254,23 +238,8 @@ impl RootConsumerChannel {
         if !(32..=128).contains(&secret.len()) {
             return Err(refused("installed Copy secret size invalid"));
         }
-        let raw = unsafe {
-            libc::memfd_create(
-                c"tilo-installed-copy-secret".as_ptr(),
-                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-            )
-        };
-        if raw < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let mut file = unsafe { File::from_raw_fd(raw) };
-        if unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        file.write_all(secret)?;
-        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, SEALS) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        let file =
+            crate::fd::sealed_memfd_mode(c"tilo-installed-copy-secret", secret, Some(0o600))?;
         let readonly = File::open(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
         check_secret(&readonly)?;
         Ok(readonly)

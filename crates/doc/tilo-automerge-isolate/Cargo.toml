@@ -24,7 +24,7 @@ seccompiler.workspace = true
 flate2.workspace = true
 hex.workspace = true
 sha2.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 # One test binary for the integration tests, whose files it includes as modules:
 # a file per binary linked the whole crate once each.

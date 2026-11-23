@@ -15,6 +15,8 @@ Tilo.app/Contents/
   MacOS/Tilo                          the store binary (CFBundleExecutable), universal
   MacOS/tilo-runtime                  the runtime, universal
   MacOS/tilo-runtime-update           the self-updater, universal
+  MacOS/tilolang-app                  the tilolang runtime every tilolang app runs on, universal
+  MacOS/tilolang-process              the tilolang host, universal
   Library/LaunchAgents/so.tilo.runtime.plist
   Library/LaunchAgents/so.tilo.runtime.update.plist
 ```

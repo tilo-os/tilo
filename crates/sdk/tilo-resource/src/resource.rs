@@ -1319,7 +1319,7 @@ impl tilo_actions::Action for NoAction {
 /// Option<Place>`): it travels as `{"item": id}`, `{"item": id, "at": n}` or
 /// `{"item": id, "start": n, "end": n}`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-#[serde(into = "PlaceWire")]
+#[serde(into = "tilo_actions::SelectionPlace")]
 pub enum Place {
     /// An item (a paragraph, a clip, a row).
     Item(String),
@@ -1344,6 +1344,12 @@ impl Place {
 }
 
 // Decoded through a JSON value whatever the deserializer, by one function.
+//
+// Validating on every read is safe while every stored place names a generated
+// id (today only code-editor's recorded `replace-range` action stores a
+// `Place`, its item is always a UUID, and it declares no undo). A later action
+// that has an undo and takes items from outside data would fail to decode on
+// undo.
 impl<'de> serde::Deserialize<'de> for Place {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
@@ -1356,7 +1362,7 @@ impl<'de> serde::Deserialize<'de> for Place {
 
 /// The place in `value`, its JSON form.
 fn place_from_json(value: serde_json::Value) -> Result<Place, String> {
-    match serde_json::from_value::<PlaceWire>(value) {
+    match serde_json::from_value::<tilo_actions::SelectionPlace>(value) {
         Ok(wire) => Place::try_from(wire),
         Err(error) => Err(error.to_string()),
     }
@@ -1365,69 +1371,6 @@ fn place_from_json(value: serde_json::Value) -> Result<Place, String> {
 impl crate::JsonSchema for Place {
     fn json_schema() -> serde_json::Value {
         tilo_actions::place_schema()
-    }
-}
-
-/// [`Place`] as it travels.
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PlaceWire {
-    item: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    at: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    start: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    end: Option<usize>,
-}
-
-impl From<Place> for PlaceWire {
-    fn from(place: Place) -> Self {
-        match place {
-            Place::Item(item) => Self {
-                item,
-                at: None,
-                start: None,
-                end: None,
-            },
-            Place::Caret { item, at } => Self {
-                item,
-                at: Some(at),
-                start: None,
-                end: None,
-            },
-            Place::Range { item, start, end } => Self {
-                item,
-                at: None,
-                start: Some(start),
-                end: Some(end),
-            },
-        }
-    }
-}
-
-impl TryFrom<PlaceWire> for Place {
-    type Error = String;
-
-    fn try_from(wire: PlaceWire) -> Result<Self, String> {
-        if wire.item.is_empty() {
-            return Err("a place names its item".into());
-        }
-        match (wire.at, wire.start, wire.end) {
-            (None, None, None) => Ok(Self::Item(wire.item)),
-            (Some(at), None, None) => Ok(Self::Caret {
-                item: wire.item,
-                at,
-            }),
-            (None, Some(start), Some(end)) if start <= end => Ok(Self::Range {
-                item: wire.item,
-                start,
-                end,
-            }),
-            _ => {
-                Err("a place is an item, a caret `at` in it, or a range `start..end` of it".into())
-            }
-        }
     }
 }
 
@@ -1447,12 +1390,18 @@ impl TryFrom<tilo_actions::SelectionPlace> for Place {
     type Error = String;
 
     fn try_from(place: tilo_actions::SelectionPlace) -> Result<Self, String> {
-        Self::try_from(PlaceWire {
-            item: place.item,
-            at: place.at,
-            start: place.start,
-            end: place.end,
-        })
+        match place.validated_span()? {
+            tilo_actions::selection::SelectionSpan::Item => Ok(Self::Item(place.item)),
+            tilo_actions::selection::SelectionSpan::Caret(at) => Ok(Self::Caret {
+                item: place.item,
+                at,
+            }),
+            tilo_actions::selection::SelectionSpan::Range { start, end } => Ok(Self::Range {
+                item: place.item,
+                start,
+                end,
+            }),
+        }
     }
 }
 
@@ -2889,29 +2838,95 @@ mod schema_sharing_tests;
 mod selection_place_tests {
     use super::Place;
     use tilo_actions::SelectionPlace;
+    use tilo_actions::selection::MAX_PLACE_ITEM_BYTES;
 
     #[test]
     fn a_selection_place_is_the_place_an_action_takes() {
-        for place in [
-            Place::Item("p1".into()),
-            Place::Caret {
-                item: "p1".into(),
-                at: 3,
-            },
-            Place::Range {
-                item: "p1".into(),
-                start: 2,
-                end: 7,
-            },
+        for (place, expected_json) in [
+            (Place::Item("p1".into()), r#"{"item":"p1"}"#),
+            (
+                Place::Caret {
+                    item: "p1".into(),
+                    at: 3,
+                },
+                r#"{"item":"p1","at":3}"#,
+            ),
+            (
+                Place::Range {
+                    item: "p1".into(),
+                    start: 2,
+                    end: 7,
+                },
+                r#"{"item":"p1","start":2,"end":7}"#,
+            ),
+            (
+                Place::Item("a".repeat(MAX_PLACE_ITEM_BYTES)),
+                &format!(r#"{{"item":"{}"}}"#, "a".repeat(MAX_PLACE_ITEM_BYTES)),
+            ),
         ] {
+            let wire = serde_json::to_string(&place).unwrap();
+            assert_eq!(wire, expected_json, "valid places serialise as before");
             let selection = SelectionPlace::from(place.clone());
             assert_eq!(
-                serde_json::to_value(&selection).unwrap(),
-                serde_json::to_value(&place).unwrap(),
+                serde_json::to_string(&selection).unwrap(),
+                wire,
                 "both travel in one wire form"
             );
+            assert_eq!(serde_json::from_str::<Place>(&wire).unwrap(), place);
             assert_eq!(Place::try_from(selection).unwrap(), place);
         }
-        assert!(Place::try_from(SelectionPlace::item("")).is_err());
+
+        let overlong_ascii = "a".repeat(MAX_PLACE_ITEM_BYTES + 1);
+        let overlong_utf8 = "界".repeat(MAX_PLACE_ITEM_BYTES / 3 + 1);
+        assert!(overlong_utf8.len() > MAX_PLACE_ITEM_BYTES);
+
+        for bad_item in [
+            String::new(),
+            overlong_ascii,
+            overlong_utf8,
+            "p\n1".to_owned(),
+            "p\u{0}1".to_owned(),
+            "p\x1b1".to_owned(),
+            "p\t1".to_owned(),
+        ] {
+            for selection in [
+                SelectionPlace::item(bad_item.clone()),
+                SelectionPlace::caret(bad_item.clone(), 0),
+                SelectionPlace::range(bad_item.clone(), 0, 1),
+            ] {
+                assert!(
+                    Place::try_from(selection.clone()).is_err(),
+                    "Place::try_from accepted invalid SelectionPlace: {selection:?}"
+                );
+                let json = serde_json::to_value(&selection).unwrap();
+                assert!(
+                    serde_json::from_value::<Place>(json.clone()).is_err(),
+                    "Place::deserialize accepted invalid JSON: {json}"
+                );
+            }
+        }
+
+        for malformed in [
+            serde_json::json!({"item": "p1", "at": 1, "start": 0, "end": 2}),
+            serde_json::json!({"item": "p1", "start": 2}),
+            serde_json::json!({"item": "p1", "end": 2}),
+            serde_json::json!({"item": "p1", "start": 5, "end": 2}),
+        ] {
+            let wire: SelectionPlace = serde_json::from_value(malformed.clone()).unwrap();
+            let from_selection = Place::try_from(wire).unwrap_err();
+            let from_json = serde_json::from_value::<Place>(malformed)
+                .unwrap_err()
+                .to_string();
+            for error in [&from_selection, &from_json] {
+                assert!(
+                    error.contains("at") && error.contains("start") && error.contains("end"),
+                    "malformed-shape error should name `at` and `start`/`end`: {error}"
+                );
+            }
+        }
+        assert!(
+            serde_json::from_value::<Place>(serde_json::json!({"item": "p1", "extra": true}))
+                .is_err()
+        );
     }
 }

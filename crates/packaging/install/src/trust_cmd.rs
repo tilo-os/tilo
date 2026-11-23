@@ -4,8 +4,8 @@
 use tilo_app_package::trust::{AttestorScope, RevokedKey, TrustFile, TrustedAttestor};
 
 use super::{
-    Candidate, Error, TrustFlags, check, decode_hex_32, load_revocation_list,
-    load_trusted_attestors, revoked_keys_path, trusted_attestors_path,
+    Error, TrustFlags, decode_hex_32, installer, load_revocation_list, load_trusted_attestors,
+    revoked_keys_path, trusted_attestors_path,
 };
 
 pub(super) fn trust_add(id: &str, pubkey_hex: &str, scope: &str) -> Result<(), Error> {
@@ -99,7 +99,11 @@ pub(super) fn check_verdict(tapp: &std::path::Path, trust: &TrustFlags) -> Resul
         allow_self_signed: true,
         ..trust.clone()
     };
-    let checked = check(&Candidate::File(tapp.to_path_buf()), &trust)?;
+    let checked = installer::check(
+        &installer::Candidate::file(tapp),
+        &(&trust).into(),
+        &mut installer::Report::default(),
+    )?;
     let package = &checked.manifest.package;
     let name = package
         .name

@@ -257,17 +257,30 @@ fn the_power_key_and_the_lid_are_actions_too() {
     assert_eq!(none.value, None, "an ignored lid does nothing");
 }
 
-/// The machine's power profiles are the daemon's, so the session offers the
-/// ones it read and asks for a switch rather than writing the profile itself.
+/// The `power:sleep` resource still reads the daemon's power profiles for now,
+/// while switching the profile lives exclusively on `power#set-power-mode` so
+/// `power:sleep` offers no duplicate action.
 #[test]
-fn a_power_profile_is_switched_through_the_machines_own_daemon() {
+fn the_sleep_reading_follows_power_profiles_without_a_duplicate_action() {
     let link = PowerLink::new(quiet());
     let mut service = SessionPower::without_daemons(link.clone()).expect("service");
+    let sleep = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == SLEEP)
+        .expect("the sleep resource");
+    assert!(
+        sleep.actions.iter().all(|spec| spec.id != "set-profile"),
+        "power:sleep publishes no duplicate power-profile action: {:?}",
+        sleep
+            .actions
+            .iter()
+            .map(|spec| spec.id.as_str())
+            .collect::<Vec<_>>()
+    );
 
-    // A machine whose daemon offers profiles: the reading lists them, and
-    // nothing is asked of a profile the machine does not have. The daemon
-    // answers after the session first read the service, which says its
-    // reading moved, once.
+    // The daemon answers after the session first read the service, which says
+    // its reading moved, once.
     assert!(!service.poll(), "nothing moved yet");
     link.bridge().note_profiles(vec![
         "performance".into(),
@@ -285,28 +298,19 @@ fn a_power_profile_is_switched_through_the_machines_own_daemon() {
         link.sleep().profiles,
         ["performance", "balanced", "power-saver"]
     );
-    assert!(
-        invoke(
-            &mut service,
-            "set-profile",
-            serde_json::json!({ "profile": "turbo" })
-        )
-        .is_err(),
-        "a profile this machine does not offer is refused"
+    assert_eq!(link.sleep().profile.as_deref(), Some("balanced"));
+
+    let Value::Object(arguments) = serde_json::json!({ "profile": "power-saver" }) else {
+        panic!("arguments are an object")
+    };
+    assert_eq!(
+        service.invoke(SLEEP, "set-profile", &arguments),
+        Err(tilo_actions::ApiError::Unknown(
+            tilo_actions::ActionAddress::new(SLEEP, "set-profile"),
+        )),
+        "the retired set-profile action is unknown on power:sleep"
     );
     assert!(link.bridge().drain_commands().is_empty());
-
-    invoke(
-        &mut service,
-        "set-profile",
-        serde_json::json!({ "profile": "power-saver" }),
-    )
-    .expect("the profile switch is asked for");
-    assert_eq!(
-        link.bridge().drain_commands(),
-        vec![PowerCommand::SetProfile("power-saver".into())],
-        "the daemon does the switching"
-    );
 }
 
 /// A pack in memory: the limit its driver would offer, and the writes it

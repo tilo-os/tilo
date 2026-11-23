@@ -926,8 +926,8 @@ fn attach_files(cx: &ViewCx<FileExplorer>, files: &mut FilesState) {
     }
     if cx.mode().is_live() {
         files.follow_cloud_status();
-        if let Some(accounts) = cx.shared_workspace::<accounts::person::PersonAccounts>(
-            <accounts::person::PersonAccounts as ui::tilo_resource::SharedResource>::OWNER,
+        if let Some(accounts) = cx.shared_workspace::<accounts::person::AccountList>(
+            <accounts::person::AccountList as ui::tilo_resource::SharedResource>::OWNER,
         ) {
             files.follow_person_accounts(accounts);
         } else {

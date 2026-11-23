@@ -257,6 +257,9 @@ tilo-identity-authority = { path = "../identity-authority" }
 # them on the apps' own routes.
 accounts = { path = "../../system/accounts", features = ["person"] }
 account-credentials = { path = "../../system/account-credentials" }
+# The workspace's contact directory, which Contacts keeps and the session publishes as
+# `contacts:tilo.contacts.identities`, one record every member reads and changes (contacts.rs).
+tilo-contact-directory = { path = "../../platform/tilo-contact-directory" }
 # The sign-ins and calendar look-ups adding an account makes, made here for Settings, whose
 # sandbox has no network (services::accounts).
 tilo-account-probe = { path = "../../platform/account-probe" }
@@ -280,6 +283,8 @@ tilo-seal = { path = "../../system/tilo-seal" }
 # The desktop's event sounds (a notification's ring, a screenshot's click).
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["voice", "pipewire", "realtime"] }
 tilo-compositor = { path = "../compositor" }
+# The clipboard an app's process reaches over its connection to this session.
+tilo-clipboard = { path = "../../platform/tilo-clipboard" }
 # The session's own profiler: what its frame went on, recorded on the owner's
 # request and read from the same socket.
 tilo-frame-metrics = { path = "../frame-metrics" }
@@ -482,11 +487,11 @@ tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
 # enrolling a machine in one process.
 iroh-relay = { version = "1.0.3", features = ["server"] }
 zbus = { workspace = true, features = ["tokio", "p2p"] }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 # The log a test's people write while it runs.
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # A site's entry and directory served over loopback, for what joins list.
-test-http = { path = "../../dev/test-http" }
+test-http = { path = "../../../tools/test-http" }
 # The broker's certified-connection context, for driving a service the way
 # the broker admits Files.
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "test-support"] }
@@ -501,9 +506,13 @@ tilo-nm = { path = "../../system/tilo-nm" }
 tilo-device-vpn = { path = "../../system/device-vpn", default-features = false, features = ["test-support"] }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
 # A server host on this machine's loopback, which is what a test's devices relay through.
-test-server = { path = "../../dev/test-server", features = ["questions"] }
+test-server = { path = "../../../tools/test-server", features = ["questions"] }
+# The AirDrop test's receiver: a TLS listener with a certificate of its own, which the sender's
+# helper pins to before it sends anything.
+rustls.workspace = true
+rcgen.workspace = true
 futures-util.workspace = true
-tilo-copy-lint = { path = "../../dev/copy-lint" }
+tilo-copy-lint = { path = "../../../tools/copy-lint" }
 tilo-audio-service = { path = "../audio-service" }
 tilo-onboarding = { path = "../onboarding" }
 # The prepared-setup and journal fixtures: what a device holds before setup runs.

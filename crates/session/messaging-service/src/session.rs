@@ -1,7 +1,7 @@
 //! The compositor's side of the messaging session: what the service asks of it,
 //! over the service's standard input and output.
 //!
-//! The compositor alone holds the person's records (their accounts and
+//! The compositor alone holds the workspace's records (its accounts and
 //! contacts), shows the protected network prompt and owns the device's
 //! endpoint that carries private Tilo messages, so the service asks it for
 //! those. The compositor tells the service when the person's session stops
@@ -39,7 +39,7 @@ pub enum PublicationKind {
 /// A call either side makes.
 #[derive(Serialize, Deserialize)]
 pub enum Call {
-    /// Service: the person's accounts and contacts as they are now.
+    /// Service: the workspace's accounts and contacts as they are now.
     Person,
     /// Service: publish an approved account.
     Publish(Publication),

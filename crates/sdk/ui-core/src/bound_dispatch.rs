@@ -30,6 +30,7 @@ use deferred_intent::validate_deferred_arguments;
 pub(crate) use deferred_intent::{DeferredIntent, PreparedActionIntent};
 
 mod control;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use control::control_draft_identity;
 pub(crate) use control::{
     ControlContinuationArguments, ControlDeclaration, ControlIdentity, ControlObservation,
@@ -1830,7 +1831,7 @@ pub(crate) fn admit_local_action(
 ) -> Result<(), tilo_actions::ApiError> {
     let answer = permissions.invocation_answer(app_id, resource, action, typed, argument);
     crate::permissions::admit_in_window(answer, action, permissions.asker(), confirmed).map_err(
-        |refused| match permissions.held_refusal(resource, action) {
+        |refused| match permissions.shown_refusal(resource, action) {
             Some(held) if answer == crate::permissions::Answer::Deny => held,
             _ => refused,
         },
@@ -3045,19 +3046,13 @@ fn perform_resource_action(
                         arguments.as_ref(),
                         argument,
                     );
-                    // A record another workspace holds was admitted there when the broker
-                    // delivers it; what this window was told of it only shows its controls.
-                    let held_admitted = broker_admitted && resource.workspace.is_some();
-                    if !held_admitted {
+                    // An invocation the broker delivers was admitted there; what this window was
+                    // told of its actions only shows its controls.
+                    if !broker_admitted {
                         let asker = binding.permissions.borrow().asker();
-                        crate::permissions::admit_in_window(
-                            answer,
-                            spec,
-                            asker,
-                            confirmed || broker_admitted,
-                        )
+                        crate::permissions::admit_in_window(answer, spec, asker, confirmed)
                         .map_err(|refused| {
-                            match binding.permissions.borrow().held_refusal(resource, spec) {
+                            match binding.permissions.borrow().shown_refusal(resource, spec) {
                                 Some(held) if answer == crate::permissions::Answer::Deny => held,
                                 _ => refused,
                             }

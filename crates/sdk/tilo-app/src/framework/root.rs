@@ -102,7 +102,7 @@ pub(crate) struct ResourceRoot {
     permissions: Option<LivePermissions>,
     /// The records other workspaces hold that the window last asked its host about, and what the
     /// records it publishes beside its own were then ([`super::settings::ViewStorage::resources_key`]).
-    held_asked: (Vec<(String, u64)>, Vec<ui_core::held_elsewhere::HeldRecord>),
+    shown_asked: (Vec<(String, u64)>, Vec<ui_core::shown_actions::ShownAction>),
     write: Option<PermissionScope>,
     stages: Stages,
     /// The item a view operation showed and its host laid out, which the
@@ -631,7 +631,7 @@ impl ResourceRoot {
             save: super::saves::SaveIndicator::new(saves, title),
             reactions: super::reactions::ReactionsIndicator::default(),
             permissions: None,
-            held_asked: Default::default(),
+            shown_asked: Default::default(),
             write: None,
             stages,
             shown_first: None,
@@ -1803,7 +1803,7 @@ impl ResourceRoot {
             return Ok(Some(completed(output)));
         }
         if let Some(request) = op.unscoped()
-            && super::share_link::handles(request.type_id)
+            && tilo_resource::share::handles(request.type_id)
         {
             return self
                 .start_share(request.invocation, request.payload)
@@ -2015,8 +2015,8 @@ impl ui_core::widget::Collaborative for ResourceRoot {
     fn take_collab_requests(&mut self) -> Vec<ui_core::collaboration::CollabRequest> {
         let mut requests =
             ui_core::widget::Collaborative::take_collab_requests(self.share.remote_mut());
-        if let Some(records) = self.held_to_ask() {
-            requests.push(ui_core::collaboration::CollabRequest::DecideHeldElsewhere { records });
+        if let Some(actions) = self.shown_to_ask() {
+            requests.push(ui_core::collaboration::CollabRequest::DecideShownActions { actions });
         }
         if let Some(mut api) = self.dispatch.opener.api() {
             requests.extend(ui_core::widget::Collaborative::take_collab_requests(
@@ -2032,10 +2032,10 @@ impl ui_core::widget::Collaborative for ResourceRoot {
     }
 
     fn handle_collab_event(&mut self, event: &ui_core::collaboration::CollabEvent) {
-        if let ui_core::collaboration::CollabEvent::HeldElsewhereVerdicts { verdicts } = event
+        if let ui_core::collaboration::CollabEvent::ActionVerdicts { verdicts } = event
             && let Some(permissions) = &self.permissions
         {
-            permissions.decide_held(verdicts);
+            permissions.decide_shown(verdicts);
             self.dispatch.refresh_permission_states();
         }
         ui_core::widget::Collaborative::handle_collab_event(self.share.remote_mut(), event);
@@ -2055,37 +2055,37 @@ impl ResourceRoot {
     /// holds (a person's profile record, held in their own workspace), when they changed since the
     /// window last asked its host about them: what it asks now. They are refused here until the
     /// host's verdicts arrive.
-    fn held_to_ask(&mut self) -> Option<Vec<ui_core::held_elsewhere::HeldRecord>> {
+    fn shown_to_ask(&mut self) -> Option<Vec<ui_core::shown_actions::ShownAction>> {
         let permissions = self.permissions.as_ref()?;
         let key = self.storage.resources_key();
-        if key == self.held_asked.0 {
+        if key == self.shown_asked.0 {
             return None;
         }
-        let mut records = Vec::new();
+        let mut actions = Vec::new();
         for resource in &self.storage.resource_resources() {
-            held_records(self.dispatch.app_id(), resource, &mut records);
+            shown_actions_of(self.dispatch.app_id(), resource, &mut actions);
         }
-        self.held_asked.0 = key;
-        if records == self.held_asked.1 {
+        self.shown_asked.0 = key;
+        if actions == self.shown_asked.1 {
             return None;
         }
-        permissions.ask_held(&records);
-        self.held_asked.1.clone_from(&records);
-        Some(records)
+        permissions.ask_shown(&actions);
+        self.shown_asked.1.clone_from(&actions);
+        Some(actions)
     }
 }
 
-/// Add to `records` every action of `resource`, and of its children, that a workspace other than
+/// Add to `actions` every action of `resource`, and of its children, that a workspace other than
 /// the window's holds.
-fn held_records(
+fn shown_actions_of(
     app: &str,
     resource: &ResourceSpec,
-    records: &mut Vec<ui_core::held_elsewhere::HeldRecord>,
+    actions: &mut Vec<ui_core::shown_actions::ShownAction>,
 ) {
     if let Some(workspace) = &resource.workspace {
-        records.extend(resource.actions.iter().map(|action| {
-            ui_core::held_elsewhere::HeldRecord::new(
-                workspace,
+        actions.extend(resource.actions.iter().map(|action| {
+            ui_core::shown_actions::ShownAction::new(
+                Some(workspace),
                 app,
                 (&resource.kind, resource.id.as_str(), &action.id),
                 &action.contract.need(),
@@ -2093,7 +2093,7 @@ fn held_records(
         }));
     }
     for child in &resource.children {
-        held_records(app, child, records);
+        shown_actions_of(app, child, actions);
     }
 }
 

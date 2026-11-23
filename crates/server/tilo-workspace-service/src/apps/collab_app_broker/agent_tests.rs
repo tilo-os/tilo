@@ -454,7 +454,7 @@ impl Fixture {
             listed.push(crate::apps::services::ListedAgent {
                 id: "scribe".into(),
                 name: "Scribe".into(),
-                keeper: String::new(),
+                acts_for: String::new(),
             });
         }
     }
@@ -500,7 +500,6 @@ impl Fixture {
         admitted: AdmittedJoinIdentity,
     ) -> JoinedChannel {
         JoinedChannel {
-            as_app: None,
             committed_read: Rc::new(std::cell::RefCell::new(committed_document::Slot::default())),
             state: self.state.clone(),
             directories: self.directories.clone(),

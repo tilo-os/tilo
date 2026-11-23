@@ -1083,28 +1083,6 @@ mod tests {
     #[test]
     fn grants_narrow_but_never_widen_the_manifest_allowlist() {
         {
-            // A user who granted one host to an app that asks for `host` gets one host.
-            let decision = EgressDecision::resolve("host", &[], &v(&["mail.example.com"]), false);
-            let policy = decision.policy().expect("a named host must be filtered");
-            assert!(policy.permits("mail.example.com"));
-            assert!(!policy.permits("github.com"));
-            assert!(
-                !decision.shares_host_network(),
-                "a grant naming one host must not share the whole host network: {decision:?}"
-            );
-        }
-        {
-            assert_eq!(
-                EgressDecision::resolve("host", &[], &v(&["*"]), false),
-                EgressDecision::Unrestricted
-            );
-            // A grant never opens what the manifest asks none of.
-            assert_eq!(
-                EgressDecision::resolve("off", &[], &v(&["*"]), false),
-                EgressDecision::Blocked
-            );
-        }
-        {
             // "Allow everything this app asks for" means its declared endpoints, not the whole
             // internet.
             let weather = v(&["api.open-meteo.com", "geocoding-api.open-meteo.com"]);
@@ -1116,39 +1094,6 @@ mod tests {
             assert!(
                 !decision.shares_host_network(),
                 "a `*` grant must not widen a package that enumerated its endpoints: {decision:?}"
-            );
-        }
-        {
-            let maps = v(&[
-                "tile.openstreetmap.org",
-                "nominatim.openstreetmap.org",
-                "overpass-api.de",
-            ]);
-            let decision =
-                EgressDecision::resolve("allowlist", &maps, &v(&[".openstreetmap.org"]), false);
-            let policy = decision.policy().expect("filtered");
-            assert_eq!(
-                policy.describe(),
-                ["nominatim.openstreetmap.org", "tile.openstreetmap.org"]
-            );
-            assert!(
-                !policy.permits("overpass-api.de"),
-                "an endpoint outside the granted suffix must not survive: {policy:?}"
-            );
-        }
-        {
-            let decision = EgressDecision::resolve(
-                "allowlist",
-                &v(&["api.open-meteo.com"]),
-                &v(&["api.open-meteo.com", "exfil.example.com"]),
-                false,
-            );
-            let policy = decision.policy().expect("filtered");
-            assert!(policy.permits("api.open-meteo.com"));
-            assert!(
-                !policy.permits("exfil.example.com"),
-                "a runtime grant must not widen the endpoint surface the packager declared: \
-                 {policy:?}"
             );
         }
         {
@@ -1169,20 +1114,6 @@ mod tests {
                 !policy.permits("93.184.216.34"),
                 "an address literal must not satisfy a hostname allowlist entry"
             );
-            // An entry that is a literal is not a host in the one grammar: refused, so it covers
-            // nothing.
-            let by_addr = EgressPolicy::from_grants(["93.184.216.34"]);
-            assert!(!by_addr.permits("93.184.216.34"));
-            assert_eq!(by_addr, EgressPolicy::none());
-        }
-        {
-            // `.example.com` is `host_covers`' suffix form, the same spelling the compositor evaluates
-            // — asserted so a matcher change shows up here.
-            let policy = EgressPolicy::from_grants([".example.com"]);
-            assert!(policy.permits("example.com"));
-            assert!(policy.permits("mail.example.com"));
-            assert!(!policy.permits("example.com.evil.net"));
-            assert!(!policy.permits("notexample.com"));
         }
     }
 

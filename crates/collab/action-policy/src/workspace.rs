@@ -137,6 +137,15 @@ pub enum Change {
     RemoveRole {
         id: String,
     },
+    /// The whole-set role assignment the builds since custom roles numbered
+    /// here: kept in its place so every later change reads as the change those
+    /// builds wrote, an ownership transfer above all. No build wrote one, and
+    /// a workspace refuses it.
+    #[serde(rename = "set_member_roles")]
+    RetiredSetMemberRoles {
+        person: String,
+        roles: BTreeSet<String>,
+    },
     /// Assign or remove one custom role without replacing other assignments.
     SetMemberCustomRole {
         person: String,
@@ -195,6 +204,7 @@ impl Change {
             Self::TransferOwnership { .. } => governance::TRANSFER_OWNERSHIP,
             Self::Grant(_)
             | Self::DefineRole { .. }
+            | Self::RetiredSetMemberRoles { .. }
             | Self::SetMemberCustomRole { assigned: true, .. } => governance::GRANT,
             Self::Revoke(_)
             | Self::RemoveRole { .. }
@@ -232,6 +242,7 @@ impl Change {
             | Self::Restrict { person, .. }
             | Self::Unrestrict { person }
             | Self::SetRole { person, .. }
+            | Self::RetiredSetMemberRoles { person, .. }
             | Self::SetMemberCustomRole { person, .. }
             | Self::TransferOwnership { person }
             | Self::AddAgent {
@@ -305,6 +316,9 @@ pub enum Refusal {
     /// workspace neither revokes nor gives one; it adjusts a role with grants
     /// of its own.
     BuiltInRole(GrantId),
+    /// A grant to any key: what visitors may do follows the workspace's entry
+    /// ([`crate::EntryPolicy::visitor_grants`]), and nobody writes one.
+    EntryGrant(GrantId),
     /// An id that is no person's root key: a change naming software, or a
     /// spelling no device of ours writes, as a person.
     NotAPerson(String),
@@ -360,6 +374,10 @@ impl std::fmt::Display for Refusal {
             Self::UnknownGrant(id) => write!(f, "no grant {id}"),
             Self::DuplicateGrant(id) => write!(f, "grant {id} already exists"),
             Self::BuiltInRole(id) => write!(f, "{id} is part of a built-in role"),
+            Self::EntryGrant(id) => write!(
+                f,
+                "{id} names any visitor: what visitors may do follows the workspace's entry"
+            ),
             Self::NotAPerson(id) => write!(f, "{id} is not a person's id"),
         }
     }
@@ -1087,6 +1105,8 @@ impl WorkspacePolicy {
                     |grant| !matches!(&grant.grantee, Grantee::CustomRole(role) if role == &id),
                 );
             }
+            // Refused by `check_change` before it is reached.
+            Change::RetiredSetMemberRoles { .. } => {}
             Change::SetMemberCustomRole {
                 person,
                 role,
@@ -1216,6 +1236,9 @@ impl WorkspacePolicy {
             Change::Revoke(id) => self.check_revocation(id),
             Change::DefineRole { id, name } => Self::check_role_definition(id, name),
             Change::RemoveRole { id } => self.require_custom_role(id),
+            Change::RetiredSetMemberRoles { .. } => Err(Refusal::NotPermitted(
+                "roles are assigned one at a time".to_owned(),
+            )),
             Change::SetMemberCustomRole {
                 person,
                 role,
@@ -1440,8 +1463,13 @@ impl WorkspacePolicy {
         grant: &Grant,
         cx: &Context<'_>,
     ) -> Result<(), Refusal> {
+        // What a visitor may do is the entry's to say ([`crate::EntryPolicy::visitor_grants`]),
+        // never a grant someone writes.
         if roles::is_role_grant(grant) {
             return Err(Refusal::BuiltInRole(grant.id.clone()));
+        }
+        if grant.grantee == Grantee::AnyKey {
+            return Err(Refusal::EntryGrant(grant.id.clone()));
         }
         if grant.node.workspace_id() != Some(self.workspace.as_str()) {
             return Err(Refusal::OutsideWorkspace(grant.node.clone()));

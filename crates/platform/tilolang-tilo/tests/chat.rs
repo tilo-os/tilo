@@ -44,15 +44,16 @@ fn rich(text: &str) -> Value {
 }
 
 /// Every text a node and its children show, rich text as written.
-fn texts(node: &UiNode, out: &mut Vec<String>) {
-    out.extend(node.props.values().filter_map(|value| match value {
-        Value::Text(text) => Some(text.clone()),
-        Value::Rich(rich) => Some(rich.written_text()),
-        _ => None,
-    }));
-    for child in &node.children {
-        texts(child, out);
-    }
+fn texts(node: &UiNode) -> Vec<String> {
+    crate::fixtures::nodes(node)
+        .into_iter()
+        .flat_map(|node| node.props.values())
+        .filter_map(|value| match value {
+            Value::Text(text) => Some(text.clone()),
+            Value::Rich(rich) => Some(rich.written_text()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The transcript's rows as the list builds them, each with its menu: each row's node.
@@ -103,11 +104,11 @@ fn said(view: &mut ViewInstance) -> Vec<String> {
     rows(view)
         .iter()
         .map(|row| {
-            let out = row.of_kind("ui.BlockEditor");
-            let mut text = Vec::new();
-            for node in out {
-                texts(node, &mut text);
-            }
+            let text: Vec<String> = row
+                .of_kind("ui.BlockEditor")
+                .into_iter()
+                .flat_map(texts)
+                .collect();
             text.join(" ")
         })
         .collect()
@@ -170,13 +171,11 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
 
     // The sidebar lists the category's channel under the category's heading.
     let sidebar = ada.view(APP);
-    let mut shown = Vec::new();
-    texts(sidebar.tree(), &mut shown);
+    let shown = texts(sidebar.tree());
     assert!(shown.contains(&"design".to_owned()), "{shown:?}");
     let section = sidebar.tree().first_of_kind("ui.NavSection").unwrap();
     assert_eq!(section.props.get("title"), Some(&Value::text("Team")));
-    let mut under = Vec::new();
-    texts(section, &mut under);
+    let under = texts(section);
     assert!(under.contains(&"design".to_owned()), "{under:?}");
 
     let mut ada_design = ada.host.open_resource(&target(&design), None).unwrap();
@@ -372,13 +371,6 @@ fn two_people_reacting_at_once_both_stay_and_a_second_press_takes_yours_back() {
     }
 }
 
-/// Every text `row` shows.
-fn shown_in(row: &UiNode) -> Vec<String> {
-    let mut out = Vec::new();
-    texts(row, &mut out);
-    out
-}
-
 tilo_test_env::scenario! {
     fn a_message_is_sent_edited_and_deleted;
 
@@ -453,9 +445,9 @@ tilo_test_env::scenario! {
             let row = rows(view).remove(0);
             assert!(row.first_of_kind("ui.RichInput").is_none(), "the editor is gone");
             assert!(
-                shown_in(&row).contains(&"edited".to_owned()),
+                texts(&row).contains(&"edited".to_owned()),
                 "marked as edited: {:?}",
-                shown_in(&row)
+                texts(&row)
             );
         }
 
@@ -498,12 +490,12 @@ tilo_test_env::scenario! {
         for view in [&mut ada_design, &mut ben_design] {
             let row = rows(view).remove(0);
             assert!(
-                shown_in(&row).contains(&"Pinned".to_owned()),
+                texts(&row).contains(&"Pinned".to_owned()),
                 "{:?}",
-                shown_in(&row)
+                texts(&row)
             );
             assert!(
-                shown_in(&row).contains(&"edited".to_owned()),
+                texts(&row).contains(&"edited".to_owned()),
                 "a pin after the edit keeps it marked as edited"
             );
             let labels = row.of_kind("ui.Button");
@@ -654,8 +646,7 @@ fn the_conversations_of_chat_before_channels_open_as_channels_saying_what_they_s
     // The same workspace, opened by the Chat of channels.
     let (later, _) = Replica::new("ada", ada.doc.fork(), &PACKAGES);
     let sidebar = later.view(APP);
-    let mut shown = Vec::new();
-    texts(sidebar.tree(), &mut shown);
+    let shown = texts(sidebar.tree());
     assert!(
         shown.contains(&"Plans".to_owned()),
         "the conversation is a channel: {shown:?}"
@@ -664,11 +655,9 @@ fn the_conversations_of_chat_before_channels_open_as_channels_saying_what_they_s
     let mut channel = later.host.open_resource(&target(&plans), None).unwrap();
     let rows = rows(&mut channel);
     assert_eq!(rows.len(), 2, "every message is still there");
-    let mut first = Vec::new();
-    texts(&rows[0], &mut first);
+    let first = texts(&rows[0]);
     assert!(first.contains(&"Walk on Saturday?".to_owned()), "{first:?}");
-    let mut second = Vec::new();
-    texts(&rows[1], &mut second);
+    let second = texts(&rows[1]);
     for part in ["In minutes:", "5 * 15"] {
         assert!(second.contains(&part.to_owned()), "{part} in {second:?}");
     }
@@ -949,12 +938,9 @@ fn header_count(view: &mut ViewInstance) -> Option<i64> {
 /// plain text parts, not rich text, so its rows carry them among the row's other texts.
 fn sent(view: &mut ViewInstance) -> Vec<String> {
     view.poll_patches().unwrap();
-    let mut out = Vec::new();
-    texts(view.tree(), &mut out);
+    let mut out = texts(view.tree());
     for row in rows(view) {
-        let mut row_texts = Vec::new();
-        texts(&row, &mut row_texts);
-        out.extend(row_texts);
+        out.extend(texts(&row));
     }
     out
 }
@@ -1137,8 +1123,7 @@ tilo_test_env::scenario! {
                 .expect("the direct messages section")
                 .clone()
         };
-        let mut people = Vec::new();
-        texts(&section, &mut people);
+        let people = texts(&section);
         assert!(people.contains(&"ben".to_owned()), "{people:?}");
 
         // Pressing them opens the conversation with Ben, once: a person has one.
@@ -1216,9 +1201,7 @@ tilo_test_env::scenario! {
         // Nobody at the channel but Ada: no one is typing.
         let typing = |view: &mut ViewInstance| -> Vec<String> {
             view.poll_patches().unwrap();
-            let mut found = Vec::new();
-            texts(view.tree(), &mut found);
-            found
+            texts(view.tree())
                 .into_iter()
                 .filter(|text| text.contains("is typing") || text.contains("are typing"))
                 .collect()
@@ -1492,11 +1475,7 @@ fn asks(r: &Replica) -> Vec<String> {
     let mut view = r.view(AGENT_APP);
     rows(&mut view)
         .iter()
-        .map(|row| {
-            let mut out = Vec::new();
-            texts(row, &mut out);
-            out.join(" ")
-        })
+        .map(|row| texts(row).join(" "))
         .collect()
 }
 

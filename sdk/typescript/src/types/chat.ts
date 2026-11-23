@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@b91eb01292edf00c";
+export const SURFACE = "so.tilo.chat@d21a7a397512be3f";
 
 /** The arguments of `delete_channel`. */
 export interface DeleteChannelArgs {
@@ -82,9 +82,35 @@ export interface DirectDeleteArgs {
   m: Message;
 }
 
+/** The arguments of `correct_skill`. */
+export interface CorrectSkillArgs {
+  name?: string;
+  work?: string;
+  how?: string;
+  form?: string;
+  model?: string;
+}
+
+/** The arguments of `forget_skill`. */
+export interface ForgetSkillArgs {
+}
+
+/** The arguments of `keep_example`. */
+export interface KeepExampleArgs {
+  text: string;
+  accepted: boolean;
+  note?: string;
+}
+
+/** The arguments of `drop_example`. */
+export interface DropExampleArgs {
+  example: Example;
+}
+
 /** Conversations — `tl.so.tilo.chat.Conversations`. */
 export interface Conversations extends tilo.Resource {
   "5kzdptyg": Array<tilo.Entry<Category | Direct | TextChannel | VoiceChannel>>;  // channels
+  n2xgh234: Array<tilo.Entry<Skill>>;  // skills
   /** Adds a text channel to the sidebar, about `topic` when it is given. */
   new_channel(args?: {
     name?: string;
@@ -98,6 +124,10 @@ export interface Conversations extends tilo.Resource {
   new_voice_channel(args?: {
     name?: string;
   }): Promise<VoiceChannel>;
+  /** Starts a skill, called `name`. What it is for and how its work is done are written on its page, or by an agent told to share the guidance with the workspace. */
+  new_skill(args?: {
+    name?: string;
+  }): Promise<Skill>;
   /** Files a problem report, what someone ran into while using Tilo, in the workspace's #feedback channel, which the first report opens. The people who read the reports there answer, react and start a thread under one as under any message. The channel is made under one key on every device, so reports filed apart open one. */
   report_problem(args: {
     body: string;
@@ -142,7 +172,7 @@ export interface Conversations extends tilo.Resource {
 
 /** The actions `Conversations` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CONVERSATIONS_ACTIONS = ["new_channel", "new_category", "new_voice_channel", "report_problem", "message_person", "write_to", "delete_channel", "delete_channelMany", "delete_category", "delete_categoryMany", "move_channel", "move_channelMany", "move_category", "move_categoryMany"] as const;
+export const CONVERSATIONS_ACTIONS = ["new_channel", "new_category", "new_voice_channel", "new_skill", "report_problem", "message_person", "write_to", "delete_channel", "delete_channelMany", "delete_category", "delete_categoryMany", "move_channel", "move_channelMany", "move_category", "move_categoryMany"] as const;
 
 /** The `tl.so.tilo.chat.Conversations` kind at `path`. */
 export function conversations(ws: tilo.Workspace, path: string): Conversations {
@@ -442,6 +472,70 @@ export const PART_ACTIONS = [] as const;
 /** The `tl.so.tilo.chat.Part` kind at `path`. */
 export function part(ws: tilo.Workspace, path: string): Part {
   return resourceProxy(ws, path, SURFACE, PART_ACTIONS) as unknown as Part;
+}
+
+/** Skill — `tl.so.tilo.chat.Skill`. */
+export interface Skill extends tilo.Resource {
+  gfk6pm4a: string;  // name
+  gnfldsvz: string;  // work
+  bn3w5doj: string;  // how
+  ijpa4i7d: string;  // form
+  "3wlkwi6k": string;  // model
+  bxx5rykt: Array<tilo.Entry<Example>>;  // examples
+  /** Corrects a skill: only what is given changes, and what is left out stays as it is. */
+  correct_skill(args?: {
+    name?: string;
+    work?: string;
+    how?: string;
+    form?: string;
+    model?: string;
+  }): Promise<void>;
+  /** Runs `correct_skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  correct_skillMany(items: CorrectSkillArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Forgets a skill: no later turn reads it. */
+  forget_skill(): Promise<void>;
+  /** Runs `forget_skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  forget_skillMany(items: ForgetSkillArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Keeps an example of a skill: a result the person accepted (more like this) or rejected (less like this), with what they said about it. The same result said again is that example, moved newest, and a skill keeps its newest twelve. */
+  keep_example(args: {
+    text: string;
+    accepted: boolean;
+    note?: string;
+  }): Promise<void>;
+  /** Runs `keep_example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  keep_exampleMany(items: KeepExampleArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes an example out of a skill. */
+  drop_example(args: {
+    example: Example;
+  }): Promise<void>;
+  /** Runs `drop_example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  drop_exampleMany(items: DropExampleArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `Skill` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SKILL_ACTIONS = ["correct_skill", "correct_skillMany", "forget_skill", "forget_skillMany", "keep_example", "keep_exampleMany", "drop_example", "drop_exampleMany"] as const;
+
+/** The `tl.so.tilo.chat.Skill` kind at `path`. */
+export function skill(ws: tilo.Workspace, path: string): Skill {
+  return resourceProxy(ws, path, SURFACE, SKILL_ACTIONS) as unknown as Skill;
+}
+
+/** Example — `tl.so.tilo.chat.Example`. */
+export interface Example extends tilo.Resource {
+  fspydtu6: string;  // text
+  "2u2ngevv": boolean;  // accepted
+  agcun6lt: string;  // note
+  "3ccutu3r": number;  // at
+}
+
+/** The actions `Example` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const EXAMPLE_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.chat.Example` kind at `path`. */
+export function example(ws: tilo.Workspace, path: string): Example {
+  return resourceProxy(ws, path, SURFACE, EXAMPLE_ACTIONS) as unknown as Example;
 }
 
 /** Chat — `tl.so.tilo.chat`. */

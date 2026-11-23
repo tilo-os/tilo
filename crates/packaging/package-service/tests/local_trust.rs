@@ -4,8 +4,7 @@ use std::process::{Child, Command, Stdio};
 use tilo_app_package::trust::{RevocationList, RevokedKey, TrustFile};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-#[path = "../src/local_package/fixture.rs"]
-mod fixture;
+use crate::fixture;
 
 struct Host(Child);
 impl Drop for Host {

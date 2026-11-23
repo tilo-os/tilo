@@ -51,7 +51,7 @@ __all__ = [
 class Agent(TypedDict):
     id: str
     name: str
-    keeper: str
+    acts_for: str
     model: str | None
     mcp_client: str | None
     bound: list[Bound]
@@ -217,11 +217,11 @@ SetSubAgentLimitsArgs = TypedDict("SetSubAgentLimitsArgs", {
 
 class Window(Resource):
     """Assistant window — `assistant.window`."""
-    __surface__ = "so.tilo.assistant@234f619a24e3cb4e"
+    __surface__ = "so.tilo.assistant@b0e2f9cf0312fc07"
 
 class WorkspaceAgent(Resource):
     """Agents — `tilo.workspace.agent`."""
-    __surface__ = "so.tilo.assistant@234f619a24e3cb4e"
+    __surface__ = "so.tilo.assistant@b0e2f9cf0312fc07"
     agents: list[Entry[Agent]]
 
     def create_agent(self,

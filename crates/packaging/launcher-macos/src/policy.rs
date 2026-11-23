@@ -150,8 +150,9 @@ pub enum SeatbeltNetwork {
 pub struct PolicyInputs<'a> {
     /// The installed package: readable and executable, never writable.
     pub payload_dir: &'a Path,
-    /// Shared runtime dylibs the app links against: readable and mappable.
-    pub runtime_dylib_dir: Option<&'a Path>,
+    /// The runtime package the app's entrypoint runs from (`[entrypoint] runtime`, the tilolang
+    /// runtime for a tilolang app): readable and executable, never writable, like the payload.
+    pub runtime_dir: Option<&'a Path>,
     /// The one writable directory (see [`prepare_container`]).
     pub container_dir: &'a Path,
     pub capabilities: &'a CapabilityPlan,
@@ -232,7 +233,7 @@ impl SeatbeltPolicy {
     pub fn resolve(inputs: &PolicyInputs<'_>) -> Result<Self, PolicyError> {
         let payload = resolve_dir("payload", inputs.payload_dir)?;
         let runtime = inputs
-            .runtime_dylib_dir
+            .runtime_dir
             .map(|dir| resolve_dir("runtime", dir))
             .transpose()?;
         let container = resolve_dir("container", inputs.container_dir)?;
@@ -543,7 +544,7 @@ mod tests {
     ) -> PolicyInputs<'a> {
         PolicyInputs {
             payload_dir: &layout.payload,
-            runtime_dylib_dir: None,
+            runtime_dir: None,
             container_dir: &layout.container,
             capabilities: plan,
             egress,

@@ -3,10 +3,7 @@
 //! doing anything while it is asked.
 use super::*;
 use tilo_actions::remote::{ActionProvider as _, Caller, Found, Within};
-use tilo_server::{
-    workspace_join,
-    workspaces::{IssueInvitationRequest, Workspaces},
-};
+use tilo_server::workspaces::Workspaces;
 use tilo_workspace_service::agents as turns;
 use ui::tilo_workspace_agent::{Agent, Bound};
 
@@ -256,43 +253,15 @@ impl Served {
     /// Admit the person of `device` to `workspace` as an editor: the server issues them an
     /// invitation and their device redeems it.
     async fn admit(&self, workspace: &str, device: &crate::support::Device) {
-        let invitation = self
-            .workspaces
-            .issue(
-                workspace,
-                &self.devices.0.cert,
-                IssueInvitationRequest {
-                    request_id: device.cert.device_public_key,
-                    role: tilo_peer_state::join::Role::Editor,
-                    recipient_user_public_key: Some(device.cert.user_public_key),
-                    invitee_name: Some("Bo".into()),
-                    inviter_name: None,
-                    expires_at_ns: tilo_clock::unix_now_ns()
-                        .checked_add(600_000_000_000)
-                        .unwrap(),
-                },
-            )
-            .await
-            .unwrap();
-        let verified = tilo_peer_state::join::decode_and_verify_invitation(
-            &invitation.signed_invitation,
-            None,
-            &RevocationList::new(),
-            tilo_clock::unix_now_ns(),
+        crate::workspace_actions::resource_support::admit_with(
+            &self.workspaces,
+            &self.devices.0.cert,
+            workspace,
+            device,
+            tilo_peer_state::join::Role::Editor,
+            "Bo",
         )
-        .unwrap();
-        let endpoint =
-            test_server::endpoint(iroh::SecretKey::from_bytes(&device.key.to_bytes())).await;
-        workspace_join::WorkspaceJoinClient::new(endpoint)
-            .redeem_hint(
-                verified.grant().transport.first().unwrap(),
-                invitation.signed_invitation.clone(),
-                device.cert.clone(),
-                &device.key,
-                device.cert.device_public_key,
-            )
-            .await
-            .unwrap();
+        .await;
     }
 
     /// `root`'s person themselves in `workspace`, on `device`.
@@ -916,7 +885,7 @@ async fn what_a_person_tells_an_agent_is_found_by_them_and_their_own_turns_alone
     }
     let only_chat = Agent {
         id: ui::tilo_resource::Atom(SCOUT.into()),
-        keeper: person_of(&served.ada),
+        acts_for: person_of(&served.ada),
         bound: vec![
             reading(format!("workspace:{workspace}"), "deny"),
             reading(chat_in(&workspace), "allow"),

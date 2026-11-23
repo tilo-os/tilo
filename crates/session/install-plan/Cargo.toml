@@ -4,16 +4,13 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license.workspace = true
-description = "An install plan for a machine at another place: the choices it makes or leaves open, the single-use token it enrolls with, and where the person's devices keep it."
+description = "An install plan for a machine at another place: the choices it makes or leaves open, what its single-use ticket is named by, and where the person's devices keep it."
 
 [dependencies]
 install-profile-model = { path = "../install-profile-model" }
 tilo-device-identity = { path = "../../collab/tilo-device-identity" }
-tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
-tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 tilo-files = { path = "../../platform/tilo-files" }
-ed25519-dalek.workspace = true
 rand.workspace = true
 hex.workspace = true
 serde_json.workspace = true

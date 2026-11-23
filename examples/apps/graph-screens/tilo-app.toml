@@ -28,8 +28,8 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@34"
-tilo-fs = "optional@34"
+collab = "optional@36"
+tilo-fs = "optional@36"
 
 [entrypoint]
 bin = "bin/example-graph-screens"

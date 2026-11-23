@@ -11,18 +11,13 @@ use std::time::Duration;
 use block_devices::{BlockDevice, Lsblk, lsblk};
 use serde_json::Value;
 
-pub const LINUX_FILESYSTEM_GUID: &str = "0fc63daf-8483-4772-8e79-3d69d8477de4";
-pub const TILO_ROOT_GUID: &str = "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab";
+pub const LINUX_FILESYSTEM_GUID: &str = staging_handoff_model::gpt::LINUX_FILESYSTEM;
+pub const TILO_ROOT_GUID: &str = staging_handoff_model::gpt::TILO_ROOT;
 /// The root a staged live installer boots from; only the installer UKI resolves it, so it never
 /// competes with the Tilo root installed beside it.
-pub const TILO_STAGING_ROOT_GUID: &str = "d4c4daf6-f72c-43ee-b8e3-5ba32550311d";
-pub const EFI_SYSTEM_GUID: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
-pub const MIN_ALONGSIDE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
-/// Tilo keeps several signed UKIs for rollback and repair, which a 100--512 MiB ESP cannot hold.
-pub const MIN_ALONGSIDE_ESP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-/// Keeps the first and last MiB clear of both GPT copies, and starts and ends aligned for flash
-/// and 4Kn.
-const PARTITION_ALIGNMENT_BYTES: u64 = 1024 * 1024;
+pub const TILO_STAGING_ROOT_GUID: &str = staging_handoff_model::gpt::TILO_STAGING_ROOT;
+pub const EFI_SYSTEM_GUID: &str = staging_handoff_model::gpt::EFI_SYSTEM;
+pub use crate::{BOOT_BYTES, MIN_ALONGSIDE_BYTES, MIN_ALONGSIDE_ESP_BYTES};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PartitionExtent {
@@ -48,20 +43,18 @@ pub struct GuidedAlongsidePlan {
 impl GuidedAlongsidePlan {
     /// The returned extent is the write authorization, not all the free space discovery saw.
     pub fn with_capacity_bytes(&self, bytes: u64) -> Option<Self> {
-        let overhead = MIN_ALONGSIDE_ESP_BYTES.checked_add(1 << 30)?;
+        let overhead = MIN_ALONGSIDE_ESP_BYTES.checked_add(BOOT_BYTES)?;
         let minimum = overhead.checked_add(MIN_ALONGSIDE_BYTES)?;
         let available_end = self.free_start_bytes.checked_add(self.free_size_bytes)?;
         let end = self.free_start_bytes.checked_add(bytes)?;
         if bytes < minimum
             || bytes > self.free_size_bytes
-            || !bytes.is_multiple_of(PARTITION_ALIGNMENT_BYTES)
-            || !self
-                .free_start_bytes
-                .is_multiple_of(PARTITION_ALIGNMENT_BYTES)
+            || !bytes.is_multiple_of(crate::ALIGN_BYTES)
+            || !self.free_start_bytes.is_multiple_of(crate::ALIGN_BYTES)
             || self.efi_start_bytes != self.free_start_bytes
             || self.efi_size_bytes != MIN_ALONGSIDE_ESP_BYTES
             || self.boot_start_bytes != self.efi_start_bytes.checked_add(self.efi_size_bytes)?
-            || self.boot_size_bytes != 1 << 30
+            || self.boot_size_bytes != BOOT_BYTES
             || self.root_start_bytes != self.free_start_bytes.checked_add(overhead)?
             || end > available_end
         {
@@ -382,7 +375,7 @@ impl Disk {
         if !self.partition_table.eq_ignore_ascii_case("gpt")
             || self.partition_table_uuid.is_empty()
             || self.logical_sector_size == 0
-            || !PARTITION_ALIGNMENT_BYTES.is_multiple_of(self.logical_sector_size)
+            || !crate::ALIGN_BYTES.is_multiple_of(self.logical_sector_size)
             || !self.identity_ready()
             || self.read_only
         {
@@ -402,36 +395,32 @@ impl Disk {
             previous_end = end;
         }
         let disk_end = align_down(
-            self.size_bytes.saturating_sub(PARTITION_ALIGNMENT_BYTES),
-            PARTITION_ALIGNMENT_BYTES,
+            self.size_bytes.saturating_sub(crate::ALIGN_BYTES),
+            crate::ALIGN_BYTES,
         );
-        let mut cursor = PARTITION_ALIGNMENT_BYTES;
+        let mut cursor = crate::ALIGN_BYTES;
         let mut candidates = Vec::new();
         for occupied in extents.iter().chain(std::iter::once(&PartitionExtent {
             part_uuid: String::new(),
             start_bytes: disk_end,
             size_bytes: 0,
         })) {
-            let Some(start) = align_up(cursor, PARTITION_ALIGNMENT_BYTES) else {
+            let Some(start) = align_up(cursor, crate::ALIGN_BYTES) else {
                 return Vec::new();
             };
-            let end = align_down(
-                occupied.start_bytes.min(disk_end),
-                PARTITION_ALIGNMENT_BYTES,
-            );
+            let end = align_down(occupied.start_bytes.min(disk_end), crate::ALIGN_BYTES);
             if end > start {
                 let Some(size) = end.checked_sub(start) else {
                     return Vec::new();
                 };
-                if size >= MIN_ALONGSIDE_ESP_BYTES + 1024 * 1024 * 1024 + MIN_ALONGSIDE_BYTES {
+                if size >= MIN_ALONGSIDE_ESP_BYTES + BOOT_BYTES + MIN_ALONGSIDE_BYTES {
                     let Some(boot_start) = start.checked_add(MIN_ALONGSIDE_ESP_BYTES) else {
                         return Vec::new();
                     };
-                    let Some(root_start) = boot_start.checked_add(1024 * 1024 * 1024) else {
+                    let Some(root_start) = boot_start.checked_add(BOOT_BYTES) else {
                         return Vec::new();
                     };
-                    let Some(root_size) =
-                        size.checked_sub(MIN_ALONGSIDE_ESP_BYTES + 1024 * 1024 * 1024)
+                    let Some(root_size) = size.checked_sub(MIN_ALONGSIDE_ESP_BYTES + BOOT_BYTES)
                     else {
                         return Vec::new();
                     };
@@ -441,7 +430,7 @@ impl Disk {
                         efi_start_bytes: start,
                         efi_size_bytes: MIN_ALONGSIDE_ESP_BYTES,
                         boot_start_bytes: boot_start,
-                        boot_size_bytes: 1024 * 1024 * 1024,
+                        boot_size_bytes: BOOT_BYTES,
                         root_start_bytes: root_start,
                         root_size_bytes: root_size,
                     });
@@ -457,7 +446,7 @@ impl Disk {
 
     /// Only when discovery is unambiguous; multiple safe extents are never resolved silently.
     pub fn guided_alongside_plan(&self) -> Option<GuidedAlongsidePlan> {
-        exactly_one_owned(self.guided_alongside_plans().into_iter())
+        exactly_one(self.guided_alongside_plans().into_iter())
     }
 
     /// A verified staged installation is the one exception.
@@ -583,15 +572,15 @@ impl Disk {
             .checked_add(MIN_ALONGSIDE_ESP_BYTES)
             .ok_or_else(malformed)?;
         let root_start_bytes = boot_start_bytes
-            .checked_add(1024 * 1024 * 1024)
+            .checked_add(BOOT_BYTES)
             .ok_or_else(malformed)?;
         let root_size_bytes = free_size_bytes
-            .checked_sub(MIN_ALONGSIDE_ESP_BYTES + 1024 * 1024 * 1024)
+            .checked_sub(MIN_ALONGSIDE_ESP_BYTES + BOOT_BYTES)
             .ok_or_else(malformed)?;
-        if !free_start_bytes.is_multiple_of(PARTITION_ALIGNMENT_BYTES)
-            || !free_size_bytes.is_multiple_of(PARTITION_ALIGNMENT_BYTES)
+        if !free_start_bytes.is_multiple_of(crate::ALIGN_BYTES)
+            || !free_size_bytes.is_multiple_of(crate::ALIGN_BYTES)
             || root_size_bytes < MIN_ALONGSIDE_BYTES
-            || free_end > self.size_bytes.saturating_sub(PARTITION_ALIGNMENT_BYTES)
+            || free_end > self.size_bytes.saturating_sub(crate::ALIGN_BYTES)
         {
             return Err("the staged target space cannot hold Tilo".into());
         }
@@ -607,7 +596,7 @@ impl Disk {
             efi_start_bytes: free_start_bytes,
             efi_size_bytes: MIN_ALONGSIDE_ESP_BYTES,
             boot_start_bytes,
-            boot_size_bytes: 1024 * 1024 * 1024,
+            boot_size_bytes: BOOT_BYTES,
             root_start_bytes,
             root_size_bytes,
         })
@@ -633,14 +622,7 @@ impl Disk {
 
 /// Formatting the "first" blank partition is not safe: signature-free storage can still hold
 /// unrecognised data, and enumeration order is not consent.
-fn exactly_one<'a>(
-    mut candidates: impl Iterator<Item = &'a DiskPartition>,
-) -> Option<&'a DiskPartition> {
-    let candidate = candidates.next()?;
-    candidates.next().is_none().then_some(candidate)
-}
-
-fn exactly_one_owned<T>(mut candidates: impl Iterator<Item = T>) -> Option<T> {
+fn exactly_one<T>(mut candidates: impl Iterator<Item = T>) -> Option<T> {
     let candidate = candidates.next()?;
     candidates.next().is_none().then_some(candidate)
 }
@@ -1203,7 +1185,7 @@ mod tests {
             let fixture = format!(
                 r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":{},"start":null,"model":"NVMe","type":"disk","pttype":"gpt","ptuuid":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","log-sec":512,"rm":false,"ro":false,"wwn":"eui.0011223344556677","serial":"TILO-NVME","maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":{},"start":2048,"type":"part","fstype":"ntfs","label":"Windows","mountpoint":null,"parttype":"basic","partuuid":"00000000-0000-0000-0000-000000000001"}}]}}]}}"#,
                 200 * gib,
-                100 * gib - PARTITION_ALIGNMENT_BYTES,
+                100 * gib - crate::ALIGN_BYTES,
             );
             let disk = parse_lsblk(&fixture).remove(0);
             let plan = disk.guided_alongside_plan().expect("one safe free extent");
@@ -1213,7 +1195,7 @@ mod tests {
             assert_eq!(plan.boot_start_bytes, 102 * gib);
             assert_eq!(plan.boot_size_bytes, gib);
             assert_eq!(plan.root_start_bytes, 103 * gib);
-            assert_eq!(plan.root_size_bytes, 97 * gib - PARTITION_ALIGNMENT_BYTES);
+            assert_eq!(plan.root_size_bytes, 97 * gib - crate::ALIGN_BYTES);
             assert_eq!(disk.occupied_extents().unwrap().len(), 1);
         }
         {

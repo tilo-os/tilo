@@ -85,21 +85,50 @@ stage() {
   stage_runtimes "$dir"
 }
 
+# Fetch URL into FILE, retrying a 5xx and a connection error a few times with backoff: a
+# flaky host must not decide a release run. 0 when the bytes came, 1 when the URL holds
+# nothing (404); anything else is refused, naming the URL and what answered.
+fetch_file() {
+  local url=$1 out=$2 attempt=1 code delay=1
+  while :; do
+    if code=$(curl --fail --silent --show-error --proto '=https' --output "$out" \
+                --write-out '%{http_code}' "$url"); then
+      return 0
+    fi
+    case ${code:-000} in
+      404) return 1 ;;
+      5?? | 000)
+        if [ "$attempt" -ge 5 ]; then
+          die "$url answered HTTP ${code:-connection error} after 5 tries"
+        fi
+        sleep "$delay"
+        delay=$((delay * 2))
+        attempt=$((attempt + 1))
+        ;;
+      *) die "$url answered HTTP ${code:-000}" ;;
+    esac
+  done
+}
+
 # Upload FILE to the immutable package URL with TOKEN unless it holds those bytes already, then
 # read it back anonymously. A different object at the URL is a conflict, never overwritten.
 publish_file() {
-  local file=$1 url=$2 token=$3 sha
+  local file=$1 url=$2 token=$3 sha kept read
   sha=$(sha256sum "$file" | cut -d' ' -f1)
-  if curl --fail --silent --head --proto '=https' --output /dev/null "$url"; then
-    [[ $(curl --fail --silent --show-error --proto '=https' "$url" | sha256sum | cut -d' ' -f1) == "$sha" ]] \
-      || die "$url holds other bytes"
+  kept=$(mktemp)
+  if fetch_file "$url" "$kept"; then
+    [[ $(sha256sum "$kept" | cut -d' ' -f1) == "$sha" ]] || die "$url holds other bytes"
   else
     # The token goes through curl's configuration on stdin, never its arguments.
     printf 'header = "Authorization: token %s"\n' "$token" \
       | curl --fail --silent --show-error --proto '=https' --config - --upload-file "$file" "$url"
   fi
-  [[ $(curl --fail --silent --show-error --proto '=https' "$url" | sha256sum | cut -d' ' -f1) == "$sha" ]] \
+  rm -f -- "$kept"
+  read=$(mktemp)
+  fetch_file "$url" "$read" || die "$url does not read back as published"
+  [[ $(sha256sum "$read" | cut -d' ' -f1) == "$sha" ]] \
     || die "$url does not read back as published"
+  rm -f -- "$read"
 }
 
 # Sign $2 (a source.json beside its artifacts) with the seed $4 into $3/catalog.json and keys.json.

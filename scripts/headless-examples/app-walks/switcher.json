@@ -1,0 +1,131 @@
+{
+  "app": "switcher",
+  "said": "Switch between windows",
+  "family": "shell",
+  "live": "rust",
+  "apps": "file-explorer chat settings terminal",
+  "rust": {},
+  "tl": {
+    "session_args": [
+      "--shell",
+      "screen"
+    ]
+  },
+  "steps": [
+    {
+      "id": "signed-in",
+      "said": "Sign in: the desktop is there, nothing open, nothing over it",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "state": {
+            "chrome.session_locked": false,
+            "chrome.overlays.search": false,
+            "chrome.overlays.overview": false,
+            "chrome.overlays.strips": false,
+            "chrome.overlays.quick-settings": false,
+            "chrome.overlays.centre": false
+          }
+        },
+        {
+          "windows": 0
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "open-files",
+      "said": "Open Files",
+      "ops": [
+        {
+          "open": "files"
+        }
+      ],
+      "budget_ms": 30000
+    },
+    {
+      "id": "open-chat",
+      "said": "Open Chat",
+      "ops": [
+        {
+          "open": "chat"
+        },
+        {
+          "windows": {
+            "at_least": 2
+          }
+        }
+      ],
+      "budget_ms": 30000
+    },
+    {
+      "id": "open-terminal",
+      "said": "Open Terminal",
+      "ops": [
+        {
+          "open": "terminal"
+        },
+        {
+          "windows": 3
+        }
+      ],
+      "budget_ms": 30000
+    },
+    {
+      "id": "switcher-open",
+      "said": "Walk the switcher one window back: all three windows are listed",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "desktop:overlays",
+            "walk-switcher",
+            {
+              "steps": 1
+            }
+          ]
+        },
+        {
+          "must": [
+            "Alt + Tab: Walk, Enter: Go there, Esc: Stay"
+          ]
+        }
+      ],
+      "dark": true,
+      "budget_ms": 10000
+    },
+    {
+      "id": "switcher-commit",
+      "said": "Let go: the chosen window comes to the front",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "desktop:overlays",
+            "commit-switcher"
+          ]
+        }
+      ],
+      "budget_ms": 10000
+    },
+    {
+      "id": "step-focus",
+      "said": "Step the focus to the next window",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "desktop:shell",
+            "step-focus",
+            {
+              "steps": 1
+            }
+          ]
+        }
+      ],
+      "budget_ms": 10000
+    }
+  ]
+}

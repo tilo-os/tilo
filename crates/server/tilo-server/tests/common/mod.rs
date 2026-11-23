@@ -409,6 +409,18 @@ pub async fn serve_in(
     work: WorkSetting,
     state: TempDir,
 ) -> Hosted {
+    serve_with_keys(user, device, work, state, None).await
+}
+
+/// [`serve_in`], whose device takes part in its workspaces' channels through `channels`, as a
+/// person's own device does: what opens a workspace's vault there.
+pub async fn serve_with_keys(
+    user: &TestUser,
+    device: &TestDevice,
+    work: WorkSetting,
+    state: TempDir,
+    channels: Option<tilo_workspace_service::workspaces::DeviceKeyGroups>,
+) -> Hosted {
     let endpoint = device_endpoint(device).await;
     let host = WorkspaceService::open(
         ServiceConfig::new(state.path().to_path_buf(), work),
@@ -419,7 +431,7 @@ pub async fn serve_in(
             revocations: RevocationList::new(),
         },
         endpoint.clone(),
-        None,
+        channels,
     )
     .await
     .unwrap();

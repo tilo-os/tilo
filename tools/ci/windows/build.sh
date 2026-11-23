@@ -6,6 +6,7 @@
 #   build.sh sdk <arch> <out>     download the pinned CRT and SDK into <out>/sdk-<arch>.tar.zst
 #   build.sh imager <arch> <sdk> <out>   the release imager.exe
 #   build.sh tests <arch> <sdk> <out>    the imager's unit-test executable, for Wine or a Windows host
+#   build.sh runtime <arch> <sdk> <out>  the device daemon and the tilolang runtime programs
 #
 # <sdk> is the archive `build.sh sdk` made. Every output has a SHA-256 sidecar.
 set -euo pipefail
@@ -93,6 +94,19 @@ print(paths[0])' "${TMPDIR:-/tmp}/imager-tests.json")"
     [ -d "$profile/font-catalogs" ] || { printf 'the build published no font catalogs in %s\n' "$profile" >&2; exit 1; }
     rm -rf "$out/font-catalogs"
     cp -a "$profile/font-catalogs" "$out/font-catalogs"
+    ;;
+  runtime)
+    sdk="${3:?SDK archive}" out="${4:?output directory}"
+    use_windows_sdk "$arch" "$sdk"
+    # The daemon and the tilolang runtime programs of a Tilo desktop: cross-built
+    # so that a platform arm which stops compiling is a failed check, and so the
+    # x86_64 daemon can be run under Wine to prove it refuses legibly. The
+    # daemon's Windows port is partial: it compiles, and its CLI answers the
+    # refusal until its services have Windows bodies.
+    cargo xwin build --locked -p tilo-runtime -p tilolang-app -p tilolang-process --target "$target"
+    mkdir -p "$out"
+    install -m 0644 "${CARGO_TARGET_DIR:-target}/$target/debug/tilo-runtime.exe" "$out/tilo-runtime.exe"
+    digest "$out/tilo-runtime.exe"
     ;;
   *) printf 'unknown mode: %s\n' "$mode" >&2; exit 2 ;;
 esac

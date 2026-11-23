@@ -5,7 +5,7 @@
 
 use crate::fixtures::Workspace;
 use tilolang_runtime::value::Value;
-use tilolang_runtime::{Actor, InvokeOutcome, UiNode};
+use tilolang_runtime::{Actor, InvokeOutcome};
 
 use crate::fixtures::{Replica, target};
 
@@ -103,22 +103,16 @@ view board(g: Gallery) {
 const APP: &str = "so.tilo.gallery";
 
 /// The words the window shows.
-fn texts(node: &UiNode, out: &mut Vec<String>) {
-    if (node.kind == "text" || node.kind == "ui.Text")
-        && let Some(Value::Text(text)) = node.props.get("value")
-    {
-        out.push(text.clone());
-    }
-    for child in &node.children {
-        texts(child, out);
-    }
-}
-
 fn shown(replica: &Replica) -> Vec<String> {
     let view = replica.view(APP);
-    let mut out = Vec::new();
-    texts(view.tree(), &mut out);
-    out
+    crate::fixtures::nodes(view.tree())
+        .into_iter()
+        .filter(|node| node.kind == "text" || node.kind == "ui.Text")
+        .filter_map(|node| match node.props.get("value") {
+            Some(Value::Text(text)) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn person(replica: &Replica) -> Actor {

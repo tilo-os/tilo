@@ -154,6 +154,22 @@ impl ServerAddress {
     /// transport and no relay could never reach the server.
     #[cfg(feature = "dial")]
     pub async fn bind(&self, key: Option<[u8; 32]>) -> Result<iroh::Endpoint, LinkError> {
+        self.bind_at(key, None).await
+    }
+
+    /// [`bind`](Self::bind), its direct transport bound on UDP `port` of every interface when one
+    /// is given ([`listening_on`]), so a forward to that port reaches it; over the relay it has
+    /// no direct transport, and `port` is not used.
+    ///
+    /// # Errors
+    ///
+    /// As [`bind`](Self::bind), and when `port` cannot be bound.
+    #[cfg(feature = "dial")]
+    pub async fn bind_at(
+        &self,
+        key: Option<[u8; 32]>,
+        port: Option<u16>,
+    ) -> Result<iroh::Endpoint, LinkError> {
         let relay = self.relay().cloned();
         if self.carrier == Carrier::WebTransport {
             return Err(LinkError::Unavailable(
@@ -180,6 +196,13 @@ impl ServerAddress {
             // QUIC's own slow start above it only adds round trips.
             builder = builder.transport_config(transport()).clear_ip_transports();
         }
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(port) = port.filter(|_| self.carrier != Carrier::Relay) {
+            builder = listening_on(builder, port)
+                .map_err(|error| LinkError::Unavailable(format!("UDP port {port}: {error}")))?;
+        }
+        #[cfg(target_family = "wasm")]
+        let _ = port;
         if let Some(key) = key {
             builder = builder.secret_key(iroh::SecretKey::from_bytes(&key));
         }
@@ -223,6 +246,31 @@ pub fn transport() -> iroh::endpoint::QuicTransportConfig {
     iroh::endpoint::QuicTransportConfig::builder()
         .congestion_controller_factory(std::sync::Arc::new(cubic))
         .build()
+}
+
+/// `builder` with its direct transport on UDP `port` of every interface: IPv4, and IPv6 where the
+/// machine has it. A device whose port is fixed is reached through a forward to it (a local VM's
+/// host, a container's published port); the relay and the addresses it tells others stay as they
+/// are.
+///
+/// # Errors
+///
+/// The address is not one iroh binds.
+#[cfg(all(feature = "dial", not(target_family = "wasm")))]
+pub fn listening_on(
+    builder: iroh::endpoint::Builder,
+    port: u16,
+) -> Result<iroh::endpoint::Builder, iroh::endpoint::InvalidSocketAddr> {
+    builder
+        .clear_ip_transports()
+        .bind_addr_with_opts(
+            std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, port)),
+            iroh::endpoint::BindOpts::default(),
+        )?
+        .bind_addr_with_opts(
+            std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)),
+            iroh::endpoint::BindOpts::default().set_is_required(false),
+        )
 }
 
 #[cfg(test)]

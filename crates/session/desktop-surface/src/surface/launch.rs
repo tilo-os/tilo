@@ -5,7 +5,6 @@ use tilo_desktop_model::{Strip, StripId, WindowGroup, WindowWidth, Workspace};
 
 use super::{Shared, row_op::RowOp};
 use crate::TileSource;
-use crate::navigation;
 
 /// Put a window for `app` after the focused one of the shown strip, or at
 /// the place `at` in it (a drop's [`StripPart::index`]), over the
@@ -25,7 +24,7 @@ pub(super) fn open(
         .iter()
         .find(|w| w.id() == workspace_id)?;
     let tab = tiles.launch(workspace, tab_id, app, None)?;
-    let shown = navigation::active_strip(&shared.tree, workspace);
+    let shown = shared.tree.active_strip_for(workspace);
     // A workspace a site lets this computer into comes with the strips its
     // site holds, and one joined before its site recorded any has none. The
     // first window opened there makes the strip it goes in.
@@ -142,7 +141,9 @@ impl super::DesktopHandle {
     pub fn part_at(&self, x: f64) -> Option<StripPart> {
         let shared = self.shared.borrow();
         let workspace = shared.tree.active_workspace()?;
-        let Some(strip) = navigation::active_strip(&shared.tree, workspace)
+        let Some(strip) = shared
+            .tree
+            .active_strip_for(workspace)
             .and_then(|id| workspace.strips.iter().find(|strip| strip.id == id))
         else {
             return Some(StripPart { index: 0, x });
@@ -177,7 +178,10 @@ impl super::DesktopHandle {
         }
         shared
             .queue
-            .push(crate::navigation::Admitted::LaunchAt(app.to_owned(), index));
+            .push(tilo_session_core::desktop::navigation::Admitted::LaunchAt(
+                app.to_owned(),
+                index,
+            ));
         shared.wake.wake();
         Ok(())
     }

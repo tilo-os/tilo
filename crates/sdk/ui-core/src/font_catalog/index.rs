@@ -138,7 +138,7 @@ pub(crate) fn add_faces(system: &fontdb::Database, db: &mut fontdb::Database) {
 /// invalidate it; one that exists now and was not recorded is a font (or a
 /// font directory) the record lacks.
 pub(crate) fn load(path: &Path) -> Option<fontdb::Database> {
-    let bytes = tilo_files::native::bounded::read(path, MAX_INDEX_BYTES).ok()??;
+    let bytes = tilo_files::native::bounded::read(path, MAX_INDEX_BYTES).ok()?;
     let index: Index = serde_json::from_slice(&bytes).ok()?;
     if index.version != VERSION {
         return None;

@@ -1265,12 +1265,231 @@ scenario "the quick settings" {
     stage(device.overlays, device.Overlays(here: "quick-settings"))
 }
 
+/// The quick settings on a laptop at work: a song playing, the sound and its microphone, the
+/// networks and the Bluetooth devices in reach, a VPN profile, the night light, the power mode and
+/// the charge.
+scenario "the quick settings, at work" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    stage(device.overlays, device.Overlays(here: "quick-settings"))
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(
+        device.battery,
+        device.Battery(present: true, percentage: 76, state: "discharging", on_battery: true),
+    )
+    stage(device.power, device.Power(modes: [.saver, .balanced, .performance], mode: .balanced))
+    stage(device.night_light, device.NightLight(on: false))
+    stage(
+        device.vpn,
+        device.Vpn(
+            profiles: [
+                device.VpnProfile(name: "Work", id: "work", kind: "wireguard", connected: true),
+            ],
+        ),
+    )
+    stage(
+        device.sound,
+        device.Sound(
+            volume: 0.62,
+            muted: false,
+            input_volume: 0.8,
+            input_muted: false,
+            outputs: [
+                device.Device(
+                    node: 1,
+                    name: "alsa_output.pci",
+                    label: "Studio headphones",
+                    chosen: true,
+                    channels: 2,
+                ),
+            ],
+            inputs: [
+                device.Device(
+                    node: 2,
+                    name: "alsa_input.usb",
+                    label: "USB microphone",
+                    chosen: true,
+                    channels: 1,
+                ),
+            ],
+            uses: [
+                device.Use(
+                    client_id: 7,
+                    pid: 4242,
+                    app_id: "so.tilo.meet",
+                    label: "Meet",
+                    binary: "meet",
+                    kind: .microphone,
+                ),
+            ],
+        ),
+    )
+    stage(
+        device.network,
+        device.Network(
+            airplane_mode: false,
+            wifi: device.Wifi(
+                available: true,
+                on: true,
+                networks: [
+                    device.WifiNetwork(
+                        name: "Studio",
+                        signal: 4,
+                        secure: true,
+                        known: true,
+                        connected: true,
+                    ),
+                    device.WifiNetwork(
+                        name: "Cafe",
+                        signal: 2,
+                        secure: false,
+                        known: false,
+                        connected: false,
+                    ),
+                ],
+            ),
+        ),
+    )
+    stage(
+        device.bluetooth,
+        device.Bluetooth(
+            available: true,
+            on: true,
+            accessories: [
+                device.Accessory(
+                    name: "Sony WH-1000XM5",
+                    address: "AC:80:0A:11:22:33",
+                    battery: 82,
+                    connected: true,
+                ),
+            ],
+            nearby: [device.Nearby(name: "Keyboard", address: "AA:BB:CC:DD:EE:FF", signal: -54)],
+        ),
+    )
+}
+
+/// Three banners, newest first, two with actions and one offering a reply; and more waiting behind
+/// them than fit.
+scenario "the banners" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    stage(device.time, device.Time(clock: "2:04 PM"))
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(
+        device.notifications,
+        device.Notifications(
+            notices: [
+                build_failed(),
+                mia_mention(),
+                release_moved(),
+                notebook_shared(),
+                backup_done(),
+            ],
+            banners: [4, 1, 3, 5, 6],
+        ),
+    )
+}
+
+/// The hardware keys' readout: the volume key answered with the level it set.
+scenario "the readout, volume" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(device.time, device.Time(clock: "2:04 PM"))
+    stage(
+        device.osd,
+        device.Osd(
+            visible: true,
+            kind: "volume",
+            level: 0.65,
+            on: true,
+            name: "Studio headphones",
+            glyph: "headphones",
+        ),
+    )
+}
+
+/// The hardware keys' readout: the microphone muted, said in words.
+scenario "the readout, microphone muted" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(device.osd, device.Osd(visible: true, kind: "microphone", on: false, name: "Microphone"))
+}
+
+/// The bar with a timer running: its activity pill, the capture indicator, a tray item counting
+/// its app's unread notices, and an agent at work.
+scenario "the bar's work" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(
+        device.tray,
+        device.Tray(
+            items: [
+                device.TrayItem(
+                    key: "chat",
+                    title: "Chat",
+                    menu: false,
+                    badge: 3,
+                    attention: false,
+                ),
+            ],
+        ),
+    )
+    stage(
+        device.agents,
+        device.Agents(
+            sessions: [
+                device.Agent(
+                    key: "a1",
+                    name: "Fieldwork",
+                    state: "running",
+                    doing: "Reading mail",
+                    unseen: 2,
+                ),
+            ],
+        ),
+    )
+    stage(
+        device.sound,
+        device.Sound(
+            volume: 0.5,
+            uses: [
+                device.Use(
+                    client_id: 7,
+                    pid: 4242,
+                    app_id: "so.tilo.meet",
+                    label: "Meet",
+                    binary: "meet",
+                    kind: .camera,
+                ),
+            ],
+        ),
+    )
+}
+
 /// The centre with nothing in it: what a person sees after Clear all.
 scenario "an empty notification centre" {
     let d = root Layout
     d.person = "Ada Lovelace"
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     stage(device.overlays, device.Overlays(here: "centre"))
+}
+
+/// The centre just after Clear all, while the cleared notices can still come back: the Undo band
+/// under the empty list.
+scenario "the notification centre, cleared" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(device.overlays, device.Overlays(here: "centre"))
+    stage(device.notifications, device.Notifications(notices: [], undo: true))
 }
 
 /// The workspaces: every one the person is in, and who is here in the one in front.
@@ -1810,14 +2029,74 @@ scenario "the strips style's settings" -> Layout {
 
 /// The frames style's own settings, over the canvas they change.
 scenario "the frames style's settings" -> Layout {
+    // The note has its point and size on the canvas, and the styles the session publishes are
+    // staged, so the shot shows the style the panel belongs to standing behind it and the switch
+    // above the settings listing the canvas beside the other three.
+    stage(
+        device.styles,
+        device.Styles(
+            offered: [
+                device.Style(
+                    style: "so.tilo.shell:strips",
+                    package: "so.tilo.shell",
+                    name: "strips",
+                    line: "Strips",
+                    loads: true,
+                    reason: "",
+                ),
+                device.Style(
+                    style: "so.tilo.shell:frames",
+                    package: "so.tilo.shell",
+                    name: "frames",
+                    line: "Frames",
+                    loads: true,
+                    reason: "",
+                ),
+                device.Style(
+                    style: "so.tilo.shell:frameless",
+                    package: "so.tilo.shell",
+                    name: "frameless",
+                    line: "Frameless",
+                    loads: true,
+                    reason: "",
+                ),
+                device.Style(
+                    style: "so.tilo.shell:desktop",
+                    package: "so.tilo.shell",
+                    name: "desktop",
+                    line: "Desktop",
+                    loads: true,
+                    reason: "",
+                ),
+            ],
+        ),
+    )
     stage(settings.agent_models, agent_models())
-    a_style_settings("so.tilo.shell:frames")
+    let a = a_style_settings("so.tilo.shell:frames")
+    if let strip = a.strips.first() {
+        strip.canvas_x = 0
+        strip.canvas_y = 0
+        strip.canvas_width = 1100
+        strip.canvas_height = 1200
+        strip.placed = true
+    }
+    a
 }
 
 /// The frameless style's own settings, over the places they change.
 scenario "the frameless style's settings" -> Layout {
+    // The note has its point on the canvas, so the shot shows the style the panel belongs to
+    // standing behind it.
     stage(settings.agent_models, agent_models())
-    a_style_settings("so.tilo.shell:frameless")
+    let a = a_style_settings("so.tilo.shell:frameless")
+    if let strip = a.strips.first() {
+        strip.canvas_x = 0
+        strip.canvas_y = 0
+        strip.canvas_width = 1100
+        strip.canvas_height = 1200
+        strip.placed = true
+    }
+    a
 }
 
 /// The desktop style's own settings, over the shell they change.

@@ -1,4 +1,4 @@
-//! What a kept layout promises: it is the layout, exactly.
+//! What a kept layout promises: it is the layout, exactly, and only what changed is measured.
 
 use super::*;
 
@@ -72,14 +72,15 @@ tilo_test_env::scenario! {
     /// Each phase was a test of its own and builds its own fixture.
     fn the_list_layout_cache_measures_only_what_changed;
 
-    // The conversation's days are the dividers, and its runs are the bands: a test
-    // of the kept layout is only worth something if the layout has them.
-    phase the_layout_under_test_breaks_days_and_runs;
+    phase a_kept_layout_is_the_layout_and_only_what_changed_is_measured;
     {
         let mut text = crate::font_catalog::fixture_renderer();
         let theme = Theme::dark();
         let lines = conversation();
         let laid = reference(&mut text, &theme, &lines, LIST);
+
+        // The conversation's days are the dividers, and its runs are the bands: a
+        // test of the kept layout is only worth something if the layout has them.
         let dividers = laid
             .rows
             .iter()
@@ -101,14 +102,8 @@ tilo_test_env::scenario! {
         assert_eq!(dividers, 3, "three days, three dividers");
         assert_eq!(bands, 5, "the runs that open with a named person");
         assert_eq!(laid.rows.len(), lines.len() + dividers);
-    }
 
-    phase a_kept_layout_is_the_layout_it_replaces;
-    {
-        let mut text = crate::font_catalog::fixture_renderer();
-        let theme = Theme::dark();
-        let lines = conversation();
-        let laid = reference(&mut text, &theme, &lines, LIST);
+        // A fresh cache measures every line; a frame that changed nothing measures none.
         let face = ListFace::new(&lines, clock());
         let mut cache = ListCache::default();
         let first = face
@@ -159,12 +154,8 @@ tilo_test_env::scenario! {
             0,
             "asking for the height does not measure or move the rows"
         );
-    }
 
-    phase editing_a_line_measures_only_that_line;
-    {
-        let mut text = crate::font_catalog::fixture_renderer();
-        let theme = Theme::dark();
+        // Editing one line measures only that line.
         let mut lines = conversation();
         let mut cache = ListCache::default();
         laid_out(&lines, &mut cache, &mut text, &theme);
@@ -177,12 +168,8 @@ tilo_test_env::scenario! {
         );
         assert_eq!(cache.work().reused, lines.len() - 1);
         same_layout(&edited, &reference(&mut text, &theme, &lines, LIST));
-    }
 
-    phase an_arriving_line_measures_only_itself;
-    {
-        let mut text = crate::font_catalog::fixture_renderer();
-        let theme = Theme::dark();
+        // An arriving line measures only itself.
         let mut lines = conversation();
         let mut cache = ListCache::default();
         laid_out(&lines, &mut cache, &mut text, &theme);
@@ -195,12 +182,8 @@ tilo_test_env::scenario! {
         );
         assert_eq!(cache.work().reused, lines.len() - 1);
         same_layout(&arrived, &reference(&mut text, &theme, &lines, LIST));
-    }
 
-    phase a_narrower_column_measures_every_line;
-    {
-        let mut text = crate::font_catalog::fixture_renderer();
-        let theme = Theme::dark();
+        // A narrower column measures every line.
         let lines = conversation();
         let face = ListFace::new(&lines, clock());
         let mut cache = ListCache::default();
@@ -235,12 +218,8 @@ tilo_test_env::scenario! {
                 .to_bits(),
             laid.height.to_bits()
         );
-    }
 
-    phase a_larger_text_scale_measures_every_line;
-    {
-        let mut text = crate::font_catalog::fixture_renderer();
-        let theme = Theme::dark();
+        // A larger text scale measures every line.
         let lines = conversation();
         let face = ListFace::new(&lines, clock());
         let mut cache = ListCache::default();
@@ -252,7 +231,7 @@ tilo_test_env::scenario! {
             LIST.width(),
             LIST.y0,
         );
-        let larger = theme.with_text_scale(1.5);
+        let larger = theme.clone().with_text_scale(1.5);
         text.set_text_scale(1.5);
         let laid = face
             .layout(
@@ -270,12 +249,9 @@ tilo_test_env::scenario! {
             "a text scale changes every role's type"
         );
         same_layout(&laid, &reference(&mut text, &larger, &lines, LIST));
-    }
 
-    phase a_moved_list_places_again_without_measuring;
-    {
+        // A moved list places again without measuring.
         let mut text = crate::font_catalog::fixture_renderer();
-        let theme = Theme::dark();
         let lines = conversation();
         let face = ListFace::new(&lines, clock());
         let mut cache = ListCache::default();
@@ -301,12 +277,8 @@ tilo_test_env::scenario! {
         assert_eq!(cache.work().measured, 0, "moving a list measures nothing");
         assert_eq!(cache.work().reused, lines.len());
         same_layout(&laid, &reference(&mut text, &theme, &lines, moved));
-    }
 
-    phase lines_that_leave_take_their_measurements_with_them;
-    {
-        let mut text = crate::font_catalog::fixture_renderer();
-        let theme = Theme::dark();
+        // Lines that leave take their measurements with them.
         let mut lines = conversation();
         let mut cache = ListCache::default();
         laid_out(&lines, &mut cache, &mut text, &theme);

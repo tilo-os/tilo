@@ -44,9 +44,7 @@ pub fn package_dirs(dir: &Path, search: &[PathBuf]) -> Result<Vec<PathBuf>, Stri
 
 /// The signing identity in the publisher key file at `path` ([`registry_types::key_file`]).
 pub fn load_identity(path: &Path) -> Result<SigningIdentity, String> {
-    registry_types::key_file::load(path)
-        .map(SigningIdentity::from_signing_key)
-        .map_err(|e| format!("{}: {e}", path.display()))
+    SigningIdentity::from_key_file(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The identity at `path`, made the first time it is asked

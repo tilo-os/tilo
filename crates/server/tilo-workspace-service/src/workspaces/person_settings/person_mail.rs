@@ -159,7 +159,7 @@ impl Workspaces {
 /// that feeds mail, and every other account a provider keeps beside them
 /// (a Nextcloud server's, whose files and calendars it is signed in to),
 /// which feeds no mail.
-pub(super) fn mail_accounts(held: &accounts::person::PersonAccounts, root: &Path) -> MailAccounts {
+pub(super) fn mail_accounts(held: &accounts::person::AccountList, root: &Path) -> MailAccounts {
     let email = accounts::AccountTypeId::from(accounts::email::TYPE_ID);
     let mail = held.of_type(accounts::email::TYPE_ID);
     let listed = |account: &accounts::Account| {
@@ -316,7 +316,7 @@ pub(super) fn answers_in_public(name: &str) -> bool {
 
 /// The account `id` as the listing answers it.
 pub(super) fn kept_mail(
-    held: &accounts::person::PersonAccounts,
+    held: &accounts::person::AccountList,
     root: &Path,
     id: &str,
 ) -> Result<MailAccount, String> {

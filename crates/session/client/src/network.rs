@@ -360,8 +360,6 @@ pub enum Event {
         wanted: Vec<(tilo_live::video::Source, tilo_live::video::Layer)>,
         keyframes: Vec<tilo_live::video::Source>,
     },
-    /// What the host said about this device's calls.
-    Voice(VoiceEvent),
     /// A joined workspace moved to `state` on this session.
     Workspace {
         ws: Topic,
@@ -378,39 +376,6 @@ pub enum Event {
     /// a workspace of theirs is made, joined, renamed, left or deleted, so no
     /// device has to ask the host again.
     Personal(Box<tilo_server_session::workspaces::PersonalList>),
-}
-
-/// What the host said about this device's calls.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum VoiceEvent {
-    /// The answer to asking for a workspace's calls.
-    Calls {
-        ws: Topic,
-        /// Its calls, or why it lists none.
-        result: Result<Vec<tilo_server_protocol::voice::CallSummary>, String>,
-    },
-    /// The answer to the call change `request`.
-    CallResult {
-        ws: Topic,
-        /// The request's id.
-        request: [u8; 16],
-        /// The call now, or why the change was refused.
-        result: Result<tilo_server_protocol::voice::CallState, String>,
-    },
-    /// The participation's current grant: the first after a join, then
-    /// whenever the roster, the directions or the token change.
-    Granted {
-        ws: Topic,
-        grant: Box<tilo_server_protocol::voice::VoiceGrant>,
-    },
-    /// The participation ended: the call ended, the device may no longer
-    /// take part, or the host refused the join.
-    Ended {
-        ws: Topic,
-        call: [u8; 32],
-        /// Why.
-        reason: String,
-    },
 }
 
 /// How the peer network numbers one workspace's topic.
@@ -518,17 +483,6 @@ pub enum Cmd {
     SayForSession(Topic, tilo_server_protocol::host_voice::HostWords),
     /// Microphone frames, said on the peer network of the workspace on the topic as this device's voice.
     CallAudio(Topic, Vec<CallFrame>),
-    /// Ask for the calls of the workspace on the topic: the answer is a [`VoiceEvent::Calls`].
-    VoiceCalls(Topic),
-    /// Change a call of the workspace on the topic under a request id: the answer is a
-    /// [`VoiceEvent::CallResult`].
-    VoiceCall(Topic, [u8; 16], tilo_server_protocol::voice::CallOperation),
-    /// Take part in a call of the workspace on the topic.
-    VoiceJoin(Topic, [u8; 32]),
-    /// Leave the call this device takes part in on the topic.
-    VoiceLeave(Topic),
-    /// What this device shows of the call it takes part in on the topic.
-    VoiceShow(Topic, tilo_server_protocol::voice::Showing),
     /// Pictures this device's camera and screen encoded, for the peer network of the workspace on the
     /// topic.
     CallPictures(Topic, Vec<CallPicture>),

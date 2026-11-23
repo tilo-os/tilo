@@ -351,7 +351,7 @@ impl<R: Resource> ResourceEnv<R> {
         let Some(cluster) = self
             .me()
             .and_then(tilo_resource::MemberId::person_id)
-            .and_then(ui_core::resource::personal_cluster_of)
+            .and_then(ui_core::resource::person_workspace_of)
         else {
             return false;
         };

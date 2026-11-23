@@ -75,8 +75,8 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # A local service that answers slowly, so a fetch's request count and wall time can be checked.
-test-http = { path = "../../dev/test-http" }
-tilo-test-env = { path = "../../dev/test-env" }
+test-http = { path = "../../../tools/test-http" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

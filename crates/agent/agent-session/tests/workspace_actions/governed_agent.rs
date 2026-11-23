@@ -186,7 +186,7 @@ async fn a_hosted_roster_turn() {
     let hosted = crate::harness::hosted::start(&owner, &node, state.path(), options()).await;
     let sessions = hosted.agents.agent_sessions();
     let server = hosted.server.agent_link();
-    let keeper = owner.verifying_key().to_bytes();
+    let acts_for = owner.verifying_key().to_bytes();
     let workspaces = hosted.server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Existing hosted agent").await.unwrap();
     let elsewhere = workspaces.create("Another workspace").await.unwrap();
@@ -208,7 +208,7 @@ async fn a_hosted_roster_turn() {
         &page,
         &workspaces,
         &workspace.workspace,
-        &hex::encode(keeper),
+        &hex::encode(acts_for),
         None,
     )
     .await;
@@ -229,7 +229,7 @@ async fn a_hosted_roster_turn() {
         guest.invoke(ask()).await.status,
         ReceiptStatus::Rejected {
             error: tilo_actions::remote::ActionCallError::Refused { reason },
-        } if reason == "only the active keeper of this hosted roster agent can manage its grant here"
+        } if reason == "only the active person of this hosted roster agent can manage its grant here"
     ));
     let standalone = page
         .invoke(request(
@@ -307,7 +307,7 @@ async fn a_hosted_roster_turn() {
         }
         assert!(
             Instant::now() < deadline,
-            "the keeper's denial was not recorded"
+            "the person's denial was not recorded"
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
@@ -343,7 +343,7 @@ async fn a_hosted_roster_turn() {
 
     let deadline = tilo_test_env::hang_deadline();
     while server
-        .roster_session_device(&sessions, workspace.workspace_id, agent, &keeper)
+        .roster_session_device(&sessions, workspace.workspace_id, agent, &acts_for)
         .await
         != Some(device)
     {
@@ -354,9 +354,9 @@ async fn a_hosted_roster_turn() {
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    for (workspace, id, keeper) in [
-        (elsewhere.workspace_id, agent, keeper),
-        (workspace.workspace_id, "another-agent", keeper),
+    for (workspace, id, acts_for) in [
+        (elsewhere.workspace_id, agent, acts_for),
+        (workspace.workspace_id, "another-agent", acts_for),
         (
             workspace.workspace_id,
             agent,
@@ -365,7 +365,7 @@ async fn a_hosted_roster_turn() {
     ] {
         assert_eq!(
             server
-                .roster_session_device(&sessions, workspace, id, &keeper)
+                .roster_session_device(&sessions, workspace, id, &acts_for)
                 .await,
             None
         );
@@ -519,13 +519,13 @@ async fn a_hosted_roster_turn() {
     // before anything runs: unsigned, nothing runs (its signed sheet above ran), and signed by
     // it, what its grant does not reach is refused.
     let created_at = workspaces
-        .hosted_roster_agent(workspace.workspace_id, agent, &keeper, None)
+        .hosted_roster_agent(workspace.workspace_id, agent, &acts_for, None)
         .await
         .unwrap()
         .created_at;
-    let as_agent = tilo_actions::remote::Caller::delegated_agent(agent, keeper, device)
+    let as_agent = tilo_actions::remote::Caller::delegated_agent(agent, acts_for, device)
         .in_workspace(&workspace.workspace)
-        .on_roster(created_at, keeper)
+        .on_roster(created_at, acts_for)
         .on_roster_turn(tilo_action_policy::turn::Turn::new(
             String::new(),
             String::new(),
@@ -596,7 +596,7 @@ async fn a_hosted_roster_turn() {
         &wrong,
         &workspaces,
         &elsewhere.workspace,
-        &hex::encode(keeper),
+        &hex::encode(acts_for),
         None,
     )
     .await;
@@ -634,7 +634,7 @@ async fn a_hosted_roster_turn() {
     let mut roster = ui::tilo_resource::Replica::<WorkspaceAgents>::from_doc(
         automerge::AutoCommit::load(&saved).unwrap(),
     )
-    .as_author(&hex::encode(keeper));
+    .as_author(&hex::encode(acts_for));
     roster
         .apply(WorkspaceAgents::RETIRE_AGENT.with(RetireAgent {
             agent: ui::tilo_resource::Id::from_raw(agent.to_owned()),
@@ -695,7 +695,7 @@ async fn a_hosted_roster_turn() {
     assert!(sessions.link(&stale_device).is_none());
     assert_eq!(
         server
-            .roster_session_device(&sessions, workspace.workspace_id, agent, &keeper)
+            .roster_session_device(&sessions, workspace.workspace_id, agent, &acts_for)
             .await,
         Some(device)
     );
@@ -716,7 +716,7 @@ async fn a_hosted_roster_turn() {
     );
     assert_eq!(
         server
-            .roster_session_device(&sessions, workspace.workspace_id, agent, &keeper)
+            .roster_session_device(&sessions, workspace.workspace_id, agent, &acts_for)
             .await,
         None
     );

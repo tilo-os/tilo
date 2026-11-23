@@ -217,14 +217,14 @@ fn an_app_that_ends_cleanly_before_its_window_came_could_not_open() {
     apps.attach(desktop.clone());
     desktop
         .with_policy(|policy| {
-            policy
-                .handle()
-                .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
+            policy.handle().dispatch(
+                tilo_session_core::desktop::navigation::ChromeEffect::OpenApp {
                     app: "example.Canvas".into(),
                     beside: None,
                     background: None,
                     float: None,
-                })
+                },
+            )
         })
         .unwrap();
     desktop.with_widgets(WidgetSurface::relayout);
@@ -520,14 +520,14 @@ fn a_windows_program_is_named_by_its_name_and_a_windowless_one_leaves_no_tab() {
     apps.attach(desktop.clone());
     desktop
         .with_policy(|policy| {
-            policy
-                .handle()
-                .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
+            policy.handle().dispatch(
+                tilo_session_core::desktop::navigation::ChromeEffect::OpenApp {
                     app: "example.Canvas".into(),
                     beside: None,
                     background: None,
                     float: None,
-                })
+                },
+            )
         })
         .unwrap();
     desktop.with_widgets(WidgetSurface::relayout);
@@ -557,14 +557,14 @@ fn a_stop_the_person_asked_for_before_the_window_came_closes_its_tab() {
     apps.attach(desktop.clone());
     desktop
         .with_policy(|policy| {
-            policy
-                .handle()
-                .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
+            policy.handle().dispatch(
+                tilo_session_core::desktop::navigation::ChromeEffect::OpenApp {
                     app: "example.Canvas".into(),
                     beside: None,
                     background: None,
                     float: None,
-                })
+                },
+            )
         })
         .unwrap();
     desktop.with_widgets(WidgetSurface::relayout);

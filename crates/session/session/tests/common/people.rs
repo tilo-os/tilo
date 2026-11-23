@@ -1024,6 +1024,7 @@ impl Person {
             home,
             child: None,
             announced: None,
+            session: None,
         }
     }
 }
@@ -1158,6 +1159,7 @@ impl Person {
                 home,
                 child: None,
                 announced: None,
+                session: None,
             },
             *branched,
         )
@@ -1248,6 +1250,9 @@ pub struct Device {
     /// [`Self::ready`]: whether it announced listening, sent once when the stream it prints on
     /// ends.
     announced: Option<mpsc::Receiver<bool>>,
+    /// The session program this device runs, when it is not this package's own test build
+    /// ([`Self::run_session`]).
+    session: Option<PathBuf>,
 }
 
 impl Device {
@@ -1262,6 +1267,18 @@ impl Device {
     /// redeemed over the collaboration endpoint.
     pub fn join(&mut self, invitation: &str) {
         self.spawn(Some(invitation));
+    }
+
+    /// Run the session program at `program` rather than this package's own build, from the next
+    /// start on: a build of the session made another way, which finds the launcher beside itself
+    /// as an installed session does.
+    pub fn run_session(&mut self, program: PathBuf) {
+        self.session = Some(program);
+    }
+
+    /// The process of the session this device runs, while it runs.
+    pub fn session_pid(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
     }
 
     /// Stop this device's session, as the person closing their laptop does.
@@ -1322,6 +1339,12 @@ impl Device {
     /// The device's own session file: what it logged, when something went wrong.
     pub fn log(&self) -> String {
         std::fs::read_to_string(self.logs_dir().join("session.log")).unwrap_or_default()
+    }
+
+    /// The process this device's session runs as, while it runs: what a sample of everything the
+    /// session started ([`tilo_test_env::idle::idle_wakeups`]) is rooted at.
+    pub fn process(&self) -> Option<u32> {
+        self.child.as_ref().map(std::process::Child::id)
     }
 
     /// What this device's session logged as a warning or an error, oldest first: what a failed step
@@ -1419,7 +1442,11 @@ impl Device {
             .open(logs.join("session.log"))
             .expect("a log for the session");
         let _ = writeln!(log, "\n--- this device's session starts ---");
-        let mut command = Command::new(env!("CARGO_BIN_EXE_tilo-session"));
+        let mut command = Command::new(
+            self.session
+                .as_deref()
+                .unwrap_or_else(|| Path::new(env!("CARGO_BIN_EXE_tilo-session"))),
+        );
         command
             .args([
                 "--backend",

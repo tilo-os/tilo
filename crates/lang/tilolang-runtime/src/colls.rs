@@ -198,7 +198,7 @@ pub(crate) fn listing_of(store: &dyn Store, coll: &CollRef) -> Result<Rc<Listing
         }
     };
     match listed {
-        Err(StoreError::NotFound(_)) if coll.target.is_unmade_root() => {
+        Err(StoreError::NotFound(_)) if crate::held::unmade(store, &coll.target) => {
             Ok(Rc::new(Listing::from_ids(Vec::new())))
         }
         other => other,

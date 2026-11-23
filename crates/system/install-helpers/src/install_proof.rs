@@ -168,14 +168,7 @@ fn is_composefs(text: &str) -> bool {
     is_hex(text, 128)
 }
 
-/// `[0-9a-fA-F]{8}-…-[0-9a-fA-F]{12}`.
-fn is_guid(text: &str) -> bool {
-    let groups: Vec<&str> = text.split('-').collect();
-    groups.len() == 5
-        && groups.iter().zip([8, 4, 4, 4, 12]).all(|(group, length)| {
-            group.len() == length && group.bytes().all(|b| b.is_ascii_hexdigit())
-        })
-}
+use staging_handoff_model::is_guid;
 
 fn text(path: &Path) -> String {
     path.to_string_lossy().into_owned()

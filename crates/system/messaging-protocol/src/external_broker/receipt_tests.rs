@@ -1,3 +1,9 @@
+#![allow(
+    clippy::too_many_lines,
+    clippy::significant_drop_tightening,
+    clippy::doc_markdown,
+    reason = "one end-to-end journey reads as one test, and its prose names the services"
+)]
 use super::*;
 use crate::signal_session::{Completion, SendJournal};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -145,9 +151,230 @@ async fn observe(fixture: &Fixture, kind: ReceiptType) -> Result<bool, SendError
         .await
 }
 
+pub(super) fn messages_with_client(
+    fixture: &Fixture,
+    client: tilo_messaging::MessagingClient,
+) -> ui::framework::testing::TestApp<messages::MessagesShell> {
+    use messages::{MessagesEffect, MessagesShell};
+    use tilo_contact_directory::ContactDirectory;
+    let mut app = ui::framework::testing::TestApp::<MessagesShell>::for_person_with_lent(
+        &fixture.owner.actor,
+        client,
+    )
+    .unwrap();
+    tests::project_account_metadata(&fixture.owner, &fixture.route, &mut app);
+    let directory = app
+        .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
+        .unwrap();
+    let route = &fixture.route;
+    directory
+        .invoke(&ContactDirectory::PROJECT_CONTACT.with((route.person.clone(), "Alex".into())))
+        .unwrap();
+    directory
+        .invoke(&ContactDirectory::CONFIRM_ACCOUNT.with((
+            route.person.clone(),
+            route.association.clone(),
+            route.service.clone(),
+            route.scope.clone(),
+            route.recipient.clone(),
+            route.revision.clone(),
+        )))
+        .unwrap();
+    app.settle();
+    app.effect(&MessagesEffect::OpenPerson {
+        person: route.person.as_str().into(),
+    })
+    .unwrap();
+    let choice = serde_json::json!({"service":route.service,"account":fixture.owner.account,"recipient":route.recipient,"association":route.association.as_str(),"scope":route.scope,"revision":route.revision}).to_string();
+    app.effect(&MessagesEffect::SelectRoute { choice }).unwrap();
+    app
+}
+
+pub(super) async fn durability_fixture() -> (Fixture, Arc<WhatsappInboxHook>) {
+    let root = tempfile::tempdir().unwrap();
+    let owner = tests::owner(crate::Service::Whatsapp);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let hook = Arc::new(WhatsappInboxHook::new(owner.clone()).unwrap());
+    let backend = Arc::new(
+        crate::whatsapp_store::EncryptedBackend::open_with_key(
+            &root.path().join("sdk"),
+            owner.clone(),
+            secret_vault::VaultKey::from_bytes([23; 32]),
+        )
+        .unwrap(),
+    );
+    let manager = Arc::new(
+        whatsapp_rust::store::persistence_manager::PersistenceManager::new(backend)
+            .await
+            .unwrap(),
+    );
+    let source = whatsapp_rust::Client::builder()
+        .with_runtime(whatsapp_rust::TokioRuntime)
+        .with_persistence_manager(manager)
+        .with_http_client(NoNetwork(calls.clone()))
+        .with_transport_factory(NoNetwork(calls.clone()))
+        .with_inbound_durability_hook_arc(hook.clone())
+        .build()
+        .await
+        .unwrap()
+        .into_parts()
+        .0;
+    (assemble(root, owner, calls, source), hook)
+}
+
+pub(super) fn network(calls: &Arc<AtomicUsize>) -> crate::supervisor::whatsapp::Network {
+    crate::supervisor::whatsapp::Network {
+        http: Arc::new(NoNetwork(calls.clone())),
+        transport: Arc::new(NoNetwork(calls.clone())),
+    }
+}
+
+/// A WhatsApp account's host lifecycle and its recipient evidence: the
+/// supervisor reports each state on the person's Messages view without ever
+/// admitting a route, freezes its link generation, and native receipts promote
+/// the exact operation monotonically, privately and durably.
 #[tokio::test]
-async fn actual_sdk_recipient_evidence_reaches_private_history_monotonically_without_sending() {
-    let fixture = fixture().await;
+async fn whatsapp_lifecycle_and_receipt_journey_never_admits_a_route() {
+    use crate::supervisor::{AccountSupervisor, whatsapp::WhatsappBootstrap};
+    use tilo_messaging::{AccountState, ServiceAccount};
+    let root = tempfile::tempdir().unwrap();
+    let owner = tests::owner(crate::Service::Whatsapp);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let backend = crate::whatsapp_store::EncryptedBackend::open_with_key(
+        &root.path().join("sdk"),
+        owner.clone(),
+        secret_vault::VaultKey::from_bytes([23; 32]),
+    )
+    .unwrap();
+    let bootstrap = WhatsappBootstrap::build(backend, network(&calls))
+        .await
+        .unwrap();
+    let source = bootstrap.client();
+    let fixture = assemble(root, owner, calls, source);
+    let supervisor = AccountSupervisor::new(&fixture.owner).unwrap();
+    let account = ServiceAccount::new("whatsapp", &fixture.owner.account);
+    let client = supervisor.client();
+    assert_eq!(client.account_state(&account), AccountState::Unavailable);
+    // A lifecycle label cannot claim readiness.
+    assert_eq!(
+        supervisor.unavailable(AccountState::Ready),
+        Err(SendError::InvalidRequest)
+    );
+    let mut app = messages_with_client(&fixture, client.clone());
+    supervisor.unavailable(AccountState::Linking).unwrap();
+    assert!(
+        app.harness()
+            .wait_until(ui::time::Duration::from_secs(5), |h| h
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.label()
+                    == Some(
+                        "Linking this account… Confirm the request on your phone."
+                    )))
+    );
+    supervisor.unavailable(AccountState::Locked).unwrap();
+    assert!(
+        app.harness()
+            .wait_until(ui::time::Duration::from_secs(5), |h| h
+                .a11y_nodes()
+                .iter()
+                .any(
+                    |(_, node)| node.label() == Some("Unlock this account to use messaging.")
+                ))
+    );
+    assert!(!client.supports(&fixture.route));
+    supervisor
+        .install_whatsapp(Arc::new(fixture.broker.clone()), bootstrap)
+        .await
+        .unwrap();
+    // An SDK that has not logged in/connected must never advertise readiness.
+    assert_eq!(client.account_state(&account), AccountState::NeedsRelink);
+    let states = app
+        .effect(&messages::MessagesEffect::ListAccountStates)
+        .unwrap()
+        .value
+        .unwrap();
+    assert!(
+        states
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|state| state["service"] == "whatsapp"
+                && state["account"] == fixture.owner.account
+                && state["state"] == "needs-relink")
+    );
+    assert!(!client.supports(&fixture.route));
+    assert!(
+        app.harness()
+            .wait_until(ui::time::Duration::from_secs(5), |h| h
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.label()
+                    == Some("Link this account again to resume messaging.")))
+    );
+    supervisor.unavailable(AccountState::Failed).unwrap();
+    assert!(
+        app.harness()
+            .wait_until(ui::time::Duration::from_secs(5), |h| h
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.label()
+                    == Some(
+                        "This account's connection stopped. Check its connection and account setup."
+                    )))
+    );
+    assert_eq!(
+        client.account_state(&ServiceAccount::new("signal", &fixture.owner.account)),
+        AccountState::Unavailable
+    );
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+    assert!(
+        !app.harness()
+            .dump_json()
+            .contains("private fixture message")
+    );
+
+    // A supervisor frozen at another link generation installs neither an
+    // external broker nor another owner's SDK, and never becomes ready.
+    let fixture = super::receipt_tests::fixture().await;
+    let mut stale = fixture.owner.clone();
+    stale.linking_generation = stale.linking_generation.saturating_add(1);
+    let supervisor = AccountSupervisor::new(&stale).unwrap();
+    assert_eq!(
+        supervisor.install_external(&fixture.broker),
+        Err(SendError::Unavailable)
+    );
+    assert_eq!(
+        supervisor.unavailable(AccountState::Ready),
+        Err(SendError::InvalidRequest)
+    );
+    let backend = crate::whatsapp_store::EncryptedBackend::open_with_key(
+        &fixture.root.path().join("stale-sdk"),
+        fixture.owner.clone(),
+        secret_vault::VaultKey::from_bytes([24; 32]),
+    )
+    .unwrap();
+    let bootstrap = WhatsappBootstrap::build(backend, network(&fixture.calls))
+        .await
+        .unwrap();
+    assert_eq!(
+        supervisor
+            .install_whatsapp(Arc::new(fixture.broker.clone()), bootstrap)
+            .await,
+        Err(SendError::Revoked)
+    );
+    assert_eq!(
+        supervisor
+            .client()
+            .account_state(&ServiceAccount::new("whatsapp", &stale.account)),
+        AccountState::Unavailable
+    );
+    assert!(!supervisor.client().supports(&fixture.route));
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+
+    // Native recipient evidence reaches private history monotonically, wakes
+    // its readers, and never sends or replays anything.
+    let fixture = super::receipt_tests::fixture().await;
     let history = fixture.broker.client().history();
     assert_eq!(
         history
@@ -184,49 +411,9 @@ async fn actual_sdk_recipient_evidence_reaches_private_history_monotonically_wit
     );
     assert_eq!(wakes.load(Ordering::SeqCst), 2);
     assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
-    fixture.revoked.store(true, Ordering::SeqCst);
-    assert_eq!(
-        observe(&fixture, ReceiptType::Read).await,
-        Err(SendError::Revoked)
-    );
-    assert_eq!(
-        history.read(fixture.route.clone(), None).await,
-        Err(HistoryError::Revoked)
-    );
-    drop(history);
-    let Fixture {
-        root,
-        owner,
-        route,
-        broker,
-        ..
-    } = fixture;
-    drop(broker);
-    let history = History::open(
-        &root.path().join("history"),
-        &owner,
-        secret_vault::VaultKey::from_bytes([8; 32]),
-    )
-    .unwrap();
-    assert_eq!(
-        history.page(route, 128).unwrap().messages[0].delivery,
-        Some(Delivery::RecipientRead)
-    );
-    assert_eq!(
-        history.check_operation("operation"),
-        Err(SendError::AlreadyReserved)
-    );
-    let encrypted = std::fs::read(root.path().join("history/history.enc")).unwrap();
-    assert!(
-        !encrypted
-            .windows(b"private fixture message".len())
-            .any(|bytes| bytes == b"private fixture message")
-    );
-}
 
-#[tokio::test]
-async fn foreign_sdk_and_wrong_recipient_or_operation_cannot_promote_history() {
-    let fixture = fixture().await;
+    // A foreign SDK client, a self or group receipt, an unsupported kind, a
+    // wrong sender or a wrong operation cannot promote anything.
     let foreign = sdk(&fixture.calls).await;
     assert_eq!(
         fixture
@@ -247,6 +434,24 @@ async fn foreign_sdk_and_wrong_recipient_or_operation_cannot_promote_history() {
             .observe_whatsapp_receipt("operation".into(), fixture.source.clone(), event)
             .await
             .unwrap()
+    );
+    let mut event = receipt(&fixture.route, ReceiptType::Read);
+    event.source.is_from_me = true;
+    assert!(
+        !fixture
+            .broker
+            .observe_whatsapp_receipt("operation".into(), fixture.source.clone(), event)
+            .await
+            .unwrap()
+    );
+    let mut event = receipt(&fixture.route, ReceiptType::Read);
+    event.r#type = ReceiptType::Other("delivery".into());
+    assert_eq!(
+        fixture
+            .broker
+            .observe_whatsapp_receipt("operation".into(), fixture.source.clone(), event)
+            .await,
+        Err(SendError::Revoked)
     );
     let mut event = receipt(&fixture.route, ReceiptType::Read);
     event.source.sender = "different@lid".parse().unwrap();
@@ -287,117 +492,45 @@ async fn foreign_sdk_and_wrong_recipient_or_operation_cannot_promote_history() {
             .unwrap()
             .messages[0]
             .delivery,
-        Some(Delivery::Uncertain)
+        Some(Delivery::RecipientRead)
+    );
+    fixture.revoked.store(true, Ordering::SeqCst);
+    assert_eq!(
+        observe(&fixture, ReceiptType::Read).await,
+        Err(SendError::Revoked)
+    );
+    assert_eq!(
+        history.read(fixture.route.clone(), None).await,
+        Err(HistoryError::Revoked)
     );
     assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
-}
-
-pub(super) fn messages(
-    fixture: &Fixture,
-) -> ui::framework::testing::TestApp<messages::MessagesShell> {
-    let mut app = messages_with_client(fixture, fixture.broker.client());
-    let route = &fixture.route;
-    let choice = serde_json::json!({"service":route.service,"account":fixture.owner.account,"recipient":route.recipient,"association":route.association.as_str(),"scope":route.scope,"revision":route.revision}).to_string();
-    app.effect(&messages::MessagesEffect::ReadHistory { choice })
-        .unwrap();
-    app
-}
-pub(super) fn messages_with_client(
-    fixture: &Fixture,
-    client: tilo_messaging::MessagingClient,
-) -> ui::framework::testing::TestApp<messages::MessagesShell> {
-    use messages::{MessagesEffect, MessagesShell};
-    use tilo_contact_directory::ContactDirectory;
-    let mut app = ui::framework::testing::TestApp::<MessagesShell>::for_person_with_lent(
-        &fixture.owner.actor,
-        client,
+    drop(history);
+    let Fixture {
+        root,
+        owner,
+        route,
+        broker,
+        ..
+    } = fixture;
+    drop(broker);
+    let history = History::open(
+        &root.path().join("history"),
+        &owner,
+        secret_vault::VaultKey::from_bytes([8; 32]),
     )
     .unwrap();
-    tests::project_account_metadata(&fixture.owner, &fixture.route, &mut app);
-    let directory = app
-        .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
-        .unwrap();
-    let route = &fixture.route;
-    directory
-        .invoke(&ContactDirectory::PROJECT_CONTACT.with((route.person.clone(), "Alex".into())))
-        .unwrap();
-    directory
-        .invoke(&ContactDirectory::CONFIRM_ACCOUNT.with((
-            route.person.clone(),
-            route.association.clone(),
-            route.service.clone(),
-            route.scope.clone(),
-            route.recipient.clone(),
-            route.revision.clone(),
-        )))
-        .unwrap();
-    app.settle();
-    app.effect(&MessagesEffect::OpenPerson {
-        person: route.person.as_str().into(),
-    })
-    .unwrap();
-    let choice = serde_json::json!({"service":route.service,"account":fixture.owner.account,"recipient":route.recipient,"association":route.association.as_str(),"scope":route.scope,"revision":route.revision}).to_string();
-    app.effect(&MessagesEffect::SelectRoute { choice }).unwrap();
-    app
-}
-
-#[tokio::test]
-async fn actual_receipt_wakes_messages_and_refreshes_visible_recipient_evidence_privately() {
-    let fixture = fixture().await;
-    let mut app = messages(&fixture);
-    assert!(observe(&fixture, ReceiptType::Read).await.unwrap());
+    assert_eq!(
+        history.page(route, 128).unwrap().messages[0].delivery,
+        Some(Delivery::RecipientRead)
+    );
+    assert_eq!(
+        history.check_operation("operation"),
+        Err(SendError::AlreadyReserved)
+    );
+    let encrypted = std::fs::read(root.path().join("history/history.enc")).unwrap();
     assert!(
-        app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |harness| {
-                harness.a11y_nodes().iter().any(|(_, node)| {
-                    super::tests::speaks(node.label(), &ui::widget::DeliveryState::Read.label())
-                })
-            }),
-        "native evidence wakes and refreshes the selected private conversation"
+        !encrypted
+            .windows(b"private fixture message".len())
+            .any(|bytes| bytes == b"private fixture message")
     );
-    assert!(
-        !app.harness()
-            .dump_json()
-            .contains("private fixture message")
-    );
-    assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
-}
-
-pub(super) async fn durability_fixture() -> (Fixture, Arc<WhatsappInboxHook>) {
-    let root = tempfile::tempdir().unwrap();
-    let owner = tests::owner(crate::Service::Whatsapp);
-    let calls = Arc::new(AtomicUsize::new(0));
-    let hook = Arc::new(WhatsappInboxHook::new(owner.clone()).unwrap());
-    let backend = Arc::new(
-        crate::whatsapp_store::EncryptedBackend::open_with_key(
-            &root.path().join("sdk"),
-            owner.clone(),
-            secret_vault::VaultKey::from_bytes([23; 32]),
-        )
-        .unwrap(),
-    );
-    let manager = Arc::new(
-        whatsapp_rust::store::persistence_manager::PersistenceManager::new(backend)
-            .await
-            .unwrap(),
-    );
-    let source = whatsapp_rust::Client::builder()
-        .with_runtime(whatsapp_rust::TokioRuntime)
-        .with_persistence_manager(manager)
-        .with_http_client(NoNetwork(calls.clone()))
-        .with_transport_factory(NoNetwork(calls.clone()))
-        .with_inbound_durability_hook_arc(hook.clone())
-        .build()
-        .await
-        .unwrap()
-        .into_parts()
-        .0;
-    (assemble(root, owner, calls, source), hook)
-}
-
-pub(super) fn network(calls: &Arc<AtomicUsize>) -> crate::supervisor::whatsapp::Network {
-    crate::supervisor::whatsapp::Network {
-        http: Arc::new(NoNetwork(calls.clone())),
-        transport: Arc::new(NoNetwork(calls.clone())),
-    }
 }

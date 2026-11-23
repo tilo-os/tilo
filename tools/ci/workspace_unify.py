@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Writes crates/dev/workspace-unify, the package that makes every member of a cargo family's build
+"""Writes tools/workspace-unify, the package that makes every member of a cargo family's build
 build with one feature set, whatever selection of its packages pulls it in.
 
 Cargo unifies a member's features over the packages a command selects, so `-p tilo-session` and `-p notes`
@@ -41,7 +41,9 @@ import package_features  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 NAME = "workspace-unify"
 HAKARI = "workspace-hack"
-DIR = ROOT / "crates" / "dev" / NAME
+DIR = ROOT / "tools" / NAME
+# From the manifest's directory up to the root: how its lines name a package by path.
+UP = "/".join(".." for _ in DIR.relative_to(ROOT).parts)
 # The families whose builds this package unifies, as t.toml declares them: those naming it in
 # `unify`. A run of one that asks for a few of its packages builds those beside this one, whose
 # manifest gives every shared library the features all of their whole builds together resolve.
@@ -194,7 +196,7 @@ def lines(packages: dict, members: set[str], root: Path, features_of) -> dict[st
         if package_id in members or source is None:
             directory = Path(package["manifest_path"]).parent.relative_to(root.resolve())
             key = name if package_id in members else f"{name}-{package['version']}"
-            where = f'path = "../../../{directory}"'
+            where = f'path = "{UP}/{directory}"'
         elif source.startswith("registry+"):
             key = f"{name}-{package['version']}"
             where = f'version = "^{package["version"]}"'
@@ -399,7 +401,7 @@ def main() -> int:
         problems = stale(ROOT, have)
         if problems:
             for arch, problem in problems:
-                print(f"crates/dev/{NAME}'s {arch} table {problem}: run "
+                print(f"tools/{NAME}'s {arch} table {problem}: run "
                       f"'python3 tools/ci/workspace_unify.py --write' on {arch} and commit the "
                       "result.", file=sys.stderr)
             return 1
@@ -433,7 +435,7 @@ def main() -> int:
     if have != want or text("main.rs") != MAIN or text("build.rs") != BUILD:
         with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
             f.write(want)
-        print(f"crates/dev/{NAME} is stale: the workspace's features and versions changed. Run "
+        print(f"tools/{NAME} is stale: the workspace's features and versions changed. Run "
               f"'python3 tools/ci/workspace_unify.py --write' and commit the result "
               f"(what it would write: {f.name}).", file=sys.stderr)
         subprocess.run(["diff", "-u", str(DIR / "Cargo.toml"), f.name], check=False)

@@ -64,6 +64,7 @@ mod returning_person_tests;
 pub(crate) use holding::{HostWorkspaceRequest, decode_hex, owner, work_takes};
 mod links;
 mod member;
+pub use member::describe;
 pub use member::{AdmittedWrite, MemberDevice, MemberMaterial};
 mod run_admission;
 pub use run_admission::{Refusal, SessionAdmission};
@@ -73,9 +74,10 @@ mod hosts;
 use carried::Carried;
 mod clock;
 pub(crate) use clock::system_time;
-mod delegated_work;
 mod listing;
 mod memberships;
+/// The operator's kill switch, held while a host offers one.
+pub mod mode;
 mod opened_records;
 mod own;
 mod ownership;
@@ -178,6 +180,11 @@ mod governed_grants_tests;
 #[cfg(test)]
 mod naming_tests;
 pub mod person_workspace;
+// The person's own workspace's resources, as a part of a session reads and writes them.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod person_resources;
+#[cfg(not(target_arch = "wasm32"))]
+pub use person_resources::{Holds, PersonResources};
 // The person's region and formats and their zone: what a view rendered here for them shows
 // dates in.
 #[cfg(not(target_arch = "wasm32"))]
@@ -192,8 +199,6 @@ pub use unattended::{Answer as PersonAnswer, AsksPeople};
 mod readings;
 #[cfg(feature = "agents")]
 mod views;
-mod voice;
-pub(crate) use voice::carried_call_workspace;
 mod wait_list;
 
 use std::collections::HashMap;
@@ -1002,9 +1007,20 @@ struct WorkspacesInner {
     /// ([`Workspaces::speak_no_catch_up`]).
     #[cfg(any(test, feature = "test-support"))]
     speaks_no_catch_up: std::sync::atomic::AtomicBool,
+    /// The content each device handing a workspace over keeps none of
+    /// itself, as it handed the list in parts ([`Workspaces::keep_absent`]).
+    handed_absent: hosts::HandedAbsent,
+    /// How many cursors an answer of where this device's store stands
+    /// carries, when a test sets it ([`Workspaces::answer_cursors_in_pages_of`]);
+    /// `0` keeps the build's own.
+    #[cfg(any(test, feature = "test-support"))]
+    cursors_per_answer: std::sync::atomic::AtomicUsize,
     /// Whether this server is about to restart and hands its work to the
     /// other holders: it takes and renews no lease ([`Workspaces::drain`]).
     draining: std::sync::atomic::AtomicBool,
+    /// The mode the host runs under, when its operator offers a kill switch: what its entry
+    /// admits follows it ([`Workspaces::hold_mode`]).
+    mode: std::sync::RwLock<Option<Arc<mode::HostMode>>>,
     dir: PathBuf,
     /// The workspaces governed here, each under its id spelled out: the one
     /// id a workspace has, which its channels carry too ([`Workspaces::held`]).
@@ -1023,7 +1039,6 @@ struct WorkspacesInner {
     jobs: Arc<device_actions::DeviceWork>,
     /// Who waits for whom while workspaces are created ([`Creating`]).
     creating: creating::Creating,
-    calls: Arc<voice::Calls>,
     /// The workspace UUID after each settled governance decision.
     changes: tokio::sync::broadcast::Sender<String>,
     /// The workspace UUID each time this device's copy turns current with
@@ -1331,8 +1346,17 @@ impl Workspaces {
         // renamed since serves with the record's own, verified.
         let host = record_authority::host_serving(host, &dir);
         let workspaces = Arc::new(device_actions::WorkspacesMap::default());
+        // The device actions answer on the endpoint, so they sign as the key it is keyed by: a
+        // member device's own key where its service writes under a key of its own, else the host's.
+        let endpoint_key = *host.endpoint.id().as_bytes();
+        let signer: Arc<dyn collab_types::signer::DeviceSigner> = match &host.member {
+            Some(member) if member.cert.device_public_key == endpoint_key => {
+                Arc::clone(&member.signer)
+            }
+            _ => Arc::new(host.key.clone()),
+        };
         let (action_service, jobs) =
-            device_actions::action_service(Arc::clone(&workspaces), host.key.clone());
+            device_actions::action_service(Arc::clone(&workspaces), signer);
         let store =
             LinkStore::open(store, Appetite::StoreAll).map_err(|error| error.to_string())?;
         // What a host from before the device store kept in its own store of
@@ -1358,7 +1382,11 @@ impl Workspaces {
                 link_heard_capacity: std::sync::atomic::AtomicUsize::new(0),
                 #[cfg(any(test, feature = "test-support"))]
                 speaks_no_catch_up: std::sync::atomic::AtomicBool::new(false),
+                handed_absent: hosts::HandedAbsent::default(),
+                #[cfg(any(test, feature = "test-support"))]
+                cursors_per_answer: std::sync::atomic::AtomicUsize::new(0),
                 draining: std::sync::atomic::AtomicBool::new(false),
+                mode: std::sync::RwLock::new(None),
                 store,
                 direct,
                 records,
@@ -1370,7 +1398,6 @@ impl Workspaces {
                 workspaces,
                 readings: readings::Readings::default(),
                 own_opened: reads::OwnOpened::default(),
-                calls: Arc::default(),
                 creating: creating::Creating::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
                 reached: tokio::sync::broadcast::Sender::new(64),
@@ -1513,6 +1540,28 @@ impl Workspaces {
         self.inner
             .draining
             .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Hold the operator's kill switch: from now on the entry admits nobody new while the mode
+    /// pauses joins ([`mode::Mode::allows_joins`]), and the people already in work on.
+    pub fn hold_mode(&self, held: Arc<mode::HostMode>) {
+        *self
+            .inner
+            .mode
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(held);
+    }
+
+    /// The mode the host admits under now: what its operator set, or normal while it set none.
+    #[must_use]
+    pub fn mode(&self) -> mode::Mode {
+        let held = self
+            .inner
+            .mode
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        held.map_or_else(mode::Mode::default, |held| held.current())
     }
 
     /// The certificate this host serves its workspaces with: its own, or the
@@ -1734,6 +1783,18 @@ impl Workspaces {
         self.inner.jobs.serve_linux(linux);
     }
 
+    /// Answer the requests on the device action service (`tilo-actions/1`) that name `provider`
+    /// with `answers`, the provider id a request's target names. The workspace a request asks in
+    /// admits the asking device to the action by its ordinary grants first, so `answers` sees
+    /// only admitted requests and decides no grant itself.
+    pub fn provide(
+        &self,
+        provider: &'static str,
+        answers: Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+    ) {
+        self.inner.jobs.provide(provider, answers);
+    }
+
     /// Answer the workspaces' governance actions their member devices ask on the device action
     /// service through `governance`.
     pub(crate) fn govern_device_actions_with(&self, governance: std::sync::Weak<actions::Shared>) {
@@ -1926,7 +1987,7 @@ impl Workspaces {
     /// Every person `workspace`'s governance has, by person (hex root), with the
     /// workspace's governance generation: its owner among them, also where the owner is
     /// this host's own person. What the server decides who acts here by, an agent through
-    /// its keeper, never what [`Self::membership`] shows a person: that leaves the
+    /// the person it acts for, never what [`Self::membership`] shows a person: that leaves the
     /// server's own account out.
     ///
     /// # Errors
@@ -2017,9 +2078,52 @@ impl Workspaces {
             .ok_or_else(|| CollaborationError::new("this server does not hold that workspace"))
     }
 
+    /// The membership answer a page builds its replica of `workspace_id` from
+    /// as it subscribes ([`crate::transport::Envelope::WorkspaceBootstrap`]): the
+    /// workspace's roster, its revocations and its governance as one message,
+    /// answered for `device`, the session's certified device. What follows such
+    /// an answer is admitted like any governance
+    /// ([`tilo_peer_state::owner::NativeWorkspaceOwner::install_vouched`]). Built
+    /// only for a device a subscription is answered with: it is as large as the
+    /// workspace.
+    pub(crate) async fn subscriber_bootstrap(
+        &self,
+        workspace_id: WorkspaceId,
+        device: &DeviceCert,
+    ) -> Option<Vec<u8>> {
+        use tilo_peer_state::join::{JoinBootstrap, JoinTransportResponse};
+        use tilo_peer_state::join_log::GovernanceMessages as _;
+        let workspace = self.workspace(&workspace_id.to_string()).await.ok()?;
+        let governed = workspace.lock().await;
+        let peer = governed.peer();
+        let now = tilo_clock::wall();
+        let role = peer.role(&device.device_public_key, now).ok()?;
+        let host = self.inner.host.cert.clone();
+        // The roster names what the device holds before the governance it is sent with,
+        // or could not take from it: every other member device's certificate arrives
+        // with the governance.
+        let certified_roster =
+            peer.roster_beside_governance(&[device.device_public_key, host.device_public_key], now);
+        let governance = peer.governance_messages().ok()?;
+        postcard::to_stdvec(&JoinTransportResponse::MembershipComplete(JoinBootstrap {
+            version: 1,
+            invite_id: [0; 32],
+            device_cert: device.clone(),
+            role,
+            workspace_id: governed.workspace_id(),
+            host,
+            certified_roster,
+            revocations: peer.revocations(),
+            records: Vec::new(),
+            governance_messages: governance,
+            generation: governed.record.generation,
+        }))
+        .ok()
+    }
+
     /// Hold the workspace, admitting only the members its governance names,
     /// and follow its members' writes: create the records they start and keep the
-    /// governor's copy of the others current, as calls bind to chat records.
+    /// governor's copy of the others current.
     ///
     /// Members' changes stay retained as signed tails: members write directly,
     /// not through the governor, so the owner-baseline selection that retires
@@ -2795,7 +2899,7 @@ impl Workspaces {
 
     /// Bring the server in line with the workspace's committed state: admit exactly
     /// its governed members, then retain every governance change not yet
-    /// published, then re-derive its calls' key holders. Runs after each
+    /// published, Runs after each
     /// decision, before the decision is answered.
     ///
     /// The changes are kept at the device store and carried on the
@@ -2840,7 +2944,6 @@ impl Workspaces {
         workspace.publish(&self.inner.records)?;
         crate::timing::event("workspace.settle.publish", publishing, 0);
         let observing = crate::timing::start();
-        self.observe_calls(workspace);
         self.dial_holders(workspace);
         self.governance_moved(workspace);
         crate::timing::event("workspace.settle.observe", observing, 0);

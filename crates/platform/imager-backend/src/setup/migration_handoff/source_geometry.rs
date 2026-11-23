@@ -93,7 +93,7 @@ mod tests {
             group: 1002,
             mode: libc::S_IFDIR | 0o750,
         };
-        entry.home.relative = NativePath::encode(Path::new(""));
+        set_home_relative(&mut entry.home, NativePath::encode(Path::new("")));
         entry.validate().unwrap();
         let mut plans = vec![plan.bytes().unwrap()];
         // Exact same-volume entries need no additional physical collision rule.
@@ -117,7 +117,7 @@ mod tests {
         assert!(Plan::parse(&plans[1]).is_err());
         entry.kind = EntryKind::File;
         entry.mode = libc::S_IFREG | 0o640;
-        entry.home.relative = NativePath::encode(Path::new("real-file"));
+        set_home_relative(&mut entry.home, NativePath::encode(Path::new("real-file")));
         let bytes = serde_json::to_vec(&MountedGeometry {
             schema: 1,
             operation: plan.operation_id.clone(),

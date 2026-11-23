@@ -17,6 +17,8 @@ const RANDOM: &str = "random";
 
 const FILE: &str = "file";
 
+const CLIPBOARD: &str = "clipboard";
+
 impl Checker<'_> {
     pub(super) fn call(
         &mut self,
@@ -92,6 +94,12 @@ impl Checker<'_> {
                 {
                     return self.builtin_file(name, args, span);
                 }
+                if matches!(&base.kind, ExprKind::Ident(ns) if ns == CLIPBOARD)
+                    && self.lookup(CLIPBOARD).is_none()
+                    && self.env.find_import(CLIPBOARD).is_none()
+                {
+                    return self.builtin_clipboard(name, args, span);
+                }
                 if let Some(key) = self.enum_path(base) {
                     let ty = Ty::Enum(key);
                     return match super::enums::Shape::of(self, &ty) {
@@ -143,7 +151,7 @@ impl Checker<'_> {
         }
         if let Some(t) = env.own_type(name).filter(|_| !self.in_std()) {
             let key = t.key.clone();
-            return self.construct(&key, args);
+            return self.construct(&key, args, span);
         }
         if name == "RichText" {
             return self.builtin_rich_text(args, span);
@@ -295,7 +303,7 @@ impl Checker<'_> {
             name: name.name.clone(),
         };
         if env.type_info(&key).is_some() {
-            return self.construct(&key, args);
+            return self.construct(&key, args, span);
         }
         let names: Vec<&str> = env
             .callables
@@ -513,7 +521,14 @@ impl Checker<'_> {
         let reads_state = names
             .iter()
             .any(|n| self.state_named(n).is_some() || self.clock_named(n));
-        if reads_state && !matches!(want, Ty::Action) {
+        // What an event carries is in place only when it fires: a value computed from it
+        // (`set(expr, x.expr)`) is computed then. Given as itself, it is filled in place.
+        let reads_event = !matches!(e.kind, ExprKind::Ident(_))
+            && names.iter().any(|n| {
+                self.lookup(n)
+                    .is_some_and(|(local, _)| self.st.event_values.contains(&local))
+            });
+        if (reads_state || reads_event) && !matches!(want, Ty::Action) {
             return self.at_event(e, want, &names);
         }
         self.expr_as(e, want)
@@ -539,10 +554,15 @@ impl Checker<'_> {
     ) -> Ex {
         let mut params = Vec::new();
         let mut args = Vec::new();
+        // The scalars an event carries come boxed until it fires; the function reads them plain.
+        let mut boxed = Vec::new();
         for name in names {
             let (ty, arg) = if let Some(state) = self.state_named(name) {
                 (state.ty.clone(), Self::state_at(&state))
             } else if let Some((local, ty)) = self.lookup(name) {
+                if self.st.event_scalars.contains(&local) {
+                    boxed.push(name.clone());
+                }
                 (ty.clone(), Ex::local(local, ty))
             } else {
                 continue;
@@ -564,6 +584,15 @@ impl Checker<'_> {
         self.st.ns.clone_from(&outer.ns);
         self.st.types.clone_from(&outer.types);
         self.st.press = true;
+        for name in &boxed {
+            if let Some((local, Ty::Option(inner))) = self.lookup(name) {
+                let plain = self.declare(name, (*inner).clone());
+                self.emit(Stmt::Set(
+                    plain,
+                    Self::unwrap_opt(Ex::local(local, Ty::Option(inner.clone())), &inner),
+                ));
+            }
+        }
         let value = self.expr_as(e, want);
         self.emit(Stmt::Return(Some(value)));
         let name = format!("{} at the event", outer.view_id);
@@ -800,7 +829,7 @@ impl Checker<'_> {
     }
 
     /// `Todo(title: "x")`: a record value, not yet a resource.
-    fn construct(&mut self, key: &TypeKey, args: &[ast::Arg]) -> Ex {
+    fn construct(&mut self, key: &TypeKey, args: &[ast::Arg], span: Span) -> Ex {
         let env = self.env;
         let Some(info) = env.type_info(key) else {
             return Ex::error();
@@ -897,6 +926,8 @@ impl Checker<'_> {
                 Ty::Unit,
             )));
         }
+        // A record field it leaves out starts holding a record of its own when it is made.
+        self.check_held(key, &given, span);
         Ex::new(Ek::Seq(stmts, Box::new(Ex::local(tmp, ty.clone()))), ty)
     }
 
@@ -2266,6 +2297,78 @@ impl Checker<'_> {
             Ty::RichText,
         )
     }
+    /// `clipboard.copy(text)`, `clipboard.copy_image(file)`, `clipboard.paste()` and
+    /// `clipboard.paste_image()`: the person's clipboard. A copy reaches their device and a paste
+    /// reads what is on it now, so an action that does either declares `uses clipboard`, and
+    /// neither is written in a view, which is drawn again from what it is shown.
+    fn builtin_clipboard(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        let (imp, ty) = match name.name.as_str() {
+            "copy" => (Imp::ClipboardCopyText, Ty::Bool),
+            "copy_image" => (Imp::ClipboardCopyImage, Ty::Bool),
+            "paste" => (Imp::ClipboardPasteText, Ty::Option(Box::new(Ty::Text))),
+            "paste_image" => (Imp::ClipboardPasteImage, Ty::Option(Box::new(Ty::File))),
+            other => {
+                self.err(
+                    "E022",
+                    name.span,
+                    format!(
+                        "`clipboard` has `copy`, `copy_image`, `paste` and `paste_image`, not \
+                         `{other}`: `clipboard.copy(text)`, `clipboard.copy_image(file)`, \
+                         `clipboard.paste()` and `clipboard.paste_image()`"
+                    ),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            }
+        };
+        let what = format!("`clipboard.{}`", name.name);
+        self.reads(crate::effects::Effect::Clipboard, span, &what);
+        let (held, said) = match name.name.as_str() {
+            "copy" => (Some(Ty::Text), "the text to copy"),
+            "copy_image" => (Some(Ty::File), "the image file to copy"),
+            _ => (None, ""),
+        };
+        let Some(held) = held else {
+            if let Some(extra) = args.first() {
+                self.err(
+                    "E022",
+                    extra.value.span,
+                    format!("{what} takes nothing: it answers what is on the clipboard"),
+                );
+                let _ = self.expr(&extra.value, None);
+            }
+            return Ex::host(imp, Vec::new(), ty);
+        };
+        let [value] = args else {
+            self.err(
+                "E022",
+                span,
+                format!(
+                    "{what} takes {said} and nothing else: `clipboard.{}(\u{2026})`",
+                    name.name
+                ),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        if let Some(named) = &value.name {
+            self.err(
+                "E022",
+                named.span,
+                format!("{what} takes {said} by position"),
+            );
+        }
+        let value = self.expr_as(&value.value, &held);
+        // A copy changes the device: the action that makes it reaches outside Tilo, and its
+        // invocation records it.
+        self.st.facts.outside = true;
+        Ex::host(imp, vec![value], ty)
+    }
+
     /// `File`'s methods: `File.of_text(name, text)`, `File.of_bytes(name, bytes)`, `File.at(name,
     /// address)` and `File.zip(name, files)`.
     fn file_type_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {

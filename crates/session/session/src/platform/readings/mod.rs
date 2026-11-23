@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use tilo_desktop::chrome::{ActiveMediaUse, LinkStatus, VolumeState};
-use tilo_desktop_surface::now_playing::NowPlaying;
+use tilo_session_core::desktop::now_playing::NowPlaying;
 
 #[cfg(target_os = "linux")]
 mod linux;

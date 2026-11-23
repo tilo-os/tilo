@@ -5,7 +5,8 @@
 #      site, approves a server key `tilo keys create` asks for, on the site's
 #      own /sign-in page; the pictures of what it reads there (the sign-in
 #      card, the API server's grants page, and the key that page makes) are kept in
-#      WORK/startup, light and dark;
+#      WORK/startup, light and dark. The page stays open on the site, holding
+#      that person, so it is where their hosts' questions are answered;
 #   2-6. with that key, the visa run (sdk/python/examples/visa_proof.py): it
 #      makes applicant workspaces, mints a one-workspace key and MCP, the
 #      agent fills the form and writes the letter, a reviewer (another real
@@ -42,13 +43,15 @@
 #      submission runs once the person allows that one submission, the
 #      receipt reaches the same shell, and a second submission is refused when
 #      they deny it — both answered by the person on the question sheet of
-#      their own page, open on the site since step 1, their view of each kept
-#      as WORK/startup/submission-{denied,allowed}-{asked,answered}.png — then
-#      a submission is allowed on a phone paired to them, and another allowed
-#      and one denied on a second browser of theirs, paired to them by that
-#      page and open in the applicant's workspace while their root's page
-#      shows another: the question reaches that browser, and a denial there is
-#      refused to the agent with the refusal's own code; and
+#      their own page, open on the site since step 1, what each sheet drew
+#      kept beside its answer in WORK/startup/answers.jsonl and their view of
+#      it as WORK/startup/submission-{denied,allowed}-{asked,answered}.png —
+#      then a submission is allowed on a browser signed in through a ticket,
+#      holding none of their identity, and another allowed and one denied on
+#      another browser of theirs, signed in by that page and open in the
+#      applicant's workspace while their root's page shows another: the
+#      question reaches that browser, and a denial there is refused to the
+#      agent with the refusal's own code; and
 #      a click on the submit button is held and asked once; a key minted with
 #      the scope unticked is asked about the page actions that act on the
 #      page; a reviewer who joined by invitation reads the run in History, and
@@ -84,8 +87,9 @@
 # command is TILO_SH_TILO_BIN, else this checkout's release build the stack
 # serves at /releases, else target/{debug,release}/tilo. VISA_APPLICANTS
 # sets how many workspaces the run makes (25 here). The questions put to the
-# startup person are answered by TILO_SH_TILO_APPROVE (tilo-approve, built by
-# the t check), through the server address the VM host names.
+# startup person are answered on their page, which step 1 keeps open on the
+# site and whose answers the check writes to and reads from
+# (integration/page_person.py), so it is opened whenever a step that asks runs.
 # TILO_SH_ONLY names the steps to run (`1`, `2-6`, `7`, `10,13-18`, comma
 # separated) to chase one of them without the rest; the stack is brought up
 # either way and each step's own seconds are printed beside it.
@@ -129,11 +133,11 @@ startup_identity() {
   local invitation
   invitation=$(invite_link) || fail 'the Lounge made no invitation for the startup'
   local args=(--invite "$invitation" --key 'Visa backend' --tilo "$tilo" --api "$api" --no-pages)
-  if [[ ${TILO_SH_VM_HOST:-0} == 1 ]] && runs_step 12; then
+  if [[ ${TILO_SH_VM_HOST:-0} == 1 ]] && runs_any 12 13 14 15 16 17 18; then
     # The person stays on the site in their browser, whose page holds their
-    # root: step 12 has them answer the submissions their agent's page holds
-    # there, on its question sheet, and keeps what they saw. The check holds
-    # the FIFO open so each answer asked of it is one line, not its end.
+    # identity: the hosted steps have them answer what their agent's page and
+    # their workspaces' VMs put to them, on its question sheet. The check
+    # holds the FIFO open so each answer asked of it is one line, not its end.
     mkdir -p "$work/startup"
     person_asks=$work/startup/asks
     rm -f "$person_asks" "$work/startup/answers.jsonl"
@@ -337,12 +341,12 @@ if [[ $hosted == 1 ]]; then
   # below runs as an account with a card on file, so a probe of its own admits.
   vm_run_account=$(python3 -c 'import json,sys; print(next(iter(json.load(open(sys.argv[1])).get("accounts") or {})))' "$plans") \
     || fail "the plans file $plans names no account with a card"
-  # The person's approving device, so what the server asks them is answered
-  # and printed.
-  approve=${TILO_SH_TILO_APPROVE:-tilo-approve}
-  command -v "$approve" >/dev/null 2>&1 || [[ -x $approve ]] \
-    || fail "no tilo-approve: TILO_SH_TILO_APPROVE names the program the t check builds"
   [[ -n $server_address ]] || fail 'the VM host names no server address for Browser sessions'
+  # Steps 12-18 ask the person (a submission held, a Linux command outside the
+  # workspace's records): their page answers, and step 1 opened it for them.
+  if runs_any 12 13 14 15 16 17 18; then
+    [[ -n ${person_asks:-} ]] || fail "the person's page is not open to answer these steps (WORK/startup)"
+  fi
 
   # A Linux command in the VM needs the card the check puts on file in step
   # 14: without it a person's own command waits for the card rather than
@@ -423,9 +427,8 @@ if [[ $hosted == 1 ]]; then
   hosted_flow() { # PHASE
     TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
       HOSTED_VISA_PLANS=$plans HOSTED_VISA_ACCOUNT=$vm_account \
-      HOSTED_VISA_APPROVER=$approve HOSTED_VISA_ROOT=$work/startup/root \
-      HOSTED_VISA_SERVER=$server_address HOSTED_VISA_UNSCOPED_KEY=$plain_key \
-      HOSTED_VISA_SITE=$site HOSTED_VISA_SITE_SERVER=$server \
+      HOSTED_VISA_UNSCOPED_KEY=$plain_key \
+      HOSTED_VISA_SITE=$site HOSTED_VISA_SITE_SERVER=$server HOSTED_VISA_TILO=$tilo \
       HOSTED_VISA_PAGE_ASKS=${person_asks:-} HOSTED_VISA_PAGE_ANSWERS=${person_asks:+$work/startup/answers.jsonl} \
       HOSTED_VISA_PAGE_WORKSPACE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("workspace") or "")' "$work/startup.json") \
       sdk_python "$here/integration/hosted-visa.py" "$api" "$key" "$work/hosted" "$form_url" "$1"
@@ -435,8 +438,7 @@ if [[ $hosted == 1 ]]; then
   hosted_terminal() { # PHASE
     HOSTED_TERMINAL_CLI=$tilo HOSTED_TERMINAL_API_URL=$api \
       HOSTED_TERMINAL_PLANS=$plans HOSTED_TERMINAL_ACCOUNT=$vm_account \
-      HOSTED_TERMINAL_APPROVER=$approve HOSTED_TERMINAL_ROOT=$work/startup/root \
-      HOSTED_TERMINAL_SERVER=$server_address \
+      HOSTED_TERMINAL_ASKS=${person_asks:-} HOSTED_TERMINAL_ANSWERS=$work/startup/answers.jsonl \
       HOSTED_TERMINAL_SITE=$site HOSTED_TERMINAL_SITE_SERVER=$server \
       sdk_python "$here/integration/hosted-terminal.py" "$api" "$key" "$work/hosted" "$1"
   }
@@ -454,9 +456,9 @@ if [[ $hosted == 1 ]]; then
       echo '--- the key the host joined with:' >&2
       sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 \
         --init-groups --inh-caps=-all tilo-device-admin key \
-        --identity-root /var/lib/tilo-hosted/member/profile/identity >&2 2>/dev/null || true
+        --identity-root /var/lib/tilo-hosted/member/identity >&2 2>/dev/null || true
       sudo -n podman exec tilo-sh-vm-host-0 sh -c \
-        'ls -la --time-style=full-iso /var/lib/tilo-hosted/member/profile/identity/device-private /var/lib/tilo-hosted/member/profile/identity/device' >&2 2>/dev/null || true
+        'ls -la --time-style=full-iso /var/lib/tilo-hosted/member/identity/device-private /var/lib/tilo-hosted/member/identity/device' >&2 2>/dev/null || true
       echo '--- the member, from its start:' >&2
       sudo -n podman logs tilo-sh-vm-host-0 2>&1 | grep -v 'net_report' | head -60 >&2 || true
       # What the Browser session in the workspace's VM wrote, which the host
@@ -668,6 +670,13 @@ fi
 
 if runs_step 7; then
   entry_visits
+fi
+
+
+# The person's page, which answered the hosted steps, can go: its browser
+# closes as one a person closes does, after the report it printed first.
+if [[ -n ${person_asks:-} ]]; then
+  printf 'done\n' > "$person_asks"
 fi
 
 # And still none, now that the steps' people signed in, kept keys and connected

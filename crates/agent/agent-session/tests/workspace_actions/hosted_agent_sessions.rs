@@ -35,12 +35,12 @@ fn agent_work(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_on_the_server_is_an_agent_session_the_page_reads() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let keeper = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let acts_for = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let server = crate::harness::hosted::start(
         &root,
-        &keeper,
+        &acts_for,
         state.path(),
         crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
@@ -48,7 +48,7 @@ async fn a_turn_on_the_server_is_an_agent_session_the_page_reads() {
     let actions = server.roster.actions.clone();
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let mut page = Browser::open_at(&server, &browser, &keeper, &workspace).await;
+    let mut page = Browser::open_at(&server, &browser, &acts_for, &workspace).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     make_agent(&page, &workspaces, &workspace, &person, None).await;
     let tracker_part = file_issue(
@@ -56,7 +56,7 @@ async fn a_turn_on_the_server_is_an_agent_session_the_page_reads() {
         &workspaces,
         &workspace,
         &root,
-        (&keeper, &browser),
+        (&acts_for, &browser),
     )
     .await;
     page.follow_chain(TASKS, tasks::issue_list::chain().chain_head().as_str());

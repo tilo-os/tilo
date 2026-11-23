@@ -11,7 +11,7 @@ pub use tilo_session_client::presence;
 pub use tilo_session_client::{
     Answer, CallFrame, CallPicture, CallShown, Closed, Cmd, Device, Enrolled, Event, InCall,
     LiveCall, LiveCaller, Outbox, OwnPresence, PageShown, Receipt, RosterDevice, SayPresence,
-    Topic, Transport, VoiceEvent, answer, topic_of,
+    Topic, Transport, answer, topic_of,
 };
 
 pub mod layout;
@@ -77,8 +77,6 @@ pub(crate) use client::HostCmd;
 pub(crate) use client::HostOutbox;
 #[cfg(target_os = "linux")]
 pub(crate) use client::ReceivedSurface;
-#[cfg(target_os = "linux")]
-pub(crate) use client::SiblingDials;
 #[cfg(target_os = "linux")]
 pub(crate) use client::found_alone;
 #[cfg(test)]

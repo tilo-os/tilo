@@ -2295,7 +2295,7 @@ fn a_notice_floats_over_the_canvas_and_never_moves_what_stands() {
     let before = on_screen(&session, CANVAS).expect("the canvas");
     // A notice arrives as the session posts one, as chat's does when someone writes.
     session.notices().post(
-        tilo_desktop_surface::notifications::Notification::new("Chat", "Guest wrote to you")
+        tilo_session_core::desktop::notifications::Notification::new("Chat", "Guest wrote to you")
             .with_app_name("Chat"),
     );
     let dismiss = wait_for(&mut session, "the banner's dismiss", |session| {

@@ -145,7 +145,7 @@ tilo_test_env::scenario! {
                 ("strip".to_owned(), serde_json::json!("3")),
             ],
         );
-        let destination: tilo_desktop_surface::navigation::Destination =
+        let destination: tilo_session_core::desktop::navigation::Destination =
             serde_json::from_value(wire["to"].clone()).expect("the chrome reads the destination");
         assert_eq!(
             serde_json::Value::Object(wire),

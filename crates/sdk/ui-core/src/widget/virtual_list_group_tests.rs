@@ -130,8 +130,9 @@ fn press(list: &mut VirtualList<Grouped>, y: f64, taffy: &TaffyTree<()>, node: N
 tilo_test_env::scenario! {
     fn group_headings_head_fold_and_stay_over_their_rows;
 
-    phase a_grouped_list_heads_each_run_and_keeps_the_done_tail_folded;
+    phase a_grouped_list_heads_each_run_and_opens_and_closes_them;
     {
+        // Each run of rows under one heading is a band, and the done tail is folded.
         let mut list = week();
         let _ = settle(&mut list);
         let band = band_height(&Theme::dark());
@@ -151,14 +152,9 @@ tilo_test_env::scenario! {
             !mounted.contains(&4) && !mounted.contains(&5),
             "no done row is built while folded: {mounted:?}"
         );
-    }
 
-    phase a_press_on_a_heading_opens_and_closes_its_group;
-    {
-        let mut list = week();
+        // A press on the tail's heading opens it; a press on Monday's folds it.
         let (taffy, node) = settle(&mut list);
-        let band = band_height(&Theme::dark());
-        let done = 4.0 * f64::from(ROW) + 2.0 * band;
         assert!(press(&mut list, done + band / 2.0, &taffy, node));
         let _ = settle(&mut list);
         assert!(
@@ -177,63 +173,8 @@ tilo_test_env::scenario! {
             bands(&list)
         );
         assert!(!mounted_indexes(&list).contains(&0), "its rows let go");
-    }
 
-    phase the_heading_over_the_top_of_the_box_stays_there_while_its_group_scrolls;
-    {
-        let mut list = grouped(
-            (0..30)
-                .map(|index| heading(["Monday", "Tuesday", "Wednesday"][index / 10]))
-                .collect(),
-        );
-        let _ = settle(&mut list);
-        let inside = list.viewport.item_top(12).unwrap_or_default() + 5.0;
-        list.set_scroll_offset(inside);
-        let _ = settle(&mut list);
-        let shown = list.bands_in_view();
-        assert_eq!(
-            shown.first().map(|band| (band.heading.as_str(), band.top)),
-            Some(("Tuesday", 0.0))
-        );
-    }
-
-    phase a_heading_stays_over_the_top_as_a_scroll_moves_it_without_a_layout;
-    {
-        let mut list = grouped(
-            (0..30)
-                .map(|index| heading(["Monday", "Tuesday", "Wednesday"][index / 10]))
-                .collect(),
-        );
-        let _ = settle(&mut list);
-        let inside = list.viewport.item_top(12).unwrap_or_default() + 5.0;
-        list.set_scroll_offset(inside);
-        let shown = list.bands_in_view();
-        assert_eq!(
-            shown
-                .iter()
-                .map(|band| (band.heading.as_str(), band.top))
-                .collect::<Vec<_>>(),
-            vec![("Tuesday", 0.0)],
-            "the heading of the group under the top, held there once, over its rows"
-        );
-    }
-
-    phase a_long_list_asks_the_model_about_the_rows_in_view_only;
-    {
-        let groups = (0..100_000)
-            .map(|index| heading(&format!("day {}", index / 50)))
-            .collect();
-        let mut list = grouped(groups);
-        let _ = settle(&mut list);
-        let asked = list.model().asked.get();
-        assert!(
-            asked <= 400,
-            "a layout asks about the rows it lays out, not the whole list: {asked} of 100000"
-        );
-    }
-
-    phase a_finger_gets_a_heading_band_it_can_hit;
-    {
+        // Under a finger the band is tall enough to press, and pressing it folds.
         let mut list = week();
         list.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
         let (taffy, node) = settle(&mut list);
@@ -252,6 +193,49 @@ tilo_test_env::scenario! {
                 .all(|(heading, _, closed)| heading != "Monday" || *closed),
             "Monday folded by the press: {:?}",
             bands(&list)
+        );
+    }
+
+    phase the_heading_over_the_top_stays_there_while_its_group_scrolls;
+    {
+        let mut list = grouped(
+            (0..30)
+                .map(|index| heading(["Monday", "Tuesday", "Wednesday"][index / 10]))
+                .collect(),
+        );
+        let _ = settle(&mut list);
+        let inside = list.viewport.item_top(12).unwrap_or_default() + 5.0;
+        list.set_scroll_offset(inside);
+        // A scroll that moves without a layout holds the heading over its rows.
+        let shown = list.bands_in_view();
+        assert_eq!(
+            shown
+                .iter()
+                .map(|band| (band.heading.as_str(), band.top))
+                .collect::<Vec<_>>(),
+            vec![("Tuesday", 0.0)],
+            "the heading of the group under the top, held there once, over its rows"
+        );
+        // And it is still there once the layout catches up.
+        let _ = settle(&mut list);
+        let shown = list.bands_in_view();
+        assert_eq!(
+            shown.first().map(|band| (band.heading.as_str(), band.top)),
+            Some(("Tuesday", 0.0))
+        );
+    }
+
+    phase a_long_list_asks_the_model_about_the_rows_in_view_only;
+    {
+        let groups = (0..100_000)
+            .map(|index| heading(&format!("day {}", index / 50)))
+            .collect();
+        let mut list = grouped(groups);
+        let _ = settle(&mut list);
+        let asked = list.model().asked.get();
+        assert!(
+            asked <= 400,
+            "a layout asks about the rows it lays out, not the whole list: {asked} of 100000"
         );
     }
 
@@ -391,8 +375,9 @@ fn focused_heading(list: &VirtualList<Grouped>) -> Option<&str> {
 tilo_test_env::scenario! {
     fn a_heading_counts_what_stands_under_it;
 
-    phase a_heading_counts_the_row_on_its_way_that_stands_under_it;
+    phase a_heading_counts_the_rows_under_it_that_are_worth_counting;
     {
+        // A heading counts the rows it heads; a group of one counts nothing.
         let mut list = grouped(vec![heading("Today"), None, heading("Tomorrow")]);
         let _ = settle(&mut list);
         let tree = Widget::accessibility(&list).expect("list semantics");
@@ -410,10 +395,6 @@ tilo_test_env::scenario! {
             ],
             "each heading counts the rows under it"
         );
-    }
-
-    phase a_heading_counts_only_where_the_number_says_something;
-    {
         let mut one = grouped(vec![heading("Today")]);
         let _ = settle(&mut one);
         let band = one
@@ -440,10 +421,8 @@ tilo_test_env::scenario! {
             Some(2),
             "two rows are a number worth reading"
         );
-    }
 
-    phase a_heading_counts_the_rows_left_to_do;
-    {
+        // What is left to do is what a heading counts, and the tail counts what is done.
         let mut one = grouped_finished(vec![heading("Today"), heading("Today")], &[1]);
         assert_eq!(
             open_count(&mut one),
@@ -455,8 +434,6 @@ tilo_test_env::scenario! {
             &[2],
         );
         assert_eq!(open_count(&mut two), Some(2), "two tasks are left to do");
-        // The tail heads the rows done with: it counts them as they stand, never what is left of
-        // them, which is nothing.
         let mut week = listed(
             Grouped::new(vec![
                 heading("Monday"),
@@ -492,10 +469,8 @@ tilo_test_env::scenario! {
             None,
             "the one row left to do under Monday says itself"
         );
-    }
 
-    phase a_heading_a_reader_hears_counts_the_rows_left_to_do;
-    {
+        // A reader hears the same number, with a finished row not read as one to do.
         let mut list = grouped_finished(
             vec![
                 heading("Today"),
@@ -524,11 +499,22 @@ tilo_test_env::scenario! {
     }
 }
 
+fn send(list: &mut VirtualList<Grouped>, target: &str, action: &crate::a11y::Action) -> bool {
+    Widget::perform_semantic_action(
+        list,
+        target,
+        action,
+        &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+        &automerge::ROOT,
+    )
+}
+
 tilo_test_env::scenario! {
     fn a_heading_is_a_disclosure_a_reader_and_an_agent_can_use;
 
-    phase a_heading_is_a_disclosure_in_the_lists_accessibility_children;
+    phase a_heading_is_a_disclosure_a_reader_and_an_agent_can_use;
     {
+        use accesskit::{Action as AkAction, Role as AkRole};
         let mut list = week();
         let (taffy, node) = settle(&mut list);
         list.set_focus(true);
@@ -536,6 +522,7 @@ tilo_test_env::scenario! {
         assert!(key(&mut list, NamedKey::ArrowUp, &taffy, node));
         assert_eq!(focused_heading(&list), Some("Monday"));
 
+        // The list's own nodes: each heading before the rows it holds.
         let tree = Widget::accessibility(&list).expect("list semantics");
         let names = tree
             .children
@@ -562,18 +549,12 @@ tilo_test_env::scenario! {
         assert_eq!(done.value.as_deref(), Some("2"));
         assert_eq!(done.state.expanded, Some(false));
         assert!(!done.state.focused);
-        // The list builds each mounted row's node itself, headings before
-        // them: the walk never visits the row widgets.
         assert!(
             (0..list.mounted.len()).all(|child| Widget::accessibility_represents_child(&list, child)),
             "every mounted row is a node of the list's own"
         );
-    }
 
-    phase the_accesskit_tree_hands_a_reader_each_heading_with_its_expanded_state;
-    {
-        use accesskit::{Action as AkAction, Role as AkRole};
-        let mut list = week();
+        // The accesskit tree a reader is handed says the same.
         let nodes = access_nodes(&mut list);
         let heading = |label: &str| {
             nodes
@@ -590,24 +571,12 @@ tilo_test_env::scenario! {
         assert_eq!(done.value(), Some("2"));
         assert_eq!(done.is_expanded(), Some(false));
         assert!(done.supports_action(AkAction::Expand));
-    }
 
-    phase an_agent_reads_and_toggles_a_heading_as_a_control;
-    {
-        use crate::a11y::Action;
+        // An agent reads and toggles a heading as a control.
         let mut list = week();
         let _ = settle(&mut list);
         let name = |heading: &str| format!("group:{heading}");
-        fn send(list: &mut VirtualList<Grouped>, target: &str, action: &crate::a11y::Action) -> bool {
-            Widget::perform_semantic_action(
-                list,
-                target,
-                action,
-                &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
-                &automerge::ROOT,
-            )
-        }
-        assert!(send(&mut list, &name("Done"), &Action::Activate));
+        assert!(send(&mut list, &name("Done"), &crate::a11y::Action::Activate));
         assert_eq!(focused_heading(&list), Some("Done"));
         let _ = settle(&mut list);
         assert!(
@@ -622,7 +591,7 @@ tilo_test_env::scenario! {
             .find(|child| child.name.as_deref() == Some("Done"))
             .expect("the tail's heading");
         assert_eq!(done.state.expanded, Some(true));
-        assert!(send(&mut list, &name("Monday"), &Action::Collapse));
+        assert!(send(&mut list, &name("Monday"), &crate::a11y::Action::Collapse));
         let _ = settle(&mut list);
         assert!(
             bands(&list)
@@ -631,7 +600,7 @@ tilo_test_env::scenario! {
             "Monday folded: {:?}",
             bands(&list)
         );
-        assert!(send(&mut list, &name("Monday"), &Action::Expand));
+        assert!(send(&mut list, &name("Monday"), &crate::a11y::Action::Expand));
         let _ = settle(&mut list);
         assert!(
             bands(&list)
@@ -640,10 +609,10 @@ tilo_test_env::scenario! {
             "Monday unfolded: {:?}",
             bands(&list)
         );
-        assert!(send(&mut list, &name("Tuesday"), &Action::Focus));
+        assert!(send(&mut list, &name("Tuesday"), &crate::a11y::Action::Focus));
         assert_eq!(focused_heading(&list), Some("Tuesday"));
         // A heading that is not there is not acted on.
-        assert!(!send(&mut list, &name("Wednesday"), &Action::Activate));
+        assert!(!send(&mut list, &name("Wednesday"), &crate::a11y::Action::Activate));
     }
 }
 
@@ -720,8 +689,9 @@ fn the_heading_holding_the_keyboard_wears_a_focus_ring() {
 tilo_test_env::scenario! {
     fn headings_and_rows_share_their_columns_and_area;
 
-    phase a_lists_headings_and_rows_share_one_column_and_one_trailing_edge;
+    phase headings_and_rows_share_one_column_and_one_area;
     {
+        // A list whose headings fold keeps the chevron gutter before its column.
         let mut list = week();
         let _ = settle(&mut list);
         let rect = list.rect;
@@ -750,10 +720,8 @@ tilo_test_env::scenario! {
             (header.x0 - (rect.x0 + list.lead)).abs() < 0.5,
             "the column starts one lead in from the list's edge"
         );
-    }
 
-    phase a_list_with_nothing_to_disclose_keeps_no_chevron_area;
-    {
+        // A list of rows that name no group keeps no chevron area and leads with them.
         let mut list = grouped(vec![None, None]);
         let _ = settle(&mut list);
         assert!(
@@ -761,10 +729,15 @@ tilo_test_env::scenario! {
             "no heading or parent to fold reserves no gutter: {}",
             list.lead
         );
-    }
+        assert!(
+            (list.band_gap(0) - 0.0).abs() < 0.5,
+            "nothing heads the list: {} over its first row",
+            list.band_gap(0)
+        );
 
-    phase a_lone_group_heading_starts_the_rows_on_the_content_gutter;
-    {
+        // A lone group heading starts the rows on the content gutter.
+        let inset = crate::chrome::column_gutter(&Theme::dark());
+        let band = band_height(&Theme::dark());
         let mut headed = grouped(vec![
             heading("Today"),
             heading("Today"),
@@ -772,8 +745,6 @@ tilo_test_env::scenario! {
         ])
         .in_column();
         let _ = settle(&mut headed);
-        let inset = crate::chrome::column_gutter(&Theme::dark());
-        let band = band_height(&Theme::dark());
         let headed_band = bands(&headed).first().expect("a heading leads the rows").1;
         assert!(
             (headed_band - inset).abs() < 0.5,
@@ -793,24 +764,8 @@ tilo_test_env::scenario! {
             (lone_top - inset).abs() < 0.5,
             "with the heading left out the row stands on the content gutter: {lone_top} of {inset}"
         );
-    }
 
-    phase a_list_of_rows_that_name_no_group_leads_with_them;
-    // A list of rows that name no groups keeps its rows against its own edge: its block is the
-    // list's, with nothing over it.
-    {
-        let mut list = grouped(vec![None, None]);
-        let _ = settle(&mut list);
-        assert!(
-            (list.band_gap(0) - 0.0).abs() < 0.5,
-            "nothing heads the list: {} over its first row",
-            list.band_gap(0)
-        );
-    }
-
-    phase a_list_states_the_area_it_keeps_over_its_first_band;
-    {
-        let inset = crate::chrome::column_gutter(&Theme::dark());
+        // A list states the area it keeps over its first band.
         let stated = |list: &VirtualList<Grouped>| {
             let Some(crate::widget::LayoutInfo::List(stated)) = Widget::layout_info(list) else {
                 panic!("a list states how it stands its rows");
@@ -845,10 +800,8 @@ tilo_test_env::scenario! {
         let mut alone = grouped(vec![heading("Today"), heading("Today")]);
         let _ = settle(&mut alone);
         assert!(stated(&alone).lead.abs() < 0.5);
-    }
 
-    phase the_area_over_a_lists_first_band_is_no_part_of_it;
-    {
+        // The area over a list's first band is no part of it.
         let mut list = grouped(vec![heading("Today"), heading("Today")])
             .in_view("Today", Some(2))
             .in_column();
@@ -872,8 +825,9 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn a_title_over_a_list_takes_or_keeps_its_headings;
 
-    phase a_view_titled_like_its_one_group_heads_nothing_over_the_rows;
+    phase a_title_over_a_list_takes_or_keeps_its_headings;
     {
+        // A view titled like its one group heads nothing over the rows.
         let mut list = grouped(vec![heading("Today"), heading("Today")])
             .in_view("Today", Some(2))
             .in_column();
@@ -907,10 +861,8 @@ tilo_test_env::scenario! {
             "the row's box stands on the column's content gutter: {} of {inset}",
             first.y0
         );
-    }
 
-    phase a_list_of_two_groups_keeps_their_headings_under_a_title;
-    {
+        // Two runs keep the headings that tell them apart under a title.
         let mut list = grouped(vec![
             heading("Overdue"),
             heading("Overdue"),
@@ -927,10 +879,8 @@ tilo_test_env::scenario! {
             vec!["Overdue", "Today"],
             "two runs keep the headings that tell them apart"
         );
-    }
 
-    phase a_title_counting_other_rows_keeps_the_heading_that_counts_these;
-    {
+        // A title counting other rows keeps the heading that counts these.
         let mut list = grouped(vec![heading("Today"), heading("Today")]).in_view("Today", Some(3));
         let _ = settle(&mut list);
         assert_eq!(
@@ -941,10 +891,8 @@ tilo_test_env::scenario! {
             vec!["Today"],
             "the heading counts what the title does not"
         );
-    }
 
-    phase a_list_whose_group_names_another_run_keeps_its_heading;
-    {
+        // A list whose group names another run keeps its heading.
         let mut list =
             grouped(vec![heading("Tomorrow"), heading("Tomorrow")]).in_view("Upcoming", Some(2));
         let _ = settle(&mut list);
@@ -955,10 +903,8 @@ tilo_test_env::scenario! {
                 .collect::<Vec<_>>(),
             vec!["Tomorrow"]
         );
-    }
 
-    phase the_title_a_list_stands_under_takes_its_heading_away_and_gives_it_back;
-    {
+        // The title a list stands under takes its heading away and gives it back.
         let mut list = grouped(vec![heading("Today"), heading("Today")]);
         let _ = settle(&mut list);
         assert_eq!(
@@ -986,10 +932,8 @@ tilo_test_env::scenario! {
             vec!["Today"],
             "a title saying something else gives the heading back"
         );
-    }
 
-    phase the_title_counting_what_is_left_takes_the_heading_over_a_finished_row_too;
-    {
+        // The title counting what is left takes the heading over a finished row too.
         let mut list =
             grouped_finished(vec![heading("Today"), heading("Today")], &[1]).in_view("Today", Some(1));
         let _ = settle(&mut list);

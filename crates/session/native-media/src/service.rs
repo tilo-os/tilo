@@ -167,6 +167,10 @@ struct Shared {
 
 /// The voice channel this device is in.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "camera, screen, muted and deafened are each their own flag a person shows in a call"
+)]
 pub struct OwnCall {
     /// The workspace the call is in.
     pub workspace: String,
@@ -180,6 +184,10 @@ pub struct OwnCall {
     pub camera: bool,
     /// This device shares its screen in the call.
     pub screen: bool,
+    /// This device's microphone is off in the call.
+    pub muted: bool,
+    /// This device hears nothing of the call.
+    pub deafened: bool,
 }
 
 /// The session's calls, as the apps it runs reach them.
@@ -230,6 +238,8 @@ impl NativeMediaService {
                 channel: entry.channel.clone(),
                 camera: entry.snapshot.camera,
                 screen: entry.snapshot.screen,
+                muted: entry.snapshot.muted,
+                deafened: entry.snapshot.deafened,
             })
     }
 

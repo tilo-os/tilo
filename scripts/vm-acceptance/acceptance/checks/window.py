@@ -418,6 +418,8 @@ def on_screen_keyboard(ctx, res):
     # service runs in the default automatic mode.
     ctx.vm.input("touch", "tap", str(x), str(y))
     showed = wait_until(lambda: (keys,) if (keys := _keyboard_keys(ctx, d0)) else None, 30, 0.5)
+    if not showed:
+        ctx.write("W19-keyboard.log", _keyboard_evidence(ctx))
     expect(showed, "the on-screen keyboard did not show after tapping the field")
     res.metrics["keys"] = len(showed[0])
     ctx.shot("W19-keyboard")
@@ -455,6 +457,21 @@ def _inert_point(ctx, display) -> tuple[int, int]:
 # The caret the state dump reports where the person types: the search's field, while it is up.
 def _caret(st):
     return (st.get("chrome") or {}).get("caret")
+
+
+def _keyboard_evidence(ctx) -> str:
+    """Whether the on-screen keyboard is installed and running, and what the session said about
+    it: started, told to show, or never asked for."""
+    facts = ctx.vm.exec(
+        'command -v tilo-osk || echo "no tilo-osk on PATH"; '
+        'ls -l /usr/bin/tilo-osk 2>&1; '
+        'pgrep -a tilo-osk || echo "tilo-osk is not running"', check=False) or ""
+    said = ctx.vm.exec(
+        f'tail -n 4000 "{core.SESSION_LOG}" | sed "s/\\x1b\\[[0-9;]*m//g" '
+        '| grep -avE "realtime|collab:|launch_latency|app_output" '
+        '| grep -aiE "osk|on.screen keyboard|keyboard_run|surface app|input method|no keyboard|did not start" '
+        '| tail -n 80 | cut -c1-400', check=False) or "the session log said nothing about the keyboard"
+    return facts + "\n--- session log\n" + said
 
 
 def _close_search(ctx) -> None:
@@ -495,6 +512,8 @@ def _on_screen_keyboard_in_the_shell(ctx, res):
     # The field stands at the caret the search publishes; tapping there focuses it.
     _tap(ctx, (caret[0], caret[1], max(1, caret[2] - caret[0]), max(1, caret[3] - caret[1])))
     showed = wait_until(lambda: (keys,) if (keys := _keyboard_keys(ctx, d0)) else None, 30, 0.5)
+    if not showed:
+        ctx.write("W20-keyboard.log", _keyboard_evidence(ctx))
     expect(showed, "the on-screen keyboard did not show for the search field")
     res.metrics["keys"] = len(showed[0])
     ctx.shot("W20-keyboard-over-search")
@@ -577,7 +596,9 @@ def touch_unlock(ctx, res):
         # that.
         _expect_snapshot_refused_while_locked(ctx)
         log_lines = _session_log_lines(ctx)
+        # The lock's field is a password field: Return submits it, as a person does.
         ctx.vm.input("type", passcode)
+        ctx.vm.key("Return")
         try:
             ctx.wait_state(lambda s: not s["chrome"].get("session_locked"), 20,
                            "the session unlocked with the passcode typed after the touch")

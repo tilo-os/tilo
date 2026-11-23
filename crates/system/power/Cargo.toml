@@ -14,10 +14,11 @@ path = "src/lib.rs"
 
 [features]
 default = ["service"]
+serde = ["dep:serde"]
 service = [
+    "serde",
     "dep:tilo-files",
     "dep:futures-util",
-    "dep:serde",
     "dep:serde_json",
     "dep:settings-store",
     "dep:tokio",
@@ -58,7 +59,7 @@ zbus = { workspace = true, features = ["tokio", "p2p"] }
 # Fixture power-supply trees for the sysfs battery reader, so its parsing
 # is tested against representative directory layouts.
 tempfile = { workspace = true }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

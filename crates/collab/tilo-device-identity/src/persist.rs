@@ -274,7 +274,8 @@ pub fn collaboration_identity_root() -> PathBuf {
 
 /// [`collaboration_identity_root`] without the environment: `system` when it holds an identity,
 /// else the account's own `data` directory, else `system` (where an identity will be made).
-fn held_root(system: &Path, data: Option<&Path>) -> PathBuf {
+#[must_use]
+pub fn held_root(system: &Path, data: Option<&Path>) -> PathBuf {
     if system.join("device").is_dir() {
         return system.to_path_buf();
     }

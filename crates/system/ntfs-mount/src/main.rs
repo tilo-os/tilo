@@ -13,9 +13,6 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-    use std::os::unix::net::UnixListener;
     use std::path::Path;
     use std::process::ExitCode;
     use std::sync::atomic::AtomicBool;
@@ -25,7 +22,7 @@ mod linux {
     use ntfs_mount::grants::GrantStore;
     use ntfs_mount::protocol::SOCKET_PATH;
     use ntfs_mount::service::linux::{Config, LinuxBackend, check_volume};
-    use ntfs_mount::service::{Service, peer, server};
+    use ntfs_mount::service::{Service, server};
 
     const GRANTS_DIR: &str = "/var/lib/tilo/ntfs-mount/grants";
 
@@ -53,36 +50,10 @@ mod linux {
         }
     }
 
-    /// The listening socket: the one systemd passes (`tilo-ntfs-mount.socket`),
-    /// or one bound here when started by hand.
-    fn listener() -> std::io::Result<UnixListener> {
-        use std::os::fd::FromRawFd;
-        let activated = std::env::var("LISTEN_PID")
-            .ok()
-            .and_then(|pid| pid.parse::<u32>().ok())
-            == Some(std::process::id())
-            && std::env::var("LISTEN_FDS").as_deref() == Ok("1");
-        if activated {
-            // SAFETY: systemd passes the socket as descriptor 3 and nothing
-            // else in this process has claimed it.
-            let listener = unsafe { UnixListener::from_raw_fd(3) };
-            // Helpers must never inherit it.
-            // SAFETY: setting a flag on the descriptor just adopted.
-            unsafe { libc::fcntl(3, libc::F_SETFD, libc::FD_CLOEXEC) };
-            return Ok(listener);
-        }
-        let socket = Path::new(SOCKET_PATH);
-        let _ = fs::remove_file(socket);
-        let listener = tilo_files::native::socket::bind(socket)?;
-        // Who may ask what is decided per connection, from the kernel's
-        // account of the caller; the socket itself is open to every local
-        // process.
-        fs::set_permissions(socket, fs::Permissions::from_mode(0o666))?;
-        Ok(listener)
-    }
-
     fn serve() -> ExitCode {
-        let listener = match listener() {
+        // SAFETY: called at startup before any thread is spawned, so nothing
+        // else touches the environment while systemd activation is adopted.
+        let listener = match unsafe { peer_facts::server::listen(Path::new(SOCKET_PATH)) } {
             Ok(listener) => listener,
             Err(error) => {
                 eprintln!("tilo-ntfs-mount: listening on {SOCKET_PATH}: {error}");
@@ -96,11 +67,7 @@ mod linux {
         server::serve(
             &listener,
             &mut service,
-            |stream| {
-                peer::facts(stream)
-                    .map_err(|error| format!("unidentified caller: {error}"))
-                    .and_then(|facts| policy.decide(&facts))
-            },
+            |stream| peer_facts::server::identify_peer(stream, |facts| policy.decide(facts)),
             server::Pacing {
                 housekeeping: Duration::from_secs(5),
                 idle_exit: Some(Duration::from_secs(60)),

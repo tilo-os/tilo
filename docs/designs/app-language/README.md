@@ -171,6 +171,14 @@ replayed writes no second one.
 What a notice says is words a person reads: its `title` and `body` are messages of the action,
 translated in the package's catalogues like the text of a view (`d-<action>.w-<word>`).
 
+`clipboard.copy(text)`, `clipboard.copy_image(file)`, `clipboard.paste()` and
+`clipboard.paste_image()` are the person's clipboard. A copy is theirs: it reaches their device
+and stays there as a copy of theirs, kept in their history and on their other devices like one
+they made in an app. A paste reads what is on the clipboard now, as an `Option<Text>` or an
+`Option<File>` — an image the device keeps for the app once pasted. An action that copies or
+pastes declares `uses clipboard`; a view does neither, since it is drawn again from what it is
+shown.
+
 ```
 action remind(t: Task) uses notify {
     notify(
@@ -207,6 +215,24 @@ resource is made. It calls no action, since each action is a change of its own; 
 it needs itself, and each item it inserts starts with its own type's initial content in the same
 change. Content that would make itself again (a `Book` that starts with a `Book`) is refused.
 Nothing invokes an initial action by name, and no surface offers it.
+
+A field of a record type holds a reference. When a resource is made without it (a root, or
+`Clocks()` inserted without `stopwatch:`), it starts holding a record of its own, built from its
+type's defaults: `type Clocks { stopwatch: Stopwatch }` reads `clocks.stopwatch.elapsed` as `0`
+from the start. That record is kept in the holder's document, so it has the same readers,
+history, sync and removal. It is the same record on every device that makes the holder. The
+checker refuses it where the making leaves the field out and the record cannot start on its own:
+a field of it has no default, it would hold itself again, or it belongs to another app.
+
+## Events
+
+A handler (`on activate(x: Calculation): ...`) is data the host fills with the event's value
+when it fires, never a closure. An action on a resource takes that value as it is
+(`open(x)`), so what it is called with is what the person chose. A `set` of
+the view's own declared state may compute from it, with field reads and `fn` calls:
+`set(expr, x.expr).then(set(fresh, false))` loads a past calculation into the editor. The new
+value is a function the runtime runs at the press, so it uses no action. View state is the
+person's presentation, so this never changes a resource outside an action.
 
 ## Opening
 

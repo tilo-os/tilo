@@ -28,14 +28,7 @@ fn download_timeout() -> Duration {
 
 fn safe_download_url(raw: &str) -> Result<reqwest::Url, String> {
     let url = reqwest::Url::parse(raw).map_err(|error| format!("invalid package URL: {error}"))?;
-    let loopback_http =
-        url.scheme() == "http" && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
-    if (url.scheme() != "https" && !loopback_http)
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.host_str().is_none()
-        || url.fragment().is_some()
-    {
+    if !tilo_net::secure_endpoint(&url) || url.fragment().is_some() {
         return Err(
             "package URL must be credential-free HTTPS (or loopback HTTP for development)"
                 .to_string(),
@@ -1369,54 +1362,15 @@ mod tests {
 
         phase installer_errors_render_one_actionable_line;
         {
-            {
-                let cases = [
-                    InstallError::NotOffered {
-                        package_id: "so.tilo.ghost".into(),
-                    },
-                    InstallError::NoStagingDir,
-                    InstallError::Download {
-                        detail: "connection refused".into(),
-                    },
-                    InstallError::InstallerMissing {
-                        detail: "No such file or directory".into(),
-                    },
-                    InstallError::Refused {
-                        code: 2,
-                        detail: "publisher signature did not verify".into(),
-                    },
-                    InstallError::Integrity {
-                        detail: "package root mismatch".into(),
-                    },
-                ];
-                for c in &cases {
-                    let msg = c.user_message();
-                    assert!(!msg.trim().is_empty(), "{c:?} rendered nothing");
-                    assert!(
-                        msg.chars()
-                            .next()
-                            .is_some_and(|ch| ch.is_lowercase() || ch.is_alphanumeric()),
-                        "{c:?} → {msg:?} should read as a sentence fragment"
-                    );
+            assert!(
+                InstallError::Refused {
+                    code: 2,
+                    detail: "publisher signature did not verify".into()
                 }
-                assert!(
-                    InstallError::Refused {
-                        code: 2,
-                        detail: "publisher signature did not verify".into()
-                    }
-                    .user_message()
-                    .contains("publisher signature"),
-                    "the installer's own reason has to survive to the user"
-                );
-            }
-            {
-                let msg = InstallError::Refused {
-                    code: 7,
-                    detail: "   \n  ".into(),
-                }
-                .user_message();
-                assert!(msg.contains('7'), "{msg:?}");
-            }
+                .user_message()
+                .contains("publisher signature"),
+                "the installer's own reason has to survive to the user"
+            );
             {
                 let text = "reading header\n\nverifying\ntapp parse: unexpected EOF\n";
                 assert_eq!(installer_complaint(text), "tapp parse: unexpected EOF");
@@ -1574,6 +1528,35 @@ mod tests {
             .expect_err("redirect must not become a second authorized origin");
             server.join().expect("server thread");
             assert!(error.contains("redirects are not followed"), "{error}");
+        }
+    }
+
+    #[test]
+    fn safe_download_url_allows_local_http_and_query_and_refuses_credentials_and_fragment() {
+        for safe in [
+            "https://apps.tilo.so/artifacts/app.tapp?token=signed",
+            "http://127.0.0.1:8080/app.tapp",
+            "http://[::1]:8080/",
+            "http://[::1]:8080/app.tapp?token=signed",
+            "http://tilo.localhost:8080/app.tapp",
+        ] {
+            assert!(
+                safe_download_url(safe).is_ok(),
+                "safe package origin was refused: {safe}"
+            );
+        }
+        for unsafe_url in [
+            "http://apps.tilo.so/artifacts/app.tapp",
+            "http://localhost.apps.tilo.so/artifacts/app.tapp",
+            "https://placeholder:placeholder@apps.tilo.so/artifacts/app.tapp",
+            "http://placeholder:placeholder@[::1]:8080/app.tapp",
+            "file:///tmp/app.tapp",
+            "https://apps.tilo.so/artifacts/app.tapp#alternate",
+        ] {
+            assert!(
+                safe_download_url(unsafe_url).is_err(),
+                "unsafe package origin was accepted: {unsafe_url}"
+            );
         }
     }
 

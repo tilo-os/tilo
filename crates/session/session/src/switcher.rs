@@ -32,9 +32,9 @@ pub(crate) fn show(
     locked: bool,
     sizes: &std::collections::HashMap<u64, (u32, u32)>,
 ) -> bool {
-    if locked {
-        walk.hide(Overlay::Switcher);
+    if locked || (walk.switcher_up() && crate::windows::switcher_walk_empty(handle, walk)) {
         walk.forget_walk();
+        walk.hide(Overlay::Switcher);
     }
     // A flick shorter than the panel's reveal delay shows nothing, and costs no reading of the
     // shell's windows.
@@ -179,7 +179,7 @@ mod tests {
             view: String::new(),
             pinned: false,
         });
-        let tree = tilo_desktop_surface::seed_tree(&mut minter, "Shell", tabs.into());
+        let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Shell", tabs.into());
         let (surface, handle) = tilo_desktop_surface::DesktopSurface::new(tree, 5, Box::new(Blank));
         (WindowWalk::new(handle), surface)
     }
@@ -188,8 +188,8 @@ mod tests {
     fn walked(walk: &WindowWalk) -> (Vec<String>, Option<usize>, Option<usize>) {
         walk.handle.read(|tree| {
             let windows = crate::windows::windows(tree, &walk.handle);
-            let (walked, front) = crate::windows::walked(&windows, walk.walk.scope());
-            let reached = crate::windows::reaching(&walk.walk, &windows)
+            let (walked, front) = crate::windows::walked(&windows, tree.active, walk.walk.scope());
+            let reached = crate::windows::reaching(&walk.walk, &windows, tree.active)
                 .and_then(|at| walked.iter().position(|place| *place == at));
             let titles = walked
                 .iter()

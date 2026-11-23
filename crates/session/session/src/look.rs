@@ -2,7 +2,7 @@
 //! whoever reads the shell — an agent, a test, a script.
 //!
 //! The shell publishes the two read actions of such a window
-//! (`tilo_desktop_surface::window`); the picture itself is made here, where
+//! (`tilo_session_core::desktop::window`); the picture itself is made here, where
 //! the compositor is, by the same read-back window sharing captures with,
 //! and kept in the workspace's content store under the address every caller
 //! of the action protocol reads content by. The surface that names the

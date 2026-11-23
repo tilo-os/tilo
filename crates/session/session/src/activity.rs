@@ -20,15 +20,15 @@ use durable_store::{DurableStore, StorageKey, WriteOp};
 use serde_json::Value;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_desktop_surface::HistorySource;
-use tilo_desktop_surface::activity::describer::{Describer, Job};
-use tilo_desktop_surface::activity::{
+use tilo_desktop_surface::session::{ActivityRequests, activity_requests};
+use tilo_lock::MutexRecover as _;
+use tilo_session_core::desktop::activity::describer::{Describer, Job};
+use tilo_session_core::desktop::activity::{
     ActivityHost, ActivitySnapshot, DetachedRecordHistory, HistoryOrigin, TaskRunDocument,
     TaskRunUndo, WorkspaceDeparture, WorkspaceSeenFrontier, morning,
 };
 #[cfg(target_os = "linux")]
-use tilo_desktop_surface::history_log;
-use tilo_desktop_surface::session::{ActivityRequests, activity_requests};
-use tilo_lock::MutexRecover as _;
+use tilo_session_core::desktop::history_log;
 
 use crate::activity_provider::ActivityWire;
 
@@ -36,10 +36,13 @@ use crate::activity_provider::ActivityWire;
 /// history: what each membership operation did, and what each device row names its device.
 pub struct GovernanceValues;
 
-impl tilo_desktop_surface::activity::GovernanceReader for GovernanceValues {
-    fn membership(&self, op: &[u8]) -> Option<tilo_desktop_surface::activity::MembershipWrite> {
-        use tilo_desktop_surface::activity::MembershipWrite;
+impl tilo_session_core::desktop::activity::GovernanceReader for GovernanceValues {
+    fn membership(
+        &self,
+        op: &[u8],
+    ) -> Option<tilo_session_core::desktop::activity::MembershipWrite> {
         use tilo_peer_state::members::{MembershipOpCommand, SignedMembershipOp};
+        use tilo_session_core::desktop::activity::MembershipWrite;
         let (_, op) = SignedMembershipOp::verified_stored(op).ok()?;
         Some(match &op.command {
             MembershipOpCommand::Project { changes } => MembershipWrite::Changes(changes.clone()),
@@ -503,7 +506,7 @@ impl Activity {
         steps: Vec<(String, String)>,
     ) -> Result<(), String> {
         let Some(api) = self.0.api.borrow().as_ref().map(Arc::clone) else {
-            return Err(tilo_desktop_surface::i18n::t(
+            return Err(tilo_session_core::desktop::i18n::t(
                 "activity-undo-task-unavailable",
             ));
         };
@@ -1067,7 +1070,7 @@ impl ActivityHost for Host {
         #[cfg(target_os = "linux")]
         {
             let Some(api) = self.0.api.borrow().as_ref().map(Arc::clone) else {
-                return Err(tilo_desktop_surface::i18n::t(
+                return Err(tilo_session_core::desktop::i18n::t(
                     "activity-undo-task-unavailable",
                 ));
             };
@@ -1086,7 +1089,7 @@ impl ActivityHost for Host {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = undo;
-            Err(tilo_desktop_surface::i18n::t(
+            Err(tilo_session_core::desktop::i18n::t(
                 "activity-undo-task-unavailable",
             ))
         }
@@ -1258,8 +1261,9 @@ mod tests {
     use tilo_actions::remote::{Caller, InvokeArgument, PendingPoll};
     use tilo_desktop_model::commands::DesktopCommand;
     use tilo_desktop_model::{IdMinter, Tab, TileContent};
-    use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect};
-    use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
+    use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
+    use tilo_session_core::desktop::navigation::{ActivityView, ChromeEffect};
+    use tilo_session_core::desktop::seed_tree;
     use ui::widget::TileHost;
 
     /// What a test session's tabs say. Nothing the session would start.
@@ -1592,7 +1596,7 @@ mod tests {
     /// its own.
     fn seeded(workspace: &str) -> Session {
         Session::seeded(|minter, notes| {
-            tilo_desktop_surface::seed_tree_in(
+            tilo_session_core::desktop::seed_tree_in(
                 minter,
                 WorkspaceId::parse(workspace).expect("a workspace id"),
                 "Workspace",

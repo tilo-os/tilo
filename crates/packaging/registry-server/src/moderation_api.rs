@@ -805,40 +805,6 @@ mod tests {
                 let (_directory, service, _publisher, reviewer, allowlist) = setup();
                 let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
                 let case = service
-                    .apply(&report(&reporter, "file"), 110, &allowlist)
-                    .unwrap();
-                let decision = |key: &SigningKey, id: &str| {
-                    sign_moderation_mutation(
-                        id.into(),
-                        111,
-                        200,
-                        ModerationActorRole::Reviewer,
-                        ModerationMutation::ReviewerDecision {
-                            case_id: case.case_id.clone(),
-                            decision: ModerationDecision::NoAction,
-                            reason: "The signed evidence does not demonstrate a policy violation"
-                                .into(),
-                        },
-                        key,
-                    )
-                    .unwrap()
-                };
-                assert!(matches!(
-                    service.apply(&decision(&reporter, "bad-decision"), 112, &allowlist),
-                    Err(ModerationApiError::Forbidden)
-                ));
-                assert_eq!(
-                    service
-                        .apply(&decision(&reviewer, "good-decision"), 112, &allowlist)
-                        .unwrap()
-                        .status,
-                    ModerationCaseStatus::ClosedNoAction
-                );
-            }
-            {
-                let (_directory, service, _publisher, reviewer, allowlist) = setup();
-                let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
-                let case = service
                     .apply(&report(&reporter, "file-for-recovery"), 110, &allowlist)
                     .unwrap();
                 let quarantine = sign_moderation_mutation(

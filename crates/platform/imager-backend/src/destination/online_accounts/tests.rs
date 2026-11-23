@@ -318,7 +318,7 @@ tilo_test_env::scenario! {
         until(|| !controller.worker_alive.load(Ordering::Acquire));
         assert!(controller.poll() == AccountsStatus::Ready);
         assert!(controller.selected().is_empty());
-        assert!(!accounts::store_path_in(&controller.root).exists());
+        assert!(!accounts::person::staged_path_in(&controller.root).exists());
         assert!(!accounts::vault_dir_in(&controller.root).exists());
     }
 
@@ -331,7 +331,7 @@ tilo_test_env::scenario! {
         controller.command(AccountsCommand::Cancel).unwrap();
         assert!(controller.poll() == AccountsStatus::Ready);
         assert!(controller.selected().is_empty());
-        assert!(!accounts::store_path_in(&controller.root).exists());
+        assert!(!accounts::person::staged_path_in(&controller.root).exists());
     }
 
     phase dropping_a_pending_authorization_closes_the_listener_and_removes_ownership;

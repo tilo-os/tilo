@@ -170,19 +170,28 @@ pub fn dispatch(args: &[String]) -> Option<std::process::ExitCode> {
 
 #[cfg(target_os = "linux")]
 fn run_from_env() -> std::process::ExitCode {
-    use std::os::fd::{FromRawFd, OwnedFd};
-    let Some(fd) = std::env::var(broker::BROKER_FD_ENV)
-        .ok()
-        .and_then(|fd| fd.parse::<i32>().ok())
-        .filter(|fd| *fd > 2)
-    else {
-        eprintln!("render service: {} names no socket", broker::BROKER_FD_ENV);
-        return std::process::ExitCode::FAILURE;
+    use std::os::fd::{AsFd as _, AsRawFd as _};
+    // The broker hands its socket over as stdin. Everything else this process inherited is
+    // closed, the socket is moved off stdin, and stdin becomes `/dev/null`.
+    confine::close_inherited(2);
+    let taken = std::io::stdin()
+        .as_fd()
+        .try_clone_to_owned()
+        .and_then(|socket| {
+            let null = std::fs::File::open("/dev/null")?;
+            // SAFETY: both are descriptors this process owns; nothing else in it reads stdin.
+            if unsafe { libc::dup2(null.as_raw_fd(), 0) } < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(socket)
+        });
+    let socket = match taken {
+        Ok(socket) => socket,
+        Err(error) => {
+            eprintln!("render service: its socket: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
     };
-    confine::close_inherited(fd);
-    // SAFETY: the broker started this process with its socket at `fd` and
-    // nothing else in the process owns that descriptor.
-    let socket = unsafe { OwnedFd::from_raw_fd(fd) };
     let broker = match Channel::from_socket(socket) {
         Ok(broker) => broker,
         Err(error) => {

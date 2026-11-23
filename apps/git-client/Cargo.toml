@@ -70,7 +70,7 @@ futures-util.workspace = true
 tokio = { workspace = true, features = ["process", "io-util", "sync", "macros"] }
 tempfile.workspace = true
 rcgen.workspace = true
-tilo-test-env = { path = "../../crates/dev/test-env", features = ["tokio"] }
+tilo-test-env = { path = "../../tools/test-env", features = ["tokio"] }
 
 [[test]]
 name = "it"

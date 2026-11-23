@@ -1,0 +1,68 @@
+[Unit]
+Description=This device's Tilo daemon, answering tilo-actions/1 from boot
+Documentation=https://code.tilo.so/tilo/tilo/src/branch/main/docs/architecture/core.md
+# The device's one daemon is the device's, not a signed-in person's: it serves
+# the device key from boot, so a device at the greeter, before its first
+# sign-in or in the middle of an update still answers actions. It opens the
+# workspaces of each person whose certificate names this device's key, from
+# its own copy of them under /var/lib/tilo/state, and is never handed a
+# person's own key.
+#
+# The key is made before sysinit by tilo-device-key-init.service, since the
+# filesystem daemon and the greeter read it before this starts, and a disk
+# copied from another machine is re-keyed by tilo-device-branch.service first.
+After=tilo-device-key-init.service tilo-device-branch.service network.target
+After=systemd-tmpfiles-setup.service
+ConditionPathExists=/usr/libexec/tilo/tilo-runtime
+ConditionPathExists=/var/lib/tilo/device-private/keypair.bin
+
+[Service]
+Type=exec
+User=tilo
+Group=tilo
+# Read access to the device key, and the certificates people give it.
+SupplementaryGroups=tilo-identity
+Environment=HOME=/var/lib/tilo/state
+Environment=TILO_RUNTIME_PROFILE=/var/lib/tilo/state
+# Its sockets, in /run/tilo: where its callers on this machine reach it.
+RuntimeDirectory=tilo
+ExecStart=/usr/libexec/tilo/tilo-runtime
+# A ticket a machine is set up with (`tilo device add` on one of the person's
+# devices), passed as a system credential: spent at the first start, while no
+# person's certificate names this device's key, and left alone after.
+ImportCredential=tilo.ticket
+# The UDP port the device's endpoint binds, for a machine reached through a
+# forward to it (a local VM's host forward: tilo-vm hands 7703). Without it the
+# port is iroh's choice, as on every other device.
+ImportCredential=tilo.port
+Restart=on-failure
+RestartSec=5
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/tilo/state
+# Where the certificates a person gives this device are filed.
+ReadWritePaths=/var/lib/tilo/device
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+# The endpoint binds UDP on every interface and watches them change.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

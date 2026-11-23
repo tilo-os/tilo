@@ -139,9 +139,6 @@ impl PreparedAccounts {
     pub fn entries(&self) -> &[PreparedEntry] {
         &self.entries
     }
-    pub fn destination_guard(&self) -> &DestinationGuard {
-        &self.guard
-    }
 }
 impl AccountActions {
     /// Capture the selected staged accounts under this action session's destination fence.

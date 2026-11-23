@@ -97,7 +97,6 @@ impl StatePeer {
             gathering: super::compaction_set::Gathering::default(),
             workspace_host: false,
             own_device: None,
-            refused_base: None,
             governance_now: None,
         })
     }

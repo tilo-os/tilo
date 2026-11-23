@@ -41,9 +41,7 @@ impl AppBrokerState {
             .acting()
             .person_id()
             .ok_or("native person required")?;
-        let workspace = caller
-            .workspace()
-            .ok_or("native personal cluster required")?;
+        let workspace = caller.workspace().ok_or("native own workspace required")?;
         let certificate = service.certificate(workspace, person)?;
         if super::person_id_for_root(certificate.user_public_key) != *person {
             return Err("native person certificate mismatch".into());
@@ -458,8 +456,8 @@ impl AppBrokerState {
             .as_ref()
             .ok_or("personal device certificate unavailable")?;
         let workspace = uuid::Uuid::parse_str(&checked.admission.workspace)
-            .map_err(|_| "personal cluster unavailable")?;
-        if !collab_types::is_personal_cluster(&certificate.user_public_key, &workspace)
+            .map_err(|_| "own workspace unavailable")?;
+        if !collab_types::is_person_workspace(&certificate.user_public_key, &workspace)
             || checked.effective.is_foreign_device()
             || checked.admission.admitted.agent_id.is_some()
         {

@@ -111,11 +111,10 @@ impl AppBrokerState {
             | WorkspaceMembershipCommand::Unshare { .. } => {
                 return Err("a share is its sharer's own, made at their device".into());
             }
-            WorkspaceMembershipCommand::Lease { .. } => {
+            WorkspaceMembershipCommand::Lease { .. }
+            | WorkspaceMembershipCommand::AnswerSchedule { .. }
+            | WorkspaceMembershipCommand::KeepDone { .. } => {
                 return Err("a lease is claimed by the device that does the work".into());
-            }
-            WorkspaceMembershipCommand::RevokeWorkDelegation { .. } => {
-                return Err("a member's delegation is revoked at the device that signed it".into());
             }
             WorkspaceMembershipCommand::InstallApp(_)
             | WorkspaceMembershipCommand::UninstallApp { .. } => {
@@ -123,6 +122,9 @@ impl AppBrokerState {
                     "a workspace's app version is chosen on its host, through the workspace's `install-app`"
                         .into(),
                 );
+            }
+            WorkspaceMembershipCommand::Call { .. } => {
+                return Err("a call is moderated through the workspace's `call` action".into());
             }
         };
         self.invoke_workspace_person_action(

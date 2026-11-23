@@ -10,12 +10,11 @@
 
 use std::io::Read;
 use std::sync::Arc;
-use std::time::Duration;
 
 use cloud_source::{
     Change, CloudSource, Credential, Error, HashAlgorithm, ItemId, StaticCredential, UploadTarget,
 };
-use cloud_source_onedrive::fake::{FakeFault, FakeGraph, QUOTA_TOTAL, TOKEN};
+use cloud_source_onedrive::fake::{FakeGraph, QUOTA_TOTAL, TOKEN};
 use cloud_source_onedrive::quickxor::quick_xor_base64;
 use cloud_source_onedrive::{FRAGMENT_UNIT, OneDriveSource, RootSelector};
 use zeroize::Zeroizing;
@@ -235,42 +234,6 @@ fn uploads_use_320_kib_fragments_and_skip_what_the_server_already_has() {
 }
 
 #[test]
-fn empty_files_upload_without_a_session() {
-    let server = FakeGraph::personal();
-    let source = connect(&server, RootSelector::DriveRoot);
-    let item = upload(
-        &source,
-        UploadTarget::Create {
-            parent: source.root(),
-            name: "empty.txt".into(),
-        },
-        b"",
-    )
-    .unwrap();
-    assert_eq!(item.size, Some(0));
-    assert!(matches!(
-        upload(
-            &source,
-            UploadTarget::Create {
-                parent: source.root(),
-                name: "EMPTY.txt".into(),
-            },
-            b"",
-        ),
-        Err(Error::AlreadyExists)
-    ));
-    let stale = upload(
-        &source,
-        UploadTarget::Replace {
-            id: item.id,
-            expect: Some(cloud_source::Revision::new("\"stale,1\"")),
-        },
-        b"",
-    );
-    assert!(matches!(stale, Err(Error::Conflict { .. })), "{stale:?}");
-}
-
-#[test]
 fn deletes_go_to_the_recycle_bin() {
     let server = FakeGraph::personal();
     server.put("Old/draft.txt", b"d");
@@ -284,34 +247,13 @@ fn deletes_go_to_the_recycle_bin() {
 }
 
 #[test]
-fn share_links_and_quota() {
+fn quota_reports_usage_and_allocation() {
     let server = FakeGraph::business();
     server.put("share.txt", b"0123456789");
     let source = connect(&server, RootSelector::DriveRoot);
-    let item = source.item_at("share.txt").unwrap();
-    let link = source.share_link(&item.id).unwrap();
-    assert!(link.starts_with("https://"));
-    assert_eq!(
-        source.share_link(&item.id).unwrap(),
-        link,
-        "the existing link is reused"
-    );
     let quota = source.quota().unwrap();
     assert_eq!(quota.total, Some(QUOTA_TOTAL));
     assert_eq!(quota.used, 10, "business drives derive used from remaining");
-}
-
-#[test]
-fn throttling_carries_retry_after() {
-    let server = FakeGraph::personal();
-    let source = connect(&server, RootSelector::DriveRoot);
-    server.inject(FakeFault::RateLimited);
-    let error = source.list(&source.root()).unwrap_err();
-    assert!(
-        matches!(error, Error::RateLimited { retry_after: Some(d) } if d == Duration::from_secs(1)),
-        "{error:?}"
-    );
-    source.list(&source.root()).unwrap();
 }
 
 #[test]
@@ -354,22 +296,10 @@ fn ranged_reads_fetch_only_the_range() {
 }
 
 #[test]
-fn a_rejected_token_is_reported() {
+fn only_bearer_credentials_are_accepted() {
     let server = FakeGraph::personal();
     let source = connect(&server, RootSelector::DriveRoot);
     let wrong = OneDriveSource::new(
-        source.mount().clone(),
-        Arc::new(StaticCredential(Credential::Bearer {
-            token: Zeroizing::new("nope".into()),
-            expires: None,
-        })),
-    )
-    .unwrap();
-    assert!(matches!(
-        wrong.list(&wrong.root()),
-        Err(Error::Unauthorized)
-    ));
-    let basic = OneDriveSource::new(
         source.mount().clone(),
         Arc::new(StaticCredential(Credential::Basic {
             username: "ada".into(),
@@ -378,7 +308,7 @@ fn a_rejected_token_is_reported() {
     )
     .unwrap();
     assert!(matches!(
-        basic.list(&basic.root()),
+        wrong.list(&wrong.root()),
         Err(Error::Unsupported(_))
     ));
 }

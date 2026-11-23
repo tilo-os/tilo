@@ -12,9 +12,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use durable_store::{
-    Durability, DurableStore as _, Lease, ReadyWake, Revision, StorageKey, WriteOp,
-};
+use durable_store::{DurableStore as _, Lease, Revision, StorageKey, WriteOp};
 
 /// The workspace in front and the displays' partition ([`crate::device_state`]).
 pub(crate) const SHOWN: &str = "so.tilo.session-shown";
@@ -24,8 +22,6 @@ pub(crate) const WORKSPACES: &str = "so.tilo.session-workspaces";
 pub(crate) const PENDING_LAYOUT: &str = "so.tilo.session-pending-layout";
 /// What the person's devices answered to an unlock ([`crate::unlock_history`]).
 pub(crate) const UNLOCK: &str = "so.tilo.session-unlock";
-/// When each scheduled shortcut fires next ([`crate::automation::triggers`]).
-pub(crate) const SCHEDULES: &str = "so.tilo.session-schedules";
 /// The picture each workspace on this device shows ([`crate::wallpapers`]).
 pub(crate) const WALLPAPERS: &str = "so.tilo.session-wallpapers";
 /// What the notification centre held when the session ended ([`crate::notifications`]).
@@ -159,16 +155,6 @@ impl Kept {
             };
         }
         lease.is_some()
-    }
-
-    /// What became of the write that returned `revision`.
-    pub(crate) fn durability(&self, revision: Revision) -> Durability {
-        self.store.durability(&self.key, revision)
-    }
-
-    /// Call `wake` once what was written so far has committed or failed.
-    pub(crate) fn wake_when_settled(&self, wake: ReadyWake) {
-        let _ = self.store.wake_when_settled(&self.key, wake);
     }
 }
 

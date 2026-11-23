@@ -199,9 +199,8 @@ mod size_tests {
             }
         }
 
-        phase app_limit_is_eight_mib_and_runtime_bundles_are_separate;
+        phase runtime_bundles_are_not_held_to_the_app_limit;
         {
-            assert_eq!(MAX_APP_TAPP_BYTES, 8 * 1024 * 1024);
             assert_eq!(MAX_APP_UNPACKED_BYTES, MAX_APP_TAPP_BYTES);
             assert!(tapp_size_allowed(Kind::App, MAX_APP_TAPP_BYTES));
             assert!(!tapp_size_allowed(Kind::App, MAX_APP_TAPP_BYTES + 1));

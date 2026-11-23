@@ -66,7 +66,7 @@ workspace-hack = { version = "0.1" }
 remote-samples = { package = "remote", path = ".", features = ["samples"] }
 tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 
 [lints]
 workspace = true

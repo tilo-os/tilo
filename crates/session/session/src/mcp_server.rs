@@ -40,8 +40,8 @@ use tilo_action_policy::Lifetime;
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
-    ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
+    ConfirmedInvocation, ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_compositor::ReadableWatch;
 use tilo_desktop_surface::DesktopHandle;
@@ -555,7 +555,7 @@ impl Loop {
                             .find(|held| {
                                 !held.id().is_nil() && held.id().to_string() == ask.workspace
                             })
-                            .map(|held| tilo_desktop_surface::names::workspace(&held.name))
+                            .map(|held| tilo_session_core::desktop::names::workspace(&held.name))
                     })
                     .ok_or_else(|| word("mcp-server-no-workspace"))?;
                 let (agent, name) = members(&ask.workspace, &ask.client)?;
@@ -1285,6 +1285,15 @@ pub(crate) struct SessionServices {
     /// The shell's workspaces, as of the loop's last pass: each one's decimal id, name and the id it
     /// is shared under, by which an action names a workspace.
     workspaces: std::sync::Mutex<Vec<[String; 2]>>,
+    /// The workspaces on the shell this session is founding or about to found, by their id, as of
+    /// the loop's last pass: an ask of one of them waits for the founding and is delivered once it
+    /// lands, rather than refused for a workspace this device is making.
+    founding: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// The asks held for a workspace this session is founding, until the loop delivers them.
+    held: std::sync::Mutex<Vec<HeldFounding>>,
+    /// This session's engine, to tell a workspace this device holds from one it is founding even
+    /// between passes (a founding is under way while the loop waits for it).
+    engine: std::sync::OnceLock<Arc<tilo_session_client::engine::Engine>>,
     /// The apps whose records the session's services keep, the packages it runs itself: only
     /// their records are read and changed on the loop's pass. Every other app's are the
     /// workspace's, which a connection reads without waiting for a pass.
@@ -1297,6 +1306,21 @@ pub(crate) struct SessionServices {
     /// What changed in the records of the workspaces this device holds, for a watch of a whole
     /// workspace ([`crate::change_feed`]).
     changes: Arc<crate::change_feed::Feeds>,
+}
+
+/// An ask of a workspace this session is founding, held until the founding lands: the broker
+/// takes it then as it would have at the ask, so nothing of a workspace this device is making is
+/// refused or dropped.
+struct HeldFounding {
+    /// The workspace the ask names, by its id.
+    workspace: String,
+    caller: Caller,
+    request: InvokeRequest,
+    /// Whether the ask is the person at this device's own ([`Host::invoke_within`]).
+    local_person: bool,
+    /// The broker that would have taken it: the same one, once the workspace is the service's.
+    state: Option<Arc<AppBrokerState>>,
+    done: Completer<Result<InvocationReceipt, ActionCallError>>,
 }
 
 /// How often the loop reads again which workspaces wait for their host to admit this device: the
@@ -1376,6 +1400,9 @@ impl SessionServices {
             awaiting: std::sync::Mutex::default(),
             awaited_at: std::sync::Mutex::default(),
             changes: Arc::default(),
+            founding: std::sync::Mutex::default(),
+            held: std::sync::Mutex::default(),
+            engine: std::sync::OnceLock::new(),
         }
     }
 
@@ -1415,7 +1442,7 @@ impl SessionServices {
                     Some((
                         workspace.id().to_string(),
                         awaited_sentence(
-                            &tilo_desktop_surface::names::workspace(&workspace.name),
+                            &tilo_session_core::desktop::names::workspace(&workspace.name),
                             &host,
                         ),
                     ))
@@ -1435,6 +1462,105 @@ impl SessionServices {
     /// The session's services keep `app`'s records from now on.
     pub(crate) fn keep_records_of(&self, app: &str) {
         self.kept.lock_recover().insert(app.to_owned());
+    }
+
+    /// Keep this session's engine: what tells a workspace this device holds from one it is
+    /// founding, even between passes.
+    pub(crate) fn keep_engine(&self, engine: Arc<tilo_session_client::engine::Engine>) {
+        let _ = self.engine.set(engine);
+    }
+
+    /// Keep the workspaces this session is founding, as of the loop's last pass: an ask of one of
+    /// them waits for the founding ([`Self::hold_founding`]), and what waits is delivered when it
+    /// is no longer being founded ([`Self::release_founding`]).
+    pub(crate) fn keep_founding(&self, founding: std::collections::BTreeSet<String>) {
+        *self.founding.lock_recover() = founding;
+    }
+
+    /// Whether `workspace` is one this session is founding now: on the shell, made here, and not
+    /// this device's yet, or a founding of it under way.
+    pub(crate) fn founding_here(&self, workspace: &str) -> bool {
+        self.founding.lock_recover().contains(workspace)
+            || self
+                .engine
+                .get()
+                .is_some_and(|engine| founding_of(engine, workspace))
+    }
+
+    /// Hold an ask of the workspace `workspace` until this session's founding of it lands, and
+    /// answer the asker then: the broker takes it as it would have at the ask, so nothing of a
+    /// workspace this device is making is refused or dropped.
+    pub(crate) fn hold_founding(
+        &self,
+        workspace: String,
+        caller: Caller,
+        request: InvokeRequest,
+        local_person: bool,
+        state: Option<Arc<AppBrokerState>>,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let (done, answer) = tilo_actions::remote::pending();
+        self.held.lock_recover().push(HeldFounding {
+            workspace,
+            caller,
+            request,
+            local_person,
+            state,
+            done,
+        });
+        (self.wake)();
+        answer
+    }
+
+    /// Deliver every ask held for a workspace this session is no longer founding: as of the loop's
+    /// last pass it is this device's now, or the founding was given up, and the asker hears what
+    /// the broker says either way.
+    pub(crate) fn release_founding(&self) {
+        let mut ready = Vec::new();
+        {
+            let mut held = self.held.lock_recover();
+            let mut kept = Vec::with_capacity(held.len());
+            for ask in std::mem::take(&mut *held) {
+                if self.founding_here(&ask.workspace) {
+                    kept.push(ask);
+                } else {
+                    ready.push(ask);
+                }
+            }
+            *held = kept;
+        }
+        for ask in ready {
+            // The broker's answer waits on this session's loop for a launch to start, so it is
+            // taken off the loop, as every ask the broker takes is: the loop that holds the ask is
+            // the one that would have to answer it.
+            let deliver = async move {
+                let delivered = match (&ask.state, ask.local_person) {
+                    (Some(state), true) => {
+                        state.action_invoke_local_person(&ask.caller, &ask.request)
+                    }
+                    (Some(state), false) => {
+                        state.action_invoke(&ask.caller, None, None, &ask.request)
+                    }
+                    (None, _) => Pending::ready(Err(ActionCallError::Unavailable {
+                        reason: "this desktop's apps are not running here".to_owned(),
+                    })),
+                };
+                let done = ask.done;
+                delivered.then(move |answer| {
+                    if let Some(answer) = answer {
+                        done.complete(answer);
+                    }
+                });
+            };
+            match tilo_rt::try_app() {
+                Ok(runtime) => {
+                    runtime.spawn(deliver);
+                }
+                Err(error) => tracing::warn!(
+                    %error,
+                    "no task delivers an ask held for a workspace this session was founding"
+                ),
+            }
+        }
     }
 
     /// Keep where the shell's windows stand now, read from `handle` on the loop's pass.
@@ -1461,7 +1587,7 @@ impl SessionServices {
                 .map(|workspace| {
                     [
                         workspace.id().to_string(),
-                        tilo_desktop_surface::names::workspace(&workspace.name),
+                        tilo_session_core::desktop::names::workspace(&workspace.name),
                     ]
                 })
                 .collect()
@@ -1479,7 +1605,7 @@ impl SessionServices {
     /// Whether the shell's window `resource` (`desktop:tab:<tab>`) stands in a workspace other than
     /// `workspace`: a window the shell no longer knows is no one's.
     fn window_elsewhere(&self, resource: &str, workspace: &str) -> bool {
-        tilo_desktop_surface::window::resource_tab(resource).is_some_and(|tab| {
+        tilo_session_core::desktop::window::resource_tab(resource).is_some_and(|tab| {
             self.tabs
                 .lock_recover()
                 .get(&tab)
@@ -1993,6 +2119,22 @@ impl Host {
         // Every other step of an admitted agent's is its session's.
         if !person && let Some(agent) = &self.agent {
             return agent.invoke(caller, request);
+        }
+        // An ask of a workspace this session is founding on its own service lands once the
+        // workspace is the service's: the ask waits for the founding, as one of a workspace this
+        // device joined waits for its enrollment, and is delivered then. It is never refused for a
+        // workspace this device is making, and never dropped.
+        if let Some(workspace) = tilo_actions::remote::provider_workspace(&request.target.provider)
+            .or_else(|| app_provider_workspace(&request.target.provider))
+            && self.session.founding_here(workspace)
+        {
+            return self.session.hold_founding(
+                workspace.to_owned(),
+                caller.clone(),
+                request,
+                as_local_person,
+                self.state.clone(),
+            );
         }
         match &self.state {
             Some(state) if as_local_person => state.action_invoke_local_person(caller, &request),
@@ -2746,6 +2888,11 @@ fn app_provider_workspace(provider: &str) -> Option<&str> {
     (!workspace.is_empty()).then_some(workspace)
 }
 
+/// Whether a founding of `workspace` is under way on `engine` now, for a provider naming it by id.
+fn founding_of(engine: &tilo_session_client::engine::Engine, workspace: &str) -> bool {
+    tilo_desktop_model::WorkspaceId::parse(workspace).is_some_and(|id| engine.is_founding(id))
+}
+
 /// Why nothing of `workspace` (its id) runs here yet: the shell holds it, but `engine` has not been
 /// admitted to it by its host ([`awaited_sentence`]). `None` once admitted, for a workspace the shell
 /// does not hold, or one that is no workspace's id.
@@ -2761,7 +2908,7 @@ pub(crate) fn awaited_reason(
             tree.workspaces
                 .iter()
                 .find(|held| held.id() == id)
-                .map(|held| tilo_desktop_surface::names::workspace(&held.name))
+                .map(|held| tilo_session_core::desktop::names::workspace(&held.name))
         })
         .unwrap_or_else(|| workspace.to_owned());
     Some(awaited_sentence(&name, &host))

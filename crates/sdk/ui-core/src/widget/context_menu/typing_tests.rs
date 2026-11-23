@@ -248,6 +248,42 @@ fn a_sentence_no_row_answers_is_sent_from_the_box_in_the_menus_place() {
     // One Escape puts the box away, and nothing of the menu is left.
     dispatch(&mut menu, &named_key(NamedKey::Escape));
     assert!(!menu.send_to().is_open() && !menu.is_open());
+
+    // Send pressed by assistive technology or an agent sends once and ends
+    // the box, as a press of the pointer does: nothing of the box stays drawn
+    // over the window after its message left.
+    crate::shared_selection::set_send_host_available(true);
+    let _ = crate::shared_selection::take_send_to();
+    let ran = Rc::new(RefCell::new(Vec::new()));
+    let mut menu = context_menu(&ran);
+    menu.set_about(Some(crate::shared_selection::SharedSelection::of_text(
+        "Report.pdf",
+    )));
+    menu.open_at([120.0, 80.0]);
+    menu.set_query("summarise this for Ana");
+    dispatch(&mut menu, &named_key(NamedKey::Enter));
+    crate::shared_selection::set_send_host_available(false);
+    assert!(
+        menu.send_to().is_open(),
+        "the box opened in the menu's place"
+    );
+    let mut doc = automerge::AutoCommit::new();
+    assert!(Widget::perform_semantic_action(
+        &mut menu,
+        "send-to:send",
+        &crate::a11y::Action::Activate,
+        &mut crate::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+    ));
+    assert_eq!(
+        crate::shared_selection::take_send_to().len(),
+        1,
+        "the message left, once"
+    );
+    assert!(
+        !menu.send_to().is_open() && !menu.is_open(),
+        "and the box went with the menu"
+    );
 }
 
 #[test]
@@ -274,8 +310,10 @@ fn an_owner_that_answers_typing_takes_the_sentence_itself() {
     assert!(!menu.is_open());
 }
 
+/// A menu of a few commands is read at a glance: no field over it. A menu a
+/// button not the context-menu gesture opened takes no typing either.
 #[test]
-fn a_menu_of_a_few_commands_opens_as_a_plain_list() {
+fn a_short_menu_takes_no_typing_and_adds_no_row() {
     crate::shared_selection::set_send_host_available(false);
     note_input(&crate::synthetic_input::mouse_input(
         ElementState::Pressed,
@@ -296,10 +334,7 @@ fn a_menu_of_a_few_commands_opens_as_a_plain_list() {
     );
     assert_eq!(menu.items().len(), 3, "and the menu adds no row");
     assert_eq!(menu.shown_rows(), &[0, 1, 2], "every command is shown");
-}
 
-#[test]
-fn a_menu_a_button_opened_takes_no_typing() {
     crate::shared_selection::set_send_host_available(true);
     note_input(&crate::synthetic_input::mouse_input(
         ElementState::Pressed,
@@ -313,44 +348,5 @@ fn a_menu_a_button_opened_takes_no_typing() {
     assert!(
         !dispatch(&mut menu, &char_key("s")),
         "a typed key is not its"
-    );
-}
-
-/// Send pressed by assistive technology or an agent sends once and ends the box, as a press of the
-/// pointer does: nothing of the box stays drawn over the window after its message left.
-#[test]
-fn a_send_pressed_by_its_name_ends_the_box() {
-    crate::shared_selection::set_send_host_available(true);
-    let _ = crate::shared_selection::take_send_to();
-    let ran = Rc::new(RefCell::new(Vec::new()));
-    let mut menu = context_menu(&ran);
-    menu.set_about(Some(crate::shared_selection::SharedSelection::of_text(
-        "Report.pdf",
-    )));
-    menu.open_at([120.0, 80.0]);
-    menu.set_query("summarise this for Ana");
-    dispatch(&mut menu, &named_key(NamedKey::Enter));
-    crate::shared_selection::set_send_host_available(false);
-    assert!(
-        menu.send_to().is_open(),
-        "the box opened in the menu's place"
-    );
-
-    let mut doc = automerge::AutoCommit::new();
-    assert!(Widget::perform_semantic_action(
-        &mut menu,
-        "send-to:send",
-        &crate::a11y::Action::Activate,
-        &mut crate::widget::Edits::lend(&mut doc),
-        &automerge::ROOT,
-    ));
-    assert_eq!(
-        crate::shared_selection::take_send_to().len(),
-        1,
-        "the message left, once"
-    );
-    assert!(
-        !menu.send_to().is_open() && !menu.is_open(),
-        "and the box went with the menu"
     );
 }

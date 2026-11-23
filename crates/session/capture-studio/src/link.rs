@@ -9,12 +9,13 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use tilo_sheets::{Presentation, SheetState};
 use ui::vello::kurbo::Rect;
 use ui::widget::{
-    AudioCaptureMode, CaptureDestination, CapturePreview, CaptureTarget, RegionAnchor,
-    ScreenshotKept, ScreenshotSendDevice, SourceMode,
+    AudioCaptureMode, CaptureDestination, CapturePreview, CaptureTarget, MarkupExport,
+    RegionAnchor, ScreenshotKept, ScreenshotSendDevice, SourceMode,
 };
 
 /// How a capture is made: what of the desktop, and which parts of it.
@@ -76,6 +77,18 @@ pub struct Recording {
     /// Frames the encoder was too far behind to take so far: the file is
     /// shorter by them, and the person is told.
     pub skipped: u64,
+}
+
+/// A screenshot's pixels, handed to the markup editor once: the file it is
+/// the marks of, and the picture they are drawn on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MarkupImage {
+    /// The screenshot file the editor marks up: the receipt of the picture it
+    /// keeps says what that is.
+    pub path: PathBuf,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Arc<[u8]>,
 }
 
 /// A recording that ended, while its receipt says what it made.
@@ -177,6 +190,8 @@ pub enum Failure {
     NotCopied(String),
     /// A screenshot could not be read back for the clipboard, and why.
     NotRead(String),
+    /// A screenshot could not be read back to mark it up, and why.
+    NotMarked(String),
     /// A clip of what just happened could not be saved, and why.
     ClipNotSaved(String),
     /// A capture could not be opened in the person's app for it, and why.
@@ -383,6 +398,15 @@ pub enum Ask {
     Reveal(PathBuf),
     /// Copy the last screenshot to the clipboard again.
     CopyLast,
+    /// Open the markup editor on the last screenshot: its pixels come back
+    /// as the picture the editor draws on, and the studio comes up to show
+    /// it.
+    AnnotateLast,
+    /// Keep the picture the markup editor made as the last screenshot, with
+    /// its own file and receipt, as a capture the person took does.
+    SaveMarkup(MarkupExport),
+    /// Put the picture the markup editor made on the clipboard.
+    CopyMarkup(MarkupExport),
     /// Offer the last screenshot to one of the person's other devices, by its
     /// [`Scene::devices`] id.
     SendLastTo(String),
@@ -398,6 +422,9 @@ struct Shared {
     /// What the studio opens on when something outside it opened it: the
     /// shell, for an app that asked for a capture.
     opens_on: Option<ui::widget::CaptureMode>,
+    /// The picture the markup editor draws on, once: the session reads it
+    /// back off the last screenshot's file.
+    markup: Option<MarkupImage>,
     wake: Option<ui::WakeHandle>,
 }
 
@@ -468,6 +495,20 @@ impl Link {
     #[must_use]
     pub fn take_open_on(&self) -> Option<ui::widget::CaptureMode> {
         self.shared.borrow_mut().opens_on.take()
+    }
+
+    /// Hand the markup editor the picture `image` draws on, and wake the
+    /// studio for it.
+    pub fn open_markup(&self, image: MarkupImage) {
+        self.shared.borrow_mut().markup = Some(image);
+        self.wake();
+    }
+
+    /// The picture the markup editor is to draw on, once: nothing after it
+    /// took it.
+    #[must_use]
+    pub fn take_markup(&self) -> Option<MarkupImage> {
+        self.shared.borrow_mut().markup.take()
     }
 
     /// Wake the studio when the session hands it a new scene.
@@ -581,6 +622,26 @@ mod tests {
             assert!(scene.system_audio);
             assert_eq!(scene.replay, Some(12));
             assert!(!studio.presentation().is_drawn(), "closed until opened");
+        }
+
+        phase the_picture_the_markup_editor_draws_on_is_handed_over_once;
+        {
+            let link = Link::new();
+            assert_eq!(link.take_markup(), None, "nothing read back yet");
+            link.open_markup(MarkupImage {
+                path: PathBuf::from("/home/person/Pictures/Screenshots/shot.png"),
+                width: 2,
+                height: 1,
+                rgba: Arc::from(vec![0_u8; 8]),
+            });
+            let image = link.take_markup().expect("the picture the editor draws on");
+            assert_eq!((image.width, image.height), (2, 1));
+            assert_eq!(
+                image.path,
+                PathBuf::from("/home/person/Pictures/Screenshots/shot.png"),
+                "the editor knows which screenshot it marks up"
+            );
+            assert_eq!(link.take_markup(), None, "taken once");
         }
     }
 }

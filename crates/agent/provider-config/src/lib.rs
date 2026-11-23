@@ -540,6 +540,24 @@ impl ModelDescriptor {
         self.context_window
             .map_or(declared, |context| declared.min(context))
     }
+
+    /// How many characters of conversation this model reads at once, by what its descriptor
+    /// knows of its context, about four characters a token; a model that says nothing reads a
+    /// generous default. A turn keeps its conversation within this bound so that a small local
+    /// window is never overflowed.
+    #[must_use]
+    pub fn context_chars(&self) -> usize {
+        let tokens = self
+            .request_limits
+            .as_ref()
+            .and_then(|limits| limits.runtime_context_tokens)
+            .or(self.context_window)
+            .unwrap_or(128_000);
+        let headroom = tokens.saturating_sub(self.max_output_tokens.unwrap_or(8_192));
+        usize::try_from(headroom)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(3)
+    }
 }
 
 /// A configured model-provider endpoint.
@@ -601,9 +619,68 @@ pub struct ProviderProfile {
     /// lists none: its models are typed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub models_path: Option<String>,
+    /// Headers sent with every request to this provider beside its key: what
+    /// a provider asks of each call, such as the organisation or workspace a
+    /// key with access to several bills (`anthropic-workspace-id`,
+    /// `openai-organization`). They are settings, shown wherever the provider
+    /// is, never secrets: the key has its own place, and
+    /// [`ProviderHeader::check`] refuses the headers the key and the protocol
+    /// own.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<ProviderHeader>,
 }
 
 settings_store::read_through_json_value!(ProviderProfile);
+
+/// One header a provider is sent with every request ([`ProviderProfile::headers`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ProviderHeader {
+    pub name: String,
+    pub value: String,
+}
+
+/// Headers a provider's own settings may not send: the ones its key travels in, the
+/// protocol's version, and the ones the HTTP client writes itself.
+const OWNED_HEADERS: &[&str] = &[
+    "authorization",
+    "x-api-key",
+    "api-key",
+    "anthropic-version",
+    "host",
+    "content-type",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "cookie",
+];
+
+impl ProviderHeader {
+    /// Whether this header may be sent as a provider's setting.
+    ///
+    /// # Errors
+    /// The words a person reads: a name that is no HTTP header name, one the key or the
+    /// protocol sends, or a value no header can carry.
+    pub fn check(&self) -> Result<(), String> {
+        let name = self.name.trim();
+        let token = |byte: u8| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte);
+        if name.is_empty() || !name.bytes().all(token) {
+            return Err(format!("{name:?} is not the name of a header"));
+        }
+        if OWNED_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
+            return Err(format!(
+                "{name} is sent by Tilo itself: the provider's key has its own setting"
+            ));
+        }
+        if !self
+            .value
+            .bytes()
+            .all(|byte| byte == b'\t' || (b' '..=b'~').contains(&byte))
+        {
+            return Err(format!("The value of {name} cannot be sent in a header"));
+        }
+        Ok(())
+    }
+}
 
 /// The request header an API key travels in ([`ProviderProfile::key_header`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -733,6 +810,7 @@ impl Default for ProviderProfile {
             openai_api: None,
             key_header: None,
             models_path: None,
+            headers: Vec::new(),
         }
     }
 }
@@ -768,6 +846,7 @@ impl ProviderProfile {
             openai_api: None,
             key_header: None,
             models_path: None,
+            headers: Vec::new(),
         }
     }
 
@@ -794,6 +873,7 @@ impl ProviderProfile {
             openai_api: None,
             key_header: None,
             models_path: None,
+            headers: Vec::new(),
         }
     }
 
@@ -825,6 +905,7 @@ impl ProviderProfile {
             openai_api: None,
             key_header: None,
             models_path: None,
+            headers: Vec::new(),
         }
     }
 

@@ -163,6 +163,12 @@ impl LocalPort {
 
 impl Port for LocalPort {
     fn command(&self, command: Command) -> Result<Reply, String> {
+        // A workspace on this device alone: every turn is this device's.
+        if let Command::Turn { answer, .. } = command {
+            return Ok(Reply::Turn(
+                answer.map_or(wire::Turn::Take, wire::Turn::Done),
+            ));
+        }
         if command.writes() {
             let written = wire::write(&mut self.store.borrow_mut(), command);
             return match written {

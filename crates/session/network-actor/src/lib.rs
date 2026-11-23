@@ -3395,10 +3395,8 @@ fn host_event(
         HostInbound::DocumentOpened { channel, answer } => {
             HostEvent::DocumentOpened { channel, answer }
         }
-        // Nothing here holds these: a call's audio is the session's, carried
-        // by the server session the call itself holds, and a host keeps what a
-        // link's store kept.
-        HostInbound::Voice(_) | HostInbound::Committed { .. } => return None,
+        // A host keeps what a link's store kept.
+        HostInbound::Committed { .. } => return None,
         HostInbound::CommitRefused { refusal, .. } => {
             tracing::warn!(ws = %ws, host = %host, %refusal, "the host did not keep a sealed write");
             return None;

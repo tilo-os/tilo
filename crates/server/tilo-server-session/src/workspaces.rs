@@ -250,8 +250,26 @@ pub const UNHOST_WORKSPACE: &str = "workspace.unhost";
 /// Take in what the store of the asking device, one the workspace names among
 /// those keeping it, keeps of `workspace` and this host's store lacks, over the
 /// workspace's device link: what a device that hands a workspace over, or lets
-/// it go, waits for before it does. Answers a [`CaughtUpWorkspace`].
+/// it go, waits for before it does. Arguments `workspace`, `names_content`,
+/// and the content the asking device keeps none of itself: listed in
+/// `absent`, or, with `absent_parts`, as it handed the list before with
+/// [`CATCH_UP_ABSENT`]. Answers a [`CaughtUpWorkspace`]: with `cursor_pages`,
+/// its cursors in pages, the first here and the rest from
+/// [`CATCH_UP_STANDING`].
 pub const CATCH_UP_WORKSPACE: &str = "workspace.catch-up";
+/// Hand part of the list of content the asking device, one keeping
+/// `workspace`, keeps none of itself (`absent`), which its next
+/// [`CATCH_UP_WORKSPACE`] with `absent_parts` counts as the whole list. With
+/// `first` the part starts the list afresh, and an empty first part lets the
+/// list go. A list too long for one ask's frame goes in parts, each well
+/// within it. Answers `{"kept": count}`, how many addresses the list holds.
+pub const CATCH_UP_ABSENT: &str = "workspace.catch-up.absent";
+/// Where the answering host's store of `workspace` stands on the lineages
+/// after `after` (a lineage, postcard in hex), as the device keeping it that
+/// asked [`CATCH_UP_WORKSPACE`] reads the rest of its answer's cursors: a
+/// store keeps a lineage per record and author, more than one frame carries.
+/// Answers a [`StandingPage`].
+pub const CATCH_UP_STANDING: &str = "workspace.catch-up.standing";
 /// The person's whole workspace list, as one of their own devices keeps it
 /// here: argument `list`, a [`PersonalList`] naming each workspace of theirs,
 /// wherever it is hosted (one of their desktops, a paired device, a server),
@@ -517,6 +535,20 @@ pub struct CaughtUpWorkspace {
     /// follow content it fetched.
     #[serde(default)]
     pub fetched: bool,
+    /// Whether the store stands on more lineages than `cursors` names: the
+    /// rest are read with [`CATCH_UP_STANDING`], after the last one named.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub more_cursors: bool,
+}
+
+/// What [`CATCH_UP_STANDING`] answers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StandingPage {
+    /// Where the answering host's store stands on the lineages after the one
+    /// asked for, in lineage order: a cursor per lineage, postcard in hex.
+    pub cursors: String,
+    /// Whether it stands on more lineages after the last one named.
+    pub more: bool,
 }
 
 /// One workspace a server governs, as its host actions answer it.

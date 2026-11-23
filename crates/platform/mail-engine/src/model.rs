@@ -15,8 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
-use ui::icons::Icon;
-use ui::tilo_resource::{self, JsonSchema, Model};
+use tilo_resource::{JsonSchema, Model};
 use uuid::Uuid;
 
 pub use accounts::email::{AccountConfig, AuthMethod};
@@ -26,7 +25,7 @@ pub type MessageId = Uuid;
 /// Minutes since the Unix epoch, the unit a message's timestamps are kept in.
 #[must_use]
 pub fn now_minutes() -> i64 {
-    (ui::time::unix_now() / 60) as i64
+    (tilo_clock::unix_now() / 60) as i64
 }
 
 #[derive(
@@ -64,18 +63,6 @@ impl Folder {
             Folder::Archive => "mail-folder-archive",
             Folder::Trash => "mail-folder-trash",
             Folder::Junk => "mail-folder-junk",
-        }
-    }
-
-    pub fn icon(self) -> Icon {
-        match self {
-            Folder::Inbox => Icon::Inbox,
-            Folder::Starred => Icon::Star,
-            Folder::Sent => Icon::Send,
-            Folder::Drafts => Icon::Pencil,
-            Folder::Archive => Icon::Archive,
-            Folder::Trash => Icon::Trash,
-            Folder::Junk => Icon::Ban,
         }
     }
 
@@ -217,29 +204,6 @@ impl Attachment {
 
     pub fn is_downloadable(&self) -> bool {
         self.hydrated && (!self.content.is_empty() || self.kept || self.apart)
-    }
-
-    pub fn size_human(&self) -> String {
-        ui::format::size(self.size)
-    }
-
-    pub fn icon(&self) -> Icon {
-        let m = self.mime.to_ascii_lowercase();
-        if m.starts_with("image/") {
-            Icon::Image
-        } else if m.contains("pdf") || m.starts_with("text/") {
-            Icon::FileText
-        } else if m.contains("zip")
-            || m.contains("compressed")
-            || m.contains("tar")
-            || m.contains("gzip")
-        {
-            Icon::Archive
-        } else if m.contains("calendar") {
-            Icon::Calendar
-        } else {
-            Icon::Paperclip
-        }
     }
 }
 
@@ -515,6 +479,14 @@ impl Mailbox {
 
     pub fn get(&self, id: MessageId) -> Option<&Message> {
         self.messages.get(&id)
+    }
+
+    /// A message its server no longer holds leaves the mailbox.
+    pub fn remove(&mut self, id: MessageId) {
+        if self.messages.remove(&id).is_some() {
+            self.order.retain(|kept| *kept != id);
+            self.touch_search_revision();
+        }
     }
 
     /// The messages loaded since this was last asked, oldest first.

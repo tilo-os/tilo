@@ -507,11 +507,12 @@ fn a_short_display_keeps_the_card_the_grid_and_the_chosen_emoji_inside_it() {
 }
 
 #[test]
-fn narrow_tones_wrap_inside_the_card_at_the_emoji_cell_size() {
+fn narrow_tones_wrap_inside_the_card_and_walk_row_by_row_to_a_pick() {
     let window = window(false);
     let _in = window.scope.enter();
     let theme = Theme::light();
-    let picker = tones_opened(Rect::new(0.0, 0.0, 240.0, 360.0), &theme);
+    let card = Rect::new(0.0, 0.0, 240.0, 360.0);
+    let mut picker = tones_opened(card, &theme);
     let tones = picker.tones.as_ref().expect("the skin tones");
     assert!(
         contains(picker.rect(), tones.rect),
@@ -529,15 +530,7 @@ fn narrow_tones_wrap_inside_the_card_at_the_emoji_cell_size() {
         assert_eq!(cell.width(), picker.geometry.cell);
         assert_eq!(cell.height(), picker.geometry.cell);
     }
-}
 
-#[test]
-fn wrapped_tones_walk_row_by_row_and_the_last_one_picks() {
-    let window = window(false);
-    let _in = window.scope.enter();
-    let theme = Theme::dark();
-    let card = Rect::new(0.0, 0.0, 240.0, 360.0);
-    let mut picker = tones_opened(card, &theme);
     let columns = usize_of_f64(
         ((picker.rect().width() - 2.0 * f64::from(theme.tokens.spacing.s1)) / picker.geometry.cell)
             .floor(),

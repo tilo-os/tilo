@@ -1,0 +1,97 @@
+{
+  "app": "workspace-settings",
+  "said": "The workspace's settings",
+  "family": "shell",
+  "live": "rust",
+  "apps": "file-explorer chat settings terminal",
+  "rust": {},
+  "tl": {
+    "session_args": [
+      "--shell",
+      "screen"
+    ]
+  },
+  "steps": [
+    {
+      "id": "signed-in",
+      "said": "Sign in: the desktop is there, nothing open, nothing over it",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "state": {
+            "chrome.session_locked": false,
+            "chrome.overlays.search": false,
+            "chrome.overlays.overview": false,
+            "chrome.overlays.strips": false,
+            "chrome.overlays.quick-settings": false,
+            "chrome.overlays.centre": false
+          }
+        },
+        {
+          "windows": 0
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "open",
+      "said": "Open the workspace's settings: its name and members",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "desktop:chrome",
+            "workspace-settings"
+          ]
+        },
+        {
+          "must": [
+            "Workspace settings",
+            "Workspace name",
+            "General",
+            "Agents",
+            "Apps & files",
+            "Privacy & security",
+            "Create invite",
+            "Leave",
+            "Delete"
+          ]
+        }
+      ],
+      "dark": true,
+      "budget_ms": 10000
+    },
+    {
+      "id": "rename",
+      "said": "Rename the workspace: the new name shows on the desktop",
+      "ops": [
+        {
+          "click": "Workspace name"
+        },
+        {
+          "chord": [
+            "Control",
+            "a"
+          ]
+        },
+        {
+          "type": "Lisbon trip"
+        },
+        {
+          "key": "Enter"
+        },
+        {
+          "key": "Escape"
+        },
+        {
+          "must": [
+            "Lisbon trip"
+          ]
+        }
+      ],
+      "budget_ms": 10000
+    }
+  ]
+}

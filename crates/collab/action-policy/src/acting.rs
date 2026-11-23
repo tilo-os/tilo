@@ -91,6 +91,8 @@ impl<'a> Authority<'a> {
                         );
                     }
                 },
+                // A visitor holds what the workspace opens to any key, and nothing else.
+                Actor::Visitor(_) => others.push(policy.party_of(Grantee::AnyKey)),
                 Actor::Automation(_) if owned => {}
                 // An app acting by itself holds no person's grants.
                 Actor::Automation(_) | Actor::App(_) => others.push(Party::default()),

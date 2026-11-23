@@ -2,6 +2,7 @@
 //! one it refuses is answered failed, with why, never as saved. Asked of the
 //! server by a person's logged-in computer over its session, and written by a
 //! device itself.
+use super::agent_mcp::tool;
 use super::api_on_server::OnServer;
 use super::resource_support::{admit_person, open_admitted_peer};
 use super::*;
@@ -12,31 +13,6 @@ use tilo_session_actions::SessionActions;
 
 const TASKS: &str = "so.tilo.tasks";
 const CALENDAR: &str = "so.tilo.calendar";
-
-/// What a tool call answers, and whether it failed.
-async fn tool(server: &McpServer<SessionActions>, name: &str, arguments: Value) -> (String, bool) {
-    let answer = server
-        .handle(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                       "params": {"name": name, "arguments": arguments}}))
-        .await
-        .expect("a call is answered");
-    let result = &answer["result"];
-    let text = result["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|block| block["text"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    (
-        if text.is_empty() {
-            answer.to_string()
-        } else {
-            text
-        },
-        result["isError"] == true || answer.get("error").is_some(),
-    )
-}
 
 /// The person's logged-in computer, over the one session its device holds,
 /// asks the server to make tasks as the person: each is done once the

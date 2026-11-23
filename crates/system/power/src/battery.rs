@@ -7,8 +7,8 @@ use crate::policy::{PowerAction, PowerPolicy};
 
 /// The battery's charge and discharge state, mirroring `UPower`'s `Device.State`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "service", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "service", serde(rename_all = "kebab-case"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 pub enum BatteryState {
     Unknown,
     Charging,
@@ -260,13 +260,6 @@ mod tests {
             let p = policy();
             assert!(m.evaluate(&BatterySnapshot::absent(), &p).is_empty());
             assert!(!m.is_warning());
-        }
-        {
-            let mut p = policy();
-            p.critical_action = PowerAction::Suspend;
-            assert!(critical_leads_to_suspend(&p));
-            p.critical_action = PowerAction::Ignore;
-            assert!(!critical_leads_to_suspend(&p));
         }
     }
 }

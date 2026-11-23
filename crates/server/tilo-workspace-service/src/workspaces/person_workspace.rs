@@ -143,7 +143,8 @@ pub async fn apply_on<R: Resource>(
         (app, name),
         Some(start),
         |doc| {
-            let mut replica = Replica::<R>::from_doc(std::mem::take(doc));
+            let mut replica = Replica::<R>::from_doc(std::mem::take(doc))
+                .as_invoker(&hex::encode(cert.user_public_key));
             // This device's own actor: the genesis is one actor's change
             // already, and two devices continuing it under that actor would
             // make one sequence with two different changes.

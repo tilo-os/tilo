@@ -5,7 +5,7 @@ use crate::setup::{
     flatpak_transfer::portable::{NativeOfflineRunner, StageGrant, StorageRequirement},
     portable_transfer::Observer,
 };
-use std::{os::fd::AsRawFd, os::unix::fs::DirBuilderExt};
+use std::os::unix::fs::DirBuilderExt;
 const RECEIPT_RESERVE: u64 = 128 * 1024;
 fn checked_sum(values: &[u64]) -> io::Result<u64> {
     values.iter().try_fold(0u64, |sum, value| {
@@ -22,15 +22,12 @@ fn available(required: u64, reservation: u64) -> io::Result<()> {
     let output =
         PinnedDirectory::open_absolute(Path::new(launcher::owned_service::CAPTURE_OUTPUT_PATH))?;
     output.validate_destination()?;
-    let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::fstatvfs(output.file.as_raw_fd(), &raw mut stats) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let stats = rustix::fs::fstatvfs(&output.file)?;
     let free = stats
         .f_bavail
         .checked_mul(stats.f_frsize)
         .ok_or_else(|| failure("Applications-only free space overflows"))?;
-    if stats.f_flag & libc::ST_RDONLY != 0 || required > free {
+    if stats.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY) || required > free {
         return Err(failure(
             "Selected applications output and scratch space unavailable",
         ));

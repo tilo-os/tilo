@@ -4,8 +4,6 @@
 //! opens nothing to them: what it names is refused them as any read of it is, and its person
 //! reads on.
 use super::*;
-use tilo_peer_state::join::decode_and_verify_invitation;
-use tilo_server::{workspace_join::WorkspaceJoinClient, workspaces::IssueInvitationRequest};
 use ui::permissions::policy::{ActionKind, Answer, Grant, Grantee, KindSet, TreePath};
 
 /// Admit `device`'s person to `workspace` as an editor, by an invitation its server issues, as
@@ -15,42 +13,15 @@ async fn admit(
     workspace: &str,
     device: &crate::support::Device,
 ) {
-    let governor = workspaces.governor().clone();
-    let invitation = workspaces
-        .issue(
-            workspace,
-            &governor,
-            IssueInvitationRequest {
-                request_id: device.cert.device_public_key,
-                role: tilo_peer_state::join::Role::Editor,
-                recipient_user_public_key: Some(device.cert.user_public_key),
-                invitee_name: Some("Bo".into()),
-                inviter_name: None,
-                expires_at_ns: tilo_clock::unix_now_ns()
-                    .checked_add(600_000_000_000)
-                    .unwrap(),
-            },
-        )
-        .await
-        .unwrap();
-    let verified = decode_and_verify_invitation(
-        &invitation.signed_invitation,
-        None,
-        &tilo_user_identity::RevocationList::new(),
-        tilo_clock::unix_now_ns(),
+    crate::workspace_actions::resource_support::admit_with(
+        workspaces,
+        workspaces.governor(),
+        workspace,
+        device,
+        tilo_peer_state::join::Role::Editor,
+        "Bo",
     )
-    .unwrap();
-    let endpoint = test_server::endpoint(iroh::SecretKey::from_bytes(&device.key.to_bytes())).await;
-    WorkspaceJoinClient::new(endpoint)
-        .redeem_hint(
-            verified.grant().transport.first().unwrap(),
-            invitation.signed_invitation.clone(),
-            device.cert.clone(),
-            &device.key,
-            device.cert.device_public_key,
-        )
-        .await
-        .unwrap();
+    .await;
 }
 
 /// An agent shows its person the document it wrote, live. Another member reads that document

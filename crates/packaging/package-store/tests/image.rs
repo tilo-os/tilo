@@ -132,6 +132,24 @@ fn sealed_runtime(identity: &SigningIdentity) -> (tempfile::TempDir, Packed) {
     )
 }
 
+/// A system store that installed `image`, and a Store over an empty user
+/// store reading it as its system. The two directories stay alive with the
+/// store.
+fn system_installed(image: &Packed) -> (tempfile::TempDir, tempfile::TempDir, Store) {
+    let system = scratch();
+    PackageStore::at(system.path())
+        .install_image(
+            full_tapp(image).as_slice(),
+            |_| Ok(Admission::default()),
+            None,
+        )
+        .unwrap();
+    let user = scratch();
+    let store = Store::new(PackageStore::at(user.path()))
+        .with_system(package_store::Layout::new(system.path()));
+    (system, user, store)
+}
+
 fn mode(path: &Path) -> u32 {
     std::fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
@@ -370,17 +388,7 @@ tilo_test_env::scenario! {
     {
         let ci = SigningIdentity::generate();
         let (_source, runtime) = sealed_runtime(&ci);
-        let system = scratch();
-        PackageStore::at(system.path())
-            .install_image(
-                full_tapp(&runtime).as_slice(),
-                |_| Ok(Admission::default()),
-                None,
-            )
-            .unwrap();
-        let user = scratch();
-        let store = Store::new(PackageStore::at(user.path()))
-            .with_system(package_store::Layout::new(system.path()));
+        let (_system, user, store) = system_installed(&runtime);
         let source = materialized_tree(&store, &runtime.meta.id).unwrap();
         let local = package_store::local_materialized_tree(&store, &runtime.meta.id).unwrap();
         assert!(local.starts_with(user.path()));
@@ -435,17 +443,7 @@ tilo_test_env::scenario! {
     {
         let ci = SigningIdentity::generate();
         let (_source, runtime) = sealed_runtime(&ci);
-        let system = scratch();
-        PackageStore::at(system.path())
-            .install_image(
-                full_tapp(&runtime).as_slice(),
-                |_| Ok(Admission::default()),
-                None,
-            )
-            .unwrap();
-        let user = scratch();
-        let store = Store::new(PackageStore::at(user.path()))
-            .with_system(package_store::Layout::new(system.path()));
+        let (_system, _user, store) = system_installed(&runtime);
         let source = materialized_tree(&store, &runtime.meta.id).unwrap();
         std::fs::set_permissions(
             source.join("usr/bin/bash"),
@@ -917,6 +915,24 @@ fn forget_materialized_image(store: &PackageStore, id: PackageId) {
     std::fs::remove_dir_all(store.layout().meta_dir(id)).unwrap();
 }
 
+/// A system store that installed `image`, and a user store that did too and
+/// then lost its materialised tree: the state an update or a rollback leaves,
+/// where the user copy's content must come back from the system's tree.
+fn system_and_cached_user(image: &Packed) -> (tempfile::TempDir, PackageStore, tempfile::TempDir) {
+    let admit = |_: &tilo_app_package::PackageMeta| Ok(Admission::default());
+    let system = scratch();
+    PackageStore::at(system.path())
+        .install_image(full_tapp(image).as_slice(), admit, None)
+        .unwrap();
+    let user = scratch();
+    let packages = PackageStore::at(user.path());
+    packages
+        .install_image(full_tapp(image).as_slice(), admit, None)
+        .unwrap();
+    forget_materialized_image(&packages, image.meta.id);
+    (system, packages, user)
+}
+
 tilo_test_env::scenario! {
     #[cfg(target_os = "linux")]
     fn local_overlay_reuses_cached_content;
@@ -931,24 +947,7 @@ tilo_test_env::scenario! {
             &identity,
             runtime_with_large_blob,
         );
-        let system = scratch();
-        PackageStore::at(system.path())
-            .install_image(
-                full_tapp(&image).as_slice(),
-                |_| Ok(Admission::default()),
-                None,
-            )
-            .unwrap();
-        let user = scratch();
-        let packages = PackageStore::at(user.path());
-        packages
-            .install_image(
-                full_tapp(&image).as_slice(),
-                |_| Ok(Admission::default()),
-                None,
-            )
-            .unwrap();
-        forget_materialized_image(&packages, image.meta.id);
+        let (system, packages, _user) = system_and_cached_user(&image);
         let watch = watch_staging(&packages.layout().tmp());
         let store = Store::new(packages).with_system(package_store::Layout::new(system.path()));
         let local = package_store::local_materialized_tree(&store, &image.meta.id).unwrap();
@@ -983,24 +982,7 @@ tilo_test_env::scenario! {
             &identity,
             runtime_with_two_large_blobs,
         );
-        let system = scratch();
-        PackageStore::at(system.path())
-            .install_image(
-                full_tapp(&image).as_slice(),
-                |_| Ok(Admission::default()),
-                None,
-            )
-            .unwrap();
-        let user = scratch();
-        let packages = PackageStore::at(user.path());
-        packages
-            .install_image(
-                full_tapp(&image).as_slice(),
-                |_| Ok(Admission::default()),
-                None,
-            )
-            .unwrap();
-        forget_materialized_image(&packages, image.meta.id);
+        let (system, packages, _user) = system_and_cached_user(&image);
         let missing = image.meta.collection.entries["usr/lib64/missing.bin"];
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1060,26 +1042,8 @@ fn local_overlay_still_checks_modified_and_missing_source_with_cached_content() 
             &identity,
             runtime_with_large_blob,
         );
-        let system = scratch();
-        let source_store = PackageStore::at(system.path());
-        source_store
-            .install_image(
-                full_tapp(&image).as_slice(),
-                |_| Ok(Admission::default()),
-                None,
-            )
-            .unwrap();
-        let user = scratch();
-        let packages = PackageStore::at(user.path());
-        packages
-            .install_image(
-                full_tapp(&image).as_slice(),
-                |_| Ok(Admission::default()),
-                None,
-            )
-            .unwrap();
-        forget_materialized_image(&packages, image.meta.id);
-        let source = source_store
+        let (system, packages, _user) = system_and_cached_user(&image);
+        let source = PackageStore::at(system.path())
             .layout()
             .payload(image.meta.id)
             .join("usr/lib64/cached.bin");
@@ -1111,24 +1075,7 @@ fn local_overlay_refuses_corrupt_cached_bytes_and_reimports_truncated_ones() {
             &identity,
             runtime_with_large_blob,
         );
-        let system = scratch();
-        PackageStore::at(system.path())
-            .install_image(
-                full_tapp(&image).as_slice(),
-                |_| Ok(Admission::default()),
-                None,
-            )
-            .unwrap();
-        let user = scratch();
-        let packages = PackageStore::at(user.path());
-        packages
-            .install_image(
-                full_tapp(&image).as_slice(),
-                |_| Ok(Admission::default()),
-                None,
-            )
-            .unwrap();
-        forget_materialized_image(&packages, image.meta.id);
+        let (system, packages, user) = system_and_cached_user(&image);
         let expected = image.meta.collection.entries["usr/lib64/cached.bin"];
         let cached = stored_blob_file(user.path(), &expected);
         assert!(

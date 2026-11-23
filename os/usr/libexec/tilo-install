@@ -784,8 +784,11 @@ esac
 # Validate the friendly name before touching the target disk.
 "$STAGING_HANDOFF" check-device-label "$DEVICE_LABEL" || die "invalid --device-label"
 
-# Validate hostname (RFC-1123 label: letters/digits/hyphens, no edge hyphen).
+# Validate hostname (RFC-1123 label: 1-63 letters/digits/hyphens, no edge hyphen).
 [ -n "$HOSTNAME_VAL" ] || die "missing --hostname <name>"
+if [ "${#HOSTNAME_VAL}" -gt 63 ]; then
+  die "invalid hostname '$HOSTNAME_VAL' (use at most 63 characters)"
+fi
 case "$HOSTNAME_VAL" in
   -*|*-) die "invalid hostname '$HOSTNAME_VAL'" ;;
   *[!A-Za-z0-9-]*) die "invalid hostname '$HOSTNAME_VAL' (letters, digits, hyphens only)" ;;
@@ -1654,7 +1657,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
     unset PLAN_RECOVERY_KEY
     shred -u "$RECOVERY_CAPTURE" 2>/dev/null || rm -f "$RECOVERY_CAPTURE"
     chmod 0600 "$PLAN_RECOVERY_KEY_FILE"
-    log "  the disk's recovery key is kept root-only until the enrollment hands it to your devices"
+    log "  the disk's recovery key is kept root-only until this machine hands it to your devices"
   else
     "$DISK_ENCRYPT" enrol "$ENC_LUKS" --key-file "$ENC_KEYFILE" "${ENROL_ARGS[@]}" 2>&1
   fi
@@ -2462,9 +2465,17 @@ enrol_planned_server() {
   [ -x "$TILO_BIN" ] || die "the tilo command $TILO_BIN is missing"
   step "Joining this machine to one of your devices"
   TILO_IDENTITY_ROOT="$identity" XDG_STATE_HOME="$state" HOME="$state" \
-    "$TILO_BIN" login "$(tr -d '[:space:]' < "${TILO_TICKET:-/etc/tilo/ticket}")" \
-    --label "$HOSTNAME_VAL" 2>&1 \
+    "$TILO_BIN" login - --label "$HOSTNAME_VAL" < "${TILO_TICKET:-/etc/tilo/ticket}" 2>&1 \
     || die "this machine did not join your devices; its disk would need the recovery key at every boot"
+  # This machine keeps no copy of its disk's recovery key: the vault of the person's Servers
+  # workspace keeps it, handed over as this machine, now one of their devices. Without it the
+  # disk would have no key anyone could recover it with.
+  if [ -n "${PLAN_RECOVERY_KEY_FILE:-}" ]; then
+    step "Handing the disk's recovery key to your devices"
+    TILO_IDENTITY_ROOT="$identity" XDG_STATE_HOME="$state" HOME="$state" \
+      "$TILO_BIN" server keep-recovery-key "$PLAN_RECOVERY_KEY_FILE" 2>&1 \
+      || die "your devices did not keep this disk's recovery key; nothing could open the disk if its other factors failed"
+  fi
   # The login wrote into the installed /var as root from this live medium; label every file with
   # the policy path it will have there, so the server's own account and session can read it.
   while IFS= read -r -d '' written; do
@@ -2526,7 +2537,7 @@ if [ "$INSTALL_PLAN" -eq 1 ]; then
   phase sibling
   enrol_planned_sibling
   rm -f "${TILO_TICKET:-/etc/tilo/ticket}"
-  # The key reached the person's devices with the enrollment: this machine
+  # The key reached the person's devices as the machine joined them: this machine
   # keeps none, and its disk opens with their consent.
   [ -z "${PLAN_RECOVERY_KEY_FILE:-}" ] \
     || { shred -u "$PLAN_RECOVERY_KEY_FILE" 2>/dev/null || rm -f "$PLAN_RECOVERY_KEY_FILE"; }

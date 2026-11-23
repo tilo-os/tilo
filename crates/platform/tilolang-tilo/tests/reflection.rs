@@ -487,14 +487,15 @@ view topic_row(t: Topic) {
 }
 "#;
 
-fn shown(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
-    out.extend(node.props.values().filter_map(|value| match value {
-        Value::Text(text) => Some(text.clone()),
-        _ => None,
-    }));
-    for child in &node.children {
-        shown(child, out);
-    }
+fn shown(node: &tilolang_runtime::UiNode) -> Vec<String> {
+    crate::fixtures::nodes(node)
+        .into_iter()
+        .flat_map(|node| node.props.values())
+        .filter_map(|value| match value {
+            Value::Text(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn list_key(node: &tilolang_runtime::UiNode) -> Option<String> {
@@ -511,7 +512,7 @@ fn rows(view: &mut tilolang_runtime::ViewInstance, n: usize) -> Vec<String> {
     let mut out = Vec::new();
     for i in 0..n {
         if let Some(row) = view.row(&list, i).unwrap() {
-            shown(row, &mut out);
+            out.extend(shown(row));
         }
     }
     out.retain(|t| t.starts_with("topic "));

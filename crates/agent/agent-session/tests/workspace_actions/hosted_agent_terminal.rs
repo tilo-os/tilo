@@ -117,14 +117,14 @@ impl OnTheirServer {
         let address = tilo_server_client::ServerAddress::at(server.node_addr());
         let workspaces = server.workspaces().unwrap().clone();
         let workspace = workspaces.create("Team").await.unwrap().workspace;
-        let keeper = ada.verifying_key().to_bytes();
+        let acts_for = ada.verifying_key().to_bytes();
         assert!(
             workspaces
-                .name_person_everywhere(keeper, "Ada", tilo_clock::unix_now_ms())
+                .name_person_everywhere(acts_for, "Ada", tilo_clock::unix_now_ms())
                 .await
         );
         let page = Browser::open_at(&server, &browser, &holder, &workspace).await;
-        let person = hex::encode(keeper);
+        let person = hex::encode(acts_for);
         make_agent(&page, &workspaces, &workspace, &person, None).await;
         let model = ScriptedProvider::answering(Vec::new());
         workspaces.answer_models_with(model.clone());
@@ -136,7 +136,7 @@ impl OnTheirServer {
                         name: "Google",
                         protocol: ProviderProtocol::OpenAiCompatible,
                         endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
-                        key: Some("the-keepers-own-model-key"),
+                        key: Some("the-persons-own-model-key"),
                         models: &["gemini-main"],
                     },
                     true,
@@ -429,7 +429,7 @@ impl OnTheirServer {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_agent_allowed_to_execute_commands_does_unasked_until_its_keeper_takes_it_back() {
+async fn an_agent_allowed_to_execute_commands_does_unasked_until_its_person_takes_it_back() {
     Box::pin(allowed_commands_go_unasked()).await;
 }
 

@@ -112,19 +112,14 @@ fn a_package_file_installs_by_the_package_service_rule() {
     let revoked = app(&["install", &first, "--yes"]);
     assert!(!revoked.status.success(), "{}", text(&revoked));
     assert!(text(&revoked).contains("revoked"), "{}", text(&revoked));
-}
 
-tilo_test_env::scenario! {
-    fn package_files_install_by_rule;
-
-    phase file_only_options_refuse_a_repository_app;
-    {
-        let refused = app(&["install", "sheets", "--yes"]);
-        assert!(!refused.status.success());
-        assert!(
-            text(&refused).contains("--yes is for a package file"),
-            "{}",
-            text(&refused)
-        );
-    }
+    // The file-only options stay with a package file: a repository app asked
+    // for with `--yes` is refused rather than installed past the signature rule.
+    let refused = app(&["install", "sheets", "--yes"]);
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused).contains("--yes is for a package file"),
+        "{}",
+        text(&refused)
+    );
 }

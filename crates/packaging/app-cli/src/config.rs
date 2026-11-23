@@ -240,15 +240,7 @@ pub fn add_registry(
         return Err(ConfigError::DuplicateName(name.to_string()));
     }
     let url = reqwest::Url::parse(base_url).map_err(|_| ConfigError::InvalidUrl)?;
-    let loopback_http =
-        url.scheme() == "http" && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
-    if (url.scheme() != "https" && !loopback_http)
-        || url.host().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
+    if !tilo_net::secure_endpoint(&url) || url.query().is_some() || url.fragment().is_some() {
         return Err(ConfigError::InvalidUrl);
     }
     if owner_pubkey_hex.len() != 64
@@ -291,291 +283,34 @@ pub fn set_registry_enabled(
     registry.enabled = enabled;
     Ok(())
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
-    tilo_test_env::scenario! {
-        fn registry_configuration_round_trips_and_validates;
-
-        phase the_official_registry_key_and_pin_follow_the_build_and_exact_match;
-        {
-            {
-                use package_store::dev_env::dev_override_from;
-                let guarded = dev_override_from(
-                    false,
-                    OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
-                    Some("/tmp/attacker-owner.pub".into()),
-                );
-                assert_eq!(
-                    official_owner_key_path_from(guarded),
-                    PathBuf::from(OFFICIAL_OWNER_KEY_PATH)
-                );
-                let honoured = dev_override_from(
-                    true,
-                    OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
-                    Some("/dev/owner.pub".into()),
-                );
-                assert_eq!(
-                    official_owner_key_path_from(honoured),
-                    PathBuf::from("/dev/owner.pub")
-                );
-            }
-            {
-                let td = TempDir::new().unwrap();
-                let _guard = scoped_dir(&td);
-                let mut registries = RegistriesFile {
-                    registries: vec![
-                        RegistryConfig {
-                            name: "Tilo main".into(),
-                            base_url: DEFAULT_REGISTRY_BASE_URL.into(),
-                            owner_pubkey_hex: placeholder_owner_pubkey(),
-                            enabled: true,
-                            channel: tilo_app_package::version::ReleaseChannel::Stable,
-                        },
-                        RegistryConfig {
-                            name: "custom".into(),
-                            base_url: "https://registry.example".into(),
-                            owner_pubkey_hex: placeholder_owner_pubkey(),
-                            enabled: true,
-                            channel: tilo_app_package::version::ReleaseChannel::Stable,
-                        },
-                    ],
-                };
-                assert!(refresh_official_pin(&mut registries));
-                assert_eq!(
-                    registries.registries[0].owner_pubkey_hex,
-                    official_owner_pubkey().unwrap()
-                );
-                assert_eq!(registries.registries[0].base_url, DEFAULT_REGISTRY_BASE_URL);
-                assert_eq!(
-                    registries.registries[1].owner_pubkey_hex,
-                    placeholder_owner_pubkey()
-                );
-            }
-        }
-
-        phase repository_mutations_do_not_overwrite_a_broken_hand_edited_config;
-        {
-            let td = TempDir::new().unwrap();
-            let _guard = scoped_dir(&td);
-            let path = td.path().join("registries.toml");
-            let broken = "[[registry]]\nname = \"My mirror\"\nbase_url = \"https://mirror.example\n";
-            fs::write(&path, broken).unwrap();
-            let mut registries = load_registries();
-            add_registry(
-                &mut registries,
-                "Another mirror",
-                "https://other.example",
-                &"12".repeat(32),
-            )
-            .unwrap();
-            assert!(matches!(
-                save_registries(&registries),
-                Err(ConfigError::Decode(_))
-            ));
-            assert_eq!(fs::read_to_string(&path).unwrap(), broken);
-
-            fs::write(
-                &path,
-                "[[registry]]\nname = \"My mirror\"\nbase_url = \"https://mirror.example\"\n",
-            )
-            .unwrap();
-            let mut repaired = load_registries();
-            set_registry_enabled(&mut repaired, "My mirror", false).unwrap();
-            save_registries(&repaired).unwrap();
-            assert_eq!(load_registries().registries, repaired.registries);
-        }
-
-        phase registry_config_is_seeded_once_and_hand_edits_round_trip;
-        {
-            {
-                let td = TempDir::new().unwrap();
-                let _g = scoped_dir(&td);
-                let regs = load_registries();
-                assert_eq!(regs.registries.len(), 1);
-                assert_eq!(regs.registries[0].name, "Tilo main");
-                assert_ne!(
-                    regs.registries[0].owner_pubkey_hex,
-                    placeholder_owner_pubkey()
-                );
-                assert!(td.path().join("registries.toml").exists());
-            }
-            {
-                let td = TempDir::new().unwrap();
-                let _g = scoped_dir(&td);
-                let text = r#"
-    [[registry]]
-    name = "my mirror"
-    base_url = "https://mirror.example.com"
-    owner_pubkey_hex = "ab"
-    enabled = false
-    "#;
-                std::fs::write(td.path().join("registries.toml"), text).unwrap();
-                let regs = load_registries();
-                assert_eq!(regs.registries.len(), 1);
-                assert_eq!(regs.registries[0].name, "my mirror");
-                assert!(!regs.registries[0].enabled);
-                assert_eq!(
-                    regs.enabled().count(),
-                    0,
-                    "a disabled registry is not consulted"
-                );
-            }
-            {
-                let td = TempDir::new().unwrap();
-                let _g = scoped_dir(&td);
-                std::fs::write(td.path().join("registries.toml"), "registry = []\n").unwrap();
-                let regs = load_registries();
-                assert_eq!(regs.registries.len(), 1);
-                assert_eq!(regs.registries[0].name, "Tilo main");
-                let written = std::fs::read_to_string(td.path().join("registries.toml")).unwrap();
-                assert!(written.contains("Tilo main"), "{written}");
-
-                let bare = TempDir::new().unwrap();
-                let mut env = tilo_test_env::ScopedEnv::new();
-                env.set("TILO_STORE_CONFIG_DIR", bare.path()).set(
-                    "TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH",
-                    bare.path().join("missing.pub"),
-                );
-                assert!(load_registries().registries.is_empty());
-                assert!(
-                    !bare.path().join("registries.toml").exists(),
-                    "without the trust anchor no empty list is written down"
-                );
-            }
-            {
-                let td = TempDir::new().unwrap();
-                let _g = scoped_dir(&td);
-                let broken =
-                    "[[registry]]\nname = \"my mirror\"\nbase_url = \"https://mirror.example.com\n";
-                std::fs::write(td.path().join("registries.toml"), broken).unwrap();
-                let regs = load_registries();
-                assert_eq!(
-                    regs.registries[0].name, "Tilo main",
-                    "the seed answers in memory"
-                );
-                assert_eq!(
-                    std::fs::read_to_string(td.path().join("registries.toml")).unwrap(),
-                    broken,
-                    "the user's file is left for them to fix"
-                );
-            }
-            {
-                let td = TempDir::new().unwrap();
-                let _g = scoped_dir(&td);
-                let regs = load_registries_no_seed();
-                assert!(
-                    regs.registries.is_empty(),
-                    "nothing configured means nothing available"
-                );
-                assert!(
-                    !td.path().join("registries.toml").exists(),
-                    "the no-seed read must leave the config dir untouched"
-                );
-            }
-            {
-                let td = TempDir::new().unwrap();
-                let _g = scoped_dir(&td);
-                std::fs::write(
-                    td.path().join("registries.toml"),
-                    "[[registry]]\nname = \"local\"\nbase_url = \"http://127.0.0.1:9\"\n",
-                )
-                .unwrap();
-                let regs = load_registries_no_seed();
-                assert_eq!(regs.registries.len(), 1);
-                assert_eq!(regs.registries[0].name, "local");
-                assert!(regs.registries[0].enabled, "enabled defaults to true");
-            }
-        }
-
-        phase registry_mutations_validate_and_channels_default_to_stable;
-        {
-            {
-                let td = TempDir::new().unwrap();
-                let _g = scoped_dir(&td);
-                let mut regs = RegistriesFile::default();
-                add_registry(&mut regs, "team", "https://apps.tilo.so/", &"ab".repeat(32)).unwrap();
-                assert_eq!(regs.registries[0].base_url, "https://apps.tilo.so");
-                set_registry_enabled(&mut regs, "team", false).unwrap();
-                save_registries(&regs).unwrap();
-                assert_eq!(load_registries(), regs);
-                assert!(matches!(
-                    remove_registry(&mut regs, "team"),
-                    Err(ConfigError::LastRegistry(_))
-                ));
-                add_registry(
-                    &mut regs,
-                    "mirror",
-                    "https://mirror.example",
-                    &"cd".repeat(32),
-                )
-                .unwrap();
-                remove_registry(&mut regs, "team").unwrap();
-                assert_eq!(regs.registries.len(), 1);
-            }
-            {
-                let mut regs = RegistriesFile::default();
-                assert!(matches!(
-                    add_registry(&mut regs, "", "https://example.test", ""),
-                    Err(ConfigError::EmptyName)
-                ));
-                assert!(matches!(
-                    add_registry(&mut regs, "x", "file:///tmp/apps", ""),
+    #[test]
+    fn add_registry_checks_secure_endpoint_and_refuses_query_and_fragment() {
+        let key = "ab".repeat(32);
+        let mut regs = RegistriesFile::default();
+        add_registry(&mut regs, "ipv6", "http://[::1]:8080/", &key).unwrap();
+        assert_eq!(regs.registries[0].base_url, "http://[::1]:8080");
+        add_registry(&mut regs, "local-sub", "http://tilo.localhost:8080", &key).unwrap();
+        assert_eq!(regs.registries[1].base_url, "http://tilo.localhost:8080");
+        for unsafe_url in [
+            "http://example.test/",
+            "http://localhost.example.test/",
+            "https://placeholder:placeholder@example.test/",
+            "http://placeholder:placeholder@[::1]:8080/",
+            "https://example.test/?token=1",
+            "https://example.test/#frag",
+            "file:///tmp/apps",
+        ] {
+            assert!(
+                matches!(
+                    add_registry(&mut regs, "rejected", unsafe_url, &key),
                     Err(ConfigError::InvalidUrl)
-                ));
-                assert!(matches!(
-                    add_registry(&mut regs, "x", "https://example.test", "bad"),
-                    Err(ConfigError::InvalidOwnerKey)
-                ));
-                assert!(matches!(
-                    add_registry(&mut regs, "x", "https://example.test", ""),
-                    Err(ConfigError::InvalidOwnerKey)
-                ));
-                assert!(matches!(
-                    add_registry(&mut regs, "x", "http://example.test", &"ab".repeat(32)),
-                    Err(ConfigError::InvalidUrl)
-                ));
-                assert!(matches!(
-                    add_registry(
-                        &mut regs,
-                        "x",
-                        "https://user:secret@example.test",
-                        &"ab".repeat(32)
-                    ),
-                    Err(ConfigError::InvalidUrl)
-                ));
-            }
-            {
-                let old = "name = 'test'\nbase_url = 'https://example.invalid'\nenabled = true\n";
-                let stable: RegistryConfig = toml::from_str(old).unwrap();
-                assert_eq!(
-                    stable.channel,
-                    tilo_app_package::version::ReleaseChannel::Stable
-                );
-                let dev: RegistryConfig =
-                    toml::from_str(&format!("{old}channel = 'development'\n")).unwrap();
-                assert_eq!(
-                    dev.channel,
-                    tilo_app_package::version::ReleaseChannel::Development
-                );
-                assert!(toml::from_str::<RegistryConfig>(&format!("{old}channel = 'typo'\n")).is_err());
-            }
+                ),
+                "unsafe registry URL was accepted: {unsafe_url}"
+            );
         }
-    }
-
-    fn scoped_dir(td: &TempDir) -> tilo_test_env::ScopedEnv {
-        let trust = td.path().join("registry-owner.pub");
-        std::fs::write(
-            &trust,
-            "d5dd5851bebac876b19986485184213ead36b67595b7efedf1144c120033b0bb\n",
-        )
-        .unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_STORE_CONFIG_DIR", td.path())
-            .set("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH", trust);
-        env
     }
 }

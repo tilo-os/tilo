@@ -30,8 +30,8 @@ const ARG: &str = "--tilo-final-bootnext";
 const PRIMARY: &str = "\\EFI\\systemd\\systemd-bootaa64.efi";
 const FALLBACK: &str = "\\EFI\\BOOT\\BOOTAA64.EFI";
 const MAX_LOADER: u64 = 64 << 20;
-const LINUX_TYPE: &str = "0fc63daf-8483-4772-8e79-3d69d8477de4";
-const TILO_ROOT_TYPE: &str = "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab";
+const LINUX_TYPE: &str = staging_handoff_model::gpt::LINUX_FILESYSTEM;
+const TILO_ROOT_TYPE: &str = staging_handoff_model::gpt::TILO_ROOT;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct FinalReadback {
@@ -186,7 +186,9 @@ fn loader_hash<P: FinalBootPlatform + ?Sized>(
         .iter()
         .find(|p| same_guid(&p.guid, esp_guid))
         .ok_or("ESP disappeared")?;
-    let image_len = (esp.last_lba - esp.first_lba + 1)
+    let image_len = esp
+        .extent()
+        .lbas()
         .checked_mul(disk.sector_bytes)
         .ok_or("ESP length overflow")?;
     let sector = disk.sector_bytes;
@@ -272,7 +274,7 @@ pub fn arm<P: FinalBootPlatform>(platform: &mut P, receipt: &FinalReadback) -> I
         description: "Tilo".into(),
         partition_number: esp.number,
         start_lba: esp.first_lba,
-        size_lba: esp.last_lba - esp.first_lba + 1,
+        size_lba: esp.extent().lbas(),
         partition_guid: expected_guid.clone(),
         file_path: receipt.loader_path.clone(),
     })?;

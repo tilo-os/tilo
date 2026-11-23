@@ -115,7 +115,33 @@ mod tests {
     }
 
     #[test]
-    fn seeking_needs_length_track_and_capability() {
+    fn a_player_row_names_itself_and_seeks_only_with_length_track_and_capability() {
+        use base64::Engine as _;
+        assert_eq!(player("web.tab3", Status::Paused).name(), "web");
+        let music = Player {
+            identity: Some("Music".into()),
+            art_url: Some("file:///cover.png".into()),
+            ..player("music", Status::Playing)
+        };
+        assert_eq!(music.name(), "Music");
+        let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+        let cover = decode_artwork(ArtworkImage {
+            width: 2,
+            height: 1,
+            rgba: encode(&[1; 8]),
+        })
+        .expect("a 2×1 cover");
+        assert_eq!((cover.width, cover.height, cover.rgba.len()), (2, 1, 8));
+        assert!(
+            decode_artwork(ArtworkImage {
+                width: 2,
+                height: 2,
+                rgba: encode(&[1; 8]),
+            })
+            .is_none(),
+            "a cover whose pixels do not fill it is dropped"
+        );
+
         let p = player("a", Status::Playing);
         assert_eq!(
             p.seek(0.5),
@@ -147,34 +173,5 @@ mod tests {
         ] {
             assert_eq!(broken.seek(0.5), None);
         }
-    }
-
-    #[test]
-    fn players_are_named_and_their_covers_arrive_as_rgba_of_their_size() {
-        use base64::Engine as _;
-        assert_eq!(player("web.tab3", Status::Paused).name(), "web");
-        let music = Player {
-            identity: Some("Music".into()),
-            art_url: Some("file:///cover.png".into()),
-            ..player("music", Status::Playing)
-        };
-        assert_eq!(music.name(), "Music");
-        let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
-        let cover = decode_artwork(ArtworkImage {
-            width: 2,
-            height: 1,
-            rgba: encode(&[1; 8]),
-        })
-        .expect("a 2×1 cover");
-        assert_eq!((cover.width, cover.height, cover.rgba.len()), (2, 1, 8));
-        assert!(
-            decode_artwork(ArtworkImage {
-                width: 2,
-                height: 2,
-                rgba: encode(&[1; 8]),
-            })
-            .is_none(),
-            "a cover whose pixels do not fill it is dropped"
-        );
     }
 }

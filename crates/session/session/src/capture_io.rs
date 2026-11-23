@@ -95,6 +95,12 @@ pub(crate) struct Written {
     pub png: Option<Vec<u8>>,
 }
 
+/// A picture's size and its pixels, RGBA in rows: what a decoded screenshot is.
+pub(crate) type Picture = (u32, u32, Vec<u8>);
+
+/// The answer a read of a picture comes back with.
+pub(crate) type PictureAnswer = Receiver<Result<Picture, String>>;
+
 /// One piece of capture work.
 enum Job {
     /// Start run number `run` , which every note about it carries: its file goes to `file` when
@@ -142,6 +148,12 @@ enum Job {
     Read {
         path: PathBuf,
         done: Sender<Result<Vec<u8>, String>>,
+    },
+    /// The picture in the PNG at `path` : its size and its pixels, for the
+    /// markup editor to draw on.
+    ReadPicture {
+        path: PathBuf,
+        done: Sender<Result<Picture, String>>,
     },
 }
 
@@ -315,6 +327,19 @@ impl CaptureIo {
         answer
     }
 
+    /// The picture in the PNG at `path` , decoded: what the markup editor
+    /// draws on.
+    pub(crate) fn read_picture(&self, path: PathBuf) -> PictureAnswer {
+        let (done, answer) = channel();
+        if !self.submit(Job::ReadPicture {
+            path,
+            done: done.clone(),
+        }) {
+            let _ = done.send(Err(NO_WORKER.to_owned()));
+        }
+        answer
+    }
+
     /// How many frames the running recorder's replay buffer holds.
     pub(crate) fn buffered(&self) -> usize {
         self.buffered.load(Ordering::Acquire)
@@ -465,6 +490,10 @@ impl Worker {
             }
             Job::Read { path, done } => {
                 let _ = done.send(read(&path));
+                self.wake();
+            }
+            Job::ReadPicture { path, done } => {
+                let _ = done.send(read_picture(&path));
                 self.wake();
             }
         }
@@ -637,6 +666,15 @@ fn encode_png(picture: &image::RgbaImage) -> Result<Vec<u8>, String> {
 
 fn read(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// The picture in the PNG at `path` : its size and its pixels, RGBA in rows.
+fn read_picture(path: &Path) -> Result<Picture, String> {
+    let picture = image::open(path)
+        .map_err(|error| format!("{}: {error}", path.display()))?
+        .into_rgba8();
+    let (width, height) = picture.dimensions();
+    Ok((width, height, picture.into_raw()))
 }
 
 #[cfg(test)]

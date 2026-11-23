@@ -100,11 +100,20 @@ fn collect_showing(widget: &dyn Widget, found: &mut Vec<Step>, at: Instant) {
     }
 }
 
-#[test]
-fn a_remote_list_moves_nothing_as_its_rows_arrive() {
+/// A remotely-read page whose body `build` makes from the pending read.
+fn remote(build: impl FnOnce(&Arriving<()>) -> Element) -> (Arriving<()>, Column, Instant) {
     let t0 = crate::time::now();
-    let (arriving, mut view) = with_monotonic_time(t0, || {
+    let (arriving, view) = with_monotonic_time(t0, || {
         let arriving: Arriving<()> = Arriving::pending(Source::Remote);
+        let body = build(&arriving);
+        (arriving, page(body))
+    });
+    (arriving, view, t0)
+}
+
+#[test]
+fn a_remote_list_grid_and_page_move_nothing_as_their_content_arrives() {
+    let (arriving, mut view, t0) = remote(|arriving| {
         let mut rows = Column::new().with_no_padding().with_intrinsic_height();
         for title in ["Water the plants", "Book the train", "Call the bakery"] {
             rows = rows.push(Box::new(
@@ -115,16 +124,11 @@ fn a_remote_list_moves_nothing_as_its_rows_arrive() {
                     .shaped(SkeletonShape::Row(TASK_ROW)),
             ));
         }
-        (arriving, page(Box::new(rows)))
+        Box::new(rows)
     });
     assert_nothing_moves("list", &arriving, &mut view, t0);
-}
 
-#[test]
-fn a_remote_media_grid_moves_nothing_as_its_cards_arrive() {
-    let t0 = crate::time::now();
-    let (arriving, mut view) = with_monotonic_time(t0, || {
-        let arriving: Arriving<()> = Arriving::pending(Source::Remote);
+    let (arriving, mut view, t0) = remote(|arriving| {
         let cards = ["Blue Train", "Kind of Blue", "Time Out", "Moanin'"]
             .into_iter()
             .map(|title| -> Element {
@@ -141,24 +145,20 @@ fn a_remote_media_grid_moves_nothing_as_its_cards_arrive() {
                 )
             })
             .collect();
-        (arriving, page(Box::new(MediaGrid::of(cards))))
+        Box::new(MediaGrid::of(cards))
     });
     assert_nothing_moves("grid", &arriving, &mut view, t0);
-}
 
-#[test]
-fn a_remote_page_moves_nothing_as_its_text_arrives() {
-    let t0 = crate::time::now();
-    let (arriving, mut view) = with_monotonic_time(t0, || {
-        let arriving: Arriving<()> = Arriving::pending(Source::Remote);
-        let body = arriving
-            .view(|()| -> Element {
-                Box::new(Text::new(
-                    "It was a bright cold day in April, and the clocks were striking thirteen.",
-                ))
-            })
-            .shaped(SkeletonShape::Page);
-        (arriving, page(Box::new(body)))
+    let (arriving, mut view, t0) = remote(|arriving| {
+        Box::new(
+            arriving
+                .view(|()| -> Element {
+                    Box::new(Text::new(
+                        "It was a bright cold day in April, and the clocks were striking thirteen.",
+                    ))
+                })
+                .shaped(SkeletonShape::Page),
+        )
     });
     assert_nothing_moves("page", &arriving, &mut view, t0);
 }
@@ -209,7 +209,7 @@ fn rows_of(reads: &[Arriving<()>], order: &[usize]) -> Column {
 }
 
 #[test]
-fn rows_sharing_a_read_show_its_failure_once_and_rows_of_their_own_each_show_theirs() {
+fn a_reads_failure_shows_once_however_its_rows_share_it() {
     let t0 = crate::time::now();
     let mut shot = ShotFrame::new((720, 600), Theme::light());
     let (reads, mut view) = with_monotonic_time(t0, || {
@@ -234,10 +234,9 @@ fn rows_sharing_a_read_show_its_failure_once_and_rows_of_their_own_each_show_the
         [true, false, true, false, false],
         "one failure per read in the region, on its first row"
     );
-}
 
-#[test]
-fn rows_built_after_their_read_failed_show_its_failure_once() {
+    // Rows built after their read failed show its failure once, and moving the
+    // failure moves no box.
     let t0 = crate::time::now();
     let mut shot = ShotFrame::new((720, 600), Theme::light());
     let (_reads, mut view) = with_monotonic_time(t0, || {

@@ -179,7 +179,8 @@ pub struct Found {
     /// Its label, as the person reads it.
     pub label: String,
     /// The action a caller runs to open it, when the result is one a caller
-    /// opens (`open`); `None` for a result that is not a resource of an app
+    /// opens: the resource's own (`open` for one that opens itself, a page's
+    /// `open-pane`); `None` for a result that is not a resource of an app
     /// (a setting, a file, a command) or one reached another way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open: Option<String>,

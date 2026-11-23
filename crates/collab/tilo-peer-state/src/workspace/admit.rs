@@ -1,8 +1,8 @@
 //! The one admission rule for a workspace document a peer sends (`SyncResp`).
 //!
 //! The native peer ([`crate::StatePeer`]) and the shell's workspace tree both
-//! receive the same workspace document — owner, capabilities, identities, media
-//! policy, coverage, durability, receipts and window contents — so both admit it
+//! receive the same workspace document — owner, capabilities, identities,
+//! coverage, durability, receipts and window contents — so both admit it
 //! here. What differs between them is only data: how the receiver identifies
 //! the sender ([`Writer`]) and whose workspace it is. Each caller keeps its own
 //! storage and projection.
@@ -11,8 +11,6 @@
 //! merge would advance local heads past refused operations.
 use automerge::AutoCommit;
 use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
-
-use super::media;
 
 /// How the receiver knows the sender's access in the workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,20 +90,12 @@ pub struct WorkspaceAdmission<'a> {
     /// carries. Not whole seconds: a certificate issued earlier in this
     /// second is already valid.
     pub now_ns: u64,
-    /// Whether the receiver itself writes back, as a change of its own, the
-    /// work delegations it holds that a newer base lacks
-    /// ([`crate::StatePeer::write_as_device`]). Such a base is adopted by
-    /// that receiver alone; any other refuses it, as every receiver refuses
-    /// a batch that erases a delegation or moves it back.
-    pub keeps_delegations: bool,
 }
 
-/// A batch every check admitted. The caller binds a returned media policy to
-/// its own authority record before installing the candidate.
+/// A batch every check admitted.
 #[derive(Debug)]
 pub struct AdmittedWorkspace {
     pub candidate: AutoCommit,
-    pub media: Option<media::WorkspaceMediaV1>,
     /// The candidate is a newer base ([`super::base`]) replacing the
     /// document held, not that document with the batch applied.
     pub rebased: bool,
@@ -149,13 +139,8 @@ pub enum WorkspaceRefusal {
     /// ([`crate::removals::monotonic`]), or of a change that took standing
     /// away ([`crate::standing::monotonic`]).
     Removals(String),
-    /// A change erases a member's work delegation or moves its row back to an
-    /// earlier form ([`crate::state::work_delegation_rows_kept`]).
-    Delegations(String),
     /// The batch rewinds a durable receipt.
     Durability(String),
-    /// The media policy is malformed or its transition is not permitted.
-    Media(media::MediaPolicyError),
     /// The batch adds or changes the shortcut `0` naming who saved it
     /// without that person's device's proof ([`super::saved_shortcut`]).
     ShortcutAuthorship(String),
@@ -169,7 +154,6 @@ impl std::fmt::Display for WorkspaceRefusal {
             Self::Malformed(error)
             | Self::Coverage(error)
             | Self::Removals(error)
-            | Self::Delegations(error)
             | Self::Durability(error)
             | Self::Membership(error) => f.write_str(error),
             Self::DeclaredWorkspaceMismatch => f.write_str("declared workspace mismatch"),
@@ -184,7 +168,6 @@ impl std::fmt::Display for WorkspaceRefusal {
             }
             Self::ReceiptWriter => f.write_str("effect receipt is not its writer's own"),
             Self::RefusalWriter => f.write_str("write refusal is not its recorder's own"),
-            Self::Media(error) => write!(f, "{error}"),
             Self::ShortcutAuthorship(shortcut) => write!(
                 f,
                 "the shortcut `{shortcut}` names who saved it without their device's proof"
@@ -206,15 +189,13 @@ impl WorkspaceRefusal {
             | Self::ReceiptWriter
             | Self::RefusalWriter
             | Self::ShortcutAuthorship(_) => RefusalReason::Forbidden,
-            Self::Malformed(_)
-            | Self::DeclaredWorkspaceMismatch
-            | Self::Coverage(_)
-            | Self::Media(_) => RefusalReason::Malformed,
+            Self::Malformed(_) | Self::DeclaredWorkspaceMismatch | Self::Coverage(_) => {
+                RefusalReason::Malformed
+            }
             Self::Refounded
             | Self::ReceiptImmutable
             | Self::RedemptionImmutable
             | Self::Removals(_)
-            | Self::Delegations(_)
             | Self::Durability(_) => RefusalReason::Conflict,
         }
     }
@@ -312,10 +293,9 @@ pub fn admit_workspace_changes(
             } else {
                 false
             };
-            let media = checked(&input, &candidate, governed)?;
+            checked(&input, &candidate, governed)?;
             Ok(AdmittedWorkspace {
                 candidate,
-                media,
                 rebased: false,
             })
         }
@@ -323,12 +303,9 @@ pub fn admit_workspace_changes(
             let candidate = super::candidate_on(*base, &changes)?;
             // The receiver projects what it owns onto the base it adopts, so a
             // base leaving out or changing its entries holds only until then.
-            // A base that lacks a work delegation's form the receiver holds
-            // is taken only by a receiver that writes the form back itself.
-            let media = checked_as(&input, &candidate, false, input.keeps_delegations)?;
+            checked_as(&input, &candidate, false)?;
             Ok(AdmittedWorkspace {
                 candidate,
-                media,
                 rebased: true,
             })
         }
@@ -370,10 +347,9 @@ fn holder_writes(
     let pruned = super::base::pruned(Some(before), replaced);
     let candidate = super::candidate(Some(pruned.as_ref().unwrap_or(before)), &changes)?;
     if only_own_copy_row(before, &candidate, input.source.key) {
-        let media = checked(input, &candidate, false)?;
+        checked(input, &candidate, false)?;
         return Ok(AdmittedWorkspace {
             candidate,
-            media,
             rebased: false,
         });
     }
@@ -402,10 +378,9 @@ fn holder_writes(
         input.now_ns,
     )
     .map_err(membership)?;
-    let media = checked(input, &candidate, true)?;
+    checked(input, &candidate, true)?;
     Ok(AdmittedWorkspace {
         candidate,
-        media,
         rebased: false,
     })
 }
@@ -454,8 +429,7 @@ fn membership(refusal: super::membership::MembershipRefusal) -> AdmissionFailure
 
 /// Check a candidate workspace document, however it was built: from
 /// `input.before` and a batch ([`admit_workspace_changes`]), or as a whole
-/// checkpoint replacing it. Returns the candidate's media policy for the caller
-/// to bind.
+/// checkpoint replacing it.
 ///
 /// 1. The document names this workspace ([`super::declared_workspace_mismatches`]).
 /// 2. Governance changed beyond what an operation of the batch or its writer's
@@ -467,11 +441,7 @@ fn membership(refusal: super::membership::MembershipRefusal) -> AdmissionFailure
 ///    ([`super::redemptions_kept`]).
 /// 5. Coverage and durable receipts never rewind
 ///    ([`crate::coverage::monotonic`], [`crate::durability::monotonic`]), and
-///    no work delegation is erased or moved back to an earlier form
-///    ([`crate::state::work_delegation_rows_kept`]).
-/// 6. The media policy is well formed and its transition is permitted
-///    ([`media::validate_transition`]).
-/// 7. A shortcut names as who saved it only a proven saver
+/// 6. A shortcut names as who saved it only a proven saver
 ///    ([`super::saved_shortcut`]).
 ///
 /// # Errors
@@ -481,8 +451,7 @@ fn checked_as(
     input: &WorkspaceAdmission<'_>,
     candidate: &AutoCommit,
     governed: bool,
-    carried: bool,
-) -> Result<Option<media::WorkspaceMediaV1>, WorkspaceRefusal> {
+) -> Result<(), WorkspaceRefusal> {
     let WorkspaceAdmission {
         before,
         workspace,
@@ -490,7 +459,6 @@ fn checked_as(
         owner,
         administrators,
         now_ns,
-        keeps_delegations: _,
     } = *input;
     let governs = source.governs(owner);
     let keeps = source.keeps_history(owner, administrators);
@@ -535,17 +503,7 @@ fn checked_as(
     crate::coverage::monotonic(before, candidate).map_err(WorkspaceRefusal::Coverage)?;
     crate::removals::monotonic(before, candidate).map_err(WorkspaceRefusal::Removals)?;
     crate::standing::monotonic(before, candidate).map_err(WorkspaceRefusal::Removals)?;
-    // Every writer, the owner's devices included, and a base as a batch: what
-    // a member's own devices signed about their work is never taken back by
-    // whoever writes the workspace. Only a newer base whose receiver writes
-    // the forms it lacks back itself (`carried`) is taken without them.
-    if !carried {
-        crate::state::work_delegation_rows_kept(before, candidate)
-            .map_err(WorkspaceRefusal::Delegations)?;
-    }
-    crate::durability::monotonic(before, candidate).map_err(WorkspaceRefusal::Durability)?;
-    media::validate_transition(before, candidate, media::TransitionMode::Admission)
-        .map_err(WorkspaceRefusal::Media)
+    crate::durability::monotonic(before, candidate).map_err(WorkspaceRefusal::Durability)
 }
 
 /// [`checked_as`] where the receiver carries nothing over: every batch but a
@@ -554,8 +512,8 @@ fn checked(
     input: &WorkspaceAdmission<'_>,
     candidate: &AutoCommit,
     governed: bool,
-) -> Result<Option<media::WorkspaceMediaV1>, WorkspaceRefusal> {
-    checked_as(input, candidate, governed, false)
+) -> Result<(), WorkspaceRefusal> {
+    checked_as(input, candidate, governed)
 }
 
 /// A shortcut a batch adds or changes names, as who saved it, no one or the
@@ -635,19 +593,6 @@ fn may_write(
     } else {
         Err(WorkspaceRefusal::WriteForbidden)
     }
-}
-
-/// Whether a batch of `source`'s own may change the workspace `before`
-/// governs: it governs it, or may make undoable changes on it, as
-/// [`admit_workspace_changes`] decides for a batch it sends.
-pub(crate) fn writes(
-    before: Option<&AutoCommit>,
-    workspace: &str,
-    source: &Writer<'_>,
-    owner: &[u8; 32],
-    now_ns: u64,
-) -> bool {
-    source.governs(owner) || matches!(may_write(before, workspace, source, now_ns), Ok(true))
 }
 
 #[cfg(test)]

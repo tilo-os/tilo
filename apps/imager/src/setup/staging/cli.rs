@@ -379,5 +379,25 @@ mod tests {
             assert_eq!(code, Some(1));
             assert!(!out.exists());
         }
+
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let bad = dir.path().join("bad-profile.json");
+            std::fs::write(&bad, r#"{"schema":1,"hostname":"bad host"}"#).unwrap();
+            assert!(read_profile(bad.to_str().unwrap()).is_err());
+
+            let long = dir.path().join("long-profile.json");
+            std::fs::write(
+                &long,
+                serde_json::json!({"schema": 1, "hostname": "h".repeat(64)}).to_string(),
+            )
+            .unwrap();
+            assert!(read_profile(long.to_str().unwrap()).is_err());
+
+            let good = dir.path().join("good-profile.json");
+            std::fs::write(&good, r#"{"schema":1,"hostname":"studio"}"#).unwrap();
+            let profile = read_profile(good.to_str().unwrap()).unwrap();
+            assert_eq!(profile["hostname"], "studio");
+        }
     }
 }

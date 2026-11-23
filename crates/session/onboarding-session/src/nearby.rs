@@ -260,13 +260,27 @@ fn join(
         .map_err(NearbyFailure::storage)?;
     let place = Place::here(paths.clone()).map_err(NearbyFailure::unavailable)?;
     make_login_dir(place.dir())?;
-    let daemon = DaemonPlace::of(place.dir(), &key.verifying_key().to_bytes())
-        .map_err(NearbyFailure::unavailable)?;
-    ensure_daemon(&daemon)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(NearbyFailure::not_started)?;
+    // A computer no person's certificate names yet logs in itself, as `tilo login` does: its
+    // daemon serves the device key alone until then, and has no API to ask.
+    if !tilo_device_identity::login::claimed(&place, &key.verifying_key().to_bytes()) {
+        runtime
+            .block_on(tilo_api::daemon::enter::log_in_here(
+                &key,
+                &place,
+                &ticket.encode(),
+                AGENT,
+                Some(label),
+            ))
+            .map_err(|error| refused(&error))?;
+        return taken_up(&place, identity_dir, paths, cancelled);
+    }
+    let daemon = DaemonPlace::of(place.dir(), &key.verifying_key().to_bytes())
+        .map_err(NearbyFailure::unavailable)?;
+    ensure_daemon(&daemon)?;
     runtime
         .block_on(async {
             let client = Client::open(Reach {
@@ -287,12 +301,22 @@ fn join(
             Ok::<(), anyhow::Error>(())
         })
         .map_err(|error| refused(&error))?;
+    taken_up(&place, identity_dir, paths, cancelled)
+}
+
+/// This account's identity, from the login kept in `place`, unless setup gave the attempt up.
+fn taken_up(
+    place: &Place,
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    cancelled: &AtomicBool,
+) -> Result<MintedIdentity, NearbyFailure> {
     // Setup gave the attempt up: the login stays kept for a later daemon to
     // take up, and nothing is written into this account's identity here.
     if cancelled.load(Ordering::Acquire) {
         return Err(NearbyFailure::new(NearbyCause::Unknown));
     }
-    let device = tilo_device_identity::login::load(&place)
+    let device = tilo_device_identity::login::load(place)
         .map_err(NearbyFailure::storage)?
         .ok_or_else(|| NearbyFailure::storage("the login was not kept"))?
         .1;
@@ -540,7 +564,7 @@ pub(crate) mod testing {
     }
 
     /// A member certificate `root` signs for `key`.
-    fn cert_for(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
+    pub(crate) fn cert_for(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: key.verifying_key().to_bytes(),
@@ -680,41 +704,6 @@ pub(crate) mod tests {
             );
         }
 
-        phase a_code_that_was_used_says_to_make_a_new_one;
-        {
-            let account = Account::new();
-            let identity_dir = account.identity_dir();
-            let _daemon = FakeDaemon::start(
-                &account.paths,
-                Answer::Refuse("Your device didn't take this ticket: this ticket was used already: ask for a new one."),
-            );
-            let mut join = NearbyJoin::start(
-                code(),
-                &identity_dir,
-                &account.paths,
-                "the kitchen computer",
-            )
-            .expect("the join starts");
-            let NearbyEvent::Failed(failure) = wait_for_outcome(&mut join) else {
-                panic!("a spent code adds nothing");
-            };
-            assert_eq!(failure.cause, NearbyCause::Used);
-            assert!(
-                failure.title().contains("already used"),
-                "the title names the cause: {}",
-                failure.title()
-            );
-            assert!(
-                failure.message().contains("tilo device add"),
-                "the message says how to get a new code: {}",
-                failure.message()
-            );
-            assert!(
-                tilo_identity::store::resolve_active_identity(&identity_dir).is_none(),
-                "nothing is taken up when the code is refused"
-            );
-        }
-
         phase a_device_that_cannot_be_reached_says_so;
         {
             let account = Account::new();
@@ -740,27 +729,122 @@ pub(crate) mod tests {
         }
     }
 
+    /// The person's device that printed a code, as it serves it: its root signs the certificate
+    /// of the computer that brings the code.
+    struct RootSigns {
+        root: SigningKey,
+        device: SigningKey,
+        cert: tilo_user_identity::DeviceCert,
+    }
+
+    impl tilo_device_identity::login::Approver for RootSigns {
+        fn approve(
+            &self,
+            asked: tilo_device_identity::login::Asked,
+        ) -> tilo_device_identity::login::Approval {
+            use ed25519_dalek::Signer as _;
+            let mut cert = asked.cert.clone();
+            tilo_user_identity::sign_device_cert(&mut cert, &self.root).expect("the root signs");
+            Box::pin(std::future::ready(Ok(
+                tilo_device_identity::login::Approved {
+                    cert,
+                    approver: self.cert.clone(),
+                    signature: self.device.sign(&asked.digest).to_bytes(),
+                },
+            )))
+        }
+    }
+
+    /// A computer no person's certificate names yet, whose daemon serves its device key alone,
+    /// joins with a code itself: the device that printed it, reached over iroh, has the person's
+    /// root certify this computer's key, and the person is this account's identity.
     #[test]
-    fn a_code_this_computer_cannot_use_is_refused_before_any_device_is_called() {
+    fn a_computer_nobody_certified_yet_joins_with_a_code_itself() {
+        use tilo_device_identity::login::{Entry, Ticket};
         let account = Account::new();
         let identity_dir = account.identity_dir();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let root = SigningKey::from_bytes(&[0x42; 32]);
+        let device = SigningKey::from_bytes(&[0x43; 32]);
+        let cert = super::testing::cert_for(&root, &device, "the person's laptop");
+        let endpoint = runtime.block_on(async {
+            iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                .secret_key(iroh::SecretKey::from_bytes(&device.to_bytes()))
+                .relay_mode(iroh::RelayMode::Disabled)
+                .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+                .expect("a loopback address")
+                .bind()
+                .await
+                .expect("the laptop's endpoint")
+        });
+        let reached = tilo_api::daemon::enter::reached_of(&endpoint.addr());
+        let ticket = Ticket::new(reached.clone());
+        let router = {
+            let _entered = runtime.enter();
+            tilo_api::daemon::enter::issuing_for_test(
+                &endpoint,
+                &device,
+                ticket.clone(),
+                root.verifying_key().to_bytes(),
+                Entry {
+                    workspace: WORKSPACE.into(),
+                    workspace_name: Some("Studio".into()),
+                    server_cert: cert.clone(),
+                    server: reached,
+                    site: "https://tilo.test/".into(),
+                    host_origin: "https://eu1.tilo.test".into(),
+                },
+                Arc::new(RootSigns {
+                    root: root.clone(),
+                    device: device.clone(),
+                    cert,
+                }),
+            )
+        };
+        let key = tilo_device_identity::persist::load_device_key(&account.paths).expect("a key");
+        let place = Place::here(account.paths.clone()).expect("a place");
+        assert!(
+            !tilo_device_identity::login::claimed(&place, &key.verifying_key().to_bytes()),
+            "no person's certificate names this computer yet"
+        );
+
         let mut join = NearbyJoin::start(
-            "tilo login made-up".to_owned(),
+            ticket.encode(),
             &identity_dir,
             &account.paths,
             "the kitchen computer",
         )
         .expect("the join starts");
+        let outcome = wait_for_outcome(&mut join);
+        let NearbyEvent::Joined(minted) = outcome else {
+            panic!("the device that printed the code certified this computer: {outcome:?}");
+        };
+        let person = root.verifying_key().to_bytes();
+        let joined = tilo_device_identity::login::load(&place)
+            .expect("the kept login reads")
+            .expect("a login is kept")
+            .1;
+        assert_eq!(joined.cert.user_public_key, person);
         assert_eq!(
-            wait_for_outcome(&mut join),
-            NearbyEvent::Failed(NearbyFailure::new(NearbyCause::Wrong))
+            joined.cert.device_public_key,
+            key.verifying_key().to_bytes()
         );
-        let failure = NearbyFailure::new(NearbyCause::Wrong);
-        assert!(
-            failure.message().contains("starting with tilo1"),
-            "the message says what a code looks like: {}",
-            failure.message()
+        assert_eq!(joined.label(), "the kitchen computer");
+        assert_eq!(
+            tilo_device_identity::persist::read_device_cert(
+                &account.paths.device_cert_for_user(&person)
+            )
+            .expect("the certificate filed under the person"),
+            joined.cert
         );
+        assert_eq!(minted.fingerprint, hex::encode(person));
+        runtime.block_on(async {
+            let _ = router.shutdown().await;
+            endpoint.close().await;
+        });
     }
 
     #[test]

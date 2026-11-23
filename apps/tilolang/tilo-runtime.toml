@@ -17,10 +17,10 @@ kind     = "runtime"
 provides = "tilolang/0.1.0+tilolang"
 # Where the runtime runs, and so where a tilolang app runs: as a Linux binary, baked into the OS
 # image beside the Tilo runtime and executed by the session's launcher (a Tilo OS device is a
-# Linux one), and as its web bundle in a browser tab, which runs the app's module and draws its
-# views as HTML. No macOS build of the runtime exists.
-platforms = ["linux", "web"]
-platform-reason = "Runs on the tilolang runtime, which is built for Linux and the browser."
+# Linux one); as a macOS binary, shipped in Tilo.app and executed by its runtime's launcher under
+# App Sandbox or Seatbelt; and as its web bundle in a browser tab, which runs the app's module and
+# draws its views as HTML.
+platforms = ["linux", "macos", "web"]
 
 [entrypoint]
 type = "cli"

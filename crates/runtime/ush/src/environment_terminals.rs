@@ -777,11 +777,7 @@ impl ush_shell::Runs for SessionRuns {
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
-        })
+    tilo_clock::unix_now_ms_i64()
 }
 
 /// The runs of one session, kept for the one stream that follows them

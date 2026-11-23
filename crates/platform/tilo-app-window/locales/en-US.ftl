@@ -46,6 +46,8 @@ tilolang-did-cleared-time = cleared the { $field } time
 # What a change made over many items at once says: the action's own words are written for one
 # item ("moved this to"), so the sentence counts what it changed.
 tilolang-did-many = changed { $count } { $kind }
+# A bound control's edit, where nothing of the field it wrote is left to say what changed.
+tilolang-did-edited = edited it
 # How one sentence goes on with the next field a change wrote ("… and set priority to High").
 tilolang-did-and = and
 
@@ -148,7 +150,7 @@ tilolang-none-value = None
 tilolang-empty-value = Empty
 tilolang-yes = Yes
 tilolang-no = No
-tilolang-history = History
+tilolang-history-of = History of { $title }
 tilolang-history-changes = { $count ->
     [one] 1 change
    *[other] { $count } changes

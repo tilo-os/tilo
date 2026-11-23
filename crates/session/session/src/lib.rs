@@ -152,6 +152,8 @@ mod config;
 #[cfg(target_os = "linux")]
 pub mod connectors;
 #[cfg(target_os = "linux")]
+mod contacts;
+#[cfg(target_os = "linux")]
 mod content;
 #[cfg(target_os = "linux")]
 pub mod controller_nav;
@@ -285,6 +287,8 @@ mod machine_steps;
 pub mod mcp_server;
 pub mod mentions;
 #[cfg(target_os = "linux")]
+mod nearby_airdrop;
+#[cfg(target_os = "linux")]
 pub mod nearby_transfer;
 #[cfg(target_os = "linux")]
 mod network;
@@ -298,6 +302,8 @@ pub mod notices;
 mod notifications;
 #[cfg(target_os = "linux")]
 mod options;
+#[cfg(target_os = "linux")]
+mod osd;
 mod overview;
 #[cfg(target_os = "linux")]
 mod owner_session;
@@ -320,9 +326,7 @@ pub mod parts;
 mod pass;
 pub mod people;
 #[cfg(target_os = "linux")]
-mod person_resources;
-#[cfg(target_os = "linux")]
-mod personal;
+pub(crate) use tilo_workspace_service::workspaces::PersonResources;
 #[cfg(target_os = "linux")]
 pub mod portal_link;
 #[cfg(target_os = "linux")]

@@ -701,7 +701,7 @@ fn launch_holds(
     if !local.current() || local.workspace_id != route.cluster_id {
         return None;
     }
-    if local.keeps_documents_of(&route.app_id) {
+    if local.app_id == route.app_id {
         return Some(true);
     }
     (read_only
@@ -1123,7 +1123,9 @@ impl JoinedChannel {
     /// instant at which this read's checks can answer differently by time
     /// alone: the reader's certificate validity, the membership tree's next
     /// grant expiry, and what the document owner names. Returns `false` when
-    /// any input is neither announced nor timed, and the wait keeps its
+    /// an input is neither announced nor timed — an owner that cannot name
+    /// its expiries, a host that announces nothing, or a device fleet read
+    /// while another process may write it unwatched — and the wait keeps its
     /// clock.
     fn register_read_expiry(
         &self,
@@ -1131,7 +1133,7 @@ impl JoinedChannel {
         service: &dyn NativeDocumentReads,
     ) -> bool {
         use tilo_identity::policy_change;
-        if !policy_change::timers_reliable() || !policy_change::identity_files_watched() {
+        if !policy_change::timers_reliable() {
             return false;
         }
         if self
@@ -1139,6 +1141,14 @@ impl JoinedChannel {
             .membership
             .as_ref()
             .is_some_and(|membership| !membership.announces_policy_changes())
+        {
+            return false;
+        }
+        // The device fleet is read here only through an installed certificate authority: without
+        // one, a write another process makes to the fleet changes none of these checks, so the
+        // watch on the identity files is not what keeps the wait honest.
+        if self.state.certificate_authority.get().is_some()
+            && !policy_change::identity_files_watched()
         {
             return false;
         }

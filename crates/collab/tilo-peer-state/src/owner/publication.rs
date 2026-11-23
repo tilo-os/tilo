@@ -1233,13 +1233,6 @@ pub fn ownership_run_name(workspace: WorkspaceId, hash: [u8; 32]) -> String {
     kept_name(workspace, "custody", hash)
 }
 
-/// The name builds kept the same writes under for a while. A store reads them from here when
-/// they are not under the name above, and keeps them while its entry names them.
-#[must_use]
-pub fn ownership_name_between(workspace: WorkspaceId, hash: [u8; 32]) -> String {
-    kept_name(workspace, "ownership", hash)
-}
-
 fn kept_name(workspace: WorkspaceId, kept_as: &str, hash: [u8; 32]) -> String {
     format!(
         "{workspace}.{kept_as}.{}",
@@ -1250,15 +1243,9 @@ fn kept_name(workspace: WorkspaceId, kept_as: &str, hash: [u8; 32]) -> String {
 impl stored::NativeAuthorityStorage {
     /// The name of every run of outgoing ownership this record names: what its store keeps
     /// beside it, and may let go of once a record it publishes no longer names it.
-    /// Each is named twice, by the two names a store may hold it under.
     pub fn ownership_runs(&self) -> impl Iterator<Item = String> + '_ {
         self.workspaces.iter().flat_map(|(workspace, stored)| {
-            kept_hashes(stored).flat_map(|hash| {
-                [
-                    ownership_run_name(*workspace, hash),
-                    ownership_name_between(*workspace, hash),
-                ]
-            })
+            kept_hashes(stored).map(move |hash| ownership_run_name(*workspace, hash))
         })
     }
 }

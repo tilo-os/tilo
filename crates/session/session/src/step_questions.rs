@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::Lifetime;
+use tilo_action_policy::{ActionKind, Lifetime};
 use tilo_actions::remote::PersonAsk;
 use tilo_service::{Question, Questions};
 use tilo_sheets::portal::{AgentAsk, AgentQuestion};
@@ -44,6 +44,8 @@ pub(crate) struct StepQuestion {
     pub action: String,
     /// What it takes it on.
     pub resource: String,
+    /// What the action does, as the catalogue says: reading or changing.
+    pub kind: ActionKind,
     /// What the step would do, field by field: each label and its value.
     pub fields: Vec<(String, String)>,
     /// What the host says the step risks.
@@ -259,6 +261,7 @@ fn question(request: &AppActionConsentRequest) -> Question {
         target: (!agent_asks).then(|| request.target_app.clone()),
         action: request.action_label.clone(),
         resource: request.resource_label.clone(),
+        kind: request.kind,
         fields,
         risk: serde_json::to_value(request.risk)
             .ok()
@@ -293,12 +296,10 @@ mod tests {
             app_id: "claude-code".into(),
             agent_session: None,
             target_app: "so.tilo.terminal".into(),
-            resource: "terminal".into(),
-            action: "run".into(),
             resource_label: "Terminal".into(),
             action_label: "Run a command line in the session".into(),
+            kind: ActionKind::Outside,
             risk: tilo_actions::RiskLevel::Destructive,
-            needs_confirmation: true,
             confirming: true,
             moderation: None,
             scope: scope.map(str::to_owned),
@@ -591,6 +592,7 @@ mod tests {
             asked.app_id = "so.tilo.lang.today".into();
             asked.target_app = "so.tilo.lang.tasks".into();
             asked.action_label = "Delete finished tasks".into();
+            asked.kind = ActionKind::Undoable;
             asked.scope = Some("ignored for an app".into());
             let answer = sheet.ask(asked).expect("asked");
             let pending = questions.pending();
@@ -599,6 +601,11 @@ mod tests {
             let shown: StepQuestion = serde_json::from_value(pending[0].details.clone()).unwrap();
             assert_eq!(shown.agent, "so.tilo.lang.today");
             assert_eq!(shown.target.as_deref(), Some("so.tilo.lang.tasks"));
+            assert_eq!(
+                shown.kind,
+                ActionKind::Undoable,
+                "the sheet knows what it does"
+            );
             assert_eq!(shown.may_allow_agent, always, "{handle}");
             let expected = if always {
                 Lifetime::UntilRevoked

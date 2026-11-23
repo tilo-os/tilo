@@ -200,6 +200,26 @@ impl ProfileInventory {
         }
     }
 
+    /// A profile whose sources could not be inspected: counts stay unknown, never a
+    /// fabricated zero, and the unsupported classes are named.
+    #[must_use]
+    pub fn unavailable(
+        id: String,
+        browser: BrowserKind,
+        installation: Installation,
+        application: String,
+        profile_label: String,
+        exportable: bool,
+    ) -> Self {
+        let mut item = Self::new(id, browser, installation, application, profile_label);
+        item.capabilities.bookmarks = Capability::Unsupported("browser-inventory-unavailable");
+        item.capabilities.history = Capability::Unsupported("browser-inventory-unavailable");
+        item.exportable = exportable;
+        item.bookmarks = Measure::Unknown;
+        item.history = Measure::Unknown;
+        item
+    }
+
     /// A report with this flag must not be presented as a complete inventory.
     #[must_use]
     pub fn incomplete(&self) -> bool {

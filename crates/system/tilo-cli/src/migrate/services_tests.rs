@@ -19,9 +19,9 @@ use migration_sources::service::{
 };
 use serde_json::{Value, json};
 
-use super::Lander;
 use super::services::{self as services_source, LINEAR};
-use super::state::{Journal, Place};
+use super::state::Place;
+use super::tests::test_env::{Told, land_as};
 use super::workspace::{Answer, Invocation, Refused, Workspace};
 
 /// An issue as the fake Tasks keeps it.
@@ -283,29 +283,29 @@ fn reviewed(place: &Place) {
 
 /// One import of `issues` into `tasks`, as `tilo migrate start linear` makes it once Linear answered.
 fn invocation(place: &Place, tasks: &mut Tasks, issues: &[IncomingIssue], id: &str) -> Result<()> {
-    let mut journal: Journal = place.journal(LINEAR)?;
-    let invocation = Invocation {
-        id: id.into(),
-        title: "From Linear".into(),
-    };
-    let mut progress = |_: &str| {};
-    let mut lander = Lander {
-        workspace: tasks,
-        opened: std::collections::BTreeSet::new(),
-        landing_in: None,
-        invocation: &invocation,
-        journal: &mut journal,
-        place,
-        source: LINEAR,
-        progress: &mut progress,
-        confirm: &mut |_: &str| Ok(true),
-    };
     let issues = issues.to_vec();
-    services_source::land_with(LINEAR, &mut lander, |journal, landing, save, cancel| {
-        let mut report = ServiceReport::default();
-        service::hand_issues(issues, journal, landing, &mut report, save, cancel)?;
-        Ok(report)
-    })
+    let mut told = Told {
+        yes: true,
+        ..Told::default()
+    };
+    land_as(
+        place,
+        LINEAR,
+        &Invocation {
+            id: id.into(),
+            title: "From Linear".into(),
+        },
+        tasks,
+        &mut told,
+        |lander| {
+            services_source::land_with(LINEAR, lander, |journal, landing, save, cancel| {
+                let mut report = ServiceReport::default();
+                service::hand_issues(issues, journal, landing, &mut report, save, cancel)?;
+                Ok(report)
+            })
+        },
+    )
+    .map(|_| ())
 }
 
 fn landed(place: &Place) -> usize {
@@ -456,10 +456,26 @@ fn a_resumed_import_brings_issues_naming_ones_an_earlier_import_brought_or_none_
     };
     tasks.drops_after = None;
     let calls = tasks.calls;
+    // The person deleted an issue the first import brought: the later issue that names it as its
+    // parent still comes over, at the top level, with its own sub-issue under it.
+    let deleted = tasks
+        .issues
+        .iter()
+        .find(|(_, issue)| issue.url == page(20))
+        .map(|(id, _)| id.clone())
+        .expect("the first import made it");
+    tasks.issues.remove(&deleted);
+    issues[295].parent = Some(page(20));
 
     invocation(&place, &mut tasks, &issues, "invocation-2").unwrap();
     assert_eq!(landed(&place), 450, "nothing refused");
     let made = |at: usize| &tasks.issues[&by_page(&tasks, &page(at)).unwrap()];
+    assert_eq!(made(295).parent, None, "at the top level");
+    assert_eq!(
+        made(296).parent.as_deref(),
+        by_page(&tasks, &page(295)).as_deref(),
+        "its own sub-issue under it"
+    );
     assert_eq!(made(250).parent, by_page(&tasks, &page(10)));
     let fifteen = by_page(&tasks, &page(15)).unwrap();
     assert!(
@@ -480,42 +496,6 @@ fn a_resumed_import_brings_issues_naming_ones_an_earlier_import_brought_or_none_
     // The issues the first import made but did not finish (comments, links) and the 250 new ones:
     // a call per list, per group of comments and per group of links.
     assert!(tasks.calls - calls <= 12, "{} calls", tasks.calls - calls);
-}
-
-/// The person deleted an issue an earlier import brought: a later issue under it still comes
-/// over, at the top level, with the rest of its list.
-#[test]
-fn an_issue_whose_parent_was_deleted_since_comes_over_at_the_top() {
-    let dir = tempfile::tempdir().unwrap();
-    let place = Place::at(dir.path());
-    reviewed(&place);
-    let mut tasks = Tasks::default();
-    invocation(&place, &mut tasks, &tracker(50), "invocation-1").unwrap();
-    let deleted = tasks
-        .issues
-        .iter()
-        .find(|(_, issue)| issue.url == page(20))
-        .map(|(id, _)| id.clone())
-        .unwrap();
-    tasks.issues.remove(&deleted);
-
-    let mut issues = tracker(60);
-    issues[55].parent = Some(page(20));
-    invocation(&place, &mut tasks, &issues, "invocation-2").unwrap();
-    assert_eq!(landed(&place), 60);
-    let made = |at: usize| {
-        tasks
-            .issues
-            .iter()
-            .find(|(_, issue)| issue.url == page(at))
-            .unwrap()
-    };
-    assert_eq!(made(55).1.parent, None, "at the top level");
-    assert_eq!(
-        made(56).1.parent.as_deref(),
-        Some(made(55).0.as_str()),
-        "its own sub-issue under it"
-    );
 }
 
 /// A workspace whose earlier issues are still on their way answers not ready, and keeps doing so

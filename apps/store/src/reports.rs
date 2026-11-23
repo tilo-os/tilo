@@ -17,12 +17,28 @@ pub const MAX_REPORT_NOTE_CHARS: usize = 4_096;
 const MAX_REPORT_STATUS_CHARS: usize = 128;
 const MAX_CASE_ID_CHARS: usize = 128;
 
+/// Whether `value` is a valid application identifier for Store links, lookups,
+/// blocks and new reports.
+///
+/// Differs from [`tilo_app_id::AppId::parse`] by allowing a single segment
+/// without a dot (Store links and catalogue entries never required a dot)
+/// while refusing empty segments and leading or trailing dots, and allowing
+/// `_` for Flathub identifiers.
 pub(crate) fn valid_app_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 255
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '-')
+    const GRAMMAR: tilo_app_id::Grammar = tilo_app_id::Grammar::CANONICAL.allow_single_segment();
+    GRAMMAR.matches(value)
+}
+
+/// Whether `value` may remain as an already-stored key in [`Reports::reports`]:
+/// the pre-unification Store invariant (so shared documents written earlier
+/// stay editable) plus [`valid_app_id`] (which adds `_` for Flathub ids).
+fn valid_stored_app_id(value: &str) -> bool {
+    valid_app_id(value)
+        || (!value.is_empty()
+            && value.len() <= tilo_app_id::MAX_APP_ID_BYTES
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-')))
 }
 
 pub(crate) fn valid_case_id(value: &str) -> bool {
@@ -93,7 +109,7 @@ impl Reports {
         #[param("App identity (for example so.tilo.notes)")] app_id: String,
     ) -> Result<(), Refusal> {
         let app_id = app_id.trim();
-        if !valid_app_id(app_id) {
+        if !self.reports.contains_key(app_id) && !valid_app_id(app_id) {
             return Err(Refusal::new("invalid app id for report draft"));
         }
         let report = self.reports.entry(app_id.to_owned()).or_default();
@@ -110,7 +126,7 @@ impl Reports {
     ) -> Result<(), Refusal> {
         let app_id = app_id.trim();
         let case_id = case_id.trim();
-        if !valid_app_id(app_id)
+        if (!self.reports.contains_key(app_id) && !valid_app_id(app_id))
             || !valid_case_id(case_id)
             || status.is_empty()
             || status.chars().count() > MAX_REPORT_STATUS_CHARS
@@ -126,7 +142,11 @@ impl Reports {
 
 impl Reports {
     fn valid(&self) -> Result<(), Refusal> {
-        if self.reports.keys().any(|app_id| !valid_app_id(app_id)) {
+        if self
+            .reports
+            .keys()
+            .any(|app_id| !valid_stored_app_id(app_id))
+        {
             return Err(Refusal::new("a report is about an app by its id"));
         }
         Ok(())

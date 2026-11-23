@@ -8,7 +8,7 @@ use super::written_under::Under;
 use super::{
     ActionKind, AutoCommit, DeviceCert, GovernedIdentity, MemberAccess, MembershipError, Role,
     Route, SignedOp, StatePeer, SystemTime, TreePath, WorkspacePolicy, backend, document_surface,
-    err, held_units, now_ns, resource_type, workspace, workspace_host_actor,
+    held_units, now_ns, resource_type, workspace, workspace_host_actor,
 };
 use collab_types::signer::DeviceSigner;
 
@@ -43,14 +43,39 @@ pub(super) mod walks {
 }
 
 /// How a write is decided ([`StatePeer::written_as`]): what its author may
-/// do, whether it is history of a device removed or of work taken back since,
-/// and, for a server's work a withdrawal keeps, the withdrawn delegation that
-/// keeps it.
-type Written = (
-    MemberAccess,
-    bool,
-    Option<collab_types::work_delegation::WorkDelegation>,
-);
+/// do, and whether it is history of a device its person removed since.
+type Written = (MemberAccess, bool);
+
+/// A caller a change was made for, as the change's history entry names them
+/// and the signed invocation it keeps proves it: the person who asked, and
+/// their access in the governance this copy judges the write by.
+pub(super) struct CallerAccess {
+    person: String,
+    access: MemberAccess,
+}
+
+/// The changes of a cleartext change `envelope`, when its payload carries
+/// them: `None` for a sealed one, a checkpoint, or bytes that do not parse.
+fn cleartext_changes_of(envelope: &SignedOp) -> Option<Vec<automerge::Change>> {
+    if envelope.encryption.is_some() {
+        return None;
+    }
+    let collab_types::DocumentMutation::Incremental(bytes) =
+        collab_types::DocumentMutation::decode(&envelope.payload).ok()?
+    else {
+        return None;
+    };
+    tilo_failure::ignored!(
+        "change bytes that do not parse name no caller",
+        collab_types::claim::parse_changes(&bytes).ok()
+    )
+}
+
+/// The person a change's invoker is decided as: the actor itself when it is a
+/// person, else the person it acts for.
+fn caller_person(acting: &tilo_action_policy::Acting) -> Option<&str> {
+    acting.person_id().or_else(|| acting.acted_for_person())
+}
 
 /// `person`'s access under `policy`, held to the foreign-device bound on a
 /// `foreign` device and to `delegate`'s bound on a delegate's.
@@ -131,29 +156,6 @@ impl StatePeer {
                     .is_ok_and(|identity| identity.device_cert == *cert && identity.has_admission())
             })
         })
-    }
-
-    /// Whether `key`'s device may take `action` on the workspace's governance
-    /// now: its person's role there and the grants on it decide, as every
-    /// receiver of a governance operation judges it
-    /// ([`crate::workspace::membership`]). The owner's role holds every
-    /// governance action by default.
-    pub(super) fn require_governance_action(
-        &self,
-        key: &dyn DeviceSigner,
-        action: &str,
-        now: SystemTime,
-    ) -> Result<(), String> {
-        let member = self.membership(key.device_public_key(), now)?;
-        member
-            .policy
-            .check_action(
-                &member.authority(),
-                action,
-                &tilo_action_policy::Context::at_time(now),
-                false,
-            )
-            .map_err(|refusal| refusal.to_string())
     }
 
     /// A current member's device. What it writes into the workspace is admitted
@@ -514,118 +516,8 @@ impl StatePeer {
                     delegate,
                 ))
             }
-            Err(error @ (MembershipError::Absent | MembershipError::UnknownDevice)) => {
-                // A key holder of another person that is no member takes a
-                // member's work as that member, under the delegation the
-                // member's own device signed for it; every change it writes is
-                // admitted within the delegation's paths alone
-                // ([`Self::authorize_document`]). A server the workspace names
-                // for nobody is nobody's.
-                let Some(delegation) = self.delegated_work(source, now) else {
-                    return Err(error);
-                };
-                let acting = crate::state::ActingAs {
-                    actor: tilo_action_policy::Actor::Member(delegation.actor()),
-                    grants: delegation.grants.clone(),
-                };
-                Ok((hex::encode(delegation.person), true, Some(acting)))
-            }
             Err(error) => Err(error),
         }
-    }
-    /// The delegation a member's device signed for the holder `source` to take
-    /// their work at `now`, when `source` is a holder this workspace names and
-    /// the delegation is live. A device that is no holder takes no member's
-    /// work, whatever rows the workspace carries.
-    fn delegated_work(
-        &self,
-        source: &[u8; 32],
-        now: SystemTime,
-    ) -> Option<collab_types::work_delegation::WorkDelegation> {
-        self.holder_certificate(source)?;
-        self.workspace().delegation_for_server(source, now)
-    }
-    /// The withdrawn delegation whose cut keeps `write`, a write to `document`
-    /// of `app` by a server this workspace names: the member's device held the
-    /// write when it took the work back
-    /// ([`collab_types::work_delegation::WorkDelegation::keeps`]), and the
-    /// write is that member's work ([`Self::delegated_work_is_theirs`]). What
-    /// the member signed decides, and the place of the write in its document:
-    /// no time a write names and no clock is asked.
-    fn withdrawal_keeping(
-        &self,
-        app: &str,
-        document: &str,
-        write: &SignedOp,
-    ) -> Option<collab_types::work_delegation::WorkDelegation> {
-        let server = write.author.as_bytes();
-        self.holder_certificate(server)?;
-        // A compaction restates history under a number its author used
-        // before: the cut names the very compactions the device held.
-        let compaction = if write.kind == collab_types::OpKind::Compaction {
-            Some(self.write_id(app, document, write)?)
-        } else {
-            None
-        };
-        let route = crate::coverage::route_key(app, document);
-        self.workspace()
-            .work_delegations()
-            .into_iter()
-            .filter(|form| {
-                &form.server == server && form.keeps(&route, write.seq, compaction.as_ref())
-            })
-            .find(|form| Self::delegated_work_is_theirs(server, form, write).is_ok())
-    }
-    /// Check that `write`, which `server` makes under `delegation`, is the
-    /// work of the member who signed it: every change names that member, or
-    /// the agent of theirs the delegation names, as the actor and the server's
-    /// device as where it ran. A write whose history names another person,
-    /// another device or nobody is refused: a server takes the work of the
-    /// member who delegated it and of no one else, and history says so.
-    fn delegated_work_is_theirs(
-        server: &[u8; 32],
-        delegation: &collab_types::work_delegation::WorkDelegation,
-        write: &SignedOp,
-    ) -> Result<(), AuthorizeRefusal> {
-        if write.encryption.is_some() {
-            return Err(AuthorizeRefusal::Denied(crate::AdmissionError::forbidden(
-                "work a server takes for a member is written in the clear",
-            )));
-        }
-        let mutation = collab_types::DocumentMutation::decode(&write.payload).map_err(|error| {
-            AuthorizeRefusal::Denied(crate::AdmissionError::malformed(format!(
-                "the change does not read as work: {error}"
-            )))
-        })?;
-        let changes = collab_types::claim::parse_changes(mutation.data()).map_err(|error| {
-            AuthorizeRefusal::Denied(crate::AdmissionError::malformed(format!(
-                "the change does not read as work: {error}"
-            )))
-        })?;
-        let actor = tilo_action_policy::Actor::Member(delegation.actor());
-        let server = hex::encode(server);
-        for change in &changes {
-            let named = change
-                .message()
-                .and_then(tilo_actions::ActionContext::from_change_message)
-                .and_then(|context| context.invoker)
-                .ok_or_else(|| {
-                    AuthorizeRefusal::Denied(crate::AdmissionError::forbidden(
-                        "work a server takes for a member names the actor it acts for",
-                    ))
-                })?;
-            if named.acting.by != actor {
-                return Err(AuthorizeRefusal::Denied(crate::AdmissionError::forbidden(
-                    "a server takes the work of the member who delegated it and no one else",
-                )));
-            }
-            if named.device.as_ref().map(|device| device.id.as_str()) != Some(server.as_str()) {
-                return Err(AuthorizeRefusal::Denied(crate::AdmissionError::forbidden(
-                    "work a server takes for a member names the server it ran on",
-                )));
-            }
-        }
-        Ok(())
     }
     /// What `source` may do, for a write of its history: [`Self::permissions`]
     /// as if its person had not removed the device since. Asked only of a
@@ -688,7 +580,7 @@ impl StatePeer {
     ) -> Result<Option<Written>, MembershipError> {
         let author = write.author.as_bytes();
         match self.permissions(*author, now) {
-            Ok(member) => Ok(Some((member, false, None))),
+            Ok(member) => Ok(Some((member, false))),
             Err(MembershipError::Revoked) => {
                 // The cut is read where it is kept: the governance this copy
                 // holds now, whatever the write is judged by.
@@ -716,32 +608,10 @@ impl StatePeer {
                 ) {
                     Ok(crate::removals::Place::Before) => self
                         .permissions_in_history(author, now)
-                        .map(|member| Some((member, true, None))),
+                        .map(|member| Some((member, true))),
                     Ok(crate::removals::Place::Unrecorded) => Ok(None),
                     Ok(crate::removals::Place::After) | Err(_) => Err(MembershipError::Revoked),
                 }
-            }
-            Err(error @ (MembershipError::Absent | MembershipError::UnknownDevice)) => {
-                // No live delegation stands for a server that is no member's
-                // device. What a withdrawal's cut keeps of its work is
-                // history; the rest stays refused, whatever time it names.
-                let Some(withdrawn) = self.withdrawal_keeping(app, document, write) else {
-                    return Err(error);
-                };
-                let policy = self
-                    .core
-                    .workspace_doc
-                    .as_ref()
-                    .ok_or(MembershipError::RulesMissing)?
-                    .workspace_policy(&self.core.workspace)
-                    .clone();
-                let acting = crate::state::ActingAs {
-                    actor: tilo_action_policy::Actor::Member(withdrawn.actor()),
-                    grants: withdrawn.grants.clone(),
-                };
-                let member = access_of(policy, hex::encode(withdrawn.person), true, Some(acting))
-                    .granted(self.approved_keys(now));
-                Ok(Some((member, true, Some(withdrawn))))
             }
             Err(error) => Err(error),
         }
@@ -776,7 +646,7 @@ impl StatePeer {
             Under::Missing => return Err(MembershipError::RulesMissing),
         };
         written
-            .map(|(member, _, _)| member)
+            .map(|(member, _)| member)
             .ok_or(MembershipError::Revoked)
     }
     /// Whether the device that wrote a change is one of a governor's
@@ -866,7 +736,7 @@ impl StatePeer {
             .resource(resource)
             .rest()
             .action(action);
-        Ok(self.allows(source, &member, &node, ActionKind::Undoable, now))
+        Ok(member.allows(&node, ActionKind::Undoable, now))
     }
 
     /// Whether the device `source` may open `resource` of `app` here now: read
@@ -888,28 +758,7 @@ impl StatePeer {
             .app(app)
             .rest()
             .resource(resource);
-        Ok(self.allows(source, &member, &node, ActionKind::Read, now))
-    }
-
-    /// Whether `member`, the device `source`, may do `kind` at `node`. A server
-    /// of another person acts for a member only within the delegation the
-    /// member signed for it.
-    fn allows(
-        &self,
-        source: [u8; 32],
-        member: &MemberAccess,
-        node: &TreePath,
-        kind: ActionKind,
-        now: SystemTime,
-    ) -> bool {
-        if backend::member::role(&self.core, &source, now).is_err()
-            && self
-                .delegated_work(&source, now)
-                .is_none_or(|delegation| !delegation.allows(node, kind))
-        {
-            return false;
-        }
-        member.allows(node, kind, now)
+        Ok(member.allows(&node, ActionKind::Read, now))
     }
     /// The app surface this peer names in the changes it signs for `app`'s
     /// records, if it names one.
@@ -922,13 +771,9 @@ impl StatePeer {
     pub fn write_as_workspace_host(&mut self) {
         self.workspace_host = true;
     }
-    /// Tell this copy which device it is the copy of. Where that device is a
-    /// member's and may write the workspace, the copy keeps what it saw when
-    /// the workspace's document starts over: a base that lacks a work
-    /// delegation's form this copy holds is adopted, and the form goes back
-    /// into its row as this device's own change in the same step
-    /// ([`Self::receive_from`]). A copy that was told no device refuses such
-    /// a base and stays on what it holds until a base holds the form.
+    /// Tell this copy which device it is the copy of: what it writes against
+    /// a base that replaced its history is carried onto the base
+    /// ([`Self::receive_from`]).
     pub fn write_as_device(&mut self, device: [u8; 32]) {
         self.own_device = Some(device);
     }
@@ -951,12 +796,12 @@ impl StatePeer {
     }
 
     /// The admitted workspace's security basis
-    /// ([`workspace::media::security_basis`]) under this replica's
+    /// ([`workspace::basis::security_basis`]) under this replica's
     /// revocations, reading the identity rows its governance state decoded
     /// once, and worked out once for that state: every copy of this replica
     /// that holds the same governance answers with it. `None` while no
     /// workspace is admitted.
-    pub fn security_basis(&self) -> Option<Result<[u8; 32], workspace::media::MediaPolicyError>> {
+    pub fn security_basis(&self) -> Option<Result<[u8; 32], workspace::basis::BasisError>> {
         let doc = self.core.workspace_doc.as_ref()?;
         Some(doc.security_basis(&self.revocations()))
     }
@@ -1151,68 +996,6 @@ impl StatePeer {
                 .into()
         })
     }
-    /// Validated data from this exact snapshot, not an authorization credential.
-    /// Missing exact Chat prerequisites and unpromoted local revocations fail
-    /// closed. Current device permissions/time still require separate checks.
-    pub fn validated_media_policy(
-        &self,
-    ) -> Result<Option<workspace::media::WorkspaceMediaV1>, String> {
-        let policy = self.validate_present_media_policy()?;
-        if let Some(policy) = &policy {
-            backend::media::ready(
-                policy,
-                |app, record| backend::media::bound(self, policy, app, record),
-                || self.holds_unpromoted_revocations(),
-            )
-            .map_err(backend::media::ReadinessError::message)?;
-        }
-        Ok(policy)
-    }
-    /// Whether this replica knows of a revocation its workspace's governance
-    /// does not hold yet. The call policy rests on the governance
-    /// ([`Self::validate_present_media_policy`]), so calls wait until such a
-    /// revocation is written into it.
-    pub(super) fn holds_unpromoted_revocations(&self) -> Result<bool, String> {
-        let doc = self
-            .core
-            .workspace_doc
-            .as_ref()
-            .ok_or("missing workspace")?;
-        let revocations = self.revocations();
-        if revocations.is_empty() {
-            return Ok(false);
-        }
-        Ok(doc.security_basis(&revocations).map_err(err)?
-            != workspace::media::security_basis(doc, &[]).map_err(err)?)
-    }
-    pub(super) fn validate_present_media_policy(
-        &self,
-    ) -> Result<Option<workspace::media::WorkspaceMediaV1>, String> {
-        self.core
-            .workspace_doc
-            .as_deref()
-            .map(|doc| {
-                workspace::media::validate_transition(
-                    None,
-                    doc,
-                    workspace::media::TransitionMode::Restore,
-                )
-                .map_err(err)
-            })
-            .transpose()
-            .map(Option::flatten)
-    }
-    pub(super) fn validate_media_bindings(
-        &self,
-        policy: &workspace::media::WorkspaceMediaV1,
-        require_complete: bool,
-    ) -> Result<(), String> {
-        backend::media::bindings(policy, require_complete, |app, record| {
-            backend::media::bound(self, policy, app, record)
-        })
-        .map_err(backend::media::ReadinessError::message)
-    }
-
     pub(super) fn certificate(
         &self,
         source: &[u8; 32],
@@ -1349,20 +1132,6 @@ impl StatePeer {
             .collect())
     }
 
-    /// Whether this copy refused a base of its governor that is newer than
-    /// the workspace document it holds: its governor then governs by roles
-    /// and grants the copy does not hold, and what the copy holds says of no
-    /// write that it is its author's to make.
-    pub(super) fn behind_its_governor(&self) -> bool {
-        self.refused_base.is_some_and(|refused| {
-            self.core
-                .workspace_doc
-                .as_deref()
-                .map_or(0, workspace::base::generation)
-                < refused
-        })
-    }
-
     /// The authority of `source` for the change `envelope` makes on `record`
     /// of `app_id`, judged by the governance it was written under
     /// ([`Self::judged_under`]): refused when that governance does not grant
@@ -1379,22 +1148,58 @@ impl StatePeer {
         authorization_time: SystemTime,
         retained: bool,
     ) -> Result<Authorized, AuthorizeRefusal> {
+        self.authorize_document_as(
+            source,
+            app_id,
+            record,
+            envelope,
+            envelope,
+            authorization_time,
+            retained,
+        )
+    }
+
+    /// [`Self::authorize_document`] for `envelope`, a sealed write whose
+    /// plaintext this device opened as `changes`: the write's identity, the
+    /// governance heads it names and its author's authority are `envelope`'s,
+    /// and what its changes say of who made them, the invocation a caller
+    /// signed included, is `changes`'.
+    pub(super) fn authorize_document_as(
+        &self,
+        source: &[u8; 32],
+        app_id: &str,
+        record: &str,
+        envelope: &SignedOp,
+        changes: &SignedOp,
+        authorization_time: SystemTime,
+        retained: bool,
+    ) -> Result<Authorized, AuthorizeRefusal> {
         if envelope.author.as_bytes() != source {
             return Err(AuthorizeRefusal::Denied(crate::AdmissionError::forbidden(
                 "the change is not its sender's own",
             )));
         }
-        let (decided, delegated) = match self
+        let decided = match self
             .judged_under(app_id, record, envelope, retained)
             .map_err(|error| AuthorizeRefusal::Denied(crate::AdmissionError::malformed(error)))?
         {
             Under::Missing => return Ok(Authorized::Hold(crate::MissingPrerequisite::Rules)),
-            Under::Now => {
-                self.decide_written(source, app_id, record, envelope, authorization_time)?
-            }
-            Under::Past(judged) => {
-                judged.decide_written(source, app_id, record, envelope, authorization_time)?
-            }
+            Under::Now => self.decide_written(
+                source,
+                app_id,
+                record,
+                envelope,
+                changes,
+                authorization_time,
+            )?,
+            Under::Past(judged) => judged.decide_written(
+                source,
+                app_id,
+                record,
+                envelope,
+                changes,
+                authorization_time,
+            )?,
             // The governance it names may be on its way: what this copy holds
             // refusing it, it waits for that.
             Under::Unresolved(judged) => {
@@ -1403,6 +1208,7 @@ impl StatePeer {
                     app_id,
                     record,
                     envelope,
+                    changes,
                     authorization_time,
                 ) {
                     Ok(decided) => decided,
@@ -1412,46 +1218,24 @@ impl StatePeer {
                 }
             }
         };
-        if !matches!(decided, Authorized::Admit { .. }) {
-            return Ok(decided);
-        }
-        // A server's work for a member who took it back since is history only
-        // as far as the withdrawal kept it, whatever governance it names.
-        if delegated
-            && self.delegated_work(source, authorization_time).is_none()
-            && self.withdrawal_keeping(app_id, record, envelope).is_none()
-        {
-            return Err(AuthorizeRefusal::Denied(crate::AdmissionError::forbidden(
-                "the member this server worked for took the work back before it was taken",
-            )));
-        }
-        // A copy behind its governor's base takes nothing in on the roles and
-        // grants it holds: the write waits, and the base the copy takes
-        // decides it.
-        if self.behind_its_governor() {
-            return Ok(Authorized::Hold(crate::MissingPrerequisite::Rules));
-        }
         Ok(decided)
     }
 
-    /// [`Self::authorize_document`] by the governance this peer holds, and
-    /// whether the change was a server's work under a live delegation.
+    /// [`Self::authorize_document`] by the governance this peer holds.
     fn decide_written(
         &self,
         source: &[u8; 32],
         app_id: &str,
         record: &str,
         envelope: &SignedOp,
+        changes: &SignedOp,
         authorization_time: SystemTime,
-    ) -> Result<(Authorized, bool), AuthorizeRefusal> {
+    ) -> Result<Authorized, AuthorizeRefusal> {
         let written = self
             .written_as(app_id, record, envelope, authorization_time)
             .map_err(|error| AuthorizeRefusal::Denied(error.into()))?;
-        let Some((member, history, kept)) = written else {
-            return Ok((
-                Authorized::Hold(crate::MissingPrerequisite::RemovalCut),
-                false,
-            ));
+        let Some((member, history)) = written else {
+            return Ok(Authorized::Hold(crate::MissingPrerequisite::RemovalCut));
         };
         // A change made with another version of the app than the workspace runs
         // is held: its author's desktop switches to the workspace's version, and
@@ -1460,10 +1244,7 @@ impl StatePeer {
             && let Some(running) = self.workspace_surface(app_id)
             && envelope.surface != Some(running)
         {
-            return Ok((
-                Authorized::Hold(crate::MissingPrerequisite::AppSurface),
-                false,
-            ));
+            return Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface));
         }
         let route = Route {
             app: app_id.into(),
@@ -1479,38 +1260,51 @@ impl StatePeer {
         // A document this peer does not hold yet is read from its first
         // changes: they carry its unit index from the start.
         let held = match document {
-            Some(document) => Some(held_units(&document.doc, envelope)),
+            Some(document) => Some(held_units(&document.doc, changes)),
             None => enforced.then(AutoCommit::new),
         };
         let cx = tilo_action_policy::Context::at_time(authorization_time);
-        // A server that is no member's own device takes a member's work under
-        // that member's delegation, and only as far as the delegation names:
-        // the member's authority bounds it above, the delegation below.
-        // History a withdrawal's cut keeps is bounded by the form that keeps
-        // it, as the work was when it was done ([`Self::written_as`]).
-        let live = kept.is_none();
-        let delegation = kept.or_else(|| {
-            backend::member::role(&self.core, source, authorization_time)
-                .is_err()
-                .then(|| self.delegated_work(source, authorization_time))
-                .flatten()
-        });
-        if let Some(delegation) = &delegation {
-            Self::delegated_work_is_theirs(source, delegation, envelope)?;
-        }
+        // A change a host made for a caller on another device proves who asked
+        // with the invocation the caller signed.
+        let caller =
+            self.recorded_caller(app_id, record, source, changes, &member, authorization_time)?;
+        // What the caller was refused, when the author was granted the claim
+        // but the caller was not: the node and kind the claim was decided at,
+        // as the one builder of decision nodes names them.
+        let caller_refused = std::cell::RefCell::new(None);
         let allows =
             |invoker: Option<&tilo_action_policy::Acting>, node: &TreePath, kind: ActionKind| {
-                if delegation
-                    .as_ref()
-                    .is_some_and(|delegation| !delegation.allows(node, kind))
+                if collab_types::ChangeAuthor::answer(&member, invoker, node, kind, &cx)
+                    != tilo_action_policy::Answer::Allow
                 {
                     return false;
                 }
-                collab_types::ChangeAuthor::answer(&member, invoker, node, kind, &cx)
-                    == tilo_action_policy::Answer::Allow
+                // The caller asked for this action, so the member list must let
+                // them take it, not only the device that ran it for them.
+                match (&caller, invoker) {
+                    (Some(caller), Some(acting))
+                        if caller_person(acting) == Some(caller.person.as_str()) =>
+                    {
+                        if collab_types::ChangeAuthor::answer(
+                            &caller.access,
+                            Some(acting),
+                            node,
+                            kind,
+                            &cx,
+                        ) == tilo_action_policy::Answer::Allow
+                        {
+                            true
+                        } else {
+                            *caller_refused.borrow_mut() =
+                                Some((caller.person.clone(), node.to_string(), kind));
+                            false
+                        }
+                    }
+                    _ => true,
+                }
             };
         let decided = collab_types::decide_op_pinned(
-            envelope,
+            changes,
             &collab_types::WrittenDocument {
                 workspace: &self.core.workspace,
                 app: app_id,
@@ -1525,27 +1319,168 @@ impl StatePeer {
             collab_types::Receipt::Admit => self.recorded_invocations(envelope).map(|()| receipt),
             collab_types::Receipt::Hold => Ok(receipt),
         });
-        let delegated = live && delegation.is_some();
         match decided {
-            Ok(collab_types::Receipt::Admit) => Ok((
-                Authorized::Admit {
-                    by_governor: self.wrote_as_governor(source, history),
-                    shows: self.appearance_author(source, authorization_time, history),
-                    member,
-                    history,
-                },
-                delegated,
-            )),
-            Ok(collab_types::Receipt::Hold) => Ok((
-                Authorized::Hold(crate::MissingPrerequisite::AppSurface),
-                false,
-            )),
+            Ok(collab_types::Receipt::Admit) => Ok(Authorized::Admit {
+                by_governor: self.wrote_as_governor(source, history),
+                shows: self.appearance_author(source, authorization_time, history),
+                member,
+                history,
+            }),
+            Ok(collab_types::Receipt::Hold) => {
+                Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface))
+            }
             Err(refusal) => {
+                // The author was granted the claim and its caller was not:
+                // the refusal is the caller's, not the author's.
+                let refusal = match caller_refused.borrow().clone() {
+                    Some((person, node, kind)) => {
+                        collab_types::ReceiptRefusal::CallerNotGranted { person, node, kind }
+                    }
+                    None => refusal,
+                };
                 let said = refused_change(&refusal, &route, source, envelope);
                 Err(AuthorizeRefusal::Rules(refusal, said))
             }
         }
     }
+
+    /// The caller a change `envelope` of `record` in `app_id` was made for, if
+    /// any: a history entry names a caller on another device, so the change
+    /// must carry the invocation that caller signed, and it must check.
+    /// `Ok(None)` for a change a device made for itself, which names no caller
+    /// on another device and needs none.
+    ///
+    /// The caller's access is taken under the governance this copy judges the
+    /// write by ([`Self::decide_written`]), never the governance it holds now
+    /// when that is not the one the write names.
+    fn recorded_caller(
+        &self,
+        app_id: &str,
+        record: &str,
+        source: &[u8; 32],
+        envelope: &SignedOp,
+        member: &MemberAccess,
+        authorization_time: SystemTime,
+    ) -> Result<Option<CallerAccess>, AuthorizeRefusal> {
+        let Some(changes) = cleartext_changes_of(envelope) else {
+            return Ok(None);
+        };
+        self.callers_named_in(
+            app_id,
+            record,
+            source,
+            envelope,
+            &changes,
+            member,
+            authorization_time,
+        )
+    }
+
+    /// The caller the changes `changes` of `envelope` name, each invocation
+    /// they keep checked: what [`Self::recorded_caller`] asks of a received
+    /// change, and a device opening a sealed write asks of the open one.
+    pub(super) fn callers_named_in(
+        &self,
+        app_id: &str,
+        record: &str,
+        source: &[u8; 32],
+        envelope: &SignedOp,
+        changes: &[automerge::Change],
+        member: &MemberAccess,
+        authorization_time: SystemTime,
+    ) -> Result<Option<CallerAccess>, AuthorizeRefusal> {
+        let route = Route {
+            app: app_id.into(),
+            record: record.into(),
+        };
+        let mut caller: Option<CallerAccess> = None;
+        for change in changes {
+            let Some(context) = change
+                .message()
+                .and_then(tilo_actions::ActionContext::from_change_message)
+            else {
+                continue;
+            };
+            // Every invocation a change keeps is checked, whether or not it
+            // names a caller on another device.
+            let certificate = tilo_server_protocol::invocation::verify_recorded(
+                &context,
+                &self.core.workspace,
+                &self.core.revocations,
+            )
+            .map_err(|error| {
+                refused_invocation(
+                    &route,
+                    source,
+                    envelope,
+                    &format!("the invocation a change made for a caller does not check: {error}"),
+                )
+            })?;
+            let Some(invoker) = context.invoker.as_ref() else {
+                return Err(refused_no_invoker(&route, source, envelope));
+            };
+            if invoker.device.is_none() {
+                continue;
+            }
+            let Some(certificate) = certificate else {
+                return Err(refused_invocation(
+                    &route,
+                    source,
+                    envelope,
+                    "a change made for a caller carries no invocation that caller signed",
+                ));
+            };
+            let person = hex::encode(certificate.user_public_key);
+            match &caller {
+                Some(held) if held.person != person => {
+                    return Err(refused_invocation(
+                        &route,
+                        source,
+                        envelope,
+                        "the changes of one action name more than one caller",
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    // The member list at the write's heads decides the caller:
+                    // the role and grants its person had then, and the keys
+                    // approved then.
+                    let access = MemberAccess::person(member.policy.clone(), person.clone())
+                        .granted(self.approved_keys(authorization_time));
+                    caller = Some(CallerAccess { person, access });
+                }
+            }
+        }
+        Ok(caller)
+    }
+}
+
+/// `reason` as a change of `route` from `source` is refused: typed as the
+/// workspace's rules refuse a change, and in words that name who made it and
+/// which device signed it.
+fn refused_invocation(
+    route: &Route,
+    source: &[u8; 32],
+    envelope: &SignedOp,
+    reason: &str,
+) -> AuthorizeRefusal {
+    let refusal = collab_types::ReceiptRefusal::SignedInvocation(reason.to_owned());
+    let said = refused_change(&refusal, route, source, envelope);
+    AuthorizeRefusal::Rules(refusal, said)
+}
+
+/// A change of `route` from `source` that names no invoker is refused: every
+/// change says who made it, a device's own person or agent or a caller that
+/// signed.
+///
+/// A compaction and a checkpoint are no changes of their own: they carry
+/// other writes, which keep their own invokers, and they are judged by those
+/// and by their signer. They are exempt from this rule for that reason, and
+/// not from admission.
+fn refused_no_invoker(route: &Route, source: &[u8; 32], envelope: &SignedOp) -> AuthorizeRefusal {
+    let refusal = collab_types::ReceiptRefusal::NoInvoker;
+    let said = refused_change(&refusal, route, source, envelope);
+    AuthorizeRefusal::Rules(refusal, said)
 }
 
 impl StatePeer {

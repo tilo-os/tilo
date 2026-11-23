@@ -104,6 +104,7 @@ tilo_test_env::scenario! {
 
     phase a_steady_frame_measures_nothing_and_paints_only_what_is_in_view;
     {
+        let mut painted = Vec::new();
         for count in [40_usize, 400] {
             let mut frames = Frames::of(thread(count));
             let steady = frames.frames(30);
@@ -135,20 +136,11 @@ tilo_test_env::scenario! {
                 count + count.div_ceil(50),
                 "every row — a line or a day divider — is either painted or culled: {work:?}"
             );
+            painted.push(work.painted);
         }
-    }
-
-    phase a_ten_times_longer_thread_costs_the_same_frame;
-    {
-        let mut short = Frames::of(thread(40));
-        let mut long = Frames::of(thread(400));
-        short.frames(10);
-        long.frames(10);
-        let short_work = short.list.work();
-        let long_work = long.list.work();
-        assert_eq!(short_work.measured, long_work.measured);
-        assert_eq!(short_work.reused, 40);
-        assert_eq!(long_work.reused, 400);
-        assert_eq!(short_work.painted, long_work.painted);
+        assert_eq!(
+            painted[0], painted[1],
+            "a ten times longer thread costs the same frame: {painted:?}"
+        );
     }
 }

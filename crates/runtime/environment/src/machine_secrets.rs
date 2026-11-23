@@ -46,20 +46,9 @@ pub struct MachineSecret {
     pub item: String,
 }
 
-impl MachineSecrets {
-    /// What the document holds, read as any app's document through
-    /// [`fields`](tilo_resource::read::fields).
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
 #[resource(
     kind = "terminal.machine-secrets",
-    read_content = MachineSecrets::read_document
+    read_content = tilo_resource::read::fields
 )]
 impl MachineSecrets {
     /// Add secret.

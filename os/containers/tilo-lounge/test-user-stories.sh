@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # The user stories (stories/stories.json), walked as the people in them would.
 # A story says how it is walked (`walk`): in Tilo shells (`shell`: each person a
-# headless Tilo session of their own, stories/shell/story.py), on the web page
-# (`page`: each story on a fresh tilo.sh stack of its own, tilo-sh/stack.sh,
-# production's entrypoints and environment over the programs t built, as
-# test-e2e.sh brings it up, its people in fresh browser profiles,
+# headless Tilo session of their own, stories/shell/story.py, or a computer on
+# which the `tilo` command is the whole of Tilo, stories/shell/cli_host.py),
+# on the web page (`page`: each story on a fresh tilo.sh stack of its own,
+# tilo-sh/stack.sh, production's entrypoints and environment over the programs
+# t built, as test-e2e.sh brings it up, its people in fresh browser profiles,
 # stories/recorder.mjs), or through the workspace's mounted folders (`mount`).
 # Every step is recorded, timed and held to its budget. Then a first-time user's
 # verdict on each recording (stories/judge.py, a model with no knowledge of the

@@ -36,7 +36,6 @@
 //! call through once ([`AllowedOnce`]): what it answers goes to the agent
 //! that made it, so it is sent when that agent makes the same call again.
 
-use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -50,8 +49,8 @@ pub(super) use tilo_actions::remote::person_vault::WebCall;
 use super::{AskedTurn, Workspaces};
 // The guard's own names, from the one place this crate takes them.
 use crate::connections::wire::{
-    Destinations, Lookup, check_destination, guarded_client, is_public, refused_address,
-    system_lookup,
+    Destinations, Lookup, check_destination, guarded_client, is_non_public_literal,
+    is_withheld_request_header, refused_address, system_lookup,
 };
 
 /// How long a service may take to answer, whole.
@@ -82,31 +81,18 @@ const CANNOT_RIDE: &str = "That key cannot be sent the way its item says";
 const INSIDE: &str = "That address is inside this server's own network, where no key is sent";
 
 /// Whether `name`, in lower case, is a header that is not the agent's to set:
-/// what frames a request, says who it is for or how it reached here, turns it
-/// into another request at the service, or signs it in.
+/// the shared withheld set ([`is_withheld_request_header`]), credentials, and
+/// headers that turn the request into another request at the service.
 fn senders_own(name: &str) -> bool {
-    name.starts_with("x-forwarded-")
+    is_withheld_request_header(name)
         || matches!(
             name,
             "authorization"
-                | "connection"
-                | "content-length"
                 | "cookie"
-                | "expect"
-                | "forwarded"
-                | "host"
-                | "keep-alive"
-                | "proxy-authorization"
-                | "proxy-connection"
-                | "te"
-                | "trailer"
-                | "transfer-encoding"
-                | "upgrade"
                 | "x-http-method"
                 | "x-http-method-override"
                 | "x-method-override"
                 | "x-original-url"
-                | "x-real-ip"
                 | "x-rewrite-url"
         )
 }
@@ -138,27 +124,6 @@ impl Workspaces {
     }
 }
 
-/// Whether `url` names a literal address that is off the public internet.
-/// A name is never one.
-fn literal_inside(url: &Url) -> bool {
-    if url.domain().is_some() {
-        return false;
-    }
-    // What is left of an origin without its scheme: `127.0.0.1:8080`,
-    // `[::1]:8080`, or the address alone on the scheme's own port.
-    let origin = url.origin().ascii_serialization();
-    let at = origin.split_once("://").map_or("", |(_, at)| at);
-    let literal = at.strip_prefix('[').map_or_else(
-        || at.rsplit_once(':').map_or(at, |(address, _)| address),
-        |inside| inside.split(']').next().unwrap_or_default(),
-    );
-    tilo_failure::ignored!(
-        "what is no literal address is a name, and a name is never inside",
-        literal.parse::<IpAddr>().ok()
-    )
-    .is_some_and(|address| !is_public(address))
-}
-
 /// The address `call` names, when a key may be sent there by a server that
 /// reaches `reach`.
 fn address(call: &WebCall, reach: Destinations) -> Result<Url, String> {
@@ -173,7 +138,8 @@ fn address(call: &WebCall, reach: Destinations) -> Result<Url, String> {
                 .to_owned(),
         );
     }
-    let plain_inside = url.scheme() == "http" && reach == Destinations::Any && literal_inside(&url);
+    let plain_inside =
+        url.scheme() == "http" && reach == Destinations::Any && is_non_public_literal(&url);
     if url.scheme() != "https" && !plain_inside {
         return Err("A key is sent only to an https address".to_owned());
     }
@@ -684,6 +650,7 @@ impl AllowedOnce {
 mod tests {
 
     use std::future::Future;
+    use std::net::IpAddr;
     use std::pin::Pin;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1085,5 +1052,158 @@ mod tests {
         assert_eq!(name.as_str(), "x-api-key");
         assert!(!format!("{value:?}").contains("made-up"));
         assert!(key_header("X-Api-Key", "two\nlines").is_err());
+    }
+
+    /// Every unusual IPv4 spelling, bracketed or IPv4-mapped IPv6 literal,
+    /// trailing-dot literal, port and credentialed address is judged by the
+    /// shared literal-address guard.
+    #[test]
+    fn literal_addresses_are_refused_in_every_spelling_and_plain_only_when_let() {
+        for refused in [
+            "https://127.0.0.1/",
+            "https://127.0.0.1./",
+            "https://2130706433/",
+            "https://0x7f.1/",
+            "https://0177.0.0.1/",
+            "https://127.1/",
+            "https://0/",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://10.0.0.1:8443/",
+            "https://172.16.0.1/",
+            "https://192.168.1.1/",
+            "https://[::1]:8443/",
+            "https://[fe80::1]/",
+            "https://[fc00::1]/",
+            "https://[::ffff:127.0.0.1]/",
+            "https://[::ffff:10.0.0.7]:8443/",
+            "https://user:pass@127.0.0.1/",
+            "https://user:pass@[::1]:8443/",
+        ] {
+            assert!(
+                address(&call(refused), Destinations::Public).is_err(),
+                "{refused}"
+            );
+        }
+        for plain_inside in [
+            "http://127.0.0.1:8080/v1",
+            "http://127.0.0.1./v1",
+            "http://2130706433:8080/v1",
+            "http://0x7f.1:8080/v1",
+            "http://[::1]:8080/v1",
+            "http://[::ffff:127.0.0.1]:8080/v1",
+            "http://10.0.0.7:8080/v1",
+        ] {
+            assert!(
+                address(&call(plain_inside), Destinations::Any).is_ok(),
+                "{plain_inside}"
+            );
+        }
+        for not_plain in [
+            "http://1.1.1.1/v1",
+            "http://1.1.1.1./v1",
+            "http://[::ffff:1.1.1.1]/v1",
+            "http://[2606:4700:4700::1111]/v1",
+            "http://example.com./v1",
+            "http://localhost./v1",
+            "blob:http://127.0.0.1/x",
+            "redis://127.0.0.1/",
+            "file://127.0.0.1/etc/passwd",
+        ] {
+            assert!(
+                address(&call(not_plain), Destinations::Any).is_err(),
+                "{not_plain}"
+            );
+        }
+        let (items, mut with_key) = kept_for("https://api.example.test");
+        with_key.url = "https://api.example.test/v1".to_owned();
+        assert!(
+            sendable(&with_key, Destinations::Public, &items).is_ok(),
+            "control row must pass sendable with a vault key"
+        );
+        for non_http in [
+            "blob:http://127.0.0.1/x",
+            "redis://127.0.0.1/",
+            "file://127.0.0.1/etc/passwd",
+        ] {
+            with_key.url = non_http.to_owned();
+            assert!(
+                sendable(&with_key, Destinations::Public, &items).is_err(),
+                "{non_http} (public)"
+            );
+            assert!(
+                sendable(&with_key, Destinations::Any, &items).is_err(),
+                "{non_http} (any)"
+            );
+        }
+    }
+
+    /// Every header in the shared withheld set and the web-call-specific set
+    /// is refused, in any case, and credential response headers stay stripped.
+    #[test]
+    fn every_shared_and_web_call_withheld_header_is_refused() {
+        let with = |name: &str, value: &str| {
+            let mut asked = call("https://api.example.test/v1");
+            asked.headers.insert(name.to_owned(), value.to_owned());
+            asked
+        };
+        for refused in [
+            // Shared with the fetch proxy.
+            "connection",
+            "content-length",
+            "expect",
+            "forwarded",
+            "host",
+            "keep-alive",
+            "proxy-authorization",
+            "proxy-connection",
+            "te",
+            "trailer",
+            "transfer-encoding",
+            "upgrade",
+            "x-real-ip",
+            "x-forwarded-for",
+            "X-Forwarded-Proto",
+            "Host",
+            // Web-call-specific extras.
+            "authorization",
+            "cookie",
+            "x-http-method",
+            "x-http-method-override",
+            "x-method-override",
+            "x-original-url",
+            "x-rewrite-url",
+            "X-Rewrite-URL",
+        ] {
+            assert!(
+                headers(&with(refused, "v"), &KeyIn::Bearer).is_err(),
+                "{refused} must be refused"
+            );
+        }
+        // Credential response headers remain stripped by `not_handed_back`.
+        let mut response = HeaderMap::new();
+        for name in [
+            "authorization",
+            "proxy-authenticate",
+            "proxy-authorization",
+            "set-cookie",
+            "set-cookie2",
+            "content-type",
+        ] {
+            response.insert(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_static("ok"),
+            );
+        }
+        let answered = handed_back(&response, &Struck::of(&[KEY]));
+        for stripped in [
+            "authorization",
+            "proxy-authenticate",
+            "proxy-authorization",
+            "set-cookie",
+            "set-cookie2",
+        ] {
+            assert!(!answered.contains_key(stripped), "{stripped}");
+        }
+        assert_eq!(answered.get("content-type"), Some(&json!("ok")));
     }
 }

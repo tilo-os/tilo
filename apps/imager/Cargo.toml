@@ -174,11 +174,6 @@ path = "tests/prepared_setup_cli.rs"
 required-features = ["installation"]
 
 [[test]]
-name = "destination_headless_wizard"
-path = "tests/destination_headless_wizard.rs"
-required-features = ["destination"]
-
-[[test]]
 name = "profile_transport"
 path = "tests/profile_transport.rs"
 required-features = ["installation", "destination"]
@@ -193,9 +188,9 @@ imager-backend = { path = "../../crates/platform/imager-backend", features = ["t
 tilo-desktop-model = { path = "../../crates/session/desktop-model" }
 vello_encoding.workspace = true
 cloud-source-dav = { path = "../../crates/system/cloud-source-dav", features = ["fake-server"] }
-test-http = { path = "../../crates/dev/test-http" }
+test-http = { path = "../../tools/test-http" }
 tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 # Waits on the handoff source's refusals instead of sleeping.
 tilo-handoff = { path = "../../crates/platform/tilo-handoff", features = ["test-support"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

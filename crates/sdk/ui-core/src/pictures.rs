@@ -329,8 +329,10 @@ pub fn dropped_picture(path: &std::path::Path) -> Result<KeptPicture, PictureRef
         &file,
         crate::clipboard::MAX_PASTED_IMAGE_BYTES.saturating_add(1),
     )
-    .map_err(|error| PictureRefusal::Unreadable(error.to_string()))?
-    .ok_or(PictureRefusal::TooLarge)?;
+    .map_err(|error| match error {
+        tilo_files::FsError::FileTooLarge => PictureRefusal::TooLarge,
+        other => PictureRefusal::Unreadable(other.to_string()),
+    })?;
     keep_picture(&name, &bytes)
 }
 

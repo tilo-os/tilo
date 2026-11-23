@@ -78,7 +78,7 @@ impl ResourceApp for TlApp {
     /// runs; without one, the window running its instance in this process.
     fn opening(cx: &OpeningCx<'_>) -> Option<Box<dyn OpeningView>> {
         crate::i18n::ensure();
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             let window = if crate::hosted::is_hosted() {
                 crate::hosted::HostedWindow::new(crate::hosted::window_instance())
@@ -87,7 +87,7 @@ impl ResourceApp for TlApp {
             };
             Some(Box::new(window))
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         {
             let _ = cx;
             None
@@ -96,7 +96,7 @@ impl ResourceApp for TlApp {
 
     fn view(cx: &mut ViewCx<Workspace>) -> Element {
         crate::i18n::ensure();
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             // The window shown before the document, taken over with what the person did in it.
             let opened = cx
@@ -151,7 +151,7 @@ impl ResourceApp for TlApp {
                 .to_owned();
             cx.surface(crate::page::PageWindow::new(&me, bundle))
         }
-        #[cfg(not(any(target_os = "linux", target_arch = "wasm32")))]
+        #[cfg(not(any(unix, target_arch = "wasm32")))]
         {
             let _ = cx;
             Box::new(ui::widget::EmptyState::new(crate::i18n::t(
@@ -165,7 +165,7 @@ impl ResourceApp for TlApp {
 /// process over the app's document on this device, kept in the app's data area (`files`): a
 /// window without a session (`tilolang dev`, a capture). `None` when nothing is installed, or
 /// the instance does not start.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn in_process(
     me: &str,
     workspace: &str,
@@ -211,7 +211,7 @@ fn in_process(
 /// and the origin, in native code with the network, writes what they answer. A mail server's
 /// types are kept only by the connector the session starts, which the session tells the
 /// workspace's accounts and their sign-ins: a window outside a tilolang host reaches none.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn live_origins(window: &mut crate::hosted::HostedWindow) {
     let Some(meta) = installed() else {
         return;

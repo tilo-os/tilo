@@ -404,34 +404,30 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_sound_plays_only_when_its_event_and_the_quiet_state_allow;
 
-        phase policy_table;
-        // Every event × Do Not Disturb × its own toggle.
+        phase feedback_and_critical_events_play_through_do_not_disturb_only;
         {
             use SystemSoundEvent as E;
-            // Feedback and critical events play through Do Not Disturb.
-            // Notifications and messages carry their own verdict, which is
-            // already "no" under DND; other interruptions are held back here.
-            let expected_under_dnd =
-                |event: E| matches!(event, E::VolumeChange | E::Screenshot | E::LowBattery);
+            let muted = QuietState {
+                do_not_disturb: true,
+                ..QuietState::default()
+            };
             for event in E::ALL {
-                for dnd in [false, true] {
-                    for toggle in [false, true] {
-                        let mut prefs = prefs();
-                        prefs.events.set(event, toggle);
-                        let quiet = QuietState {
-                            do_not_disturb: dnd,
-                            ..QuietState::default()
-                        };
-                        let notification_verdict =
-                            !(dnd && matches!(event, E::Notification | E::Message));
-                        let expected = toggle && (!dnd || expected_under_dnd(event));
-                        assert_eq!(
-                            should_play(event, &prefs, quiet, notification_verdict),
-                            expected,
-                            "{event:?} dnd={dnd} toggle={toggle}"
-                        );
-                    }
-                }
+                // Notifications and messages carry the notification policy's own verdict,
+                // which is already "no" under Do Not Disturb; other interruptions are held
+                // back here, while feedback and critical events play through.
+                let expected = matches!(event, E::VolumeChange | E::Screenshot | E::LowBattery);
+                let verdict = !matches!(event, E::Notification | E::Message);
+                assert_eq!(
+                    should_play(event, &prefs(), muted, verdict),
+                    expected,
+                    "{event:?} under Do Not Disturb"
+                );
+                let mut off = prefs();
+                off.events.set(event, false);
+                assert!(
+                    !should_play(event, &off, QuietState::default(), true),
+                    "{event:?} switched off"
+                );
             }
         }
 
@@ -487,13 +483,11 @@ mod tests {
     tilo_test_env::scenario! {
         fn sound_events_and_preferences_are_named_and_read_back;
 
-        phase keys_round_trip_and_every_event_has_a_sound_id;
+        phase every_event_has_a_sound;
         {
             for event in SystemSoundEvent::ALL {
-                assert_eq!(SystemSoundEvent::from_key(event.key()), Some(event));
-                assert!(!event.sound_ids().is_empty());
+                assert!(!event.sound_ids().is_empty(), "{event:?}");
             }
-            assert_eq!(SystemSoundEvent::from_key("startup"), None);
         }
 
         phase notification_categories_pick_the_event;

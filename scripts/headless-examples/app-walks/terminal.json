@@ -1,0 +1,106 @@
+{
+  "app": "terminal",
+  "said": "Terminal",
+  "family": "apps",
+  "live": "rust",
+  "rust": {
+    "id": "so.tilo.terminal",
+    "native": "terminal"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Terminal on the shell running on this device",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "focused": "terminal"
+        },
+        {
+          "must": [
+            "Command line"
+          ]
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    },
+    {
+      "id": "shell-ready",
+      "said": "Wait for the shell to be running before typing into it",
+      "ops": [
+        {
+          "read": {
+            "app": "so.tilo.terminal",
+            "operation": "inspect-session",
+            "contains": "open",
+            "within": 10
+          }
+        }
+      ]
+    },
+    {
+      "id": "echo",
+      "said": "Type a command at the prompt and press Enter",
+      "ops": [
+        {
+          "type": "echo hi"
+        },
+        {
+          "key": "Enter"
+        },
+        {
+          "read": {
+            "app": "so.tilo.terminal",
+            "operation": "read-screen",
+            "contains": "hi",
+            "within": 10
+          }
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "run-kept",
+      "said": "The session keeps the command as a run that ended well, with what it printed",
+      "ops": [
+        {
+          "read": {
+            "app": "so.tilo.terminal",
+            "operation": "read",
+            "is": {
+              "commands#len": 1
+            },
+            "within": 10
+          }
+        }
+      ]
+    },
+    {
+      "id": "screen",
+      "said": "The screen still shows what the command printed",
+      "ops": [
+        {
+          "read": {
+            "app": "so.tilo.terminal",
+            "operation": "read-screen"
+          }
+        }
+      ]
+    }
+  ]
+}

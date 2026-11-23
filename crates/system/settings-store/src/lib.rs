@@ -476,16 +476,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_document_is_read_only_when_changed_and_forgivingly;
-
-        phase an_unchanged_settings_stamp_does_not_read_again;
-        {
-            let stamp = SettingsStamp(1);
-            assert!(document_changed(false, None, None));
-            assert!(!document_changed(true, None, None));
-            assert!(!document_changed(true, Some(stamp), Some(stamp)));
-            assert!(document_changed(true, Some(stamp), Some(SettingsStamp(2))));
-        }
+        fn reads_forgive_missing_and_mistyped_sections;
 
         phase reads_forgive_missing_and_mistyped_sections;
         {

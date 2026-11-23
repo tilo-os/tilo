@@ -4,9 +4,9 @@
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    reason = "a failed unwrap or index in a test is its assertion"
+    clippy::too_many_lines,
+    reason = "a failed unwrap or index in a test is its assertion, and one end-to-end flow reads as one test"
 )]
-use messages::{MessagesEffect, MessagesShell};
 use std::{
     io::{BufRead, BufReader, Read, Write},
     os::unix::net::UnixStream,
@@ -16,9 +16,8 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use tilo_contact_directory::ContactDirectory;
 use tilo_contact_directory::routing::Route;
-use tilo_messaging::{MessagingClient, SendError};
+use tilo_messaging::{Delivery, HistoryError, MessagingClient, SendError};
 use tilo_messaging_protocol::{
     Service,
     journal::{EncryptedJournal, Owner},
@@ -26,19 +25,16 @@ use tilo_messaging_protocol::{
     signal_broker::{Authorization, History, SignalAuthority, SignalBroker},
     signal_runtime::SignalRuntime,
 };
-use ui::framework::testing::TestApp;
 use ui::prelude::Id;
-use ui::tilo_resource::SharedResource as _;
 const ACI: &str = "01234567-89ab-cdef-0123-456789abcdef";
 const OWN_ACI: &str = "11111111-1111-4111-8111-111111111111";
 const SCOPE: &str = "signal:11111111-1111-4111-8111-111111111111";
 /// How long a fixture daemon waits for the broker's next line before failing.
 ///
-/// The wait for the per-contact identity probe spans opening two live
-/// `TestApp`s and confirming the contact, which on a saturated nextest shard
-/// has taken longer than five seconds; the daemon then gave up and the send
-/// failed as "This contact is unavailable.". The bound only has to stop a
-/// hung exchange, not measure the broker.
+/// The wait for the per-contact identity probe spans opening the broker and
+/// confirming the contact, which on a saturated nextest shard has taken longer
+/// than five seconds. The bound only has to stop a hung exchange, not measure
+/// the broker.
 const DAEMON_READ_DEADLINE: ui::time::Duration = ui::time::Duration::from_secs(30);
 fn revision() -> String {
     format!("signal-identity:05{}", "42".repeat(32))
@@ -73,7 +69,7 @@ impl SignalAuthority for Authority {
         if self.revoked.load(Ordering::SeqCst) || *requested != route() {
             return Err(SendError::Revoked);
         }
-        let mut accounts = accounts::person::PersonAccounts::default();
+        let mut accounts = accounts::person::AccountList::default();
         accounts
             .keep(&accounts::Account::new("fixture-signal", "signal"))
             .map_err(|_| SendError::Revoked)?;
@@ -126,59 +122,12 @@ fn broker(root: &Path, stream: UnixStream, authority: Authority) -> SignalBroker
     SignalBroker::new(runtime, history, Arc::new(authority), OWN_ACI.into())
         .expect("registered service")
 }
-fn choice() -> String {
-    serde_json::json!({"service":"signal","account":"fixture-signal","recipient":ACI,"association":"broker","scope":SCOPE,"revision":revision()}).to_string()
-}
-fn open_app(client: MessagingClient) -> ui::framework::testing::TestApp<MessagesShell> {
-    let mut app = live_messages_with_service(client);
-    let directory = app
-        .shared_workspace::<tilo_contact_directory::ContactDirectory>(
-            tilo_contact_directory::ContactDirectory::OWNER,
-        )
-        .expect("contacts");
-    directory
-        .invoke(
-            &tilo_contact_directory::ContactDirectory::CONFIRM_ACCOUNT.with((
-                Id::from_raw(PERSON),
-                Id::from_raw("broker"),
-                "signal".into(),
-                SCOPE.into(),
-                ACI.into(),
-                revision(),
-            )),
-        )
-        .expect("reviewed identity");
-    app.settle();
-    app.effect(&MessagesEffect::SelectRoute { choice: choice() })
-        .expect("exact route");
-    app
-}
-/// Whether an accessible `label` says `text`: the whole label, or one part of
-/// a conversation line. The shared conversation list speaks each line as who
-/// said it, when, whether it arrived and what it says
-/// (`ui::widget::ConversationList`), so a message body or a delivery word is
-/// one comma-separated part of its list item's name.
-fn speaks(label: Option<&str>, text: &str) -> bool {
-    label.is_some_and(|label| label == text || label.split(", ").any(|part| part == text))
-}
-fn has_text(app: &mut ui::framework::testing::TestApp<MessagesShell>, text: &str) -> bool {
-    app.harness()
-        .a11y_nodes()
-        .iter()
-        .any(|(_, n)| speaks(n.label(), text))
-}
-/// Whether `text` shows once the conversation settles. A send publishes the
-/// history change, so the next frame starts a fresh read of the conversation
-/// that hides the page until it answers; on a loaded machine that answer
-/// comes after the send's own frame, so a single look can miss it.
-fn shows_text(app: &mut ui::framework::testing::TestApp<MessagesShell>, text: &str) -> bool {
-    app.harness()
-        .wait_until(tilo_test_env::hang_bound(), |harness| {
-            harness
-                .a11y_nodes()
-                .iter()
-                .any(|(_, n)| speaks(n.label(), text))
-        })
+fn send() -> tilo_messaging::SendRequest {
+    tilo_messaging::SendRequest {
+        route: route(),
+        operation: "fixture-operation".into(),
+        text: zeroize::Zeroizing::new("private outgoing".into()),
+    }
 }
 fn field(value: &serde_json::Value, path: &str) -> serde_json::Value {
     value
@@ -272,14 +221,50 @@ fn daemon_with_revocation(
     })
 }
 
+/// A restart of the same private state: the account probe on a fresh stream,
+/// then the broker that serves it.
+fn restarted(root: &Path, authority: Authority) -> (SignalBroker, UnixStream) {
+    let (stream, mut peer) = UnixStream::pair().expect("restart stream");
+    let setup = std::thread::spawn(move || {
+        let mut reader = BufReader::new(peer.try_clone().expect("restart reader"));
+        account_probe(&mut reader, &mut peer);
+        peer
+    });
+    let service = broker(root, stream, authority);
+    let peer = setup.join().expect("restart account probe");
+    peer.set_nonblocking(true)
+        .expect("restart replay observation");
+    (service, peer)
+}
+
+async fn wait_for_page(client: &MessagingClient, wanted: usize) -> Vec<tilo_messaging::Message> {
+    let deadline = std::time::Instant::now()
+        .checked_add(tilo_test_env::hang_bound())
+        .expect("bounded wait");
+    loop {
+        let page = client
+            .history()
+            .read(route(), None)
+            .await
+            .expect("private history");
+        if page.messages.len() >= wanted || std::time::Instant::now() > deadline {
+            return page.messages;
+        }
+        std::thread::park_timeout(ui::time::Duration::from_millis(1));
+    }
+}
+
+/// Revocation after the native write keeps the reservation uncertain, never
+/// replays the write, and keeps that state across a restart; a completed send
+/// is durable and equally unresendable.
 #[tokio::test]
-async fn revoked_signal_authority_after_native_send_retains_uncertainty_without_replay() {
+async fn signal_send_never_replays_after_revocation_duplication_or_restart() {
     let root = tempfile::tempdir().expect("private history");
     let revoked = Arc::new(AtomicBool::new(false));
     let (stream, peer) = UnixStream::pair().expect("actual protocol streams");
     peer.set_read_timeout(Some(DAEMON_READ_DEADLINE))
         .expect("bounded daemon fixture");
-    let daemon = daemon_with_revocation(peer, None, Some(revoked.clone()));
+    let writer = daemon_with_revocation(peer, None, Some(revoked.clone()));
     let service = broker(
         root.path(),
         stream,
@@ -288,17 +273,12 @@ async fn revoked_signal_authority_after_native_send_retains_uncertainty_without_
         },
     );
     let client = service.client();
-    let send = || tilo_messaging::SendRequest {
-        route: route(),
-        operation: "fixture-operation".into(),
-        text: zeroize::Zeroizing::new("private outgoing".into()),
-    };
     assert!(matches!(
         client.send(send()).await,
         Err(SendError::Uncertain)
     ));
     assert!(!client.supports(&route()));
-    let mut peer = daemon.join().expect("acknowledged real stream");
+    let mut peer = writer.join().expect("acknowledged real stream");
     peer.set_nonblocking(true).expect("no replay observation");
     revoked.store(false, Ordering::SeqCst);
     let history = client
@@ -309,7 +289,7 @@ async fn revoked_signal_authority_after_native_send_retains_uncertainty_without_
     assert_eq!(history.messages.len(), 1);
     assert_eq!(
         history.messages.first().expect("reserved send").delivery,
-        Some(tilo_messaging::Delivery::Uncertain)
+        Some(Delivery::Uncertain)
     );
     assert!(matches!(
         client.send(send()).await,
@@ -323,16 +303,7 @@ async fn revoked_signal_authority_after_native_send_retains_uncertainty_without_
     );
     drop(client);
     drop(service);
-    let (stream, mut peer) = UnixStream::pair().expect("restart stream");
-    let setup = std::thread::spawn(move || {
-        let mut reader = BufReader::new(peer.try_clone().expect("restart reader"));
-        account_probe(&mut reader, &mut peer);
-        peer
-    });
-    let service = broker(root.path(), stream, Authority { revoked });
-    let mut peer = setup.join().expect("restart account probe");
-    peer.set_nonblocking(true)
-        .expect("restart replay observation");
+    let (service, mut peer) = restarted(root.path(), Authority { revoked });
     let client = service.client();
     let history = client
         .history()
@@ -341,7 +312,7 @@ async fn revoked_signal_authority_after_native_send_retains_uncertainty_without_
         .expect("durable uncertain state");
     assert_eq!(
         history.messages.first().expect("reserved send").delivery,
-        Some(tilo_messaging::Delivery::Uncertain)
+        Some(Delivery::Uncertain)
     );
     assert!(matches!(
         client.send(send()).await,
@@ -353,9 +324,10 @@ async fn revoked_signal_authority_after_native_send_retains_uncertainty_without_
             .kind(),
         std::io::ErrorKind::WouldBlock
     );
-}
-#[test]
-fn messages_send_crosses_native_adapter_and_private_history_survives_restart_without_replay() {
+
+    // A completed native submission keeps both sides of the conversation,
+    // stays private on disk and refuses to be submitted again: before or
+    // after a restart, and after its authority is revoked.
     let root = tempfile::tempdir().expect("isolated state");
     let authority = Authority {
         revoked: Arc::new(AtomicBool::new(false)),
@@ -363,32 +335,29 @@ fn messages_send_crosses_native_adapter_and_private_history_survives_restart_wit
     let (stream, peer) = UnixStream::pair().expect("daemon fixture");
     peer.set_read_timeout(Some(DAEMON_READ_DEADLINE))
         .expect("deadline");
-    let daemon = daemon(peer);
+    let writer = daemon(peer);
     let service = broker(root.path(), stream, authority.clone());
-    let mut app = open_app(service.client());
-    let send = MessagesEffect::Send {
-        choice: choice(),
-        operation: "fixture-operation".into(),
-        text: "private outgoing".into(),
-    };
+    let client = service.client();
+    let receipt = client.send(send()).await.expect("confirmed actual send");
+    assert_eq!(receipt.delivery, Delivery::ServerAcknowledged);
+    let page = client.history().read(route(), None).await.expect("history");
     assert!(
-        app.effect(&send).is_err(),
-        "sensitive send requires normal confirmation"
+        page.messages
+            .iter()
+            .any(|m| m.text.as_str() == "private outgoing"
+                && m.delivery == Some(Delivery::ServerAcknowledged)),
+        "a native acknowledgment is not a delivery"
     );
-    app.effect_confirmed(&send).expect("confirmed actual send");
-    assert!(shows_text(&mut app, "private outgoing"));
-    assert!(has_text(&mut app, "private incoming"));
-    assert!(has_text(&mut app, &ui::widget::DeliveryState::Sent.label()));
-    assert!(!has_text(
-        &mut app,
-        &ui::widget::DeliveryState::Delivered.label()
+    assert!(
+        page.messages
+            .iter()
+            .any(|m| m.text.as_str() == "private incoming")
+    );
+    assert!(matches!(
+        client.send(send()).await,
+        Err(SendError::AlreadyReserved)
     ));
-    assert!(!app.harness().dump_json().contains("private outgoing"));
-    assert!(
-        app.effect_confirmed(&send).is_err(),
-        "operation cannot replay"
-    );
-    let mut peer = daemon.join().expect("daemon");
+    let mut peer = writer.join().expect("daemon");
     peer.set_nonblocking(true).expect("observation");
     assert_eq!(
         peer.read(&mut [0; 1])
@@ -397,31 +366,31 @@ fn messages_send_crosses_native_adapter_and_private_history_survives_restart_wit
         std::io::ErrorKind::WouldBlock
     );
     authority.revoked.store(true, Ordering::SeqCst);
-    assert!(
-        app.effect(&MessagesEffect::ReadHistory { choice: choice() })
-            .is_err()
-    );
-    drop(app);
+    assert!(matches!(
+        client.history().read(route(), None).await,
+        Err(HistoryError::Revoked)
+    ));
+    drop(client);
     drop(service);
     authority.revoked.store(false, Ordering::SeqCst);
-    let (stream, mut peer) = UnixStream::pair().expect("restart");
-    peer.set_nonblocking(true).expect("observation");
-    let setup = std::thread::spawn(move || {
-        peer.set_nonblocking(false)
-            .expect("account setup observation");
-        let mut reader = BufReader::new(peer.try_clone().expect("reader"));
-        account_probe(&mut reader, &mut peer);
-        peer
-    });
-    let service = broker(root.path(), stream, authority);
-    let mut peer = setup.join().expect("restart setup");
-    peer.set_nonblocking(true).expect("restart observation");
-    let mut app = open_app(service.client());
-    app.effect(&MessagesEffect::ReadHistory { choice: choice() })
+    let (service, mut peer) = restarted(root.path(), authority);
+    let client = service.client();
+    let page = client
+        .history()
+        .read(route(), None)
+        .await
         .expect("durable history");
-    assert!(has_text(&mut app, "private incoming"));
-    assert!(has_text(&mut app, "private outgoing"));
-    assert!(app.effect_confirmed(&send).is_err());
+    assert!(
+        page.messages
+            .iter()
+            .any(|m| m.text.as_str() == "private incoming")
+    );
+    assert!(
+        page.messages
+            .iter()
+            .any(|m| m.text.as_str() == "private outgoing")
+    );
+    assert!(client.send(send()).await.is_err());
     assert_eq!(
         peer.read(&mut [0; 1])
             .expect_err("restart cannot replay")
@@ -450,6 +419,15 @@ fn idle_inbound_arrival_persists_and_wakes_the_selected_conversation() {
     });
     let service = broker(root.path(), sender, authority);
     let _sender_peer = setup.join().expect("sender setup");
+    let client = service.client();
+    let woke = Arc::new(AtomicBool::new(false));
+    let flagged = woke.clone();
+    let _observer = client
+        .history()
+        .observe(Arc::new(move || {
+            flagged.store(true, Ordering::SeqCst);
+        }))
+        .expect("private history observer");
     let (stream, mut peer) = UnixStream::pair().expect("independent inbound");
     let (go, when) = std::sync::mpsc::channel();
     let daemon = std::thread::spawn(move || {
@@ -471,26 +449,36 @@ fn idle_inbound_arrival_persists_and_wakes_the_selected_conversation() {
     let guard = service
         .start_receiver(receiver)
         .expect("independent worker");
-    let mut app = open_app(service.client());
     go.send(()).expect("fixture arrival");
+    let deadline = std::time::Instant::now()
+        .checked_add(tilo_test_env::hang_bound())
+        .expect("bounded wait");
+    while !woke.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+        std::thread::park_timeout(ui::time::Duration::from_millis(1));
+    }
     assert!(
-        app.harness()
-            .wait_until(tilo_test_env::hang_bound(), |harness| {
-                harness
-                    .a11y_nodes()
-                    .iter()
-                    .any(|(_, node)| speaks(node.label(), "idle private arrival"))
-            }),
-        "actual arrival wakes UI and reads durable history"
+        woke.load(Ordering::SeqCst),
+        "actual arrival wakes the private history reader"
     );
-    assert!(!app.harness().dump_json().contains("idle private arrival"));
-    assert!(!has_text(
-        &mut app,
-        &ui::widget::DeliveryState::Delivered.label()
-    ));
+    let messages = block_on(client.history().read(route(), None)).expect("history");
+    assert!(
+        messages
+            .messages
+            .iter()
+            .any(|m| m.text.as_str() == "idle private arrival" && m.delivery.is_none()),
+        "an idle arrival persists as an incoming message with no delivery claim"
+    );
     assert!(!guard.stopped());
     drop(guard);
     daemon.join().expect("only owned receive connection stops");
+}
+
+fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("blocking reader")
+        .block_on(future)
 }
 
 #[test]
@@ -543,7 +531,9 @@ fn signal_ready_publication_already_owns_receiver_and_observes_its_failure() {
                 .recv_timeout(tilo_test_env::hang_bound())
                 .expect("native peer"),
         );
-        let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+        let deadline = std::time::Instant::now()
+            .checked_add(tilo_test_env::hang_bound())
+            .expect("bounded wait");
         while supervisor.client().account_state(&account) != AccountState::Failed
             && std::time::Instant::now() < deadline
         {
@@ -572,8 +562,8 @@ fn signal_ready_publication_already_owns_receiver_and_observes_its_failure() {
     assert!(!supervisor.client().supports(&route()));
 }
 
-#[test]
-fn changed_provider_key_refuses_before_reservation_or_send() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn changed_provider_key_refuses_before_reservation_or_send() {
     let root = tempfile::tempdir().expect("private state");
     let authority = Authority {
         revoked: Arc::new(AtomicBool::new(false)),
@@ -590,16 +580,15 @@ fn changed_provider_key_refuses_before_reservation_or_send() {
         peer
     });
     let service = broker(root.path(), sender, authority);
-    let mut app = open_app(service.client());
-    assert!(
-        app.effect_confirmed(&MessagesEffect::Send {
-            choice: choice(),
-            operation: "changed-key-operation".into(),
-            text: "must not send".into()
-        })
-        .is_err()
-    );
-    assert!(!has_text(&mut app, "must not send"));
+    let client = service.client();
+    let changed = tilo_messaging::SendRequest {
+        route: route(),
+        operation: "changed-key-operation".into(),
+        text: zeroize::Zeroizing::new("must not send".into()),
+    };
+    assert!(client.send(changed).await.is_err());
+    let page = client.history().read(route(), None).await.expect("history");
+    assert!(page.messages.is_empty(), "no reservation or history row");
     let mut peer = daemon.join().expect("probe daemon");
     peer.set_nonblocking(true).expect("wire observation");
     assert_eq!(
@@ -610,87 +599,8 @@ fn changed_provider_key_refuses_before_reservation_or_send() {
     );
 }
 
-struct AccountOwnerFixture;
-impl ui::framework::ResourceApp for AccountOwnerFixture {
-    type Resource = tilo_messaging::PersonAccounts;
-    const ID: &'static str = "so.tilo.settings";
-    const TITLE: &'static str = "Metadata owner fixture";
-    fn view(_cx: &mut ui::framework::ViewCx<Self::Resource>) -> ui::widget::Element {
-        Box::new(ui::widget::Column::new())
-    }
-}
-
-fn live_messages_with_service(client: MessagingClient) -> TestApp<MessagesShell> {
-    let person = "11".repeat(32);
-    let mut settings = TestApp::<AccountOwnerFixture>::for_person(&person).expect("metadata owner");
-    let account_entry = settings
-        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
-        .expect("owner account record");
-    account_entry
-        .invoke(&tilo_messaging::PersonAccounts::SAVE_ACCOUNT.with((
-            "fixture-signal".into(),
-            "signal".into(),
-            "Personal".into(),
-            serde_json::json!({"messaging_scope":SCOPE}),
-            true,
-            0,
-        )))
-        .expect("configured metadata fixture");
-    let mut app = TestApp::<MessagesShell>::for_person_with_lent(&person, client)
-        .expect("live Messages host");
-    let accounts = app
-        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
-        .expect("read-only accounts");
-    assert_eq!(
-        accounts.record().route(),
-        account_entry.record().route(),
-        "same owner's shared record route"
-    );
-    accounts
-        .record()
-        .merge_peer_document(
-            account_entry
-                .record()
-                .document()
-                .expect("owner record document"),
-        )
-        .expect("existing shared-record sync path");
-    drop(account_entry);
-    drop(settings);
-    assert!(
-        accounts
-            .get()
-            .accounts
-            .get(&Id::from_raw("fixture-signal"))
-            .is_some(),
-        "shared metadata was persisted by its actual owner"
-    );
-    let directory = app
-        .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
-        .expect("shared directory");
-    directory
-        .invoke(&ContactDirectory::PROJECT_CONTACT.with((Id::from_raw(PERSON), "Alex".into())))
-        .expect("person");
-    directory
-        .invoke(&ContactDirectory::CONFIRM_ACCOUNT.with((
-            Id::from_raw(PERSON),
-            Id::from_raw("signal"),
-            "signal".into(),
-            "fixture-signal-scope".into(),
-            "+12025550123".into(),
-            "fixture-signal-revision".into(),
-        )))
-        .expect("reviewed fixture identity");
-    app.settle();
-    app.effect(&MessagesEffect::OpenPerson {
-        person: PERSON.into(),
-    })
-    .expect("open exact live person");
-    app
-}
-
-#[test]
-fn actual_signal_recipient_receipt_correlates_native_operation_and_updates_private_messages() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn actual_signal_recipient_receipt_correlates_native_operation_and_updates_private_history() {
     let root = tempfile::tempdir().expect("private state");
     let authority = Authority {
         revoked: Arc::new(AtomicBool::new(false)),
@@ -702,21 +612,22 @@ fn actual_signal_recipient_receipt_correlates_native_operation_and_updates_priva
         "envelope":{"sourceUuid":ACI,"receiptMessage":{"when":44,"isDelivery":false,"isRead":true,"isViewed":false,"timestamps":[43]}}}});
     let daemon = daemon_with_receipt(peer, Some(receipt));
     let service = broker(root.path(), stream, authority);
-    let mut app = open_app(service.client());
-    let send = MessagesEffect::Send {
-        choice: choice(),
-        operation: "fixture-operation".into(),
-        text: "private outgoing".into(),
-    };
-    app.effect_confirmed(&send)
+    let client = service.client();
+    let receipt = client
+        .send(send())
+        .await
         .expect("confirmed native submission");
-    assert!(shows_text(
-        &mut app,
-        &ui::widget::DeliveryState::Read.label()
-    ));
-    assert!(has_text(&mut app, "private outgoing"));
-    assert!(!app.harness().dump_json().contains("private outgoing"));
-    assert!(app.effect_confirmed(&send).is_err());
+    assert_eq!(receipt.delivery, Delivery::ServerAcknowledged);
+    let page = wait_for_page(&client, 2).await;
+    assert_eq!(
+        page.iter()
+            .find(|m| m.text.as_str() == "private outgoing")
+            .expect("outgoing row")
+            .delivery,
+        Some(Delivery::RecipientRead),
+        "the interleaved native receipt promotes the exact operation"
+    );
+    assert!(client.send(send()).await.is_err());
     let mut peer = daemon.join().expect("daemon");
     peer.set_nonblocking(true).expect("observe native writes");
     assert_eq!(
@@ -725,7 +636,7 @@ fn actual_signal_recipient_receipt_correlates_native_operation_and_updates_priva
             .kind(),
         std::io::ErrorKind::WouldBlock
     );
-    drop(app);
+    drop(client);
     drop(service);
     let history = History::open(
         &root.path().join("history"),
@@ -746,8 +657,8 @@ fn actual_signal_recipient_receipt_correlates_native_operation_and_updates_priva
     );
 }
 
-#[test]
-fn unknown_signal_timestamp_or_foreign_sender_never_promotes_recipient_delivery() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unknown_signal_timestamp_or_foreign_sender_never_promotes_recipient_delivery() {
     for (sender, timestamps) in [
         (ACI, vec![999]),
         ("22222222-2222-4222-8222-222222222222", vec![43]),
@@ -763,31 +674,35 @@ fn unknown_signal_timestamp_or_foreign_sender_never_promotes_recipient_delivery(
             "envelope":{"sourceUuid":sender,"receiptMessage":{"when":44,"isDelivery":false,"isRead":true,"isViewed":false,"timestamps":timestamps}}}});
         let daemon = daemon_with_receipt(peer, Some(receipt));
         let service = broker(root.path(), stream, authority);
-        let mut app = open_app(service.client());
-        app.effect_confirmed(&MessagesEffect::Send {
-            choice: choice(),
-            operation: "fixture-operation".into(),
-            text: "private outgoing".into(),
-        })
-        .expect("server accepts the exact submission");
-        assert!(shows_text(
-            &mut app,
-            &ui::widget::DeliveryState::Sent.label()
-        ));
-        assert!(!has_text(
-            &mut app,
-            &ui::widget::DeliveryState::Read.label()
-        ));
-        assert!(!has_text(
-            &mut app,
-            &ui::widget::DeliveryState::Delivered.label()
-        ));
+        let client = service.client();
+        client
+            .send(send())
+            .await
+            .expect("server accepts the exact submission");
+        let deadline = std::time::Instant::now()
+            .checked_add(tilo_test_env::hang_bound())
+            .expect("bounded wait");
+        let mut delivery = None;
+        while delivery.is_none() && std::time::Instant::now() < deadline {
+            let page = client.history().read(route(), None).await.expect("history");
+            delivery = page
+                .messages
+                .iter()
+                .find(|m| m.text.as_str() == "private outgoing")
+                .and_then(|m| m.delivery);
+            std::thread::park_timeout(ui::time::Duration::from_millis(1));
+        }
+        assert_eq!(
+            delivery,
+            Some(Delivery::ServerAcknowledged),
+            "unrelated receipts never promote recipient delivery"
+        );
         daemon.join().expect("owned daemon");
     }
 }
 
-#[test]
-fn idle_signal_receipt_wakes_the_selected_private_conversation() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_signal_receipt_wakes_the_selected_private_conversation() {
     let root = tempfile::tempdir().expect("private state");
     let authority = Authority {
         revoked: Arc::new(AtomicBool::new(false)),
@@ -797,14 +712,20 @@ fn idle_signal_receipt_wakes_the_selected_private_conversation() {
         .expect("deadline");
     let sent = daemon(peer);
     let service = broker(root.path(), sender, authority);
-    let mut app = open_app(service.client());
-    app.effect_confirmed(&MessagesEffect::Send {
-        choice: choice(),
-        operation: "fixture-operation".into(),
-        text: "private outgoing".into(),
-    })
-    .expect("confirmed native submission");
+    let client = service.client();
+    client
+        .send(send())
+        .await
+        .expect("confirmed native submission");
     let _sender_peer = sent.join().expect("sender fixture remains owned");
+    let woke = Arc::new(AtomicBool::new(false));
+    let flagged = woke.clone();
+    let _observer = client
+        .history()
+        .observe(Arc::new(move || {
+            flagged.store(true, Ordering::SeqCst);
+        }))
+        .expect("private history observer");
     let (stream, mut peer) = UnixStream::pair().expect("independent inbox");
     let (go, when) = std::sync::mpsc::channel();
     let inbox = std::thread::spawn(move || {
@@ -827,18 +748,29 @@ fn idle_signal_receipt_wakes_the_selected_private_conversation() {
         .start_receiver(receiver)
         .expect("independent receive worker");
     go.send(()).expect("receipt arrival");
-    let read = ui::widget::DeliveryState::Read.label();
+    let deadline = std::time::Instant::now()
+        .checked_add(tilo_test_env::hang_bound())
+        .expect("bounded wait");
+    while !woke.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+        std::thread::park_timeout(ui::time::Duration::from_millis(1));
+    }
     assert!(
-        app.harness()
-            .wait_until(tilo_test_env::hang_bound(), |harness| {
-                harness
-                    .a11y_nodes()
-                    .iter()
-                    .any(|(_, node)| speaks(node.label(), &read))
-            }),
-        "the actual idle receipt persists and wakes private Messages history"
+        woke.load(Ordering::SeqCst),
+        "the actual idle receipt persists and wakes private history"
     );
-    assert!(!app.harness().dump_json().contains("private outgoing"));
+    let deadline = std::time::Instant::now()
+        .checked_add(tilo_test_env::hang_bound())
+        .expect("bounded wait");
+    let mut delivery = None;
+    while delivery != Some(Delivery::RecipientRead) && std::time::Instant::now() < deadline {
+        let page = wait_for_page(&client, 2).await;
+        delivery = page
+            .iter()
+            .find(|m| m.text.as_str() == "private outgoing")
+            .and_then(|m| m.delivery);
+        std::thread::park_timeout(ui::time::Duration::from_millis(1));
+    }
+    assert_eq!(delivery, Some(Delivery::RecipientRead));
     assert!(!guard.stopped());
     drop(guard);
     inbox.join().expect("only the owned receiver closes");

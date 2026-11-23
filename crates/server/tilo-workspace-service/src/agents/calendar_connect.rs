@@ -351,20 +351,15 @@ impl Carrier {
     /// Ask again about every ask of `workspace` this process does not ask about, as after a
     /// restart, and tell the agent of one this server stopped on while it was carried out. Costs
     /// one look at what this server keeps when nothing waits.
-    pub(super) fn settle_connects(&self, workspace: &str) {
-        for ask in self.workspaces.open_connects(workspace) {
-            if ask.interrupted {
-                self.workspaces.connect_not_asked(&ask);
-                let this = self.clone();
-                tokio::spawn(async move {
-                    this.tell_of_password(&ask, &ask.named(), (TYPED, INTERRUPTED))
-                        .await;
-                });
-            } else if !ask.started {
-                let this = self.clone();
-                tokio::spawn(async move { this.ask_and_connect(ask).await });
-            }
-        }
+    pub(super) async fn settle_connects(&self, workspace: &str) {
+        self.settle_password_asks(
+            self.workspaces.open_connects(workspace),
+            INTERRUPTED,
+            Workspaces::connect_not_asked,
+            ConnectAsk::named,
+            |this, ask| async move { this.ask_and_connect(ask).await },
+        )
+        .await;
     }
 
     /// Ask the person `open` names for the password, then connect the calendar with what they

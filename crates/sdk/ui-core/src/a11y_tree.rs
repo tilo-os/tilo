@@ -277,6 +277,9 @@ pub struct SemanticNode {
     pub role: Role,
     /// Already i18n-resolved.
     pub name: Option<String>,
+    /// The row's own title, the line its [`name`](Self::name) starts with, kept
+    /// apart from the rest of it ([`AccessNode::title`](crate::a11y::AccessNode::title)).
+    pub title: Option<String>,
     /// A field's contents, a slider's readout, etc.
     pub value: Option<String>,
     /// What is said after the name: a dialog's situation and keys.
@@ -322,6 +325,12 @@ impl SetPlace {
 impl SemanticNode {
     pub fn action(&self, name: &str) -> Option<&SemanticAction> {
         self.actions.iter().find(|a| a.name == name)
+    }
+
+    /// Whether the node answers to `name`: it is named it, or it is a row
+    /// titled it ([`AccessNode::answers_to`](crate::a11y::AccessNode::answers_to)).
+    pub fn answers_to(&self, name: &str) -> bool {
+        self.name.as_deref() == Some(name) || self.title.as_deref() == Some(name)
     }
 
     fn same_exported_content(&self, other: &Self) -> bool {
@@ -408,6 +417,7 @@ impl SemanticTree {
                 durable_identity: true,
                 role: Role::Window,
                 name: Some(crate::i18n::widget_format("window-root-name", &[])),
+                title: None,
                 value: None,
                 description: None,
                 state: AccessState::default(),
@@ -646,6 +656,7 @@ impl SemanticTree {
                 durable_identity: true,
                 role: Role::Window,
                 name: Some(crate::i18n::widget_format("window-root-name", &[])),
+                title: None,
                 value: None,
                 description: None,
                 state: AccessState::default(),
@@ -873,11 +884,11 @@ impl SemanticTree {
         &self.duplicate_ids
     }
 
-    /// The first node whose accessible [`name`](SemanticNode::name) equals `name`, in reading order —
-    /// the ergonomic handle for a CLI / agent that addresses elements by label ("focus the node called
-    /// 'Volume'").
+    /// The first node that answers to `name` — its accessible [`name`](SemanticNode::name), or a
+    /// row's title — in reading order: the ergonomic handle for a CLI / agent that addresses
+    /// elements by label ("focus the node called 'Volume'").
     pub fn find_by_name(&self, name: &str) -> Option<&SemanticNode> {
-        self.iter().find(|n| n.name.as_deref() == Some(name))
+        self.iter().find(|n| n.answers_to(name))
     }
 
     /// Every live semantic path to a control binding id, shortest first.
@@ -1544,6 +1555,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
             durable_identity: durable,
             role: access.role,
             name: access.name.clone(),
+            title: access.title.clone(),
             value: if access.state.protected {
                 None
             } else {
@@ -1620,6 +1632,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
             durable_identity: durable,
             role: access.role,
             name: access.name.clone(),
+            title: access.title.clone(),
             value: if access.state.protected {
                 None
             } else {
@@ -1960,6 +1973,7 @@ mod tests {
                     durable_identity: true,
                     role: Role::Button,
                     name: Some("Save".into()),
+                    title: None,
                     value: None,
                     description: None,
                     state: AccessState::default(),

@@ -14,13 +14,13 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
+use crate::desktop::tree::TreeHandle;
 use tilo_actions::remote::session_actions;
 use tilo_actions::{Actor, MemberId, ResourceSpec};
 use tilo_desktop_model::{
     FloatPlace, GroupId, Layout as Tree, LayoutKind, Strip, StripId, Tab, TabId, TileContent,
     WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
-use tilo_desktop_surface::DesktopHandle;
 
 mod document;
 pub use document::*;
@@ -746,7 +746,7 @@ pub struct Layout {
     /// The person whose record it is.
     person: String,
     /// The shell itself: what the layout reads, and whose change every layout action is.
-    handle: DesktopHandle,
+    handle: TreeHandle,
     /// Where the layout is kept: the record the workspace shares, whose own changes are its history.
     layouts: Rc<dyn Layouts>,
     /// What the host calls a window, by [`Names`].
@@ -788,7 +788,7 @@ impl Layout {
     #[must_use]
     pub fn new(
         person: &str,
-        handle: DesktopHandle,
+        handle: TreeHandle,
         layouts: Rc<dyn Layouts>,
         names: Names,
         words: Words,
@@ -880,11 +880,7 @@ impl Layout {
                     .active_workspace()
                     .ok_or("the layout has no workspace in front")?,
             };
-            let row = tree
-                .active_strip
-                .get(&workspace.id())
-                .copied()
-                .or_else(|| workspace.strips.first().map(|row| row.id));
+            let row = tree.active_strip_for(workspace);
             (workspace.id(), row)
         };
         drop(tree);
@@ -1670,7 +1666,7 @@ impl Layout {
                     .flat_map(|workspace| &workspace.strips)
                     .flat_map(|strip| &strip.window_groups)
                     .any(|group| group.active_tab == place);
-                let in_front = tilo_desktop_surface::navigation::active_route(tree)
+                let in_front = crate::desktop::navigation::active_route(tree)
                     .is_some_and(|route| route.tab == place);
                 (shown, in_front)
             });

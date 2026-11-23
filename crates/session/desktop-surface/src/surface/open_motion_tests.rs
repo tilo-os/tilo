@@ -53,7 +53,7 @@ impl Shell {
             view: String::new(),
             pinned: false,
         };
-        let tree = seed_tree(&mut minter, "Office", vec![chat]);
+        let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Office", vec![chat]);
         let (surface, handle) = DesktopSurface::new(tree, 9, Box::new(Apps));
         handle.set_viewport_width(f64::from(width));
         let frame = ui::headless::FrameHarness::for_root_with(

@@ -555,12 +555,12 @@ async fn what_insists_is_raised_no_more_often_than_its_person_said() {
 /// Somebody else on the same host.
 const BO: [u8; 32] = [9; 32];
 
-/// An agent `keeper` keeps, made at `made`.
-fn agent(id: &str, keeper: [u8; 32], made: i64) -> Agent {
+/// An agent `person` keeps, made at `made`.
+fn agent(id: &str, acts_for: [u8; 32], made: i64) -> Agent {
     Agent {
         id: tilo_resource::Atom(id.to_owned()),
         name: id.to_owned(),
-        keeper: hex::encode(keeper),
+        acts_for: hex::encode(acts_for),
         created_at: made,
         ..Agent::default()
     }

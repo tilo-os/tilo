@@ -72,19 +72,17 @@ impl AppConnection {
                 return Err(BrokerError::failed(reason));
             }
         }
-        // A renamed app keeps using the record of an id it had before (`kept_document`).
         let resource_route = route.clone();
-        let (route, as_app) =
-            kept_document::working_route(self.lease.local_media.as_deref(), &resource_route);
+        // An attested launch joins its own route; another app's only to
         // An attested launch joins its own route; another app's only to
         // read a record whose kinds it declared it reads.
         let route_access = match self.lease.local_media.as_ref() {
             Some(app) => {
-                let personal_cluster = verified_identity
+                let own_workspace = verified_identity
                     .verified
-                    .owns_personal_cluster(&route.cluster_id);
+                    .owns_person_workspace(&route.cluster_id);
                 let now = state.policy_now_ns().map_err(BrokerError::failed)? / 1_000_000_000;
-                attested_route_access(&app.app_id, &route, personal_cluster, || {
+                attested_route_access(&app.app_id, &route, own_workspace, || {
                     identity_reads_document(
                         state.membership.as_ref(),
                         &verified_identity,
@@ -251,7 +249,6 @@ impl AppConnection {
             state: state.clone(),
             directories: Rc::clone(&self.directories),
             channel_id,
-            as_app,
             peer_id: hold_id,
             connection_id: peer_id,
             verified_identity,

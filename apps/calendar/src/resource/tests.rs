@@ -1,6 +1,6 @@
 use super::*;
 use crate::model::*;
-use accounts::person::PersonAccounts;
+use accounts::person::AccountList;
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::{Replica, SharedResource as _, scope_contains};
 
@@ -14,15 +14,15 @@ tilo_test_env::scenario! {
         let person = "cb".repeat(32);
         let mut settings = TestApp::<person_accounts::AccountsOwner>::for_person(&person).unwrap();
         let mut app = TestApp::<CalendarShell>::for_person(&person).expect("test app");
-        let kept = settings.shared_workspace::<PersonAccounts>(PersonAccounts::OWNER).unwrap();
-        let mut account = crate::AccountStore::sample().accounts.remove(0);
+        let kept = settings.shared_workspace::<AccountList>(AccountList::OWNER).unwrap();
+        let mut account = crate::CalendarAccounts::sample().accounts.remove(0);
         account.config.server_url = server.url();
         account.calendars.truncate(1);
         account.calendars[0].read_only = true;
         let remote = account.calendars[0].id.clone();
-        kept.invoke(&PersonAccounts::saving(&account.to_stored_for_test()))
+        kept.invoke(&AccountList::saving(&account.to_stored_for_test()))
             .unwrap();
-        let read = app.shared_workspace::<PersonAccounts>(PersonAccounts::OWNER).unwrap();
+        let read = app.shared_workspace::<AccountList>(AccountList::OWNER).unwrap();
         read.record()
             .merge_peer_document(kept.record().document().unwrap())
             .unwrap();
@@ -68,7 +68,7 @@ tilo_test_env::scenario! {
     phase undo_of_an_uploaded_remote_event_deletes_it_on_the_server;
     {
         let mut app = TestApp::<CalendarShell>::new().expect("test app");
-        let accounts = crate::AccountStore::sample();
+        let accounts = crate::CalendarAccounts::sample();
         let remote = accounts
             .all_calendars()
             .next()
@@ -1007,7 +1007,7 @@ tilo_test_env::scenario! {
     phase calendar_display_choices_are_personal_settings;
     {
         let mut app = TestApp::<CalendarShell>::capture(Some("month")).expect("capture");
-        let (calendar, name) = crate::AccountStore::sample()
+        let (calendar, name) = crate::CalendarAccounts::sample()
             .all_calendars()
             .find(|(_, calendar)| calendar.visible)
             .map(|(_, calendar)| (calendar.id.clone(), calendar.name.clone()))
@@ -1035,52 +1035,11 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_host_profile_window_uses_that_profiles_accounts_and_sync_health;
-    {
-        let profiles = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
-        for (profile, name) in profiles.iter().zip(["first", "second"]) {
-            crate::AccountStore {
-                accounts: vec![crate::account::CalendarAccount::new(
-                    crate::account::CalDavConfig {
-                        display_name: name.into(),
-                        server_url: "http://127.0.0.1:9/".into(),
-                        username: format!("{name}-dav"),
-                        password: format!("{name}-fixture-password"),
-                        ..Default::default()
-                    },
-                )],
-            }
-            .persist_in(profile.path())
-            .unwrap();
-        }
-        for (profile, name) in profiles.iter().zip(["first", "second"]) {
-            let mut app = TestApp::<CalendarShell>::open_data_dir(profile.path()).expect("test app");
-            let configured = app
-                .with_widget(|surface: &mut CalendarApp| surface.configured_for_test().clone())
-                .unwrap();
-            let [account] = configured.accounts.as_slice() else {
-                panic!("the profile's one account, got {:?}", configured.accounts);
-            };
-            assert_eq!(account.config.username, format!("{name}-dav"));
-            assert_eq!(
-                account.config.password, "",
-                "a calendar's password is the workspace's vault's, never this device's"
-            );
-            let _ = app.effect(&CalendarEffect::Sync);
-            let health = accounts::AccountSyncStatusStore::load_in(profile.path());
-            assert!(
-                health
-                    .get(&accounts::AccountId::from(account.id.as_str()))
-                    .is_some(),
-                "sync health is kept in the window's profile"
-            );
-        }
-    }
 }
 
 mod person_accounts {
     use super::*;
-    use accounts::person::{ACCOUNTS_OWNER, PersonAccounts};
+    use accounts::person::{ACCOUNTS_OWNER, AccountList};
 
     pub(super) struct AccountsOwner;
 
@@ -1103,7 +1062,7 @@ mod person_accounts {
         let mut settings = TestApp::<AccountsOwner>::for_person(&person()).unwrap();
         let mut calendar = TestApp::<CalendarShell>::for_person(&person()).unwrap();
         let kept = settings
-            .shared_workspace::<PersonAccounts>(PersonAccounts::OWNER)
+            .shared_workspace::<AccountList>(AccountList::OWNER)
             .unwrap();
         let mut account = crate::account::CalendarAccount::new(crate::account::CalDavConfig {
             display_name: "Work calendars".into(),
@@ -1112,10 +1071,10 @@ mod person_accounts {
         });
         account.config.password = "kept-on-the-device".into();
         let stored = account.to_stored_for_test();
-        kept.invoke(&PersonAccounts::saving(&stored)).unwrap();
+        kept.invoke(&AccountList::saving(&stored)).unwrap();
 
         let read = calendar
-            .shared_workspace::<PersonAccounts>(PersonAccounts::OWNER)
+            .shared_workspace::<AccountList>(AccountList::OWNER)
             .expect("Calendar reads the workspace's accounts");
         assert_eq!(
             read.record().route(),

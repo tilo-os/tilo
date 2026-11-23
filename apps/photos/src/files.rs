@@ -45,5 +45,5 @@ impl StateFile {
 
 pub(crate) fn read_native(path: &Path, limit: u64) -> Option<Vec<u8>> {
     let (dir, name) = tilo_files::file_at(path).ok()?;
-    blocking::read_bounded(&dir, &name, usize::try_from(limit).unwrap_or(usize::MAX)).ok()?
+    blocking::read_bounded(&dir, &name, usize::try_from(limit).unwrap_or(usize::MAX)).ok()
 }

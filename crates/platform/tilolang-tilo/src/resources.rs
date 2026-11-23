@@ -28,6 +28,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::{Rc, Weak};
 
 use serde_json::Value as Json;
+pub use tilo_resource_store::wire::Turn;
 use tilo_resource_store::wire::{Command, Edit, Reply};
 use tilo_resource_store::{
     Absent, Cell, Cursor, Filter, Indexed, Order, PARENT, Query, Resource, Stamp, Value,
@@ -558,6 +559,9 @@ fn published_verb(note: &ChangeNote) -> String {
         _ => tilolang_runtime::store::EDIT_TEXT_ACTION.to_owned(),
     }
 }
+
+/// A field's value, by the field's id.
+pub type FieldOf = (String, FieldValue);
 
 impl ResourceStore {
     /// A store sending its commands to `port`.
@@ -1170,7 +1174,7 @@ impl ResourceStore {
         Ok(links)
     }
 
-    /// The fields `fields` of every resource of the type `ty`, each as [`Store::read`] reads it,
+    /// The fields `fields` of every resource of the type `ty`, each by its id as [`Store::read`] reads it,
     /// a page of resources at a time: a page holding only their indexed fields among these, and
     /// their content, where a field is held in it, in one read a page. What search reads of every
     /// resource of a type, without a read a resource and a field.
@@ -1181,7 +1185,7 @@ impl ResourceStore {
         &self,
         ty: &str,
         fields: &[FieldSpec],
-    ) -> Result<Vec<(ResourceRef, Vec<FieldValue>)>, StoreError> {
+    ) -> Result<Vec<(ResourceRef, Vec<FieldOf>)>, StoreError> {
         let entries: Vec<Option<kinds::FieldEntry>> = fields
             .iter()
             .map(|field| self.field(ty, &field.id))
@@ -1239,7 +1243,9 @@ impl ResourceStore {
                     if self.inner.local.borrow().contains_key(&id) {
                         let values = fields
                             .iter()
-                            .filter_map(|field| self.read(&at, field).ok())
+                            .filter_map(|field| {
+                                Some((field.id.clone(), self.read(&at, field).ok()?))
+                            })
                             .collect();
                         out.push((at, values));
                         continue;
@@ -1255,7 +1261,8 @@ impl ResourceStore {
                             let json = json.as_ref().and_then(Json::as_object).and_then(|map| {
                                 names.iter().find_map(|name| map.get(name.as_str()))
                             });
-                            self.value_from(field, entry.as_ref(), cell, json).ok()
+                            let value = self.value_from(field, entry.as_ref(), cell, json).ok()?;
+                            Some((field.id.clone(), value))
                         })
                         .collect();
                     out.push((at, values));
@@ -1450,6 +1457,40 @@ impl ResourceStore {
         })
     }
 
+    /// Whether this device runs the action `address` (`<app>/<resource>#<action>`) on `inputs`
+    /// now, an action that runs once in the workspace whichever device runs it: the device's
+    /// workspace service places it. A store that cannot be asked answers [`Turn::Later`], so nothing runs twice.
+    #[must_use]
+    pub fn take_turn(&self, address: &str, inputs: &Json) -> Turn {
+        match self.inner.port.command(Command::Turn {
+            address: address.to_owned(),
+            inputs: inputs.clone(),
+            answer: None,
+        }) {
+            Ok(Reply::Turn(turn)) => turn,
+            Ok(other) => {
+                tracing::warn!(address, ?other, "a turn was answered with no turn");
+                Turn::Later
+            }
+            Err(error) => {
+                tracing::debug!(address, %error, "a turn could not be asked for");
+                Turn::Later
+            }
+        }
+    }
+
+    /// Keep that this device ran the action [`Self::take_turn`] gave it, and what it answered:
+    /// no device runs it again, and each that asks is given `answer`.
+    pub fn turn_done(&self, address: &str, inputs: &Json, answer: Json) {
+        if let Err(error) = self.inner.port.command(Command::Turn {
+            address: address.to_owned(),
+            inputs: inputs.clone(),
+            answer: Some(answer),
+        }) {
+            tracing::warn!(address, %error, "a turn that ran was not kept done");
+        }
+    }
+
     /// Whether the migration `migration` ran on `at`, or `at` was made by a version that
     /// declares it.
     #[must_use]
@@ -1465,31 +1506,6 @@ impl ResourceStore {
             .and_then(|value| value.as_str().map(str::to_owned))
     }
 
-    /// Notes that the trigger `trigger` ran for `at` at `value`, as a change of the trigger
-    /// written by `by`, the person whose device ran it.
-    ///
-    /// # Errors
-    /// When the store refused it.
-    pub fn mark_triggered(
-        &self,
-        at: &ResourceRef,
-        trigger: &str,
-        value: &str,
-        by: &Actor,
-    ) -> Result<(), StoreError> {
-        self.mark(
-            at,
-            TRIGGERED,
-            trigger,
-            Json::String(value.to_owned()),
-            &ChangeNote {
-                action: trigger.to_owned(),
-                invoker: Some(by.clone()),
-                ..ChangeNote::default()
-            },
-        )
-    }
-
     /// Notes that the trigger `trigger` ran for `at` at `value` with the first commit of the run
     /// `run`, as part of the change it makes: what the trigger did is one change.
     pub fn mark_triggered_in_run(&self, run: &str, at: &ResourceRef, trigger: &str, value: &str) {
@@ -1501,13 +1517,13 @@ impl ResourceStore {
         });
     }
 
-    /// Drops what [`Self::mark_triggered_in_run`] left for the run `run` to write. Whether any
-    /// was left: the run committed nothing.
-    pub fn drop_run_marks(&self, run: &str) -> bool {
-        let mut marks = self.inner.run_marks.borrow_mut();
-        let before = marks.len();
-        marks.retain(|mark| mark.run != run);
-        marks.len() != before
+    /// Drops what [`Self::mark_triggered_in_run`] left for the run `run` to write: a run that
+    /// committed nothing notes nothing.
+    pub fn drop_run_marks(&self, run: &str) {
+        self.inner
+            .run_marks
+            .borrow_mut()
+            .retain(|mark| mark.run != run);
     }
 
     fn mark_in(
@@ -3171,6 +3187,20 @@ impl ResourceStore {
             .and_then(|parent| self.left_of(at, parent, entry, &held.change));
         // A change of the resources nested in this one changed the collections that hold them.
         let mut fields: Vec<FieldId> = held.fields.iter().map(|name| field_id(name)).collect();
+        // A rich text is held as the resource's content, which names no field of the index: a
+        // body edit is a change of the content and of no field the store records. The type's
+        // rich text fields are what it may have written, and what each held before and after
+        // the change says which one did (the runtime reads them). Without this a body edit is
+        // a change of no field, and history has nothing to say of it but the action's name.
+        if held.content
+            && let Some(entry) = entry
+        {
+            for (id, field) in &entry.fields {
+                if field.kind == FieldKind::RichText && !fields.contains(id) {
+                    fields.push(id.clone());
+                }
+            }
+        }
         let mut placed = Vec::new();
         for nested in &held.nested {
             let Some(child) = self.entry_of_kind(&nested.kind) else {

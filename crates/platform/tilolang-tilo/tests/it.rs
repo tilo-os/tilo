@@ -13,6 +13,7 @@
 
 mod agent_queries;
 mod atomic;
+mod block_search;
 mod board_lists;
 mod bundle;
 mod capture;
@@ -60,6 +61,7 @@ mod resource_service;
 mod resource_store;
 mod rich_text;
 mod scenarios;
+mod share;
 mod suggest;
 mod surface;
 mod task;
@@ -69,6 +71,7 @@ mod tasks_places;
 mod tasks_time;
 mod tasks_today;
 mod triggers;
+mod tube;
 mod unions;
 mod upgrade;
 mod words;

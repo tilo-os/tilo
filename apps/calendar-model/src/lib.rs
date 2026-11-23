@@ -29,7 +29,7 @@ pub mod shown;
 pub mod spans;
 pub mod timezone;
 
-pub use account::AccountStore;
+pub use account::CalendarAccounts;
 pub use model::{
     Attendee, Calendar, Event, Id, InviteStatus, OccurrenceOverride, Palette, Priority, Project,
     Recurrence, Task, View,

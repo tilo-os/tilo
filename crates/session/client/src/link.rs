@@ -139,6 +139,9 @@ pub struct PeerStatus {
     /// (root key, hex), as the workspace's governance admitted them. Who is here is shown by
     /// person from it, so someone the live session never certified to this page is still theirs.
     pub workspace_devices: BTreeMap<String, BTreeMap<String, String>>,
+    /// What each call of a joined workspace allows, by workspace, by channel, as the workspace
+    /// keeps it: who a call lists, and whose media it carries.
+    pub workspace_calls: BTreeMap<String, BTreeMap<String, collab_types::calls::CallRule>>,
     /// What each joined workspace's governance calls its people, by workspace, by person id
     /// (root key, hex): how a page names someone who is not here now, never by their key.
     pub workspace_names: BTreeMap<String, BTreeMap<String, String>>,
@@ -167,6 +170,7 @@ impl PeerStatus {
             key_state: String::new(),
             workspace_members: BTreeMap::new(),
             workspace_devices: BTreeMap::new(),
+            workspace_calls: BTreeMap::new(),
             workspace_names: BTreeMap::new(),
             entry: None,
         }
@@ -786,6 +790,14 @@ impl Link {
     pub fn workspace_devices(&self, workspace: &str) -> BTreeMap<String, String> {
         self.reports
             .read(|status| status.workspace_devices.get(workspace).cloned())
+            .unwrap_or_default()
+    }
+
+    /// What each call of `workspace` allows, by channel, as [`PeerStatus::workspace_calls`] says.
+    #[must_use]
+    pub fn call_rules(&self, workspace: &str) -> BTreeMap<String, collab_types::calls::CallRule> {
+        self.reports
+            .read(|status| status.workspace_calls.get(workspace).cloned())
             .unwrap_or_default()
     }
 

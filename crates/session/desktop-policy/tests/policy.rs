@@ -16,7 +16,7 @@ use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{GroupId, TileContent};
 use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::{DesktopPolicy, Placement, Window};
-use tilo_desktop_surface::navigation::{ChromeEffect, LayoutEffect};
+use tilo_session_core::desktop::navigation::{ChromeEffect, LayoutEffect};
 use ui::kurbo::Rect;
 
 const WIDTH: f64 = 1200.0;
@@ -1015,7 +1015,7 @@ fn an_app_that_did_not_start_says_why_in_its_tab_and_tries_again() {
 
     // The launch could not start it: the tab the person opened stays, and
     // says what happened and why instead of vanishing.
-    let answer = tilo_desktop_surface::outcome::Outcome::new("Notes could not open")
+    let answer = tilo_session_core::desktop::outcome::Outcome::new("Notes could not open")
         .saying("it is not installed here")
         .retryable("Try again");
     policy.failed_at(tab, "so.tilo.notes", answer);
@@ -1040,7 +1040,7 @@ fn an_app_that_did_not_start_says_why_in_its_tab_and_tries_again() {
     // so a window that comes fills it rather than opening a second one.
     driver
         .perform_named(
-            tilo_desktop_surface::outcome::RETRY_ID,
+            tilo_session_core::desktop::outcome::RETRY_ID,
             &ui::a11y::Action::Activate,
         )
         .unwrap();
@@ -1078,7 +1078,7 @@ fn a_stopped_app_leaves_a_notice_that_asks_for_it_again() {
         .stopped(
             asked,
             "Probe",
-            tilo_desktop_surface::outcome::Closed::Crashed,
+            tilo_session_core::desktop::outcome::Closed::Crashed,
             None,
         )
         .unwrap();
@@ -1102,7 +1102,7 @@ fn a_stopped_app_leaves_a_notice_that_asks_for_it_again() {
 
     driver
         .perform_named(
-            tilo_desktop_surface::outcome::RETRY_ID,
+            tilo_session_core::desktop::outcome::RETRY_ID,
             &ui::a11y::Action::Activate,
         )
         .unwrap();
@@ -1139,7 +1139,7 @@ fn a_stopped_app_says_so_where_its_window_was() {
         .stopped(
             "org.example.Probe",
             "Probe",
-            tilo_desktop_surface::outcome::Closed::Crashed,
+            tilo_session_core::desktop::outcome::Closed::Crashed,
             Some(tab),
         )
         .unwrap();
@@ -1161,7 +1161,7 @@ fn a_stopped_app_says_so_where_its_window_was() {
         .stopped(
             "org.example.Right",
             "Right",
-            tilo_desktop_surface::outcome::Closed::Crashed,
+            tilo_session_core::desktop::outcome::Closed::Crashed,
             Some(other),
         )
         .unwrap();

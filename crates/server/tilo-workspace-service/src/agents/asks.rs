@@ -45,7 +45,7 @@ use tilo_workspace_agent::Agent;
 
 use super::{Ask, ServerAgents as Agents, Turn, WRITE_WAIT, later};
 use crate::workspaces::person_asking::Allowing;
-use crate::workspaces::person_asking::kept_asks::{KeptAsk, NewAsk};
+use crate::workspaces::person_asking::kept_asks::{KeptAsk, KeptAskKind, NewAsk};
 use crate::workspaces::{ToTell, Workspaces};
 
 /// The carrier of an invocation the workspace's policy left to the person.
@@ -853,14 +853,59 @@ impl Agents {
         put.map(|()| None)
     }
 
+    /// Settle every open device-password ask of kind `K` through [`settle_kept`]: interrupted
+    /// asks are forgotten and reported to their agent; waiting asks are asked again (as after a
+    /// restart).
+    pub(super) async fn settle_password_asks<K, Fut>(
+        &self,
+        open: Vec<K>,
+        interrupted_words: &'static str,
+        forget: impl Fn(&Workspaces, &K) + Send + Sync,
+        named: impl Fn(&K) -> String + Send + Sync,
+        ask_and_carry: impl Fn(Self, K) -> Fut + Send + Sync,
+    ) where
+        K: KeptAskKind + super::calendar_connect::PutAsk + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        settle_kept(
+            open,
+            |ask| {
+                forget(&self.workspaces, &ask);
+                let this = self.clone();
+                let title = named(&ask);
+                async move {
+                    tokio::spawn(async move {
+                        this.tell_of_password(
+                            &ask,
+                            &title,
+                            (super::calendar_connect::TYPED, interrupted_words),
+                        )
+                        .await;
+                    });
+                }
+            },
+            |ask| {
+                let this = self.clone();
+                let fut = ask_and_carry(this, ask);
+                async move {
+                    tokio::spawn(fut);
+                }
+            },
+        )
+        .await;
+    }
+
     /// Carry out what the people of `workspace` answered about what its agents asked them: each
     /// answer once, its ask closed before anything is done. Costs one look at what this server
     /// keeps when nothing waits.
     pub(super) async fn settle_asks(&self, workspace: &str) {
         // Where a person's password for a calendar or a mail account is wanted and this process
         // does not ask them for it, as after a restart, they are asked again.
-        self.settle_connects(workspace);
-        self.settle_mail_connects(workspace);
+        self.settle_connects(workspace).await;
+        self.settle_mail_connects(workspace).await;
+        // What a person answered about a use of their vault is carried out whether or not
+        // anything asks an agent now.
+        Box::pin(self.settle_uses(workspace)).await;
         let open: Vec<KeptAsk> = self
             .workspaces
             .open_asks(workspace)
@@ -1136,6 +1181,33 @@ impl Agents {
                     .cloned()
                     .filter(|value| !value.is_null())
             })
+    }
+}
+
+/// One settle loop over any kept-ask kind: skips asks being carried out now (`started &&
+/// !interrupted`), hands asks a restart interrupted to `on_interrupted`, and waiting asks
+/// (`!started`) to `on_waiting`.
+pub(super) async fn settle_kept<K, I, IFut, W, WFut>(
+    open: Vec<K>,
+    mut on_interrupted: I,
+    mut on_waiting: W,
+) where
+    K: KeptAskKind,
+    I: FnMut(K) -> IFut,
+    IFut: Future<Output = ()>,
+    W: FnMut(K) -> WFut,
+    WFut: Future<Output = ()>,
+{
+    for ask in open {
+        if ask.started() && !ask.interrupted() {
+            // Its answer is being carried out now.
+            continue;
+        }
+        if ask.interrupted() {
+            on_interrupted(ask).await;
+        } else {
+            on_waiting(ask).await;
+        }
     }
 }
 

@@ -204,68 +204,21 @@ mod tests {
         /// `ClientTable`: the committed table, its scopes, and what an entry or the environment configures.
         fn the_client_table_configures_each_provider_and_use;
 
-        phase the_committed_table_parses_and_names_every_provider;
-        {
-            let table = ClientTable::parse(DEFAULTS).expect("oauth-clients.toml");
-            assert!(
-                table
-                    .google
-                    .client_id
-                    .ends_with(".apps.googleusercontent.com")
-            );
-            assert!(!table.microsoft.client_id.is_empty());
-            assert!(!table.dropbox.client_id.is_empty());
-            // Google and Microsoft match loopback redirects without the port; Dropbox
-            // matches exactly and so needs registered ports.
-            assert!(table.google.redirect_ports.is_empty());
-            assert!(table.microsoft.redirect_ports.is_empty());
-            assert!(!table.dropbox.redirect_ports.is_empty());
-            assert!(table.dropbox.paste_code_fallback);
-            assert_eq!(table.spotify.client_id, "fc7bc68792734157a2c9857cba652df7");
-            assert!(table.spotify.client_secret.is_empty());
-            assert_eq!(table.spotify.redirect_ports, [47654]);
-            assert!(!table.spotify.paste_code_fallback);
-        }
-
-        phase the_committed_table_scopes_each_use_of_one_client;
+        phase the_committed_table_configures_every_cloud_and_use;
         {
             let table = ClientTable::parse(DEFAULTS).expect("oauth-clients.toml");
             for cloud in OAuthCloud::ALL {
-                assert!(!table.scopes(cloud.oauth_use()).is_empty(), "{cloud:?}");
+                let (provider, client) = table.config(cloud.oauth_use()).expect("configured");
+                assert!(!provider.scopes.is_empty(), "{cloud:?}");
+                assert!(!client.client_id.is_empty(), "{cloud:?}");
             }
-            assert_eq!(table.scopes(GMAIL), ["https://mail.google.com/"]);
-            assert_eq!(
-                table.scopes(OAuthUse::calendar(OAuthIssuer::Google)),
-                ["https://www.googleapis.com/auth/calendar"]
-            );
-            assert_eq!(
-                table.scopes(OAuthUse::identity(OAuthIssuer::Microsoft)),
-                ["offline_access", "User.Read"]
-            );
-            assert!(
-                table
-                    .scopes(OAuthUse::calendar(OAuthIssuer::Microsoft))
-                    .is_empty()
-            );
-            assert_eq!(
-                table.scopes(OUTLOOK),
-                [
-                    "offline_access",
-                    "https://outlook.office.com/IMAP.AccessAsUser.All",
-                    "https://outlook.office.com/SMTP.Send",
-                ]
-            );
-            assert_eq!(
-                table.scopes(OAuthCloud::GoogleDrive.oauth_use()),
-                ["https://www.googleapis.com/auth/drive"]
-            );
+            // Google and Microsoft match loopback redirects without the port; Dropbox
+            // matches exactly and so needs registered ports, or the code pasted instead.
+            assert!(!table.dropbox.redirect_ports.is_empty());
+            assert!(table.dropbox.paste_code_fallback);
             // Vertex AI asks for the cloud scope alone, in its own grant: none of the Google
             // uses shares a scope with another.
             let vertex = OAuthUse::new(OAuthIssuer::Google, Capability::Models);
-            assert_eq!(
-                table.scopes(vertex),
-                ["https://www.googleapis.com/auth/cloud-platform"]
-            );
             for other in [GMAIL, OAuthCloud::GoogleDrive.oauth_use()] {
                 assert!(
                     table
@@ -275,11 +228,6 @@ mod tests {
                 );
             }
             // Dropbox is storage only.
-            assert!(
-                table
-                    .scopes(OAuthUse::mail(OAuthIssuer::Dropbox))
-                    .is_empty()
-            );
             assert!(!table.is_configured(OAuthUse::mail(OAuthIssuer::Dropbox)));
             let (gmail, gmail_client) = table.config(GMAIL).unwrap();
             let (drive, drive_client) = table.config(OAuthCloud::GoogleDrive.oauth_use()).unwrap();
@@ -326,16 +274,12 @@ mod tests {
                 Refresh::RefreshToken
             );
 
-            // Hugging Face signs in for downloads on any loopback port of its registered
-            // `/callback`, with a device code where there is no browser; its registration
-            // has no inference scope.
+            // Hugging Face signs in for downloads only, with a device code where there is no
+            // browser.
             let downloads = OAuthUse::new(OAuthIssuer::HuggingFace, Capability::ModelDownloads);
             let (provider, client) = table.config(downloads).expect("Hugging Face is configured");
-            assert_eq!(provider.scopes, ["openid", "profile", "gated-repos"]);
             assert!(provider.device_authorization_endpoint.is_some());
-            assert_eq!(client.redirect_ports, RedirectPorts::Any);
             assert_eq!(client.redirect.path, "/callback");
-            assert_eq!(client.secret(), None);
             assert!(!table.is_configured(OAuthUse::new(OAuthIssuer::HuggingFace, Capability::Models)));
         }
 

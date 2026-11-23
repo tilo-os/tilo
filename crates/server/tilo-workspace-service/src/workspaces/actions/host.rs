@@ -23,12 +23,12 @@ use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::Role;
 use tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE;
 use tilo_server_session::workspaces::{
-    ActionInvitation, CATCH_UP_WORKSPACE, CREATE_OWN_WORKSPACE, CREATE_WORKSPACE,
-    CaughtUpWorkspace, CreatedWorkspace, DELETE_WORKSPACE, ENTER_WORKSPACE, EnteredWorkspace,
-    HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, HostedWorkspace,
-    KEEP_PERSONAL, LIST_PERSONAL, LIST_REVOCATIONS, LIST_WORKSPACES, PERSONAL_DEVICE_NAME,
-    PersonalList, Refusal, UNHOST_WORKSPACE, WorkspaceLabels, WorkspaceListing, check_labels,
-    labelled,
+    ActionInvitation, CATCH_UP_ABSENT, CATCH_UP_STANDING, CATCH_UP_WORKSPACE, CREATE_OWN_WORKSPACE,
+    CREATE_WORKSPACE, CaughtUpWorkspace, CreatedWorkspace, DELETE_WORKSPACE, ENTER_WORKSPACE,
+    EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE,
+    HostedWorkspace, KEEP_PERSONAL, LIST_PERSONAL, LIST_REVOCATIONS, LIST_WORKSPACES,
+    PERSONAL_DEVICE_NAME, PersonalList, Refusal, StandingPage, UNHOST_WORKSPACE, WorkspaceLabels,
+    WorkspaceListing, check_labels, labelled,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -62,7 +62,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
-pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 19] = [
+pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 23] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -194,6 +194,28 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 19] = [
         ServiceOperation::CatchUpWorkspace,
     ),
     (
+        // Part of what a catch-up counts with, asked by whoever may ask it.
+        Verb {
+            id: CATCH_UP_ABSENT,
+            label: "Hand part of the content a device keeping a workspace keeps none of",
+            check: CATCH_UP_WORKSPACE,
+            kind: roles::GOVERNANCE_KIND,
+            params: catch_up_absent_params,
+        },
+        ServiceOperation::CatchUpWorkspace,
+    ),
+    (
+        // The rest of what a catch-up answers.
+        Verb {
+            id: CATCH_UP_STANDING,
+            label: "Read where a workspace's store stands after a catch-up",
+            check: CATCH_UP_WORKSPACE,
+            kind: roles::GOVERNANCE_KIND,
+            params: catch_up_standing_params,
+        },
+        ServiceOperation::CatchUpWorkspace,
+    ),
+    (
         Verb {
             id: PLAN_MACHINE,
             label: "Plan a machine",
@@ -253,6 +275,26 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 19] = [
         },
         ServiceOperation::AdmitServer,
     ),
+    (
+        Verb {
+            id: KEEP_RECOVERY_KEY,
+            label: "Keep this machine's disk recovery key",
+            check: KEEP_RECOVERY_KEY,
+            kind: ActionKind::Undoable,
+            params: keep_recovery_key_params,
+        },
+        ServiceOperation::KeepRecoveryKey,
+    ),
+    (
+        Verb {
+            id: RECOVERY_KEYS,
+            label: "Read your machines' disk recovery keys",
+            check: RECOVERY_KEYS,
+            kind: ActionKind::Read,
+            params: Vec::new,
+        },
+        ServiceOperation::ListRecoveryKeys,
+    ),
 ];
 
 /// Plan a machine: the plan document the person's window or command wrote,
@@ -271,6 +313,18 @@ pub(super) const ADMIT_MACHINE: &str = "machine.admit";
 /// Take a server in among the person's servers, by the certificate its ticket's login answered
 /// with and where its endpoint is dialled.
 pub(super) const ADMIT_SERVER: &str = "server.admit";
+/// Keep the disk recovery key of the machine that asks.
+pub(super) const KEEP_RECOVERY_KEY: &str = tilo_actions::remote::machines::KEEP_RECOVERY_KEY;
+/// The disk recovery keys of the person's machines.
+pub(super) const RECOVERY_KEYS: &str = tilo_actions::remote::machines::RECOVERY_KEYS;
+
+fn keep_recovery_key_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "key",
+        ParamType::Text,
+        "The disk recovery key this machine installed with.",
+    )]
+}
 
 fn admit_server_params() -> Vec<ActionParam> {
     vec![
@@ -356,6 +410,41 @@ fn catch_up_params() -> Vec<ActionParam> {
         "absent",
         ParamType::Array,
         "The addresses of the content the asking device keeps none of itself.",
+    ));
+    params.push(ActionParam::optional(
+        "absent_parts",
+        ParamType::Boolean,
+        "Whether that content is the list the asking device handed in parts before.",
+    ));
+    params.push(ActionParam::optional(
+        "cursor_pages",
+        ParamType::Boolean,
+        "Whether the answer's cursors come in pages, the rest read after it.",
+    ));
+    params
+}
+
+fn catch_up_standing_params() -> Vec<ActionParam> {
+    let mut params = workspace_params();
+    params.push(ActionParam::required(
+        "after",
+        ParamType::Text,
+        "The lineage the page starts after, postcard in hex.",
+    ));
+    params
+}
+
+fn catch_up_absent_params() -> Vec<ActionParam> {
+    let mut params = workspace_params();
+    params.push(ActionParam::optional(
+        "absent",
+        ParamType::Array,
+        "Part of the addresses of the content the asking device keeps none of itself.",
+    ));
+    params.push(ActionParam::optional(
+        "first",
+        ParamType::Boolean,
+        "Whether the part starts the list afresh; an empty first part lets it go.",
     ));
     params
 }
@@ -738,12 +827,12 @@ impl Workspaces {
                     .await
             }
             operation if operation.decided_by_its_workspace() => {
-                Box::pin(self.serving_invoke(device, operation, &args, now)).await
+                Box::pin(self.serving_invoke(device, (verb.id, operation), &args, now)).await
             }
             operation if operation.of_machines() => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
-                Box::pin(machine::invoke(self, operation, &args)).await
+                Box::pin(machine::invoke(self, device, operation, &args)).await
             }
             ServiceOperation::AdmitServer => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -892,6 +981,19 @@ impl Workspaces {
         };
         if entering {
             return Ok(());
+        }
+        // A disk's recovery key opens it with nothing else: only the person, on a device of
+        // their own, keeps or reads one. No agent is asked on their behalf, and a stand-in is
+        // no device of theirs.
+        if matches!(verb.id, KEEP_RECOVERY_KEY | RECOVERY_KEYS) {
+            return if caller.acting().is_person()
+                && !device.capabilities.stand_in
+                && caller.device_public_key() == Some(&device.device_public_key)
+            {
+                Ok(())
+            } else {
+                Err(ActionCallError::UnknownAction)
+            };
         }
         // A machine's own record, written when the person certified the machine with their root:
         // their device asks it as itself (the session's agent is that device's run), so no agent
@@ -1396,12 +1498,79 @@ impl Workspaces {
         Ok(Some(owner))
     }
 
+    /// A catch-up a device keeping a workspace asks for, already permitted
+    /// to `device`: the catch-up itself ([`CATCH_UP_WORKSPACE`]), part of the
+    /// list of content the device keeps none of itself it handed ahead of it
+    /// ([`CATCH_UP_ABSENT`]), or the rest of where this host's store stands
+    /// after it ([`CATCH_UP_STANDING`]).
+    async fn catch_up_invoke(
+        &self,
+        device: &DeviceCert,
+        action: &str,
+        args: &Args,
+    ) -> Result<Value, ActionCallError> {
+        let workspace = args.required_text("workspace")?;
+        if action == CATCH_UP_ABSENT {
+            let kept = self
+                .keep_absent(
+                    device,
+                    workspace,
+                    args.texts("absent")?,
+                    args.flag("first")?,
+                )
+                .await
+                .map_err(|error| refused(&error))?;
+            return Ok(serde_json::json!({ "kept": kept }));
+        }
+        if action == CATCH_UP_STANDING {
+            let after = crate::workspaces::decode_hex(args.required_text("after")?)
+                .map_err(|error| invalid(format!("`after` is no lineage: {error}")))?;
+            let (cursors, more) = self
+                .standing_after(device, workspace, after)
+                .await
+                .map_err(|error| refused(&error))?;
+            return answer(&StandingPage {
+                cursors: hex_postcard(&cursors)?,
+                more,
+            });
+        }
+        let absent = if args.flag("absent_parts")? {
+            self.absent_handed(device.device_public_key, workspace)
+                .ok_or_else(|| {
+                    refused(
+                        &"the list of content the asking device keeps none of is not \
+                          here: hand it again",
+                    )
+                })?
+        } else {
+            std::sync::Arc::new(args.texts("absent")?)
+        };
+        let (cursors, content_missing, fetched) =
+            Box::pin(self.catch_up_from(device, workspace, args.flag("names_content")?, &absent))
+                .await
+                .map_err(|error| refused(&error))?;
+        // A store stands on a lineage per record and author: a device
+        // that reads the rest after is answered the first page.
+        let (cursors, more_cursors) = if args.flag("cursor_pages")? {
+            self.standing_page(cursors, None)
+        } else {
+            (cursors, false)
+        };
+        answer(&CaughtUpWorkspace {
+            cursors: hex_postcard(&cursors)?,
+            content_missing,
+            fetched,
+            more_cursors,
+        })
+    }
+
     /// The host operations that have one host of the person serve a workspace
-    /// another governs ([`super::super::holding`]), already permitted to `device`.
+    /// another governs ([`super::super::holding`]), already permitted to `device`:
+    /// the action asked, and the operation it is.
     async fn serving_invoke(
         &self,
         device: &DeviceCert,
-        operation: ServiceOperation,
+        (action, operation): (&str, ServiceOperation),
         args: &Args,
         now: u64,
     ) -> Result<Value, ActionCallError> {
@@ -1448,19 +1617,7 @@ impl Workspaces {
                 if self.speaks_no_catch_up_now() {
                     return Err(ActionCallError::UnknownAction);
                 }
-                let (cursors, content_missing, fetched) = Box::pin(self.catch_up_from(
-                    device,
-                    args.required_text("workspace")?,
-                    args.flag("names_content")?,
-                    &args.texts("absent")?,
-                ))
-                .await
-                .map_err(|error| refused(&error))?;
-                answer(&CaughtUpWorkspace {
-                    cursors: hex_postcard(&cursors)?,
-                    content_missing,
-                    fetched,
-                })
+                self.catch_up_invoke(device, action, args).await
             }
             _ => Err(ActionCallError::UnknownAction),
         }
@@ -1507,7 +1664,6 @@ mod tests;
 #[cfg(test)]
 mod told_tests;
 #[cfg(test)]
-mod turn_delegation_tests;
 #[cfg(test)]
 mod turn_use_tests;
 #[cfg(test)]

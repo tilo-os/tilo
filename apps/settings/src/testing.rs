@@ -51,10 +51,13 @@ pub fn caption(key: &str) -> String {
 }
 
 pub fn shown_values(app: &mut TestApp<crate::SettingsShell>, caption: &str) -> Vec<String> {
+    // The row is named by its caption and its secondary line; it is found by
+    // the caption, the line it is titled with.
+    let titled = app.harness().a11y_node_named(caption);
     app.harness()
         .a11y_nodes()
         .into_iter()
-        .filter(|(_, node)| node.label() == Some(caption))
+        .filter(|(id, node)| node.label() == Some(caption) || Some(*id) == titled)
         .filter_map(|(_, node)| node.value().map(str::to_owned))
         .collect()
 }

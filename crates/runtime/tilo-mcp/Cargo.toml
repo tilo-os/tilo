@@ -31,7 +31,7 @@ tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 serde.workspace = true
 serde_json.workspace = true
 tilo-action-policy = { path = "../../collab/action-policy" }
-tilo-actions = { path = "../../collab/actions" }
+tilo-actions = { path = "../../collab/actions", features = ["off-worker"] }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-content = { path = "../../system/content" }
 tilo-files = { path = "../../platform/tilo-files" }
@@ -40,7 +40,7 @@ tilo-paths.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource", optional = true }
 tilo-rt.workspace = true
 tilo-session-actions = { path = "../../session/session-actions" }
-tilo-test-env = { path = "../../dev/test-env", optional = true }
+tilo-test-env = { path = "../../../tools/test-env", optional = true }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
@@ -49,7 +49,7 @@ uuid.workspace = true
 [dev-dependencies]
 tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
 tilo-resource = { path = "../../sdk/tilo-resource" }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 tokio = { workspace = true, features = ["test-util"] }
 
 # A task's host is a Linux program started with its api: it runs nowhere else.

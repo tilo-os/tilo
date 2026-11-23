@@ -213,6 +213,20 @@ impl NativeDocumentReads for ServiceReads {
             }
         }
     }
+
+    fn next_change(
+        &self,
+        _context: &NativeDocumentReadContext,
+        _after: u64,
+    ) -> Result<Option<u64>, String> {
+        // The service holds every record its workspaces have whole, so what it answers changes by
+        // what is written to a record — announced — or by this device's access to it and to its
+        // keys, which is announced too. Time alone changes nothing here: a grant and a certificate
+        // ending are the workspace's and the reader's, which the broker registers with the policy
+        // clock itself. A held read on one of these records therefore waits for a signal rather
+        // than re-checking on a clock.
+        Ok(None)
+    }
 }
 
 /// What a refused capture says to the broker.

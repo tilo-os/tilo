@@ -5,6 +5,7 @@
 #   wine-test.sh units <imager-tests.exe>     the imager's unit tests
 #   wine-test.sh install <package-dir>        install the package silently, check what it
 #                                             installed, uninstall
+#   wine-test.sh runtime <tilo-runtime.exe>   the device daemon's CLI refuses Windows
 #
 # Wine is not Windows: the disk, volume and privilege APIs the media writer
 # uses are partial or missing there, so tests that need them are listed in
@@ -13,7 +14,7 @@
 set -euo pipefail
 
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-mode="${1:?units or install}"
+mode="${1:?units, install or runtime}"
 # On disk, not in TMPDIR: Wine reports a tmpfs drive as a virtual disk, which
 # the unit tests' storage refuses as Windows would.
 root=""
@@ -68,6 +69,26 @@ case "$mode" in
     wineserver -w
     [ ! -e "$dir/tilo-imager.exe" ] || { printf 'uninstalling left the program behind\n' >&2; exit 1; }
     printf 'installed and uninstalled %s under Wine\n' "$(basename -- "$setup")"
+    ;;
+  runtime)
+    # The daemon's CLI is the first thing a Windows user reaches, and the port
+    # is partial: asking it to run the daemon must answer that it does not run
+    # on Windows yet, in words, rather than crash or start half of one.
+    runtime="${2:?the tilo-runtime.exe to run}"
+    set +e
+    output="$(timeout --kill-after=30 300 wine "$runtime" \
+      --profile 'C:\tilo-runtime-profile' 2>&1)"
+    status=$?
+    set -e
+    printf '%s\n' "$output"
+    if [ "$status" -eq 0 ]; then
+      printf 'the Windows daemon exited successfully instead of refusing to run\n' >&2
+      exit 1
+    fi
+    case "$output" in
+      *"does not run on Windows yet"*) ;;
+      *) printf 'the Windows daemon failed without its refusal:\n%s\n' "$output" >&2; exit 1 ;;
+    esac
     ;;
   *) printf 'unknown mode: %s\n' "$mode" >&2; exit 2 ;;
 esac

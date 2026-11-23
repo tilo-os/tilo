@@ -52,6 +52,13 @@ use super::{ActionProvider, Addressed, Failure, McpServer, OneCall, Reply, app_n
 /// loses the step it was taking, so it holds on to the action's own answer instead.
 const PROGRAM_WAIT_MS: u64 = super::super::MAX_WAIT_MS;
 
+/// The refusal a task's program answers on a host that cannot start one: a task's
+/// host is started over an inherited descriptor, and Windows has none yet.
+#[cfg(windows)]
+fn programs_absent() -> String {
+    "a task's programs do not run on Windows yet".to_owned()
+}
+
 /// Why a task's program was given up on: what was waited for, and for how long.
 fn waited_for_the_task(what: &str) -> String {
     format!(
@@ -63,6 +70,7 @@ fn waited_for_the_task(what: &str) -> String {
 
 /// Where an API starts the tilolang host of a task: the session, which launches it as every
 /// tilolang host is launched, its author the task.
+#[cfg(unix)]
 pub trait TaskHosts: Send + Sync {
     /// Start the host of the task `task` (the agent run) in `workspace`: the API's end of the task's
     /// program connection.
@@ -70,11 +78,13 @@ pub trait TaskHosts: Send + Sync {
 }
 
 /// The program connection to a task's host, one JSON object per line.
+#[cfg(unix)]
 pub(crate) struct TaskLink {
     reader: tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: tokio::net::unix::OwnedWriteHalf,
 }
 
+#[cfg(unix)]
 impl TaskLink {
     fn new(fd: std::os::fd::OwnedFd) -> std::io::Result<Self> {
         let stream = std::os::unix::net::UnixStream::from(fd);
@@ -1140,11 +1150,23 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Every installed app the task's programs may name, with its declarations, as JSON
     /// (`{alias: {app, signatures: [{name, id, kind, signature, call}]}}`): read from the
     /// packages in the task's host, so an app that runs nowhere is listed like any other.
+    pub(super) async fn catalogue(&self) -> Result<Value, String> {
+        #[cfg(windows)]
+        {
+            Err(programs_absent())
+        }
+        #[cfg(unix)]
+        {
+            self.catalogue_unix().await
+        }
+    }
+
+    #[cfg(unix)]
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the task's link is held while its host answers, as a program's run holds it"
     )]
-    pub(super) async fn catalogue(&self) -> Result<Value, String> {
+    async fn catalogue_unix(&self) -> Result<Value, String> {
         use std::sync::atomic::Ordering;
         // A program that did not answer for a listing is not started again by
         // every listing after it: the export of a workspace lists tens of
@@ -1230,6 +1252,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// replaced): the host's packages are the ones it started with, so every page of a listing
     /// names what it shows by the same forms, and no page waits for the catalogue again.
     pub(super) async fn program_forms(&self) -> Option<ProgramForms> {
+        #[cfg(windows)]
+        {
+            None
+        }
+        #[cfg(unix)]
+        {
+            self.program_forms_unix().await
+        }
+    }
+
+    #[cfg(unix)]
+    async fn program_forms_unix(&self) -> Option<ProgramForms> {
         if !self.starts_programs() {
             return None;
         }
@@ -1292,6 +1326,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     ///
     /// # Errors
     /// The connection is unusable, or the host answered nothing.
+    #[cfg(unix)]
     pub async fn program_on(
         &self,
         fd: std::os::fd::OwnedFd,
@@ -1313,12 +1348,29 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Run `source` in the task's host as `author`, read back: its text, its host answer and
     /// the references it showed. A host that went away takes the task's `let`s with it, and the
     /// next program starts another.
+    async fn run_as_person(&self, source: &str, author: &Value) -> Result<(String, Value), String> {
+        #[cfg(windows)]
+        {
+            let _ = (source, author);
+            Err(programs_absent())
+        }
+        #[cfg(unix)]
+        {
+            self.run_as_person_unix(source, author).await
+        }
+    }
+
+    #[cfg(unix)]
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the programs' guard is taken only to resolve a reference, and dropping it early \
                   across an await would leave the future unsendable"
     )]
-    async fn run_as_person(&self, source: &str, author: &Value) -> Result<(String, Value), String> {
+    async fn run_as_person_unix(
+        &self,
+        source: &str,
+        author: &Value,
+    ) -> Result<(String, Value), String> {
         let resolved = {
             let programs = self.programs.lock_recover();
             resolve_placed(source, &programs)?
@@ -1350,11 +1402,24 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
 
     /// Run `source` in the task's host, doing what it reads and invokes as the task, until it
     /// answers. The host is started on the task's first program.
+    async fn run_in_task(&self, source: &str, confirm: bool) -> Result<Value, String> {
+        #[cfg(windows)]
+        {
+            let _ = (source, confirm);
+            Err(programs_absent())
+        }
+        #[cfg(unix)]
+        {
+            self.run_in_task_unix(source, confirm).await
+        }
+    }
+
+    #[cfg(unix)]
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the task's link is held while its host runs the program, as its catalogue is read"
     )]
-    async fn run_in_task(&self, source: &str, confirm: bool) -> Result<Value, String> {
+    async fn run_in_task_unix(&self, source: &str, confirm: bool) -> Result<Value, String> {
         let mut link = self.task.lock().await;
         if link.is_none() {
             *link = Some(self.start_task().await?);
@@ -1376,6 +1441,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         ran
     }
 
+    #[cfg(unix)]
     async fn serve_run(
         &self,
         task: &mut TaskLink,
@@ -1432,6 +1498,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
 
     /// Start this task's host.
+    #[cfg(unix)]
     async fn start_task(&self) -> Result<TaskLink, String> {
         let hosts = self.task_hosts.clone().ok_or(
             "this connection runs no programs: the API serving it starts no task's host; \

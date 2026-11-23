@@ -101,6 +101,33 @@ pub(super) fn ml_input(text: &str, w: f64, h: f64) -> TextInput {
     ti
 }
 
+/// The height a field takes in a layout as the theme gives it: its taffy style's
+/// when it pins one, else what it measures.
+pub(super) fn layout_height(ti: &mut TextInput, theme: &Theme, width: f32) -> f32 {
+    let mut taffy = TaffyTree::<()>::new();
+    let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+        std::collections::HashMap::new();
+    let node = ti.build_layout(&mut taffy, theme, &mut node_map);
+    let mut tr = TextRenderer::new();
+    tr.set_text_scale(theme.text_scale);
+    let size = Widget::measure(
+        ti,
+        taffy::Size {
+            width: Some(width),
+            height: None,
+        },
+        taffy::Size {
+            width: taffy::AvailableSpace::Definite(width),
+            height: taffy::AvailableSpace::MaxContent,
+        },
+        &mut tr,
+    );
+    match taffy.style(node).unwrap().size.height.into_option() {
+        Some(fixed) => fixed,
+        None => size.height,
+    }
+}
+
 pub(super) fn shaped_row(ti: &TextInput, byte: usize) -> usize {
     ti.single_layout
         .as_ref()
@@ -172,9 +199,10 @@ mod pointer;
 tilo_test_env::scenario! {
     fn a_field_asks_names_and_shows_what_it_holds;
 
-    phase a_field_that_asks_for_the_keyboard_asks_once;
+    phase a_field_asks_for_the_keyboard_once_and_names_a_page_by_its_title;
     // The field a command opens takes the keyboard once, and never asks again: a person who
-    // points elsewhere keeps the keyboard where they put it.
+    // points elsewhere keeps the keyboard where they put it. A large-title field is the page's
+    // heading; a body field is not, however it is worded.
     {
         let mut field = TextInput::local()
             .with_placeholder("New task")
@@ -195,10 +223,7 @@ tilo_test_env::scenario! {
             None,
             "a field that says nothing asks nothing"
         );
-    }
 
-    phase a_large_title_field_shows_its_pages_title_and_a_body_field_does_not;
-    {
         let field = |role: TextRole| {
             TextInput::local()
                 .with_initial_value("Call the landlord about the boiler")
@@ -221,89 +246,106 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_field_given_its_text_and_its_area_shows_all_of_it;
+    phase a_field_shows_its_value_from_where_the_person_reads_it;
     // A one-line field is as wide as its text plus [`TextInput::field_padding`] before it scrolls: at
     // that width the whole value shows, from its first letter; anything narrower scrolls to the
-    // caret and cuts the start off.
+    // caret and cuts the start off. A value put there to read (a pairing link in the add-a-device
+    // sheet) starts at its beginning however the caret would follow it, and a focused field that
+    // widens shows its whole value again.
     {
         let _settled = crate::motion::testing::settled();
         let theme = Theme::dark();
-        let mut input = TextInput::local().with_initial_value("Meeting notes");
-        input.set_focus(true);
-        input.apply_layout_external(Rect::new(0.0, 0.0, 600.0, 40.0));
-        draw_with_theme(&mut input, &theme);
-        let text_w = *input
-            .char_x_positions()
-            .last()
-            .expect("the value is measured");
-        assert!(text_w > 20.0, "fixture: the name is measured: {text_w}");
-        let spare = input.field_padding(&theme);
-        assert!(
-            spare > 4.0,
-            "a field keeps its inset on both edges and its carets: {spare}"
-        );
-
-        input.apply_layout_external(Rect::new(0.0, 0.0, text_w + spare, 40.0));
-        draw_with_theme(&mut input, &theme);
-        assert_eq!(
-            input.scroll_x(),
-            0.0,
-            "the field's own area shows the name whole, from its first letter"
-        );
-
-        input.apply_layout_external(Rect::new(0.0, 0.0, text_w + 4.0, 40.0));
-        draw_with_theme(&mut input, &theme);
-        assert!(
-            input.scroll_x() > 0.0,
-            "narrower than its area, the field scrolls to the caret"
-        );
-    }
-
-    phase a_value_shown_for_reading_starts_at_its_beginning;
-    // The add-a-device sheet shows the pairing link in a read-only field and hands the field the
-    // keyboard: the person reads the link from where it starts, not from the meaningless tail its
-    // caret would drag into view.
-    {
-        let _settled = crate::motion::testing::settled();
-        let theme = Theme::dark();
-        let link = "https://tilo.coffee/#/@eu1.tilo.coffee/w/\
-                    0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c?pair=abababababababababababab\
-                    abababababababababababababababab0123456789abcdef0123456789abcdef";
-        let drawn = |mut field: TextInput| {
-            field.set_focus(true);
-            field.apply_layout_external(Rect::new(0.0, 0.0, 320.0, 40.0));
-            draw_with_theme(&mut field, &theme);
-            field
-        };
-        let at_start = |field: &TextInput, what: &str| {
+        {
+            let mut input = TextInput::local().with_initial_value("Meeting notes");
+            input.set_focus(true);
+            input.apply_layout_external(Rect::new(0.0, 0.0, 600.0, 40.0));
+            draw_with_theme(&mut input, &theme);
+            let text_w = *input
+                .char_x_positions()
+                .last()
+                .expect("the value is measured");
+            assert!(text_w > 20.0, "fixture: the name is measured: {text_w}");
+            let spare = input.field_padding(&theme);
             assert!(
-                field.char_x_positions().last().copied().unwrap_or(0.0) > 320.0,
-                "{what}: fixture, the link is longer than the field"
+                spare > 4.0,
+                "a field keeps its inset on both edges and its carets: {spare}"
             );
-            assert_eq!(field.scroll_x(), 0.0, "{what}: the value shows from its start");
-            assert_eq!(field.cursor_pos(), 0, "{what}: the caret is where reading starts");
-        };
-        // The sheet's own order: the value, then that the field is one to read.
-        at_start(
-            &drawn(TextInput::local().with_initial_value(link).with_read_only(true)),
-            "a link put in before the field was read-only",
-        );
-        at_start(
-            &drawn(TextInput::local().with_read_only(true).with_initial_value(link)),
-            "a link put in after",
-        );
-        // A link that changes while the sheet is up arrives the same way.
-        let mut arrived = TextInput::local().with_read_only(true);
-        arrived.set_focus(true);
-        arrived.set_text(link);
-        arrived.apply_layout_external(Rect::new(0.0, 0.0, 320.0, 40.0));
-        draw_with_theme(&mut arrived, &theme);
-        at_start(&arrived, "a refreshed link");
-        // A field the person types in keeps its caret at the end, where typing goes on.
-        let typed = drawn(TextInput::local().with_initial_value(link));
-        assert!(
-            typed.scroll_x() > 0.0,
-            "an editable field follows the caret to the end of what was typed"
-        );
+
+            input.apply_layout_external(Rect::new(0.0, 0.0, text_w + spare, 40.0));
+            draw_with_theme(&mut input, &theme);
+            assert_eq!(
+                input.scroll_x(),
+                0.0,
+                "the field's own area shows the name whole, from its first letter"
+            );
+
+            input.apply_layout_external(Rect::new(0.0, 0.0, text_w + 4.0, 40.0));
+            draw_with_theme(&mut input, &theme);
+            assert!(
+                input.scroll_x() > 0.0,
+                "narrower than its area, the field scrolls to the caret"
+            );
+        }
+
+        // The add-a-device sheet shows the pairing link in a read-only field and hands the field the
+        // keyboard: the person reads the link from where it starts, not from the meaningless tail its
+        // caret would drag into view.
+        {
+            let link = "https://tilo.coffee/#/@eu1.tilo.coffee/w/\
+                        0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c?pair=abababababababababababab\
+                        abababababababababababababababab0123456789abcdef0123456789abcdef";
+            let drawn = |mut field: TextInput| {
+                field.set_focus(true);
+                field.apply_layout_external(Rect::new(0.0, 0.0, 320.0, 40.0));
+                draw_with_theme(&mut field, &theme);
+                field
+            };
+            let at_start = |field: &TextInput, what: &str| {
+                assert!(
+                    field.char_x_positions().last().copied().unwrap_or(0.0) > 320.0,
+                    "{what}: fixture, the link is longer than the field"
+                );
+                assert_eq!(field.scroll_x(), 0.0, "{what}: the value shows from its start");
+                assert_eq!(field.cursor_pos(), 0, "{what}: the caret is where reading starts");
+            };
+            // The sheet's own order: the value, then that the field is one to read.
+            at_start(
+                &drawn(TextInput::local().with_initial_value(link).with_read_only(true)),
+                "a link put in before the field was read-only",
+            );
+            at_start(
+                &drawn(TextInput::local().with_read_only(true).with_initial_value(link)),
+                "a link put in after",
+            );
+            // A link that changes while the sheet is up arrives the same way.
+            let mut arrived = TextInput::local().with_read_only(true);
+            arrived.set_focus(true);
+            arrived.set_text(link);
+            arrived.apply_layout_external(Rect::new(0.0, 0.0, 320.0, 40.0));
+            draw_with_theme(&mut arrived, &theme);
+            at_start(&arrived, "a refreshed link");
+            // A field the person types in keeps its caret at the end, where typing goes on.
+            let typed = drawn(TextInput::local().with_initial_value(link));
+            assert!(
+                typed.scroll_x() > 0.0,
+                "an editable field follows the caret to the end of what was typed"
+            );
+        }
+
+        // A focused field that widens shows its text from the start again.
+        {
+            let name = "Travel";
+            let mut input = TextInput::local().with_initial_value(name);
+            input.set_focus(true);
+            input.set_cursor_pos(name.len());
+            let draw_at = |input: &mut TextInput, width: f64| {
+                input.apply_layout_external(Rect::new(0.0, 0.0, width, 32.0));
+                draw_with_theme(input, &theme);
+            };
+            draw_at(&mut input, 40.0);
+            assert!(input.scroll_x() > 0.0, "narrow, it follows the caret");
+            draw_at(&mut input, 400.0);
+            assert_eq!(input.scroll_x(), 0.0, "wide, the whole name shows");
+        }
     }
 }

@@ -29,7 +29,7 @@ from rust_source import is_test_file, line_number, production_source, skip_strin
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SCANNED = (Path("crates"), Path("apps"))
+SCANNED = (Path("crates"), Path("tools"), Path("apps"))
 # The crate that defines the raw write, its keys and its tests.
 ALLOWED = (Path("crates/system/settings-store"),)
 

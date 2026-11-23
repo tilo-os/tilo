@@ -42,6 +42,8 @@
  * provides it over IndexedDB with strict durability.
  */
 
+import {hex} from './hex.mjs';
+
 export const LOCK_PREFIX = 'tilo-device-key:';
 /** The prefix a page took a key's lock under before the one above. A page takes the lock
  * under both, the older first, so a page loaded before a site's update and one loaded after
@@ -378,10 +380,9 @@ export function rememberBrowserDevice(certified, namespaces = globalThis.localSt
     if (!Array.isArray(cert?.device_public_key)) return;
     const kept = JSON.parse(namespaces?.getItem(BROWSER_DEVICES) ?? 'null');
     const id = typeof kept?.id === 'string' && /^[0-9a-f]{32}$/.test(kept.id) ? kept.id
-      : [...random(new Uint8Array(16))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+      : hex(random(new Uint8Array(16)));
     const certs = [...(Array.isArray(kept?.certs) ? kept.certs : []).filter(other => JSON.stringify(other?.device_public_key) !== key), cert]
       .slice(-BROWSER_DEVICES_KEPT);
-    const hex = bytes => bytes.map(byte => byte.toString(16).padStart(2, '0')).join('');
     const exact = {...(kept?.exact && typeof kept.exact === 'object' ? kept.exact : {}), [hex(cert.device_public_key)]: certified};
     const keys = new Set(certs.map(other => Array.isArray(other?.device_public_key) ? hex(other.device_public_key) : ''));
     for (const other of Object.keys(exact)) if (!keys.has(other)) delete exact[other];

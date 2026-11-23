@@ -341,7 +341,7 @@ impl Record {
             return Err("staging record plan does not match its digest".into());
         }
         self.validate_resize_checkpoints()?;
-        super::handoff::validate_profile(&self.profile)?;
+        super::handoff::validate_stored_profile(&self.profile)?;
         if let Some(expected) = &self.prepared_setup
             && (!expected.valid()
                 || expected.sealed_bytes > imager_backend::staging::prepared_setup::SLOT_BYTES
@@ -519,11 +519,12 @@ impl RecordStore {
         if self.require_privileged_owner {
             secure::check_owner(&path)?;
         }
-        let record: Record = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        let mut record: Record = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
         record.validate()?;
         if record.operation_id != id {
             return Err("staging record name and content disagree".into());
         }
+        super::handoff::drop_invalid_hostname(&mut record.profile);
         Ok(Some(record))
     }
 
@@ -562,8 +563,11 @@ pub fn pending_in(dir: &Path) -> Vec<Record> {
             let id = name.to_str()?.strip_suffix(".json")?.to_string();
             valid_operation_id(&id).then_some(())?;
             let bytes = read_bounded(&e.path()).ok()?;
-            let record: Record = serde_json::from_slice(&bytes).ok()?;
-            (record.validate().is_ok() && record.operation_id == id).then_some(record)
+            let mut record: Record = serde_json::from_slice(&bytes).ok()?;
+            (record.validate().is_ok() && record.operation_id == id).then(|| {
+                super::handoff::drop_invalid_hostname(&mut record.profile);
+                record
+            })
         })
         .filter(|r| r.status() != RecordStatus::Removed)
         .collect();
@@ -852,5 +856,53 @@ mod tests {
             assert!(store.load("op-user").is_err());
             assert!(parent_open.load("op-user").is_err());
         }
+    }
+
+    #[test]
+    fn stored_record_with_bad_hostname_loads_and_asks_for_hostname_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = RecordStore::at(tmp.path());
+        let mut record = sample_record("op-legacy-host");
+        record.profile = serde_json::from_value(serde_json::json!({
+            "schema": 1,
+            "purpose": "computer",
+            "hostname": "bad host",
+            "username": "ada",
+            "locale": "en_US.UTF-8",
+            "keyboard": "de",
+        }))
+        .unwrap();
+        store.save(&record).unwrap();
+
+        let loaded = store.load("op-legacy-host").unwrap().unwrap();
+        assert!(
+            loaded.profile.get("hostname").is_none(),
+            "bad stored hostname is dropped on load"
+        );
+        assert_eq!(loaded.profile["username"], "ada");
+        let media =
+            imager_backend::destination::media_profile::validate_object(&loaded.profile).unwrap();
+        assert!(media.hostname.is_none());
+        assert!(
+            media
+                .repairs
+                .contains(&imager_backend::destination::media_profile::MediaProfileField::Hostname)
+        );
+        assert!(super::super::handoff::validate_profile(&loaded.profile).is_ok());
+
+        let pending = pending_in(store.public_dir.as_ref().unwrap());
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].profile.get("hostname").is_none());
+
+        let mut valid = sample_record("op-valid-host");
+        valid.profile = serde_json::from_value(serde_json::json!({
+            "schema": 1,
+            "hostname": "studio",
+            "username": "ada",
+        }))
+        .unwrap();
+        store.save(&valid).unwrap();
+        let reloaded = store.load("op-valid-host").unwrap().unwrap();
+        assert_eq!(reloaded.profile["hostname"], "studio");
     }
 }

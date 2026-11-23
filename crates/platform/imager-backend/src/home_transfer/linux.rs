@@ -99,7 +99,7 @@ fn review_inner(source: &Path, destination: &Path, journal: &Path) -> io::Result
 }
 
 fn directory_identity(directory: &PinnedDirectory) -> io::Result<durability::Identity> {
-    durability::identity(&durability::readable_directory(&directory.file)?)
+    durability::directory_identity(directory)
 }
 
 fn reject_virtual_source(file: &File) -> io::Result<()> {

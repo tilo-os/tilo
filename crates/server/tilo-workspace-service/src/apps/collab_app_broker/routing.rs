@@ -457,7 +457,7 @@ impl AppBrokerState {
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::ResourceCommandResult { .. }
             | CollabEvent::ResourcePage { .. }
-            | CollabEvent::HeldElsewhereVerdicts { .. }
+            | CollabEvent::ActionVerdicts { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
             | CollabEvent::NearbyTransferChanged
             | CollabEvent::SpeakersChanged
@@ -1100,7 +1100,7 @@ impl AppBrokerState {
     /// announcement: an input nothing announces, or a check that failed.
     pub(super) fn refresh_policy_surfaces(self: &Arc<Self>) -> bool {
         // Read only the workspaces' grants: decided again whatever else this host serves.
-        self.refresh_held_elsewhere();
+        self.refresh_shown_actions();
         // Only the opens waiting before this refresh reads the workspaces are
         // told its outcome; a later one waits for the next.
         let waiting = self.take_membership_surface_waiters();

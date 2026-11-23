@@ -40,7 +40,7 @@ pub const MAILBOXES: &[(&str, &str)] = &[
 ];
 
 /// The mailboxes whose changes are asked for when an account is first seen.
-const SYNCED: &[&str] = &["inbox", "archive", "sent", "trash"];
+const SYNCED: &[&str] = &["inbox", "archive", "sent", "junk", "trash"];
 
 /// What people change of a message.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -97,6 +97,12 @@ enum Pending {
         account: String,
         key: String,
         before: People,
+    },
+    /// A message being deleted from its server for good: its account, which says why a server
+    /// would not, and its key, so what the server says of it meanwhile is no news of it.
+    Purge {
+        account: String,
+        key: String,
     },
 }
 
@@ -188,6 +194,9 @@ pub struct ImapOrigin {
     accounts_waiting: bool,
     /// What changed in the room since the last poll, as the store told it.
     changed: Rc<RefCell<Vec<FieldKey>>>,
+    /// The messages a person deleted for good, whose server copy is no mail of theirs again
+    /// while its server still lists it: what the fetch in flight carries is passed over.
+    purged: std::collections::HashSet<(String, String)>,
     /// Whether what changes in the workspace is being watched: the store is asked once, however
     /// many times the workspace is read.
     subscribed: bool,
@@ -223,6 +232,7 @@ impl ImapOrigin {
             polling: Rc::default(),
             accounts_waiting: false,
             changed: Rc::default(),
+            purged: std::collections::HashSet::new(),
             subscribed: false,
             pending: BTreeMap::new(),
             sends: HashMap::new(),
@@ -265,6 +275,60 @@ impl ImapOrigin {
         Delivery::Delivered
     }
 
+    /// Deletes messages from the account's server for good, its trash emptied of them: what a
+    /// person deleting a trashed conversation permanently does. The payload is `(account, [key
+    /// …])`. A key the account's mail no longer names is passed over, so deleting again what is
+    /// already gone changes nothing.
+    fn purge(&mut self, payload: &Json) -> Delivery {
+        let account = payload.get(0).and_then(Json::as_str).unwrap_or_default();
+        let keys: Vec<String> = payload
+            .get(1)
+            .and_then(Json::as_array)
+            .map(|keys| {
+                keys.iter()
+                    .filter_map(Json::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let Some(state) = self.state.as_mut() else {
+            return Delivery::Rejected(format!("no mail account {account} on this device"));
+        };
+        if !state.accounts.contains_key(account) {
+            return Delivery::Rejected(format!("no mail account {account} on this device"));
+        }
+        let account_id = account.to_owned();
+        let connector = &mut self.connector;
+        let pending = &mut self.pending;
+        let purged = &mut self.purged;
+        let Some(acct) = state.accounts.get_mut(account) else {
+            return Delivery::Delivered;
+        };
+        for key in keys {
+            let Some(held) = acct.messages.remove(&key) else {
+                continue;
+            };
+            state.by_record.remove(&held.record.id_string());
+            if let Some(request) = connector.purge(&account_id, &key) {
+                pending.insert(
+                    request,
+                    Pending::Purge {
+                        account: account_id.clone(),
+                        key: key.clone(),
+                    },
+                );
+                purged.insert((account_id.clone(), key.clone()));
+            }
+            for thread in acct.threads.values_mut() {
+                thread.keys.retain(|kept| kept != &key);
+            }
+        }
+        // A conversation whose messages are all gone has nothing left to say of itself here: the
+        // app takes the conversation away with its last message.
+        acct.threads.retain(|_, thread| !thread.keys.is_empty());
+        Delivery::Delivered
+    }
+
     /// What the connector reported since the last frame: what changed, what
     /// became unreachable and how what was asked of it ended.
     fn take_events(&mut self, host: &Host, now: &str) -> Polled {
@@ -285,6 +349,8 @@ impl ImapOrigin {
                         mailbox: String::new(),
                         messages,
                         flags: Vec::new(),
+                        removed: Vec::new(),
+                        more: None,
                     };
                     polled.wrote |= self.take_changes(host, now, changes).wrote();
                 }
@@ -302,6 +368,9 @@ impl ImapOrigin {
                         polled.settle = true;
                     }
                     Some(Pending::Write { .. }) | None => {}
+                    Some(Pending::Purge { account, key }) => {
+                        self.purged.remove(&(account, key));
+                    }
                 },
                 Event::Refused { request, reason } => match self.pending.remove(&request) {
                     Some(Pending::Send(payload)) => {
@@ -315,6 +384,12 @@ impl ImapOrigin {
                     }) => {
                         self.trouble.insert(account.clone(), reason);
                         polled.wrote |= self.write_back(host, now, account, key, before);
+                    }
+                    // A message deleted here stays deleted here: the account says why its
+                    // server would not, and the server's next mail brings it back if it keeps
+                    // it.
+                    Some(Pending::Purge { account, .. }) => {
+                        self.trouble.insert(account, reason);
                     }
                     None => {}
                 },
@@ -330,6 +405,9 @@ impl ImapOrigin {
                     }) => {
                         self.trouble.insert(account.clone(), reason);
                         polled.wrote |= self.write_back(host, now, account, key, before);
+                    }
+                    Some(Pending::Purge { account, .. }) => {
+                        self.trouble.insert(account, reason);
                     }
                     None => {}
                 },
@@ -612,6 +690,12 @@ impl ImapOrigin {
             put(&t.account, &mut fields, "key", text(&a.id));
             put(&t.account, &mut fields, "address", text(&a.address));
             put(&t.account, &mut fields, "name", text(&a.name));
+            put(
+                &t.account,
+                &mut fields,
+                "identities",
+                text(&a.identities.join("\n")),
+            );
             put(&t.account, &mut fields, "online", Value::Bool(false));
             writes.push(OriginWrite::Insert {
                 owner: state.root.clone(),
@@ -722,6 +806,10 @@ impl ImapOrigin {
                     account: asked_of,
                     key: asked,
                     ..
+                }
+                | Pending::Purge {
+                    account: asked_of,
+                    key: asked,
                 } => asked_of == account && asked == key,
                 Pending::Send(_) => false,
             })
@@ -767,7 +855,15 @@ impl ImapOrigin {
 
     /// What a server said changed, written if the workspace takes it, and kept — behind what the
     /// server said before — if it does not.
-    fn take_changes(&mut self, host: &Host, now: &str, changes: Changes) -> Taken {
+    fn take_changes(&mut self, host: &Host, now: &str, mut changes: Changes) -> Taken {
+        // A message a person deleted for good is not their mail again because the fetch in
+        // flight still lists it: its server has not answered the deletion yet.
+        let account = changes.account.clone();
+        changes.messages.retain(|message| {
+            !self
+                .purged
+                .contains(&(account.clone(), message.key.clone()))
+        });
         let taken = self.take_step(host, now, &changes);
         if !taken.done() {
             self.keep(changes);
@@ -1052,12 +1148,14 @@ impl ImapOrigin {
         }
     }
 
-    /// Each account says whether its server answers, what is wrong with it, and why not.
+    /// Each account says whether its server answers, what is wrong with it, why not, and the
+    /// names and addresses it sends as, which the settings' account carries.
     fn account_state(&self, host: &Host) -> Vec<OriginWrite> {
         let Some(state) = self.state.as_ref() else {
             return Vec::new();
         };
         let t = &state.types;
+        let accounts = self.connector.accounts();
         let mut writes = Vec::new();
         for (id, acct) in &state.accounts {
             let unreached = self.trouble.get(id).map_or("", String::as_str);
@@ -1070,14 +1168,21 @@ impl ImapOrigin {
             };
             let online = unreached.is_empty();
             let fetched = self.fetched.get(id).map_or("", String::as_str);
+            let identities = accounts
+                .iter()
+                .find(|a| &a.id == id)
+                .map(|a| a.identities.join("\n"))
+                .unwrap_or_default();
             if read_text(host, &acct.record, &t.account, "trouble") != trouble
                 || read_bool(host, &acct.record, &t.account, "online") != online
+                || read_text(host, &acct.record, &t.account, "identities") != identities
                 || (!fetched.is_empty()
                     && read_text(host, &acct.record, &t.account, "fetched") != fetched)
             {
                 let mut fields = Vec::new();
                 put(&t.account, &mut fields, "trouble", text(trouble));
                 put(&t.account, &mut fields, "online", Value::Bool(online));
+                put(&t.account, &mut fields, "identities", text(&identities));
                 if !fetched.is_empty() {
                     put(&t.account, &mut fields, "fetched", text(fetched));
                 }
@@ -1121,6 +1226,8 @@ fn take_in_step(
     // The messages inserted, by their record and the server's key, to be known by their record
     // once the change is kept.
     let mut inserted: Vec<(String, String)> = Vec::new();
+    // The records of the messages the server no longer has, forgotten once the change is kept.
+    let mut gone_records: Vec<String> = Vec::new();
     host.runtime()
         .write_origin("imap", Some(now.to_owned()), |change| {
             let mut touched: BTreeSet<String> = BTreeSet::new();
@@ -1162,20 +1269,7 @@ fn take_in_step(
                 });
                 new_messages.push(m);
             }
-            for (key, unread, flagged) in &changes.flags {
-                if let Some(held) = acct.messages.get_mut(key) {
-                    let server = People {
-                        unread: *unread,
-                        flagged: *flagged,
-                        mailbox: held.confirmed.mailbox.clone(),
-                    };
-                    if !waiting(&changes.account, key) && held.confirmed != server {
-                        held.confirmed = server.clone();
-                        writes.push(people_write(t, &held.record, &server));
-                        touched.insert(held.thread.clone());
-                    }
-                }
-            }
+            take_in_flags(t, acct, changes, &waiting, &mut writes, &mut touched);
             // The inserts are in `writes` interleaved with updates; find their results by order.
             let made = change.write(writes)?;
             let mut made_iter = made.into_iter().flatten();
@@ -1204,6 +1298,19 @@ fn take_in_step(
                     },
                 );
             }
+            // What the server no longer has leaves the workspace, after what it brought: the
+            // message, and the conversation it was the last of. The mailbox says too whether
+            // its server holds mail older than what is held, so a window can offer the page
+            // before it.
+            remove_gone(
+                change,
+                host,
+                t,
+                acct,
+                threads_field,
+                changes,
+                &mut gone_records,
+            )?;
             change.write(summarize(host, t, acct, &touched))?;
             Ok(())
         })?;
@@ -1212,7 +1319,100 @@ fn take_in_step(
             .by_record
             .insert(record, (changes.account.clone(), key));
     }
+    for record in gone_records {
+        state.by_record.remove(&record);
+    }
     Ok(true)
+}
+
+/// The flags a server reported of the messages held: each one's unread and flagged brought to
+/// what the server says, unless someone changed them here and the server has not been told yet.
+fn take_in_flags(
+    t: &Types,
+    acct: &mut Acct,
+    changes: &Changes,
+    waiting: &dyn Fn(&str, &str) -> bool,
+    writes: &mut Vec<OriginWrite>,
+    touched: &mut BTreeSet<String>,
+) {
+    for (key, unread, flagged) in &changes.flags {
+        if let Some(held) = acct.messages.get_mut(key) {
+            let server = People {
+                unread: *unread,
+                flagged: *flagged,
+                mailbox: held.confirmed.mailbox.clone(),
+            };
+            if !waiting(&changes.account, key) && held.confirmed != server {
+                held.confirmed = server.clone();
+                writes.push(people_write(t, &held.record, &server));
+                touched.insert(held.thread.clone());
+            }
+        }
+    }
+}
+
+/// The messages `changes.removed` names leave the workspace with the conversation each was the
+/// last one of, written in `change`: their records are forgotten here too, and `gone_records`
+/// keeps them for the state once the change is kept. The mailbox also says whether its server
+/// holds mail older than what is held, so a window can offer the page before it.
+fn remove_gone(
+    change: &mut OriginChange<'_>,
+    host: &Host,
+    t: &Types,
+    acct: &mut Acct,
+    threads_field: &str,
+    changes: &Changes,
+    gone_records: &mut Vec<String>,
+) -> Result<(), RuntimeError> {
+    let mut writes = Vec::new();
+    let mut emptied: BTreeSet<String> = BTreeSet::new();
+    for key in &changes.removed {
+        let Some(held) = acct.messages.remove(key) else {
+            continue;
+        };
+        gone_records.push(held.record.id_string());
+        if let Some(thread) = acct.threads.get_mut(&held.thread) {
+            thread.keys.retain(|kept| kept != key);
+            if thread.keys.is_empty() {
+                emptied.insert(held.thread.clone());
+            }
+        }
+        if let (Some(field), Some(owner)) = (
+            t.thread.field("messages"),
+            acct.threads
+                .get(&held.thread)
+                .map(|thread| thread.record.clone()),
+        ) {
+            writes.push(OriginWrite::Remove {
+                owner,
+                field: field.to_owned(),
+                item: held.record,
+            });
+        }
+    }
+    for key in emptied {
+        if let Some(thread) = acct.threads.remove(&key) {
+            writes.push(OriginWrite::Remove {
+                owner: acct.record.clone(),
+                field: threads_field.to_owned(),
+                item: thread.record,
+            });
+        }
+    }
+    if let Some(more) = changes.more
+        && let Some(record) = acct.boxes.get(&changes.mailbox)
+        && t.mailbox.field("more").is_some()
+        && read_bool(host, record, &t.mailbox, "more") != more
+    {
+        let mut fields = Vec::new();
+        put(&t.mailbox, &mut fields, "more", Value::Bool(more));
+        writes.push(OriginWrite::Set {
+            target: record.clone(),
+            fields,
+        });
+    }
+    change.write(writes)?;
+    Ok(())
 }
 
 /// The conversations a server's changes start, each a record in its account, in `change`.
@@ -1411,7 +1611,10 @@ impl Origin for ImapOrigin {
     }
 
     fn serves(&self, capability: &str) -> bool {
-        matches!(capability, "smtp.send" | "imap.check")
+        matches!(
+            capability,
+            "smtp.send" | "imap.check" | "imap.older" | "imap.purge"
+        )
     }
 
     /// A step the workspace would not take is not a reason to poll: it is taken again with the
@@ -1525,6 +1728,31 @@ impl Origin for ImapOrigin {
         if capability == "imap.check" {
             return self.check_now(payload.as_str().unwrap_or_default());
         }
+        if capability == "imap.older" {
+            let field = |i: usize| -> String {
+                payload
+                    .get(i)
+                    .and_then(Json::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            let (account, mailbox) = (field(0), field(1));
+            let known = self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.accounts.contains_key(&account));
+            if !known {
+                return Delivery::Rejected(format!("no mail account {account} on this device"));
+            }
+            return match self.connector.older(&account, &mailbox) {
+                // The page arrives as the server's answers do, on the poll it wakes.
+                Some(_) => Delivery::Delivered,
+                None => Delivery::Rejected(format!("there is no older mail to read in {mailbox}")),
+            };
+        }
+        if capability == "imap.purge" {
+            return self.purge(payload);
+        }
         if capability != "smtp.send" {
             return Delivery::Rejected(format!(
                 "the mail connector does not carry out {capability}"
@@ -1557,14 +1785,18 @@ impl Origin for ImapOrigin {
                 .to_owned()
         };
         let account = field(0);
+        let body = field(6);
         let message = Outgoing {
-            to: field(1),
-            cc: field(2),
-            subject: field(3),
-            body: field(4),
-            in_reply_to: field(5),
-            references: field(6),
-            calendar_ics: field(7),
+            from: field(1),
+            to: field(2),
+            cc: field(3),
+            bcc: field(4),
+            subject: field(5),
+            html_body: crate::html::of_markdown(&body),
+            body,
+            in_reply_to: field(7),
+            references: field(8),
+            calendar_ics: field(9),
         };
         match self.connector.send(&account, message) {
             Ok(request) => {

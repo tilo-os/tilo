@@ -502,6 +502,11 @@ impl<M: ListModel + 'static> VirtualList<M> {
             .set_on_activate(move |key: ListKey| callback(key.typed()));
     }
 
+    pub fn set_on_revealed(&mut self, mut callback: impl FnMut(M::Key) + 'static) {
+        self.rows
+            .set_on_revealed(move |key: ListKey| callback(key.typed()));
+    }
+
     pub fn set_on_opened(&mut self, mut callback: impl FnMut(M::Key) + 'static) {
         self.rows
             .set_on_opened(move |key: ListKey| callback(key.typed()));
@@ -661,6 +666,21 @@ impl<M: ListModel + 'static> VirtualList<M> {
     /// made the item the row shows, and the person is still typing where they made it.
     /// The ask is taken once: the list clears it, so a list built again shows its own
     /// place rather than asking for a row shown before.
+    /// Show the row `key` names as the list is built: it scrolls into view at the list's motion,
+    /// without taking the keyboard or the selection — what a view asks when it shows a row of its
+    /// own, as a view of an address book does for the first card under a letter.
+    #[must_use]
+    pub fn revealing(mut self, item: impl Into<String>) -> Self {
+        self.rows.scroll_reveal(item);
+        self
+    }
+
+    /// Show the row of the item `item` names now, as [`Self::revealing`] does for a list being
+    /// built.
+    pub fn scroll_reveal(&mut self, item: impl Into<String>) {
+        self.rows.scroll_reveal(item);
+    }
+
     #[must_use]
     pub fn reveal_when(mut self, shown: &crate::LocalState<Option<M::Key>>) -> Self {
         let initial = shown.with(Clone::clone);

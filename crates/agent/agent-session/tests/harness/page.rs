@@ -35,6 +35,21 @@ use tilo_server_client::ServerAddress;
 use tilo_session_actions::Heard;
 
 use super::hosted::Hosted;
+
+/// How long a page waits for its host to answer a barrier, or to hold what the page wrote. A
+/// healthy host answers within a second even on a loaded runner; a write still not taken after
+/// this is one the host never took, and every test of a shard waiting the whole shared hang bound
+/// on one kept a runner busy for an hour.
+pub const BARRIER_BOUND: Duration = Duration::from_secs(60);
+
+/// When a wait for the host to take a page's write gives up: [`BARRIER_BOUND`] from now, or the
+/// shared hang bound if that is shorter.
+#[must_use]
+pub fn write_deadline() -> Instant {
+    Instant::now()
+        .checked_add(tilo_test_env::hang_bound().min(BARRIER_BOUND))
+        .expect("the bound fits in an Instant")
+}
 use crate::support::{Device, WORKSPACE, admitted_to, ready, start_peer};
 use tilo_server_protocol::WorkspaceId;
 
@@ -330,6 +345,41 @@ impl Page {
             .push(([0; 32], bytes));
     }
 
+    /// Open `app` in a window of the workspace's shared layout, as `person` opens it on this
+    /// device: the change that places it, written into the layout this page holds.
+    pub fn open_on_layout(&mut self, app: &str, title: &str, person: &str) {
+        let route = self.layout_route();
+        let bytes = self
+            .read(&route)
+            .expect("the page holds the workspace's layout");
+        let doc = automerge::AutoCommit::load(&bytes).unwrap();
+        let change = tilo_desktop_model::place::place_view(
+            &doc,
+            &tilo_desktop_model::place::Opener {
+                person,
+                opened_by: None,
+            },
+            &tilo_desktop_model::place::View {
+                app_id: app,
+                title,
+                document: "",
+                beside: None,
+            },
+        )
+        .unwrap()
+        .expect("the window is added");
+        self.peer
+            .write(
+                route.clone(),
+                &collab_types::DocumentMutation::Incremental(change.clone()),
+            )
+            .unwrap();
+        self.documents
+            .entry(route)
+            .or_default()
+            .push(([0; 32], change));
+    }
+
     /// The workspace's shared layout as the page has received it.
     pub fn layout(&mut self) -> Option<tilo_desktop_model::ownership::SharedDesktop> {
         self.pump();
@@ -513,7 +563,7 @@ impl Page {
     /// Wait until everything this page published is durable on the host.
     pub async fn durable(&self) {
         let receipt = self.peer.barrier().unwrap();
-        let deadline = tilo_test_env::hang_deadline();
+        let deadline = write_deadline();
         loop {
             match receipt.try_recv() {
                 Ok(result) => return result.unwrap(),
@@ -522,7 +572,8 @@ impl Page {
             }
             assert!(
                 Instant::now() < deadline,
-                "the page's edits never became durable"
+                "the page's edits never became durable: the host did not answer its barrier \
+                 within {BARRIER_BOUND:?}"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

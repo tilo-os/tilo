@@ -189,10 +189,13 @@ tilo_test_env::scenario! {
         let state_for_poison = Arc::clone(&state);
         assert!(
             std::thread::spawn(move || {
-                let _journal = state_for_poison.journal.lock().expect("journal lock");
-                panic!("poison journal lock for shutdown recovery");
+                tilo_rt::panic_boundary::isolate(|| {
+                    let _journal = state_for_poison.journal.lock().expect("journal lock");
+                    panic!("poison journal lock for shutdown recovery");
+                })
             })
             .join()
+            .unwrap()
             .is_err()
         );
 

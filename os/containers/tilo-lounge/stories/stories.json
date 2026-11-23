@@ -1,24 +1,22 @@
 {
-  "about": "The user stories: what a person sets out to do with Tilo, in their words, and the steps they take. `walk` says how a story is walked: `shell` in Tilo shells, each person a headless Tilo session of their own (shell/story.py); `page` on the web page, each person a fresh browser profile (recorder.mjs); `mount` through the workspace's mounted folders. `driver` names the program that walks a story as that person; a story with none is listed as not yet automated, and `needs` says what walking it still takes. `servers` names the servers a story's people meet that the check starts itself (test-user-stories.sh), `nextcloud` being crates/system/cloud-source-dav/tests/servers.sh's seeded Nextcloud on the check's own loopback: the check then runs as root in its VM, where those containers can start. `stack: false` marks a page story walked without a tilo.sh stack of its own; `admission` is what that stack's entry admits (`open` unless the story asks for production's `invite`), `mailStandIn` gives a page story the stack's stand-in mail server and a shell story the tree's `mail_stand_in` program, and `privateNetwork` gives a page story's stack a network namespace of its own, where the low ports a provider publishes on may be bound. `credentials` marks a story that cannot run without an outside account.",
+  "about": "The user stories: what a person sets out to do with Tilo, in their words, and the steps they take. `walk` says how a story is walked: `shell` in Tilo shells, each person a headless Tilo session of their own (shell/story.py), or a computer on which the `tilo` command is the whole of Tilo (shell/cli_host.py); `page` on the web page, each person a fresh browser profile (recorder.mjs); `mount` through the workspace's mounted folders. `driver` names the program that walks a story as that person; a story with none is listed as not yet automated, and `needs` says what walking it still takes. `servers` names the servers a story's people meet that the check starts itself (test-user-stories.sh), `nextcloud` being crates/system/cloud-source-dav/tests/servers.sh's seeded Nextcloud on the check's own loopback: the check then runs as root in its VM, where those containers can start. `stack: false` marks a page story walked without a tilo.sh stack of its own; `admission` is what that stack's entry admits (`open` unless the story asks for production's `invite`), `mailStandIn` gives a page story the stack's stand-in mail server and a shell story the tree's `mail_stand_in` program, and `privateNetwork` gives a page story's stack a network namespace of its own, where the low ports a provider publishes on may be bound. `credentials` marks a story that cannot run without an outside account.",
   "stories": [
     {
       "id": "invite-live",
       "title": "Make a workspace, invite someone, and work together live",
-      "intent": "Ada makes a new workspace and invites Grace. Grace opens the invitation in Tilo on a computer that has never seen it, and joins. Each sees the other in their people list within about two seconds. Grace follows Ada, and what Ada types in a note shows on Grace's screen within about a second.",
+      "intent": "Ada makes a new workspace and invites Grace. Grace opens the invitation in Tilo on a computer that has never seen it, and joins. Each sees the other in their people list within about two seconds. What Ada types in Chat shows on Grace's screen within about a second.",
       "walk": "shell",
-      "needs": "a driver that works in Chat or the tilolang Notes, which the native Notes app this story was written for no longer is",
+      "driver": "shell/invite-live.py",
       "steps": [
         "Ada opens Tilo",
-        "Ada opens Tilo again",
         "Ada gives their name",
         "Ada makes a new workspace, “Garden club”",
         "Ada makes an invitation link",
         "Grace opens the invitation on her computer",
         "Grace joins Garden club",
         "Ada and Grace see each other in their people lists",
-        "Grace follows Ada",
-        "Ada opens Notes and starts a note",
-        "Ada types a line in the note",
+        "Grace opens Chat",
+        "Ada writes a line in Chat",
         "Grace sees Ada’s words"
       ]
     },
@@ -113,6 +111,48 @@
         "Ada asks her laptop for a way to add a new device",
         "Ada adds her phone as one of her devices"
       ]
+    },
+    {
+      "id": "cli-login-ticket",
+      "title": "Add another computer with a ticket and read the workspace from it",
+      "intent": "Ada runs `tilo device add` on a computer she signed in on, and `tilo login` with the ticket it printed on a second computer. The second computer is then one of her member devices: it enters the workspace that computer serves, and reads a file she put there from the first.",
+      "walk": "shell",
+      "driver": "shell/cli-login-ticket.py",
+      "steps": [
+        "Ada signs in on her computer",
+        "Ada asks her computer for a ticket for another",
+        "The second computer logs in with the ticket",
+        "Ada puts a file in the workspace from her computer",
+        "The second computer reads the file from the workspace"
+      ]
+    },
+    {
+      "id": "home-server-joins",
+      "title": "A home server joins the workspace with a ticket and holds what is written there",
+      "intent": "Ada's computer prints a ticket for a home server with `tilo device add --server`, and the server logs in with it as one of her devices. Afterwards the server holds the workspace's own resources: a file Ada puts from her computer reads from the server, and the server's own state keeps it.",
+      "walk": "shell",
+      "driver": "shell/home-server-joins.py",
+      "steps": [
+        "Ada signs in on her computer",
+        "Ada asks her computer for a ticket for a home server",
+        "The home server joins with the ticket",
+        "Ada puts a file in the workspace from her computer",
+        "The home server reads the file from its own state"
+      ]
+    },
+    {
+      "id": "agent-turn-on-mention",
+      "title": "Mention a server-side agent in Chat and get its answer",
+      "intent": "In Chat, a person mentions an agent the workspace's server runs. The mention starts an agent turn on the server, and the agent's reply appears in Chat under its own name.",
+      "walk": "shell",
+      "needs": "a workspace served by a host that runs its agents, and a model that host can ask: the host asks only providers on the internet unless its operator lets it reach its own network, and the check holds no model key. A shell story's workspace is served by a device, not by a server."
+    },
+    {
+      "id": "phone-thumbnails-on-server",
+      "title": "A phone's photos are thumbnailed by the server",
+      "intent": "A phone adds photos to the workspace, the workspace's server runs `make-thumbnails` for them, and the phone shows the thumbnails.",
+      "walk": "shell",
+      "needs": "a workspace served by a server whose entry offers compute, with the thumbnails worker installed and a phone joined to that server as a device: photos in a workspace a device serves run `make-thumbnails` on the device, and a server takes that turn only once its entry offers compute."
     },
     {
       "id": "mail-password",

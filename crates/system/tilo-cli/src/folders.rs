@@ -3,7 +3,7 @@
 //! Each of the person's workspaces has one folder, the same everywhere: on
 //! Tilo OS at `/var/workspace`, on any other computer logged in with
 //! `tilo login` at `~/<workspace>` by default. The daemon `tilo login` leaves
-//! running (`tilo-runtime --hold`) mounts them; this command changes which, where,
+//! running (`tilo-runtime`) mounts them; this command changes which, where,
 //! and whether each syncs ([`tilo_api::daemon::folders`]), and the daemon applies it
 //! within seconds.
 

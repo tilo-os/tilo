@@ -9,7 +9,7 @@
 //! desktop session; nothing it checks is relaxed.
 
 use super::{Apps, Launch, Sockets};
-use crate::unix;
+use crate::host;
 use app_catalogue::apps::InstalledApp;
 use std::{
     io,
@@ -122,9 +122,9 @@ fn wayland_socket() -> Result<PathBuf, String> {
 fn service_directory(root: &Path, sockets: &Sockets) -> io::Result<PathBuf> {
     let runtime_dir = root.join(LAUNCH_RUNTIME_DIR);
     let services = runtime_dir.join("tilo/services");
-    unix::private_directory(&runtime_dir)?;
-    unix::private_directory(&runtime_dir.join("tilo"))?;
-    unix::private_directory(&services)?;
+    host::private_directory(&runtime_dir)?;
+    host::private_directory(&runtime_dir.join("tilo"))?;
+    host::private_directory(&services)?;
     for (name, target) in [
         (launcher::services::COLLAB_SERVICE, &sockets.collab),
         (launcher::services::IDENTITY_SERVICE, &sockets.identity),

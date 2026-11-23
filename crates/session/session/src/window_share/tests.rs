@@ -42,11 +42,11 @@ use tilo_actions::ResourceSpec;
 use tilo_color_pipeline::hdr_display::DisplayCapabilities;
 use tilo_compositor::{Compositor, InputEvent, OutputConfig, Selection};
 
-use tilo_desktop::verbs::{SHELL_RESOURCE, WINDOW_KIND, tab_resource_id};
+use tilo_desktop::verbs::{CHROME_RESOURCE, SHELL_RESOURCE, WINDOW_KIND, tab_resource_id};
 use tilo_desktop_model::window_share::window_share_id;
 use tilo_desktop_model::{
-    GroupId, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceId,
+    CanvasPlace, GroupId, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
+    WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_network_actor::WorkspaceId as Topic;
 use tilo_window_share::streaming::InputEvent as SharedInput;
@@ -1019,7 +1019,10 @@ fn a_window_the_session_does_not_run_is_read_and_pictured() {
         assert!(
             matches!(
                 action.action_type().operation_type.as_deref(),
-                Some(tilo_desktop_surface::window::LOOK | tilo_desktop_surface::window::READ)
+                Some(
+                    tilo_session_core::desktop::window::LOOK
+                        | tilo_session_core::desktop::window::READ
+                )
             ) || action.id == "focus"
                 || action.id == "close-tab",
             "the window's row offers {}, which reaches into another desktop's window",
@@ -2334,6 +2337,385 @@ fn a_window_the_shell_lists_as_running_on_its_host_is_pictured_there_and_stays_w
         "the window still stands on the shell, as one that runs on its host"
     );
     assert_eq!(hosted_tabs(&viewer.session), vec![tab]);
+}
+
+/// A shell with the workspace and no strips yet, as a workspace just joined stands before its
+/// first window or share arrives.
+fn empty_workspace_shell() -> Layout {
+    let workspace = Workspace::new(workspace_id(), "Shell");
+    Layout {
+        active: workspace.id(),
+        workspaces: vec![workspace],
+        ..Layout::default()
+    }
+}
+
+/// Start one shared window on a host of `host_seed` and carry the workspace policy to a viewer
+/// of `viewer_seed` running `viewer_shell` until the viewer receives and shows it.
+#[track_caller]
+fn start_share_and_carry(
+    host_seed: u8,
+    viewer_seed: u8,
+    viewer_shell: Layout,
+) -> (Member, Option<TestClient>, Member, u64) {
+    tilo_window_share::flatpak_share::read_encoders();
+    let salt = tilo_desktop_model::ids::device_salt_of_key(device(host_seed).as_bytes());
+    let mut host = member_minting_under(
+        host_seed,
+        shell(
+            TileContent::LocalApp {
+                app_id: APP.to_owned(),
+                label: "Notes".to_owned(),
+                note: String::new(),
+            },
+            tilo_desktop_model::ids::compose_id(salt, 1),
+        ),
+        salt,
+    );
+    let mut window = Some(mapped(&mut host.session, APP));
+    let tab = tab_of(&host.session, APP);
+    let mut viewer = member_minting_under(viewer_seed, viewer_shell, 1);
+    share(&mut host, APP, tab);
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        !rows(&shares(&host.session), "sharing").is_empty()
+    });
+    carry_governance(&host.session, &viewer.session);
+    heard(&viewer, host_seed, "Framework");
+    let host_key = hex::encode(device(host_seed).as_bytes());
+    until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
+        hosted(&viewer.session, tab).as_deref() == Some(host_key.as_str())
+    });
+    until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
+        !rows(&shares(&viewer.session), "received").is_empty()
+    });
+    (host, window, viewer, tab)
+}
+
+/// Stop `host`'s share of `tab` and carry the retracted workspace policy to `viewer` until `viewer`
+/// stops showing it.
+#[track_caller]
+fn stop_share_and_carry(
+    host: &mut Member,
+    window: &mut Option<TestClient>,
+    viewer: &mut Member,
+    tab: u64,
+) {
+    host.session
+        .invoke(
+            SHARES_RESOURCE,
+            "stop",
+            &arguments(serde_json::json!({ "tab": tab.to_string() })),
+        )
+        .expect("the share is stopped");
+    until(host, window, viewer, |host, _, _| {
+        !host.session.handle().read(|tree| {
+            tree.workspaces[0]
+                .policy
+                .grants
+                .iter()
+                .any(|grant| is_of_share(grant, &window_share_id(tab)))
+        })
+    });
+    carry_governance(&host.session, &viewer.session);
+    until(host, window, viewer, |_, viewer, _| {
+        hosted(&viewer.session, tab).is_none()
+    });
+}
+
+/// A share that ends while its group is fullscreen clears `fullscreen` and forgets the group's
+/// canvas place instead of leaving them pointing at the removed group.
+#[test]
+fn a_share_ending_while_fullscreen_clears_fullscreen_and_canvas_place() {
+    let (mut host, mut window, mut viewer, tab) = start_share_and_carry(0x96, 0x97, own_shell());
+    viewer
+        .session
+        .invoke(
+            CHROME_RESOURCE,
+            "fullscreen",
+            &arguments(serde_json::json!({ "group": tab.to_string(), "on": true })),
+        )
+        .expect("the shared window goes fullscreen");
+    settle(&mut host, &mut window, &mut viewer);
+    let mut tree = viewer.session.handle().read(Clone::clone);
+    tree.workspaces[0]
+        .layout
+        .places
+        .insert(tab, CanvasPlace::new(744, 0, 720, 520));
+    viewer.session.handle().replace_tree(tree);
+    settle(&mut host, &mut window, &mut viewer);
+    viewer.session.handle().read(|tree| {
+        assert_eq!(
+            tree.fullscreen,
+            Some(tab),
+            "the shared window's group is fullscreen before the share ends"
+        );
+        assert!(
+            tree.workspaces[0].layout.place_of(tab).is_some(),
+            "the shared window's group holds a canvas place before the share ends"
+        );
+    });
+
+    stop_share_and_carry(&mut host, &mut window, &mut viewer, tab);
+    viewer.session.handle().read(|tree| {
+        assert_eq!(
+            tree.fullscreen, None,
+            "ending a fullscreen shared window clears fullscreen"
+        );
+        assert_eq!(
+            tree.workspaces[0].layout.place_of(tab),
+            None,
+            "ending a share forgets the removed group's canvas place"
+        );
+        assert!(
+            tree.workspaces[0].closed_tabs().is_empty(),
+            "ending a share records nothing to reopen"
+        );
+    });
+}
+
+/// A share that ends while its group is its strip's active group hands focus to a surviving
+/// group instead of leaving `active_group` pointing at the removed group.
+#[test]
+fn a_share_ending_while_active_group_hands_focus_to_its_neighbour() {
+    let (mut host, mut window, mut viewer, tab) = start_share_and_carry(0x98, 0x99, own_shell());
+    viewer
+        .session
+        .invoke(
+            SHELL_RESOURCE,
+            "focus",
+            &arguments(serde_json::json!({ "tab": tab.to_string() })),
+        )
+        .expect("the shared window takes focus");
+    settle(&mut host, &mut window, &mut viewer);
+    viewer.session.handle().read(|tree| {
+        assert_eq!(
+            tree.active_group.get(&StripId(1)),
+            Some(&tab),
+            "the shared window's group is its strip's active group before the share ends"
+        );
+        assert_eq!(tree.active_group_for(StripId(1)), Some(tab));
+    });
+
+    stop_share_and_carry(&mut host, &mut window, &mut viewer, tab);
+    viewer.session.handle().read(|tree| {
+        assert_eq!(
+            tree.active_group.get(&StripId(1)),
+            Some(&1),
+            "ending the strip's active shared group hands focus to the surviving group"
+        );
+        assert_eq!(tree.active_group_for(StripId(1)), Some(1));
+    });
+}
+
+/// A strip made for a share is removed through the layout model once ending the share leaves it
+/// empty, and the workspace's recorded `active_strip` falls back to a strip that exists.
+#[test]
+fn a_strip_made_for_a_share_is_removed_when_empty_and_falls_back_to_an_existing_strip() {
+    let (mut host, mut window, mut viewer, tab) =
+        start_share_and_carry(0x9a, 0x9b, empty_workspace_shell());
+    let share_strip = StripId(tab);
+    viewer.session.handle().read(|tree| {
+        let strips: Vec<StripId> = tree.workspaces[0]
+            .strips
+            .iter()
+            .map(|strip| strip.id)
+            .collect();
+        assert_eq!(
+            strips,
+            vec![share_strip],
+            "the share created a strip of its own in the empty workspace"
+        );
+    });
+
+    viewer
+        .session
+        .invoke(
+            CHROME_RESOURCE,
+            "new-strip",
+            &arguments(serde_json::json!({ "name": "Other" })),
+        )
+        .expect("a second strip is created");
+    settle(&mut host, &mut window, &mut viewer);
+    viewer
+        .session
+        .invoke(
+            SHELL_RESOURCE,
+            "focus",
+            &arguments(serde_json::json!({ "tab": tab.to_string() })),
+        )
+        .expect("the shared window takes focus on its strip");
+    settle(&mut host, &mut window, &mut viewer);
+    let other_strip = viewer.session.handle().read(|tree| {
+        let strips: Vec<StripId> = tree.workspaces[0]
+            .strips
+            .iter()
+            .map(|strip| strip.id)
+            .collect();
+        assert_eq!(strips.len(), 2);
+        assert_eq!(
+            tree.active_strip.get(&workspace_id()),
+            Some(&share_strip),
+            "the workspace's recorded active strip is the strip made for the share"
+        );
+        strips
+            .into_iter()
+            .find(|id| *id != share_strip)
+            .expect("the second strip exists")
+    });
+
+    stop_share_and_carry(&mut host, &mut window, &mut viewer, tab);
+    viewer.session.handle().read(|tree| {
+        let strips: Vec<StripId> = tree.workspaces[0]
+            .strips
+            .iter()
+            .map(|strip| strip.id)
+            .collect();
+        assert_eq!(
+            strips,
+            vec![other_strip],
+            "the empty strip made for the share is removed and the other strip stays"
+        );
+        assert_eq!(
+            tree.active_strip.get(&workspace_id()),
+            Some(&other_strip),
+            "the workspace's recorded active strip falls back to a strip that exists"
+        );
+        assert_eq!(tree.active_strip_id(), Some(other_strip));
+        assert_eq!(
+            tree.active_group.get(&share_strip),
+            None,
+            "the removed strip keeps no active_group entry"
+        );
+    });
+}
+
+/// A strip made for a share stays when another window stands on it when the share ends.
+#[test]
+fn a_strip_made_for_a_share_stays_when_another_window_is_on_it() {
+    let (mut host, mut window, mut viewer, tab) =
+        start_share_and_carry(0x9e, 0x9f, empty_workspace_shell());
+    let share_strip = StripId(tab);
+    let mut tree = viewer.session.handle().read(Clone::clone);
+    tree.workspaces[0].strips[0]
+        .window_groups
+        .push(WindowGroup {
+            id: GroupId::from(2_u64),
+            tabs: vec![Tab {
+                id: TabId::from(2_u64),
+                title: "Notes".to_owned(),
+                tile: TileContent::LocalApp {
+                    app_id: APP.to_owned(),
+                    label: "Notes".to_owned(),
+                    note: String::new(),
+                },
+                app_title: None,
+                view: String::new(),
+                pinned: false,
+            }],
+            active_tab: TabId::from(2_u64),
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+    viewer.session.handle().replace_tree(tree);
+    settle(&mut host, &mut window, &mut viewer);
+    viewer
+        .session
+        .invoke(
+            SHELL_RESOURCE,
+            "focus",
+            &arguments(serde_json::json!({ "tab": tab.to_string() })),
+        )
+        .expect("the shared window takes focus on its strip");
+    settle(&mut host, &mut window, &mut viewer);
+
+    stop_share_and_carry(&mut host, &mut window, &mut viewer, tab);
+    viewer.session.handle().read(|tree| {
+        let strips: Vec<StripId> = tree.workspaces[0]
+            .strips
+            .iter()
+            .map(|strip| strip.id)
+            .collect();
+        assert_eq!(
+            strips,
+            vec![share_strip],
+            "the strip made for the share stays because another window still stands on it"
+        );
+        assert_eq!(tree.active_strip.get(&workspace_id()), Some(&share_strip));
+        assert_eq!(tree.active_group.get(&share_strip), Some(&2));
+        assert_eq!(tree.active_group_for(share_strip), Some(2));
+    });
+}
+
+/// Dropping the live session ends every share placed on the shell through the same layout-model
+/// removal: fullscreen clears, the empty strip made for the share goes, and `active_strip`
+/// falls back to a strip that exists.
+#[test]
+fn losing_the_live_session_ends_shares_through_the_layout_model() {
+    let (mut host, mut window, mut viewer, tab) =
+        start_share_and_carry(0x9c, 0x9d, empty_workspace_shell());
+    let share_strip = StripId(tab);
+    viewer
+        .session
+        .invoke(
+            CHROME_RESOURCE,
+            "new-strip",
+            &arguments(serde_json::json!({ "name": "Other" })),
+        )
+        .expect("a second strip is created");
+    settle(&mut host, &mut window, &mut viewer);
+    viewer
+        .session
+        .invoke(
+            SHELL_RESOURCE,
+            "focus",
+            &arguments(serde_json::json!({ "tab": tab.to_string() })),
+        )
+        .expect("the shared window takes focus on its strip");
+    viewer
+        .session
+        .invoke(
+            CHROME_RESOURCE,
+            "fullscreen",
+            &arguments(serde_json::json!({ "group": tab.to_string(), "on": true })),
+        )
+        .expect("the shared window goes fullscreen");
+    settle(&mut host, &mut window, &mut viewer);
+    let other_strip = viewer.session.handle().read(|tree| {
+        assert_eq!(tree.fullscreen, Some(tab));
+        assert_eq!(tree.active_strip.get(&workspace_id()), Some(&share_strip));
+        assert_eq!(tree.active_group.get(&share_strip), Some(&tab));
+        tree.workspaces[0]
+            .strips
+            .iter()
+            .map(|strip| strip.id)
+            .find(|id| *id != share_strip)
+            .expect("the second strip exists")
+    });
+
+    viewer.session.shared.sync = None;
+    for _ in 0..4 {
+        viewer
+            .session
+            .step(Duration::from_millis(2))
+            .expect("step after live session ends");
+    }
+    assert!(
+        hosted(&viewer.session, tab).is_none(),
+        "the shared window leaves the shell once the live session ends"
+    );
+    viewer.session.handle().read(|tree| {
+        let strips: Vec<StripId> = tree.workspaces[0]
+            .strips
+            .iter()
+            .map(|strip| strip.id)
+            .collect();
+        assert_eq!(strips, vec![other_strip]);
+        assert_eq!(tree.fullscreen, None);
+        assert_eq!(tree.active_strip.get(&workspace_id()), Some(&other_strip));
+        assert_eq!(tree.active_strip_id(), Some(other_strip));
+        assert_eq!(tree.active_group.get(&share_strip), None);
+    });
 }
 
 /// The window of another device shown on `session` 's shell as `tab` , with the key of the device

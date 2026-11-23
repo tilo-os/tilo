@@ -119,13 +119,6 @@ const PAIR_POLL_MS = 3000;
  * that answered it, and `decide(approved)` answers, resolving to
  * `{approved, label}`. Both return `{close()}`, called once the link is
  * spent or expired.
- * `connectAgent()` makes a pairing link for an agent the person sets up
- * from this tab (the first screen's prompt, `first-screen.mjs`): the device
- * that answers it (the agent's `tilo` command, with a key of its own) is
- * approved without asking, since the person copied the link here a moment
- * ago and it works once, for `INVITE_TTL_MS`, in this tab only. The root
- * signs its certificate here and never leaves. `onAgent({label})` hears
- * that it signed in.
  */
 export function createIdentityActions({
   identity, hosts = () => [], name = () => undefined,
@@ -135,7 +128,7 @@ export function createIdentityActions({
   every = (run, ms) => { const timer = setInterval(run, ms); return () => clearInterval(timer); },
   pause = () => true, later = (run, ms) => setTimeout(run, ms), session = globalThis.sessionStorage,
   searchChord = 'Ctrl+K', showPairLink = () => ({close() {}}), askPairing = () => ({close() {}}),
-  invites = openInvites({now}), onAgent = () => {},
+  invites = openInvites({now}),
   profiled = () => {}, showAgentSetup = null, setupDue = () => false,
 }) {
   let mount;
@@ -199,13 +192,10 @@ export function createIdentityActions({
   // that answered it. Either closes once the invite is spent or expired.
   const shown = new Map();
   const asked = new Set();
-  // The open invites made for an agent, approved when answered.
-  const agents = new Set();
   const closeInvite = id => {
     shown.get(id)?.close();
     shown.delete(id);
     asked.delete(id);
-    agents.delete(id);
   };
   let stopPairing = null;
   // An answer spends the invite, approved or not: the host takes no second
@@ -227,14 +217,6 @@ export function createIdentityActions({
     for (const request of forInvites(pending, invites)) {
       if (asked.has(request.invite)) continue;
       asked.add(request.invite);
-      if (agents.has(request.invite)) {
-        agents.delete(request.invite);
-        try {
-          const {label} = await decide(request)(true);
-          onAgent({label});
-        } catch (error) { onError(error); }
-        continue;
-      }
       shown.get(request.invite)?.close();
       shown.set(request.invite, askPairing(request, decide(request)));
     }
@@ -269,45 +251,6 @@ export function createIdentityActions({
   };
   const controller = {
     actions,
-    /** A pairing link for an agent set up from this tab: `{link, invite,
-     * expiresAt}`, opening `workspace` (on the same host) when named, else
-     * this one. `adopt` (`{id, expiresAt}`) is an invite this tab made before
-     * it was loaded again, approved the same way while it is open: its link
-     * is already in the agent's hands. */
-    async connectAgent({workspace, adopt = null, watch = true} = {}) {
-      if (adopt) {
-        const invite = invites.adopt(adopt);
-        if (!invite) return null;
-        agents.add(invite.id);
-        if (watch) controller.watchAgents();
-        return {link: null, invite: invite.id, expiresAt: invite.expiresAt};
-      }
-      const invite = invites.open();
-      const link = workspace ? pairing?.link(invite.id, workspace) : pairing?.link(invite.id);
-      if (!link) {
-        invites.spend(invite.id);
-        throw new IdentityError('no-workspace', 'Join a workspace before setting up an agent in it');
-      }
-      agents.add(invite.id);
-      if (watch) controller.watchAgents();
-      return {link, invite: invite.id, expiresAt: invite.expiresAt};
-    },
-    /** Ask the host for the devices answering this page's agent invites,
-     * from now on: once the person used the link an invite went into
-     * (`connectAgent({watch: false})` asks nothing until then). */
-    watchAgents() {
-      if (agents.size) stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
-    },
-    /** Stop asking for the devices answering this page's agent invites,
-     * and drop those invites: the host turned this page away, so this
-     * person approves nothing there and every ask would be refused. */
-    stopWatchingAgents() {
-      for (const id of [...agents]) { invites.spend(id); closeInvite(id); }
-      if (invites.size) return;
-      stopPairing?.();
-      stopPairing = null;
-      void pairing?.close?.();
-    },
     /** Show the actions in `mount`'s desktop. */
     async attach(target) {
       mount = target;

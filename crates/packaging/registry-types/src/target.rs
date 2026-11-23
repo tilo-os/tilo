@@ -419,23 +419,20 @@ mod tests {
             .validate(),
             Err(TargetError::Platform(_))
         ));
-    }
 
-    #[test]
-    fn android_targets_are_native_arm_or_intel_builds() {
-        assert!(NATIVE_PLATFORMS.contains(&ANDROID_PLATFORM));
-        assert!(DESKTOP_PLATFORMS.contains(&ANDROID_PLATFORM));
-        for (architecture, isa) in [("aarch64", "aarch64-v8.2"), ("x86_64", "x86_64")] {
-            let android = RegistryTarget {
+        // Android is one of the desktop platforms above; an ARM build is data too.
+        assert_eq!(
+            RegistryTarget {
                 platform: ANDROID_PLATFORM.into(),
-                architecture: architecture.into(),
-                isa: isa.into(),
-                runtime: Some("tilo-runtime/2026.07".into()),
+                architecture: "aarch64".into(),
+                isa: "aarch64-v8.2".into(),
+                runtime: None,
                 interfaces: Vec::new(),
-            };
-            assert_eq!(android.validate(), Ok(()));
-        }
-        for architecture in ["armv7", "arm64-v8a", "x86", "wasm32"] {
+            }
+            .validate(),
+            Ok(())
+        );
+        for architecture in ["armv7", "arm64-v8a", "x86"] {
             assert_eq!(
                 RegistryTarget {
                     platform: ANDROID_PLATFORM.into(),
@@ -451,16 +448,5 @@ mod tests {
                 })
             );
         }
-        assert_eq!(
-            RegistryTarget {
-                platform: ANDROID_PLATFORM.into(),
-                architecture: "aarch64".into(),
-                isa: String::new(),
-                runtime: None,
-                interfaces: Vec::new(),
-            }
-            .validate(),
-            Err(TargetError::EmptyIsa)
-        );
     }
 }

@@ -58,19 +58,17 @@ tilo_test_env::scenario! {
     phase a_workspace_its_host_vouches_for_admits_its_replay_and_reopens;
     {
         let held = vouched();
-        let calls = |owner: &NativeWorkspaceOwner| {
+        let basis = |owner: &NativeWorkspaceOwner| {
             owner
                 .with_current(held.workspace, |view| {
-                    Ok(view
-                        .peer()
-                        .validated_media_policy()?
-                        .ok_or("missing admitted policy")?
-                        .calls
-                        .len())
+                    view.peer()
+                        .security_basis()
+                        .ok_or("missing admitted workspace")?
+                        .map_err(|error| error.to_string())
                 })
                 .unwrap()
         };
-        assert_eq!(calls(&held.owner), 1);
+        let admitted = basis(&held.owner);
         assert!(
             held.owner
                 .with_current(held.workspace, |view| view
@@ -82,7 +80,7 @@ tilo_test_env::scenario! {
         drop(held.owner);
         let reopened = open_file(&held.path).unwrap();
         assert_eq!(reopened.workspaces(), vec![held.workspace]);
-        assert_eq!(calls(&reopened), 1);
+        assert_eq!(basis(&reopened), admitted);
     }
 
     phase a_membership_answer_for_another_device_or_workspace_is_refused;

@@ -155,6 +155,13 @@
           "name": "placeholder",
           "doc": "An empty avatar placeholder: a message that continues its author's run lines up under the first one's avatar without repeating it.",
           "type": "bool"
+        },
+        {
+          "name": "picture",
+          "doc": "Where the person's picture is: a content address (`tilo-blob://<hash>`) or a `data:` address a record carries, read as `ui.Image` reads one. The initials show until it is here.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "semantics": {
@@ -1786,6 +1793,52 @@
       }
     },
     {
+      "name": "DistributionChart",
+      "doc": "The spread of each measured thing: where its readings centre and how far they run, as a box, a violin or both. Callers give the readings themselves, never quartiles or bins; each series takes the next colour of the theme's palette and is named under the chart.",
+      "props": [
+        {
+          "name": "samples",
+          "doc": "What was measured, each with the readings taken: `.samples(values: hours, label: \"Before\")`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Samples"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "kind",
+          "doc": "How each distribution is drawn: `box` for its quartiles, `violin` for its shape, `both` for the two together unless said.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "DistributionKind",
+                "cases": [
+                  "box",
+                  "violin",
+                  "both"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
       "name": "Docked",
       "doc": "Content that fills its column above a bar that stays at the column's foot: a conversation above its composer.",
       "parts": [
@@ -2338,6 +2391,51 @@
       "semantics": {
         "role": "Button",
         "label": "label"
+      }
+    },
+    {
+      "name": "FunnelChart",
+      "doc": "How many reach each stage of a sequence: the steps of a sign-up, a checkout, a build. Stages narrow as fewer arrive, each with the share of the one before it, or widen as a pyramid; each takes the next colour of the theme's palette.",
+      "props": [
+        {
+          "name": "stages",
+          "doc": "The stages from the first to the last: `.stage(label: \"Visited\", value: 1200.0)`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Stages"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "direction",
+          "doc": "How the stages stand: `funnel` narrowing by how many reach each unless said, `pyramid` widening.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "FunnelDirection",
+                "cases": [
+                  "funnel",
+                  "pyramid"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
       }
     },
     {
@@ -3897,6 +3995,36 @@
       }
     },
     {
+      "name": "PolarAreaChart",
+      "doc": "A cycle's magnitudes around a circle: months of the year, hours of the day, weekdays. Every direction takes the same angle and its length carries the value, so seasonal shape is read at a glance; each takes the next colour of the theme's palette.",
+      "props": [
+        {
+          "name": "areas",
+          "doc": "The directions in order, clockwise from the top: `.area(label: \"January\", value: 12.0)`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Areas"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
       "name": "BarChip",
       "doc": "A bar control for people: their faces, a label and a press, with faces opening who is here and an invite opening the host's invite flow.",
       "props": [
@@ -4531,6 +4659,48 @@
       "semantics": {
         "role": "Image",
         "label": "alt"
+      }
+    },
+    {
+      "name": "RadarChart",
+      "doc": "Several measures of the same things on axes around a circle, each axis with its own scale: a thing's shape reads at a glance, and several things compare by overlay. Each series takes the next colour of the theme's palette and is named in a legend.",
+      "props": [
+        {
+          "name": "axes",
+          "doc": "The axes in order, around the circle from the top: `.axis(label: \"Speed\", max: 100.0)`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Axes"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "series",
+          "doc": "Each thing read across the axes: `.series(values: [12.0, 8.0], label: \"This week\")`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "RadarSeries"
+              }
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
       }
     },
     {
@@ -5434,6 +5604,92 @@
       }
     },
     {
+      "name": "Timeline",
+      "doc": "A day, week or month as a time grid: events at their hours laid side by side where they overlap, an all-day lane, the line where now is, and a month of days with what stands on each. Dragging an event moves it, dragging its edge resizes it, and dragging across empty hours makes one that starts and ends where the drag did; each is a typed event, and the grid never changes what it shows.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What the grid is, for assistive technology: \"This week\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "range",
+          "doc": "The range shown: the day, the week of a day, or the month of a day.",
+          "type": {
+            "choice": {
+              "name": "TimelineMode",
+              "cases": [
+                "day",
+                "week",
+                "month"
+              ]
+            }
+          }
+        },
+        {
+          "name": "start",
+          "doc": "The day the period stands in.",
+          "type": "time",
+          "required": true
+        },
+        {
+          "name": "slot",
+          "doc": "The minutes a drag snaps to: a quarter hour by default.",
+          "type": "int"
+        },
+        {
+          "name": "show_now",
+          "doc": "Whether the line where now is shows, read from the frame's clock (views cannot read it).",
+          "type": "bool"
+        },
+        {
+          "name": "zoom",
+          "doc": "How tall an hour is drawn against its legible minimum: 1 is the minimum, 2 twice it.",
+          "type": "float"
+        },
+        {
+          "name": "rows",
+          "doc": "How many all-day rows the lane keeps, whatever the events need.",
+          "type": "int"
+        }
+      ],
+      "parts": [
+        {
+          "name": "items",
+          "doc": "What stands on the grid, in no particular order: each is placed by its own times.",
+          "accepts": {
+            "component": "TimelineItem"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "created",
+          "doc": "Empty hours were dragged across: carries where the new event starts and ends.",
+          "value": "time",
+          "at": "time"
+        },
+        {
+          "name": "open_day",
+          "doc": "A day's head was pressed: carries that day.",
+          "value": "time"
+        },
+        {
+          "name": "zoomed",
+          "doc": "The person zoomed the hours: carries the new zoom.",
+          "value": "float"
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "label"
+      }
+    },
+    {
       "name": "Toggle",
       "doc": "A switch: the same two states as a checkbox, for a setting that takes effect at once rather than when a form is sent. Its knob slides to the side it turns to.",
       "props": [
@@ -5854,6 +6110,11 @@
           "value": "float"
         },
         {
+          "name": "progress",
+          "doc": "Where playback got to while it played, as a share of its length (`0..=1`): reported on the first frame it plays, then every five seconds, and once more when it stops, so a view remembers the place a video was left at even when nobody moved the playhead.",
+          "value": "float"
+        },
+        {
           "name": "set_volume",
           "doc": "The volume was set: carries `0..=1`.",
           "value": "float"
@@ -5956,6 +6217,13 @@
           }
         },
         {
+          "name": "reveal",
+          "doc": "The row the view asks the list to show, by its key: a row below the fold scrolls into view at the list's motion, without taking the keyboard or the selection, as an address book does for the first card under a letter. It moves the list when the key it names changes; a key the list does not hold yet is shown as soon as it does, and one already in view stays where the person scrolled it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "motion",
           "doc": "The pace its rows arrive, leave and change places at, and the rows it builds move at when they say nothing themselves: the theme's unless it says otherwise.",
           "type": {
@@ -5993,6 +6261,11 @@
         }
       ],
       "events": [
+        {
+          "name": "revealed",
+          "doc": "The row the list brought up for `reveal`, once it moved to it: the view takes the ask back on it (`reveal: .none`), so the same row can be asked for again after a person scrolled away.",
+          "value": "resource"
+        },
         {
           "name": "select",
           "doc": "A row was selected: carries the item it shows.",
@@ -6223,6 +6496,13 @@
           "type": {
             "list": "text"
           }
+        },
+        {
+          "name": "slash",
+          "doc": "The commands only an editor can carry out that its slash menu offers besides the block kinds: `image` puts a picture the person chooses in the document, `page` makes a page inside this one, titled with the block's words. A view offers only the ones it answers.",
+          "type": {
+            "list": "text"
+          }
         }
       ],
       "events": [
@@ -6244,6 +6524,15 @@
         {
           "name": "command",
           "doc": "A command of `commands` was chosen, carrying its label: the view does what the label says, as it would for a button it placed.",
+          "value": "text"
+        },
+        {
+          "name": "slash_image",
+          "doc": "The person chose a picture from the slash menu: the view chooses the file and puts it in the document, as its own Insert image does."
+        },
+        {
+          "name": "slash_page",
+          "doc": "The person chose a page from the slash menu, in the block the words are: the view makes the page, titled with those words.",
           "value": "text"
         },
         {
@@ -6280,8 +6569,15 @@
       ],
       "state": [
         {
+          "name": "format",
+          "doc": "The formatting a view asks for, as a toolbar beside the document asks it: `bold`, `italic`, `underline`, `strike`, `bullets`, `numbers`, `heading:<level>` or `link:<address>`, then a count the view changes each time it asks (`bold:1`, `bold:2`), so the same command asked twice is two commands. Formatting a message is a command of the shared editor's, never a control of the app's own.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "reveal",
-          "doc": "The heading the document shows, asked by the view that places an outline beside it: the place of the heading among the document's headings (`headings` reports them in that order), then a count the view changes every time it asks (`3:1`), so asking for a heading already shown shows it again. The editor puts the caret at the heading's start and keeps it in view.",
+          "doc": "The heading the document shows, asked by the view that places an outline beside it: the place of the heading among the document's headings (`headings` reports them in that order), then a count the view changes every time it asks (`3:1`), so asking for a heading already shown shows it again. The editor puts the caret at the heading's start and keeps it in view. A block named by its place in the document instead (`¶5:2`, the sixth block from the top, counted from 0) is shown the same way: what the window asks for when a search hit on a paragraph opens the document.",
           "type": {
             "option": "text"
           }
@@ -7816,6 +8112,100 @@
       }
     },
     {
+      "name": "TimelineItem",
+      "doc": "One thing on the grid: a meeting in its hours, or something that takes whole days.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The resource it stands for: what a press, a move or a resize carries back.",
+          "type": {
+            "option": "resource"
+          },
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it is called.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "start",
+          "doc": "The moment it starts: its day, and the time of day it is at.",
+          "type": "time",
+          "required": true
+        },
+        {
+          "name": "end",
+          "doc": "The moment it ends; a day's end for something that takes whole days.",
+          "type": {
+            "option": "time"
+          }
+        },
+        {
+          "name": "all_day",
+          "doc": "Whether it takes the whole day, or the days between its start and end.",
+          "type": "bool"
+        },
+        {
+          "name": "location",
+          "doc": "Where it happens.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "tone",
+          "doc": "The colour it picks from the theme's series.",
+          "type": {
+            "choice": {
+              "name": "TimelineTone",
+              "cases": [
+                "first",
+                "second",
+                "third",
+                "fourth",
+                "fifth",
+                "sixth",
+                "seventh",
+                "eighth",
+                "neutral"
+              ]
+            }
+          }
+        },
+        {
+          "name": "stack",
+          "doc": "Which column it takes among the events it overlaps, from 1; 0 lays it out by itself.",
+          "type": "int"
+        }
+      ],
+      "events": [
+        {
+          "name": "pressed",
+          "doc": "It was pressed: carries the resource it stands for.",
+          "value": "resource"
+        },
+        {
+          "name": "moved",
+          "doc": "It was dragged: carries it and the moment it now starts at, its length unchanged.",
+          "value": "resource",
+          "at": "time"
+        },
+        {
+          "name": "resized",
+          "doc": "Its edge was dragged: carries it and the moment it now ends at.",
+          "value": "resource",
+          "at": "time"
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
+        "presents": "item"
+      }
+    },
+    {
       "name": "Segment",
       "doc": "One choice of a [`ToggleGroup`] or a [`ViewTabs`]: what it says, and how it shows.",
       "props": [
@@ -8917,6 +9307,126 @@
               "name": "value",
               "ty": "float",
               "doc": "How much of it there is; nothing below zero is drawn."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Samples",
+      "doc": "One measured thing's observations, from which its spread is calculated.",
+      "cases": [
+        {
+          "name": "samples",
+          "doc": "Every reading taken of `label`, in any order.",
+          "fields": [
+            {
+              "name": "values",
+              "ty": {
+                "list": "float"
+              },
+              "doc": "The observations, one reading each."
+            },
+            {
+              "name": "label",
+              "ty": "text",
+              "default": {
+                "text": ""
+              },
+              "doc": "What was measured."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Areas",
+      "doc": "One direction of a cycle, and its magnitude.",
+      "cases": [
+        {
+          "name": "area",
+          "doc": "A sector as long as `value` is of the largest, named `label`.",
+          "fields": [
+            {
+              "name": "label",
+              "ty": "text",
+              "doc": "Which direction it is."
+            },
+            {
+              "name": "value",
+              "ty": "float",
+              "doc": "Its magnitude; nothing below zero is drawn."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Axes",
+      "doc": "One measure a radar shows, with its own scale.",
+      "cases": [
+        {
+          "name": "axis",
+          "doc": "An axis named `label`, whose rim stands at `max`.",
+          "fields": [
+            {
+              "name": "label",
+              "ty": "text",
+              "doc": "What it measures."
+            },
+            {
+              "name": "max",
+              "ty": "float",
+              "doc": "The reading that reaches the axis' rim; readings past it stop there."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "RadarSeries",
+      "doc": "One thing read across a radar's axes.",
+      "cases": [
+        {
+          "name": "series",
+          "doc": "A shape through `values`, one per axis in the axes' order, named `label` in the legend.",
+          "fields": [
+            {
+              "name": "values",
+              "ty": {
+                "list": "float"
+              },
+              "doc": "The readings, one for each axis, in the axes' order."
+            },
+            {
+              "name": "label",
+              "ty": "text",
+              "default": {
+                "text": ""
+              },
+              "doc": "What it is of, in the legend."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Stages",
+      "doc": "One stage of a sequence, and how many reach it.",
+      "cases": [
+        {
+          "name": "stage",
+          "doc": "A stage as wide as `value` is of the widest, named `label`.",
+          "fields": [
+            {
+              "name": "label",
+              "ty": "text",
+              "doc": "What the stage is."
+            },
+            {
+              "name": "value",
+              "ty": "float",
+              "doc": "How many reach it; nothing at or below zero is drawn."
             }
           ]
         }

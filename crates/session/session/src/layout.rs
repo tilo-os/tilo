@@ -140,6 +140,9 @@ struct Held {
     /// Whether a look found the view unreadable: what it holds is not known here yet, so no view
     /// is written of it until a look reads it.
     unreadable: bool,
+    /// Why the layout could not be read at [`Self::read_at`]: it fails again until the workspace
+    /// moves, so the looks in between have nothing to read and nothing to say about it again.
+    failed: Option<String>,
     /// Where the engine stood when this record was last read, or found not to have moved: a look
     /// that skips the record (its write under way) or a write of it that finished leaves it behind
     /// the engine, so the record is read again however the rest of the workspace moved meanwhile.
@@ -908,7 +911,9 @@ impl Layouts {
                 .filter(|workspace| !workspace.id().is_nil())
                 .all(|workspace| {
                     let workspace_id = workspace.id();
-                    let current = |held: &mut Held| held.read && held.read_at == Some(version);
+                    let current = |held: &mut Held| {
+                        (held.read || held.failed.is_some()) && held.read_at == Some(version)
+                    };
                     self.held(&(workspace_id, Route::layout()), current)
                         && person.as_deref().is_none_or(|person| {
                             self.held(&(workspace_id, Route::view(person)), current)
@@ -1172,13 +1177,20 @@ impl Layouts {
             // until the workspace moves. One whose keys have not arrived is not read at all: the
             // restore and the kept windows wait for it, and every look asks again until it reads.
             let waiting = matches!(document, Err(NotRead::Waiting));
-            if let Err(NotRead::Failed(error)) = &document {
-                tracing::warn!(%workspace_id, error, "a workspace's layout could not be read");
-            }
-            self.held(&key, |held| {
+            let failed = match &document {
+                Err(NotRead::Failed(error)) => Some(error.clone()),
+                _ => None,
+            };
+            let told = self.held(&key, |held| {
+                let told = held.failed.is_some() && held.failed == failed;
                 held.read_at = Some(at);
                 held.read_once |= !waiting;
+                held.failed.clone_from(&failed);
+                told
             });
+            if let (Some(error), false) = (&failed, told) {
+                tracing::warn!(%workspace_id, error, "a workspace's layout could not be read");
+            }
             let Ok(document) = document else {
                 changed |= self.owed(workspace_id, workspace);
                 continue;
@@ -3043,10 +3055,10 @@ impl crate::activity::History for LayoutHistory {
         &self,
         tree: &Layout,
         workspace_id: WorkspaceId,
-    ) -> Option<tilo_desktop_surface::activity::ActivitySnapshot> {
+    ) -> Option<tilo_session_core::desktop::activity::ActivitySnapshot> {
         Self::workspace_of(tree, workspace_id)?;
         // A workspace with no layout yet still has a history: what its devices answered.
-        let snapshot = tilo_desktop_surface::activity::ActivitySnapshot::of_layout(
+        let snapshot = tilo_session_core::desktop::activity::ActivitySnapshot::of_layout(
             tree.clone(),
             workspace_id,
             self.layouts.layout(workspace_id).unwrap_or_default(),

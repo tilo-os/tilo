@@ -327,8 +327,11 @@ the theme: you pick it once and every device and member sees the same.
 
 ## Icons
 
-One icon set (`ui::icons`, Lucide), 1.5 px stroke, in ink colours: 16 in rows
-and controls, 20 as a bar's leading app icon. Icons rest in secondary ink and
+One icon set (`ui::icons`), one SVG per icon in `crates/sdk/ui-core/assets/icons`
+(its README has the drawing rules): a 24 grid, a 1.5 px round stroke at every
+size, in ink colours: 16 in rows and controls, 20 as a bar's leading app icon.
+Apps and tilolang name icons (`icon: .layout_grid`), never files. A filled
+state is its own icon (`heart-filled`). Icons rest in secondary ink and
 turn primary on hover or while active. No emoji or Unicode glyphs as icons
 (arrows, check marks, crosses, dots, stars); `check_copy_language.py` refuses
 them in copy.

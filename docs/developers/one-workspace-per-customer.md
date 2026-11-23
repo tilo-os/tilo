@@ -73,7 +73,7 @@ import { Refused, Tilo } from "tilo-sdk";
 import type { MintedKey } from "tilo-sdk";
 
 const tilo = new Tilo();                                     // your backend's key
-const agents: Resource<string, MintedKey> = {};
+const agents: Record<string, MintedKey> = {};
 
 for (const applicant of ["Jane Doe", "Amir Haddad"]) {       // one per customer, no limit
   const workspace = tilo.workspace((await tilo.workspaces.create(`Applicant: ${applicant}`)).id);
@@ -114,48 +114,77 @@ const letterBytes = await review.files.download(String(letter));
 console.log("the letter is", letterBytes.length, "bytes; a person opens it at", await review.link("word-processor"));
 ```
 
-```curl example=workspace-per-customer
-api=$TILO_API_URL/v1
-auth="Authorization: Bearer $TILO_API_KEY"                 # your backend's key
-json="Content-Type: application/json"
+## Browser use
 
-for applicant in "Jane Doe" "Amir Haddad"; do               # one per customer, no limit
-  workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "$json" \
-    -d "{\"name\": \"Applicant: $applicant\"}" | jq -r .id)
+The agent's key opens the workspace's own Browser with `browser#open`, and then drives the page with the
+same generic action call it uses for anything else: the page is a resource, `browser/page`, and every page
+action is one call. The window runs in the workspace's own Linux machine, so the call answers once that
+machine woke and the window is live.
 
-  # Their files: the bytes go up once, then an app takes the reference.
-  printf 'a passport scan, in bytes' | curl -sS --fail-with-body "$api/workspaces/$workspace/uploads" \
-    -H "$auth" -H "Content-Type: application/octet-stream" --data-binary @- > /dev/null
+```python example=hosted-browser host=stack
+import os
 
-  # A key for this applicant's agent: it reaches this workspace alone.
-  key=$(curl -sS --fail-with-body "$api/keys" -H "$auth" -H "$json" \
-    -d "{\"workspace\": \"$workspace\", \"name\": \"$applicant's agent\"}")
-  echo "$applicant: MCP at $(jq -r .mcp_url <<<"$key")"
-  [[ $applicant == "Jane Doe" ]] && jane=$workspace jane_key=$(jq -r .token <<<"$key")
-done
+from tilo import Invocation, Tilo
 
-# The customer's agent, with only its own key: it writes the cover letter, as
-# one invocation.
-agent="Authorization: Bearer $jane_key"
-group=(-H "Tilo-Invocation: cover-letter" -H "Tilo-Invocation-Title: Write the cover letter")
-word=$api/workspaces/$jane/resources/word-processor/actions
-for text in "Dear Visa Officer," "My passport and application form are enclosed."; do
-  curl -sS --fail-with-body "$word/append-paragraph" -H "$agent" -H "$json" "${group[@]}" \
-    -d "{\"text\": \"$text\"}" > /dev/null
-done
-letter=$(curl -sS --fail-with-body "$word/export-content" -H "$agent" -H "$json" "${group[@]}" \
-  -d '{"format": "docx"}' | jq -r '[.. | strings | select(startswith("tilo.content:"))][0]')
+tilo = Tilo()                                            # your backend's key
+made = tilo.workspaces.create("Visa application: Jane Doe")
+key = tilo.workspace(made.id).keys.mint("Jane Doe's agent")
+workspace = Tilo(key=key.token).workspace(made.id)       # the agent's key, in its one workspace
 
-# The same key cannot reach anyone else, or make a workspace of its own.
-curl -sS "$api/workspaces" -H "$agent" -H "$json" -d '{"name": "Applicant: someone else"}' \
-  | jq -r '"the agent cannot make workspaces: \(.error.code)"'
+# The page to drive: any address the workspace's machine reaches.
+url = os.environ.get("TILO_BROWSER_URL", "https://visa.example/apply")
 
-# Later, for review: your backend takes the letter out and hands a person the link to it.
-bytes=$(curl -sS --fail-with-body "$api/workspaces/$jane/content/$letter" -H "$auth" | wc -c)
-link=$(curl -sS --fail-with-body "$api/workspaces/$jane/resources/word-processor/actions/share-link" \
-  -H "$auth" -H "$json" -d '{}' | jq -r .result.url)
-echo "the letter is $bytes bytes; a person opens it at $link"
+# Browser opens in the workspace's own machine; a window that takes longer than one call's wait
+# comes back as its run, followed until the window is live.
+opened = workspace.do("browser#open")
+if isinstance(opened, Invocation):
+    opened.result()
+workspace.do("browser/page#navigate", url=url)
+workspace.do("browser/page#wait-page-settled", quiet_ms=300, timeout_ms=30_000)
+
+# The page is a resource: find the field, fill it, and read the page back.
+family = workspace.do("browser/page#find-page-element", role="textbox", name="Family name")
+workspace.do("browser/page#fill-page", element=family["element"], text="Doe")
+page = workspace.do("browser/page#read-page")
+print("the page is", page["title"], "and says:", page["outline"])
 ```
+
+```typescript example=hosted-browser host=stack
+import { Invocation, Tilo } from "tilo-sdk";
+
+const tilo = new Tilo();                                 // your backend's key
+const made = await tilo.workspaces.create("Visa application: Jane Doe");
+const minted = await tilo.workspace(made.id).keys.mint("Jane Doe's agent");
+const workspace = new Tilo({ key: minted.token }).workspace(made.id); // the agent's key, in its one workspace
+
+// The page to drive: any address the workspace's machine reaches.
+const url = process.env.TILO_BROWSER_URL ?? "https://visa.example/apply";
+
+// Browser opens in the workspace's own machine; a window that takes longer than one call's wait
+// comes back as its run, followed until the window is live.
+const opened = await workspace.do("browser#open");
+if (opened instanceof Invocation) {
+  await opened.result();
+}
+await workspace.do("browser/page#navigate", { url });
+await workspace.do("browser/page#wait-page-settled", { quiet_ms: 300, timeout_ms: 30_000 });
+
+// The page is a resource: find the field, fill it, and read the page back.
+const family = (await workspace.do("browser/page#find-page-element", {
+  role: "textbox",
+  name: "Family name",
+})) as { element: string };
+await workspace.do("browser/page#fill-page", { element: family.element, text: "Doe" });
+const page = (await workspace.do("browser/page#read-page")) as { title: string; outline: string };
+console.log("the page is", page.title, "and says:", page.outline);
+```
+
+The page's actions are the ones a person's Browser has: `navigate`, `wait-page-settled`, `read-page`,
+`find-page-element`, `fill-page`, `select-page`, `click-page`, `capture-page` and `submit-page`
+([the hosted Browser](../tilo-sh/hosted-browser.md)). A submit, a click that sends, or a page posting on
+its own is put to the person: the SDK raises `AskPending`, and nothing leaves until they allow that one
+request. A key minted with `browser_pages` on, as `keys.mint` mints by default, may fill, select and click
+without asking; a submission always asks.
 
 ## Hundreds of customers: label, find, export
 
@@ -186,6 +215,7 @@ for customer in ["cus_8121", "cus_8122", "cus_8123"]:     # your own ids for the
 jane = tilo.workspaces.find({"customer_id": "cus_8121"})  # None when there is none
 print("cus_8121 is", jane.id, jane.labels)
 print("visa customers:", len(tilo.workspaces.list(labels={"plan": "visa"})))
+print("usage rows:", len(tilo.usage().workspaces))        # what each one keeps, and its VM time
 
 # Before a customer leaves: everything their workspace holds, then delete it.
 workspace = tilo.workspace(jane.id)
@@ -211,6 +241,7 @@ await Promise.all(                                           // all at once: hun
 const jane = (await tilo.workspaces.find({ customer_id: "cus_8121" }))!; // undefined when none
 console.log("cus_8121 is", jane.id, jane.labels);
 console.log("visa customers:", (await tilo.workspaces.list({ labels: { plan: "visa" } })).length);
+console.log("usage rows:", (await tilo.usage()).workspaces.length); // what each keeps, and its VM time
 
 // Before a customer leaves: everything their workspace holds, then delete it.
 const exported = await tilo.workspace(jane.id).export();
@@ -220,40 +251,13 @@ for (const gone of await tilo.workspaces.list({ labels: { plan: "visa" } })) {
 }
 ```
 
-```curl example=customer-labels
-api=$TILO_API_URL/v1
-auth="Authorization: Bearer $TILO_API_KEY"                 # your backend's key
-json="Content-Type: application/json"
-
-for customer in cus_8121 cus_8122 cus_8123; do              # your own ids for them
-  curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "$json" \
-    -H "Idempotency-Key: workspace-for-$customer" \
-    -d "{\"name\": \"Applicant $customer\", \"labels\": {\"customer_id\": \"$customer\", \"plan\": \"visa\"}}" \
-    > /dev/null
-done
-
-jane=$(curl -sS --fail-with-body -G "$api/workspaces" -H "$auth" \
-  --data-urlencode "label[customer_id]=cus_8121" | jq -r '.workspaces[0].id')
-echo "cus_8121 is $jane"
-curl -sS --fail-with-body -G "$api/workspaces" -H "$auth" --data-urlencode "label[plan]=visa" \
-  | jq -r '"visa customers: \(.workspaces | length)"'
-
-# Before a customer leaves: everything their workspace holds, then delete it.
-curl -sS --fail-with-body "$api/workspaces/$jane/export" -H "$auth" \
-  | jq -r '"exported \(.resources | length) resources of \(.workspace.labels.customer_id)"'
-for gone in $(curl -sS --fail-with-body -G "$api/workspaces" -H "$auth" \
-    --data-urlencode "label[plan]=visa" | jq -r '.workspaces[].id'); do
-  curl -sS --fail-with-body -X DELETE "$api/workspaces/$gone" -H "$auth" > /dev/null
-done
-```
-
 An export is every resource of every app in the workspace, each read whole as `tilo_read` reads it, with the
 workspace's listing and labels; a resource that does not read is named in `unread` with why. A page's resources
 are read side by side and written in the order a walk finds them, and the document streams out as it is read, so
 the server holds no more than the reads in flight however much a workspace holds. Exports of many workspaces run
 side by side up to a bound; the rest wait their turn rather than fail. The files the
 resources name are `tilo.content:` references: download each with `files.download` (`GET
-/v1/workspaces/<workspace>/content/<content>`) while the workspace still exists. From a shell,
+/v1/workspaces/<workspace>/contents/<hash>`) while the workspace still exists. From a shell,
 `tilo workspace create "Applicant cus_8121" --label customer_id=cus_8121` and
 `tilo workspace ls --label customer_id=cus_8121` do the same.
 
@@ -306,9 +310,9 @@ names, so the agent can end its work by handing a person the link to what it did
 Open the workspace in Tilo, or invite the person who reviews it:
 
 ```sh
-tilo workspace people invite --role editor --email ops@example.com -w applicant-jane-doe
-tilo workspace people ls -w applicant-jane-doe
-tilo workspace people name "Jane Doe" -w applicant-jane-doe   # what its people and your invitations call you
+tilo workspace people invite --role editor --email ops@example.com -w "Applicant: Jane Doe"
+tilo workspace people ls -w "Applicant: Jane Doe"
+tilo workspace people name "Jane Doe" -w "Applicant: Jane Doe"   # what its people and your invitations call you
 ```
 
 Following the link signs them in to Tilo (by approving an agent) and lands them in the
@@ -332,7 +336,7 @@ changed ([invocations and history](../tilo-sh/invocations-and-history.md)). Watc
 Delete their workspace, and their data goes with it:
 
 ```sh
-tilo workspace rm applicant-jane-doe   # {"deleted": id, "revoked_keys": [...]}
+tilo workspace rm "Applicant: Jane Doe"   # {"deleted": id, "revoked_keys": [...]}
 ```
 
 Deleting is final: there is no undo, and nothing asks again, so the call is the confirmation. The host
@@ -351,16 +355,16 @@ A key the host turns away says why: `KeyRevoked`, `KeyExpired` (a minted key pas
 ```sh
 tilo workspace create "Applicant: Jane Doe"
 tilo workspace branch "Onboarding template" "Applicant: Amir Haddad"   # or start from one set up once
-tilo files put passport.png -w applicant-jane-doe
-tilo -w applicant-jane-doe do pdf-viewer#import-pdf-content content=tilo.content:… name=application.pdf
-tilo -w applicant-jane-doe do pdf-viewer/application.pdf#read-form-fields
-tilo -w applicant-jane-doe do word-processor#export-content format=docx
-tilo files get tilo.content:… -w applicant-jane-doe -o cover-letter.docx
-tilo keys mint -w applicant-jane-doe --name "Jane Doe's agent"
-tilo workspace people invite --role editor --email ops@example.com -w applicant-jane-doe
-tilo workspace people ls -w applicant-jane-doe
+tilo files put passport.png -w "Applicant: Jane Doe"
+tilo -w "Applicant: Jane Doe" do pdf-viewer#import-pdf-content content=tilo.content:… name=application.pdf
+tilo -w "Applicant: Jane Doe" do pdf-viewer/application.pdf#read-form-fields
+tilo -w "Applicant: Jane Doe" do word-processor#export-content format=docx
+tilo files get tilo.content:… -w "Applicant: Jane Doe" -o cover-letter.docx
+tilo keys mint -w "Applicant: Jane Doe" --name "Jane Doe's agent"
+tilo workspace people invite --role editor --email ops@example.com -w "Applicant: Jane Doe"
+tilo workspace people ls -w "Applicant: Jane Doe"
 tilo keys revoke <grant>
-tilo workspace rm applicant-jane-doe   # when the customer leaves
+tilo workspace rm "Applicant: Jane Doe"   # when the customer leaves
 ```
 
 ## What is underneath

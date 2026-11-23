@@ -112,9 +112,9 @@ tilo-board-successor = { path = "../board-successor" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-accounts = { path = "../accounts" }
+accounts = { path = "../accounts", features = ["person"] }
 base64.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

@@ -292,7 +292,8 @@ impl BrokerActor {
             (
                 Some(
                     actor @ (tilo_action_policy::Actor::Automation(_)
-                    | tilo_action_policy::Actor::App(_)),
+                    | tilo_action_policy::Actor::App(_)
+                    | tilo_action_policy::Actor::Visitor(_)),
                 ),
                 _,
             ) => Acting::from(actor),
@@ -417,7 +418,7 @@ impl BrokerActor {
     /// window publishing it is open in another (`ResourceSpec::workspace`): decided where the
     /// record is held, as that workspace's grants say, never by the roles of the window's. The
     /// route record is the window's, so its own restrictions are not asked here.
-    pub fn admit_held_in(
+    pub fn admit_kept_elsewhere_in(
         &self,
         workspace: &Workspace,
         now: u64,

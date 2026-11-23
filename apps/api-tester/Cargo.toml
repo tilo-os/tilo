@@ -32,8 +32,8 @@ base64.workspace = true
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
-test-http = { path = "../../crates/dev/test-http" }
-tilo-test-env = { path = "../../crates/dev/test-env" }
+test-http = { path = "../../tools/test-http" }
+tilo-test-env = { path = "../../tools/test-env" }
 
 [lints]
 workspace = true

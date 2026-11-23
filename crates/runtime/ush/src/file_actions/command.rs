@@ -18,6 +18,21 @@ pub struct RunGroup {
     pub label: String,
 }
 
+impl RunGroup {
+    /// Shorten the display label to [`MAX_ARG_BYTES`](crate::broker::MAX_ARG_BYTES)
+    /// on a UTF-8 character boundary before sending it to the broker.
+    #[must_use]
+    pub fn bounded_label(&self) -> Self {
+        let end = self
+            .label
+            .floor_char_boundary(crate::broker::MAX_ARG_BYTES.min(self.label.len()));
+        Self {
+            id: self.id.clone(),
+            label: self.label.get(..end).unwrap_or_default().to_owned(),
+        }
+    }
+}
+
 pub const COMMAND_GROUP: &str = "command-run";
 
 pub struct Io<'a> {
@@ -67,7 +82,7 @@ fn act(
     if let Some(broker) = io.broker {
         let request = Request::FileAction {
             action,
-            run: run.cloned(),
+            run: run.map(RunGroup::bounded_label),
         };
         let answer = crate::broker::ask_streaming_with_progress(
             broker,

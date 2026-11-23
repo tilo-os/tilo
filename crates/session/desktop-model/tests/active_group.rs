@@ -228,3 +228,55 @@ fn window_group_json_round_trips() {
         assert!(round.workspaces[0].strips[0].window_groups[0].maximized);
     }
 }
+
+#[test]
+fn active_strip_for_resolves_recorded_or_falls_back_to_first() {
+    let work_id = WorkspaceId::from_u128(1);
+    let other_id = WorkspaceId::from_u128(2);
+    let mut work = Workspace::new(work_id, "Work");
+    work.strips = vec![
+        Strip::new(StripId(10), "First"),
+        Strip::new(StripId(11), "Second"),
+    ];
+    let mut other = Workspace::new(other_id, "Other");
+    other.strips = vec![Strip::new(StripId(20), "Main")];
+    let mut tree = Layout {
+        workspaces: vec![work, other],
+        active: work_id,
+        ..Layout::default()
+    };
+
+    // Unrecorded: falls back to the workspace's first strip.
+    assert_eq!(
+        tree.active_strip_for(&tree.workspaces[0]),
+        Some(StripId(10))
+    );
+    assert_eq!(tree.active_strip_id(), Some(StripId(10)));
+
+    // Recorded strip that exists: returns it.
+    tree.active_strip.insert(work_id, StripId(11));
+    assert_eq!(
+        tree.active_strip_for(&tree.workspaces[0]),
+        Some(StripId(11))
+    );
+    assert_eq!(tree.active_strip_id(), Some(StripId(11)));
+
+    // Stale recorded strip: falls back to the first surviving strip.
+    tree.active_strip.insert(work_id, StripId(99));
+    assert_eq!(
+        tree.active_strip_for(&tree.workspaces[0]),
+        Some(StripId(10))
+    );
+    assert_eq!(tree.active_strip_id(), Some(StripId(10)));
+
+    // Non-active workspace resolves its own strip independently of `tree.active`.
+    assert_eq!(
+        tree.active_strip_for(&tree.workspaces[1]),
+        Some(StripId(20))
+    );
+
+    // Empty workspace: returns `None` even with a stale recorded strip.
+    tree.workspaces[0].strips.clear();
+    assert_eq!(tree.active_strip_for(&tree.workspaces[0]), None);
+    assert_eq!(tree.active_strip_id(), None);
+}

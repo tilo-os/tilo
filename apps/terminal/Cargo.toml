@@ -101,7 +101,7 @@ tempfile.workspace = true
 ush-shell = { path = "../../crates/runtime/ush-shell" }
 # ush's host on the Tilo side, for a session whose shell runs there.
 ush-tilo = { path = "../../crates/runtime/ush-tilo" }
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 # Serialises the tests that touch the shared system clipboard / primary
 # selection so they don't race each other under the default parallel runner
 # (selecting text sets the primary selection, which a middle-click paste test

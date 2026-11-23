@@ -1,0 +1,61 @@
+{
+  "app": "sign-in",
+  "said": "Sign in, lock the screen",
+  "family": "shell",
+  "order": 99,
+  "live": "rust",
+  "apps": "file-explorer chat settings terminal",
+  "rust": {},
+  "tl": {
+    "session_args": [
+      "--shell",
+      "screen"
+    ]
+  },
+  "steps": [
+    {
+      "id": "signed-in",
+      "said": "Sign in: the desktop is there, nothing open, nothing over it",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "state": {
+            "chrome.session_locked": false,
+            "chrome.overlays.search": false,
+            "chrome.overlays.overview": false,
+            "chrome.overlays.strips": false,
+            "chrome.overlays.quick-settings": false,
+            "chrome.overlays.centre": false
+          }
+        },
+        {
+          "windows": 0
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "lock",
+      "said": "Lock the screen: the lock screen covers the desktop",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "session:screen",
+            "lock"
+          ]
+        },
+        {
+          "state": {
+            "chrome.session_locked": true,
+            "chrome.lock_screen_drawn": true
+          }
+        }
+      ],
+      "dark": true,
+      "budget_ms": 10000
+    }
+  ]
+}

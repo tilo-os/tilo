@@ -237,14 +237,19 @@ async fn an_8021x_sign_in_returns_identity_and_password_in_the_8021x_setting() {
     assert!(!logs.text().contains("tr0ub4dor"));
 }
 
+/// A request `NetworkManager` cancels or replaces, and one the person
+/// dismisses, leave no secrets; only the request's own sheet is let go,
+/// never a successor's.
 #[tokio::test]
-async fn networkmanager_cancelling_takes_the_sheet_down() {
+async fn a_withdrawn_or_dismissed_request_has_no_secrets() {
     let sheets = Arc::new(ScriptedSheets::default());
     let link = link(
         Arc::clone(&sheets) as Arc<dyn Sheets>,
         Arc::new(MemoryStore::default()),
     )
     .await;
+
+    // NetworkManager cancels the request it made.
     let reply = link
         .get_secrets(
             wifi_psk_connection(),
@@ -254,7 +259,6 @@ async fn networkmanager_cancelling_takes_the_sheet_down() {
         )
         .await;
     let (handle, _) = sheets.sheet_up().await;
-
     link.agent()
         .await
         .call::<_, _, ()>(
@@ -281,16 +285,9 @@ async fn networkmanager_cancelling_takes_the_sheet_down() {
         [handle],
         "the withdrawn sheet is let go"
     );
-}
 
-#[tokio::test]
-async fn dismissing_the_sheet_is_a_user_cancel() {
-    let sheets = ScriptedSheets::answering([None]);
-    let link = link(
-        Arc::clone(&sheets) as Arc<dyn Sheets>,
-        Arc::new(MemoryStore::default()),
-    )
-    .await;
+    // The person dismisses the sheet.
+    sheets.answers.lock_recover().push_back(None);
     let reply = link
         .get_secrets(
             wifi_psk_connection(),
@@ -306,19 +303,11 @@ async fn dismissing_the_sheet_is_a_user_cancel() {
             .contains("org.freedesktop.NetworkManager.SecretAgent.UserCanceled"),
         "{error}"
     );
-    assert_eq!(sheets.asked().len(), 1, "dismissed in the sheet");
-}
+    assert_eq!(sheets.asked().len(), 2, "dismissed in the sheet");
 
-/// A request `NetworkManager` replaces is withdrawn; its successor's sheet
-/// has its own handle, so letting the first go never takes the second down.
-#[tokio::test]
-async fn a_replaced_request_never_takes_down_its_successors_sheet() {
-    let sheets = Arc::new(ScriptedSheets::default());
-    let link = link(
-        Arc::clone(&sheets) as Arc<dyn Sheets>,
-        Arc::new(MemoryStore::default()),
-    )
-    .await;
+    // A request NetworkManager replaces is withdrawn; its successor's sheet
+    // has its own handle, so letting the first go never takes the second
+    // down.
     let first = link
         .get_secrets(
             wifi_psk_connection(),
@@ -327,7 +316,7 @@ async fn a_replaced_request_never_takes_down_its_successors_sheet() {
             FLAG_ALLOW_INTERACTION,
         )
         .await;
-    let (first_handle, _) = sheets.sheet_up().await;
+    let (replaced_handle, _) = sheets.sheets_up(3).await.pop().expect("a sheet");
     let _second = link
         .get_secrets(
             wifi_psk_connection(),
@@ -346,10 +335,10 @@ async fn a_replaced_request_never_takes_down_its_successors_sheet() {
             .contains("org.freedesktop.NetworkManager.SecretAgent.AgentCanceled"),
         "{error}"
     );
-    let asked = sheets.sheets_up(2).await;
-    assert_eq!(asked.len(), 2, "the successor asked: {asked:?}");
-    assert_ne!(asked[0].0, asked[1].0, "each request has its own sheet");
-    assert_eq!(sheets.cancelled(), [first_handle]);
+    let asked = sheets.sheets_up(4).await;
+    assert_eq!(asked.len(), 4, "the successor asked: {asked:?}");
+    assert_ne!(asked[2].0, asked[3].0, "each request has its own sheet");
+    assert_eq!(sheets.cancelled().last(), Some(&replaced_handle));
 }
 
 #[tokio::test]
@@ -363,6 +352,30 @@ async fn remembered_secrets_answer_without_asking_unless_new_ones_are_wanted() {
         "802-11-wireless-security",
         remembered,
     );
+    // Nothing remembered and no asking allowed: no secrets at all.
+    let bare = link(
+        Arc::new(ScriptedSheets::default()),
+        Arc::new(MemoryStore::default()),
+    )
+    .await;
+    let error = bare
+        .get_secrets(
+            wifi_psk_connection(),
+            "802-11-wireless-security",
+            Vec::new(),
+            0,
+        )
+        .await
+        .await
+        .expect("call task")
+        .expect_err("no secrets");
+    assert!(
+        error
+            .to_string()
+            .contains("org.freedesktop.NetworkManager.SecretAgent.NoSecrets"),
+        "{error}"
+    );
+
     let link = link(
         Arc::clone(&sheets) as Arc<dyn Sheets>,
         Arc::clone(&store) as Arc<dyn SecretStore>,
@@ -406,32 +419,6 @@ async fn remembered_secrets_answer_without_asking_unless_new_ones_are_wanted() {
     assert_eq!(
         string_of(&reply, "802-11-wireless-security", "psk"),
         "battery staple"
-    );
-}
-
-#[tokio::test]
-async fn nothing_remembered_and_no_asking_is_no_secrets() {
-    let link = link(
-        Arc::new(ScriptedSheets::default()),
-        Arc::new(MemoryStore::default()),
-    )
-    .await;
-    let error = link
-        .get_secrets(
-            wifi_psk_connection(),
-            "802-11-wireless-security",
-            Vec::new(),
-            0,
-        )
-        .await
-        .await
-        .expect("call task")
-        .expect_err("no secrets");
-    assert!(
-        error
-            .to_string()
-            .contains("org.freedesktop.NetworkManager.SecretAgent.NoSecrets"),
-        "{error}"
     );
 }
 

@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+use tilo_lock::MutexRecover as _;
+
 use iroh::{EndpointAddr, EndpointId};
 use tilo_endpoint_reachability::Reachability;
 use tilo_network_actor::own_service::OwnService;
@@ -157,7 +159,7 @@ impl Serving {
         (service, records, person): (
             tilo_workspace_service::service::ServiceSlot,
             crate::platform::records::Changes,
-            crate::person_resources::PersonResources,
+            crate::PersonResources,
         ),
     ) -> Self {
         Self {
@@ -195,7 +197,7 @@ pub(crate) struct Beside {
     pub(crate) records: crate::platform::records::Changes,
     /// The person's own workspace's resources, read and written through that service once it
     /// opened.
-    pub(crate) person: crate::person_resources::PersonResources,
+    pub(crate) person: crate::PersonResources,
 }
 
 /// This device's endpoint as the session binds it: the bound endpoint itself,
@@ -207,7 +209,85 @@ pub(crate) struct Bound {
     pub(crate) relays: tilo_endpoint_reachability::EndpointRelays,
     /// What it hears on the local network.
     pub(crate) lan: tilo_endpoint_reachability::Nearby,
+    /// The devices the workspaces it is in admit, whom that discovery answers too.
+    pub(crate) workspace_devices: WorkspaceDevices,
     pub(crate) reached: Reached,
+}
+
+/// The devices each workspace this device is in admitted, as the session last handed the peer
+/// network the devices each admits: beside the person's own devices, the ones this device's local discovery
+/// answers ([`LanFleet`]).
+#[derive(Clone, Default)]
+pub(crate) struct WorkspaceDevices(
+    Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<WorkspaceId, Vec<tilo_network_actor::RosterDevice>>,
+        >,
+    >,
+);
+
+impl WorkspaceDevices {
+    /// Take what `command` says of a workspace's devices: the devices it admits now, or none once
+    /// this device left it.
+    fn note(&self, command: &Cmd) {
+        match command {
+            Cmd::Roster { ws, devices } => {
+                self.0.lock_recover().insert(*ws, devices.clone());
+            }
+            Cmd::Leave(ws) => {
+                self.0.lock_recover().remove(ws);
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether a workspace this device is in admits `device` at `now_ns`.
+    fn admit(&self, device: &[u8; 32], now_ns: u64) -> bool {
+        self.0
+            .lock_recover()
+            .values()
+            .flatten()
+            .any(|(id, expires)| {
+                id.as_bytes() == device && expires.is_none_or(|expires| expires > now_ns)
+            })
+    }
+}
+
+/// The devices this device's local discovery answers ([`tilo_endpoint_reachability::lan`]): the
+/// person's own, current and unrevoked, as the sibling session admits them, and the devices a
+/// workspace this device is in admitted. Its probes present the person's certificate.
+pub(crate) struct LanFleet {
+    pub(crate) identity: DeviceIdentity,
+    pub(crate) workspace_devices: WorkspaceDevices,
+}
+
+impl tilo_endpoint_reachability::Fleet for LanFleet {
+    fn certificate(&self) -> Option<tilo_user_identity::DeviceCert> {
+        Some(
+            self.identity
+                .material_for(tilo_network_actor::DEFAULT_WS_TOPIC)
+                .0,
+        )
+    }
+
+    fn admits(&self, cert: &tilo_user_identity::DeviceCert) -> bool {
+        let now = tilo_clock::unix_now_ns();
+        let (own, revocations) = self
+            .identity
+            .material_for(tilo_network_actor::DEFAULT_WS_TOPIC);
+        if cert.device_public_key == own.device_public_key
+            || tilo_user_identity::verify_device_cert_at(cert, now).is_err()
+        {
+            return false;
+        }
+        let persons = cert.user_public_key == own.user_public_key
+            && !revocations.iter().any(|entry| {
+                (entry.user_public_key, entry.revoked_device_public_key)
+                    == (cert.user_public_key, cert.device_public_key)
+                    && entry.revoked_at_ns <= now
+            });
+        persons || self.workspace_devices.admit(&cert.device_public_key, now)
+    }
 }
 
 impl Bound {
@@ -222,6 +302,7 @@ impl Bound {
             endpoint,
             relays,
             lan,
+            workspace_devices: WorkspaceDevices::default(),
             reached: Reached::default(),
         }
     }
@@ -351,6 +432,9 @@ pub(super) fn run(
             own_service,
         };
         while let Some(command) = commands.recv().await {
+            if let HostCmd::Network(command) = &command {
+                bound.workspace_devices.note(command);
+            }
             let Some(taken) = carry_host(&actor, &events, &asking, command).await else {
                 break;
             };
@@ -604,7 +688,12 @@ async fn listening(
     bound: &Bound,
 ) -> Option<Listening> {
     let lookup = iroh::address_lookup::memory::MemoryLookup::new();
-    let (builder, deferred_relays) = match endpoint_for(identity, &bound.relays, &bound.lan) {
+    let (builder, deferred_relays) = match endpoint_for(
+        identity,
+        &bound.relays,
+        &bound.lan,
+        &bound.workspace_devices,
+    ) {
         Ok(building) => building,
         Err(error) => {
             let _ = ready.send(Err(error));
@@ -689,7 +778,7 @@ async fn listening(
         person.attach(
             service.workspaces().clone(),
             &tokio::runtime::Handle::current(),
-            move |workspace: &str| {
+            Some(Arc::new(move |workspace: &str| {
                 let Some(engine) = holding.as_ref().and_then(std::sync::Weak::upgrade) else {
                     return false;
                 };
@@ -697,7 +786,7 @@ async fn listening(
                     return false;
                 };
                 engine.workspaces().contains(&id)
-            },
+            })),
         );
     }
     if let (true, Some(documents), Some(service)) = (opened, documents, service) {

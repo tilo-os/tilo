@@ -2,14 +2,13 @@
 mod admit;
 mod adopt;
 pub mod base;
-pub mod media;
+pub mod basis;
 pub mod membership;
 pub(crate) mod policy;
 pub(crate) mod read;
 pub mod rows;
 pub mod saved_shortcut;
 pub mod share;
-pub(crate) use admit::writes as writes_workspace;
 pub use admit::{
     AdmissionFailure, AdmittedWorkspace, SenderAccess, WorkspaceAdmission, WorkspaceRefusal,
     Writer, admit_workspace_changes,
@@ -45,8 +44,6 @@ pub struct WorkspaceGovernance {
     /// `invitation_parts_v1.*`: the runs of signed invitations receipts
     /// share, keyed by their digest ([`crate::state::invitation_receipts`]).
     pub invitation_parts: BTreeMap<String, Vec<Vec<u8>>>,
-    /// The governed media policy, by value.
-    pub media: media::MediaGovernanceValue,
 }
 impl WorkspaceGovernance {
     fn absent() -> Self {
@@ -58,7 +55,6 @@ impl WorkspaceGovernance {
             coverage: None,
             invitation_receipts: BTreeMap::new(),
             invitation_parts: BTreeMap::new(),
-            media: media::MediaGovernanceValue::Absent,
         }
     }
 }
@@ -95,7 +91,6 @@ pub fn governance_of(doc: Option<&AutoCommit>) -> WorkspaceGovernance {
     governance.coverage = crate::coverage::governed_bytes(doc);
     governance.invitation_receipts = invitation_receipts(doc).unwrap_or_default();
     governance.invitation_parts = crate::state::invitation_receipts::parts(doc).unwrap_or_default();
-    governance.media = media::governed_value(Some(doc));
     governance
 }
 

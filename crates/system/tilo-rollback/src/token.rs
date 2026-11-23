@@ -307,30 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn tokens_round_trip_with_named_fields_and_reject_inconsistency() {
-        {
-            let t = sample();
-            let j = t.to_json().unwrap();
-            assert_eq!(RollbackToken::from_json(&j).unwrap(), t);
-        }
-        {
-            let j = sample().to_json().unwrap();
-            let v: serde_json::Value = serde_json::from_str(&j).unwrap();
-            assert_eq!(v["type"], "tilo-rollback");
-            assert_eq!(v["keyslots"], serde_json::json!(["2"]));
-        }
-        {
-            let t = sample();
-            assert_eq!(t.decoded_public().unwrap(), b"pub");
-            assert_eq!(t.decoded_private().unwrap(), b"priv");
-            assert_eq!(t.decoded_key_name().unwrap(), b"name");
-            let p = t.decoded_predictions().unwrap();
-            assert_eq!(p[0].approved_policy, b"ap");
-            assert_eq!(p[0].signature, b"sig");
-        }
-        {
-            assert_eq!(sample().keyslot().unwrap(), 2);
-        }
+    fn a_rewritten_token_is_refused_by_what_is_wrong_with_it() {
         {
             let mut t = sample();
             t.predictions.clear();

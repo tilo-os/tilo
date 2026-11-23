@@ -30,7 +30,7 @@ pub(crate) fn verified_flatpak_app_id_from(
 ) -> Option<String> {
     let proc = proc_root.join(pid.to_string());
     let app_id = flatpak_application_id(&proc.join("root/.flatpak-info"))?;
-    let cgroup = read_bounded(&proc.join("cgroup"), 16 * 1024)?;
+    let cgroup = read_text(&proc.join("cgroup"), 16 * 1024)?;
     if !flatpak_cgroup_matches(&cgroup, &app_id) {
         return None;
     }
@@ -45,21 +45,24 @@ pub(crate) fn verified_flatpak_app_id_from(
         .then_some(app_id)
 }
 
-fn read_bounded(path: &Path, max_bytes: u64) -> Option<String> {
-    let metadata = std::fs::metadata(path).ok()?;
-    (metadata.len() <= max_bytes).then(|| std::fs::read_to_string(path).ok())?
+fn read_text(path: &Path, max_bytes: u64) -> Option<String> {
+    let bytes = tilo_files::native::bounded::read(path, max_bytes).ok()?;
+    String::from_utf8(bytes).ok()
 }
 
+/// Whether `id` is a valid Flatpak application id for notification attribution.
+///
+/// Differs from [`tilo_app_id::AppId::parse`] by capping length at 160 bytes to
+/// match notification policy keys. Like `AppId::parse`, this requires a dot:
+/// the id must match an installed Flatpak's `X-Flatpak` id, which always has a
+/// dot, and on refusal the sender falls back to the session's own lookup.
 pub(crate) fn valid_app_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 160
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    const GRAMMAR: tilo_app_id::Grammar = tilo_app_id::Grammar::CANONICAL.max_bytes(160);
+    GRAMMAR.matches(id)
 }
 
 fn flatpak_application_id(info_path: &Path) -> Option<String> {
-    let info = read_bounded(info_path, 16 * 1024)?;
+    let info = read_text(info_path, 16 * 1024)?;
     let mut application_section = false;
     for line in info.lines() {
         let line = line.trim();
@@ -201,14 +204,72 @@ mod tests {
                 None,
                 "an uninstalled Flatpak id is never accepted"
             );
+
+            write_flatpak_proc(tmp.path(), 407, "org..Chat", "org..Chat");
+            let mut malformed_entries = entries;
+            malformed_entries.extend(flatpak_entries(tmp.path(), "org..Chat"));
+            assert!(
+                malformed_entries.iter().any(|entry| matches!(
+                    &entry.source,
+                    desktop_entry::EntrySource::Flatpak { app_id } if app_id == "org..Chat"
+                )),
+                "fixture must include the malformed entry so refusal comes from valid_app_id"
+            );
+            assert_eq!(
+                verified_flatpak_app_id_from(tmp.path(), 407, &malformed_entries),
+                None,
+                "a malformed Flatpak id with empty segments is never accepted"
+            );
         }
 
         phase app_ids_are_bounded_reverse_dns_characters;
         {
-            assert!(valid_app_id("org.example.Chat"));
-            assert!(!valid_app_id(""));
-            assert!(!valid_app_id("org/example"));
-            assert!(!valid_app_id(&"a".repeat(161)));
+            let longest = format!("a.{}", "b".repeat(158));
+            let too_long = format!("a.{}", "b".repeat(159));
+            let too_long_dotless = "a".repeat(161);
+            for (id, expected) in [
+                ("org.example.Chat", true),
+                ("org.example.My_App-2", true),
+                ("-org.example.Chat", true),
+                (longest.as_str(), true),
+                (too_long.as_str(), false),
+                (too_long_dotless.as_str(), false),
+                ("", false),
+                ("chat", false),
+                (".org.Chat", false),
+                ("org.Chat.", false),
+                ("org..Chat", false),
+                ("..", false),
+                ("org/example", false),
+                ("org.example Chat", false),
+            ] {
+                assert_eq!(valid_app_id(id), expected, "{id:?}");
+            }
+        }
+
+        phase proc_and_oversized_files_are_refused_within_the_byte_bound;
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            assert_eq!(read_text(&tmp.path().join("missing"), 16), None);
+
+            let exact = tmp.path().join("exact");
+            std::fs::write(&exact, "a".repeat(16)).expect("exact");
+            assert_eq!(read_text(&exact, 16).as_deref(), Some("aaaaaaaaaaaaaaaa"));
+
+            let over = tmp.path().join("over");
+            std::fs::write(&over, "a".repeat(17)).expect("over");
+            assert_eq!(read_text(&over, 16), None);
+
+            #[cfg(target_os = "linux")]
+            {
+                let stat = Path::new("/proc/self/stat");
+                assert_eq!(std::fs::metadata(stat).expect("stat").len(), 0);
+                assert_eq!(
+                    read_text(stat, 16),
+                    None,
+                    "a source yielding more bytes than its metadata claimed must be refused"
+                );
+            }
         }
     }
 }

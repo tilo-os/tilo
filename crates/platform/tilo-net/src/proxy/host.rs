@@ -22,7 +22,7 @@ use http_body::Frame;
 use http_body_util::BodyExt as _;
 use tilo_lock::MutexRecover as _;
 use tokio::time::Instant;
-use url::{Host, Url};
+use url::Url;
 
 use super::{
     ERROR_HEADER, FINAL_URL_HEADER, FORWARD_PREFIX, MARKER_HEADER, MARKER_PARAM, ProxyFailure,
@@ -206,9 +206,9 @@ const METHODS: &[&str] = &[
     "SEARCH",
 ];
 
-/// Whether `address` is on the public internet: the one judge every caller
-/// asks, [`crate::address::is_public`].
-pub use crate::address::is_public;
+/// Whether `address` is on the public internet, and the one judge of literal
+/// addresses written into a URL: [`crate::address`].
+pub use crate::address::{is_non_public_literal, is_public, written_out};
 
 #[derive(Debug)]
 struct BlockedAddress {
@@ -1065,15 +1065,10 @@ fn check_target(url: &Url, destinations: Destinations) -> Result<(), Refused> {
             format!("port {port} is not for the web"),
         ));
     }
-    let literal = match url.host() {
-        None => {
-            return Err(Refused::new(ProxyFailure::BadRequest, "url names no host"));
-        }
-        Some(Host::Domain(_)) => None,
-        Some(Host::Ipv4(address)) => Some(IpAddr::V4(address)),
-        Some(Host::Ipv6(address)) => Some(IpAddr::V6(address)),
-    };
-    if destinations == Destinations::Public && literal.is_some_and(|address| !is_public(address)) {
+    if url.host().is_none() {
+        return Err(Refused::new(ProxyFailure::BadRequest, "url names no host"));
+    }
+    if destinations == Destinations::Public && is_non_public_literal(url) {
         return Err(Refused::new(
             ProxyFailure::Blocked,
             format!("{} is on the proxy's own network", host_of(url)),
@@ -1115,30 +1110,46 @@ fn classify(error: &reqwest::Error, url: &Url) -> Refused {
     Refused::new(ProxyFailure::Unreachable, message)
 }
 
-/// Request headers that never reach the target: the page's own identity at
-/// the host, connection management, and what the ingress added about the
-/// caller.
-fn withheld(name: &str) -> bool {
+/// Whether `name` is a request header a server never lets a caller set on an
+/// outgoing request: hop-by-hop framing, target host, proxy connection and
+/// proxy credentials, and forwarding headers that name the caller.
+///
+/// Matched ASCII case-insensitively. Callers with further restrictions of
+/// their own (such as the fetch proxy's ingress headers or a hosted web call's
+/// credential and method-override headers) layer them on top of this check.
+#[must_use]
+pub fn is_withheld_request_header(name: &str) -> bool {
     const NAMES: &[&str] = &[
-        "accept-encoding",
         "connection",
         "content-length",
         "expect",
         "forwarded",
         "host",
         "keep-alive",
+        "proxy-authorization",
+        "proxy-connection",
         "te",
         "trailer",
         "transfer-encoding",
-        "true-client-ip",
         "upgrade",
-        "via",
         "x-real-ip",
     ];
-    NAMES.contains(&name)
+    NAMES.iter().any(|held| name.eq_ignore_ascii_case(held))
+        || name
+            .as_bytes()
+            .get(..b"x-forwarded-".len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"x-forwarded-"))
+}
+
+/// Request headers that never reach the target: the shared withheld set
+/// ([`is_withheld_request_header`]), the page's own identity at the host,
+/// connection management, and what the ingress added about the caller.
+fn withheld(name: &str) -> bool {
+    const EXTRAS: &[&str] = &["accept-encoding", "true-client-ip", "via"];
+    is_withheld_request_header(name)
+        || EXTRAS.contains(&name)
         || name.starts_with("x-tilo-")
         || name.starts_with("proxy-")
-        || name.starts_with("x-forwarded-")
         || name.starts_with("cf-")
 }
 
@@ -1606,6 +1617,200 @@ mod tests {
             assert!(buckets.take(&Caller([2; 32]), 1.0, now).is_ok());
             let later = now.checked_add(Duration::from_secs(1)).unwrap();
             assert!(buckets.take(&device, 1.0, later).is_ok());
+        }
+    }
+
+    const INSIDE_URLS: &[&str] = &[
+        // Plain IPv4: loopback, unspecified, private, CGNAT, link-local, Azure, reserved.
+        "http://127.0.0.1/",
+        "https://127.255.255.254/",
+        "https://0.0.0.0/",
+        "https://10.0.0.1/",
+        "https://100.64.0.1/",
+        "https://169.254.169.254/latest/meta-data/",
+        "https://168.63.129.16/",
+        "https://172.16.0.1/",
+        "https://192.168.1.1/",
+        "https://224.0.0.1/",
+        // Bracketed IPv6 and IPv4-mapped / IPv4-compatible IPv6.
+        "http://[::1]/",
+        "https://[0:0:0:0:0:0:0:1]/",
+        "https://[::]/",
+        "https://[fe80::1]/",
+        "https://[fc00::1]/",
+        "https://[fd12:3456::1]/",
+        "https://[64:ff9b::a00:1]/",
+        "https://[2002:7f00:1::]/",
+        "https://[2001::1]/",
+        "http://[::ffff:127.0.0.1]/",
+        "https://[::ffff:7f00:1]/",
+        "https://[::ffff:10.0.0.7]/",
+        "https://[::ffff:169.254.169.254]/",
+        "https://[::127.0.0.1]/",
+        // Unusual IPv4 spellings normalised by `url`.
+        "http://2130706433/",
+        "http://0x7f000001/",
+        "http://0x7f.1/",
+        "http://0177.0.0.1/",
+        "http://127.1/",
+        "http://10.0.1/",
+        "http://0/",
+        "https://0xa9fea9fe/",
+        "http://%31%32%37.0.0.1/",
+        "http://\u{ff11}\u{ff12}\u{ff17}.\u{ff10}.\u{ff10}.\u{ff11}/",
+        // Trailing dot on literal IPv4, credentials, ports, and non-http(s) schemes.
+        "http://127.0.0.1./",
+        "https://10.0.0.1.:8443/",
+        "http://0x7f.1./",
+        "http://2130706433./",
+        "http://user:pass@127.0.0.1/",
+        "https://user:pass@[::1]:8443/",
+        "http://1.1.1.1@127.0.0.1/",
+        "http://127.0.0.1:8080/",
+        "http://127.0.0.1:80/",
+        "https://[::1]:443/",
+        "http://[::ffff:127.0.0.1]:8080/",
+        "file://127.0.0.1/etc/passwd",
+        "file://[::1]/etc/passwd",
+        "gopher://[::1]/",
+        "redis://127.0.0.1/",
+        "blob:http://127.0.0.1/x",
+        "blob:http://[::1]/x",
+    ];
+
+    const OUTSIDE_OR_NAME_URLS: &[&str] = &[
+        "https://1.1.1.1/",
+        "https://1.1.1.1./",
+        "https://93.184.216.34:443/",
+        "https://0x01010101/",
+        "https://172.32.0.1/",
+        "https://100.128.0.1/",
+        "https://[2606:4700:4700::1111]/",
+        "https://[::ffff:1.1.1.1]/",
+        "https://[64:ff9b::101:101]/",
+        "http://127.0.0.1@1.1.1.1/",
+        "https://example.com/",
+        "https://example.com./",
+        "http://localhost/",
+        "http://localhost./",
+        "http://127.0.0.1.example.com/",
+        "file:///etc/passwd",
+        "data:text/plain,hello",
+    ];
+
+    #[test]
+    fn non_public_literal_addresses_are_judged_from_the_parsed_host() {
+        for &inside in INSIDE_URLS {
+            let url = Url::parse(inside).unwrap();
+            assert!(is_non_public_literal(&url), "{inside} must be non-public");
+            assert!(
+                check_destination(&url, Destinations::Public).is_err(),
+                "{inside} must be refused by check_destination"
+            );
+            if !matches!(url.scheme(), "http" | "https") {
+                assert!(
+                    check_destination(&url, Destinations::Any).is_err(),
+                    "{inside} must be refused even under Destinations::Any"
+                );
+            }
+        }
+        for &outside_or_name in OUTSIDE_OR_NAME_URLS {
+            let url = Url::parse(outside_or_name).unwrap();
+            assert!(
+                !is_non_public_literal(&url),
+                "{outside_or_name} must not be a non-public literal"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_and_proxy_withheld_request_headers_never_reach_the_target() {
+        let shared = [
+            "connection",
+            "content-length",
+            "expect",
+            "forwarded",
+            "host",
+            "keep-alive",
+            "proxy-authorization",
+            "proxy-connection",
+            "te",
+            "trailer",
+            "transfer-encoding",
+            "upgrade",
+            "x-real-ip",
+            "x-forwarded-for",
+            "x-forwarded-host",
+            "x-forwarded-proto",
+        ];
+        let proxy_only = [
+            "accept-encoding",
+            "true-client-ip",
+            "via",
+            "x-tilo-proxy",
+            "x-tilo-session",
+            "proxy-custom",
+            "cf-connecting-ip",
+            "cf-ray",
+        ];
+        let mut incoming = HeaderMap::new();
+        for name in shared {
+            assert!(is_withheld_request_header(name), "{name}");
+            assert!(
+                is_withheld_request_header(&name.to_ascii_uppercase()),
+                "{name} uppercase"
+            );
+            assert!(withheld(name), "{name}");
+            incoming.append(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_static("1"),
+            );
+            incoming.append(
+                HeaderName::try_from(format!("{FORWARD_PREFIX}{name}")).unwrap(),
+                HeaderValue::from_static("2"),
+            );
+        }
+        for name in proxy_only {
+            assert!(
+                !is_withheld_request_header(name),
+                "{name} is proxy-only, not shared"
+            );
+            assert!(withheld(name), "{name}");
+            incoming.append(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_static("1"),
+            );
+            incoming.append(
+                HeaderName::try_from(format!("{FORWARD_PREFIX}{name}")).unwrap(),
+                HeaderValue::from_static("2"),
+            );
+        }
+        // Web-call-only headers and ordinary headers are not in the shared or
+        // proxy withheld lists.
+        for allowed in [
+            "accept",
+            "authorization",
+            "x-http-method-override",
+            "x-api-key",
+        ] {
+            assert!(!is_withheld_request_header(allowed), "{allowed}");
+            assert!(!withheld(allowed), "{allowed}");
+            incoming.append(
+                HeaderName::from_bytes(allowed.as_bytes()).unwrap(),
+                HeaderValue::from_static("ok"),
+            );
+        }
+        let sent = outgoing_headers(&incoming);
+        for blocked in shared.into_iter().chain(proxy_only) {
+            assert!(!sent.contains_key(blocked), "{blocked} must not be sent");
+        }
+        for allowed in [
+            "accept",
+            "authorization",
+            "x-http-method-override",
+            "x-api-key",
+        ] {
+            assert_eq!(sent[allowed], "ok");
         }
     }
 }

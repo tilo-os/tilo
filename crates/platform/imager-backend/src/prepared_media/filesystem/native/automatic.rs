@@ -1,8 +1,8 @@
 //! Mount only the verified medium's existing EFI filesystem. Never format it.
 use super::*;
+use crate::ESP_TYPE as ESP;
 use crate::prepared_media::check_cancel;
 use std::sync::atomic::AtomicBool;
-const ESP: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Selection {

@@ -1,6 +1,6 @@
 //! Ciphertext copy capacity for the authenticated completed setup generation.
 //! Physical bytes are not inverse encrypted Home plaintext capacity.
-use std::{fs::File, io, os::fd::AsRawFd};
+use std::{fs::File, io};
 
 // The completed marker is bounded to 16 KiB, the canonical receipt to 1 KiB;
 // the remaining allowance covers its durable directory/checkpoint publication.
@@ -27,13 +27,12 @@ pub fn completed_setup_free_bytes(directory: &File) -> io::Result<u64> {
     if !directory.metadata()?.is_dir() {
         return Err(invalid());
     }
-    // SAFETY: statvfs is a native integer output structure; all-zero initialization is valid.
-    let mut filesystem: libc::statvfs = unsafe { std::mem::zeroed() };
-    // SAFETY: held directory descriptor and correctly sized native output.
-    if unsafe { libc::fstatvfs(directory.as_raw_fd(), &raw mut filesystem) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if filesystem.f_flag & libc::ST_RDONLY != 0 || filesystem.f_frsize == 0 {
+    let filesystem = rustix::fs::fstatvfs(directory)?;
+    if filesystem
+        .f_flag
+        .contains(rustix::fs::StatVfsMountFlags::RDONLY)
+        || filesystem.f_frsize == 0
+    {
         return Err(invalid());
     }
     filesystem

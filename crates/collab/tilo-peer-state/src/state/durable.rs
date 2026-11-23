@@ -894,7 +894,6 @@ impl StatePeer {
             gathering: super::compaction_set::Gathering::default(),
             workspace_host: false,
             own_device: None,
-            refused_base: None,
             governance_now: None,
         };
         backend::validate_pending(&peer.core.pending, peer.core.pending_bytes).map_err(err)?;
@@ -943,17 +942,6 @@ impl StatePeer {
         peer.raise_floors_to_marks();
         for (route, ops) in durable.sealed {
             peer.restore_sealed(&route, ops)?;
-        }
-        if let Some(policy) = peer.validate_present_media_policy()? {
-            let doc = peer.core.workspace_doc.clone().ok_or("missing workspace")?;
-            // Durable identity metadata is not a substitute for matching the
-            // governed certificate rows. Reuse the normal verified import and
-            // retain historical certificates already validated during restore.
-            peer.import_governed_rows(&doc, now)?;
-            // Workspace-first admission is durable even before its exact Chat
-            // checkpoint arrives. Validate present bindings here; the media
-            // projection still requires every active prerequisite to be ready.
-            peer.validate_media_bindings(&policy, false)?;
         }
         peer.check_exact_within_floors()?;
         Ok(peer)

@@ -714,15 +714,17 @@ impl Overlays {
     }
 
     /// Where the walk has reached of `count` windows, `front` being the window in front's place
-    /// among them: `None` while the switcher is not up.
+    /// among them: `None` while the switcher is not up. When no window is in front (`front` is
+    /// `None`), the walk starts just before index `0`, so the first forward step (`walk = 1`)
+    /// reaches index `0`.
     #[must_use]
     pub fn reached(&self, count: usize, front: Option<usize>) -> Option<usize> {
         if count == 0 || !self.switcher_up() {
             return None;
         }
-        let front = i64::try_from(front.unwrap_or(0)).unwrap_or(0);
+        let origin = front.map_or(-1, |front| i64::try_from(front).unwrap_or(0));
         let count = i64::try_from(count).unwrap_or(1).max(1);
-        let at = front.saturating_add(self.walked()).rem_euclid(count);
+        let at = origin.saturating_add(self.walked()).rem_euclid(count);
         usize::try_from(at).ok()
     }
 
@@ -1626,5 +1628,35 @@ mod tests {
         assert_eq!(overlays.reached(4, Some(1)), Some(1));
         overlays.show(Overlay::Rest);
         assert!(!overlays.switcher_up());
+    }
+
+    #[test]
+    fn with_no_window_in_front_the_first_step_reaches_the_first_window() {
+        let overlays = Overlays::new();
+        overlays.walk(SwitcherScope::Workspace, 1);
+        assert_eq!(
+            overlays.reached(2, None),
+            Some(0),
+            "the first step reaches index 0 rather than skipping it"
+        );
+        assert_eq!(
+            overlays.reached(1, None),
+            Some(0),
+            "a lone window not in front is reached"
+        );
+        overlays.walk(SwitcherScope::Workspace, 1);
+        assert_eq!(overlays.reached(2, None), Some(1));
+        overlays.walk(SwitcherScope::Workspace, -1);
+        assert_eq!(overlays.reached(2, None), Some(0));
+        overlays.walk(SwitcherScope::Workspace, -1);
+        assert_eq!(
+            overlays.reached(2, None),
+            Some(1),
+            "wraps to the last window"
+        );
+        // With a window in front, nothing changes.
+        overlays.show(Overlay::Rest);
+        overlays.walk(SwitcherScope::Workspace, 1);
+        assert_eq!(overlays.reached(2, Some(0)), Some(1));
     }
 }

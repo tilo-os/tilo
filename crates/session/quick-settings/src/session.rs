@@ -34,6 +34,9 @@ pub(crate) const BATTERY: &str = "power:battery";
 /// The power service's reading of the sleep policy: what holds the machine
 /// awake, and the power profiles it offers.
 pub(crate) const SLEEP: &str = "power:sleep";
+/// The system service's power resource: the machine's power modes and session
+/// power actions.
+pub(crate) const POWER: &str = "power";
 /// The system service's reading of the update.
 pub(crate) const SYSTEM_UPDATE: &str = "system-update";
 /// The session's reading of its displays and how bright each is.

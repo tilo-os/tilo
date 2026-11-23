@@ -240,16 +240,13 @@ Type=Application
                 assert!(parse_desktop_entry(entry).is_none());
             }
             {
-                let dir =
-                    std::env::temp_dir().join(format!("tilo-greeter-sessions-{}", std::process::id()));
-                std::fs::create_dir_all(&dir).unwrap();
-                std::fs::write(dir.join("a.desktop"), NATIVE).unwrap();
-                std::fs::write(dir.join("b.desktop"), WESTON).unwrap();
+                let dir = tempfile::tempdir().unwrap();
+                std::fs::write(dir.path().join("a.desktop"), NATIVE).unwrap();
+                std::fs::write(dir.path().join("b.desktop"), WESTON).unwrap();
                 // A non-.desktop file must be skipped.
-                std::fs::write(dir.join("README.txt"), "ignore me").unwrap();
+                std::fs::write(dir.path().join("README.txt"), "ignore me").unwrap();
 
-                let sessions = read_sessions(&dir);
-                let _ = std::fs::remove_dir_all(&dir);
+                let sessions = read_sessions(dir.path());
 
                 assert_eq!(sessions.len(), 2);
                 // The default first, then the rest by name: "Tilo" before
@@ -268,15 +265,11 @@ Type=Application
             // The shipped entry beside one written by hand, in the directory the
             // greeter reads: signing in without touching the picker starts the
             // native session.
-            let dir = std::env::temp_dir().join(format!(
-                "tilo-greeter-default-session-{}",
-                std::process::id()
-            ));
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("tilo-headless.desktop"), SECONDARY).unwrap();
-            std::fs::write(dir.join("tilo-session.desktop"), NATIVE).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("tilo-headless.desktop"), SECONDARY).unwrap();
+            std::fs::write(dir.path().join("tilo-session.desktop"), NATIVE).unwrap();
 
-            let sessions = read_sessions(&dir);
+            let sessions = read_sessions(dir.path());
 
             assert_eq!(sessions.len(), 2, "{sessions:?}");
             assert_eq!(sessions[0].name, "Tilo");
@@ -290,24 +283,22 @@ Type=Application
             // comes after the one that declares itself the default, and those
             // without the key keep their order among themselves.
             std::fs::write(
-                dir.join("aardvark.desktop"),
+                dir.path().join("aardvark.desktop"),
                 "[Desktop Entry]\nName=Aardvark\nExec=/usr/bin/aardvark\nType=Application\n",
             )
             .unwrap();
-            let sessions = read_sessions(&dir);
-            let _ = std::fs::remove_dir_all(&dir);
+            let sessions = read_sessions(dir.path());
             let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
             assert_eq!(names, ["Tilo", "Aardvark", "Tilo (headless)"]);
         }
 
         phase only_real_launchable_sessions_are_offered;
         {
-            let dir =
-                std::env::temp_dir().join(format!("tilo-greeter-real-sessions-{}", std::process::id()));
-            let bin = dir.join("bin");
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("bin");
             std::fs::create_dir_all(&bin).unwrap();
             std::fs::write(bin.join("weston"), "").unwrap();
-            let sessions_dir = dir.join("sessions");
+            let sessions_dir = dir.path().join("sessions");
             std::fs::create_dir_all(&sessions_dir).unwrap();
             std::fs::write(sessions_dir.join("tilo.desktop"), NATIVE).unwrap();
             // The same command under another file is one session, not two.
@@ -345,7 +336,6 @@ Type=Application
             )
             .unwrap();
             let two = read_sessions_with_path(&sessions_dir, Some(&path));
-            let _ = std::fs::remove_dir_all(&dir);
             let names: Vec<&str> = two.iter().map(|s| s.name.as_str()).collect();
             assert_eq!(names, ["Tilo", "Weston"]);
         }

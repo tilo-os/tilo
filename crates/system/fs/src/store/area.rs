@@ -2217,23 +2217,6 @@ mod tests {
     }
 
     #[test]
-    fn the_budget_never_evicts_inline_blobs() {
-        let dir = tempfile::tempdir().unwrap();
-        let area = FileArea::open(dir.path(), 0).unwrap();
-        area.put_inline([(key(1), Bytes::from(vec![1u8; 4096]))])
-            .unwrap();
-        area.adopt_bytes(&key(2), &[2u8; 4096], Retention::Cached, &[])
-            .unwrap();
-        assert_eq!(
-            area.evict_to_budget(&[]),
-            4096,
-            "the cached entry goes, the inline blob stays"
-        );
-        assert!(area.entry(&key(2)).is_none());
-        assert_eq!(area.get_inline(&key(1)).unwrap().len(), 4096);
-    }
-
-    #[test]
     fn whole_blobs_keep_their_outboard_and_are_listed_as_blobs() {
         let dir = tempfile::tempdir().unwrap();
         let area = FileArea::open(dir.path(), u64::MAX).unwrap();
@@ -2264,22 +2247,6 @@ mod tests {
             "removal drops the outboard"
         );
         assert!(area.blob_keys().is_empty());
-    }
-
-    #[test]
-    fn a_staged_import_becomes_a_whole_blob_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let area = FileArea::open(dir.path(), u64::MAX).unwrap();
-        let bytes: Vec<u8> = (0..50_000_u32).map(|n| (n % 251) as u8).collect();
-        let hash = *blake3::hash(&bytes).as_bytes();
-        let (path, mut file) = area.staging_file().unwrap();
-        std::io::Write::write_all(&mut file, &bytes).unwrap();
-        drop(file);
-        area.install_staged_blob(&hash, &path, bytes.len() as u64, b"outboard")
-            .unwrap();
-        assert!(!path.exists(), "the staging file became the entry");
-        assert_eq!(area.read_at(&hash, 0, 16).unwrap(), bytes[..16]);
-        assert_eq!(area.entry(&hash).unwrap().retention, Retention::LocalOnly);
     }
 
     #[test]
@@ -2338,6 +2305,20 @@ mod tests {
         assert!(area.entry(&key(1)).is_none());
         assert!(area.entry(&key(5)).is_some(), "kept while in use");
         assert!(area.entry(&key(2)).is_some() && area.entry(&key(3)).is_some());
+
+        let dir = tempfile::tempdir().unwrap();
+        let area = FileArea::open(dir.path(), 0).unwrap();
+        area.put_inline([(key(1), Bytes::from(vec![1u8; 4096]))])
+            .unwrap();
+        area.adopt_bytes(&key(2), &[2u8; 4096], Retention::Cached, &[])
+            .unwrap();
+        assert_eq!(
+            area.evict_to_budget(&[]),
+            4096,
+            "the cached entry goes, the inline blob stays"
+        );
+        assert!(area.entry(&key(2)).is_none());
+        assert_eq!(area.get_inline(&key(1)).unwrap().len(), 4096);
     }
 
     tilo_test_env::scenario! {

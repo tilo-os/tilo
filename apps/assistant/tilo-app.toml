@@ -33,7 +33,7 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@35"
+collab = "optional@36"
 
 # A job for a sub-agent is handed to the main agent through Chat's own `send`,
 # as the person using the window.

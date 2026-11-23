@@ -1430,7 +1430,7 @@ impl Workspaces {
     /// holds the workspace reads it.
     ///
     /// # Errors
-    /// The workspace is not held here.
+    /// The workspace is not kept here.
     pub async fn lease_holder(
         &self,
         workspace: &str,
@@ -1447,6 +1447,50 @@ impl Workspaces {
             .lease(lease, now)
             .holder
             .map(|claim| claim.device))
+    }
+
+    /// Whether a device of `workspace` kept the work of the lease `lease`
+    /// done ([`tilo_peer_state::Done`]).
+    ///
+    /// # Errors
+    /// The workspace is not kept here.
+    pub async fn lease_done(
+        &self,
+        workspace: &str,
+        lease: &str,
+    ) -> Result<Option<serde_json::Value>, CollaborationError> {
+        Ok(self
+            .workspace(workspace)
+            .await?
+            .lock()
+            .await
+            .peer()
+            .workspace()
+            .done(lease)
+            .map(|done| done.answer))
+    }
+
+    /// The latest fire time a device of `workspace` answered for the
+    /// schedule at `trigger` of the automation `automation`, marked `mark`
+    /// ([`tilo_peer_state::trigger_mark`]); `None` when none has.
+    ///
+    /// # Errors
+    /// The workspace is not kept here.
+    pub async fn schedule_answered(
+        &self,
+        workspace: &str,
+        automation: &str,
+        trigger: usize,
+        mark: &str,
+    ) -> Result<Option<i64>, CollaborationError> {
+        Ok(self
+            .workspace(workspace)
+            .await?
+            .lock()
+            .await
+            .peer()
+            .workspace()
+            .schedule_answered(automation, trigger, mark))
     }
 
     /// Install a bot as a governed member of `workspace`, update its program,
@@ -1601,6 +1645,49 @@ impl Workspaces {
             .peer()
             .governance()
             .app_versions())
+    }
+
+    /// Change what the call in `channel` of `workspace` allows, as `member`, whom the workspace
+    /// must grant `call`: a governed change every member's live session holds the call to.
+    ///
+    /// # Errors
+    /// Refuses a malformed channel, and a member the workspace does not let moderate calls.
+    pub async fn moderate_call(
+        &self,
+        workspace: &str,
+        member: &DeviceCert,
+        request_id: [u8; 32],
+        channel: &str,
+        change: collab_types::calls::CallChange,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        self.govern_as_member(
+            workspace,
+            member,
+            request_id,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Call {
+                channel: channel.to_owned(),
+                change,
+            },
+            governance::CALL,
+            "call",
+        )
+        .await
+    }
+
+    /// What the call in `channel` of `workspace` allows, as the workspace records it now.
+    pub async fn call_rule(
+        &self,
+        workspace: &str,
+        channel: &str,
+    ) -> Result<collab_types::calls::CallRule, CollaborationError> {
+        Ok(self
+            .workspace(workspace)
+            .await?
+            .lock()
+            .await
+            .peer()
+            .governance()
+            .call(channel))
     }
 
     /// Apply `command` to `workspace` as `member`, whom the workspace must allow the

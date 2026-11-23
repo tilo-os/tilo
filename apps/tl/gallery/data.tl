@@ -140,6 +140,38 @@ view data(g: Gallery) {
                 on open(x: Change): opened_change(last, x)
             }
         }
+        part(
+            "Timeline",
+            "A week as hours, events where their times put them, and the line where now is.",
+        ) {
+            ui.Timeline(
+                range: .week,
+                start: Time("2026-11-03T09:00:00Z"),
+                show_now: true,
+                label: "This week",
+            ) {
+                ui.TimelineItem(
+                    title: "Standup",
+                    start: Time("2026-11-03T09:00:00Z"),
+                    end: Time("2026-11-03T09:15:00Z"),
+                    tone: .first,
+                )
+                ui.TimelineItem(
+                    title: "Design review",
+                    start: Time("2026-11-03T10:00:00Z"),
+                    end: Time("2026-11-03T11:30:00Z"),
+                    location: "Studio",
+                    tone: .third,
+                )
+                ui.TimelineItem(
+                    title: "Release",
+                    start: Time("2026-11-05T00:00:00Z"),
+                    end: Time("2026-11-05T00:00:00Z"),
+                    all_day: true,
+                    tone: .fifth,
+                )
+            }
+        }
     }
 }
 

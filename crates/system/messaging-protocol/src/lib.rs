@@ -154,31 +154,6 @@ impl ProtocolReference {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Submission {
-    Reserved,
-    Started,
-    Acknowledged,
-    /// Submission may have occurred; automatic retry is unsafe.
-    Uncertain,
-}
-
-impl Submission {
-    /// Only an untouched reservation permits the initial write. Started and
-    /// uncertain operations require protocol reconciliation, never a retry.
-    pub fn may_submit(self) -> bool {
-        self == Self::Reserved
-    }
-
-    #[must_use]
-    pub fn interrupted(self) -> Self {
-        match self {
-            Self::Started => Self::Uncertain,
-            other => other,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,14 +168,6 @@ mod tests {
         assert!(!drafts.contains_key(&b));
         assert!(!drafts.contains_key(&c));
         assert!(!format!("{a:?}").contains("account-a"));
-    }
-
-    #[test]
-    fn interruption_after_the_write_boundary_never_permits_retry() {
-        assert!(Submission::Reserved.interrupted().may_submit());
-        assert_eq!(Submission::Started.interrupted(), Submission::Uncertain);
-        assert!(!Submission::Uncertain.may_submit());
-        assert!(!Submission::Acknowledged.may_submit());
     }
 }
 

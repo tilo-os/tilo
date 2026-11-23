@@ -61,6 +61,9 @@ use rows::ListRows;
 use tilo_action_policy::PersonId;
 use wire::Convert;
 
+/// How long a migration that waits for its turn waits before it is asked for again, in seconds.
+const MIGRATE_AGAIN_S: i64 = 5;
+
 /// What an instance runs as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -180,7 +183,7 @@ pub trait Publication {
 
 mod platform;
 
-pub use platform::{Platform, PlatformBlobs, PlatformWeb, PlatformWords};
+pub use platform::{Platform, PlatformBlobs, PlatformClipboard, PlatformWeb, PlatformWords};
 
 /// How an instance starts.
 pub struct Config {
@@ -260,6 +263,16 @@ impl Place {
             Self::Here(view) | Self::Beside { view, .. } | Self::Fresh(view) => view,
         }
     }
+}
+
+/// A paragraph a search hit asked the window to show, which the editor of the text holding it
+/// shows.
+struct Revealing {
+    /// The resource whose text holds the paragraph, by its published id, as the window names
+    /// what a control is bound to.
+    resource: String,
+    /// The paragraph, by its place in that text.
+    block: crate::search::Block,
 }
 
 /// One of the window's two views: a resource shown through a view.
@@ -366,6 +379,12 @@ pub struct Instance {
     /// note an action made opens in the notebook's tree beside it. A kind the window has no place
     /// for is left where it was, never opened as a page of its own.
     pressed_shows: Vec<(u64, String)>,
+    /// The paragraph a search hit asked the window to show, until an editor of the text that
+    /// holds it is told to.
+    revealing: Option<Revealing>,
+    /// How many paragraphs were asked for: what tells an ask for the paragraph shown last apart
+    /// from the one before, so it is shown again.
+    reveals: u64,
     ask: Option<crate::host::Waiting>,
     settle_due: bool,
     sink: Option<Box<dyn OutsideSink>>,
@@ -393,11 +412,12 @@ pub struct Instance {
     rootless: bool,
     loading: bool,
     moved: bool,
-    /// Whether the package's migrations ran over the workspace document since the window opened.
+    /// Whether the package's migrations ran over the workspace document since the window opened,
+    /// and none waits for its turn.
     migrated: bool,
-    /// Whether this replica is the workspace's origin, the one place the package's migrations run
-    /// ([`Self::set_origin`]).
-    origin: bool,
+    /// When the migrations that wait for their turn are asked for again, in seconds since the
+    /// epoch.
+    migrate_again_at: Option<i64>,
     /// The documents a native app of the package's id kept in the workspace, which its
     /// migrations carry over ([`Self::set_earlier`]).
     earlier: Vec<(String, tilo_resource::Doc)>,
@@ -480,6 +500,8 @@ impl Instance {
             opens_to_place: Vec::new(),
             pressed_opens: Vec::new(),
             pressed_shows: Vec::new(),
+            revealing: None,
+            reveals: 0,
             ask: None,
             settle_due: false,
             sink: Some(
@@ -499,7 +521,7 @@ impl Instance {
             loading: false,
             moved: false,
             migrated: false,
-            origin: false,
+            migrate_again_at: None,
             earlier: Vec::new(),
             generation: 0,
             follows: false,
@@ -671,17 +693,31 @@ impl Instance {
     /// the time ever wakes the instance.
     #[must_use]
     pub fn wakes_in(&self) -> Option<std::time::Duration> {
-        [self.views_wake_in(), self.held_in(), self.trigger_in()]
-            .into_iter()
-            .flatten()
-            .min()
+        [
+            self.views_wake_in(),
+            self.held_in(),
+            self.trigger_in(),
+            self.migrate_in(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    /// How long until the migrations that wait for their turn are asked for again.
+    fn migrate_in(&self) -> Option<std::time::Duration> {
+        let at = self.migrate_again_at.filter(|_| !self.migrated)?;
+        let now = self.now()?;
+        Some(std::time::Duration::from_secs(
+            u64::try_from(at.saturating_sub(now)).unwrap_or(0),
+        ))
     }
 
     /// How long until a trigger of this app next has something to run: what a window that runs
-    /// the app's triggers waits for. `None` when no trigger will come due, or this replica does
+    /// the app's triggers waits for. `None` when no trigger will come due, or this window does
     /// not run them.
     fn trigger_in(&self) -> Option<std::time::Duration> {
-        if !self.origin || self.mode != Mode::Live {
+        if self.mode != Mode::Live {
             return None;
         }
         let now = self.now()?;
@@ -848,17 +884,10 @@ impl Instance {
         self.person_changed = true;
     }
 
-    /// Say whether this replica is the workspace's origin (the device that governs the workspace). Only
-    /// the origin runs the package's migrations on what an earlier version wrote, so a migration
-    /// runs once, where every change is ordered, and never as a reader elsewhere.
-    pub fn set_origin(&mut self, origin: bool) {
-        self.origin = origin;
-    }
-
     /// Hand the instance the documents a native app of the package's id kept in the workspace,
     /// each by the key it is stored under: what the package's migrations read with
-    /// `earlier(r)` and carry into its own resources once, at the origin
-    /// (`tilolang_runtime::earlier`). They are read, never written.
+    /// `earlier(r)` and carry into its own resources once, on the device whose turn the
+    /// migration is (`tilolang_runtime::earlier`). They are read, never written.
     pub fn set_earlier(&mut self, documents: Vec<(String, tilo_resource::Doc)>) {
         if let Some(host) = self.host.borrow().as_ref() {
             host.runtime().set_earlier(&self.app, &documents);
@@ -887,10 +916,22 @@ impl Instance {
         if let Some(host) = self.host.borrow().as_ref() {
             // Opened on what an earlier version wrote, the package brings it to where it keeps
             // it now; what that writes is written as any change is.
-            if !self.migrated && self.origin && self.mode == Mode::Live {
-                self.migrated = true;
+            // Each migration of a resource is the workspace's once: one that another device runs,
+            // or that none may run yet, is asked for again a little later.
+            let now = self.now();
+            if !self.migrated
+                && self.mode == Mode::Live
+                && self
+                    .migrate_again_at
+                    .is_none_or(|at| now.is_some_and(|now| now >= at))
+            {
                 if host.migrate() > 0 {
                     self.moved = true;
+                }
+                if host.migrations_wait() {
+                    self.migrate_again_at = now.map(|now| now.saturating_add(MIGRATE_AGAIN_S));
+                } else {
+                    self.migrated = true;
                 }
             }
             return Some(host.clone());
@@ -921,6 +962,8 @@ impl Instance {
             .set_web(PlatformWeb(Rc::clone(&self.platform)));
         host.runtime()
             .set_blobs(PlatformBlobs(Rc::clone(&self.platform)));
+        host.runtime()
+            .set_clipboard(PlatformClipboard(Rc::clone(&self.platform)));
         let platform = Rc::clone(&self.platform);
         host.set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);
@@ -1318,14 +1361,24 @@ impl Instance {
             return false;
         };
         for (open, front, press) in anchors {
-            // A hit names the published resource (`tl:<app>:<id>`) or the resource's id.
-            let anchor = open.anchor();
+            // A hit names the published resource (`tl:<app>:<id>`) or the resource's id, and
+            // the paragraph of its text to show when it is a hit on one.
+            let (anchor, block) = crate::search::split_anchor(open.anchor());
             let anchor = anchor
                 .strip_prefix("tl:")
                 .and_then(|rest| rest.split_once(':'))
                 .map_or(anchor, |(_, id)| id);
             match host.open_plan(anchor, open.view()) {
                 Ok(plan) => {
+                    // The paragraph is shown by the editor of the text that holds it, wherever
+                    // the window draws that, once the window shows the resource.
+                    self.revealing = block.map(|block| Revealing {
+                        resource: crate::publish::resource_id(
+                            &plan.app,
+                            &tilolang_runtime::value::flat_id(anchor),
+                        ),
+                        block,
+                    });
                     // The app's own root in its default view is what the window shows already.
                     if let Some(target) = plan.target
                         && (target.item.is_some() || plan.app != self.app || plan.view.is_some())
@@ -2333,10 +2386,8 @@ impl Instance {
                 self.open_root(&host);
             }
         }
-        // Only the origin runs the packages' triggers: every change is ordered there, and each
-        // run records what it did, so a trigger runs once across the workspace's devices.
-        if self.origin
-            && self.mode == Mode::Live
+        // Each trigger run is the workspace's once, on the device whose turn it is.
+        if self.mode == Mode::Live
             && let Some(now) = self.now()
             && host.run_triggers(now) > 0
         {

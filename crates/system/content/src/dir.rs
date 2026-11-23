@@ -97,8 +97,6 @@ impl FileSig {
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct Probes {
-    pub(crate) verifications: AtomicUsize,
-    pub(crate) scans: AtomicUsize,
     pub(crate) dir_syncs: AtomicUsize,
     pub(crate) file_syncs: AtomicUsize,
 }
@@ -236,8 +234,6 @@ impl DirBackend {
     }
 
     fn load_index(&self, index: &mut Index) -> Result<(), ContentError> {
-        #[cfg(test)]
-        self.probes.scans.fetch_add(1, Ordering::Relaxed);
         index.generation = None;
         let shards = match std::fs::read_dir(&self.root) {
             Ok(shards) => shards,
@@ -384,8 +380,6 @@ impl DirBackend {
         {
             return false;
         }
-        #[cfg(test)]
-        self.probes.verifications.fetch_add(1, Ordering::Relaxed);
         let mut reader = Verifying::new(file, hash);
         if std::io::copy(&mut reader, &mut std::io::sink()).is_err() {
             return false;

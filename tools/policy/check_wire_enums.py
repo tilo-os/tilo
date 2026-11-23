@@ -59,7 +59,7 @@ from rust_source import code_only, is_test_file, matching  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 BREAKS = Path("tools/policy/wire_enum_breaks.toml")
-SCOPES = ("crates/", "apps/")
+SCOPES = ("crates/", "tools/", "apps/")
 # The encodings that name a field or variant by its place in the bytes, never by
 # its name: what an interface.toml declares with one of these is read by position.
 POSITIONAL = ("postcard", "bincode")

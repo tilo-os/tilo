@@ -805,18 +805,15 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase dev_mode_is_an_explicit_daemon_flag;
+    phase the_daemon_is_plain_tilo_runtime;
     {
         let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
-        let dev = args(&["--profile", "/tmp/profile", "--daemon", "--dev"]).unwrap();
+        let dev = args(&["--profile", "/tmp/profile", "--dev"]).unwrap();
         assert_eq!((dev.mode, dev.dev), (Mode::Daemon, true));
-        assert!(
-            !args(&["--profile", "/tmp/profile", "--daemon"])
-                .unwrap()
-                .dev
-        );
+        assert!(!args(&["--profile", "/tmp/profile"]).unwrap().dev);
+        assert_eq!(args(&[]).unwrap().mode, Mode::Daemon, "plain tilo-runtime");
         assert!(args(&["--profile", "/tmp/profile", "--connect", "--dev"]).is_err());
-        assert!(args(&["--profile", "/tmp/profile", "--daemon", "--dev", "--dev"]).is_err());
+        assert!(args(&["--profile", "/tmp/profile", "--dev", "--dev"]).is_err());
     }
 
     phase a_device_and_its_workspace_choose_where_connect_goes;
@@ -861,7 +858,7 @@ tilo_test_env::scenario! {
             None
         );
         for refused in [
-            &["--profile", "/tmp/p", "--daemon", "--device", "b"][..],
+            &["--profile", "/tmp/p", "--device", "b"][..],
             &["--profile", "/tmp/p", "--connect", "--workspace", workspace],
             &[
                 "--profile",
@@ -926,7 +923,6 @@ tilo_test_env::scenario! {
             vec![
                 "--profile",
                 "/tmp/profile",
-                "--daemon",
                 "--workspace",
                 workspace,
             ],
@@ -948,7 +944,7 @@ fn standalone_is_the_clients_own_explicit_choice_for_connect() {
             .standalone,
         "a named profile is a standalone runtime's"
     );
-    assert!(args(&["--profile", "/tmp/profile", "--daemon", "--standalone"]).is_err());
+    assert!(args(&["--profile", "/tmp/profile", "--standalone"]).is_err());
     assert!(args(&["--connect", "--standalone", "--standalone"]).is_err());
 }
 
@@ -1116,5 +1112,71 @@ fn the_server_writes_the_workspace_and_key_into_the_initialize_alone() {
         hello.session_name.as_deref(),
         Some("Office Hours"),
         "the session the client named rides in the initialize, and the API reads it"
+    );
+}
+
+/// A device no person's certificate names yet answers on its native endpoint at once: its own
+/// actions are answered, and one that needs a person is refused saying the device has none yet.
+/// Nothing waits for a claim.
+#[test]
+fn an_unclaimed_device_answers_its_own_actions_at_once_and_says_it_has_no_person_yet() {
+    use io::{BufRead as _, Write as _};
+    let dir = tempfile::tempdir().unwrap();
+    let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
+    let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let place = tilo_device_identity::login::Place::at(dir.path().join("login"), keys);
+    let native = std::sync::Arc::new(super::Native::new(
+        crate::device::unclaimed::DeviceOnly::new(key.clone(), place),
+    ));
+    let listener =
+        tilo_files::native::private::bind_socket(&dir.path().join("native.sock")).unwrap();
+    {
+        let native = std::sync::Arc::clone(&native);
+        std::thread::spawn(move || native.accept(&listener));
+    }
+    let stream = std::os::unix::net::UnixStream::connect(dir.path().join("native.sock")).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut reader = io::BufReader::new(stream.try_clone().unwrap());
+    let mut writer = stream;
+    let mut ask = |request: serde_json::Value| {
+        writeln!(writer, "{request}").unwrap();
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .expect("the device answers at once");
+        serde_json::from_str::<serde_json::Value>(&line).unwrap()
+    };
+
+    let status = ask(serde_json::json!({"native": "status"}));
+    assert_eq!(
+        status["workspace"], "",
+        "no workspace is served yet: {status}"
+    );
+
+    let info = ask(
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "tilo_do", "arguments": {"path": "devices#info"}}}),
+    );
+    let text = info["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert_ne!(info["result"]["isError"], true, "{info}");
+    assert!(
+        text.contains(&hex::encode(key.verifying_key().to_bytes())),
+        "the device says what it is: {info}"
+    );
+
+    let person = ask(
+        serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "tilo_do", "arguments": {"path": "notes#create"}}}),
+    );
+    let text = person["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        text.contains("this device has no person yet"),
+        "what needs a person says the device has none: {person}"
     );
 }

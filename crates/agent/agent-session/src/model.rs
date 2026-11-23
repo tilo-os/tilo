@@ -1,4 +1,4 @@
-//! What carries the model turns of the agents a host runs for their keepers ([`PlanTurns`]),
+//! What carries the model turns of the agents a host runs for the people they act for ([`PlanTurns`]),
 //! holding its credential: its callers see requests and responses only.
 
 use std::time::Instant;
@@ -63,5 +63,13 @@ pub trait PlanTurns: Send {
     /// is not reads that it was not shown them.
     fn sees(&self) -> bool {
         false
+    }
+
+    /// The most characters of conversation the model reads at once, by what
+    /// its descriptor knows of its context: a turn sizes what it keeps to it
+    /// rather than to a bound one model's window may not hold. `None` for a
+    /// model that says nothing of its window, which then reads the default.
+    fn context_chars(&self) -> Option<usize> {
+        None
     }
 }

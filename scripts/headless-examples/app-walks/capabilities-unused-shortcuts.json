@@ -1,0 +1,106 @@
+{
+  "app": "capabilities-unused-shortcuts",
+  "said": "Shortcuts: save one, see it, run it, reach it by its chord, remove it",
+  "family": "capabilities-unused",
+  "live": "rust",
+  "apps": "shortcuts",
+  "rust": {
+    "id": "so.tilo.shortcuts",
+    "native": "shortcuts"
+  },
+  "tl": {
+    "id": "so.tilo.shortcuts",
+    "native": "shortcuts",
+    "session_args": ["--shell", "screen"]
+  },
+  "steps": [
+    {
+      "id": "signed-in",
+      "said": "Sign in: one strip, no shortcut saved",
+      "ops": [
+        {"theme": false},
+        {"state": {"chrome.session_locked": false,
+                   "workspace_tree.workspaces.0.strips#len": 1}},
+        {"windows": 0},
+        {"act": ["shortcuts", "list"]},
+        {"targets": true}
+      ],
+      "dark": true
+    },
+    {
+      "id": "open-shortcuts",
+      "said": "Open Shortcuts: its window is there",
+      "ops": [
+        {"launch": true},
+        {"wait_for": "window"}
+      ],
+      "budget_ms": 15000
+    },
+    {
+      "id": "save-a-shortcut",
+      "said": "Save a shortcut that makes a strip, and see it in the list",
+      "ops": [
+        {
+          "act": [
+            "shortcuts",
+            "create",
+            {
+              "shortcut": {
+                "id": "walk-strip",
+                "name": "Walk strip",
+                "steps": [
+                  {
+                    "id": "strip",
+                    "step": "invoke",
+                    "action": {"app": "so.tilo.session", "kind": "desktop", "action": "new-strip"},
+                    "resource": {"fixed": "desktop:chrome"},
+                    "args": {"name": {"literal": "Walk strip"}}
+                  }
+                ],
+                "triggers": [{"trigger": "keyboard", "chord": "Super+Shift+F12"}],
+                "grant": [
+                  {
+                    "node": "workspace:*/app:so.tilo.session/kind:*/resource:desktop:chrome/**",
+                    "kinds": ["read", "undoable", "outside"],
+                    "answer": "allow"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {"act": ["shortcuts", "list"]}
+      ],
+      "budget_ms": 10000
+    },
+    {
+      "id": "run-it",
+      "said": "Run it: a strip named Walk strip appears",
+      "ops": [
+        {"act": ["shortcuts.shortcut:walk-strip", "run", {}]},
+        {"must": [{"rust": "Show strips, now on Walk strip", "tl": "Walk strip"}]},
+        {"state": {"workspace_tree.workspaces.0.strips#len": 2}}
+      ],
+      "budget_ms": 8000
+    },
+    {
+      "id": "press-its-chord",
+      "said": "Press its chord: the strip is made again",
+      "ops": [
+        {"chord": ["Super", "Shift", "F12"]},
+        {"state": {"workspace_tree.workspaces.0.strips#len": 3}},
+        {"act": ["shortcuts", "list"]}
+      ],
+      "budget_ms": 8000
+    },
+    {
+      "id": "remove-it",
+      "said": "Delete the shortcut: it is gone from the list",
+      "ops": [
+        {"act": ["shortcuts", "delete", {"id": "walk-strip"}]},
+        {"act": ["shortcuts", "list"]}
+      ],
+      "budget_ms": 8000
+    }
+  ]
+}

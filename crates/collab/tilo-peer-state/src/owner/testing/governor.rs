@@ -357,11 +357,8 @@ impl TestGovernor {
     }
 
     /// The candidate peer of the next commit and its generation.
-    fn next_commit(&self, now: SystemTime) -> Result<(StatePeer, u64), String> {
-        let mut candidate = self.peer.clone();
-        candidate
-            .media_mut()
-            .reconcile_media_governance(&self.governor_key, now)?;
+    fn next_commit(&self) -> Result<(StatePeer, u64), String> {
+        let candidate = self.peer.clone();
         let admitted_generation = candidate
             .admitted_workspace()
             .map(crate::durability::entries)
@@ -379,53 +376,10 @@ impl TestGovernor {
         Ok((candidate, generation))
     }
 
-    /// Let `member`'s device sign into the workspace a delegation of their own
-    /// work to `server`, letting it use none of their vault items, and publish
-    /// it with the server named as a holder of its own: what every device
-    /// reads as their work given to that server, until `expires_at_ns`.
-    pub fn delegate_work(
-        &mut self,
-        member: (&DeviceCert, &SigningKey),
-        server: (&DeviceCert, &SigningKey),
-        grants: Vec<tilo_action_policy::Grant>,
-        expires_at_ns: u64,
-    ) -> Result<(), String> {
-        let now = self.now();
-        let endpoint = iroh_base::EndpointAddr::new(
-            iroh_base::EndpointId::from_bytes(&server.0.device_public_key)
-                .map_err(|error| error.to_string())?,
-        );
-        let hint = holding_hint(server.0, server.1, self.workspace_id, endpoint);
-        let mut candidate = self.peer.clone();
-        candidate
-            .governance_mut()
-            .author_keeping_device(&hint, &self.governor_key, now)?;
-        let delegation = collab_types::work_delegation::WorkDelegation::sign(
-            member.1,
-            member.0.user_public_key,
-            server.0.device_public_key,
-            self.workspace(),
-            None,
-            grants,
-            Vec::new(),
-            (ns(now).saturating_sub(1), expires_at_ns),
-        )
-        .map_err(|error| error.to_string())?;
-        candidate
-            .workspace_mut()
-            .author_work_delegation(&delegation, member.1, now)?;
-        let previous = std::mem::replace(&mut self.peer, candidate);
-        if let Err(error) = self.refresh_checkpoint() {
-            self.peer = previous;
-            return Err(error);
-        }
-        Ok(())
-    }
-
     /// Re-sign the workspace's full checkpoint at the next generation.
     pub fn refresh_checkpoint(&mut self) -> Result<(), String> {
         let now = self.now();
-        let (mut candidate, generation) = self.next_commit(now)?;
+        let (mut candidate, generation) = self.next_commit()?;
         let messages = candidate.publication_mut().durable_bootstrap_messages(
             &self.governor_key,
             now,
@@ -458,7 +412,7 @@ impl TestGovernor {
             return self.refresh_checkpoint();
         };
         let now = self.now();
-        let (mut candidate, generation) = self.next_commit(now)?;
+        let (mut candidate, generation) = self.next_commit()?;
         let messages = candidate.publication_mut().durable_mutation_messages(
             &before,
             &self.governor_key,

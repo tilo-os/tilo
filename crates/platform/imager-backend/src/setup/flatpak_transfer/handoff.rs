@@ -526,14 +526,11 @@ fn validate_metadata_remote(remote: &Remote) -> Result<(), String> {
     Ok(())
 }
 fn kernel_read_only(root: &PinnedDirectory) -> io::Result<()> {
-    use std::os::fd::AsRawFd;
-    let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: live descriptor and full writable statvfs storage.
-    if unsafe { libc::fstatvfs(root.file.as_raw_fd(), status.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: successful syscall initialized the structure.
-    if unsafe { status.assume_init() }.f_flag & libc::ST_RDONLY == 0 {
+    let status = rustix::fs::fstatvfs(&root.file)?;
+    if !status
+        .f_flag
+        .contains(rustix::fs::StatVfsMountFlags::RDONLY)
+    {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "Flatpak source grant is not kernel read-only",

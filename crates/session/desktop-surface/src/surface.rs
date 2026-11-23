@@ -34,11 +34,11 @@ use ui::widget::{
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::{TextRenderer, Theme};
 
-use crate::navigation::{
+use crate::session::{ActivityAsk, ActivityReads, ActivityRequests};
+use tilo_session_core::desktop::navigation::{
     self, ActivityView, Admitted, Application, ChromeEffect, DesktopPan, HistoryDirection,
     HistoryState, NotificationsState, Presentation, RouteIds, ScrollState, Snapshot, Verb,
 };
-use crate::session::{ActivityAsk, ActivityReads, ActivityRequests};
 
 use paging::Sideways;
 use strip::{build_row_lazily, strip_style};
@@ -55,7 +55,6 @@ mod close_motion_tests;
 mod commands;
 mod displays;
 mod drawn;
-pub use displays::{display_rect, working_display};
 mod floating;
 mod floats;
 pub use floats::{AskedFloat, DockedCard};
@@ -77,7 +76,6 @@ pub mod peer_view;
 mod personal_ask;
 mod reveals;
 mod search;
-mod seed;
 mod shared;
 mod shown;
 pub mod slide;
@@ -106,7 +104,6 @@ pub use search::{
     TypedInsertion, TypedRefusal, host_action_key, is_escape, is_host_offer, is_search_chord,
     search_chord_keys,
 };
-pub use seed::{seed_tree, seed_tree_in};
 use tile_content::{app_name_of, build_tile, descriptor, placeholder};
 pub use tile_content::{tile_app_kind, window_name, window_title};
 pub use window_menu::Row as WindowMenuRow;
@@ -264,7 +261,10 @@ struct Shared {
     queue: Vec<Admitted>,
     /// What the Activity app was last asked to show (a view, and whose doings when one person's),
     /// until the activity model is up to offer it.
-    activity_focus: Option<(ActivityView, crate::activity::ActivityDeepLink)>,
+    activity_focus: Option<(
+        ActivityView,
+        tilo_session_core::desktop::activity::ActivityDeepLink,
+    )>,
     minter: IdMinter,
     /// Logical width the strip lays out against.
     viewport_width: f64,
@@ -784,7 +784,7 @@ impl DesktopHandle {
     /// The workspace snapshot, excluding process-local stream proxies and device presentation.
     /// Durable profile saves still use the full tree.
     pub fn shared_tree(&self) -> Layout {
-        self.read(|tree| crate::shared_tree::projection(tree.clone()))
+        self.read(|tree| tilo_session_core::desktop::shared_tree::projection(tree.clone()))
     }
 
     /// Apply workspace topology without replacing this device's stream bindings
@@ -792,7 +792,7 @@ impl DesktopHandle {
     /// removed workspaces and strips still retire their contents.
     pub fn replace_shared_tree(&self, tree: Layout, local_tabs: &[TabId]) {
         let (tree, opened) = self.read(|local| {
-            let tree = crate::shared_tree::receive(local, tree, local_tabs);
+            let tree = tilo_session_core::desktop::shared_tree::receive(local, tree, local_tabs);
             let opened = arrivals::opened_elsewhere(local, &tree, local_tabs);
             (tree, opened)
         });
@@ -954,7 +954,9 @@ fn unavailable(requests: &ActivityRequests) {
     }
     for ask in requests.take() {
         if let ActivityAsk::Act { answer, .. } = ask {
-            answer.complete(Err(crate::i18n::t("activity-served-unavailable")));
+            answer.complete(Err(tilo_session_core::desktop::i18n::t(
+                "activity-served-unavailable",
+            )));
         }
     }
     requests.serve(&mut Unkept);
@@ -1515,7 +1517,7 @@ impl DesktopSurface {
             }
             return;
         };
-        let strip_id = navigation::active_strip(tree, workspace);
+        let strip_id = tree.active_strip_for(workspace);
         if let Some(strip_id) = strip_id
             && !self.rows.contains_key(&strip_id)
             && let Some(strip) = workspace.strips.iter().find(|s| s.id == strip_id)

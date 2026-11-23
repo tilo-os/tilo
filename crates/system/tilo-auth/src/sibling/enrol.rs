@@ -1045,7 +1045,7 @@ mod tests {
     }
 
     #[test]
-    fn a_machines_configured_relay_is_the_one_its_enrolment_dials() {
+    fn a_machines_configured_relay_is_read_from_its_server_config() {
         // The server image's own file: the key beside others, its value quoted.
         let config = "# where this machine enrolls\nidentity_root = \"/var/lib/tilo\"\n\
                       iroh_listen = \"0.0.0.0:0\"\n\
@@ -1069,77 +1069,6 @@ mod tests {
         assert_eq!(
             configured_relay(file.path()).as_deref(),
             Some("https://relay.example.test.")
-        );
-        assert_eq!(
-            relays(Some("https://own.example.test."))
-                .unwrap()
-                .map(|relays| relays.urls::<Vec<_>>()),
-            Some(vec![
-                "https://own.example.test."
-                    .parse::<iroh::RelayUrl>()
-                    .unwrap()
-            ])
-        );
-        assert!(relays(Some("not a relay")).is_err());
-    }
-
-    /// A header as `cryptsetup luksDump --dump-json-metadata` prints it.
-    struct Header(serde_json::Value);
-
-    impl Runner for Header {
-        fn run(
-            &self,
-            program: &str,
-            _args: &[&std::ffi::OsStr],
-            _stdin: Option<&[u8]>,
-        ) -> Result<tilo_rollback::exec::Output> {
-            if program != "cryptsetup" {
-                bail!("no {program} here");
-            }
-            Ok(tilo_rollback::exec::Output {
-                code: 0,
-                stdout: serde_json::to_vec(&self.0)?,
-                stderr: String::new(),
-            })
-        }
-    }
-
-    #[test]
-    fn a_token_an_older_tilo_wrote_is_reported_as_set_up_again_not_described() {
-        let token = serde_json::json!({
-            "type": TOKEN_TYPE,
-            "keyslots": ["3"],
-            "tilo_version": TOKEN_VERSION - 1,
-            "cert": "",
-            "siblings": [{ "device": "cc".repeat(32), "label": "Tower" }],
-            "sealing": "cleartext",
-            "material": "e30=",
-        });
-        let header = Header(serde_json::json!({ "tokens": { "0": token } }));
-        let device = Path::new("/dev/vda3");
-        let refused = status(&header, device).expect_err("an old token has no status");
-        assert!(
-            refused.to_string().contains("set it up again"),
-            "{refused:#}"
-        );
-        let refused = replace_networks(&header, device, Vec::new())
-            .expect_err("an old token's networks are not chosen again");
-        assert!(
-            refused.to_string().contains("set it up again"),
-            "{refused:#}"
-        );
-    }
-
-    #[test]
-    fn enrollment_pins_required_tpm_before_any_slot_is_added() {
-        assert!(enrollment_sealing(Sealing::Cleartext, true).is_err());
-        assert_eq!(
-            enrollment_sealing(Sealing::Tpm2, true).unwrap(),
-            Sealing::Tpm2
-        );
-        assert_eq!(
-            enrollment_sealing(Sealing::Cleartext, false).unwrap(),
-            Sealing::Cleartext
         );
     }
 

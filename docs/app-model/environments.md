@@ -553,9 +553,9 @@ A member holds a workspace as any device does, so its action service admits the
 server's runs. A member that runs the workspace's VMs also answers its browser
 environments' opens there (`tilo_actions::remote::browser`), which the host's
 hosted-VM service starts beside the Linux VM; the server asks for them the way
-it asks for a shell command, placing `<workspace>/browser` first
-(`crates/server/tilo-server/src/placed_browsers.rs`). The first time the server
-asks about a workspace it placed on the member, the member enters it: it asks
+it asks for a shell command, as a Linux turn the member takes
+(`crates/server/tilo-server/src/linux_devices.rs`). The first time the server
+asks about a workspace the member does not hold yet, the member enters it: it asks
 the server's own `workspace.enter`, which answers an invitation naming the member's
 person, and redeems it as a device joins any workspace. The server decides
 which member may enter which workspace, never the request: a device of another

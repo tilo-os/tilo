@@ -10,12 +10,12 @@
 
 use super::SystemTime;
 use super::facades::PeerWorkspaceMut;
-use super::{BOT_SCHEDULES_KEY, DONE_KEY, HELD_COPIES_KEY, LEASES_KEY, ROOT};
+use super::{DONE_KEY, HELD_COPIES_KEY, LEASES_KEY, ROOT, SCHEDULES_KEY};
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ObjType, ReadDoc as _, ScalarValueRef, Value, ValueRef};
 
 /// The maps of device rows every workspace is founded with.
-pub(super) const FOUNDED: [&str; 4] = [LEASES_KEY, DONE_KEY, BOT_SCHEDULES_KEY, HELD_COPIES_KEY];
+pub(super) const FOUNDED: [&str; 4] = [LEASES_KEY, DONE_KEY, SCHEDULES_KEY, HELD_COPIES_KEY];
 
 /// The key of `device`'s row under `scope`.
 pub(super) fn row_key(scope: &str, device: &[u8; 32]) -> String {

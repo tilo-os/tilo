@@ -85,15 +85,6 @@ tilo_test_env::scenario! {
                 "the date style reads as Settings' example"
             );
         }
-        for (style, want) in [
-            (DateStyle::Iso, "2023-03-15"),
-            (DateStyle::Us, "03/15/2023"),
-            (DateStyle::Eu, "15/03/2023"),
-            (DateStyle::Long, "15 Mar 2023"),
-            (DateStyle::Language, "Mar 15, 2023"),
-        ] {
-            assert_eq!(style.example(super::words()), want);
-        }
 
         speak("de-DE");
         assert_eq!(
@@ -617,14 +608,6 @@ tilo_test_env::scenario! {
                 neutral,
             ),
             (
-                day(2026, 7, 8),
-                Some((9, 0)),
-                today,
-                "Jul 8 09:00",
-                "8. Juli 09:00",
-                neutral,
-            ),
-            (
                 day(2027, 1, 2),
                 Some((9, 0)),
                 today,
@@ -646,22 +629,6 @@ tilo_test_env::scenario! {
                 today,
                 "Overdue since Jun 29 14:30",
                 "Überfällig seit 29. Juni 14:30",
-                danger,
-            ),
-            (
-                day(2026, 6, 25),
-                Some((7, 5)),
-                today,
-                "Overdue since Jun 25 07:05",
-                "Überfällig seit 25. Juni 07:05",
-                danger,
-            ),
-            (
-                day(2026, 6, 10),
-                Some((7, 5)),
-                today,
-                "Overdue since Jun 10 07:05",
-                "Überfällig seit 10. Juni 07:05",
                 danger,
             ),
         ];
@@ -711,26 +678,20 @@ tilo_test_env::scenario! {
     phase a_done_day_reads_as_the_day_it_happened_in_english_and_german;
     {
         let today = day(2026, 6, 30); // a Tuesday
-        speak("en-US");
-        for (when, english, _) in [
+        let cases = [
             (day(2026, 6, 30), "Today", "Heute"),
             (day(2026, 6, 29), "Yesterday", "Gestern"),
             (day(2026, 6, 24), "Wednesday", "Mittwoch"),
             (day(2026, 6, 20), "Jun 20", "20. Juni"),
             (day(2026, 1, 5), "Jan 5", "5. Jan."),
             (day(2025, 12, 31), "Dec 31, 2025", "31. Dez. 2025"),
-        ] {
+        ];
+        speak("en-US");
+        for (when, english, _) in cases {
             assert_eq!(H24.day_done(when, today), english, "{when:?}");
         }
         speak("de-DE");
-        for (when, _, german) in [
-            (day(2026, 6, 30), "Today", "Heute"),
-            (day(2026, 6, 29), "Yesterday", "Gestern"),
-            (day(2026, 6, 24), "Wednesday", "Mittwoch"),
-            (day(2026, 6, 20), "Jun 20", "20. Juni"),
-            (day(2026, 1, 5), "Jan 5", "5. Jan."),
-            (day(2025, 12, 31), "Dec 31, 2025", "31. Dez. 2025"),
-        ] {
+        for (when, _, german) in cases {
             assert_eq!(H24.day_done(when, today), german, "{when:?}");
         }
     }

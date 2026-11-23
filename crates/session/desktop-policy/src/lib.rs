@@ -24,9 +24,10 @@ use tilo_desktop_model::{
     Display, GroupId, IdMinter, Layout, Tab, TabId, TileContent, WindowWidth, Workspace,
     WorkspaceId,
 };
-use tilo_desktop_surface::navigation::{ChromeEffect, LayoutEffect, RouteIds, active_route};
-use tilo_desktop_surface::outcome::{Closed, Outcome};
-use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
+use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
+use tilo_session_core::desktop::navigation::{ChromeEffect, LayoutEffect, RouteIds, active_route};
+use tilo_session_core::desktop::outcome::{Closed, Outcome};
+use tilo_session_core::desktop::seed_tree;
 use ui::kurbo::Rect;
 use ui::widget::TileHost;
 
@@ -287,14 +288,14 @@ impl TileSource for Windows {
             .cloned()
             .unwrap_or_else(|| app_name(&self.names, &app));
         let answer = self.answers.borrow().get(&app).cloned().unwrap_or_else(|| {
-            Closed::default().outcome(&title, tilo_desktop_surface::i18n::t("answer-reopen"))
+            Closed::default().outcome(&title, tilo_session_core::desktop::i18n::t("answer-reopen"))
         });
         let launches = Rc::clone(&self.launches);
         let held = Rc::clone(&self.held);
         let reopened = app;
         let answered_tab = tab.id;
         TileHost::new(ui::widget::TileContent::App(Box::new(
-            tilo_desktop_surface::outcome::OutcomeCard::new(&answer, move || {
+            tilo_session_core::desktop::outcome::OutcomeCard::new(&answer, move || {
                 // The answer keeps its tab: the window that comes takes it
                 // when the app is back, so the launch names no other.
                 ask_again(&held, &launches, &reopened, answered_tab);
@@ -651,7 +652,7 @@ impl DesktopPolicy {
         closed: Closed,
         tab: Option<TabId>,
     ) -> Result<(), String> {
-        let answer = closed.outcome(title, tilo_desktop_surface::i18n::t("answer-reopen"));
+        let answer = closed.outcome(title, tilo_session_core::desktop::i18n::t("answer-reopen"));
         if let Some(tab) = tab
             && self.answer_where_it_was(tab, asked, title)
         {
@@ -1696,7 +1697,7 @@ impl DesktopPolicy {
     #[must_use]
     pub fn focused_tab(&self) -> Option<u64> {
         self.handle.read(|tree| {
-            tilo_desktop_surface::navigation::active_route(tree).map(|route| route.tab)
+            tilo_session_core::desktop::navigation::active_route(tree).map(|route| route.tab)
         })
     }
 
@@ -1705,7 +1706,7 @@ impl DesktopPolicy {
     #[must_use]
     pub fn focused(&self) -> Option<u64> {
         let mut window = self.handle.read(|tree| {
-            let route = tilo_desktop_surface::navigation::active_route(tree)?;
+            let route = tilo_session_core::desktop::navigation::active_route(tree)?;
             window_of(tree, route.tab)
         })?;
         while let Some(dialog) = self.newest_dialog_of(window) {
@@ -1724,7 +1725,7 @@ impl DesktopPolicy {
             return false;
         }
         let active = self.handle.read(|tree| {
-            let route = tilo_desktop_surface::navigation::active_route(tree)?;
+            let route = tilo_session_core::desktop::navigation::active_route(tree)?;
             Some((route.tab, window_of(tree, route.tab).is_some()))
         });
         if active.is_some_and(|(_, shows_window)| shows_window) {
@@ -1958,7 +1959,9 @@ impl DesktopPolicy {
                         let id = tree.outputs.display_of(group)?;
                         tree.outputs.displays.iter().find(|d| d.id == id)
                     });
-                    let clip = display.flatten().map(tilo_desktop_surface::display_rect);
+                    let clip = display
+                        .flatten()
+                        .map(tilo_session_core::desktop::display_rect);
                     Some((window_of(tree, tab)?, rect, clip))
                 })
                 .collect()
@@ -1982,7 +1985,7 @@ impl DesktopPolicy {
             .collect();
         let display = self
             .working_display()
-            .map_or(Rect::ZERO, tilo_desktop_surface::display_rect);
+            .map_or(Rect::ZERO, tilo_session_core::desktop::display_rect);
         let mut floating = Vec::new();
         for &dialog in self.floating.keys() {
             // Up to the window the dialog (or the dialog it is a dialog of)
@@ -2028,7 +2031,7 @@ impl DesktopPolicy {
         let views: Vec<Rect> = self
             .displays
             .iter()
-            .map(tilo_desktop_surface::display_rect)
+            .map(tilo_session_core::desktop::display_rect)
             .collect();
         placement
             .shown
@@ -2257,7 +2260,7 @@ fn route_of(tree: &Layout, tab: TabId) -> Option<RouteIds> {
 /// workspace in front.
 fn anchor_for(tree: &Layout, app: &str) -> Option<(TabId, GroupId, usize)> {
     let workspace = tree.active_workspace()?;
-    let focused = tilo_desktop_surface::navigation::active_route(tree).map(|ids| ids.tab);
+    let focused = tilo_session_core::desktop::navigation::active_route(tree).map(|ids| ids.tab);
     let tabs: Vec<(TabId, GroupId, usize)> = workspace
         .strips
         .iter()

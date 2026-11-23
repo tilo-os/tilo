@@ -39,7 +39,7 @@ impl Called {
     }
 }
 
-impl<P: ActionProvider + Sync> Tree<P> {
+impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
     /// Call `target` with `argument` under `invocation`, at `revision` when the caller read it
     /// at one, and follow it for `wait` (none: [`SETTLE_WAIT`]).
     ///
@@ -85,7 +85,7 @@ impl<P: ActionProvider + Sync> Tree<P> {
             return Err(Unresolved::Asked(error.clone()));
         }
         let state = if receipt.status.is_terminal() {
-            self.provider().observe(self.caller(), &receipt.invocation)
+            self.observed(&receipt.invocation).await
         } else {
             self.settled(&receipt.invocation, wait.unwrap_or(SETTLE_WAIT))
                 .await
@@ -111,7 +111,7 @@ impl<P: ActionProvider + Sync> Tree<P> {
         let until = self.pause().now().saturating_add(wait);
         loop {
             let change = self.provider().next_change(self.caller(), invocation);
-            let state = self.provider().observe(self.caller(), invocation);
+            let state = self.observed(invocation).await;
             let now = self.pause().now();
             if state.as_ref().is_none_or(InvocationState::is_terminal) || now >= until {
                 return state;

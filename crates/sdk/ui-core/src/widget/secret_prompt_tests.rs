@@ -67,10 +67,6 @@ tilo_test_env::scenario! {
             Some(FieldRole::Secret),
             "a known user name leaves only the secret to type"
         );
-    }
-
-    phase enter_answers_with_the_secret_and_escape_cancels;
-    {
         let mut prompt = focused(SecretKind::Secret);
         typed(&mut prompt, "hunter22");
         assert!(
@@ -92,18 +88,10 @@ tilo_test_env::scenario! {
                 .is_some_and(|field| field.value().is_empty()),
             "cancelling wipes what was typed"
         );
-    }
-
-    phase enter_with_nothing_typed_answers_nothing;
-    {
         let mut prompt = focused(SecretKind::Secret);
         dispatch(&mut prompt, &named_key(NamedKey::Enter));
         assert!(prompt.take_outcome().is_none());
         assert!(!prompt.can_submit());
-    }
-
-    phase enter_in_the_user_name_moves_on_to_the_secret;
-    {
         let mut prompt = focused(SecretKind::UsernameAndSecret);
         typed(&mut prompt, "quinn");
         dispatch(&mut prompt, &named_key(NamedKey::Enter));
@@ -132,10 +120,6 @@ tilo_test_env::scenario! {
             .modifiers(ModifiersState::SHIFT)
             .send(&mut prompt, &named_key(NamedKey::Tab));
         assert_eq!(prompt.focused_field(), Some(FieldRole::Secret));
-    }
-
-    phase a_dialog_body_leaves_enter_and_escape_to_its_dialog;
-    {
         let mut dialog = SecretPrompt::new(SecretKind::Secret)
             .with_title("Unlock the setup")
             .with_primary_label("Unlock")
@@ -224,13 +208,6 @@ tilo_test_env::scenario! {
             "the next keystroke replaces the wrong text"
         );
         assert_eq!(prompt.error(), None, "typing makes the old error moot");
-    }
-
-    phase a_field_being_checked_keeps_its_face_and_says_it_is_busy;
-    // While the answer is checked the field reads as checking, not as
-    // unavailable: it keeps its face, its line says so in the informational
-    // tone, and a screen reader hears it busy and not editable.
-    {
         let mut prompt = focused(SecretKind::Secret);
         typed(&mut prompt, "secret");
         dispatch(&mut prompt, &named_key(NamedKey::Enter));
@@ -297,10 +274,6 @@ tilo_test_env::scenario! {
             field.children.first().map(|c| c.role),
             Some(Role::ToggleButton)
         );
-    }
-
-    phase caps_lock_is_noticed_while_typing_a_secret;
-    {
         let mut prompt = focused(SecretKind::Secret);
         typed(&mut prompt, "A");
         assert!(prompt.caps_lock_on());
@@ -310,10 +283,6 @@ tilo_test_env::scenario! {
         );
         typed(&mut prompt, "a");
         assert!(!prompt.caps_lock_on());
-    }
-
-    phase every_secret_is_zeroized_and_never_printed;
-    {
         fn zeroized_on_drop<T: zeroize::ZeroizeOnDrop>() {}
         zeroized_on_drop::<Zeroizing<String>>();
 
@@ -329,10 +298,6 @@ tilo_test_env::scenario! {
             prompt.fields().all(|(_, field)| field.value().is_empty()),
             "wiping empties every field"
         );
-    }
-
-    phase a_screen_reader_hears_the_title_the_labels_and_the_error;
-    {
         let mut prompt = focused(SecretKind::Secret).with_label(FieldRole::Secret, "Wi-Fi password");
         let node = prompt.access_node();
         assert_eq!(node.role, Role::Dialog);
@@ -407,10 +372,6 @@ tilo_test_env::scenario! {
             crate::ime::InputPurpose::Pin,
             "and offers digits"
         );
-    }
-
-    phase a_short_pin_is_refused_in_place;
-    {
         let mut prompt = focused(SecretKind::SimPin {
             attempts_left: Some(3),
         });
@@ -433,10 +394,6 @@ tilo_test_env::scenario! {
         typed(&mut prompt, "34");
         dispatch(&mut prompt, &named_key(NamedKey::Enter));
         assert_eq!(submitted(&mut prompt).secret.as_str(), "1234");
-    }
-
-    phase a_puk_asks_for_a_new_pin_twice_and_refuses_a_mismatch;
-    {
         let mut prompt = focused(SecretKind::SimPuk {
             attempts_left: Some(10),
         });
@@ -536,10 +493,6 @@ tilo_test_env::scenario! {
             !prompt.shows_keypad(),
             "a physical key puts the keypad away"
         );
-    }
-
-    phase a_pin_prompt_raised_while_touch_is_in_use_opens_with_its_keypad;
-    {
         let phone = Rect::new(0.0, 0.0, 390.0, 844.0);
         let mut prompt = focused(SecretKind::SimPin {
             attempts_left: Some(3),
@@ -563,10 +516,6 @@ tilo_test_env::scenario! {
             },
         );
         assert!(!prompt.shows_keypad());
-    }
-
-    phase a_sheet_stays_above_the_on_screen_keyboard;
-    {
         let phone = Rect::new(0.0, 0.0, 390.0, 844.0);
         let mut prompt = focused(SecretKind::Secret);
         prompt.set_keyboard_inset(320.0);
@@ -611,10 +560,6 @@ tilo_test_env::scenario! {
                 .is_some_and(|(_, field)| field.is_focused()),
             "the refused field takes the keyboard"
         );
-    }
-
-    phase choices_and_the_option_are_answered_with_the_secret;
-    {
         let mut prompt = focused(SecretKind::Secret)
             .with_choices("Authenticate as", vec!["quinn".into(), "root".into()], 0)
             .with_option("Remember on this device", true);
@@ -657,10 +602,6 @@ tilo_test_env::scenario! {
         );
         prompt.wipe();
         assert!(buffer.lock().expect("buffer").is_empty());
-    }
-
-    phase a_prompt_of_several_fields_built_afresh_keeps_each_in_its_buffer;
-    {
         let buffers = vec![
             Arc::new(Mutex::new(String::new())),
             Arc::new(Mutex::new(String::new())),
@@ -691,10 +632,6 @@ tilo_test_env::scenario! {
                 .iter()
                 .all(|buffer| buffer.lock().expect("buffer").is_empty())
         );
-    }
-
-    phase a_prompt_built_afresh_shows_the_hosts_error_busy_line_and_caps_lock;
-    {
         let prompt = focused(SecretKind::Secret).with_error(Some("Wrong password".into()));
         assert_eq!(prompt.error(), Some("Wrong password"));
         assert_eq!(

@@ -115,23 +115,11 @@ fn upgrade(_doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
     )))
 }
 
-impl Environment {
-    /// What the record holds, read as any app's record through
-    /// [`fields`](tilo_resource::read::fields): a caller with no window open
-    /// reads the whole record, or one named item as its own type reads it.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
 #[resource(
     kind = "environment",
     version = 4,
     migrate = upgrade,
-    read_content = Environment::read_document
+    read_content = tilo_resource::read::fields
 )]
 impl Environment {
     /// Add tool.

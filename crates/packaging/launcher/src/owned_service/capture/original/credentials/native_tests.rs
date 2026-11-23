@@ -609,7 +609,7 @@ fn actual_private_home_final_observation_restores_root_before_sealing_mounted_re
         assert_eq!(metadata.uid(), 0, "receipt must not inherit caller fsuid");
         assert_eq!(
             unsafe { libc::fcntl(receipt.as_raw_fd(), libc::F_GET_SEALS) },
-            original::SEALS
+            crate::fd::SEALS
         );
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut receipt, &mut bytes).unwrap();

@@ -1,0 +1,58 @@
+{
+  "app": "capabilities-unused-agent",
+  "said": "Agent chat: an agent answers in Chat, and a turn can be stopped",
+  "live": "tl",
+  "apps": "",
+  "tl": {
+    "id": "so.tilo.chat",
+    "package": "chat"
+  },
+  "steps": [
+    {
+      "id": "signed-in",
+      "said": "Sign in: no model provider is configured yet",
+      "ops": [
+        {"theme": false},
+        {"serve": {"model-providers": true}},
+        {"act": ["models", "list"]},
+        {"targets": true}
+      ],
+      "dark": true
+    },
+    {
+      "id": "configure-a-provider",
+      "said": "Add the loopback provider, keep its key and choose its model",
+      "ops": [
+        {
+          "act": {
+            "do": [
+              "models",
+              "add-provider",
+              {
+                "name": "Fake",
+                "protocol": "open-ai-compatible",
+                "endpoint": {"served": "openai-api"}
+              }
+            ],
+            "as": "provider"
+          }
+        },
+        {"act": ["models", "set-key", {"provider": {"served": "provider.id"}, "key": "sk-fake"}]},
+        {"act": ["models", "add-model", {"provider": {"served": "provider.id"}, "model": "fake-model"}]},
+        {"act": ["models", "set-default", {"provider": {"served": "provider.id"}, "model": "fake-model"}]},
+        {"act": ["models", "list"]}
+      ],
+      "budget_ms": 20000
+    },
+    {
+      "id": "open-chat",
+      "said": "Open Chat",
+      "ops": [
+        {"launch": true},
+        {"wait_for": "window"},
+        {"actions": "agent"},
+        {"targets": true}
+      ]
+    }
+  ]
+}

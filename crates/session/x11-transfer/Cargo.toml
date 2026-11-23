@@ -17,7 +17,7 @@ x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

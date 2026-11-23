@@ -1,0 +1,288 @@
+{
+  "app": "calendar",
+  "said": "Calendar",
+  "family": "apps",
+  "live": "rust",
+  "rust": {
+    "id": "so.tilo.calendar",
+    "native": "calendar"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Calendar on the month it is today, with today picked out",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    },
+    {
+      "id": "today",
+      "said": "Today is one of the days drawn, and the calendar comes back to it",
+      "ops": [
+        {
+          "must": [
+            [
+              "Go to today",
+              "Today"
+            ],
+            {
+              "prefix": "Open "
+            }
+          ]
+        },
+        {
+          "press_any": [
+            "Go to today",
+            "Today"
+          ]
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "week",
+      "said": "Switch the calendar to the week",
+      "ops": [
+        {
+          "press_any": [
+            "Week view",
+            "Week"
+          ]
+        },
+        {
+          "must": [
+            "Previous week",
+            {
+              "prefix": "Open "
+            }
+          ]
+        },
+        {
+          "must_not": [
+            "Previous month"
+          ]
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "day",
+      "said": "Switch the calendar to the day",
+      "ops": [
+        {
+          "press_any": [
+            "Day view",
+            "Day"
+          ]
+        },
+        {
+          "must": [
+            "Previous day"
+          ]
+        },
+        {
+          "must_not": [
+            "Previous week"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "month",
+      "said": "Switch the calendar back to the month",
+      "ops": [
+        {
+          "press_any": [
+            "Month view",
+            "Month"
+          ]
+        },
+        {
+          "must": [
+            "Previous month",
+            {
+              "prefix": "Open "
+            }
+          ]
+        },
+        {
+          "must_not": [
+            "Previous day"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "new-event",
+      "said": "Add an event for today and give it a name",
+      "ops": [
+        {
+          "press": "New event"
+        },
+        {
+          "wait_for": {
+            "shown": "Edit event title"
+          }
+        },
+        {
+          "click": "Edit event title"
+        },
+        {
+          "type": "Dentist"
+        },
+        {
+          "press": "Done"
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "prefix": "Open event Dentist"
+            }
+          }
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "it-shows",
+      "said": "The event is drawn on today, and the calendar keeps it",
+      "ops": [
+        {
+          "must": [
+            {
+              "prefix": "Open event Dentist"
+            }
+          ]
+        },
+        {
+          "read": {
+            "app": "so.tilo.calendar",
+            "operation": "read",
+            "is": {
+              "events#len": 1
+            },
+            "contains": "Dentist"
+          }
+        }
+      ]
+    },
+    {
+      "id": "edit",
+      "said": "Open the event, rename it, and the new name is the one drawn",
+      "ops": [
+        {
+          "press": {
+            "prefix": "Open event Dentist"
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Edit event title"
+          }
+        },
+        {
+          "click": "Edit event title"
+        },
+        {
+          "key": "End"
+        },
+        {
+          "key": "Backspace"
+        },
+        {
+          "key": "Backspace"
+        },
+        {
+          "key": "Backspace"
+        },
+        {
+          "key": "Backspace"
+        },
+        {
+          "key": "Backspace"
+        },
+        {
+          "key": "Backspace"
+        },
+        {
+          "key": "Backspace"
+        },
+        {
+          "type": "Dentist appointment"
+        },
+        {
+          "press": "Done"
+        },
+        {
+          "read": {
+            "app": "so.tilo.calendar",
+            "operation": "read",
+            "is": {
+              "events#len": 1
+            },
+            "contains": "Dentist appointment"
+          }
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "prefix": "Open event Dentist appointment"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "delete",
+      "said": "Delete the event, and it is gone from the calendar",
+      "ops": [
+        {
+          "press": {
+            "prefix": "Open event Dentist appointment"
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Delete event"
+          }
+        },
+        {
+          "press": "Delete event"
+        },
+        {
+          "must_not": [
+            {
+              "prefix": "Open event Dentist"
+            }
+          ]
+        },
+        {
+          "read": {
+            "app": "so.tilo.calendar",
+            "operation": "read",
+            "is": {
+              "events#len": 0
+            }
+          }
+        }
+      ],
+      "dark": true
+    }
+  ]
+}

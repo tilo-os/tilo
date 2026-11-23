@@ -13,6 +13,8 @@
 //! speaks; the host carries them ([`Field`]). Nothing here touches a socket,
 //! so the same editor serves the app wherever the shell runs.
 
+use std::fmt;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Lease {
     pub incarnation: [u8; 16],
@@ -23,7 +25,10 @@ pub struct Lease {
     pub focus: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Request from the app to the shell's line editor.
+///
+/// `Debug` omits replacement text so prompt contents cannot reach a log.
+#[derive(Clone, PartialEq, Eq)]
 pub enum Request {
     Inspect,
     /// Put `text` in place of the lease's selection.
@@ -47,6 +52,39 @@ pub enum Request {
     Revoke,
 }
 
+impl fmt::Debug for Request {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Inspect => f.write_str("Inspect"),
+            Self::Replace {
+                lease,
+                transaction,
+                text: _,
+            } => f
+                .debug_struct("Replace")
+                .field("lease", lease)
+                .field("transaction", transaction)
+                .finish_non_exhaustive(),
+            Self::Undo { lease, transaction } => f
+                .debug_struct("Undo")
+                .field("lease", lease)
+                .field("transaction", transaction)
+                .finish(),
+            Self::Redo { lease, transaction } => f
+                .debug_struct("Redo")
+                .field("lease", lease)
+                .field("transaction", transaction)
+                .finish(),
+            Self::Query { lease, transaction } => f
+                .debug_struct("Query")
+                .field("lease", lease)
+                .field("transaction", transaction)
+                .finish(),
+            Self::Revoke => f.write_str("Revoke"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Unavailable,
@@ -60,8 +98,10 @@ pub enum Status {
     Revoked,
 }
 
-/// field as it is now.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Field as it is now.
+///
+/// `Debug` omits the line text so prompt contents cannot reach a log.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Reply {
     pub request: u64,
     pub status: Status,
@@ -70,6 +110,19 @@ pub struct Reply {
     pub can_undo: bool,
     pub can_redo: bool,
     pub text: String,
+}
+
+impl fmt::Debug for Reply {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Reply")
+            .field("request", &self.request)
+            .field("status", &self.status)
+            .field("lease", &self.lease)
+            .field("transaction", &self.transaction)
+            .field("can_undo", &self.can_undo)
+            .field("can_redo", &self.can_redo)
+            .finish_non_exhaustive()
+    }
 }
 
 pub const LEASE_NS: u64 = 120_000_000_000;
@@ -89,4 +142,53 @@ pub trait Field: Send + Sync {
     fn take(&self) -> Option<(u64, Request)>;
 
     fn reply(&self, reply: &Reply);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_lease() -> Lease {
+        Lease {
+            incarnation: [1; 16],
+            generation: 2,
+            revision: 3,
+            expires_ns: 4,
+            anchor: 0,
+            focus: 5,
+        }
+    }
+
+    #[test]
+    fn debug_never_prints_prompt_text() {
+        let secret = "super-secret-prompt-text";
+        let request = Request::Replace {
+            lease: sample_lease(),
+            transaction: 7,
+            text: secret.into(),
+        };
+        let reply = Reply {
+            request: 9,
+            status: Status::Ready,
+            lease: Some(sample_lease()),
+            transaction: 7,
+            can_undo: true,
+            can_redo: false,
+            text: secret.into(),
+        };
+
+        for formatted in [
+            format!("{request:?}"),
+            format!("{request:#?}"),
+            format!("{reply:?}"),
+            format!("{reply:#?}"),
+        ] {
+            assert!(
+                !formatted.contains(secret),
+                "Debug leaked prompt text: {formatted}"
+            );
+        }
+        assert!(format!("{request:?}").contains("Replace"));
+        assert!(format!("{reply:?}").contains("Ready"));
+    }
 }

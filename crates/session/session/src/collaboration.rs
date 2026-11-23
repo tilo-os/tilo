@@ -4,8 +4,8 @@
 
 use crate::sync::layout::live_record_as;
 use collab_types::presence::{ShellPresence, ShellWindow};
-use tilo_desktop_surface::navigation;
 use tilo_live::presence::{Point, Tile, anchor};
+use tilo_session_core::desktop::navigation;
 
 use crate::Session;
 
@@ -133,9 +133,7 @@ impl Session {
         let area = self.shared.handle.shown_strip().map(|(_, area, _)| area);
         let (place, focused) = self.shared.handle.read(|tree| {
             (
-                tree.active_workspace()
-                    .and_then(|workspace| navigation::active_strip(tree, workspace))
-                    .map(|strip| strip.0.to_string()),
+                tree.active_strip_id().map(|strip| strip.0.to_string()),
                 navigation::active_route(tree).map(|route| route.tab),
             )
         });

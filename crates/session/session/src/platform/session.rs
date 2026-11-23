@@ -42,7 +42,6 @@ pub use crate::notifications::RESOURCE as NOTIFICATIONS_RESOURCE;
 use crate::options::start_collaboration;
 pub use crate::options::{AppSocket, Machine, Options, no_session_actions};
 pub use crate::platform::keys::{KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE};
-use crate::platform::records::{Held, Source};
 pub use crate::records::Records;
 pub use crate::rotation::Accelerometer;
 pub use crate::run::{Backend, Reach};
@@ -365,7 +364,7 @@ impl Session {
         // The person's layout: the shell this session holds, whose layout the workspaces keep.
         let layout = Rc::new(RefCell::new(layout::Layout::new(
             &options.person,
-            handle.clone(),
+            handle.tree(),
             Rc::new(crate::layout::Steps::new(
                 Rc::clone(&desktops),
                 handle.clone(),
@@ -647,6 +646,7 @@ impl Session {
             overlays: overlays.clone(),
             notices: notices.clone(),
             overview: overview.open_flag(),
+            handle: handle.clone(),
         };
         // The same handle, for the pass that keeps one surface up at a time.
         let one_surface = surfaces.clone();
@@ -943,6 +943,20 @@ impl Session {
             options.wake.handle(),
             &options.person,
         ));
+        // What tells an ask of a workspace this session is founding from one it holds: the ask
+        // waits for the founding and is delivered then.
+        if let Some(engine) = &engine {
+            session_services.keep_engine(std::sync::Arc::clone(engine));
+        }
+        // Until the first pass says whether the person has workspaces of their own, an ask of the
+        // workspace the shell started with waits: that workspace is founded the moment it is known
+        // to be theirs, and taken off the shell otherwise. A session with no identity founds none.
+        if let Some(seed) = seed
+            && personal.is_some()
+            && engine.is_some()
+        {
+            session_services.keep_founding(std::collections::BTreeSet::from([seed.to_string()]));
+        }
         let task_programs = Some(std::sync::Arc::new(
             crate::task_programs::TaskPrograms::new(std::sync::Arc::new(
                 crate::task_programs_host::TaskProgramHost::new(std::sync::Arc::clone(
@@ -1117,6 +1131,7 @@ impl Session {
             Rc::clone(&capture_io),
             capture_notes,
             &live_activities,
+            tilo_capture_studio::Studio::new(),
         );
 
         // The desktop's own chords win over every app's: the portal's
@@ -1195,19 +1210,14 @@ impl Session {
         // The shortcuts the person saved and the triggers that start them
         // without anyone invoking them: armed on the shell this device shows,
         // and started on the broker below. A run executes here, on a runtime
-        // of its own, and what a person saves through the action API is one
-        // of its workspace's settings, written into the workspace's records
-        // and shown on the shell on the loop's next pass.
+        // of its own; the shortcuts themselves are saved and run by the
+        // device's own broker.
         let automation_runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .thread_name("tilo-automation")
             .enable_all()
             .build()
             .map_err(crate::Error::host)?;
-        let shortcut_library = crate::app_wire::ShortcutLibrary::new(
-            automation_runtime.handle().clone(),
-            engine.as_ref().map(std::sync::Arc::clone),
-        );
         // What each of this device's workspaces revokes, read from the
         // workspaces the engine holds: the broker's decisions and the
         // automation's arming both refuse a device its workspace revoked.
@@ -1223,7 +1233,6 @@ impl Session {
             &options,
             &live_activities,
             &handle,
-            std::sync::Arc::new(shortcut_library),
             &activity,
             crate::services::app_wire::Knitted {
                 agents: Some(agents.roster()),
@@ -1382,24 +1391,18 @@ impl Session {
             server
         });
         let automation = crate::automation::Automation::new(
-            options.state.as_deref(),
-            options.wake.handle(),
             handle.clone(),
             options.person.clone(),
             crate::automation::Feeds {
-                // What the workspaces hold, whose changes a shortcut can answer.
-                held: engine.as_ref().map(|_| {
-                    let held = Held::over(document_reads.clone(), changes.clone());
-                    (Arc::new(held) as Source, changes.clone())
-                }),
-                // Which of the person's devices this one is, and which of
-                // them are online: each schedule runs on one of them.
-                fabric: sync.as_ref().and_then(|sync| sync.fabric()),
-                // The apps this session starts, the person's focus modes, and
-                // what its workspaces revoke: each is a trigger a shortcut can answer.
+                // The apps this session starts, the person's focus modes, and what its
+                // workspaces revoke: each is a trigger a shortcut can answer.
                 launches: std::sync::Arc::clone(&options.launches),
                 policy: std::sync::Arc::clone(&notification_policy),
                 revocations,
+                workspaces: (
+                    workspace_service.clone(),
+                    automation_runtime.handle().clone(),
+                ),
             },
         );
 
@@ -1472,6 +1475,17 @@ impl Session {
         services
             .borrow_mut()
             .add(Box::new(crate::send_to::SendToService::new(sends.clone())));
+        // The workspaces' contact directory: one record every member reads and changes, its
+        // actions the ones Contacts publishes, answered here for a tilolang view, an agent and
+        // a script whether or not Contacts is open.
+        services
+            .borrow_mut()
+            .add(Box::new(crate::contacts::Contacts::new(
+                records.clone(),
+                handle.clone(),
+                &options.person,
+                options.wake.handle(),
+            )));
         // The shell's own records reach the API as any app's do the moment its package runs.
         if let Some(shell) = &shell {
             shell.share_records(&services, &session_services);
@@ -1653,6 +1667,8 @@ impl Session {
             controls: Rc::clone(&controls_reading),
             waiting: RefCell::default(),
             readings,
+            osd: Rc::default(),
+            tilolang_shell: options.shell,
             services,
             sends,
             table,
@@ -1691,6 +1707,8 @@ impl Session {
             file_picker,
             lock,
             keyboard,
+            nearby: nearby.as_ref().map(std::sync::Arc::clone),
+            air_drop_consent: crate::nearby_airdrop::Consent::default(),
             owner_session: crate::owner_session::SessionFollow::default(),
             display_confirm,
             notices: notices.clone(),
@@ -1772,6 +1790,16 @@ impl Session {
             .add(Box::new(crate::time::Served::new(Rc::clone(
                 &shared.activities,
             ))));
+        // What the hardware keys last said, read by the tilolang shell's readout.
+        shared
+            .services
+            .borrow_mut()
+            .add(Box::new(crate::osd::Served::new(Rc::clone(&shared.osd))));
+        // The tilolang shell draws the banners itself, so the session ages them here: one goes a
+        // few seconds after it arrived, as a banner stack takes it away.
+        if options.shell {
+            shared.notifications.borrow().set_shell_banners();
+        }
         // The session's own diagnostics: the profiler and the heap trim, which
         // the device admin and a person's own scripts read and drive through
         // the same API as the desktop's other actions.

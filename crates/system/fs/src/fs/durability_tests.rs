@@ -219,81 +219,79 @@ async fn unacceptable_or_uncommitted_bytes_survive_as_copies_and_across_crashes(
 }
 
 /// A commit can land while the staged copy of its bytes survives: recovery must then drop
-/// them, not copy them beside their own file.
+/// them, not copy them beside their own file. A file copied in is new — there is no base to
+/// compare against — and that first commit behaves the same way.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_commit_that_landed_despite_a_reported_failure_is_not_copied_beside_itself() {
-    let fixture = Fixture::new();
-    let ino = {
-        let fs = fixture.mount(true);
-        let (ino, fh) = create_open(&fs, "accounts.db");
-        fs.write_buffer(ino, 0, b"before").unwrap();
-        assert_eq!(fs.release_handle(ino, fh), Ok(()));
-        let fh = open_handle(&fs, ino, true);
-        fs.write_buffer(ino, 0, b"after!").unwrap();
-        // A sync stages; the close would commit. This one never closes, as a stop leaves it.
-        assert_eq!(fs.fsync_inode(ino), Ok(()));
-        let _ = fh;
-        ino
-    };
-    assert_eq!(
-        fixture.staged().len(),
-        1,
-        "the synced bytes were staged for the next commit"
-    );
     {
-        // The version reached the file after all, and the staged entry outlived it: what a
-        // cancellation between the commit and its cleanup leaves behind.
+        let fixture = Fixture::new();
+        let ino = {
+            let fs = fixture.mount(true);
+            let (ino, fh) = create_open(&fs, "accounts.db");
+            fs.write_buffer(ino, 0, b"before").unwrap();
+            assert_eq!(fs.release_handle(ino, fh), Ok(()));
+            let fh = open_handle(&fs, ino, true);
+            fs.write_buffer(ino, 0, b"after!").unwrap();
+            // A sync stages; the close would commit. This one never closes, as a stop leaves it.
+            assert_eq!(fs.fsync_inode(ino), Ok(()));
+            let _ = fh;
+            ino
+        };
+        assert_eq!(
+            fixture.staged().len(),
+            1,
+            "the synced bytes were staged for the next commit"
+        );
+        {
+            // The version reached the file after all, and the staged entry outlived it: what a
+            // cancellation between the commit and its cleanup leaves behind.
+            let fs = fixture.mount(true);
+            fs.commit_content(ino, b"after!").unwrap();
+        }
         let fs = fixture.mount(true);
-        fs.commit_content(ino, b"after!").unwrap();
+        assert_eq!(fs.recover_unsaved_writes(), 0, "nothing needed restoring");
+        assert_eq!(committed_bytes(&fs, ino).await, b"after!");
+        let copy_name = unsaved_copy_name(b"accounts.db", b"after!");
+        assert!(
+            fs.ns()
+                .lookup(crate::namespace::ROOT_INO, &copy_name)
+                .is_none(),
+            "the file already held those bytes, so no copy sits beside it"
+        );
+        assert!(fixture.staged().is_empty(), "the staged entry is gone");
     }
-    let fs = fixture.mount(true);
-    assert_eq!(fs.recover_unsaved_writes(), 0, "nothing needed restoring");
-    assert_eq!(committed_bytes(&fs, ino).await, b"after!");
-    let copy_name = unsaved_copy_name(b"accounts.db", b"after!");
-    assert!(
-        fs.ns()
-            .lookup(crate::namespace::ROOT_INO, &copy_name)
-            .is_none(),
-        "the file already held those bytes, so no copy sits beside it"
-    );
-    assert!(fixture.staged().is_empty(), "the staged entry is gone");
-}
-
-/// A file copied in is new: the bytes were staged while it held nothing, so there is no base
-/// to compare against. If the first commit lands while the staged copy survives a stop,
-/// recovery must drop it rather than keep a half-saved copy beside the photo.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_new_files_first_commit_that_landed_is_not_copied_beside_itself() {
-    let fixture = Fixture::new();
-    let ino = {
-        let fs = fixture.mount(true);
-        let (ino, fh) = create_open(&fs, "photo.jpg");
-        fs.write_buffer(ino, 0, b"the photo's bytes").unwrap();
-        assert_eq!(fs.fsync_inode(ino), Ok(()), "a sync stages the bytes");
-        let _ = fh;
-        ino
-    };
-    assert_eq!(fixture.staged().len(), 1);
     {
-        // The first commit reached the file after the sync, and the staged entry outlived it.
+        let fixture = Fixture::new();
+        let ino = {
+            let fs = fixture.mount(true);
+            let (ino, fh) = create_open(&fs, "photo.jpg");
+            fs.write_buffer(ino, 0, b"the photo's bytes").unwrap();
+            assert_eq!(fs.fsync_inode(ino), Ok(()), "a sync stages the bytes");
+            let _ = fh;
+            ino
+        };
+        assert_eq!(fixture.staged().len(), 1);
+        {
+            // The first commit reached the file after the sync, and the staged entry outlived it.
+            let fs = fixture.mount(true);
+            fs.commit_content(ino, b"the photo's bytes").unwrap();
+        }
         let fs = fixture.mount(true);
-        fs.commit_content(ino, b"the photo's bytes").unwrap();
+        assert_eq!(
+            fs.recover_unsaved_writes(),
+            0,
+            "the file already held those bytes"
+        );
+        assert_eq!(committed_bytes(&fs, ino).await, b"the photo's bytes");
+        let copy_name = unsaved_copy_name(b"photo.jpg", b"the photo's bytes");
+        assert!(
+            fs.ns()
+                .lookup(crate::namespace::ROOT_INO, &copy_name)
+                .is_none(),
+            "no copy sits beside the file that already holds them"
+        );
+        assert!(fixture.staged().is_empty(), "the staged entry is gone");
     }
-    let fs = fixture.mount(true);
-    assert_eq!(
-        fs.recover_unsaved_writes(),
-        0,
-        "the file already held those bytes"
-    );
-    assert_eq!(committed_bytes(&fs, ino).await, b"the photo's bytes");
-    let copy_name = unsaved_copy_name(b"photo.jpg", b"the photo's bytes");
-    assert!(
-        fs.ns()
-            .lookup(crate::namespace::ROOT_INO, &copy_name)
-            .is_none(),
-        "no copy sits beside the file that already holds them"
-    );
-    assert!(fixture.staged().is_empty(), "the staged entry is gone");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

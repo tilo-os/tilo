@@ -13,8 +13,9 @@ pub(crate) fn made(name: Option<&str>, held: &[Workspace]) -> String {
     // A workspace nobody named is held under the word the shell gives it, so a workspace asking for
     // that word is numbered beside it rather than as its twin.
     let taken = |candidate: &str| {
-        held.iter()
-            .any(|workspace| tilo_desktop_surface::names::workspace(&workspace.name) == candidate)
+        held.iter().any(|workspace| {
+            tilo_session_core::desktop::names::workspace(&workspace.name) == candidate
+        })
     };
     if !taken(&wanted) {
         return wanted;
@@ -33,7 +34,7 @@ pub(crate) fn made(name: Option<&str>, held: &[Workspace]) -> String {
 
 /// The name of a workspace the shell numbers itself: the next one after those `held` here.
 fn numbered(held: &[Workspace]) -> String {
-    tilo_desktop_surface::i18n::t_args(
+    tilo_session_core::desktop::i18n::t_args(
         "browser-new-workspace-name",
         &[("number", held.len().saturating_add(1).into())],
     )

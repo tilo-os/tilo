@@ -716,11 +716,11 @@ mod tests {
     tilo_test_env::scenario! {
         fn what_the_registry_reconciles;
 
-        phase a_personal_cluster_is_the_cluster_of_the_identity_it_derives_from;
-        // A personal cluster is the cluster of the identity its id derives
+        phase a_persons_workspace_is_the_workspace_of_the_identity_it_derives_from;
+        // The person's own workspace is the workspace of the identity its id derives
         // from, whatever else this login holds.
         {
-            let dir = temp_dir("personal-cluster");
+            let dir = temp_dir("own-workspace");
             write_record(&dir.join("alice.json"), &record("Alice", 51));
             write_record(&dir.join("bob.json"), &record("Bob", 52));
             let store = IdentityRegistryStore::at(&dir);
@@ -733,17 +733,17 @@ mod tests {
                     .expect(name)
             };
             let alice = person("Alice");
-            let workspace = collab_types::personal_cluster(&alice.user_public_key).to_string();
+            let workspace = collab_types::person_workspace(&alice.user_public_key).to_string();
             let resolving = registry
                 .for_workspace(&workspace, None)
-                .expect("Alice's cluster");
+                .expect("Alice's own workspace");
             assert_eq!(
                 resolving.display_name, "Alice",
-                "the personal cluster maps to the identity it derives from"
+                "the own workspace maps to the identity it derives from"
             );
             // A workspace no identity derives is answered by the identity this
             // login marked active.
-            let other = collab_types::personal_cluster(&[0x5a; 32]).to_string();
+            let other = collab_types::person_workspace(&[0x5a; 32]).to_string();
             let resolving = registry
                 .for_workspace(&other, None)
                 .expect("the active identity");

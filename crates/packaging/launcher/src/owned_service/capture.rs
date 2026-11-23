@@ -3,14 +3,36 @@ use super::{QuiescentExit, ServiceAuthority, ServiceCancellation, ServiceLaunch,
 use crate::run::LaunchError;
 use std::{
     fs::File,
-    io::{self, Seek, Write},
+    io,
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
-        unix::fs::{MetadataExt, PermissionsExt},
+        unix::fs::MetadataExt,
     },
     path::{Path, PathBuf},
     sync::Arc,
 };
+
+/// The device and inode identity of a held output directory, refusing anything but a directory.
+pub(in crate::owned_service) fn directory_identity(file: &File) -> io::Result<(u64, u64)> {
+    let facts = file.metadata()?;
+    if !facts.is_dir() {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    Ok((facts.dev(), facts.ino()))
+}
+
+/// The writable capacity of the filesystem behind a held output directory, refusing a read-only
+/// mount or an overflowing size.
+pub(in crate::owned_service) fn writable_capacity(file: &File) -> io::Result<u64> {
+    let facts = rustix::fs::fstatvfs(file)?;
+    if facts.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY) || facts.f_frsize == 0 {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    facts
+        .f_bavail
+        .checked_mul(facts.f_frsize)
+        .ok_or_else(|| io::ErrorKind::PermissionDenied.into())
+}
 
 mod archive;
 pub(in crate::owned_service) mod inventory_scratch;
@@ -622,24 +644,7 @@ fn contains(ancestor: &File, child: &File) -> io::Result<bool> {
 }
 fn sealed_shim(bytes: &[u8]) -> io::Result<File> {
     // Executable bytes are immutable even if the admitted runtime file is later replaced.
-    let raw = unsafe {
-        libc::memfd_create(
-            c"tilo-capture-launcher".as_ptr(),
-            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-        )
-    };
-    if raw < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let mut file = unsafe { File::from_raw_fd(raw) };
-    file.write_all(bytes)?;
-    file.rewind()?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o500))?;
-    let seals = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
-    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, seals) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(file)
+    crate::fd::sealed_memfd_mode(c"tilo-capture-launcher", bytes, Some(0o500))
 }
 fn snapshot(value: &std::fs::Metadata) -> (u64, u64, u64, i64, i64, i64, i64) {
     (
@@ -787,7 +792,10 @@ pub(crate) fn splice_output(argv: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{io::Read, os::unix::process::CommandExt};
+    use std::{
+        io::{Read, Write},
+        os::unix::process::CommandExt,
+    };
     use tilo_test_env::SpawnUnderEnvLock as _;
 
     fn signed_capture_runtime(root: &Path) -> (PathBuf, runtime_bundle::Identity) {

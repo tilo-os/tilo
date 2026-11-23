@@ -729,6 +729,16 @@ impl Shared {
                 }
             });
         let arguments = osd.arguments(display.as_deref());
+        // The tilolang shell draws the readout from its own resource, so it is published beside
+        // the native readout: a press shows on whichever shell this session runs.
+        self.osd
+            .borrow_mut()
+            .show(crate::osd::Readout::of(osd, display.as_deref()));
+        // The native readout is not drawn beside the tilolang one: the shell in tilolang draws
+        // the readout it reads.
+        if self.tilolang_shell {
+            return;
+        }
         let address = ActionAddress::new(OSD_RESOURCE, "show");
         if let Err(error) = self.published.invoke(
             &address,

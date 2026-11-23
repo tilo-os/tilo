@@ -346,45 +346,9 @@ impl BotRunner {
         connectors: BTreeMap<String, Arc<ConnectorProcess>>,
         state_file: PathBuf,
     ) -> Result<Self, String> {
-        let mut shortcut = bot.shortcut()?;
+        let shortcut = bot.shortcut()?;
         let catalogue = AppCatalogue::native();
-        let mut tilolang = BTreeMap::new();
-        for trigger in &mut shortcut.triggers {
-            let TriggerSpec::ResourceChanged { kind, .. } = trigger else {
-                continue;
-            };
-            let Some((app, _)) = tl_records::tilolang_kind(kind) else {
-                continue;
-            };
-            // The trigger keeps naming the actions their program names, as the events it is
-            // matched against do ([`name_tilolang_action`]): a change records the declaration's
-            // id, which history keeps across a rename, and the event carries the published name.
-            let packages =
-                tl_records::built_in(app)?.ok_or_else(|| tl_records::runs_elsewhere(app))?;
-            tilolang.insert(app.to_owned(), packages);
-        }
-        let mut apps: BTreeSet<String> = shortcut
-            .triggers
-            .iter()
-            .filter_map(|trigger| match trigger {
-                TriggerSpec::ResourceChanged { kind, .. } => {
-                    catalogue.app_for_kind(kind).map(str::to_owned)
-                }
-                _ => None,
-            })
-            .collect();
-        apps.extend(connectors.keys().cloned());
-        let mut elsewhere = BTreeSet::new();
-        for app in tilo_automation::requirements::requirements(&shortcut).apps {
-            if catalogue.get(&app).is_some() {
-                apps.insert(app);
-            } else if let Some(packages) = tl_records::built_in(&app)? {
-                tilolang.insert(app, packages);
-            } else {
-                elsewhere.insert(app);
-            }
-        }
-        apps.extend(tilolang.keys().cloned());
+        let (apps, tilolang, elsewhere) = apps_of(&shortcut, &catalogue, &connectors)?;
         let installer = hex::encode(host.user_public_key);
         let access = bot_access(
             &workspace,
@@ -644,6 +608,46 @@ impl BotRunner {
         }
     }
 
+    /// The events of `app`'s record `record` (held as `doc`) after the heads `since`.
+    async fn events_of(
+        &self,
+        app: &str,
+        record: &str,
+        doc: AutoCommit,
+        since: &[String],
+    ) -> Result<Vec<(tilo_automation::dispatch::DocumentEvent, Vec<String>)>, String> {
+        let Some(packages) = self.tilolang.get(app) else {
+            // A part is of its own resource (a chat's messages), as its record names it.
+            let mut doc = doc;
+            let kind = collaboration::resource::identity(&doc)
+                .map(|checkout| checkout.kind.as_str().to_owned())
+                .or_else(|| {
+                    self.catalogue
+                        .get(app)
+                        .map(|definition| definition.resource_type.as_str().to_owned())
+                })
+                .unwrap_or_default();
+            return Ok(tilo_agent_session::bot::events_since(
+                &self.workspace,
+                record,
+                &kind,
+                doc.document(),
+                since,
+            ));
+        };
+        // A tilolang record is a document of the workspace's resource store: its events are the
+        // versions the store reads of its changes, through the app's package.
+        let (workspace, record, since) =
+            (self.workspace.clone(), record.to_owned(), since.to_vec());
+        let viewer = tl_records::runtime::Actor::App(app.into());
+        self.workspaces
+            .with_tl_record(&self.workspace, packages, viewer, move |opened| {
+                let mut doc = doc;
+                Ok(opened.events_since(&workspace, &record, doc.document(), &since))
+            })
+            .await
+    }
+
     /// The firings caused by every record change and connector event after
     /// the cursors, which move past them, and by every fire time of a
     /// trigger on the clock that has come.
@@ -708,40 +712,7 @@ impl BotRunner {
                     continue;
                 }
             };
-            let events = match self.tilolang.get(&app) {
-                // A tilolang record is a document of the workspace's resource store: its events
-                // are the versions the store reads of its changes, through the app's package.
-                Some(packages) => {
-                    let (workspace, record, since) =
-                        (self.workspace.clone(), record.clone(), since.clone());
-                    let viewer = tl_records::runtime::Actor::App(app.as_str().into());
-                    self.workspaces
-                        .with_tl_record(&self.workspace, packages, viewer, move |opened| {
-                            let mut doc = doc;
-                            Ok(opened.events_since(&workspace, &record, doc.document(), &since))
-                        })
-                        .await?
-                }
-                // A part is of its own resource (a chat's messages), as its record names it.
-                None => {
-                    let kind = collaboration::resource::identity(&doc)
-                        .map(|checkout| checkout.kind.as_str().to_owned())
-                        .or_else(|| {
-                            self.catalogue
-                                .get(&app)
-                                .map(|definition| definition.resource_type.as_str().to_owned())
-                        })
-                        .unwrap_or_default();
-                    tilo_agent_session::bot::events_since(
-                        &self.workspace,
-                        &record,
-                        &kind,
-                        doc.document(),
-                        &since,
-                    )
-                }
-            };
-            for (event, _) in events {
+            for (event, _) in Box::pin(self.events_of(&app, &record, doc, &since)).await? {
                 firings.extend(
                     tilo_automation::dispatch::dispatch(&armed, Event::Record(&event)).firings,
                 );
@@ -825,7 +796,7 @@ impl BotRunner {
             }
             let answered = state
                 .workspace()
-                .bot_schedule_answered(&installation, index, &mark);
+                .schedule_answered(&installation, index, &mark);
             let step = plan(timed, answered, now_ms, &zone);
             let answered_ms = match step {
                 SchedulePlan::Waiting { answered_ms } => answered_ms,
@@ -923,7 +894,7 @@ impl BotRunner {
         if let Err(error) = self
             .workspaces
             .author_own_workspace_state(workspace, host, |peer| {
-                peer.workspace_mut().answer_bot_schedule(
+                peer.workspace_mut().answer_schedule(
                     host,
                     &installation,
                     trigger,
@@ -971,24 +942,12 @@ impl BotRunner {
         Ok(inputs)
     }
 
-    /// Run `firing` through the bot's API and publish what it changed.
-    async fn fire(&self, firing: &Firing) -> Result<Fired, String> {
-        for app in &self.elsewhere {
-            if self
-                .workspaces
-                .installed_package(&self.workspace, app)
-                .await
-                .is_some()
-            {
-                return Err(tl_records::runs_elsewhere(app));
-            }
-        }
-        // The replicas are brought up to the workspace's records first, so the
-        // run reads what members did up to now: each app's own records,
-        // then the parts of the chains they keep beside them. A record the
-        // bot cannot hold is left out of the run (and said), not every run
-        // with it. A tilolang app's record is read through its package from the workspace's
-        // store, which each of its steps writes as it runs.
+    /// Bring the replicas up to the workspace's records, so a run reads what members did up to
+    /// now: each app's own records, then the parts of the chains they keep beside them. A record
+    /// the bot cannot hold is left out of the run (and said), not every run with it. A tilolang
+    /// app's record is read through its package from the workspace's store, which each of its
+    /// steps writes as it runs; those records are answered, to tell what the run's steps wrote.
+    async fn hold_records(&self) -> Result<Vec<(String, tl_records::Record)>, String> {
         let access = std::sync::Arc::new(self.access.clone());
         let mut records = Vec::with_capacity(self.tilolang.len());
         for (app, packages) in &self.tilolang {
@@ -1027,6 +986,22 @@ impl BotRunner {
                 }
             }
         }
+        Ok(records)
+    }
+
+    /// Run `firing` through the bot's API and publish what it changed.
+    async fn fire(&self, firing: &Firing) -> Result<Fired, String> {
+        for app in &self.elsewhere {
+            if self
+                .workspaces
+                .installed_package(&self.workspace, app)
+                .await
+                .is_some()
+            {
+                return Err(tl_records::runs_elsewhere(app));
+            }
+        }
+        let records = self.hold_records().await?;
         let mut inputs = self.host_inputs().await?;
         inputs.extend(firing.inputs.clone());
         let caller = Caller::bot(
@@ -1312,6 +1287,64 @@ fn read_progress(path: &Path) -> Result<Progress, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Progress::default()),
         Err(error) => Err(format!("{}: {error}", path.display())),
     }
+}
+
+/// What [`apps_of`] answers: the native apps, the tilolang apps with their packages, and the
+/// apps that run elsewhere.
+type AppsOf = (
+    BTreeSet<String>,
+    BTreeMap<String, Packages>,
+    BTreeSet<String>,
+);
+
+/// The apps a bot with `shortcut` reads: the native apps its triggers, connectors and steps
+/// name; the tilolang apps among them, with the packages this server runs them by; and the
+/// apps it needs that run elsewhere.
+///
+/// # Errors
+/// A trigger names a tilolang app this server does not run, or a package would not load.
+fn apps_of(
+    shortcut: &Shortcut,
+    catalogue: &AppCatalogue,
+    connectors: &BTreeMap<String, Arc<ConnectorProcess>>,
+) -> Result<AppsOf, String> {
+    let mut tilolang = BTreeMap::new();
+    for trigger in &shortcut.triggers {
+        let TriggerSpec::ResourceChanged { kind, .. } = trigger else {
+            continue;
+        };
+        let Some((app, _)) = tl_records::tilolang_kind(kind) else {
+            continue;
+        };
+        // The trigger keeps naming the actions their program names, as the events it is
+        // matched against do ([`name_tilolang_action`]): a change records the declaration's
+        // id, which history keeps across a rename, and the event carries the published name.
+        let packages = tl_records::built_in(app)?.ok_or_else(|| tl_records::runs_elsewhere(app))?;
+        tilolang.insert(app.to_owned(), packages);
+    }
+    let mut apps: BTreeSet<String> = shortcut
+        .triggers
+        .iter()
+        .filter_map(|trigger| match trigger {
+            TriggerSpec::ResourceChanged { kind, .. } => {
+                catalogue.app_for_kind(kind).map(str::to_owned)
+            }
+            _ => None,
+        })
+        .collect();
+    apps.extend(connectors.keys().cloned());
+    let mut elsewhere = BTreeSet::new();
+    for app in tilo_automation::requirements::requirements(shortcut).apps {
+        if catalogue.get(&app).is_some() {
+            apps.insert(app);
+        } else if let Some(packages) = tl_records::built_in(&app)? {
+            tilolang.insert(app, packages);
+        } else {
+            elsewhere.insert(app);
+        }
+    }
+    apps.extend(tilolang.keys().cloned());
+    Ok((apps, tilolang, elsewhere))
 }
 
 /// What installation `installation` may do: what its installer, the

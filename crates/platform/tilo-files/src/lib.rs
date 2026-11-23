@@ -40,6 +40,7 @@ pub mod web;
 
 pub use caps::{Availability, Feature, Unsupported, availability, available};
 pub use error::FsError;
+pub use native::bounded::read_from;
 pub use native::lock::LockMode;
 pub use tilo_paths::{InvalidVPath, Location, VPath, VirtualRoot};
 pub use watch::{Change, ChangeKind, Next, Watch};

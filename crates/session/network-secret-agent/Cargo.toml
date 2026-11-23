@@ -39,8 +39,8 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
-tilo-copy-lint = { path = "../../dev/copy-lint" }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-copy-lint = { path = "../../../tools/copy-lint" }
+tilo-test-env = { path = "../../../tools/test-env" }
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "time"] }
 tracing-subscriber.workspace = true
 zbus = { workspace = true, features = ["p2p", "tokio"] }

@@ -151,7 +151,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_still_matching_selected_row_keeps_its_place;
+    phase a_still_matching_selected_row_keeps_its_place_and_the_first_pickable_one_starts_selected;
     {
         let source = people();
         let shown = rows(&source, "m");
@@ -166,10 +166,7 @@ tilo_test_env::scenario! {
         assert_eq!(next[1].key(), Some("milan"), "Milan stays second");
         let (_, selected) = keep_place(rows(&source, "jo"), Some(("milan", 1)));
         assert_eq!(selected, Some(0));
-    }
 
-    phase the_first_pickable_row_starts_selected;
-    {
         let (rows, selected) = keep_place(rows(&people(), ""), None);
         assert_eq!(selected, Some(1), "after the header");
         assert!(rows[1].is_pickable());

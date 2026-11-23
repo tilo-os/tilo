@@ -54,7 +54,7 @@ impl SmsRuntime {
     /// Call on the broker worker while holding the host's modem/SIM grant lease.
     pub async fn send(
         &mut self,
-        accounts: &accounts::person::PersonAccounts,
+        accounts: &accounts::person::AccountList,
         binding: &LiveBinding,
         route: &Route,
         operation: &str,
@@ -137,7 +137,7 @@ impl SmsRuntime {
     /// sends, stores, deletes nor acknowledges a modem object.
     pub async fn read_received(
         &self,
-        accounts: &accounts::person::PersonAccounts,
+        accounts: &accounts::person::AccountList,
         binding: &LiveBinding,
         route: &Route,
         object: &str,

@@ -2345,3 +2345,192 @@ async fn one_endpoint_holds_few_places_however_many_sessions_it_opens() {
         .await
         .expect("the device told busy is admitted when it asks again");
 }
+
+/// The workspace removes one member of a call and its media stops end to end: the relay cuts its
+/// session, it can publish nothing more and the remaining device hears nothing more of it, while
+/// its own session stays open and keeps publishing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removed_members_media_stops_end_to_end_and_the_other_session_carries_on() {
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint) =
+        (endpoint().await, endpoint().await, endpoint().await);
+    let (a_key, b_key) = (*a_endpoint.id().as_bytes(), *b_endpoint.id().as_bytes());
+    let (a_cert, b_cert) = (authority.admit_device(a_key), authority.admit_device(b_key));
+    let roster = authority.roster();
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let keys = keys();
+    let a = LiveSession::join(
+        Arc::new(native::Iroh::new(a_endpoint, addr(&relay_endpoint))),
+        &grant_for(&a_cert),
+        join(a_key, roster.clone(), keys.clone()),
+    )
+    .await
+    .unwrap();
+    let b = LiveSession::join(
+        Arc::new(native::Iroh::new(b_endpoint, addr(&relay_endpoint))),
+        &grant_for(&b_cert),
+        join(b_key, roster, keys),
+    )
+    .await
+    .unwrap();
+    wait_until("both sessions admitted", || relay.counters().accepted == 2);
+
+    // Media flows both ways before the workspace changes.
+    for sequence in 1..=5_u32 {
+        a.publish(Track::Audio, sequence, &voice(sequence, &[1; 8]))
+            .unwrap();
+        b.publish(Track::Audio, sequence, &voice(sequence, &[2; 8]))
+            .unwrap();
+    }
+    a.publish(Track::Presence, 1, b"member=a").unwrap();
+    b.publish(Track::Presence, 1, b"member=b").unwrap();
+    let (mut a_heard, mut b_heard) = (0, 0);
+    wait_until("each member's media reaches the other", || {
+        a_heard += heard(&a, Track::Audio)
+            .into_iter()
+            .filter(|object| object.sender == b_key)
+            .count();
+        b_heard += heard(&b, Track::Audio)
+            .into_iter()
+            .filter(|object| object.sender == a_key)
+            .count();
+        a_heard >= 5 && b_heard >= 5
+    });
+    wait_until("the other member's presence is heard", || {
+        a.presence_from()
+            .get(&b_key)
+            .is_some_and(|(said, _)| *said > 0)
+    });
+
+    // The workspace removes B. The relay cuts its session, A is told its broadcast ended, and both
+    // sides can carry nothing more of it.
+    authority.remove(b_key);
+    wait_until("the relay cuts the removed member's session", || {
+        relay.counters().expired >= 1
+    });
+    wait_until(
+        "the removed member's broadcast ends at the other device",
+        || {
+            a.presence_from()
+                .get(&b_key)
+                .is_some_and(|(_, left)| *left > 0)
+        },
+    );
+    wait_until("the removed member's session ends", || b.ended());
+    // Everything of it that was on its way before the cut has arrived (all five objects did), so
+    // from here on nothing of it can be heard or sent.
+    assert!(
+        !heard(&a, Track::Audio)
+            .into_iter()
+            .any(|object| object.sender == b_key && object.sequence > 5),
+        "the removed member's media arrived after its removal"
+    );
+    assert_eq!(
+        b.publish(Track::Audio, 6, &voice(6, &[3; 8])),
+        Err(LiveError::Ended),
+        "the removed member's session is over"
+    );
+
+    // The remaining device is untouched: its session stays open and it keeps publishing.
+    assert!(
+        !a.ended(),
+        "the other member's session closed with the removal"
+    );
+    assert_eq!(
+        a.publish(Track::Presence, 2, b"still=here"),
+        Ok(()),
+        "the remaining member keeps publishing"
+    );
+}
+
+/// A silent voice stream costs the relay a fraction of a speaking one: Opus DTX sends a
+/// comfort-noise update every 400 ms while nobody speaks, where speech is one object every 20 ms,
+/// and the relay forwards what the publisher sends once and adds nothing on a clean hop. A second
+/// of silence is therefore a small multiple less than a second of speech, by objects and by bytes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_silent_voice_stream_costs_the_relay_a_fraction_of_a_speaking_one() {
+    // One second of each, as the encoder sends them: fifty 20 ms speech frames, and the three
+    // comfort-noise updates DTX keeps the receiver's noise floor with.
+    const SPEECH_OBJECTS: usize = 50;
+    const SPEECH_BYTES: usize = 80;
+    const SILENCE_OBJECTS: usize = 3;
+    const SILENCE_BYTES: usize = 40;
+
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint) =
+        (endpoint().await, endpoint().await, endpoint().await);
+    let (a_key, b_key) = (*a_endpoint.id().as_bytes(), *b_endpoint.id().as_bytes());
+    let (a_cert, b_cert) = (authority.admit_device(a_key), authority.admit_device(b_key));
+    let roster = authority.roster();
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let keys = keys();
+    let a = LiveSession::join(
+        Arc::new(native::Iroh::new(a_endpoint, addr(&relay_endpoint))),
+        &grant_for(&a_cert),
+        join(a_key, roster.clone(), keys.clone()),
+    )
+    .await
+    .unwrap();
+    let b = LiveSession::join(
+        Arc::new(native::Iroh::new(b_endpoint, addr(&relay_endpoint))),
+        &grant_for(&b_cert),
+        join(b_key, roster, keys),
+    )
+    .await
+    .unwrap();
+    wait_until("both sessions admitted", || relay.counters().accepted == 2);
+
+    // Each object is waited for before the next, so what arrives is exactly what was sent: a burst
+    // on a loaded machine cannot hide a drop or pass one off as two.
+    let mut sequence = 1_u32;
+    let mut speaking = Vec::new();
+    for _ in 0..SPEECH_OBJECTS {
+        let before = speaking.len();
+        a.publish(Track::Audio, sequence, &voice(sequence, &[7; SPEECH_BYTES]))
+            .unwrap();
+        sequence = sequence.saturating_add(1);
+        wait_until("a speech frame reaches the other device", || {
+            speaking.extend(
+                heard(&b, Track::Audio)
+                    .into_iter()
+                    .filter(|object| object.sender == a_key),
+            );
+            speaking.len() > before
+        });
+    }
+    let mut silent = Vec::new();
+    for _ in 0..SILENCE_OBJECTS {
+        let before = silent.len();
+        a.publish(
+            Track::Audio,
+            sequence,
+            &voice(sequence, &[0; SILENCE_BYTES]),
+        )
+        .unwrap();
+        sequence = sequence.saturating_add(1);
+        wait_until("a comfort-noise update reaches the other device", || {
+            silent.extend(
+                heard(&b, Track::Audio)
+                    .into_iter()
+                    .filter(|object| object.sender == a_key),
+            );
+            silent.len() > before
+        });
+    }
+
+    let bytes =
+        |objects: &[Heard]| -> usize { objects.iter().map(|object| object.body.len()).sum() };
+    assert_eq!(
+        (speaking.len(), silent.len()),
+        (SPEECH_OBJECTS, SILENCE_OBJECTS),
+        "the relay forwarded each object once"
+    );
+    assert!(
+        bytes(&silent).saturating_mul(10) < bytes(&speaking),
+        "silence cost {} bytes against speech's {}",
+        bytes(&silent),
+        bytes(&speaking)
+    );
+}

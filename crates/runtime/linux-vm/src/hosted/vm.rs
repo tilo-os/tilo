@@ -40,13 +40,7 @@ pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 #[must_use]
 pub fn system_clock() -> Clock {
-    Arc::new(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| {
-                u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-            })
-    })
+    Arc::new(tilo_clock::unix_now_ms)
 }
 
 #[derive(Debug, Error)]
@@ -1235,5 +1229,14 @@ mod tests {
         assert!(rw.is_empty());
         assert!(ro.contains(&PathBuf::from("/srv/tilo/ws1/files")));
         assert_eq!(program.last().map(String::as_str), Some("--read-only"));
+    }
+
+    #[test]
+    fn system_clock_reads_the_shared_wall_clock() {
+        let clock = system_clock();
+        assert_eq!(
+            tilo_clock::with_wall_ms(1_700_000_000_789, || clock()),
+            1_700_000_000_789
+        );
     }
 }

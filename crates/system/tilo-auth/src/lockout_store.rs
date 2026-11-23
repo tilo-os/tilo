@@ -271,47 +271,6 @@ mod tests {
                     .is_none()
             );
         }
-
-        phase without_the_file_a_new_key_is_wrapped_from_an_existing_one;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let legacy = dir.path().join("lockout-auth");
-            std::fs::write(&legacy, b"secret-auth").unwrap();
-            let store = LockoutStore::new(dir.path().join("lockout.json"), &legacy);
-            let key = UserKey::generate().unwrap();
-            let admin = Opener::User {
-                uid: 1000,
-                key: &key,
-            };
-            store.adopt(&admin, None).unwrap();
-            std::fs::remove_file(&legacy).unwrap();
-
-            let recovery_key = RecoveryKey::from_bytes([6; 32]);
-            let recovery = Opener::Recovery(&recovery_key);
-            assert_eq!(store.adopt(&recovery, None).unwrap(), Adopted::Nothing);
-            assert_eq!(
-                store.adopt(&recovery, Some(&admin)).unwrap(),
-                Adopted::Complete
-            );
-            assert_eq!(
-                store.open(&recovery).unwrap().unwrap().as_slice(),
-                b"secret-auth"
-            );
-        }
-
-        phase a_machine_without_the_file_has_nothing_to_adopt;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let store = LockoutStore::new(dir.path().join("lockout.json"), dir.path().join("none"));
-            let key = UserKey::generate().unwrap();
-            assert_eq!(
-                store
-                    .adopt(&Opener::User { uid: 1, key: &key }, None)
-                    .unwrap(),
-                Adopted::Nothing
-            );
-            assert!(!dir.path().join("lockout.json").exists());
-        }
     }
 
     /// The lockout file this build writes: the authorisation wrapped for the

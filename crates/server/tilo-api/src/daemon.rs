@@ -1,4 +1,4 @@
-//! Where this computer's one daemon (`tilo-runtime --hold`) listens, the lock that keeps it one,
+//! Where this computer's one daemon (`tilo-runtime`) listens, the lock that keeps it one,
 //! and what the daemon and the commands that reach it say to each other about it: the claim a
 //! daemon starting makes on the device, and how it asks the one there to step down.
 //!
@@ -184,7 +184,7 @@ impl DaemonPlace {
         }
     }
 
-    /// Start this device's daemon (`tilo-runtime --hold`) as a process of its own, in a process
+    /// Start this device's daemon (`tilo-runtime`) as a process of its own, in a process
     /// group of its own so the command that started it ending does not end it, adding what it
     /// says to its log.
     ///
@@ -199,7 +199,6 @@ impl DaemonPlace {
             .append(true)
             .open(&self.log)?;
         std::process::Command::new(runtime_program()?)
-            .arg("--hold")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(log)

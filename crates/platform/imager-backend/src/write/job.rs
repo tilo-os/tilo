@@ -8,14 +8,14 @@ use super::{
     helper::{HelperPhase, HelperProgress, ReviewedSource, progress_fraction},
     prepare_target, revalidate_target, stream_copy_bound, verify_readback_bound,
 };
-use crate::media_model::SourceIdentity;
+use crate::imager_model::SourceIdentity;
 #[cfg(target_os = "linux")]
 use std::fs::OpenOptions;
 use std::{io, path::Path};
 
 pub struct SystemWriteRequest {
     pub source: ReviewedSource,
-    pub target: crate::media_model::TargetDrive,
+    pub target: crate::imager_model::TargetDrive,
     pub expected_sha256: Option<String>,
     pub installable: bool,
     pub provision_migration_data: bool,
@@ -95,7 +95,7 @@ pub fn run_job_paths_bound(
 
 #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
 pub fn run_udisks_job(
-    target: &crate::media_model::TargetDrive,
+    target: &crate::imager_model::TargetDrive,
     setup: &impl WriteSetup,
     should_cancel: &impl Fn() -> bool,
     mut on_progress: impl FnMut(HelperProgress),

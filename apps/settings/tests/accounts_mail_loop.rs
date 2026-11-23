@@ -17,7 +17,7 @@ impl settings::account_probe::AccountTester for AcceptAccount {
 }
 
 type Window = ui::framework::testing::TestApp<settings::SettingsShell>;
-type Accounts = ui::framework::WorkspaceResource<accounts::person::PersonAccounts>;
+type Accounts = ui::framework::WorkspaceResource<accounts::person::AccountList>;
 
 /// `person`'s Settings window in the test workspace, the workspace's
 /// accounts record it keeps, and the accounts root over it at `tilo_root`.
@@ -27,7 +27,7 @@ fn member(
 ) -> Result<(Window, Accounts, AccountRoot), String> {
     let mut window = Window::for_person(person).map_err(|error| error.to_string())?;
     let record = window
-        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+        .shared_workspace::<accounts::person::AccountList>(accounts::person::ACCOUNTS_OWNER)
         .ok_or("Settings keeps the workspace's accounts")?;
     let root = AccountRoot::at(tilo_root).with_person(record.clone());
     Ok((window, record, root))
@@ -60,13 +60,13 @@ fn an_email_account_added_by_one_member_is_listed_for_another() {
     assert!(!pane.form_open(), "a successful save closes the form");
 
     let email = accounts::AccountTypeId::from("email");
-    assert_eq!(ada_accounts.get().store().list(&email).len(), 1);
+    assert_eq!(ada_accounts.get().of_type(email.as_str()).len(), 1);
     assert!(bo_root.store().is_empty(), "not delivered yet");
     ada.deliver_resource_to(&mut bo, ada_accounts.id())
         .expect("the other member holds the workspace's accounts");
 
-    let shared = bo_accounts.get().store();
-    let listed = shared.list(&email);
+    let shared = bo_accounts.get();
+    let listed = shared.of_type(email.as_str());
     assert_eq!(listed.len(), 1, "exactly the account Ada added");
     let config = listed[0]
         .config_as::<serde_json::Value>()
@@ -110,12 +110,12 @@ impl settings::account_probe::AccountTester for Checked {
 
 /// The one email account the workspace's accounts keep, as it is stored.
 fn stored_mail_config(accounts: &Accounts) -> serde_json::Value {
-    let shared = accounts.get().store();
-    let listed = shared.list(&accounts::AccountTypeId::from("email"));
+    let shared = accounts.get();
+    let listed = shared.of_type(accounts::AccountTypeId::from("email").as_str());
     assert_eq!(listed.len(), 1, "exactly the account Settings added");
     listed
         .first()
-        .and_then(|account| account.config_as::<serde_json::Value>())
+        .and_then(accounts::Account::config_as::<serde_json::Value>)
         .unwrap_or_default()
 }
 
@@ -148,7 +148,7 @@ fn a_mail_account_keeps_the_servers_its_person_wrote() {
         pane.form_error_for_test()
     );
     assert!(checked.0.lock().unwrap().is_empty());
-    assert!(record.get().store().is_empty());
+    assert!(record.get().is_empty());
 
     pane.set_form_mail_servers_for_test("mail.example.org:143", "mail.example.org:587");
     pane.submit_form_for_test();

@@ -535,6 +535,7 @@ impl PersonModels {
                         _ => Protocol::OpenAiCompatible,
                     },
                     endpoint: self.form_endpoint.get(),
+                    headers: Vec::new(),
                 };
                 self.ask(Asked::Linked, person_models::ADD_PROVIDER, &adding)
             }

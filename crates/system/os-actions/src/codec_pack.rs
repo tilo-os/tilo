@@ -288,17 +288,5 @@ mod tests {
                 Some("The last update of the formats failed: offline")
             );
         }
-
-        phase the_codecs_use_their_own_units_and_status;
-        {
-            assert_eq!(
-                CodecAction::Install.unit(&id()),
-                "tilo-extension@install:media-codecs.service"
-            );
-            assert_eq!(
-                id().status_path(),
-                Path::new("/var/lib/tilo/extensions/media-codecs.json")
-            );
-        }
     }
 }

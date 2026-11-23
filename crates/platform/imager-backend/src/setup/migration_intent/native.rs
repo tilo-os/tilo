@@ -4,7 +4,7 @@
 use crate::setup::{
     destination_security,
     flatpak_transfer::{HandoffInventory, InstalledRef, NativeRunner},
-    migration::{OwnedTemporary, PinnedDirectory},
+    migration::{OwnedTemporary, PinnedDirectory, PublishMode},
     migration_durability,
     migration_handoff::{Categories, Plan},
     migration_store::NativePath,
@@ -13,7 +13,7 @@ use crate::setup::{
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, OpenOptions};
 use std::{
-    io::{self, Read, Write},
+    io::{self, Read},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -112,6 +112,7 @@ impl MigrationIntent {
             .ok_or_else(|| error("Missing selected computer applications"))?;
         let inventory = apps
             .for_media()?
+            .0
             .flatpak_inventory
             .ok_or_else(|| error("Missing selected application inventory"))?;
         let inventory =
@@ -302,17 +303,8 @@ impl MigrationIntent {
         if bytes.len() as u64 > MAX {
             return Err(error("Migration intent exceeds its metadata bound"));
         }
-        let mut temporary = OwnedTemporary::create(&directory_pin, std::ffi::OsStr::new(FILE))?;
-        temporary.file.write_all(&bytes)?;
-        migration_durability::sync_file(&temporary.file)?;
-        temporary.validate()?;
-        cap_primitives::fs::hard_link(
-            &directory_pin.file,
-            Path::new(&temporary.name),
-            &directory_pin.file,
-            Path::new(FILE),
-        )?;
-        migration_durability::sync_directory(&directory_pin.file)?;
+        OwnedTemporary::create(&directory_pin, std::ffi::OsStr::new(FILE))?
+            .publish(&bytes, PublishMode::IfAbsent)?;
         directory_pin.validate_destination()?;
         let intent = Self {
             directory: directory.to_path_buf(),

@@ -1,0 +1,87 @@
+{
+  "app": "people",
+  "said": "Who is here",
+  "family": "shell",
+  "live": "rust",
+  "apps": "file-explorer chat settings terminal",
+  "rust": {},
+  "tl": {
+    "session_args": [
+      "--shell",
+      "screen"
+    ]
+  },
+  "steps": [
+    {
+      "id": "signed-in",
+      "said": "Sign in: the desktop is there, nothing open, nothing over it",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "state": {
+            "chrome.session_locked": false,
+            "chrome.overlays.search": false,
+            "chrome.overlays.overview": false,
+            "chrome.overlays.strips": false,
+            "chrome.overlays.quick-settings": false,
+            "chrome.overlays.centre": false
+          }
+        },
+        {
+          "windows": 0
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "people",
+      "said": "Show who is here: my own row is there",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "desktop:chrome",
+            "toggle-people"
+          ]
+        },
+        {
+          "must": [
+            "people-panel",
+            "Keep on screen"
+          ]
+        }
+      ],
+      "dark": true,
+      "budget_ms": 10000
+    },
+    {
+      "id": "invite",
+      "said": "Invite people: the invitation is offered",
+      "ops": [
+        {
+          "key": "Escape"
+        },
+        {
+          "do": [
+            "so.tilo.session",
+            "session:invite",
+            "show-invite"
+          ]
+        },
+        {
+          "must": [
+            "Create link",
+            "They join as",
+            "Editor",
+            "Viewer",
+            "Administrator"
+          ]
+        }
+      ],
+      "dark": true,
+      "budget_ms": 10000
+    }
+  ]
+}

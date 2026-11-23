@@ -15,6 +15,7 @@ pub const PENDING_TYPE: &str = "email-pending";
 const MAX_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_PREFERENCES: usize = 4096;
 const MAX_ACCOUNTS: usize = 128;
+const MAX_IDENTITIES: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Transport {
@@ -51,6 +52,14 @@ pub enum ServerKind {
     Other,
 }
 
+/// One name and address a Thunderbird account sends as, from the account's
+/// identities in `prefs.js`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Identity {
+    pub name: String,
+    pub email: String,
+}
+
 /// One configured account and the profile directories that belong to it.
 /// `directory` and `directory_rel` are source metadata: callers keep them out
 /// of public receipts and resolve them only inside an already granted root.
@@ -60,6 +69,9 @@ pub struct AccountMetadata {
     pub source_identity: Option<String>,
     pub email: Option<String>,
     pub display_name: String,
+    /// Every identity the account sends as, in the order `prefs.js` names them.
+    #[serde(default)]
+    pub identities: Vec<Identity>,
     pub server_kind: ServerKind,
     pub server_key: String,
     pub hostname: Option<String>,
@@ -510,13 +522,14 @@ fn profile_metadata(prefs: &Preferences) -> Result<ProfileMetadata, DiscoveryErr
             };
             reference(&server)?;
             let kind = server_kind(prefs, &server);
-            let identities =
+            let listed =
                 string(prefs, &format!("mail.account.{account}.identities")).unwrap_or_default();
-            let identity = identities
+            let identity = listed
                 .split(',')
                 .map(str::trim)
                 .find(|value| !value.is_empty() && reference(value).is_ok())
                 .map(str::to_owned);
+            let identities = sending_identities(prefs, &listed);
             let email = identity
                 .as_ref()
                 .and_then(|identity| string(prefs, &format!("mail.identity.{identity}.useremail")));
@@ -546,6 +559,7 @@ fn profile_metadata(prefs: &Preferences) -> Result<ProfileMetadata, DiscoveryErr
                 source_identity: identity,
                 email,
                 display_name,
+                identities,
                 server_kind: kind,
                 server_key: server.clone(),
                 hostname: string(prefs, &format!("mail.server.{server}.hostname")),
@@ -570,6 +584,7 @@ fn profile_metadata(prefs: &Preferences) -> Result<ProfileMetadata, DiscoveryErr
                 source_identity: None,
                 email: None,
                 display_name: "Local Folders".into(),
+                identities: Vec::new(),
                 server_kind: ServerKind::Local,
                 server_key: server.clone(),
                 hostname: None,
@@ -583,6 +598,30 @@ fn profile_metadata(prefs: &Preferences) -> Result<ProfileMetadata, DiscoveryErr
     address_books(prefs, &mut metadata);
     calendars(prefs, &mut metadata);
     Ok(metadata)
+}
+
+/// Every identity the account with the comma-separated `listed` identities
+/// sends as, in their order, whichever of the two its person named.
+fn sending_identities(prefs: &Preferences, listed: &str) -> Vec<Identity> {
+    let mut found = Vec::new();
+    for identity in listed
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && reference(value).is_ok())
+    {
+        let Some(email) = string(prefs, &format!("mail.identity.{identity}.useremail")) else {
+            continue;
+        };
+        let name = string(prefs, &format!("mail.identity.{identity}.fullName")).unwrap_or_default();
+        found.push(Identity {
+            name: name.chars().take(256).collect(),
+            email: email.chars().take(320).collect(),
+        });
+        if found.len() == MAX_IDENTITIES {
+            break;
+        }
+    }
+    found
 }
 
 fn server_kind(prefs: &Preferences, server: &str) -> ServerKind {

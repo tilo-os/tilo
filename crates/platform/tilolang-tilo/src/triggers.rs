@@ -2,12 +2,15 @@
 //! at the time a document's field names, for each of its documents of a type.
 //!
 //! The host runs a trigger as the app's own invocation of its action ([`crate::authority`]'s
-//! `trigger:` actor), on the workspace's origin, with the app's authority and declared
-//! effects, and notes on the document what the trigger last did for it
+//! `trigger:` actor), with the app's authority and declared effects. Each run is the workspace's
+//! once, on the device whose turn it is ([`crate::resources::ResourceStore::take_turn`]), named by
+//! the trigger, the document and the instant ([`Due::run`]); the change it makes notes on the
+//! document what the trigger last did for it
 //! ([`crate::resources::ResourceStore::triggered`]): the period it ran in, or the instant it
 //! fired at. A second run of the same period or instant is not made, and a run a device missed
-//! while everything was off runs once when one comes up. The run it is is named by the trigger,
-//! the document and the instant ([`Due::run`]).
+//! while everything was off runs once when one comes up.
+
+use std::collections::BTreeSet;
 
 use serde_json::Value as Json;
 use tilolang::calendar::instant;
@@ -28,7 +31,13 @@ pub(crate) struct Schedule {
     moved: Watch,
     /// The next instant a trigger has something to run, once worked out.
     next: std::cell::Cell<Next>,
+    /// The runs found done in the workspace that are still due here: a run that changed nothing
+    /// notes nothing on its document, so it is not asked for again while it stays due.
+    done: std::cell::RefCell<BTreeSet<String>>,
 }
+
+/// How long a run that waits for its turn waits before it is asked for again, in seconds.
+const TURN_AGAIN_S: i64 = 5;
 
 /// The next instant a trigger has something to run, as a [`Schedule`] holds it.
 #[derive(Clone, Copy)]
@@ -45,6 +54,7 @@ impl Schedule {
         Self {
             moved,
             next: std::cell::Cell::new(Next::Unknown),
+            done: std::cell::RefCell::default(),
         }
     }
 
@@ -74,8 +84,14 @@ pub(crate) fn run_due(host: &Host, schedule: &Schedule, now: i64) -> usize {
         Next::At(at) if at > now => return 0,
         Next::At(_) | Next::Unknown => {}
     }
-    let ran = run(host, now);
-    schedule.set(next(host, now));
+    let (ran, waiting) = run(host, schedule, now);
+    let next = next(host, now);
+    schedule.set(if waiting {
+        let again = now.saturating_add(TURN_AGAIN_S);
+        Some(next.map_or(again, |next| next.min(again)))
+    } else {
+        next
+    });
     ran
 }
 
@@ -93,16 +109,39 @@ pub(crate) fn next_due(host: &Host, schedule: &Schedule, now: i64) -> Option<i64
 }
 
 /// Run what `host`'s packages declare due at `now` (seconds since the epoch): each trigger, for
-/// each document of the type it runs for, as the app's own invocation. Returns how many ran. A
-/// run that is refused or fails leaves its document as it is, to be tried again the next time.
-pub fn run(host: &Host, now: i64) -> usize {
+/// each document of the type it runs for, as the app's own invocation, where this device takes
+/// its turn. Returns how many ran, and whether a run waits for its turn. A run that is refused or
+/// fails leaves its document as it is, to be tried again the next time.
+fn run(host: &Host, schedule: &Schedule, now: i64) -> (usize, bool) {
     let mut ran: usize = 0;
-    for due in due(host, now) {
+    let mut waiting = false;
+    let due = due(host, now);
+    schedule
+        .done
+        .borrow_mut()
+        .retain(|run| due.iter().any(|due| due.run() == *run));
+    for due in due {
         if host.package(&due.app).is_none() {
             continue;
         }
-        let by = crate::runtime::Actor::App(due.app.as_str().into());
         let run = due.run();
+        if schedule.done.borrow().contains(&run) {
+            continue;
+        }
+        let address = format!("{}/{}#{}", due.app, due.triggering.doc, due.action);
+        let inputs = serde_json::json!({ "run": run });
+        match host.store().take_turn(&address, &inputs) {
+            crate::resources::Turn::Take => {}
+            crate::resources::Turn::Done(_) => {
+                schedule.done.borrow_mut().insert(run);
+                continue;
+            }
+            crate::resources::Turn::Later => {
+                waiting = true;
+                continue;
+            }
+        }
+        let by = crate::runtime::Actor::App(due.app.as_str().into());
         // That it ran is noted with what it did, as one change.
         host.store().mark_triggered_in_run(
             &run,
@@ -113,21 +152,13 @@ pub fn run(host: &Host, now: i64) -> usize {
         let outcome =
             host.runtime()
                 .invoke_action_named(&run, &by, (due.action.as_str(), due.args));
-        let unwritten = host.store().drop_run_marks(&run);
+        host.store().drop_run_marks(&run);
         match outcome {
-            Ok(InvokeOutcome::Done(_)) => {
+            Ok(InvokeOutcome::Done(answer)) => {
                 ran = ran.saturating_add(1);
-                // A run that changed nothing is noted by itself.
-                if unwritten
-                    && let Err(error) = host.store().mark_triggered(
-                        &due.target,
-                        &due.triggering.key,
-                        &due.triggering.value,
-                        host.viewer(),
-                    )
-                {
-                    tracing::warn!(%error, trigger = due.name, "a trigger's run was not noted");
-                }
+                host.store()
+                    .turn_done(&address, &inputs, answer_json(&answer));
+                schedule.done.borrow_mut().insert(run);
             }
             other => tracing::warn!(
                 app = due.app,
@@ -137,7 +168,7 @@ pub fn run(host: &Host, now: i64) -> usize {
             ),
         }
     }
-    ran
+    (ran, waiting)
 }
 
 /// The next instant strictly after `now` at which a trigger of `host`'s packages has something
@@ -327,4 +358,12 @@ fn arguments(
         }
     }
     Some(out)
+}
+
+/// What a once-only action that ran answered, as every device that asks for it after is given it.
+pub(crate) fn answer_json(answer: &Value) -> Json {
+    tilolang_runtime::value::to_json(answer).unwrap_or_else(|error| {
+        tracing::warn!(%error, "a once-only action answered what JSON cannot hold; kept as nothing");
+        Json::Null
+    })
 }

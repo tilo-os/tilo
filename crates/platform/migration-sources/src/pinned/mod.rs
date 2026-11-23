@@ -8,7 +8,7 @@ use crate::{
         same_directory_identity,
     },
 };
-use cap_fs_ext::OpenOptionsFollowExt;
+use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, Metadata, OpenOptions};
 use std::{
     ffi::{OsStr, OsString},
@@ -111,6 +111,35 @@ impl PinnedDirectory {
         Ok(())
     }
 
+    /// Open `name` as a regular file through this pinned directory: no-follow,
+    /// never blocking on special files, and refused when replaced between the
+    /// metadata read and the open. `write` opens it for writing; `private`
+    /// requires the owner-only protections checked elsewhere for private state.
+    ///
+    /// # Errors
+    /// Refuses a non-regular, linked, replaced or (with `private`) unprotected
+    /// entry, and native open failures.
+    pub fn open_regular(&self, name: &OsStr, write: bool, private: bool) -> io::Result<File> {
+        let expected = metadata_nofollow(&self.file, Path::new(name))?;
+        if !expected.is_file() || expected.is_symlink() {
+            return Err(changed("entry is not a regular file"));
+        }
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .write(write)
+            .follow(FollowSymlinks::No)
+            .nonblock(true);
+        let file = cap_primitives::fs::open(&self.file, Path::new(name), &options)?;
+        if private {
+            destination_security::check_private_file(&file)?;
+        }
+        if !same_snapshot(&expected, &Metadata::from_file(&file)?) {
+            return Err(changed("entry was replaced while opening"));
+        }
+        Ok(file)
+    }
+
     pub fn contains_identity(&self, identity: &Metadata) -> bool {
         let mut current = self;
         loop {
@@ -139,6 +168,22 @@ impl PinnedDirectory {
             }
         }
         Ok(())
+    }
+
+    /// Open the child `name`, creating it with owner-only permissions when it
+    /// does not exist. An existing non-directory is refused, never replaced.
+    ///
+    /// # Errors
+    /// Refuses a linked or non-directory entry, and native create/open failures.
+    pub fn open_or_create_child(self: &Arc<Self>, name: &OsStr) -> io::Result<Arc<Self>> {
+        match metadata_nofollow(&self.file, Path::new(name)) {
+            Ok(metadata) if metadata.is_dir() && !metadata.is_symlink() => {
+                self.open_child(name, &metadata)
+            }
+            Ok(_) => Err(changed("private directory entry is not a directory")),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => self.create_child(name),
+            Err(error) => Err(error),
+        }
     }
 
     /// # Errors

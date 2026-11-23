@@ -30,6 +30,8 @@ files = ["content", "dep:tilo-fs", "dep:fs-protocol", "dep:iroh-blobs", "dep:byt
 # A session client's pages, read through the document core over the replica its engine admits
 # into: what a session's tests read their workspace through.
 session-pages = ["device-keys", "dep:tilo-session-client"]
+# The web tools' tests ask a server on this machine instead of the public engines and pages.
+fixture-servers = ["tilo-web-search?/fixture-servers"]
 
 # A device serves its apps: their wire, launch, actions, invocation journal and consent.
 apps = ["dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json"]
@@ -117,7 +119,7 @@ runtime-collab = { path = "../../runtime/runtime-collab", features = ["settings-
 tilo-identity = { path = "../../runtime/tilo-identity", optional = true }
 tilo-broker-core = { path = "../../collab/broker-core", optional = true }
 tilo-workspace-keys = { path = "../../collab/workspace-keys", optional = true }
-tilo-test-env = { path = "../../dev/test-env", optional = true }
+tilo-test-env = { path = "../../../tools/test-env", optional = true }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 # The file tree's sync, which [features] files runs over this service's member copies.
 tilo-fs = { package = "tilo-fs", path = "../../system/fs", features = ["tree-sync"], optional = true }
@@ -201,7 +203,7 @@ rustix = { workspace = true, features = ["process"], optional = true }
 # The stand-in authorization server a sign-in test walks the browser through.
 tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"] }
 # A fake OpenAI sign-in and model providers, for signing in on the real path.
-fake-model-providers = { path = "../../dev/fake-model-providers" }
+fake-model-providers = { path = "../../../tools/fake-model-providers" }
 # The MCP tools a device's session takes for an agent whose turn is in its own process, taken as its session's
 # steps in the broker's tests.
 tilo-mcp = { path = "../../runtime/tilo-mcp" }
@@ -214,16 +216,18 @@ tasks-model = { path = "../../../apps/tasks-model" }
 # A direct link a test makes a reader fall behind, with the frames it hears
 # bounded by the test rather than by what a live link holds.
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
+# The engines and pages the web tools' tests read, served from this machine.
+tilo-web-search = { path = "../../platform/tilo-web-search", features = ["fixture-servers"] }
 # The store's continuity tests count each thread's heap.
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
 # The provider servers a person's key is shown to and their model is asked at
 # in tests, on loopback, each speaking its provider's wire.
-test-http = { path = "../../dev/test-http" }
+test-http = { path = "../../../tools/test-http" }
 # `iroh-relay`: the loopback relay a fixture host's endpoint takes as its home, so a
 # host opens without waiting out the probe of an endpoint that reaches none.
-tilo-test-env = { path = "../../dev/test-env", features = ["iroh-relay"] }
+tilo-test-env = { path = "../../../tools/test-env", features = ["iroh-relay"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # A test's mail server answers over real sockets, and the tester trusts its
@@ -250,14 +254,6 @@ tilo-resource = { path = "../../sdk/tilo-resource" }
 settings = { path = "../../../apps/settings" }
 store = { path = "../../../apps/store" }
 app-framework = { package = "tilo-app", path = "../../sdk/tilo-app" }
-
-# The person's own store carried to their other devices: the links and the
-# broker route that hands their apps the records are the device build's
-# (`apps`), so this test is compiled only when a device serves apps.
-[[test]]
-name = "personal_links"
-path = "tests/personal_links.rs"
-required-features = ["apps"]
 
 [lints]
 workspace = true

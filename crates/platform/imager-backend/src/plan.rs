@@ -345,14 +345,14 @@ impl Capacity {
             .ok_or_else(|| {
                 PlanError::Unsupported("the shrink volume is not on the system disk".into())
             })?;
-        if g.bytes(c.last_lba.saturating_sub(c.first_lba).saturating_add(1)) != size_bytes {
+        if g.bytes(c.extent().lbas()) != size_bytes {
             return Err(PlanError::Unsupported(
                 "the shrink volume size disagrees with the partition map".into(),
             ));
         }
         if let Some(volume) = &basis.linux_btrfs_volume
             && (volume.first_lba != c.first_lba
-                || !super::same_guid(&c.type_guid, "0fc63daf-8483-4772-8e79-3d69d8477de4")
+                || !super::same_guid(&c.type_guid, staging_handoff_model::gpt::LINUX_FILESYSTEM)
                 || minimum > size_bytes)
         {
             return Err(PlanError::Unsupported(
@@ -535,8 +535,8 @@ pub fn with_loader_path(mut plan: Plan, efi_path: &str) -> Plan {
     plan
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
+#[cfg(any(test, feature = "test-support"))]
+pub mod tests {
     use super::super::platform::Partition;
     use super::*;
 
@@ -544,7 +544,7 @@ pub(crate) mod tests {
     const GIB: u64 = 1 << 30;
     const BASIC: &str = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7";
 
-    pub(crate) fn firmware() -> FirmwareFacts {
+    pub fn firmware() -> FirmwareFacts {
         FirmwareFacts {
             uefi: true,
             secure_boot: false,
@@ -554,7 +554,7 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn part(number: u32, guid: &str, first_lba: u64, last_lba: u64) -> Partition {
+    pub fn part(number: u32, guid: &str, first_lba: u64, last_lba: u64) -> Partition {
         Partition {
             number,
             guid: guid.into(),
@@ -564,7 +564,7 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn disk(size_bytes: u64, sector: u64, partitions: Vec<Partition>) -> Disk {
+    pub fn disk(size_bytes: u64, sector: u64, partitions: Vec<Partition>) -> Disk {
         let total = size_bytes.checked_div(sector).expect("nonzero sector");
         let tail = if sector == 512 { 34 } else { 6 };
         Disk {
@@ -578,14 +578,9 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) const C_GUID: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    pub const C_GUID: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
-    pub(crate) fn windows_basis(
-        disk_gib: u64,
-        c_end_gib: u64,
-        used_gib: u64,
-        winre: bool,
-    ) -> Basis {
+    pub fn windows_basis(disk_gib: u64, c_end_gib: u64, used_gib: u64, winre: bool) -> Basis {
         let s = 512;
         let mib = MIB.checked_div(s).expect("nonzero sector");
         let mut parts = vec![
@@ -641,7 +636,7 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn linux_basis(sector: u64, disk_bytes: u64, parts: Vec<Partition>) -> Basis {
+    pub fn linux_basis(sector: u64, disk_bytes: u64, parts: Vec<Partition>) -> Basis {
         Basis {
             disk: disk(disk_bytes, sector, parts),
             system_volume: None,
@@ -650,7 +645,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn req(target: u64) -> Requirements {
+    pub fn req(target: u64) -> Requirements {
         Requirements {
             staging_esp_bytes: 600 * MIB,
             staging_root_bytes: 40 * GIB,
@@ -659,7 +654,7 @@ pub(crate) mod tests {
     }
 
     /// Every invariant the planner documents, asserted against any computed plan.
-    fn assert_layout(plan: &Plan, requirements: Requirements) {
+    pub fn assert_layout(plan: &Plan, requirements: Requirements) {
         let disk = &plan.basis.disk;
         let sector = disk.sector_bytes;
         let align = MIB.checked_div(sector).unwrap();
@@ -711,7 +706,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn btrfs_basis() -> Basis {
+    pub fn btrfs_basis() -> Basis {
         let mut basis = windows_basis(512, 400, 100, true);
         let volume = basis.system_volume.take().unwrap();
         let partition = basis

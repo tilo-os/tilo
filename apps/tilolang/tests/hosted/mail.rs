@@ -7,11 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
-use ::mail_engine::fake_servers::{
-    FakeImap, FakeSmtp, Layout, accepting_client_config, server_tls_config,
-};
 use ::mail_engine::model::{AccountConfig, AuthMethod};
 use serde_json::{Value as Json, json};
+use tilo_account_probe::stand_in::{Layout, Serving, Started, started};
 use tilolang_mail::serve::{Connector, Wakeup};
 use tilolang_tilo::runtime::store::Store as _;
 use tilolang_tilo::runtime::{ResourceRef, UiNode, Value as RtValue};
@@ -45,9 +43,10 @@ Date: Tue, 30 Jun 2026 09:00:00 +0000\n\n{body}\n"
     )
 }
 
+/// One account's mail servers: its IMAP and SMTP are the one stand-in.
 struct Servers {
-    imap: FakeImap,
-    smtp: FakeSmtp,
+    imap: Started,
+    smtp: Started,
 }
 
 /// The person's servers, their inbox holding a conversation of two and a message read already.
@@ -108,14 +107,20 @@ fn lease() -> String {
 /// The two servers with nothing in the inbox yet: what a test puts there once the window stands,
 /// as mail arrives at an open window.
 fn empty_servers() -> Servers {
-    let rt = ui::rt::app();
-    let imap = rt
-        .block_on(FakeImap::start(Layout::Gmail, server_tls_config()))
-        .expect("the IMAP server starts");
-    let smtp = rt
-        .block_on(FakeSmtp::start(server_tls_config()))
-        .expect("the SMTP server starts");
-    Servers { imap, smtp }
+    servers_of(ME)
+}
+
+/// Empty servers that take `login`'s sign-in.
+fn servers_of(login: &str) -> Servers {
+    let imap = started(Serving {
+        layout: Layout::Gmail,
+        ..Serving::local(login, "app-password")
+    })
+    .expect("the mail servers start");
+    Servers {
+        smtp: imap.clone(),
+        imap,
+    }
 }
 
 fn account(servers: &Servers) -> AccountConfig {
@@ -125,9 +130,9 @@ fn account(servers: &Servers) -> AccountConfig {
         username: ME.into(),
         password: "app-password".into(),
         imap_host: "127.0.0.1".into(),
-        imap_port: servers.imap.port,
+        imap_port: servers.imap.imap.port(),
         smtp_host: "127.0.0.1".into(),
-        smtp_port: servers.smtp.port,
+        smtp_port: servers.smtp.smtp.port(),
         auth: AuthMethod::Password,
         ..Default::default()
     }
@@ -164,7 +169,9 @@ impl MailConnector {
             let engine = ::mail_engine::engine::live::LiveEngine::trusting(
                 tilo_content::ContentStore::memory(),
                 Arc::clone(&wake),
-                accepting_client_config(),
+                // Each account's stand-in starts after the connector, signed by the one
+                // authority every stand-in is.
+                vec![tilo_account_probe::stand_in::authority().expect("the authority")],
             )
             .expect("the engine starts");
             let (requests, events) = ::mail_engine::engine::spawn_waking(Box::new(engine), wake);
@@ -667,6 +674,111 @@ fn an_account_syncs_into_mailboxes_and_conversations() {
         matches!(session.value_of(&inbox, "unread"), RtValue::Int(2))
     });
     assert_eq!(session.threads().len(), 2);
+}
+
+// USER REQUIREMENT: a mailbox holding more than one page of messages can be read back past the
+// newest page, so mail older than the first fifty is reachable.
+#[test]
+fn a_mailbox_longer_than_a_page_reads_the_page_before_it_when_asked() {
+    let servers = empty_servers();
+    for i in 0..60 {
+        servers.imap.append(
+            "INBOX",
+            &mail(
+                &format!("note-{i}@hopper.example"),
+                "Grace Hopper <grace@hopper.example>",
+                &format!("Note {i}"),
+                "A line.",
+                None,
+            ),
+            &[],
+        );
+    }
+    let (_connector, mut session) = window_of(account(&servers));
+    session.until("the newest page", |session| session.threads().len() == 50);
+    let account = session.accounts().remove(0);
+    let inbox = session.refs(&account, "mailboxes")[0].clone();
+    assert!(
+        session.flag(&inbox, "more"),
+        "the mailbox says its server holds older mail"
+    );
+    session.call("older_messages", &inbox, &json!({}));
+    session.until("the page before it", |session| {
+        session.threads().len() == 60
+    });
+    assert!(
+        !session.flag(&inbox, "more"),
+        "the folder's first message is here, and it offers no more"
+    );
+}
+
+// USER REQUIREMENT: mail that another client deletes here goes, and a folder the server
+// numbered again is read once more rather than kept stale or doubled.
+#[test]
+fn mail_deleted_elsewhere_leaves_and_a_renumbered_folder_is_read_again() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let dinner = servers
+        .imap
+        .messages("INBOX")
+        .into_iter()
+        .find(|held| String::from_utf8_lossy(&held.raw).contains("Dinner on Friday?"))
+        .expect("the dinner message");
+    servers.imap.remove("INBOX", dinner.uid);
+    session.until("the deleted message to leave", |session| {
+        session
+            .threads()
+            .iter()
+            .all(|thread| session.text(thread, "subject") != "Dinner on Friday?")
+    });
+    servers.imap.renumber("INBOX");
+    servers.imap.append("INBOX", &lease(), &[]);
+    session.until("the renumbered inbox", |session| {
+        let threads = session.threads();
+        threads.len() == 2
+            && threads
+                .iter()
+                .filter(|thread| session.text(thread, "subject") == "Launch plan")
+                .count()
+                == 1
+            && threads
+                .iter()
+                .any(|thread| session.text(thread, "subject") == "Your lease renewal")
+    });
+}
+
+// USER REQUIREMENT: mail the server files as junk shows in Mail, under its Junk place.
+#[test]
+fn junk_the_server_holds_shows_in_its_place() {
+    let servers = servers();
+    servers.imap.append(
+        "[Gmail]/Spam",
+        &mail(
+            "offer@deals.example",
+            "Prize Draw <win@deals.example>",
+            "You have won a cruise",
+            "Claim your prize.",
+            None,
+        ),
+        &[],
+    );
+    let (_connector, mut session) = window_of(account(&servers));
+    session.until("the mail to sync", |session| session.threads().len() == 3);
+    let account = session.accounts().remove(0);
+    assert!(
+        session.threads().iter().any(|thread| {
+            session.text(thread, "subject") == "You have won a cruise"
+                && matches!(session.value_of(thread, "boxes"), RtValue::List(boxes)
+                    if boxes.contains(&RtValue::text("junk")))
+        }),
+        "the junk is filed under junk"
+    );
+    assert_eq!(
+        session.place_count(&account, "Junk"),
+        Some(1),
+        "the Junk place lists it"
+    );
 }
 
 /// An editor of the workspace's mailbox, which holds its own keys, is offered Check now like
@@ -1241,7 +1353,7 @@ fn a_window_closed_and_opened_again_has_the_mail_that_came_meanwhile_and_sends_n
 
 /// A second account's server, synced alongside the first: another address, its own inbox.
 fn second_account() -> Servers {
-    let servers = empty_servers();
+    let servers = servers_of("work@rivera.example");
     servers.imap.append(
         "INBOX",
         &mail_to(
@@ -1296,6 +1408,44 @@ fn every_account_shows_in_the_sidebar_and_opens_its_own_mail() {
             .iter()
             .any(|t| session.text(t, "subject") == "Team holiday"),
         "the second account holds its own mail"
+    );
+}
+
+// USER REQUIREMENT: All inboxes is every account's inbox in one list, not only the first
+// account's.
+#[test]
+fn all_inboxes_lists_every_accounts_inbox_in_one_list() {
+    let servers = servers();
+    let second = second_account();
+    let connector = MailConnector::new(move || vec![account(&servers), work_account(&second)]);
+    let mut session = connector.window();
+    session.until("both accounts' mail", |session| {
+        session.accounts().len() == 2
+            && session
+                .accounts()
+                .iter()
+                .all(|a| !session.refs(a, "threads").is_empty())
+    });
+    // The window opens on All inboxes: the conversations of both accounts stand in its one
+    // list.
+    session.until("both inboxes in one list", |session| {
+        let titles = session.titles();
+        titles.len() == 3
+            && titles
+                .iter()
+                .any(|title| title == "Ada Lovelace, Grace Hopper")
+            && titles.iter().any(|title| title == "Bo Chen")
+            && titles.iter().any(|title| title == "holiday@team.example")
+    });
+    let root = session.mail_root();
+    let view = session
+        .instance_host()
+        .open_resource(&root, None)
+        .expect("the mail window opens");
+    assert_eq!(
+        count_in(view.tree(), "ui.NavShell"),
+        Some(3),
+        "the list counts both accounts' inboxes"
     );
 }
 
@@ -1771,5 +1921,196 @@ fn a_reply_with_no_account_to_send_it_says_so_and_does_not_send() {
     assert!(
         refused.contains("Add a mail account in Settings first"),
         "{refused}"
+    );
+}
+
+/// The buttons the window's bar offers, in the order it offers them: the choice's bar stands in
+/// the part the window's own controls stand in, which is its overview's when it lists items.
+fn bar_buttons(tree: &UiNode) -> Vec<&UiNode> {
+    let bar = tree
+        .of_kind("ui.NavShell")
+        .first()
+        .copied()
+        .expect("a window has one bar");
+    bar.children
+        .iter()
+        .filter(|child| {
+            child.kind == "part"
+                && matches!(
+                    child.props.get("name").and_then(RtValue::as_text),
+                    Some("actions" | "overview_actions")
+                )
+        })
+        .flat_map(|part| part.children.iter())
+        .filter(|node| node.kind == "ui.Button")
+        .collect()
+}
+
+/// More than one conversation is chosen at a time, and one command over the choice reaches every
+/// one of them as a single step: choosing the two in the inbox and archiving takes them both out
+/// of it, here and on the server, and one undo brings them back together.
+#[test]
+fn chosen_conversations_are_archived_with_one_command() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let root = session.mail_root();
+    let plan = session.thread("Launch plan");
+    let dinner = session.thread("Dinner on Friday?");
+    let mut window = session
+        .instance_host()
+        .open_resource(&root, None)
+        .expect("the mail window opens");
+    let list = window
+        .tree()
+        .of_kind("ui.VirtualList")
+        .first()
+        .expect("the window lists the conversations")
+        .key
+        .clone();
+    let chosen = RtValue::List(vec![RtValue::resource(&plan), RtValue::resource(&dinner)]);
+    window
+        .fire_with(&list, "selected", Some(&chosen))
+        .expect("the rows are chosen");
+    window.poll_patches().expect("the window shows the choice");
+    // The bar says how many are chosen, and offers what every one of them can take.
+    let tree = window.tree();
+    let said = tree
+        .of_kind("ui.Badge")
+        .into_iter()
+        .filter_map(|node| node.props.get("text").and_then(RtValue::as_text))
+        .collect::<Vec<_>>();
+    assert!(
+        said.contains(&"2 selected"),
+        "the bar says what is chosen: {said:?}"
+    );
+    let archive = bar_buttons(tree)
+        .into_iter()
+        .find(|node| node.props.get("label").and_then(RtValue::as_text) == Some("Archive"))
+        .unwrap_or_else(|| {
+            let offered = bar_buttons(tree)
+                .into_iter()
+                .filter_map(|node| node.props.get("label").and_then(RtValue::as_text))
+                .collect::<Vec<_>>();
+            panic!("the bar offers archiving the choice: {offered:?}")
+        })
+        .key
+        .clone();
+    window.fire(&archive, "press").expect("archive runs");
+    window.poll_patches().expect("the window shows both gone");
+    // The choice is put away once it has acted: the bar is the window's own again.
+    assert!(
+        window.tree().of_kind("ui.Badge").is_empty(),
+        "the choice is put away once it has acted"
+    );
+    session.until("the server to archive both", |_| {
+        servers.imap.messages("INBOX").is_empty()
+            && servers.imap.messages("[Gmail]/All Mail").len() == 3
+    });
+    assert_eq!(
+        session.threads().len(),
+        2,
+        "the conversations stay, out of the inbox"
+    );
+}
+
+/// A conversation in the trash is deleted for good, from its server too, and the conversation
+/// goes with its last message: what Delete permanently does, which the trash cannot take back.
+#[test]
+fn a_trashed_message_is_deleted_for_good_on_the_server() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let plan = session.thread("Launch plan");
+    session.call("delete", &plan, &json!({}));
+    session.until("the server to put it in the trash", |_| {
+        servers.imap.messages("INBOX").len() == 1
+            && servers.imap.messages("[Gmail]/Trash").len() == 2
+    });
+    let account = session.accounts()[0].clone();
+    session.call("purge", &plan, &json!({}));
+    // The deletion is asked of the server on the poll it wakes: on a loaded machine that poll
+    // may be behind the answer that put the messages in the trash, so every so often the account
+    // is asked for its mail, as a person pressing Check now does.
+    let mut looks = 0;
+    session.until("the server to delete it for good", |session| {
+        looks += 1;
+        if looks % 30 == 1 {
+            session.call("check_now", &account, &json!({}));
+        }
+        servers.imap.messages("[Gmail]/Trash").is_empty()
+    });
+    assert!(
+        !session
+            .threads()
+            .iter()
+            .any(|thread| session.text(thread, "subject") == "Launch plan"),
+        "the conversation goes with its last message"
+    );
+    // The untouched conversation is still there, in the inbox.
+    assert_eq!(session.threads().len(), 1);
+    assert_eq!(servers.imap.messages("INBOX").len(), 1);
+}
+
+/// A message goes out as the person wrote it: from the identity they chose, with what it says
+/// as the formatted alternative a mail program shows beside the words.
+#[test]
+fn a_message_goes_out_from_its_identity_as_formatted_mail() {
+    let servers = servers();
+    let config = AccountConfig {
+        identities: vec!["Ada at work <ada@work.example>".into()],
+        ..account(&servers)
+    };
+    let (_connector, mut session) = window_of(config);
+    synced(&mut session);
+    session.hold_for(0);
+    // The account says what it sends as, as the settings keep it.
+    let account = session.accounts()[0].clone();
+    session.call("check_now", &account, &json!({}));
+    session.until("the account to say what it sends as", |session| {
+        session
+            .text(&account, "identities")
+            .contains("ada@work.example")
+    });
+
+    // An answer to a conversation the person read: its words, its quotation, and the identity it
+    // goes from, which the person chose.
+    let plan = session.thread("Launch plan");
+    let draft = session.made("reply", &plan, &json!({}));
+    session.call(
+        "send_as",
+        &draft,
+        &json!({"identity": "Ada at work <ada@work.example>"}),
+    );
+    assert_eq!(
+        session.text(&draft, "from_address"),
+        "Ada at work <ada@work.example>"
+    );
+    session.call("send", &draft, &json!({}));
+    session.until("the server to take it", |_| servers.smtp.sent().len() == 1);
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    // The mail builder writes the name it was given in quotes: what it holds is what counts.
+    let from = sent.lines().next().unwrap_or_default();
+    assert!(
+        from.starts_with("From: ")
+            && from.contains("ada@work.example")
+            && from.contains("Ada at work"),
+        "it goes from the identity the person chose: {from}"
+    );
+    assert!(
+        sent.contains("multipart/alternative") && sent.contains("text/html"),
+        "the message carries its formatted alternative: {sent}"
+    );
+    assert!(
+        sent.contains("<blockquote"),
+        "the quotation it answers with is formatted: {sent}"
+    );
+    assert!(
+        sent.contains("> On ") || sent.contains("On "),
+        "the words it answers stay beside the formatting: {sent}"
+    );
+    assert!(
+        !sent.contains("Bcc:"),
+        "a blind recipient is never named in the message: {sent}"
     );
 }

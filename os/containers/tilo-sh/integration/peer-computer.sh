@@ -23,7 +23,7 @@ computer=(env -u DBUS_SESSION_BUS_ADDRESS -u TILO_API_KEY
   XDG_RUNTIME_DIR="$scratch/runtime" TILO_SITE="$TILO_SITE" TILO_API_URL="$TILO_API_URL")
 as_person() { "${person[@]}" "$@"; }
 as_computer() { "${computer[@]}" "$@"; }
-# The end of each computer's daemon log (`tilo-runtime --hold`, which mounts the folders): what a
+# The end of each computer's daemon log (`tilo-runtime`, which mounts the folders): what a
 # check that failed prints beside its own logs.
 daemon_logs() {
   local log

@@ -787,8 +787,18 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
+    /// The other device, serving content over its own hydrator.
+    struct OtherDevice(Arc<Hydrator>, Hash);
+
+    impl ContentSource for OtherDevice {
+        fn fetch(&self, hash: Hash) -> futures_util::future::BoxFuture<'static, Option<Bytes>> {
+            let (hydrator, content) = (Arc::clone(&self.0), self.1);
+            Box::pin(async move { hydrator.local_content_blob(content, hash).await })
+        }
+    }
+
     #[tokio::test]
-    async fn a_read_that_cannot_arrive_fails_at_its_bound_and_keeps_fetching() {
+    async fn a_read_waits_its_bound_while_the_fetch_it_started_keeps_going() {
         let bound = Duration::from_millis(200);
         let started = Instant::now();
         let never = bounded_read(bound, std::future::pending::<Result<()>>()).await;
@@ -818,67 +828,26 @@ mod tests {
         assert_eq!(quick, 7, "a read inside its bound returns its bytes");
     }
 
-    struct OtherDevice(Arc<Hydrator>, Hash);
-
-    impl ContentSource for OtherDevice {
-        fn fetch(&self, hash: Hash) -> futures_util::future::BoxFuture<'static, Option<Bytes>> {
-            let (hydrator, content) = (Arc::clone(&self.0), self.1);
-            Box::pin(async move { hydrator.local_content_blob(content, hash).await })
-        }
-    }
-
+    /// Bytes this device holds are read here; anything else arrives from the content source,
+    /// whole or as a range, once however many readers ask at once.
     #[tokio::test]
-    async fn content_this_device_lacks_arrives_from_the_content_source() {
-        for length in [11_usize, 300_000, 3 * 1024 * 1024] {
-            let written: Vec<u8> = (0..length)
-                .map(|i| {
-                    (u32::try_from(i).unwrap().wrapping_mul(2_654_435_761) >> 13).to_le_bytes()[0]
-                })
-                .collect();
-            let there = Arc::new(ContentStore::memory());
-            let content = there.write_content(&written).await.unwrap().unwrap();
-            let there = Arc::new(Hydrator::new(there));
-            let blobs = there.content_blobs(content).await.unwrap();
-            assert_eq!(blobs[0], content, "the manifest comes first");
-            for blob in &blobs {
-                assert!(there.local_content_blob(content, *blob).await.is_some());
-            }
-
-            let here = Hydrator::new(Arc::new(ContentStore::memory()))
-                .with_source(Arc::new(OtherDevice(Arc::clone(&there), content)));
-            let read = here.read(content, 0, length as u64).await.unwrap();
-            assert!(read == written, "{length} bytes read back as written");
-        }
-
-        let nowhere =
-            Hydrator::new(Arc::new(ContentStore::memory())).with_source(Arc::new(OtherDevice(
-                Arc::new(Hydrator::new(Arc::new(ContentStore::memory()))),
-                Hash::from([3; 32]),
-            )));
-        assert!(
-            nowhere.read(Hash::from([3; 32]), 0, 10).await.is_err(),
-            "content the source lacks does not read"
-        );
-    }
-
-    #[tokio::test]
-    async fn local_content_is_read_without_a_source() {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each section keeps one former test's body verbatim"
+    )]
+    async fn content_this_device_lacks_arrives_from_the_source_whole_or_ranged() {
         {
             let store = Arc::new(ContentStore::memory());
             let hash = store.write_content(b"hello local").await.unwrap().unwrap();
-
             let hydrator = Hydrator::new(store);
             let got = hydrator.read(hash, 0, 11).await.unwrap();
             assert_eq!(&got, b"hello local");
+            assert_eq!(&hydrator.read(hash, 6, 5).await.unwrap(), b"local");
 
-            let mid = hydrator.read(hash, 6, 5).await.unwrap();
-            assert_eq!(&mid, b"local");
-        }
-        {
-            let store = Arc::new(ContentStore::memory());
             let data: Vec<u8> = (0..200_000_u32)
                 .map(|i| u8::try_from(i % 251).unwrap())
                 .collect();
+            let store = Arc::new(ContentStore::memory());
             let hash = store.write_content(&data).await.unwrap().unwrap();
             let hydrator = Hydrator::new(store);
             assert_eq!(
@@ -893,48 +862,95 @@ mod tests {
                 "a manifest that is not local is not read"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn chunked_ranges_read_locally_and_missing_blobs_error_without_a_source() {
         {
-            let store = Arc::new(ContentStore::memory());
-            let data: Vec<u8> = (0..300_000u32)
-                .map(|i| u8::try_from((i.wrapping_mul(2_654_435_761) >> 13) & 0xff).unwrap())
-                .collect();
-            let mh = store.write_content(&data).await.unwrap().unwrap();
-            assert!(store.local(mh).await.is_some(), "manifest stored");
+            for length in [11_usize, 300_000, 3 * 1024 * 1024] {
+                let written: Vec<u8> = (0..length)
+                    .map(|i| {
+                        (u32::try_from(i).unwrap().wrapping_mul(2_654_435_761) >> 13).to_le_bytes()
+                            [0]
+                    })
+                    .collect();
+                let there = Arc::new(ContentStore::memory());
+                let content = there.write_content(&written).await.unwrap().unwrap();
+                let there = Arc::new(Hydrator::new(there));
+                let blobs = there.content_blobs(content).await.unwrap();
+                assert_eq!(blobs[0], content, "the manifest comes first");
+                for blob in &blobs {
+                    assert!(there.local_content_blob(content, *blob).await.is_some());
+                }
 
-            let hyd = Hydrator::new(store);
-            assert_eq!(hyd.content_len(mh).await.unwrap(), data.len() as u64);
-
-            assert_eq!(hyd.read(mh, 0, data.len() as u64).await.unwrap(), data);
-
-            for (off, len) in [
-                (0usize, 100usize),
-                (8000, 20000),
-                (150_000, 1),
-                (299_000, 2000),
-            ] {
-                let end = (off + len).min(data.len());
-                let got = hyd.read(mh, off as u64, (end - off) as u64).await.unwrap();
-                assert_eq!(got, &data[off..end], "range {off}+{len} mismatch");
+                let here = Hydrator::new(Arc::new(ContentStore::memory()))
+                    .with_source(Arc::new(OtherDevice(Arc::clone(&there), content)));
+                assert_eq!(here.content_len(content).await.unwrap(), length as u64);
+                assert_eq!(here.read(content, 0, length as u64).await.unwrap(), written);
+                for (off, len) in [
+                    (0usize, 100usize),
+                    (8000, 20000),
+                    (length / 2, 1),
+                    (length.saturating_sub(2000), 2000),
+                ] {
+                    if off >= length {
+                        continue;
+                    }
+                    let end = (off + len).min(length);
+                    assert_eq!(
+                        here.read(content, off as u64, (end - off) as u64)
+                            .await
+                            .unwrap(),
+                        &written[off..end],
+                        "range {off}+{len} of {length}"
+                    );
+                }
             }
+
+            let nowhere =
+                Hydrator::new(Arc::new(ContentStore::memory())).with_source(Arc::new(OtherDevice(
+                    Arc::new(Hydrator::new(Arc::new(ContentStore::memory()))),
+                    Hash::from([3; 32]),
+                )));
+            assert!(
+                nowhere.read(Hash::from([3; 32]), 0, 10).await.is_err(),
+                "content the source lacks does not read"
+            );
         }
         {
-            let store = Arc::new(ContentStore::memory());
-            let hydrator = Hydrator::new(store);
-            let absent = Hash::from([9u8; 32]);
-            assert!(hydrator.read(absent, 0, 16).await.is_err());
+            let there = Arc::new(ContentStore::memory());
+            let payload = Bytes::from_static(b"collaborative filesystem payload");
+            let hash = there
+                .write_content(payload.as_ref())
+                .await
+                .unwrap()
+                .unwrap();
+            let here = Arc::new(ContentStore::memory());
+            let hydrator = Arc::new(
+                Hydrator::new(Arc::clone(&here)).with_source(Arc::new(StoreSource(there))),
+            );
+            assert!(!here.has(hash).await, "precondition: nothing here yet");
+            let readers: Vec<_> = (0..8)
+                .map(|_| {
+                    let hydrator = Arc::clone(&hydrator);
+                    let len = payload.len() as u64;
+                    tokio::spawn(async move { hydrator.read(hash, 0, len).await.unwrap() })
+                })
+                .collect();
+            for reader in readers {
+                assert_eq!(reader.await.unwrap().as_slice(), payload.as_ref());
+            }
+            assert!(here.has(hash).await, "the fetched blob is kept here");
+            assert!(
+                hydrator.residency(hash).await.remotely_durable,
+                "what the workspace handed over is kept elsewhere too"
+            );
         }
     }
 
+    /// What the mount shows a reader before and during a fetch, and what prefetch takes.
     #[tokio::test]
     #[allow(
         clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
+        reason = "each section keeps one former test's body verbatim"
     )]
-    async fn sync_state_reports_local_projected_and_downloading_content() {
+    async fn sync_state_and_prefetch_report_what_a_read_will_cost() {
         {
             let store = Arc::new(ContentStore::memory());
             let data: Vec<u8> = (0..250_000u32)
@@ -947,13 +963,26 @@ mod tests {
                 SyncState::Local,
                 "fully-ingested file is local"
             );
+
+            let guard = hyd.mark_fetching(mh);
+            assert!(hyd.is_fetching(mh));
+            assert_eq!(
+                hyd.sync_state(mh).await,
+                SyncState::Downloading,
+                "an in-flight fetch of the manifest reads as downloading",
+            );
+            drop(guard);
+            assert!(!hyd.is_fetching(mh));
+            assert_eq!(
+                hyd.sync_state(mh).await,
+                SyncState::Local,
+                "cleared after the fetch"
+            );
         }
         {
-            let store = Arc::new(ContentStore::memory());
-            let hyd = Hydrator::new(store);
-            let absent = Hash::from([7u8; 32]);
+            let hyd = Hydrator::new(Arc::new(ContentStore::memory()));
             assert_eq!(
-                hyd.sync_state(absent).await,
+                hyd.sync_state(Hash::from([7u8; 32])).await,
                 SyncState::Projected,
                 "unknown manifest is projected"
             );
@@ -985,29 +1014,9 @@ mod tests {
                 SyncState::Projected,
                 "a locally-known manifest with a missing chunk is still projected",
             );
-        }
-        {
-            let store = Arc::new(ContentStore::memory());
-            let data: Vec<u8> = (0..200_000u32)
-                .map(|i| u8::try_from((i.wrapping_mul(40_503) >> 9) & 0xff).unwrap())
-                .collect();
-            let mh = store.write_content(&data).await.unwrap().unwrap();
-            let hyd = Hydrator::new(store);
-            assert_eq!(hyd.sync_state(mh).await, SyncState::Local);
-
-            let guard = hyd.mark_fetching(mh);
-            assert!(hyd.is_fetching(mh));
-            assert_eq!(
-                hyd.sync_state(mh).await,
-                SyncState::Downloading,
-                "an in-flight fetch of the manifest reads as downloading",
-            );
-            drop(guard);
-            assert!(!hyd.is_fetching(mh));
-            assert_eq!(
-                hyd.sync_state(mh).await,
-                SyncState::Local,
-                "cleared after the fetch"
+            assert!(
+                hyd.read(mh, 20, 20).await.is_err(),
+                "a range only a missing chunk holds is not read"
             );
         }
         {
@@ -1018,78 +1027,22 @@ mod tests {
                 .unwrap()
                 .unwrap();
             let hyd = Hydrator::new(store);
-
             let first = hyd.mark_fetching(mh);
             let second = hyd.mark_fetching(mh);
-            assert!(hyd.is_fetching(mh));
-            assert_eq!(hyd.sync_state(mh).await, SyncState::Downloading);
-
+            let other = hyd.mark_fetching(Hash::from([0xB2; 32]));
             drop(first);
+            drop(other);
             assert!(
                 hyd.is_fetching(mh),
                 "dropping one of two guards must not clear the shared state"
             );
-            assert_eq!(
-                hyd.sync_state(mh).await,
-                SyncState::Downloading,
-                "the remaining guard keeps the file downloading"
+            assert!(
+                !hyd.is_fetching(Hash::from([0xB2; 32])),
+                "another content's only guard was released"
             );
-
             drop(second);
             assert!(!hyd.is_fetching(mh));
-            assert_eq!(hyd.sync_state(mh).await, SyncState::Local);
         }
-        {
-            let store = Arc::new(ContentStore::memory());
-            let a = Hash::from([0xA1; 32]);
-            let b = Hash::from([0xB2; 32]);
-            let hyd = Hydrator::new(store);
-
-            let a1 = hyd.mark_fetching(a);
-            let a2 = hyd.mark_fetching(a);
-            let b1 = hyd.mark_fetching(b);
-            drop(a1);
-            drop(b1);
-
-            assert!(hyd.is_fetching(a), "a still has its second guard");
-            assert!(!hyd.is_fetching(b), "b's only guard was released");
-            drop(a2);
-            assert!(!hyd.is_fetching(a));
-        }
-    }
-
-    #[tokio::test]
-    async fn the_source_hydrates_real_bytes_once_for_concurrent_readers() {
-        let there = Arc::new(ContentStore::memory());
-        let payload = Bytes::from_static(b"collaborative filesystem payload");
-        let hash = there
-            .write_content(payload.as_ref())
-            .await
-            .unwrap()
-            .unwrap();
-        let here = Arc::new(ContentStore::memory());
-        let hydrator =
-            Arc::new(Hydrator::new(Arc::clone(&here)).with_source(Arc::new(StoreSource(there))));
-        assert!(!here.has(hash).await, "precondition: nothing here yet");
-        let readers: Vec<_> = (0..8)
-            .map(|_| {
-                let hydrator = Arc::clone(&hydrator);
-                let len = payload.len() as u64;
-                tokio::spawn(async move { hydrator.read(hash, 0, len).await.unwrap() })
-            })
-            .collect();
-        for reader in readers {
-            assert_eq!(reader.await.unwrap().as_slice(), payload.as_ref());
-        }
-        assert!(here.has(hash).await, "the fetched blob is kept here");
-        assert!(
-            hydrator.residency(hash).await.remotely_durable,
-            "what the workspace handed over is kept elsewhere too"
-        );
-    }
-
-    #[tokio::test]
-    async fn prefetch_hydrates_every_chunk_within_the_policy_limit() {
         {
             let server_store = Arc::new(ContentStore::memory());
             let payload: Vec<u8> = (0..400_000u32)
@@ -1098,7 +1051,6 @@ mod tests {
             let manifest_hash = server_store.write_content(&payload).await.unwrap().unwrap();
             let hydrator = Hydrator::new(Arc::new(ContentStore::memory()))
                 .with_source(Arc::new(StoreSource(server_store)));
-
             assert_eq!(
                 hydrator.sync_state(manifest_hash).await,
                 SyncState::Projected
@@ -1122,13 +1074,15 @@ mod tests {
                     .unwrap(),
                 payload
             );
-        }
-        {
+
             let store = Arc::new(ContentStore::memory());
             let payload = vec![7u8; 1024];
             let manifest_hash = store.write_content(&payload).await.unwrap().unwrap();
             let hydrator = Hydrator::new(store);
-            assert!(!hydrator.prefetch(manifest_hash, 512).await.unwrap());
+            assert!(
+                !hydrator.prefetch(manifest_hash, 512).await.unwrap(),
+                "a file over the policy's limit is not prefetched"
+            );
         }
     }
 }

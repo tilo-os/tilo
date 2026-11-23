@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilolang_tilo::origin::{Origin, OriginCx};
 use tilolang_youtube::{
-    ChannelItem, ChannelPage, PlaylistItem, Scripted, SearchPage, Service, ServiceError,
-    TrendingPage, VideoItem, YouTubeOrigin,
+    ChannelItem, ChannelPage, PlaylistItem, PlaylistPage, Scripted, SearchPage, Service,
+    ServiceError, TrendingPage, VideoItem, YouTubeOrigin,
 };
 
 const TUBE: &str = "so.tilo.tube";
@@ -107,6 +107,25 @@ fn script() -> Scripted {
                 videos: vec![
                     video("v-phone", "The phone that finally lasts a week", "UCmkbhd"),
                     video("v-watch", "The watch that needs no winding", "UCmkbhd"),
+                ],
+            },
+        )]),
+        playlists: std::collections::BTreeMap::from([(
+            "pl-phones".to_owned(),
+            PlaylistPage {
+                playlist: PlaylistItem {
+                    key: "pl-phones".to_owned(),
+                    title: "Every phone reviewed this year".to_owned(),
+                    channel_key: "UCmkbhd".to_owned(),
+                    channel_name: "MKBHD".to_owned(),
+                    video_count: 3,
+                    thumbnail: "https://example.test/pl.jpg".to_owned(),
+                },
+                // The maker's order, not the videos' dates: the newest is second.
+                videos: vec![
+                    video("v-old", "The first phone this year", "UCmkbhd"),
+                    video("v-phone", "The phone that finally lasts a week", "UCmkbhd"),
+                    video("v-budget", "The best phone under 300", "UCmkbhd"),
                 ],
             },
         )]),
@@ -205,6 +224,55 @@ fn keys(host: &tilolang_tilo::host::Host, kind: &str) -> Vec<String> {
         .collect()
 }
 
+/// The `video_keys` of the playlist keyed `key`, in the order the client's page reads them.
+fn video_keys_of(host: &tilolang_tilo::host::Host, key: &str) -> Vec<String> {
+    let packages = host.packages();
+    let package = packages
+        .iter()
+        .find(|package| package.meta.app == TUBE)
+        .expect("the client");
+    let (_, root_ty) = package.main().expect("the client's root");
+    let field_id = |ty: &str, name: &str| {
+        package
+            .meta
+            .types
+            .iter()
+            .find(|t| t.name == ty || t.id == ty)
+            .and_then(|t| t.fields.iter().find(|f| f.name == name))
+            .unwrap_or_else(|| panic!("{ty}.{name}"))
+            .id
+            .clone()
+    };
+    let root = host.root_of(TUBE).expect("the root");
+    let Ok(tilolang_tilo::runtime::Value::List(playlists)) =
+        host.runtime().read(&root, &field_id(&root_ty, "playlists"))
+    else {
+        return Vec::new();
+    };
+    let playlist_key = field_id("Playlist", "key");
+    let video_keys = field_id("Playlist", "video_keys");
+    for item in playlists {
+        let tilolang_tilo::runtime::Value::Ref(at) = item else {
+            continue;
+        };
+        match host.runtime().read(&at.target, &playlist_key) {
+            Ok(tilolang_tilo::runtime::Value::Text(held)) if held == key => {}
+            _ => continue,
+        }
+        return match host.runtime().read(&at.target, &video_keys) {
+            Ok(tilolang_tilo::runtime::Value::List(keys)) => keys
+                .into_iter()
+                .filter_map(|value| match value {
+                    tilolang_tilo::runtime::Value::Text(key) => Some(key),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+    }
+    Vec::new()
+}
+
 #[test]
 fn a_search_writes_its_channels_playlists_and_videos_where_the_client_reads_them() {
     let host = workspace();
@@ -266,6 +334,35 @@ fn a_channel_writes_its_page_and_its_newest_videos() {
     assert_eq!(videos, ["v-phone", "v-watch"]);
 }
 
+/// A playlist's page: its videos, in its maker's order, as the keys the page reads them by.
+#[test]
+fn a_playlist_writes_its_videos_in_its_maker_s_order() {
+    let host = workspace();
+    let origin = tilolang_youtube::origin(Arc::new(script()), Arc::new(AtomicBool::new(false)));
+    assert!(
+        origin.borrow().serves("youtube.playlist"),
+        "the origin carries out the client's playlist question"
+    );
+    origin
+        .borrow_mut()
+        .deliver("youtube.playlist", &serde_json::json!("pl-phones"));
+    poll(&origin, &host);
+    let playlist = keys(&host, "playlist");
+    assert_eq!(playlist, ["pl-phones"], "the playlist itself");
+    assert_eq!(
+        video_keys_of(&host, "pl-phones"),
+        ["v-old", "v-phone", "v-budget"],
+        "its videos, in the order its maker put them, not by date"
+    );
+    let mut videos = keys(&host, "video");
+    videos.sort();
+    assert_eq!(
+        videos,
+        ["v-budget", "v-old", "v-phone"],
+        "and the videos themselves are where a page finds them"
+    );
+}
+
 #[test]
 fn trending_marks_the_videos_it_lists() {
     let host = workspace();
@@ -306,6 +403,9 @@ fn a_failed_answer_writes_nothing() {
             Err(ServiceError("unreachable".to_owned()))
         }
         fn channel(&self, _: &str) -> Result<ChannelPage, ServiceError> {
+            Err(ServiceError("unreachable".to_owned()))
+        }
+        fn playlist(&self, _: &str) -> Result<PlaylistPage, ServiceError> {
             Err(ServiceError("unreachable".to_owned()))
         }
         fn trending(&self) -> Result<TrendingPage, ServiceError> {

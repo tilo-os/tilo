@@ -38,7 +38,7 @@ tar.workspace = true
 thiserror.workspace = true
 # Parses the account user's package registry from a descriptor opened without following links.
 toml.workspace = true
-tilo-vm-protocol = { path = "../tilo-vm-protocol" }
+tilo-vm-protocol = { path = "../../../tools/tilo-vm-protocol" }
 # Onboarding's controls and the walk through them, shared with the legacy stream.
 onboarding-walk = { path = "../../session/onboarding-walk" }
 tilo-actions = { path = "../../collab/actions" }
@@ -54,8 +54,8 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 tempfile.workspace = true
 # The device test drives tilo-vm's own commands against this daemon.
-tilo-test-env = { path = "../test-env" }
-tilo-vm = { path = "../tilo-vm" }
+tilo-test-env = { path = "../../../tools/test-env" }
+tilo-vm = { path = "../../../tools/tilo-vm" }
 
 [[test]]
 name = "it"

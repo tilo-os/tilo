@@ -47,8 +47,8 @@ impl HostAction {
             .choosing(vec![
                 (self.key(), self.title.clone()),
                 (
-                    crate::notifications::NOT_NOW_ACTION.to_owned(),
-                    crate::i18n::t("notification-not-now"),
+                    tilo_session_core::desktop::notifications::NOT_NOW_ACTION.to_owned(),
+                    tilo_session_core::desktop::i18n::t("notification-not-now"),
                 ),
             ])
             .staying(Some(std::time::Duration::ZERO))
@@ -157,7 +157,7 @@ mod tests {
 
     fn handle() -> DesktopHandle {
         let mut minter = tilo_desktop_model::IdMinter::new(7);
-        let tree = crate::seed_tree(&mut minter, "Office", Vec::new());
+        let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Office", Vec::new());
         crate::DesktopSurface::new(tree, 7, Box::new(Notices)).1
     }
 

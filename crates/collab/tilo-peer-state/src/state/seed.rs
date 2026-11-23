@@ -126,9 +126,9 @@ fn founding_rows(
     // each device keeps for itself in its person's name.
     for rows in [
         collab_types::workspace_grant::WORKSPACE_GRANTS_KEY,
-        collab_types::work_delegation::WORK_DELEGATIONS_KEY,
         super::keeping_devices::WORKSPACE_KEEPING_DEVICES_KEY,
         super::app_versions::APP_VERSIONS,
+        super::calls::CALLS,
         super::bot_members::PROGRAMS,
         super::bot_members::REQUESTS,
         tilo_desktop_model::projection::WORKSPACE_AUTOMATIONS_KEY,

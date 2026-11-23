@@ -177,6 +177,11 @@ pub enum Grantee {
     App(String),
     /// Members explicitly assigned this workspace-defined role.
     CustomRole(String),
+    /// Any key, certified or not: what a workspace opens to visitors with no identity in it,
+    /// who sign each call with a key of their own ([`crate::Actor::Visitor`]). Only the
+    /// workspace's entry sets these ([`crate::EntryPolicy::visitor_grants`]); nobody grants
+    /// one by hand.
+    AnyKey,
 }
 
 impl Grantee {
@@ -216,7 +221,7 @@ impl Grantee {
     pub fn as_member(&self) -> Option<&crate::MemberId> {
         match self {
             Self::Member(member) => Some(member),
-            Self::Role(_) | Self::App(_) | Self::CustomRole(_) => None,
+            Self::Role(_) | Self::App(_) | Self::CustomRole(_) | Self::AnyKey => None,
         }
     }
 
@@ -248,7 +253,7 @@ impl Grantee {
     pub fn app_id(&self) -> Option<&str> {
         match self {
             Self::App(app) => Some(app),
-            Self::Member(_) | Self::Role(_) | Self::CustomRole(_) => None,
+            Self::Member(_) | Self::Role(_) | Self::CustomRole(_) | Self::AnyKey => None,
         }
     }
 
@@ -256,7 +261,7 @@ impl Grantee {
     pub fn role_of(&self) -> Option<Role> {
         match self {
             Self::Role(role) => Some(*role),
-            Self::Member(_) | Self::App(_) | Self::CustomRole(_) => None,
+            Self::Member(_) | Self::App(_) | Self::CustomRole(_) | Self::AnyKey => None,
         }
     }
 }
@@ -268,6 +273,7 @@ impl fmt::Display for Grantee {
             Self::Role(role) => write!(f, "every {role}"),
             Self::CustomRole(id) => write!(f, "role {id}"),
             Self::App(app) => write!(f, "app {app}"),
+            Self::AnyKey => f.write_str("any visitor"),
         }
     }
 }

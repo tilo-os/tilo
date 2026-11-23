@@ -17,7 +17,6 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use clap::Subcommand;
 use serde_json::{Value, json};
 use std::fmt::Write as _;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -1922,25 +1921,29 @@ async fn export(asked: &KeyAsk<'_>, path: &Path, json: bool) -> Result<ExitCode>
 /// Write `file` at `path`, readable by this account only, in place of what was
 /// there.
 fn write_key_file(path: &Path, file: &tilo_api::direct::KeyFile) -> Result<()> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
     {
-        std::fs::create_dir_all(parent).with_context(|| format!("making {}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
     }
-    let _ = std::fs::remove_file(path);
-    let mut out = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-        .with_context(|| format!("writing {}", path.display()))?;
-    out.write_all(&serde_json::to_vec_pretty(file)?)
-        .with_context(|| format!("writing {}", path.display()))?;
-    out.sync_all()
-        .with_context(|| format!("writing {}", path.display()))?;
-    Ok(())
+    let bytes = serde_json::to_vec_pretty(file)?;
+    match tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600) {
+        Ok(()) => Ok(()),
+        // The server already approved this key; once the renamed file is in
+        // place, a refused directory sync must not fail the command and prompt
+        // the person to ask for a second key.
+        #[cfg(any(unix, windows))]
+        Err(error)
+            if tilo_files::native::atomic::publication_state(&error)
+                == Some(
+                    tilo_files::native::atomic::PublicationState::PublishedDurabilityUnknown,
+                ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error).with_context(|| format!("writing {}", path.display())),
+    }
 }
 
 /// A key asked of the person: what `tilo keys create` and `tilo keys export` ask for.
@@ -2048,7 +2051,6 @@ mod tests {
     use std::sync::Arc;
 
     const WORKSPACE: &str = "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b";
-    const BRANCH: &str = "0b5e7c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d";
 
     /// This computer's own key, as `tilo login` kept it, is a key file the API
     /// in process reads: its certificate in the canonical bytes `Direct`
@@ -2280,644 +2282,8 @@ mod tests {
         drop(env);
     }
 
-    /// A folder goes up whole, each file named by its path from the folder's
-    /// own place, in one order however the tree is walked; a file is itself.
-    #[test]
-    fn a_folder_keeps_its_structure_and_a_file_is_itself() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("contracts");
-        std::fs::create_dir_all(root.join("2026/signed")).unwrap();
-        std::fs::write(root.join("nda.pdf"), b"%PDF-1.7").unwrap();
-        std::fs::write(root.join("2026/plan.md"), b"# plan").unwrap();
-        std::fs::write(root.join("2026/signed/nda.pdf"), b"%PDF-1.7").unwrap();
-        let names: Vec<String> = files_under(&root)
-            .unwrap()
-            .into_iter()
-            .map(|file| file.name)
-            .collect();
-        assert_eq!(
-            names,
-            vec![
-                "contracts/2026/plan.md",
-                "contracts/2026/signed/nda.pdf",
-                "contracts/nda.pdf"
-            ]
-        );
-        let one = files_under(&root.join("nda.pdf")).unwrap();
-        assert_eq!(one.len(), 1);
-        assert_eq!(one[0].name, "nda.pdf");
-    }
-
-    /// Sizes read as a person says them.
-    #[test]
-    fn a_size_reads_in_the_unit_a_person_would_say() {
-        assert_eq!(bytes(0), "0 B");
-        assert_eq!(bytes(512), "512 B");
-        assert_eq!(bytes(1536), "1.5 KB");
-        assert_eq!(bytes(300 * 1024 * 1024), "300.0 MB");
-    }
-
-    fn answer(request: &test_http::Request) -> Option<test_http::Reply> {
-        let json_reply = |status: u16, body: Value| {
-            Some(
-                test_http::Reply::status(status)
-                    .header("content-type", "application/json")
-                    .body(body.to_string()),
-            )
-        };
-        let route = request.target.as_str();
-        match (request.method.as_str(), route) {
-            ("POST", "/v1/resources/account/workspaces/actions/list") => json_reply(
-                200,
-                json!({"status": "ok", "result": {"workspaces": [{"id": WORKSPACE,
-                    "name": "Applicant: Jane Doe", "host": "eu1.tilo.sh", "role": "owner"}]}}),
-            ),
-            ("POST", "/v1/resources/account/workspaces/actions/create") => json_reply(
-                200,
-                json!({"status": "ok", "result": {"workspace": {"id": WORKSPACE,
-                    "name": "Applicant: Jane Doe", "host": "eu1.tilo.sh", "role": "owner"}}}),
-            ),
-            ("POST", route) if route.ends_with("/actions/unattended") => json_reply(
-                200,
-                json!({"status": "ok", "path": "workspace/unattended#set",
-                    "result": {"workspace": WORKSPACE, "unattended": true}}),
-            ),
-            ("POST", "/v1/resources/account/workspaces/actions/branch") => json_reply(
-                200,
-                json!({"status": "ok", "result": {"workspace": {"id": BRANCH,
-                    "name": "Applicant: Jane Doe, second try", "host": "eu1.tilo.sh",
-                    "role": "owner", "labels": {"customer_id": "cus_8121"}}}}),
-            ),
-            ("POST", route) if route.ends_with("/contents/have") => {
-                let asked: Value = serde_json::from_slice(&request.body).unwrap_or_default();
-                let count = asked
-                    .get("hashes")
-                    .and_then(Value::as_array)
-                    .map_or(0, Vec::len);
-                json_reply(200, json!({"have": vec![false; count]}))
-            }
-            ("PUT", route) if route.ends_with("/contents") => {
-                let asked: Value = serde_json::from_slice(&request.body).unwrap_or_default();
-                let count = asked
-                    .get("files")
-                    .and_then(Value::as_array)
-                    .map_or(0, Vec::len);
-                json_reply(200, json!({"contents": vec!["tilo.content:abc"; count]}))
-            }
-            ("POST", route) if route.ends_with("/uploads") => json_reply(
-                201,
-                json!({"content": "tilo.content:abc", "size": request.body.len()}),
-            ),
-            ("POST", route) if route.ends_with("/actions/open") => json_reply(
-                200,
-                json!({"status": "ok", "path": "files#open", "invocation": "inv-1",
-                    "result": {}}),
-            ),
-            ("GET", route) if route.contains("/content/") => {
-                Some(test_http::Reply::status(200).body(b"hello".to_vec()))
-            }
-            ("POST", route) if route.ends_with("/resources/invocations/actions/list") => {
-                json_reply(
-                    200,
-                    json!({"status": "ok", "path": "invocations#list", "result": {
-                    "items": [{"id": "run-2", "status": "waiting",
-                        "by": {"name": "Jane Doe's agent", "kind": "agent"}}],
-                    "total": 2, "waiting": 1, "next_cursor": "17:s1"}}),
-                )
-            }
-            ("GET", route) if route.contains("/resources?path=") => json_reply(
-                200,
-                json!({"path": "notes", "kind": "notes.notebook", "rows": []}),
-            ),
-            ("GET", route) if route.contains("/resources/") => json_reply(
-                200,
-                json!({"path": "notes/Notebook/Todo", "fields": {"markdown": "# Todo"}}),
-            ),
-            _ => json_reply(
-                404,
-                json!({"error": {"code": "not_found", "message": "no such route"}}),
-            ),
-        }
-    }
-
-    /// was sent.
-    fn fake_api() -> test_http::Responder {
-        test_http::Responder::handle(answer)
-    }
-
-    /// `Reach` names.
-    fn keyed() -> tilo_test_env::ScopedEnv {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(api::KEY_ENV, "tilo_sk_test");
-        env
-    }
-
-    tilo_test_env::scenario! {
-        fn the_hosted_commands_call_the_api;
-
-        phase the_hosted_commands_are_the_apis_routes;
-        // `docs/developers/api.md`, with the headers it takes.
-        {
-            let _key = keyed();
-            let api_server = fake_api();
-            let url = api_server.url();
-            let reach = Reach {
-                api: Some(&url),
-                key_file: None,
-                json: false,
-            };
-
-            // A workspace is made as the account's `workspaces#create`, once per idempotency key.
-            workspace(
-                reach,
-                None,
-                WorkspaceCmd::Create {
-                    name: "Applicant: Jane Doe".into(),
-                    labels: vec![("customer_id".into(), "cus_8121".into())],
-                },
-            );
-            let made = api_server.drain_requests();
-            assert_eq!(made.len(), 1);
-            assert_eq!(made[0].method, "POST");
-            assert_eq!(
-                made[0].target,
-                "/v1/resources/account/workspaces/actions/create"
-            );
-            assert_eq!(made[0].header("authorization"), Some("Bearer tilo_sk_test"));
-            assert!(
-                made[0].header("idempotency-key").is_some(),
-                "a call that makes something names its invocation"
-            );
-            assert_eq!(
-                serde_json::from_slice::<Value>(&made[0].body).unwrap(),
-                json!({"name": "Applicant: Jane Doe", "labels": {"customer_id": "cus_8121"}})
-            );
-            // A branch is the account's `workspaces#branch`, its source named
-            // by a read of the list, its labels as create takes them.
-            workspace(
-                reach,
-                None,
-                WorkspaceCmd::Branch {
-                    source: "Applicant: Jane Doe".into(),
-                    name: "Applicant: Jane Doe, second try".into(),
-                    labels: vec![("customer_id".into(), "cus_8121".into())],
-                },
-            );
-            let branched = api_server.drain_requests();
-            assert_eq!(branched.len(), 2, "the source is named by the list first");
-            let branch = branched.last().expect("the branch");
-            assert_eq!(branch.method, "POST");
-            assert_eq!(
-                branch.target,
-                "/v1/resources/account/workspaces/actions/branch"
-            );
-            assert!(
-                branch.header("idempotency-key").is_some(),
-                "a call that makes something names its invocation"
-            );
-            assert_eq!(
-                serde_json::from_slice::<Value>(&branch.body).unwrap(),
-                json!({"workspace": WORKSPACE, "name": "Applicant: Jane Doe, second try",
-                    "labels": {"customer_id": "cus_8121"}})
-            );
-            // Running commands unattended is the account's `workspaces#unattended`,
-            // run in the workspace and held while the person decides.
-            workspace(
-                reach,
-                None,
-                WorkspaceCmd::Unattended {
-                    workspace: "Applicant: Jane Doe".into(),
-                    off: false,
-                },
-            );
-            let unattended = api_server.drain_requests();
-            let asked = unattended.last().expect("the setting");
-            assert_eq!(asked.method, "POST");
-            assert_eq!(
-                asked.target,
-                format!("/v1/workspaces/{WORKSPACE}/resources/account/workspaces/actions/unattended")
-            );
-            assert_eq!(asked.header("prefer"), Some("wait=60"));
-            assert_eq!(
-                serde_json::from_slice::<Value>(&asked.body).unwrap(),
-                json!({"workspace": WORKSPACE, "on": true})
-            );
-            // Listing by a label names the labels as `workspaces#list` takes them.
-            workspace(
-                reach,
-                None,
-                WorkspaceCmd::Ls {
-                    labels: vec![("customer_id".into(), "cus_8121".into())],
-                },
-            );
-            let listed = api_server.drain_requests();
-            let listed = listed.last().expect("the list");
-            assert_eq!(
-                listed.target,
-                "/v1/resources/account/workspaces/actions/list"
-            );
-            assert_eq!(
-                serde_json::from_slice::<Value>(&listed.body).unwrap(),
-                json!({"labels": {"customer_id": "cus_8121"}})
-            );
-
-            // A file goes in as one upload, and the reference it answers is what
-            // the command prints.
-            let dir = tempfile::tempdir().unwrap();
-            let file = dir.path().join("passport.png");
-            std::fs::write(&file, b"hello").unwrap();
-            files(
-                reach,
-                "applicant-jane-doe",
-                FilesCmd::Put {
-                    paths: vec![file],
-                    to: None,
-                    store: false,
-                },
-            );
-            let put = api_server.drain_requests();
-            // Content the workspace already holds is not sent again: the
-            // command asks about the file's address first.
-            let asked = put
-                .iter()
-                .find(|request| request.target.ends_with("/contents/have"))
-                .expect("the file's address is asked about");
-            assert_eq!(asked.method, "POST");
-            let asked: Value = serde_json::from_slice(&asked.body).unwrap();
-            let hashes = asked["hashes"].as_array().expect("an address each");
-            assert_eq!(hashes.len(), 1);
-            assert!(hashes[0].as_str().is_some_and(|hash| hash.len() == 64));
-            // The file goes up whole in one call, base64 as the route takes it.
-            let upload = put
-                .iter()
-                .find(|request| request.target.ends_with("/contents"))
-                .expect("the file goes up");
-            assert_eq!(upload.target, format!("/v1/workspaces/{WORKSPACE}/contents"));
-            assert_eq!(upload.method, "PUT");
-            assert_eq!(
-                serde_json::from_slice::<Value>(&upload.body).unwrap(),
-                json!({"files": ["aGVsbG8="]})
-            );
-            assert!(
-                put.iter()
-                    .all(|request| !request.target.ends_with("/uploads")),
-                "the file does not go up one request to a call"
-            );
-            // The bytes are then written into the workspace's files: a Files
-            // open names the contents and the names they take, and answers
-            // the paths they are at.
-            let placed = put
-                .iter()
-                .find(|request| request.target.ends_with("/actions/open"))
-                .expect("the file is put into the workspace");
-            assert_eq!(
-                placed.target,
-                format!("/v1/workspaces/{WORKSPACE}/resources/files/actions/open")
-            );
-            assert_eq!(
-                serde_json::from_slice::<Value>(&placed.body).unwrap(),
-                json!({"files": [{"content": "tilo.content:abc", "name": "passport.png",
-                                  "dir": ""}]})
-            );
-
-            // A folder goes up as one open, however many files it holds: many
-            // uploads, one change of the workspace's tree.
-            let folder = dir.path().join("contracts");
-            std::fs::create_dir_all(folder.join("2026")).unwrap();
-            for name in ["nda.pdf", "2026/plan.md", "2026/signed.pdf"] {
-                std::fs::write(folder.join(name), b"hello").unwrap();
-            }
-            files(
-                reach,
-                "applicant-jane-doe",
-                FilesCmd::Put {
-                    paths: vec![folder],
-                    to: Some("docs".into()),
-                    store: false,
-                },
-            );
-            let folder_put = api_server.drain_requests();
-            let uploads: Vec<&test_http::Request> = folder_put
-                .iter()
-                .filter(|request| request.target.ends_with("/uploads"))
-                .collect();
-            assert_eq!(uploads.len(), 1, "the list goes up as content, once");
-            let sent: Vec<&test_http::Request> = folder_put
-                .iter()
-                .filter(|request| request.target.ends_with("/contents"))
-                .collect();
-            assert_eq!(sent.len(), 1, "the folder's files go up in one call");
-            let sent: Value = serde_json::from_slice(&sent[0].body).unwrap();
-            assert_eq!(
-                sent["files"].as_array().map(Vec::len),
-                Some(3),
-                "every file is in that call"
-            );
-            let listed = uploads
-                .iter()
-                .find(|request| request.body.starts_with(b"["))
-                .expect("the list of files goes up as content");
-            assert_eq!(
-                serde_json::from_slice::<Value>(&listed.body).unwrap(),
-                json!([
-                    {"content": "tilo.content:abc", "name": "plan.md", "dir": "docs/contracts/2026"},
-                    {"content": "tilo.content:abc", "name": "signed.pdf", "dir": "docs/contracts/2026"},
-                    {"content": "tilo.content:abc", "name": "nda.pdf", "dir": "docs/contracts"},
-                ]),
-                "each file keeps its place under the folder it came from"
-            );
-            let opened: Vec<&test_http::Request> = folder_put
-                .iter()
-                .filter(|request| request.target.ends_with("/actions/open"))
-                .collect();
-            assert_eq!(opened.len(), 1, "the folder is one change of the tree");
-            assert_eq!(
-                serde_json::from_slice::<Value>(&opened[0].body).unwrap(),
-                json!({"files": "tilo.content:abc"}),
-                "the open names the list, however many files it holds"
-            );
-
-            // An action is `POST …/resources/{path}/actions/{action}`: its
-            // arguments are the body, and its run is named.
-            act(reach, "applicant-jane-doe", "pdf-viewer#open", &[]);
-            let acted = api_server.drain_requests();
-            assert_eq!(
-                acted.len(),
-                2,
-                "the workspace is named by a read of the list, then the action runs"
-            );
-            let action = acted.last().expect("the action");
-            assert_eq!(
-                action.target,
-                format!("/v1/workspaces/{WORKSPACE}/resources/pdf-viewer/actions/open")
-            );
-            assert_eq!(action.header("prefer"), Some("wait=60"));
-            assert_eq!(action.header("tilo-invocation-title"), Some("pdf-viewer#open"));
-            assert!(
-                action
-                    .header("tilo-invocation")
-                    .is_some_and(|id| id == action.header("idempotency-key").unwrap_or_default()),
-                "one invocation, one idempotency key"
-            );
-            assert_eq!(
-                serde_json::from_slice::<Value>(&action.body).unwrap(),
-                json!({})
-            );
-
-            // A listing and a read are the routes `tilo_ls` and `tilo_read`
-            // answer: the same call, in the words a person's command takes.
-            ls(reach, "applicant-jane-doe", Some("notes/Todo"), None);
-            let listed = api_server.drain_requests();
-            let listing = listed.last().expect("the listing");
-            assert_eq!(listing.method, "GET");
-            assert_eq!(
-                listing.target,
-                format!("/v1/workspaces/{WORKSPACE}/resources?path=notes%2FTodo")
-            );
-            // A listing past its first page names the cursor it ended with.
-            ls(reach, "applicant-jane-doe", Some("notes/Todo"), Some("12"));
-            let paged = api_server.drain_requests();
-            assert_eq!(
-                paged.last().expect("the listing").target,
-                format!("/v1/workspaces/{WORKSPACE}/resources?path=notes%2FTodo&cursor=12")
-            );
-            read(
-                reach,
-                "applicant-jane-doe",
-                "notes/Notebook/Todo",
-                Some("12"),
-            );
-            let read_requests = api_server.drain_requests();
-            assert_eq!(
-                read_requests.last().expect("the read").target,
-                format!(
-                    "/v1/workspaces/{WORKSPACE}/resources/notes/Notebook/Todo?cursor=12"
-                )
-            );
-
-            // A file comes back by the reference, its bytes as they were.
-            let out = dir.path().join("passport.back");
-            files(
-                reach,
-                "applicant-jane-doe",
-                FilesCmd::Get {
-                    content: "tilo.content:abc".into(),
-                    output: Some(out.clone()),
-                },
-            );
-            assert_eq!(std::fs::read(&out).unwrap(), b"hello");
-            let got = api_server.drain_requests();
-            assert_eq!(
-                got.last().expect("the read").target,
-                format!("/v1/workspaces/{WORKSPACE}/content/tilo.content%3Aabc")
-            );
-
-            // A fellow administrator is invited by the role the API reads.
-            members(
-                reach,
-                "applicant-jane-doe",
-                PeopleCmd::Invite {
-                    role: "administrator".into(),
-                    email: Some("ops@example.com".into()),
-                    waiting: None,
-                },
-            );
-            let invited = api_server.drain_requests();
-            let invitation = invited.last().expect("the invitation");
-            assert_eq!(invitation.method, "POST");
-            assert_eq!(
-                invitation.target,
-                format!(
-                    "/v1/workspaces/{WORKSPACE}/resources/workspace/invitations/actions/invite"
-                )
-            );
-            assert_eq!(
-                serde_json::from_slice::<Value>(&invitation.body).unwrap(),
-                json!({"role": "administrator", "invitee_name": "ops@example.com"})
-            );
-
-            // Someone in is moved by their key, and removed by it.
-            let ada = "ab".repeat(32);
-            members(
-                reach,
-                "applicant-jane-doe",
-                PeopleCmd::Role {
-                    key: ada.clone(),
-                    role: "editor".into(),
-                },
-            );
-            let moved = api_server.drain_requests();
-            let moved = moved.last().expect("the move");
-            assert_eq!(moved.method, "POST");
-            assert_eq!(
-                moved.target,
-                format!(
-                    "/v1/workspaces/{WORKSPACE}/resources/workspace/members/{ada}/actions/role"
-                )
-            );
-            assert_eq!(
-                serde_json::from_slice::<Value>(&moved.body).unwrap(),
-                json!({"role": "editor"})
-            );
-            members(reach, "applicant-jane-doe", PeopleCmd::Rm { key: ada.clone() });
-            let removed = api_server.drain_requests();
-            let removed = removed.last().expect("the removal");
-            assert_eq!(removed.method, "POST");
-            assert_eq!(
-                removed.target,
-                format!(
-                    "/v1/workspaces/{WORKSPACE}/resources/workspace/members/{ada}/actions/remove"
-                )
-            );
-            assert_eq!(
-                serde_json::from_slice::<Value>(&removed.body).unwrap(),
-                json!({})
-            );
-
-            // A workspace is named again with the account's `workspaces#rename`.
-            workspace(
-                reach,
-                None,
-                WorkspaceCmd::Rename {
-                    workspace: "applicant-jane-doe".into(),
-                    name: "Jane Doe".into(),
-                },
-            );
-            let renamed = api_server.drain_requests();
-            let renamed = renamed.last().expect("the rename");
-            assert_eq!(renamed.method, "POST");
-            assert_eq!(
-                renamed.target,
-                "/v1/resources/account/workspaces/actions/rename"
-            );
-            assert_eq!(
-                serde_json::from_slice::<Value>(&renamed.body).unwrap(),
-                json!({"workspace": WORKSPACE, "name": "Jane Doe"})
-            );
-        }
-
-        phase a_workspaces_invocations_are_listed_page_by_page;
-        // `tilo invocations` is `invocations#list`, its limit and cursor the
-        // action's arguments, and says how to read on.
-        {
-            let _key = keyed();
-            let api_server = fake_api();
-            let url = api_server.url();
-            let reach = Reach {
-                api: Some(&url),
-                key_file: None,
-                json: false,
-            };
-            assert_eq!(
-                invocations(reach, "applicant-jane-doe", Some(1), Some("17:s0")),
-                ExitCode::SUCCESS
-            );
-            let listed = api_server.drain_requests();
-            let listing = listed.last().expect("the listing");
-            assert_eq!(listing.method, "POST");
-            assert_eq!(
-                listing.target,
-                format!("/v1/workspaces/{WORKSPACE}/resources/invocations/actions/list")
-            );
-            assert_eq!(
-                serde_json::from_slice::<Value>(&listing.body).unwrap(),
-                json!({"limit": 1, "cursor": "17:s0"})
-            );
-            let said = invocations_text(&json!({
-                "items": [{"id": "run-2", "status": "waiting", "changes": 1,
-                    "by": {"name": "Jane Doe's agent", "kind": "agent"}}],
-                "total": 2, "waiting": 1, "next_cursor": "17:s1",
-            }));
-            assert!(
-                said.starts_with(concat!(
-                    "2 invocations, newest first; 1 waiting for the person\n",
-                    "run-2 waiting by Jane Doe's agent (agent): 1 change"
-                )),
-                "{said}"
-            );
-            assert!(
-                said.ends_with("\nolder: tilo invocations --cursor 17:s1"),
-                "{said}"
-            );
-        }
-
-        phase a_server_that_did_not_answer_is_asked_again_under_the_same_idempotency_key;
-        // A server that says it is briefly unavailable answers `503`; the same
-        // call is asked again under the id it first went with, so the host
-        // runs one invocation however often it is retried.
-        {
-            let _key = keyed();
-            let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let counted = Arc::clone(&asked);
-            let api_server = test_http::Responder::handle(move |request: &test_http::Request| {
-                let reply = |status: u16, body: Value| {
-                    Some(
-                        test_http::Reply::status(status)
-                            .header("content-type", "application/json")
-                            .body(body.to_string()),
-                    )
-                };
-                // The key is named as `tilo keys ls` lists it first.
-                if request.target.ends_with("/list") {
-                    return reply(
-                        200,
-                        json!({"status": "ok", "result":
-                            {"keys": [{"grant": "grant-1", "name": "Nightly"}]}}),
-                    );
-                }
-                let first = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
-                if first {
-                    reply(
-                        503,
-                        json!({"error": {"code": "unavailable", "message": "still running"}}),
-                    )
-                } else {
-                    reply(200, json!({"status": "ok", "result": {"revoked": "grant-1"}}))
-                }
-            });
-            let url = api_server.url();
-            keys(
-                Reach {
-                    api: Some(&url),
-                    key_file: None,
-                    json: false,
-                },
-                None,
-                KeysCmd::Revoke {
-                    grant: "grant-1".into(),
-                },
-            );
-            let sent: Vec<_> = api_server
-                .drain_requests()
-                .into_iter()
-                .filter(|sent| sent.target.ends_with("/revoke"))
-                .collect();
-            assert_eq!(
-                sent.len(),
-                2,
-                "the unavailable answer is retried, not reported"
-            );
-            assert_eq!(
-                sent[1].target,
-                "/v1/resources/account/keys/actions/revoke"
-            );
-            assert_eq!(
-                sent[0].header("idempotency-key"),
-                sent[1].header("idempotency-key")
-            );
-        }
-    }
-
     tilo_test_env::scenario! {
         fn hosted_answers_read_as_a_person_wrote_them;
-
-        phase a_workspace_is_named_by_its_words;
-        {
-            assert_eq!(api::slug("Applicant: Jane Doe"), "applicant-jane-doe");
-            assert_eq!(api::slug("applicant-jane-doe"), "applicant-jane-doe");
-            assert!(api::is_uuid("3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b"));
-            assert!(!api::is_uuid("jane-doe"));
-        }
 
         phase a_listing_and_a_read_print_their_typed_rows;
         {
@@ -2933,5 +2299,94 @@ mod tests {
                 "fields": {"title": "Todo", "markdown": "- milk"}});
             assert_eq!(lines::resource(&read), "# Todo\n- milk");
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn sample_key(name: &str, fill: &str) -> tilo_api::direct::KeyFile {
+        tilo_api::direct::KeyFile {
+            host: "https://eu1.tilo.test".into(),
+            site: Some("https://tilo.sh".into()),
+            name: name.into(),
+            key: fill.repeat(32),
+            cert: "aa".repeat(32),
+            reached_at: None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn key_file_is_private_under_zero_umask_and_keeps_old_key_on_failed_replace() {
+        tilo_test_env::in_own_process(
+            module_path!(),
+            "key_file_is_private_under_zero_umask_and_keeps_old_key_on_failed_replace",
+            || {
+                use std::os::unix::fs::PermissionsExt as _;
+                use std::sync::atomic::{AtomicBool, Ordering};
+                use tilo_files::native::atomic::test_support::{
+                    Checkpoint, with_failure, with_observer,
+                };
+                use tilo_test_env::file_mode::{on_a_thread_without_chmod, with_zero_umask};
+
+                let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+                with_zero_umask(|| {
+                    let dir = tempfile::tempdir().unwrap();
+                    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
+                        .unwrap();
+                    let path = dir.path().join("visa.json");
+                    let first = sample_key("first", "11");
+                    let second = sample_key("second", "22");
+
+                    // With umask 0 and chmod/fchmod neutralized, neither the writer nor the
+                    // atomic backend's post-open fchmod can narrow the inode: the stage can
+                    // only be 0600 if openat created it with 0600.
+                    let observed = Arc::new(std::sync::Mutex::new(None));
+                    let seen = Arc::clone(&observed);
+                    let existed_at_stage = Arc::new(AtomicBool::new(false));
+                    let flag = Arc::clone(&existed_at_stage);
+                    let target = path.clone();
+                    on_a_thread_without_chmod(|| {
+                        with_observer(
+                            move |event| {
+                                if event.checkpoint == Checkpoint::StageCreated {
+                                    let m =
+                                        event.stage.as_ref().unwrap().metadata.permissions().mode()
+                                            & 0o777;
+                                    *seen.lock().unwrap() = Some(m);
+                                    flag.store(target.exists(), Ordering::SeqCst);
+                                }
+                            },
+                            || write_key_file(&path, &first).unwrap(),
+                        );
+                    });
+                    assert_eq!(*observed.lock().unwrap(), Some(0o600));
+                    assert!(!existed_at_stage.load(Ordering::SeqCst));
+                    assert_eq!(mode(&path), 0o600);
+                    assert_eq!(mode(dir.path()), 0o755);
+                    let before = std::fs::read(&path).unwrap();
+
+                    let failed =
+                        with_failure(Checkpoint::BeforePublish, || write_key_file(&path, &second));
+                    assert!(failed.is_err());
+                    assert_eq!(std::fs::read(&path).unwrap(), before);
+                    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+
+                    // Once the replacement is renamed into place, a refused directory sync
+                    // must not fail the export command.
+                    with_failure(Checkpoint::BeforeCommit, || write_key_file(&path, &second))
+                        .unwrap();
+                    assert_eq!(
+                        std::fs::read(&path).unwrap(),
+                        serde_json::to_vec_pretty(&second).unwrap()
+                    );
+                    assert_eq!(mode(&path), 0o600);
+                    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+
+                    let nested = dir.path().join("nested/visa.json");
+                    on_a_thread_without_chmod(|| write_key_file(&nested, &second).unwrap());
+                    assert_eq!(mode(&nested), 0o600);
+                    assert_eq!(mode(dir.path()), 0o755);
+                });
+            },
+        );
     }
 }

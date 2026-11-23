@@ -54,30 +54,30 @@ pub fn session_answer_id(
 pub struct ListedAgent {
     pub id: String,
     pub name: String,
-    /// The person who added it.
-    pub keeper: String,
+    /// The person the agent acts for.
+    pub acts_for: String,
 }
 
 /// The agents a workspace keeps, as its own record of them names them (`chat.agent`): an agent
-/// works here because the record names a keeper for it, and that keeper is the person whose
-/// session its device joins on.
+/// works here because the record names the person it acts for, and that person's session its
+/// device joins on.
 pub trait AgentRoster: Send + Sync {
-    /// The person who keeps `agent` in `workspace`, while the workspace's
+    /// The person `agent` acts for in `workspace`, while the workspace's
     /// record names it active there; `None` for an agent it does not name.
-    fn keeper(&self, workspace: &str, agent: &str) -> Option<String> {
+    fn acts_for(&self, workspace: &str, agent: &str) -> Option<String> {
         self.listed(workspace)
             .into_iter()
             .find(|listed| listed.id == agent)
-            .map(|listed| listed.keeper)
+            .map(|listed| listed.acts_for)
     }
     /// Whether the workspace's record names `agent` active in `workspace`.
     fn lists(&self, workspace: &str, agent: &str) -> bool {
-        self.keeper(workspace, agent).is_some()
+        self.acts_for(workspace, agent).is_some()
     }
     /// The active agents the workspace's record names: its agent members.
     fn listed(&self, workspace: &str) -> Vec<ListedAgent>;
-    /// What `agent` may spend on the day its keeper counts: the limit its
-    /// keeper set and what it spent of it. `None` where this host reads no
+    /// What `agent` may spend on the day its person counts: the limit its
+    /// person set and what it spent of it. `None` where this host reads no
     /// such record, and then the agent works unmetered.
     fn spend(&self, workspace: &str, agent: &str) -> Option<runtime_collab::AgentSpend> {
         let _ = (workspace, agent);

@@ -164,8 +164,8 @@ tempfile.workspace = true
 calendar = { path = "../calendar", default-features = false }
 # Serialised, self-restoring HOME/XDG redirection for the tests that
 # construct the whole app or persist through the per-user settings file.
-tilo-test-env = { path = "../../crates/dev/test-env" }
-test-http = { path = "../../crates/dev/test-http" }
+tilo-test-env = { path = "../../tools/test-env" }
+test-http = { path = "../../tools/test-http" }
 # The persistence tests read the shared account store + vault back to verify
 # the pane wrote through them.
 accounts = { path = "../../crates/system/accounts" }

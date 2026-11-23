@@ -86,7 +86,8 @@ WGPU_ADAPTER_NAME = "llvmpipe"
 
 # Tests, one check per package: `test/<package>`. The driver runs nextest once over the whole
 # family, so a shared dependency compiles once for all of them, and t shards each test binary by
-# its measured per-test time.
+# its measured per-test time. The flows' tests are not here: the shared filters leave them out,
+# and the `flows` check runs each flow alone.
 [[cargo]]
 name = "test"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -131,18 +132,23 @@ isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd"
 # holds every such package to it).
 # The apps the session opens are built with the `fast` profile, each in an invocation of its own:
 # the app-open budget test times their startup, which only means something for an optimised build.
-# The launcher that starts them is built the same way: the session runs the copy of it t places
-# beside the session's own binary, and its sandbox set-up is part of every open the test times.
+# The launcher that starts them is built the same way: its sandbox set-up is part of every open
+# the test counts. The session is not started here: a started build of a package's own binary
+# takes that binary's name in the archive the shards run from, so every other test of the
+# session's would lose the plain build it starts.
 # The Lounge tests start the workspace service, which `tilo-server` has only with `agents`, for both
 # packages whose tests start it: a featured artifact is built in an invocation of its own, so it
 # moves no unit of this family's build. The pam-tilo tests load the PAM module as libpam does:
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo,
-# which the pam-module setup step hands to the tests (.config/nextest.toml).
-starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "launcher:tilo-launcher@fast", "tilo-runtime:tilo-runtime@fast", "tasks:tasks@fast", "passwords:passwords@fast", "model-providers:model-providers@fast", "tilo-server:bin:tilo-server=agents", "tilolang-process:tilolang-process"], tilo-session-client = ["tilo-server:bin:tilo-server=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "tilolang-process:tilolang-process", "launcher:tilo-launcher"], package-service = ["install:tilo-install"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"] }
+# which the pam-module setup step hands to the tests (.config/nextest.toml). The extension helper's
+# end-to-end test checks real manifest signatures with the tilo-crypto it is handed.
+starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "launcher:tilo-launcher@fast", "tilo-runtime:tilo-runtime@fast", "tasks:tasks@fast", "passwords:passwords@fast", "model-providers:model-providers@fast", "tilo-server:bin:tilo-server=agents", "tilolang-process:tilolang-process"], tilo-session-client = ["tilo-server:bin:tilo-server=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilolang-process:tilolang-process", "launcher:tilo-launcher"], package-service = ["install:tilo-install"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
-# every family that declares it resolve them, so all of them build the same units of them.
+# every family that declares it resolve them, so all of them build the same units of them. The
+# flows' tests are not here either: the shared filters leave them out, and the `flows` check runs
+# each flow alone.
 [[cargo]]
 name = "test-{arch}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -228,6 +234,36 @@ packages = [
 env = { TILO_TEST_NTFS_FIXTURES = "0" }
 heavy = true
 on = ["dispatch"]
+
+# The flows of docs/architecture/flows.md, one check per flow so a flow still being built can stay
+# red without turning an ordinary package's test check red: a flow test is a test whose name
+# carries a `flow_<name>` module, and the shared filters (.config/nextest-filters.toml, `flows`)
+# leave those out of every run that names no filter of its own. Each entry runs exactly that flow's
+# tests, in the package whose tests they are and the way that package's family runs them: a default
+# check, so every change it reaches runs it.
+#
+# A flow whose tests another package holds adds a matrix entry with its own `-p` and filter, and a
+# run names what it starts the way that package's family does. The flows in
+# crates/session/client/tests start the server's workspace service as a deployment does: the ci
+# profile's `lounge-siblings` setup builds it for the tests its filter matches, so a flow module it
+# should build goes in that filter (.config/nextest.toml) and the entry is `-p tilo-session-client
+# --test it -E 'test(flow_<name>::)'`. The VM-only steps of flow 1 (a hosted Browser and a command
+# in a VM) are KVM and stay in os/containers/tilo-sh/check.sh.
+[[check]]
+name = "flows/{flow}"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=pass -p tilo-agent-session --test it -E 'test(workspace_actions::flow_customer_workspaces::)'\n"
+timeout_secs = 1800
+[check.matrix]
+flow = ["customer-workspaces", "four-devices", "laptop-phone-server"]
+
+[[check.matrix.set]]
+when = { flow = "four-devices" }
+run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=pass -p tilo-session-client --test it -E 'test(flow_four_devices::)'\n"
+
+[[check.matrix.set]]
+when = { flow = "laptop-phone-server" }
+run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=pass -p tilo-session-client --test it -E 'test(flow_laptop_phone_server::)'\n"
 
 # Clippy over the workspace: one driver, one unit per crate, shared with `test` and `check` (t's
 # compiler cache keys a unit by what it was given, whichever family asked for it). Its selection
@@ -386,6 +422,10 @@ on = ["schedule:0 3 * * *", "idle"]
 [[check]]
 name = "policy/{step}"
 run = "{step.run}"
+# A step reads the tree, never the machine it runs on, so its result stands on every
+# architecture and it runs wherever there is room, the Arm node included. The unit tests below
+# stay per architecture: some of them ask the host what it is.
+requires = ["arch=any"]
 [check.matrix]
 step = { from_toml = "tools/policy/steps.toml", key = "step" }
 exclude = [{ step = "unit" }]
@@ -940,6 +980,18 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/python/src/tilo/types --check\ncargo run --locked -q -p tilo-cli -- sdk gen --lang ts --out sdk/typescript/src/types --check\ncargo run --locked -q -p tilo-cli -- sdk gen --lang openapi --out docs/api --check\n"
 fix = "cargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/python/src/tilo/types\ncargo run --locked -q -p tilo-cli -- sdk gen --lang ts --out sdk/typescript/src/types\ncargo run --locked -q -p tilo-cli -- sdk gen --lang openapi --out docs/api\n"
 
+# The component catalogue, crates/dev/ui-graph/components.json: the toolkit's widgets described as
+# data, which tilo-view and tilolang's `ui` package are built from. The toolkit's own test fails
+# while it is stale; this check names the same comparison so `t fix ui-graph` writes the file from
+# the tree, run detached and kept per tree. The fix writes the generator's output beside the file
+# first, so a generator that fails to build or run leaves the committed file whole.
+[[check]]
+name = "ui-graph"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "cargo run --locked -q -p tilo-app-window --example component-catalogue > \"$TMPDIR/components.json\"\ncmp -s \"$TMPDIR/components.json\" crates/dev/ui-graph/components.json || { echo 'crates/dev/ui-graph/components.json is stale: t fix ui-graph writes it'; exit 1; }\n"
+fix = "cargo run --locked -q -p tilo-app-window --example component-catalogue > \"$TMPDIR/components.json\"\nmv \"$TMPDIR/components.json\" crates/dev/ui-graph/components.json\n"
+default = false
+
 # The SDKs' suites need their ecosystems' tools and locked dependencies, which no other check's
 # image carries: uv with the Python SDK's environment from sdk/python/uv.lock, bun with the
 # TypeScript SDK's packages from sdk/typescript/bun.lock, both baked into the image this check
@@ -1109,7 +1161,7 @@ heavy = true
 name = "real-fuse"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\nbash os/tests/tilo-session-lifecycle.sh\ncargo test --locked -p linux-vm --test hosted_share_cache -- --nocapture\ncargo test --locked -p tilo-fs --lib -- --exact fs::mount_tests::a_name_removed_can_be_made_again_at_once fs::mount_tests::a_tree_removed_takes_every_name_with_it fs::mount_tests::a_name_can_be_made_and_taken_again_and_again fs::mount_tests::a_desktop_editor_saves_with_its_person_s_access hydration::file_keys::tests::a_mounted_file_refuses_a_read_after_workspace_access_is_revoked\ncargo test --locked -p tilo-user-identity projection --lib -- --nocapture\ncargo test --locked -p tilo-fs replica_ack::tests::exact_nonce_version_peer_and_freshness_are_bound --lib -- --nocapture\ncargo test --locked -p tilo-fs sync::tests::namespace_documents_reach_only_entitled_peers_and_readers_cannot_author --lib -- --nocapture\ncargo test --locked -p tilo-fs --lib -- --exact fs::tests::record_publisher_integration_tests::keep_current_and_use_other_append_signed_convergent_resolutions\ncargo test --locked -p tilo-fs durable_backup::tests --lib -- --nocapture\ncargo test --locked -p tilo-fs --lib -- --exact record_repository::tests::signed_transactions_merges_and_batches_project_whole_and_survive_restart record_repository::tests::a_received_changeset_applies_whole_or_not_at_all durable_backup::tests::backups_retain_generations_and_recover_from_the_newest_valid_one\ncargo test --locked -p tilo-fs namespace::tests::byte_names_survive_load_save_rename_and_replication_exactly --lib -- --nocapture\ncargo test --locked -p tilo-fs history::tests::history_logs_read_legacy_and_fail_closed_on_damage --lib -- --nocapture\ncargo test --locked -p tilo-fs record_transaction::tests::journal_restarts_exactly_with_monotonic_phases_and_whole_batches --lib -- --nocapture\ncargo test --locked -p tilo-fs transaction_coordinator::tests::broadcast_failure_recovers_exact_committed_namespace_without_duplicate_history --lib -- --nocapture\ncargo test --locked -p tilo-fs availability::tests::availability_registry_persists_by_stable_record_id_and_rejects_tampering --lib -- --nocapture\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\nbash os/tests/tilo-session-lifecycle.sh\ncargo test --locked -p linux-vm --test hosted_share_cache -- --nocapture\ncargo test --locked -p tilo-fs --lib -- --exact fs::mount_tests::a_tree_removed_takes_every_name_with_it fs::mount_tests::a_name_can_be_made_and_taken_again_and_again fs::mount_tests::a_desktop_editor_saves_with_its_person_s_access hydration::file_keys::tests::a_mounted_file_refuses_a_read_after_workspace_access_is_revoked\ncargo test --locked -p tilo-user-identity projection --lib -- --nocapture\ncargo test --locked -p tilo-fs durable_backup::tests --lib -- --nocapture\ncargo test --locked -p tilo-fs namespace::journey_tests::byte_names_survive_load_save_rename_and_replication_exactly --lib -- --nocapture\ncargo test --locked -p tilo-fs availability::tests::availability_registry_persists_by_stable_document_id_and_rejects_tampering --lib -- --nocapture\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
@@ -1194,28 +1246,18 @@ secrets = ["TILO_LIVE_WEBDAV_URL", "TILO_LIVE_WEBDAV_USER", "TILO_LIVE_WEBDAV_PA
 [[check]]
 name = "sandbox-host-ids-build"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\nbinary_target() {\n  package=$1\n  target=$2\n  name=$3\n  # Read every message before selecting: closing cargo's pipe early makes it\n  # fail with a broken pipe while it is still writing build messages.\n  executable=$(cargo test --locked -p \"$package\" --test \"$target\" --no-run --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$target\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_lib() {\n  package=$1\n  lib=$2\n  name=$3\n  shift 3\n  executable=$(cargo test --locked -p \"$package\" --lib --no-run \"$@\" --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$lib\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_target tilo-sandbox job tilo-sandbox-job\nbinary_lib runtime-bundle runtime_bundle runtime-bundle-lib\nbinary_target tilo-install-helpers it tilo-install-helpers-native-python\nbinary_target env-tools it env-tools-it\nbinary_target tilo-install-helpers it installer-accounts-native\nbinary_lib tilo-identity tilo_identity identity-host-lib --features native-current-device-qualification\n"
+run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\nbinary_target() {\n  package=$1\n  target=$2\n  name=$3\n  # Read every message before selecting: closing cargo's pipe early makes it\n  # fail with a broken pipe while it is still writing build messages.\n  executable=$(cargo test --locked -p \"$package\" --test \"$target\" --no-run --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$target\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_lib() {\n  package=$1\n  lib=$2\n  name=$3\n  shift 3\n  executable=$(cargo test --locked -p \"$package\" --lib --no-run \"$@\" --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$lib\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_lib runtime-bundle runtime_bundle runtime-bundle-lib\nbinary_target tilo-install-helpers it tilo-install-helpers-native-python\nbinary_target env-tools it env-tools-it\nbinary_target tilo-install-helpers it installer-accounts-native\nbinary_lib tilo-identity tilo_identity identity-host-lib --features native-current-device-qualification\n"
 requires = ["arch=x86_64"]
-outputs = ["/target/vm/tilo-sandbox-job", "/target/vm/runtime-bundle-lib", "/target/vm/tilo-install-helpers-native-python", "/target/vm/env-tools-it", "/target/vm/installer-accounts-native", "/target/vm/identity-host-lib", "/target/debug/tilo-firstboot-home-seeds", "/target/debug/install-test-firstboot-files", "/target/debug/staging-handoff-native-extractor"]
+outputs = ["/target/vm/runtime-bundle-lib", "/target/vm/tilo-install-helpers-native-python", "/target/vm/env-tools-it", "/target/vm/installer-accounts-native", "/target/vm/identity-host-lib", "/target/debug/tilo-firstboot-home-seeds", "/target/debug/install-test-firstboot-files", "/target/debug/staging-handoff-native-extractor"]
 heavy = true
 
 [[check]]
 name = "sandbox-host-ids"
-run = "set -eu\n# These fixtures must run as real root in the micro-VM. If t ever stops giving\n# the guest root, fail here instead of letting the fixtures take their\n# unprivileged branches or skip.\nif [ \"$(id -u)\" != \"0\" ]; then\n  echo \"sandbox-host-ids: expected euid 0 in the micro-VM, got $(id -u)\" >&2\n  exit 1\nfi\nmkdir -p \"$TMPDIR\"\n# Every fixture below must run the exact cases it exists for. A filter that\n# matches fewer (or no) tests still exits 0, so compare the reported count.\nrun_tests() {\n  expected=$1\n  shift\n  if output=$(\"$@\" 2>&1); then\n    printf '%s\\n' \"$output\"\n    case \"$output\" in\n      *\"skipping:\"*|*\"skipped:\"*)\n        echo \"selected fixture skipped: $*\" >&2\n        return 1\n        ;;\n    esac\n    actual=$(printf '%s\\n' \"$output\" | sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed.*/\\1/p' | tail -n 1)\n    if [ \"${actual:-}\" != \"$expected\" ]; then\n      echo \"expected $expected passing tests, got ${actual:-none}: $*\" >&2\n      return 1\n    fi\n  else\n    status=$?\n    printf '%s\\n' \"$output\"\n    return \"$status\"\n  fi\n}\nrepo=$PWD\ncd \"$repo/crates/platform/tilo-sandbox\"\nrun_tests 16 /target/vm/tilo-sandbox-job host_ids:: overlays:: --nocapture --test-threads=1\ncd \"$repo\"\nrun_tests 2 /target/vm/runtime-bundle-lib component_pins::tests:: --nocapture --test-threads=1\nrun_tests 1 /target/vm/tilo-install-helpers-native-python native_python::native_home_seeds --nocapture --test-threads=1\n# The current-device qualifier gives its fixture files to another user and becomes it;\n# a job sandbox's root holds neither capability, so it runs here as real root.\nrun_tests 1 /target/vm/identity-host-lib --exact enrolled_transport::tests::current_owner_reference_actual_user_reads_root_owned_host_and_retains_activation_ownership --nocapture --test-threads=1\n# The installer's account handoff mounts a disposable chroot; the job sandbox\n# ignores it, as it never gives root.\nrun_tests 1 /target/vm/installer-accounts-native --ignored --exact accounts_native::tests::production_stage_adopt_accounts --nocapture --test-threads=1\n# The two real-runtime tests need TILO_ENV_RUNTIME_TREE (built by the env-runtime\n# chain) and the network. Selecting them here would turn a missing fixture\n# into a pass, so name the five sandbox fixtures this job exists for.\nrun_tests 5 /target/vm/env-tools-it build::a_fixture_build_seals_only_what_the_packages_added build::two_fixture_builds_are_identical build::a_catalog_hit_skips_the_build build::requests_dnf_rejects_fail_before_building build::set_runtime_rebuilds_every_tool_or_none --nocapture --test-threads=1\n"
+run = "set -eu\n# These fixtures must run as real root in the micro-VM. If t ever stops giving\n# the guest root, fail here instead of letting the fixtures take their\n# unprivileged branches or skip.\nif [ \"$(id -u)\" != \"0\" ]; then\n  echo \"sandbox-host-ids: expected euid 0 in the micro-VM, got $(id -u)\" >&2\n  exit 1\nfi\nmkdir -p \"$TMPDIR\"\n# Every fixture below must run the exact cases it exists for. A filter that\n# matches fewer (or no) tests still exits 0, so compare the reported count.\nrun_tests() {\n  expected=$1\n  shift\n  if output=$(\"$@\" 2>&1); then\n    printf '%s\\n' \"$output\"\n    case \"$output\" in\n      *\"skipping:\"*|*\"skipped:\"*)\n        echo \"selected fixture skipped: $*\" >&2\n        return 1\n        ;;\n    esac\n    actual=$(printf '%s\\n' \"$output\" | sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed.*/\\1/p' | tail -n 1)\n    if [ \"${actual:-}\" != \"$expected\" ]; then\n      echo \"expected $expected passing tests, got ${actual:-none}: $*\" >&2\n      return 1\n    fi\n  else\n    status=$?\n    printf '%s\\n' \"$output\"\n    return \"$status\"\n  fi\n}\nrun_tests 2 /target/vm/runtime-bundle-lib component_pins::tests:: --nocapture --test-threads=1\nrun_tests 1 /target/vm/tilo-install-helpers-native-python native_python::native_home_seeds --nocapture --test-threads=1\n# The current-device qualifier gives its fixture files to another user and becomes it;\n# a job sandbox's root holds neither capability, so it runs here as real root.\nrun_tests 1 /target/vm/identity-host-lib --exact enrolled_transport::tests::current_owner_reference_actual_user_reads_root_owned_host_and_retains_activation_ownership --nocapture --test-threads=1\n# The installer's account handoff mounts a disposable chroot; the job sandbox\n# ignores it, as it never gives root.\nrun_tests 1 /target/vm/installer-accounts-native --ignored --exact accounts_native::tests::production_stage_adopt_accounts --nocapture --test-threads=1\n# The two real-runtime tests need TILO_ENV_RUNTIME_TREE (built by the env-runtime\n# chain) and the network. Selecting them here would turn a missing fixture\n# into a pass, so name the five sandbox fixtures this job exists for.\nrun_tests 5 /target/vm/env-tools-it build::a_fixture_build_seals_only_what_the_packages_added build::two_fixture_builds_are_identical build::a_catalog_hit_skips_the_build build::requests_dnf_rejects_fail_before_building build::set_runtime_rebuilds_every_tool_or_none --nocapture --test-threads=1\n"
 needs = ["sandbox-host-ids-build"]
 env = { TILO_REQUIRE_CHOWN = "1", TILO_REQUIRE_USERNS = "1", TMPDIR = "/var/tmp/tilo-test" }
 requires = ["arch=x86_64"]
 isolation = "vm"
-heavy = true
-
-[[check]]
-name = "sandbox-limits"
-run = "set -eu\n# The limits and helper fixtures need real root in the micro-VM and a cgroup\n# whose children get the controllers. If t ever stops giving the guest root,\n# fail here instead of letting the fixtures take their skip.\nif [ \"$(id -u)\" != \"0\" ]; then\n  echo \"sandbox-limits: expected euid 0 in the micro-VM, got $(id -u)\" >&2\n  exit 1\nfi\nmkdir -p \"$TMPDIR\"\n# A filter that matches fewer tests than named still exits 0, and so does a\n# fixture that skips: compare the reported count.\nrun_tests() {\n  expected=$1\n  shift\n  if output=$(\"$@\" 2>&1); then\n    printf '%s\\n' \"$output\"\n    case \"$output\" in\n      *\"skipping\"*|*\"skipped\"*)\n        echo \"selected fixture skipped: $*\" >&2\n        return 1\n        ;;\n    esac\n    actual=$(printf '%s\\n' \"$output\" | sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed.*/\\1/p' | tail -n 1)\n    if [ \"${actual:-}\" != \"$expected\" ]; then\n      echo \"expected $expected passing tests, got ${actual:-none}: $*\" >&2\n      return 1\n    fi\n  else\n    status=$?\n    printf '%s\\n' \"$output\"\n    return \"$status\"\n  fi\n}\n# A cgroup holding processes cannot hand its children controllers. The guest's\n# own root holds every process of this job, so move them into a leaf and let\n# the root delegate what it was given, as a container that starts containers\n# does.\ndelegate_cgroups() {\n  cg=/sys/fs/cgroup\n  [ \"$(cat /proc/self/cgroup)\" = \"0::/\" ] || return 0\n  [ -z \"$(cat \"$cg/cgroup.subtree_control\")\" ] || return 0\n  mkdir -p \"$cg/init\"\n  for _ in 1 2 3 4 5; do\n    pids=$(cat \"$cg/cgroup.procs\")\n    [ -n \"$pids\" ] || break\n    for pid in $pids; do\n      echo \"$pid\" >\"$cg/init/cgroup.procs\" 2>/dev/null || true\n    done\n  done\n  for controller in $(cat \"$cg/cgroup.controllers\"); do\n    echo \"+$controller\" >\"$cg/cgroup.subtree_control\"\n  done\n}\ndelegate_cgroups\ncd crates/platform/tilo-sandbox\n# The limits fixtures each make a job cgroup and watch the kernel enforce it;\n# the quota one needs an XFS filesystem mounted with prjquota, which no check\n# has, so it is left out rather than made to skip.\nrun_tests 5 /target/vm/tilo-sandbox-job limits:: --skip a_disk_quota_stops_writes_where_the_filesystem_enforces_it --nocapture --test-threads=1\nrun_tests 1 /target/vm/tilo-sandbox-job helpers:: --nocapture --test-threads=1\n"
-needs = ["sandbox-host-ids-build"]
-env = { TILO_REQUIRE_CHOWN = "1", TILO_REQUIRE_USERNS = "1", TMPDIR = "/var/tmp/tilo-test" }
-requires = ["arch=x86_64"]
-isolation = "vm"
-on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -1536,6 +1578,18 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 # the state's crates.
 env = { CARGO_NET_OFFLINE = "false" }
 run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\n# The Mac's own tilo test cache, which outlives jobs as the Linux nodes' does (font-catalog.py's\n# default): $TMPDIR is each job's own, and the fonts were downloaded again in every run.\nfonts=\"${TILO_TEST_CACHE_DIR:-$HOME/.cache/tilo/test-env}/font-artifacts\"\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$fonts\"\nexport TILO_FONT_ASSET_CACHE=\"$fonts\" TILO_FONT_ASSETS_OFFLINE=1\ncargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package\nbin=${CARGO_TARGET_DIR:-$PWD/target}/debug\nrustup target add wasm32-unknown-unknown\n# The template takes the SDK from this tree as a git repository (`--sdk-git file://\u2026`, at HEAD):\n# commit the tree here, so HEAD is exactly the files checked, a working tree's changes included.\nif ! git rev-parse --git-dir >/dev/null 2>&1; then\n  git init -q\n  git add -A\n  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@localhost GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@localhost git commit -q -m 'the checked tree'\nfi\nTILO_SDK_SOURCE=git cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture\nfor app in calculator; do\n  bundle=$(\"$bin/tilo-app\" build --target macos \"apps/$app\" | tail -n 1)\n  plutil -lint \"$bundle/Contents/Info.plist\"\n  codesign --verify --deep --strict \"$bundle\"\n  \"$bundle/Contents/MacOS/$app\" --shots \"$TMPDIR/$app.png\"\n  test -s \"$TMPDIR/$app.png\"\ndone\n\"$bin/tilo-app\" package --target macos apps/calculator --output \"$TMPDIR/Calculator-macos.zip\" --force\ntest -s \"$TMPDIR/Calculator-macos.zip\"\ntest -s \"$TMPDIR/Calculator-macos.zip.json\"\n"
+requires = ["os=macos", "arch=arm64"]
+on = ["dispatch", "idle"]
+heavy = true
+
+[[check]]
+name = "tilolang-macos"
+# The fonts' and crates' downloads come from hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+# A tilolang app on the Mac, on the paths Linux runs it on: its window runs the instance in its own
+# process over the app's document, patches crossing a real channel and shared memory, and an
+# action a person's click runs is counted and named in history.
+run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\nfonts=\"${TILO_TEST_CACHE_DIR:-$HOME/.cache/tilo/test-env}/font-artifacts\"\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$fonts\"\nexport TILO_FONT_ASSET_CACHE=\"$fonts\" TILO_FONT_ASSETS_OFFLINE=1\n# The channel and the shared memory every patch and module crosses, and the Seatbelt profile the\n# runtime confines an app with.\ncargo test --locked -p tilo-render-protocol --lib\ncargo test --locked -p launcher-macos --lib\n# A person's click runs the counter's action through the app's window and its tilolang host.\ncargo test --locked -p tilolang-app --test it hosted::counter -- --exact hosted::counter::a_persons_click_on_a_button_runs_the_action_and_history_names_them\n# The package built as a session installs it, opened by the runtime binary on its payload.\ncargo build --locked -p tilolang-cli --bin tilolang -p tilolang-app --bin tilolang-app\nbin=${CARGO_TARGET_DIR:-$PWD/target}/debug\nexport XDG_STATE_HOME=\"$TMPDIR/state\"\n\"$bin/tilolang\" build apps/tl/counter --out \"$TMPDIR/built\"\npayload=$(ls -d \"$TMPDIR\"/built/*/payload | head -n 1)\ntest -s \"$payload/app.wasm\"\nTILO_APP_MODULE=\"$payload\" TILO_PACKAGE_ID=so.tilo.lang.counter \"$bin/tilolang-app\" --shots \"$TMPDIR/counter.png\"\ntest -s \"$TMPDIR/counter.png\"\n# Every package runs where its runtime runs, the Mac included.\nfor app in notes mail tube; do\n  \"$bin/tilolang\" build \"apps/tl/$app\" --out \"$TMPDIR/built-$app\"\n  for manifest in \"$TMPDIR/built-$app\"/*/manifest.toml; do\n    grep -qx 'platforms = \\[\"linux\", \"macos\", \"web\"\\]' \"$manifest\"\n  done\ndone\n"
 requires = ["os=macos", "arch=arm64"]
 on = ["dispatch", "idle"]
 heavy = true
@@ -4258,6 +4312,22 @@ default = false
 arch = ["x86_64", "aarch64"]
 
 [[check]]
+name = "build/windows-runtime-{arch}"
+# Fetches from mirrors, registries and release hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/windows/build.sh runtime {arch} /target/windows/sdk/sdk-{arch}.tar.zst /target/windows/{arch}/runtime"
+needs = ["build/windows-sdk-{arch}"]
+image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
+outputs = ["/target/windows/{arch}/runtime/tilo-runtime.exe", "/target/windows/{arch}/runtime/tilo-runtime.exe.sha256"]
+# The device daemon and both tilolang runtime programs cross-built for a
+# platform no other check builds them for: too slow for every head, but the
+# only thing that keeps the Windows port compiling, so main's newest head
+# gets it whenever t has room, bisected when it breaks.
+on = ["idle"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
 name = "package/windows-{arch}"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
@@ -4296,6 +4366,18 @@ needs = ["build/windows-x86_64-tests"]
 image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
 requires = ["arch=x86_64"]
 default = false
+
+[[check]]
+name = "wine/windows-x86_64-runtime"
+# Fetches from mirrors, registries and release hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/windows/wine-test.sh runtime /target/windows/x86_64/runtime/tilo-runtime.exe"
+needs = ["build/windows-runtime-x86_64"]
+image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
+requires = ["arch=x86_64"]
+# The Windows daemon compiles before it runs: Wine drives its CLI, which must
+# answer the Windows refusal instead of crashing or starting half a daemon.
+on = ["idle"]
 
 [[check]]
 name = "wine/windows-x86_64-install"
@@ -4932,9 +5014,59 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/installer-cycle/**"]
+# A failed run keeps what the guest and its installer said: the serial tail
+# before the install begins and the installer's console state.
+evidence = ["/target/installer-cycle/**"]
 cache = false
 git = true
 timeout_secs = 10800
+# It boots the medium in a KVM guest of its own; a shrunken host leaves the
+# guest's installer with too little memory to come up.
+heavy = true
+default = false
+on = ["dispatch"]
+
+# One person's four devices used as one computer, on tilo-vm's private network: an x86-64
+# desktop with two virtual outputs, an aarch64 laptop under the software emulator and the
+# server when a disk for it is supplied. The scenario goes through published actions and
+# `tilo device`; a capability nobody has built yet ends its step naming that capability
+# (os/tests/flow_scenario.sh). The check passes while those steps are named and fails if a
+# step that should work fails, or the fleet never reaches its steps.
+[[check]]
+name = "flow-scenario-four-devices"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt tools/ci/packages/qemu-aarch64.txt\nbash os/tests/flow_scenario.sh four-devices --arm-disk /target/publish/os-dev-disk/aarch64/disk/disk.qcow2\n"
+needs = ["os-dev-disk-x86_64", "os-dev-disk-aarch64", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/flow-scenarios/four-devices/**"]
+cache = false
+git = true
+timeout_secs = 7200
+heavy = true
+default = false
+on = ["dispatch"]
+
+# Laptop and server with no tilo.sh: the desktop boots with no route to the internet and
+# its steps go through published actions and `tilo device`; the server's own web UI and the
+# desktop's management of it end naming the capability they need until it exists
+# (os/tests/flow_scenario.sh). Add --server-disk when a bootable server image disk is at hand.
+[[check]]
+name = "flow-scenario-laptop-phone-server"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt\nbash os/tests/flow_scenario.sh laptop-phone-server\n"
+needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/flow-scenarios/laptop-phone-server/**"]
+cache = false
+git = true
+timeout_secs = 5400
+heavy = true
 default = false
 on = ["dispatch"]
 
@@ -6399,14 +6531,18 @@ on = ["dispatch", "idle"]
 [check.matrix]
 proof = ["tilolang", "two-people", "mail-two-members", "agent-sessions", "session-lock"]
 
-# An app.s first hour, walked in each version its step file names: the Rust version (apps/) and
-# the tilolang one (apps/tl/) before the change that retires the Rust app, the tilolang one alone
-# after it, on the session the nested-session check built, one headless session each, every step
-# snapshotted in the light theme and the marked ones again in the dark
-# (scripts/headless-examples/app-walk.py; the steps are app-walks/APP.json). It is how a Rust app
-# is shown to be replaceable before it is deleted, and it judges nothing: the page the walk writes
-# (`t outputs app-walk/<app> --to DIR`, DIR/walk.md) sets the runs. snapshots side by side for
-# a person to read.
+# A person's first hour, one walk per thing they meet — the shell's launcher, switcher, search,
+# quick settings and the rest, and each app they open — walked in every version its step file names
+# that is still in the tree: the Rust shell and the tilolang one (`--shell screen`), a Rust app and
+# its tilolang port. One headless session per version on the session the nested-session check built,
+# every step snapshotted in the light theme and the marked ones in the dark, each step asserting what
+# a person must see and how long it may take (scripts/headless-examples/app-walk.py, the steps in
+# app-walks/WALK.json). The check holds what it found to the walk's baseline from main
+# (app-walks/baseline/WALK.json): a step walked there and not here, or walked twice as slowly, is
+# red, and a version the baseline did not have is held to the version a person got then, so a lane
+# that deletes the Rust shell or app proves the replacement lost nothing. `scripts/headless-examples/walk.sh WALK`
+# runs it and brings back the page (walk.md, compare.md) with the baseline's shots beside this
+# tree's; inputs: `only=rust|tl` walks one version, `discover=1` keeps every step's controls.
 [[check]]
 name = "app-walk/{app}"
 run = "bash tools/test-env.sh bash tools/ci/app-walk.sh /target/app-walk/{app} {app}"
@@ -6415,12 +6551,14 @@ env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TILOLANG = "/
 requires = ["arch=x86_64"]
 isolation = "vm"
 outputs = ["/target/app-walk/{app}/**"]
+evidence = ["/target/app-walk/{app}/**"]
 timeout_secs = 2400
-on = ["dispatch"]
+on = ["dispatch", "idle"]
+dispatch_inputs = { only = "", discover = "" }
 [check.matrix]
-app = ["notes", "tube"]
+app = ["apps", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "devices", "displays-across-devices", "notes", "settings", "shell", "tube"]
 
-# `cargo headless --check` and `cargo desktop --check` (crates/dev/tilo-local) on the session the
+# `cargo headless --check` and `cargo desktop --check` (tools/tilo-local) on the session the
 # nested-session check built: each starts the development session the way a developer does, asks
 # it something (its actions; its window, opened on a throwaway headless Tilo in place of the
 # developer's desktop) and stops it, with listening traps where the host's session bus, system bus,
@@ -6908,8 +7046,11 @@ story = ["wait-list-sign-up"]
 
 # The user stories walked in Tilo shells (stories.json's `"walk": "shell"`): each person a headless
 # Tilo session of their own, on the session the nested-session check built with the tree's apps, on
-# scratch homes (stories/shell/story.py). Each step is driven through the shell's own actions,
-# pointer and keys, decided by reading the shells' own state, timed against its budget and
+# scratch homes (stories/shell/story.py), or a computer of theirs where the `tilo` command is the
+# whole of Tilo, driven by the commands a person runs there (stories/shell/cli_host.py: a ticket
+# from one computer logged in on another, and a home server joined to a workspace). Each step is
+# driven through the shell's own actions, pointer and keys, or through those commands, decided by
+# reading the shells' own state or what the commands answered, timed against its budget and
 # snapshotted; each person's snapshots become their video. A story that meets a server (`servers`)
 # starts it here first, as root, and reads its state beside the person's (test-user-stories.sh):
 # the Nextcloud one story connects to over WebDAV and CalDAV is the conformance suite's own image,
@@ -6945,7 +7086,7 @@ outputs = ["/target/user-stories-shell/{story}/index.html", "/target/user-storie
 evidence = ["/target/user-stories-shell/{story}/index.html", "/target/user-stories-shell/{story}/{story}/**"]
 timeout_secs = 3000
 [check.matrix]
-story = ["agent-mcp", "second-device", "files-in", "calendar-invite", "nextcloud-files", "mail-password", "shared-mailbox", "desktop-easy"]
+story = ["agent-mcp", "second-device", "files-in", "calendar-invite", "nextcloud-files", "mail-password", "shared-mailbox", "desktop-easy", "invite-live", "cli-login-ticket", "home-server-joins"]
 
 # The programs the local tilo.sh stack's checks run, and its server's laid-out context: built once
 # here, at the release's code and opt-level without its whole-program link (Cargo.toml's
@@ -7186,6 +7327,32 @@ isolation = "vm"
 outputs = ["/target/tilo-sh-local-vm/**"]
 timeout_secs = 5400
 default = false
+
+# The developer docs' hosted-Browser example (example `hosted-browser` in
+# docs/developers/one-workspace-per-customer.md): the same stack and VM host tilo-sh-local-vm
+# runs, brought up for one program, an agent's key opening a workspace's Browser in the
+# workspace's own VM and driving a page through the SDKs' generic action call. The docs-examples
+# check runs the book's other examples against api-on-server and leaves this one out; this check
+# is the one that runs it, so the example proves itself instead of sitting in the page.
+#
+# Its setup's dnf installs from Fedora's mirrors, which are no fixed host list; the run meets the
+# stack, the page it drives and the VM's session on loopback alone.
+[[check]]
+name = "docs-examples-browser"
+on = ["dispatch", "idle"]
+run = "bash os/containers/tilo-sh/test-docs-browser.sh /target/docs-examples-browser"
+image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
+setup = { run = "dnf install -y --setopt=install_weak_deps=False podman util-linux xfsprogs openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+needs = ["tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context", "cli-x86_64", "image-vm-host", "image-hosted-guest"]
+env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/docs-examples-browser/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "1", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_BROWSER_FREE_ACTIONS = "200" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+# The stack lays the server's context out itself, from the apps' history (lounge-context.sh).
+git = true
+outputs = ["/target/docs-examples-browser/**"]
+# What a failure keeps of why: every service's log, which says which of them did not answer.
+evidence = ["/target/docs-examples-browser/state/logs/**"]
+timeout_secs = 3600
 
 # Releasing the Lounge: t's own image-lounge build of the released commit (the same cached build
 # the check runs), with the entrypoint and image tests its check runs, signed with the release key
@@ -7661,6 +7828,7 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/host-assurance/**"]
+evidence = ["/target/host-assurance/**"]
 cache = false
 git = true
 timeout_secs = 10800
@@ -7711,6 +7879,7 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/host-assurance/**"]
+evidence = ["/target/host-assurance/**"]
 cache = false
 git = true
 timeout_secs = 1800
@@ -7727,6 +7896,7 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/host-assurance/**"]
+evidence = ["/target/host-assurance/**"]
 cache = false
 git = true
 timeout_secs = 2700
@@ -7743,6 +7913,7 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/host-assurance/**"]
+evidence = ["/target/host-assurance/**"]
 cache = false
 git = true
 timeout_secs = 5400
@@ -7759,6 +7930,7 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/host-assurance/**"]
+evidence = ["/target/host-assurance/**"]
 cache = false
 git = true
 timeout_secs = 2700
@@ -7775,6 +7947,7 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/host-assurance/**"]
+evidence = ["/target/host-assurance/**"]
 cache = false
 git = true
 timeout_secs = 2700
@@ -7791,6 +7964,7 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/host-assurance/**"]
+evidence = ["/target/host-assurance/**"]
 cache = false
 git = true
 timeout_secs = 3600

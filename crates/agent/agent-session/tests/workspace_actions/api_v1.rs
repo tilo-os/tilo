@@ -1282,7 +1282,7 @@ async fn allow_on_list(
             answer: "allow".into(),
         }],
     }))
-    .expect("its keeper may allow it to invite people");
+    .expect("its person may allow it to invite people");
     let changes = list.doc_mut().save_after(&heads);
     // Her laptop's session holds the change, seals it under the workspace's keys once they are
     // here, and sends it to the workspace as each of her writes there.

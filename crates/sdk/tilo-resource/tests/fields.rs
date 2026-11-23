@@ -171,17 +171,30 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_atom_is_listed_as_set_whole_and_a_text_by_character;
+    phase an_agent_reads_from_the_descriptor_what_it_can_change;
+    // The field edit's description is the listing an agent reads before it changes anything:
+    // the paths it may address and the operations each field's shape takes.
     {
         let published = Replica::<Board>::new().published().unwrap();
-        let spec = field_edit(&published);
-        let schema = spec.params()[0].schema.as_deref().unwrap().clone();
-        let (layer, _) = described(&schema, "layer");
-        assert!(layer.starts_with("- `layer`: set \u{2014}"), "{layer}");
-        let (title, _) = described(&schema, "title");
+        let schema = field_edit(&published).params()[0]
+            .schema
+            .as_deref()
+            .unwrap()
+            .clone();
+        let description = schema["description"]
+            .as_str()
+            .expect("the field edit says what it edits");
+        for path in ["- `title`", "- `layer`", "- `notes`"] {
+            assert!(
+                description
+                    .lines()
+                    .any(|line| line.starts_with(path)),
+                "{path} is listed: {description}"
+            );
+        }
         assert!(
-            title.contains("`title`: set, splice {at, delete, insert}, replace {text}"),
-            "{title}"
+            description.contains("splice {at, delete, insert}"),
+            "a text says how it may be edited: {description}"
         );
     }
 
@@ -384,23 +397,13 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_records_fields_only_ever_set_are_named_on_its_line;
+    phase a_records_field_is_edited_through_the_records_field_edit;
+    // A record's fields are set one at a time through the field edit: the
+    // unpublished inner fields are addressed by a path below the record.
     {
         let published = Replica::<Frame>::new().published().unwrap();
         let spec = field_edit(&published);
         let schema = spec.params()[0].schema.as_deref().unwrap().clone();
-        let (look, _) = described(&schema, "look");
-        assert!(
-            look.ends_with("; set one field of it: `colour`, `width`"),
-            "{look}"
-        );
-        let (caption, _) = described(&schema, "look.caption");
-        assert!(
-            caption.contains("set, splice {at, delete, insert}, replace {text}"),
-            "{caption}"
-        );
-        let listing = schema["description"].as_str().unwrap();
-        assert!(!listing.contains("- `look.colour`"), "{listing}");
         let edit = serde_json::json!({
             "path": [{ "field": "look" }, { "field": "width" }],
             "op": "set",
@@ -962,21 +965,9 @@ tilo_test_env::scenario! {
         let spec = field_edit(&published);
         let schema = spec.params()[0].schema.as_deref().unwrap().clone();
 
-        // Every editable path is described: title, ops, value, flags.
-        let (title, _) = described(&schema, "title");
-        assert!(
-            title.contains("`title`: set, splice {at, delete, insert}, replace {text}"),
-            "{title}"
-        );
-        assert!(title.contains("(string)"), "{title}");
-        let (notes, _) = described(&schema, "notes");
-        assert!(notes.contains("Undo takes it back"), "{notes}");
-        let (drafts, _) = described(&schema, "drafts");
-        assert!(drafts.contains("asks nothing"), "{drafts}");
-
         // Built from the descriptor: the example's path with the item's id in
         // place of its placeholder, an op it lists, a value of its type.
-        let (_, example) = described(&schema, "notes.*.body");
+        let example = example_at(&schema, "notes.*.body");
         let mut path = example["path"].clone();
         for step in path.as_array_mut().unwrap() {
             if step.get("item").is_some() {
@@ -1164,7 +1155,7 @@ tilo_test_env::scenario! {
             .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
             .expect("its fields are edited from it");
         let schema = spec.params()[0].schema.as_deref().unwrap().clone();
-        let (_, example) = described(&schema, "body");
+        let example = example_at(&schema, "body");
         let edit =
             serde_json::json!({ "path": example["path"], "op": "set", "value": ["from the item"] });
         tilo_actions::validate_json_schema(&edit, &schema).expect("the edit fits the item's schema");
@@ -1331,17 +1322,10 @@ tilo_test_env::scenario! {
     }
 }
 
-/// What an agent sees of the field edit at `path` (`notes.*.body`): the
-/// line describing it, and an edit at it built from the example of its
-/// shape (one example per shape of path: a field, an item's field, …).
-fn described(schema: &serde_json::Value, path: &str) -> (String, serde_json::Value) {
-    let line = schema["description"]
-        .as_str()
-        .unwrap()
-        .lines()
-        .find(|line| line.starts_with(&format!("- `{path}`")))
-        .expect("the descriptor describes the path")
-        .to_owned();
+/// An agent's edit at `path` (`notes.*.body`) built from the descriptor's
+/// example of its shape (one example per shape of path: a field, an item's
+/// field, …), with the path naming the fields the caller wrote.
+fn example_at(schema: &serde_json::Value, path: &str) -> serde_json::Value {
     let segments: Vec<&str> = path.split('.').collect();
     let mut example = schema["examples"]
         .as_array()
@@ -1368,7 +1352,7 @@ fn described(schema: &serde_json::Value, path: &str) -> (String, serde_json::Val
             *step = serde_json::json!({ "field": segment });
         }
     }
-    (line, example)
+    example
 }
 
 /// What to look at.

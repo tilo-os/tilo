@@ -26,6 +26,9 @@ d-hzbwof46 = Fetched
 d-jxc5rufs = Signature
     .doc = What the account's messages end with.
 
+d-yinmk5zb = Identities
+    .doc = The other names and addresses the account sends as, beside its own, one `Name <address>` a line: what a person writes from when they write as a role rather than as themselves.
+
 d-ehmoyzk2 = Mailboxes
 
 d-qybqg4dl = Threads
@@ -51,9 +54,14 @@ d-dtd4czyv = Unread
 
 d-rxoe5vzb = Total
 
+d-al2vjuet = More
+    .doc = Whether the account's server holds messages older than the ones this workspace holds: what "Show older messages" reads the page before them for.
+
 d-ecbhcqdr-filter-unread = Unread
 
 d-ecbhcqdr-filter-total = Total
+
+d-ecbhcqdr-filter-more = More
 
 d-xnczt27x = Thread
     .doc = A conversation: messages that answer each other, newest last.
@@ -183,9 +191,15 @@ d-lidkonvr = Draft
 
 d-m2g6zrle = From
 
+d-zx2b4ax2 = From address
+    .doc = The identity of `from` it goes from, one of the account's own (`Name <address>`): empty for the account's own address, and for one it no longer sends as.
+
 d-hd3o4gkq = To
 
 d-cwukhrvn = Cc
+
+d-ib44zkec = Bcc
+    .doc = Blind recipients, who see the message but are not named in it.
 
 d-tyxmravh = Subject
 
@@ -207,7 +221,7 @@ d-em6rrmae = Invitation
     .doc = The calendar invitation it carries (iCalendar), which goes beside what it says so the guest's calendar can answer it: empty for none.
 
 d-ozukvva2 = Set aside
-    .doc = What the native Mail kept on this draft that this one has no place for (Bcc, attachments, private notes), said in words: never sent with it.
+    .doc = What the native Mail kept on this draft that this one has no place for (attachments, private notes), said in words: never sent with it.
 
 d-lidkonvr-filter-drafts = Drafts
 
@@ -248,11 +262,14 @@ d-546ahgq6-seconds = Seconds
 d-arnkrvgw = Check now
     .doc = Asks the account's server for its mail now: what a person presses when the window says the server could not be reached, or that what it fetched could not be saved.
 
+d-wgbxl4or = Show older messages
+    .doc = Asks the account's server for the messages older than the oldest this workspace holds in the mailbox, so a folder longer than one page can be read back to its first message.
+
 d-eon6gbrn = New message
     .doc = Starts a message from the account.
 
 d-v7wxxiaj = Carry native mail
-    .doc = The mailbox the native Mail kept before this app took its id over, carried into this one once: every draft it was writing and every message still waiting in its outbox is a draft here, from the same account, to the same people, with the same subject, body and invitation.
+    .doc = The mailbox the native Mail kept before this app took its id over, carried into this one once: every draft it was writing and every message still waiting in its outbox is a draft here, from the same account, as the same identity, to the same people (the blind ones too), with the same subject, body and invitation.
 
 d-ygbvdl5l = New message
     .doc = Starts a message from the first account.
@@ -302,6 +319,21 @@ d-grphua5j-parts = Parts
 
 d-grphua5j-attachments = Attachments
 
+d-tr43xnyj = Export as Markdown
+    .doc = The message as a Markdown file: what a person exports to read it, or keep it, elsewhere.
+
+d-shpafbd7 = Export as JSON
+    .doc = The message as a JSON file: what a script or an agent reads its record from.
+
+d-ydo5gq5e = Export as .eml
+    .doc = The message as an `.eml` file, which every mail program opens.
+
+d-3vrmj56n = Open a message file
+    .doc = Opens a message kept as a file a mail program writes (`.eml`, a single message of an mbox, or Apple Mail's `.emlx`): its headers are read, and it is kept with the mail held outside the accounts, read, in the inbox.
+    .w-the-file-holds-no-message = The file holds no message
+
+d-3vrmj56n-file = File
+
 d-hirareiw = Reply
     .doc = Answers the conversation's newest message, to whoever wrote it, quoting it under what is written.
 
@@ -337,6 +369,11 @@ d-taywgw3n-to = To
 d-xytb2lle = Delete
     .doc = Deletes the conversation: its messages go to the trash.
     .w-it-is-in-the-trash = It is in the trash
+
+d-pz2ntes2 = Delete permanently
+    .doc = Deletes the conversation's trashed messages for good, from its server too, and the conversation with them when no message of it is left.
+    .w-it-is-not-in-the-trash = It is not in the trash
+    .w-nothing-of-it-is-in-the = Nothing of it is in the trash
 
 d-le4lvs2c = Flag
     .doc = Flags or unflags the conversation.
@@ -426,6 +463,12 @@ d-7zk6ua6p = Send from
 
 d-7zk6ua6p-a = A
 
+d-naegttbl = Send as
+    .doc = Sends the message as another of its account's names or addresses, `Name <address>`: what a person writing as a role rather than as themselves chooses.
+    .w-this-message-went-already = This message went already
+
+d-naegttbl-identity = Identity
+
 d-qrcwx7a6 = Delete draft
     .doc = Throws a message being written away.
 
@@ -450,6 +493,9 @@ d-a4rv5wm6 = Answer
 
 d-a4rv5wm6-body = Body
 
+d-nxayphhi = Message file
+    .w-message = Message
+
 d-dqdt6fce = Place title
     .w-all-mail = All mail
 
@@ -471,6 +517,8 @@ d-7jf4pn3j = Prepare calendar invitation~present
 
 d-s2qkkueu = Deliver message~present
 
+d-vdfbsj4a = Open message file~present
+
 d-bj7uen6f = Archive~present
 
 d-bs42bxdn = To inbox~present
@@ -478,6 +526,8 @@ d-bs42bxdn = To inbox~present
 d-wfvq5lde = Move to~present
 
 d-efageosr = Delete~present
+
+d-djmtvfs7 = Purge~present
 
 d-cvmtfflh = Flag~present
 
@@ -497,6 +547,8 @@ d-xnse2xt5 = Mark read~present
 
 d-iv7e7g52 = Send from~present
 
+d-5kuylc3o = Send as~present
+
 d-czouixzd = Send~present
 
 d-i3cueozg = Undo send~present
@@ -505,6 +557,7 @@ d-4hds3dwy = Answer~present
 
 d-5wix2354 = Compose
     .w-to = To { $to }
+    .w-bcc = Bcc { $bcc }
 
 d-dhradxj7 = Account notice
     .w-can-t-save-what-fetched = Can't save what { $name } fetched
@@ -528,14 +581,19 @@ d-3k7hkyhl = Recovered mail
 
 d-m5y6nl2m = All inboxes
     .w-add-a-mail-account-in-settings = Add a mail account in Settings
+    .w-is-inbox = is:inbox
+
+d-s7tarqlp = Accounts threads
 
 d-tfom3oeo = Account threads
+    .w-show-older-messages = Show older messages
 
 d-gka45our = Mailboxes
     .w-all-mail = All mail
     .w-labels = Labels
 
 d-zp2cy2sc = Inbox
+    .w-is = is:{ $key }
     .w-nothing-here = Nothing here
 
 d-jgdzx3la = Thread list
@@ -571,6 +629,14 @@ d-oqpazwvc = Editor
     .w-to = To
     .w-name-example-org = name@example.org
     .w-cc = Cc
+    .w-bcc = Bcc
     .w-subject = Subject
+    .w-bold = Bold
+    .w-italic = Italic
+    .w-underline = Underline
+    .w-bulleted-list = Bulleted list
+    .w-link = Link
+    .w-https-example-org = https://example.org
+    .w-add-link = Add link
     .w-write-your-message = Write your message
     .w-send = Send

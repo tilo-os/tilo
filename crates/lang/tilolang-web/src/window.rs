@@ -107,7 +107,6 @@ impl AppPage {
                     .map_err(|error| format!("a root could not be made: {error}"))?;
             }
         }
-        instance.set_origin(true);
         instance.stage(staging.scenario);
         // The scenario runs with the instance's next frame.
         instance.sync();

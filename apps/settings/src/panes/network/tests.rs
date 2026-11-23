@@ -2402,7 +2402,10 @@ fn a_wireguard_tunnel_is_made_from_generated_keys_or_a_pasted_file() {
     run_vpn(&mut model, VpnEffect::ShowAddWireguard).unwrap();
     run_vpn(&mut model, VpnEffect::GenerateWireguardKeys).unwrap();
     let public = model.vpn_public_key().expect("the public key is shown");
-    assert!(shown(&mut model).contains(&public), "to give the server");
+    assert!(
+        shown(&mut model).iter().any(|text| text.contains(&public)),
+        "to give the server"
+    );
     model.fill_wireguard_form(
         "Cabin",
         "10.9.0.2/32",

@@ -29,7 +29,7 @@ use ui::widget::{DatePicker, Popover, TextInput};
 
 use tilo_rich_text::{RichTextField, RichTextSurface};
 
-use crate::account::AccountStore;
+use crate::account::CalendarAccounts;
 use crate::agenda::{AgendaAction, AgendaSource, AgendaView};
 use crate::caldav::{self, SyncOutcome};
 use crate::date;
@@ -186,8 +186,8 @@ pub struct CalendarApp {
     selection: Option<Sel>,
     detail_open: bool,
 
-    accounts: AccountStore,
-    configured: AccountStore,
+    accounts: CalendarAccounts,
+    configured: CalendarAccounts,
     device_accounts: crate::outbox::DeviceAccounts,
     display: crate::display::CalendarDisplay,
     display_setting: Option<ui::framework::Setting<crate::display::CalendarDisplay>>,
@@ -227,7 +227,7 @@ pub struct CalendarApp {
     sample_accounts: bool,
     config_root: Option<std::path::PathBuf>,
     person_accounts: Option<(
-        ui::framework::WorkspaceResource<accounts::person::PersonAccounts>,
+        ui::framework::WorkspaceResource<accounts::person::AccountList>,
         Option<u64>,
     )>,
     contacts_requested: std::rc::Rc<std::cell::Cell<bool>>,
@@ -307,7 +307,7 @@ impl CalendarApp {
     pub(crate) fn new_demo() -> Self {
         let mut app = Self::new_detached();
         app.model = tests::demo_calendar(app.today);
-        app.configured = AccountStore::sample();
+        app.configured = CalendarAccounts::sample();
         app.sample_accounts = true;
         app.show_accounts();
         app.open_sample_event();
@@ -316,7 +316,7 @@ impl CalendarApp {
 
     fn build() -> Self {
         let today = ui::clock::today();
-        let accounts = AccountStore::default();
+        let accounts = CalendarAccounts::default();
         let contacts_requested = std::rc::Rc::default();
         let store = store::Store::new(today, accounts.clone());
         Self {
@@ -437,7 +437,7 @@ impl CalendarApp {
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<Calendar>,
-        accounts: Option<AccountStore>,
+        accounts: Option<CalendarAccounts>,
         sample: bool,
     ) {
         *self.notes_editor = Self::new_notes_editor(self.bound, Some(&dispatcher));
@@ -2037,20 +2037,17 @@ impl CalendarApp {
     }
 
     #[cfg(test)]
-    pub(crate) fn configured_for_test(&self) -> &AccountStore {
+    pub(crate) fn configured_for_test(&self) -> &CalendarAccounts {
         &self.configured
     }
 
-    pub(crate) fn bind_profile(&mut self, config_root: Option<std::path::PathBuf>) -> AccountStore {
+    pub(crate) fn bind_profile(&mut self, config_root: Option<std::path::PathBuf>) {
         self.config_root = config_root;
-        self.config_root
-            .as_deref()
-            .map_or_else(AccountStore::default, AccountStore::load_from_settings_in)
     }
 
     pub(crate) fn follow_person_accounts(
         &mut self,
-        accounts: ui::framework::WorkspaceResource<accounts::person::PersonAccounts>,
+        accounts: ui::framework::WorkspaceResource<accounts::person::AccountList>,
     ) {
         self.person_accounts = Some((accounts, None));
         self.adopt_person_accounts();
@@ -2071,7 +2068,7 @@ impl CalendarApp {
         }
         // A calendar's password is the workspace's vault's: the account names the entry, and the
         // app asks the session for it when it signs in. This device keeps none.
-        let adopted = AccountStore::from_shared(&person.store());
+        let adopted = CalendarAccounts::from_shared(&person);
         if adopted != self.configured {
             self.configured = adopted;
             self.show_accounts();
@@ -2142,7 +2139,7 @@ impl CalendarApp {
     }
 
     /// Every calendar an event can be filed under: the local calendar plus each remote `CalDAV` collection
-    /// configured in Settings ([`AccountStore`]), never a fabricated one.
+    /// configured in Settings ([`CalendarAccounts`]), never a fabricated one.
     fn calendar_options(&self) -> Vec<(CalTarget, String)> {
         let mut out = vec![(CalTarget::Local, "On this device".to_string())];
         for acc in &self.accounts.accounts {

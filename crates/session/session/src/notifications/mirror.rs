@@ -20,7 +20,7 @@ use crate::platform::fabric::{
 };
 use crate::platform::fabric::{DeviceId, PersonalFabricAction};
 use crate::platform::fabric::{FabricLink as _, SharedLink};
-use tilo_desktop_surface::notifications::{
+use tilo_session_core::desktop::notifications::{
     ContinuityNotificationId, Notification, NotificationSeverity, RemoteNotificationRoute,
 };
 

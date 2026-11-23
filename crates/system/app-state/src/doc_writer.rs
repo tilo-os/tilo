@@ -102,6 +102,17 @@ impl StoredLoad {
     pub fn document(&self) -> &AutoCommit {
         &self.doc
     }
+
+    /// Whether decoding dropped a torn trailing change: accepting this
+    /// candidate publishes the complete prefix in place of the torn bytes.
+    pub(crate) fn repairs(&self) -> bool {
+        self.repair.is_some()
+    }
+
+    /// The decoded document, for a reader that is not accepting it.
+    pub(crate) fn into_document(self) -> AutoCommit {
+        self.doc
+    }
 }
 
 /// A stored document's bytes as its owner read them, to decode on any thread: how a window
@@ -252,6 +263,12 @@ impl DocOwner {
     /// A failure reading the store.
     pub fn stored(&self) -> Result<Option<durable_store::Stored>, StoreError> {
         Ok(self.store.read(&self.key)?)
+    }
+
+    /// Whether [`Self::accept`] already recorded what the store holds, so a
+    /// writer must continue from that rather than assume a plain read.
+    pub fn has_accepted(&self) -> bool {
+        self.accepted.borrow().is_some()
     }
 
     /// Record that `heads` are exactly what the store durably holds, in
@@ -1235,48 +1252,6 @@ mod tests {
             );
         }
 
-        phase a_writer_stores_only_committed_changes_and_leaves_a_transaction_open;
-        // What a writer stores is what is committed: a transaction someone
-        // still holds open is neither stored nor committed by a full save or
-        // an append, and is still open after both.
-        {
-            for subject in Subject::all() {
-                let owner = subject.owner("pending");
-                let mut doc = owner.new_document();
-                doc.put(ROOT, "kept", "first").unwrap();
-                doc.commit();
-                doc.put(ROOT, "pending", "full").unwrap();
-                let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
-                doc.rollback();
-                doc.put(ROOT, "kept", "second").unwrap();
-                doc.commit();
-                doc.put(ROOT, "pending", "append").unwrap();
-                writer.request(&doc);
-                subject.flush(&writer).unwrap();
-                assert_eq!(doc.pending_ops(), 1, "{}", subject.name);
-                assert_eq!(
-                    writer.durability_snapshot().durable_heads,
-                    Some(doc.committed_heads()),
-                    "{}",
-                    subject.name
-                );
-                drop((writer, owner));
-                let reopened = subject.reopen("pending");
-                assert_eq!(
-                    reopened.get(ROOT, "kept").unwrap().unwrap().0.into_string(),
-                    Ok("second".to_owned()),
-                    "{}",
-                    subject.name
-                );
-                assert_eq!(
-                    reopened.get(ROOT, "pending").unwrap(),
-                    None,
-                    "{}",
-                    subject.name
-                );
-            }
-        }
-
         phase a_writer_on_a_thread_that_must_not_wait_leaves_the_commit_to_the_store;
         // The compositor runs apps on its frame loop: saving, flushing and
         // closing a document there start the store's commits and never wait
@@ -1392,26 +1367,6 @@ mod tests {
 
         phase writer_ownership_is_exclusive_shared_or_disabled;
         {
-            // Phase `owners_and_writers_are_exclusive`.
-            {
-                for subject in Subject::all() {
-                    let owner = subject.owner("exclusive");
-                    assert!(matches!(
-                        DocOwner::acquire(
-                            Rc::clone(&subject.store),
-                            StorageKey::document("so.tilo.test", "workspace", "exclusive"),
-                        ),
-                        Err(StoreError::WriterBusy { .. })
-                    ));
-                    let writer = DocWriter::try_start(&owner).unwrap();
-                    assert!(matches!(
-                        DocWriter::try_start(&owner),
-                        Err(StoreError::WriterBusy { .. })
-                    ));
-                    drop(writer);
-                    assert!(DocWriter::try_start(&owner).is_ok());
-                }
-            }
             // Phase `only_the_primary_shared_writer_continues_the_stored_actor`.
             {
                 for subject in Subject::all() {
@@ -1423,19 +1378,22 @@ mod tests {
                     doc.commit();
                     let writer = DocWriter::start_new(&primary, &doc).unwrap();
                     subject.flush(&writer).unwrap();
+                    let author = primary.actor();
                     let secondary = Rc::new(
                         DocOwner::acquire_shared(Rc::clone(&subject.store), key.clone()).unwrap(),
                     );
+                    assert!(primary.is_primary() && !secondary.is_primary(), "{}", subject.name);
                     assert_ne!(secondary.actor(), primary.actor(), "{}", subject.name);
                     let mut other = secondary.new_document();
                     other.put(ROOT, "from", "secondary").unwrap();
                     other.commit();
                     let second = DocWriter::start_new(&secondary, &other).unwrap();
                     subject.flush(&second).unwrap();
-                    let actor = primary.actor();
+                    assert_eq!(primary.actor(), author, "{}", subject.name);
                     drop((writer, second, primary, secondary));
                     let reopened = DocOwner::acquire_shared(Rc::clone(&subject.store), key).unwrap();
-                    assert_eq!(reopened.actor(), actor, "{}", subject.name);
+                    assert!(reopened.is_primary(), "{}", subject.name);
+                    assert_eq!(reopened.actor(), author, "{}", subject.name);
                 }
             }
             // Phase `a_disabled_writer_reports_why_and_persists_nothing`.
@@ -1536,174 +1494,173 @@ mod tests {
         doc.text(&id).unwrap()
     }
 
+    /// One document's life on every store: written while a transaction is
+    /// open, typed into, appended to and compacted, acknowledged out of order,
+    /// failed and recovered with a full checkpoint, then reopened as the same
+    /// writer with nothing duplicated and nothing uncommitted stored.
     #[test]
     #[allow(
         clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
+        reason = "one document's whole life, asserted step by step"
     )]
-    fn writer_edits_become_durable_through_appends_checkpoints_and_acknowledgements() {
-        // Phase `a_burst_of_edits_is_durable_after_a_flush_and_reopens_as_the_same_writer`.
-        {
-            for subject in Subject::all() {
-                let owner = subject.owner("burst");
-                let mut doc = owner.new_document();
-                let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
-                doc.commit();
-                let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
-                for (i, ch) in "persisted".chars().enumerate() {
-                    doc.splice_text(&body, i, 0, &ch.to_string()).unwrap();
-                    doc.commit();
-                    writer.request(&doc);
-                }
-                subject.flush(&writer).unwrap();
-                assert_eq!(
-                    writer.durability_snapshot().durable_heads,
-                    Some(doc.get_heads()),
-                    "{}",
-                    subject.name
-                );
-                let actor = owner.actor();
-                drop((writer, owner));
-                let reopened = subject.reopen("burst");
-                assert_eq!(text(&reopened, "body"), "persisted", "{}", subject.name);
-                assert_eq!(reopened.get_actor(), &actor, "{}", subject.name);
-            }
-        }
-        // Phase `steady_edits_append_and_the_log_is_eventually_compacted`.
-        {
-            for subject in Subject::all() {
-                let owner = subject.owner("growth");
-                let mut doc = owner.new_document();
-                let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
-                doc.splice_text(&body, 0, 0, "seed").unwrap();
-                doc.commit();
-                let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
-                subject.flush(&writer).unwrap();
-                for i in 0..50 {
-                    doc.splice_text(&body, 4 + i, 0, "y").unwrap();
-                    doc.commit();
-                    writer.request(&doc);
-                }
-                subject.flush(&writer).unwrap();
-                assert_eq!(writer.full_writes(), 1, "{}", subject.name);
-                assert_eq!(writer.appends(), 50, "{}", subject.name);
-                // Each single-character change is about a hundred bytes, so this
-                // passes the compaction floor.
-                for i in 0..1200 {
-                    doc.splice_text(&body, 54 + i, 0, "z").unwrap();
-                    doc.commit();
-                    writer.request(&doc);
-                }
-                subject.flush(&writer).unwrap();
-                assert!(writer.full_writes() >= 2, "{}", subject.name);
-                drop((writer, owner));
-                assert_eq!(
-                    text(&subject.reopen("growth"), "body").chars().count(),
-                    4 + 50 + 1200,
-                    "{}",
-                    subject.name
-                );
-            }
-        }
-        // Phase `an_older_acknowledgement_never_marks_newer_edits_saved`.
-        {
-            for subject in Subject::all() {
-                let owner = subject.owner("status");
-                let mut doc = owner.new_document();
-                doc.commit();
-                let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
-                subject.flush(&writer).unwrap();
-                doc.put(ROOT, "value", 1_u64).unwrap();
+    fn a_document_is_typed_compacted_failed_recovered_and_reopened_on_every_store() {
+        for subject in Subject::all() {
+            let name = subject.name;
+            let owner = subject.owner("journey");
+            assert!(matches!(
+                DocOwner::acquire(
+                    Rc::clone(&subject.store),
+                    StorageKey::document("so.tilo.test", "workspace", "journey"),
+                ),
+                Err(StoreError::WriterBusy { .. })
+            ));
+            let mut doc = owner.new_document();
+            let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
+            doc.put(ROOT, "kept", "first").unwrap();
+            doc.commit();
+
+            // A transaction still open is neither stored nor committed by a
+            // full save or an append, and is still open after both.
+            doc.put(ROOT, "pending", "full").unwrap();
+            let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
+            assert!(matches!(
+                DocWriter::try_start(&owner),
+                Err(StoreError::WriterBusy { .. })
+            ));
+            doc.rollback();
+            doc.put(ROOT, "kept", "second").unwrap();
+            doc.commit();
+            doc.put(ROOT, "pending", "append").unwrap();
+            writer.request(&doc);
+            subject.flush(&writer).unwrap();
+            assert_eq!(doc.pending_ops(), 1, "{name}");
+            assert_eq!(
+                writer.durability_snapshot().durable_heads,
+                Some(doc.committed_heads()),
+                "{name}"
+            );
+            doc.rollback();
+
+            // A burst of typing is durable after a flush.
+            for (i, ch) in "persisted".chars().enumerate() {
+                doc.splice_text(&body, i, 0, &ch.to_string()).unwrap();
                 doc.commit();
                 writer.request(&doc);
-                let older = doc.get_heads();
-                subject.flush(&writer).unwrap();
-                doc.put(ROOT, "value", 2_u64).unwrap();
+            }
+            subject.flush(&writer).unwrap();
+            assert_eq!(
+                writer.durability_snapshot().durable_heads,
+                Some(doc.get_heads()),
+                "{name}"
+            );
+
+            // Steady edits append, and the log is eventually compacted.
+            let (full, appends) = (writer.full_writes(), writer.appends());
+            assert_eq!(full, 1, "{name}");
+            for i in 0..50 {
+                doc.splice_text(&body, 9 + i, 0, "y").unwrap();
                 doc.commit();
                 writer.request(&doc);
-                if subject.name != "memory" {
-                    assert_eq!(
-                        writer.durability_snapshot().durable_heads,
-                        Some(older),
-                        "{}",
-                        subject.name
-                    );
-                }
-                subject.flush(&writer).unwrap();
+            }
+            subject.flush(&writer).unwrap();
+            assert_eq!(writer.full_writes(), full, "{name}");
+            assert_eq!(writer.appends(), appends + 50, "{name}");
+            // Each single-character change is about a hundred bytes, so this
+            // passes the compaction floor.
+            for i in 0..1200 {
+                doc.splice_text(&body, 59 + i, 0, "z").unwrap();
+                doc.commit();
+                writer.request(&doc);
+            }
+            subject.flush(&writer).unwrap();
+            assert!(writer.full_writes() > full, "{name}");
+
+            // An older acknowledgement never marks newer edits saved.
+            doc.put(ROOT, "value", 1_u64).unwrap();
+            doc.commit();
+            writer.request(&doc);
+            let older = doc.get_heads();
+            subject.flush(&writer).unwrap();
+            doc.put(ROOT, "value", 2_u64).unwrap();
+            doc.commit();
+            writer.request(&doc);
+            if name != "memory" {
                 assert_eq!(
                     writer.durability_snapshot().durable_heads,
-                    Some(doc.get_heads()),
-                    "{}",
-                    subject.name
+                    Some(older),
+                    "{name}"
                 );
             }
-        }
-        // Phase `a_failed_write_requires_a_full_checkpoint_without_consuming_typing`.
-        {
-            for subject in Subject::all() {
-                if subject.queued.is_none() && subject.faults.is_none() {
-                    continue; // an immediately durable store cannot fail
-                }
-                let owner = subject.owner("failure");
-                let mut doc = owner.new_document();
-                doc.put(ROOT, "body", "original").unwrap();
-                doc.commit();
-                let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
-                subject.flush(&writer).unwrap();
+            subject.flush(&writer).unwrap();
+            assert_eq!(
+                writer.durability_snapshot().durable_heads,
+                Some(doc.get_heads()),
+                "{name}"
+            );
+
+            // A failed write requires a full checkpoint, without committing
+            // what is still being typed. An immediately durable store cannot fail.
+            if subject.queued.is_some() || subject.faults.is_some() {
                 let acknowledged = writer.durability_snapshot().durable_heads;
                 if let Some(fs) = &subject.faults {
                     fs.faults().append_prefix = Some(8);
                 }
-                doc.put(ROOT, "body", "partial").unwrap();
+                doc.put(ROOT, "status", "partial").unwrap();
                 doc.commit();
                 writer.request(&doc);
                 subject.pump_with(&Err("quota".into()));
-                assert!(writer.try_flush().is_err(), "{}", subject.name);
+                assert!(writer.try_flush().is_err(), "{name}");
                 assert_eq!(writer.durability_snapshot().durable_heads, acknowledged);
-                doc.put(ROOT, "body", "latest").unwrap();
+                doc.put(ROOT, "status", "latest").unwrap();
                 let pending = doc.pending_ops();
                 writer.request(&doc);
-                assert_eq!(doc.pending_ops(), pending, "{}", subject.name);
-                assert!(writer.try_flush().is_err(), "{}", subject.name);
+                assert_eq!(doc.pending_ops(), pending, "{name}");
+                assert!(writer.try_flush().is_err(), "{name}");
                 doc.commit();
                 writer.save(&doc);
                 subject.flush(&writer).unwrap();
-                assert_eq!(writer.last_error(), None, "{}", subject.name);
+                assert_eq!(writer.last_error(), None, "{name}");
                 assert_eq!(
                     writer.durability_snapshot().durable_heads,
                     Some(doc.get_heads())
                 );
-                drop((writer, owner));
-                let mut restored = subject.reopen("failure");
-                assert_eq!(restored.get_heads(), doc.get_heads(), "{}", subject.name);
-                assert_eq!(
-                    restored.get_changes(&[]).len(),
-                    doc.get_changes(&[]).len(),
-                    "{}",
-                    subject.name
-                );
             }
-        }
-        // Phase `a_seeded_writer_appends_only_what_follows_the_stored_document`.
-        {
-            for subject in Subject::all() {
-                let owner = subject.owner("seeded");
-                let mut doc = owner.new_document();
-                doc.put(ROOT, "body", "stored").unwrap();
-                store_raw_leased(&subject, &owner, doc.save());
-                let mut writer = DocWriter::try_start(&owner).unwrap();
-                writer.seed(&doc);
-                doc.put(ROOT, "body", "edited").unwrap();
-                doc.commit();
-                writer.request(&doc);
-                subject.flush(&writer).unwrap();
-                assert_eq!(
-                    (writer.full_writes(), writer.appends()),
-                    (0, 1),
-                    "{}",
-                    subject.name
-                );
-            }
+
+            // Dropping the writer frees the owner's one writer claim.
+            drop(writer);
+            drop(DocWriter::try_start(&owner).unwrap());
+            let actor = owner.actor();
+            drop(owner);
+            let mut reopened = subject.reopen("journey");
+            assert_eq!(reopened.get_actor(), &actor, "{name}");
+            assert_eq!(reopened.get_heads(), doc.get_heads(), "{name}");
+            assert_eq!(
+                reopened.get_changes(&[]).len(),
+                doc.get_changes(&[]).len(),
+                "nothing was stored twice ({name})"
+            );
+            let typed = text(&reopened, "body");
+            assert_eq!(typed.chars().count(), 9 + 50 + 1200, "{name}");
+            assert!(typed.starts_with("persisted"), "{name}");
+            assert_eq!(
+                reopened.get(ROOT, "kept").unwrap().unwrap().0.into_string(),
+                Ok("second".to_owned()),
+                "{name}"
+            );
+            assert_eq!(reopened.get(ROOT, "pending").unwrap(), None, "{name}");
+
+            // A writer seeded with what is stored appends only what follows it.
+            let owner = subject.owner("seeded");
+            let mut doc = owner.new_document();
+            doc.put(ROOT, "body", "stored").unwrap();
+            store_raw_leased(&subject, &owner, doc.save());
+            let mut writer = DocWriter::try_start(&owner).unwrap();
+            writer.seed(&doc);
+            doc.put(ROOT, "body", "edited").unwrap();
+            doc.commit();
+            writer.request(&doc);
+            subject.flush(&writer).unwrap();
+            assert_eq!((writer.full_writes(), writer.appends()), (0, 1), "{name}");
         }
     }
 

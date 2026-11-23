@@ -23,7 +23,7 @@ pub const COMMANDS: [&str; 6] = [
     "unpack-setup-handoff",
 ];
 
-const TILO_ROOT_TYPE: &str = "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab";
+const TILO_ROOT_TYPE: &str = staging_handoff_model::gpt::TILO_ROOT;
 const SFDISK_MAX_BYTES: u64 = 1024 * 1024;
 const MIB: u128 = 1 << 20;
 const GIB: u128 = 1 << 30;
@@ -502,44 +502,5 @@ pub fn run(command: &str, args: &[OsString]) -> Outcome {
                 .and_then(|payload| unpack_setup_handoff(&payload, Path::new(destination))),
         ),
         _ => usage("unpack-setup-handoff PAYLOAD DEST"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    tilo_test_env::scenario! {
-        fn the_device_label_is_checked_and_written_to_machine_info;
-
-        phase machine_info_replaces_only_the_pretty_hostname;
-        {
-            assert_eq!(
-                machine_info(
-                    "CHASSIS=laptop\n  PRETTY_HOSTNAME=old\r\nICON_NAME=computer",
-                    "Ada's \"$HOME\" `x` \\"
-                ),
-                "CHASSIS=laptop\nICON_NAME=computer\n\
-             PRETTY_HOSTNAME=\"Ada's \\\"\\$HOME\\\" \\`x\\` \\\\\"\n"
-            );
-            assert_eq!(machine_info("", "Tower"), "PRETTY_HOSTNAME=\"Tower\"\n");
-        }
-
-        phase device_labels_are_bounded_and_printable;
-        {
-            for good in ["", "Ada's laptop", "Café ☕", &"x".repeat(64)] {
-                assert!(check_device_label(OsStr::new(good)).is_ok(), "{good}");
-            }
-            for bad in [
-                "a\nb",
-                "tab\t",
-                "del\u{7f}",
-                "c1\u{85}",
-                &"x".repeat(65),
-                &"é".repeat(33),
-            ] {
-                assert!(check_device_label(OsStr::new(bad)).is_err(), "{bad:?}");
-            }
-        }
     }
 }

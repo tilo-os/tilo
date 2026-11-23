@@ -162,7 +162,7 @@ pub(super) fn team_turn(
             }
         }
         Some(Actor::Member(member))
-            if agent.sub.is_some() && member.person_id() == Some(agent.keeper.as_str()) =>
+            if agent.sub.is_some() && member.person_id() == Some(agent.acts_for.as_str()) =>
         {
             (said.clone(), false, false, true, agent.id.0.clone())
         }
@@ -184,7 +184,7 @@ pub(super) fn team_turn(
     Some((
         Turn {
             agent: agent.clone(),
-            person: agent.keeper.clone(),
+            person: agent.acts_for.clone(),
             conversation: format!("sub-agents/{sub_agent}"),
             cause: asked.at.id_string(),
             request,
@@ -447,7 +447,7 @@ impl ServerAgents {
     /// sub-agent's own runner say it, and no tool of a turn is asked for it.
     async fn stands(&self, workspace: &str, agent: &Agent, stands: Stands, line: &str) {
         let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let (id, keeper) = (agent.id.0.clone(), agent.keeper.clone());
+        let (id, acts_for) = (agent.id.0.clone(), agent.acts_for.clone());
         let item = tilo_resource::Id::from_raw(id.clone());
         let line = cut(line.trim(), sub::MAX_LINE.saturating_mul(2)).to_owned();
         let written = self
@@ -461,7 +461,7 @@ impl ServerAgents {
                 |doc| {
                     let mut saying =
                         tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                            .as_agent_for(&id, &keeper)
+                            .as_agent_for(&id, &acts_for)
                             .in_app(tilo_workspace_agent::OWNER, "Assistant");
                     // A replica stamps what it writes with a fixed day of its own unless told the time.
                     saying.set_now_ms(tilo_clock::unix_now_ms_i64());

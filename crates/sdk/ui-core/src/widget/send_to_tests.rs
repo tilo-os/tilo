@@ -327,7 +327,10 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_subject_chip_reads_what_was_chosen_without_the_marks_of_a_list;
+    // A subject chip reads what was chosen, without the marks of a list, and
+    // leads with its items' own glyph: a listed file shows the file, not the
+    // Files window it sits in.
+    phase a_subject_chip_reads_what_was_chosen_and_leads_with_its_items_own_glyph;
     {
         let one =
             SharedSelection::of_items([("row-1", "#1  Ship the release")]).in_kind("tasks.tracker");
@@ -350,10 +353,7 @@ tilo_test_env::scenario! {
             "#1 Ship the release +1",
             "the rest of the selection is counted, not spelled out"
         );
-    }
 
-    phase a_subject_chip_leads_with_its_items_own_glyph;
-    {
         let file = SharedSelection::of_items([("row-1", "Budget for Friday.txt")])
             .in_kind("files.folder")
             .with_icon(crate::icons::Icon::FileText);
@@ -610,13 +610,10 @@ tilo_test_env::scenario! {
         send_to.text = "And this too".to_owned();
         send_to.send();
         assert_eq!(crate::shared_selection::take_send_to().len(), 1);
-    }
 
-    phase a_subject_alone_is_something_to_send;
-    // What a message sent with no words at all carries: the subject is the
-    // message, so a task handed to someone goes without a sentence, and a box
-    // with neither words nor a subject has nothing to send.
-    {
+        // What a message sent with no words at all carries: the subject is the
+        // message, so a task handed to someone goes without a sentence, and a box
+        // with neither words nor a subject has nothing to send.
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
         let mut send_to = box_beside(Rect::new(40.0, 120.0, 212.0, 320.0), viewport);
         assert_eq!(send_to.recipients().len(), 1, "the agent a message makes");
@@ -642,11 +639,11 @@ tilo_test_env::scenario! {
         assert!(crate::shared_selection::take_send_to().is_empty());
     }
 
-    phase a_box_opened_to_a_report_sends_there_alone;
     // A box the session opened to the one place a report goes: its chip stands
     // there on its own, the person may still address it to someone instead, and
     // what they write goes to the place reports go — attached to what the window
     // picked.
+    phase a_box_opened_to_a_report_sends_there_alone;
     {
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
         let _ = crate::shared_selection::take_send_to();
@@ -689,15 +686,10 @@ tilo_test_env::scenario! {
         assert_eq!(requests[0].text, "The invoice button does nothing");
         assert_eq!(requests[0].about.len(), 1, "with what the window picked");
         assert!(send_to.take_sent());
-    }
 
-    phase a_report_with_nowhere_to_go_says_so_and_sends_nothing;
-    // A report on a computer told nowhere says so beside its chip and sends
-    // nothing; a person or an agent chosen instead sends as a message.
-    {
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        // A report on a computer told nowhere says so beside its chip and sends
+        // nothing; a person or an agent chosen instead sends as a message.
         let _ = crate::shared_selection::take_send_to();
-        crate::shared_selection::set_send_host_available(true);
         let nowhere = Recipient::found(RecipientKind::Feedback, "", "Report a problem")
             .with_detail("This computer is not set up to send reports about Tilo.");
         let mut send_to = SendToBox::new();
@@ -726,15 +718,10 @@ tilo_test_env::scenario! {
         assert!(send_to.can_send());
         send_to.send();
         assert_eq!(crate::shared_selection::take_send_to().len(), 1);
-    }
 
-    phase a_box_opened_to_the_report_destination_says_report_a_problem;
-    // A box opened to the one place reports go says so: its header and the name
-    // assistive technology reads are the report's, not a message's.
-    {
-        let viewport = Rect::new(0.0, 0.0, 800.0, 900.0);
+        // A box opened to the one place reports go says so: its header and the
+        // name assistive technology reads are the report's, not a message's.
         let _ = crate::shared_selection::take_send_to();
-        crate::shared_selection::set_send_host_available(true);
         let destination = Recipient::found(RecipientKind::Feedback, "c_feedback", "Tilo feedback");
         let mut send_to = SendToBox::new();
         send_to.set_viewport(Some(viewport));

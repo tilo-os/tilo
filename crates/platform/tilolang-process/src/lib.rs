@@ -20,6 +20,7 @@
 //! **Storage.** One directory per workspace and author, granted to the process at its start: it
 //! keeps the modules the process compiled, so a later start does not compile them again. The
 //! apps' resources are the store's, never the process's.
+#![cfg(unix)]
 
 pub mod call;
 pub mod connection;
@@ -59,26 +60,20 @@ use tilolang_tilo::instance::LaterBuilds;
 /// The route an instance of `meta`'s package for `person` in `workspace` joins: the person's own
 /// document of the workspace for an app whose documents are each member's own (`documents: .own`),
 /// which only their devices are admitted to, else the workspace's document of the app.
-///
-/// The route keeps the document of an id the app had before only when the installed catalogue
-/// honours it ([`tilo_action_policy::earlier`]): the same table the broker maps a route back with.
 #[must_use]
 pub fn route_of(
     meta: &tilolang_tilo::tilolang::PackageMeta,
     workspace: uuid::Uuid,
     person: &str,
 ) -> collaboration::RouteSpec {
-    let records = tilo_action_policy::earlier::held()
-        .documents_under(&meta.app)
-        .to_owned();
     if meta.uses_personal_profile()
-        && let Some(profile) = collab_types::personal_cluster_of(person)
+        && let Some(profile) = collab_types::person_workspace_of(person)
     {
         let kind = format!("tl.{}", meta.app);
         let id = collab_types::person_document_for_workspace(&kind, workspace);
-        return collaboration::RouteSpec::document(&records, profile, id);
+        return collaboration::RouteSpec::document(&meta.app, profile, id);
     }
-    collaboration::RouteSpec::app(records, workspace)
+    collaboration::RouteSpec::app(meta.app.clone(), workspace)
 }
 
 /// A restricted package closes its window when its read grant is removed.
@@ -158,6 +153,18 @@ fn chooser_of(fd: Option<OwnedFd>) -> Option<Arc<dyn tilo_dialogs::FilePicker>> 
         .ok()
 }
 
+/// The person's clipboard over the connection the session opened for this instance: what
+/// `clipboard.copy` and `clipboard.paste` reach, since an instance's process holds no display to
+/// offer or read a selection on.
+fn clipboard_of(fd: Option<OwnedFd>) -> Option<Arc<tilo_clipboard::service::Connected>> {
+    let stream = std::os::unix::net::UnixStream::from(fd?);
+    let Some(connected) = tilo_clipboard::service::Connected::connect(stream) else {
+        tracing::warn!("the person's clipboard is unusable");
+        return None;
+    };
+    Some(Arc::new(connected))
+}
+
 /// One running instance and its window's connection, watched for the window closing.
 struct Running {
     hosted: Hosted,
@@ -183,6 +190,8 @@ struct Opening {
     content: Option<tilo_content::ContentStore>,
     /// The person's chooser, over the connection the session opened for this instance.
     chooser: Option<Arc<dyn tilo_dialogs::FilePicker>>,
+    /// The person's clipboard, over the connection the session opened for this instance.
+    clipboard: Option<Arc<tilo_clipboard::service::Connected>>,
     /// When the host was handed the instance, and the stages it reached since, with how long
     /// after: what an instance's launch spends in the host.
     received: std::time::Instant,
@@ -403,6 +412,7 @@ impl TilolangProcess {
             earlier,
             content: None,
             chooser: None,
+            clipboard: None,
         }
     }
 
@@ -524,8 +534,9 @@ impl TilolangProcess {
     }
 
     /// A development session verified a later build of an app this host runs, and handed its
-    /// module over the API in the sealed memfd `module`: every instance of the app takes it over,
-    /// in place when it reads the state the one before wrote, else starting over on its data.
+    /// module over the API in the immutable shared buffer `module`: every instance of the app
+    /// takes it over, in place when it reads the state the one before wrote, else starting over
+    /// on its data.
     ///
     /// # Errors
     /// The module does not read, or it is another app's.
@@ -591,6 +602,7 @@ impl TilolangProcess {
             origin: fds.origin,
             content: store_of(fds.content),
             chooser: chooser_of(fds.chooser),
+            clipboard: clipboard_of(fds.clipboard),
             received: std::time::Instant::now(),
             reached: Vec::new(),
             person_changed: false,
@@ -625,6 +637,7 @@ impl TilolangProcess {
             origin: None,
             content: None,
             chooser: None,
+            clipboard: None,
             received: std::time::Instant::now(),
             reached: Vec::new(),
             person_changed: false,
@@ -708,19 +721,12 @@ impl TilolangProcess {
                 declared: bundle.meta.app,
             });
         }
-        // The ids the session believes each app had before are the ones this host honours: a
-        // module's own `previously:` is a claim the installed catalogue decides on.
-        for (app, under) in &request.installed {
-            if under != app {
-                tilolang_tilo::schema::register_previously(app, std::slice::from_ref(under));
-            }
-        }
         let workspace = uuid::Uuid::parse_str(&request.workspace)
             .map_err(|_| AdmitError::Workspace(request.workspace.clone()))?;
         let identity =
             identity.ok_or_else(|| AdmitError::Join("no identity connection".to_owned()))?;
         if bundle.meta.uses_personal_profile()
-            && collab_types::personal_cluster_of(&request.person).is_none()
+            && collab_types::person_workspace_of(&request.person).is_none()
         {
             return Err(AdmitError::Join(
                 "this app needs the person's certified profile".into(),
@@ -751,6 +757,21 @@ impl TilolangProcess {
                 language: request.language,
                 access: request.access,
                 shows: request.shows,
+                link_home: request.link_home.as_deref().and_then(|home| {
+                    match serde_json::from_str(home) {
+                        Ok(home) => Some(home),
+                        Err(error) => {
+                            // The session made this JSON; one that does not read leaves the
+                            // window's links refused, which the session's log says why.
+                            tracing::warn!(
+                                %error,
+                                "a workspace's page the session named does not read: this \
+                                 window's resources have no link"
+                            );
+                            None
+                        }
+                    }
+                }),
                 ..Spec::new(
                     request.app,
                     request.workspace,
@@ -796,6 +817,7 @@ impl TilolangProcess {
         // opened by the session for the app in its workspace.
         kept.content = opening.content.take();
         kept.chooser = opening.chooser.take();
+        kept.clipboard = opening.clipboard.take();
         let _scope = self.scope.enter();
         let connection = connection::Connection::new(manager).map_err(AdmitError::Open)?;
         let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(
@@ -1069,7 +1091,7 @@ fn arrived_early(
     }
 }
 
-/// The bundle the sealed memfd `fd` holds, `len` bytes of it.
+/// The bundle the immutable shared buffer `fd` holds, `len` bytes of it.
 fn module_bundle(fd: &OwnedFd, len: u64) -> Result<Bundle, AdmitError> {
     let module_error = |error: &dyn std::fmt::Display| AdmitError::Module(error.to_string());
     let len = usize::try_from(len).map_err(|error| module_error(&error))?;
@@ -1094,7 +1116,30 @@ fn hung_up(fd: std::os::fd::BorrowedFd<'_>) -> bool {
     // SAFETY: one initialized pollfd naming an owned descriptor; a zero timeout makes it a
     // nonblocking query.
     let ready = unsafe { libc::poll(&raw mut poll, 1, 0) };
-    ready > 0 && poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+    if ready > 0 && poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+        return true;
+    }
+    // A channel on macOS is a datagram pair, whose peer's close `poll` does not report as a
+    // hang-up: the close disconnects it instead.
+    #[cfg(not(target_os = "linux"))]
+    {
+        // SAFETY: zeroed storage is a valid `sockaddr_storage`.
+        let mut peer: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+        let mut len = libc::socklen_t::try_from(size_of::<libc::sockaddr_storage>())
+            .unwrap_or(libc::socklen_t::MAX);
+        // SAFETY: `peer` is writable for `len` bytes, and `len` says so.
+        let named = unsafe {
+            libc::getpeername(
+                fd.as_raw_fd(),
+                (&raw mut peer).cast::<libc::sockaddr>(),
+                &raw mut len,
+            )
+        };
+        if named != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOTCONN) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -1126,7 +1171,7 @@ view saved_views(v: Views) {
         let document = route.document.as_deref().unwrap();
         assert_eq!(
             route.cluster_id,
-            collab_types::personal_cluster_of(&ada).unwrap()
+            collab_types::person_workspace_of(&ada).unwrap()
         );
         assert_ne!(route.cluster_id, a);
         assert_eq!(collab_types::person_document_context(document), Some(a));

@@ -45,7 +45,7 @@ pub struct Request {
     /// person at its screen. Secret-free, like every plan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_plan: Option<install_profile_model::plan::Plan>,
-    /// Where the caller keeps the single-use enrollment token the plan spends.
+    /// Where the caller keeps the single-use ticket the plan's machine logs in with.
     /// A path, never the token: the helper copies it, owner-only, onto the
     /// staging root and never into the ESP, the handoff, the staging journal or
     /// a log.
@@ -59,10 +59,10 @@ pub struct Request {
     pub development_layers: Option<String>,
 }
 
-/// Where a staged plan's machine finds its single-use enrollment token and the prebuilt layers a
+/// Where a staged plan's machine finds its single-use ticket and the prebuilt layers a
 /// development install applies before its first boot, owner-only.
 pub use imager_backend::staging::layout::{STAGED_DEVELOPMENT_LAYERS_DIR, STAGED_TOKEN_PATH};
-/// A token longer than this is not one the enrollment issues.
+/// A ticket longer than this is not one a device issues.
 const MAX_TOKEN_BYTES: u64 = 16 * 1024;
 /// The most layers one staging carries.
 pub(crate) const MAX_DEVELOPMENT_LAYERS: usize = 16;
@@ -379,7 +379,7 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
                 return bad("only a Tilo Server installs from a staged plan without a person");
             }
             if !token_file.starts_with('/') || token_file.len() > 4096 {
-                return bad("the enrollment token is given as an absolute file path");
+                return bad("the ticket is given as an absolute file path");
             }
             if !install_profile_model::plan::IDENTIFIED_RULES.contains(&plan.disk.kind.as_str()) {
                 return bad("a staged plan names its disk by its serial or its WWN");
@@ -398,7 +398,7 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
                 ));
             }
         }
-        _ => return bad("a staged plan and its enrollment token are given together"),
+        _ => return bad("a staged plan and its ticket are given together"),
     }
     handoff::validate_profile(&request.profile)
         .map_err(|m| Refusal::new(codes::REQUEST_INVALID, m))?;
@@ -1833,7 +1833,7 @@ impl Engine<'_> {
             Which::Root => Step::WriteRoot,
         };
         let s = disk.sector_bytes;
-        let part_bytes = (p.last_lba - p.first_lba + 1) * s;
+        let part_bytes = p.extent().lbas() * s;
         // Zero the first and last MiB so no stale signature (e.g. NTFS from
         // the shrunk region) is probed next to the real one.
         let zeros = vec![0_u8; MIB.min(part_bytes) as usize];
@@ -2280,7 +2280,7 @@ impl Engine<'_> {
             description: self.plan().boot_entry.description.clone(),
             partition_number: esp.number,
             start_lba: esp.first_lba,
-            size_lba: esp.last_lba - esp.first_lba + 1,
+            size_lba: esp.extent().lbas(),
             partition_guid: esp.guid.to_ascii_lowercase(),
             file_path: self.plan().boot_entry.loader_path.clone(),
         })

@@ -44,10 +44,12 @@ pub struct RefLit {
 #[derive(Clone, Debug, PartialEq)]
 pub enum StrPiece {
     Lit(String),
-    /// A `{ expr }` interpolation: the byte range of the expression inside the braces.
+    /// A `{ expr }` interpolation: the expression inside the braces, with the escapes the string
+    /// around it gives it resolved, and the byte range it was written at.
     Interp {
         start: usize,
         end: usize,
+        expr: String,
     },
 }
 
@@ -787,6 +789,7 @@ impl Lexer<'_> {
                             pieces.push(StrPiece::Interp {
                                 start: self.base + open + 1,
                                 end: self.base + close,
+                                expr: self.interpolation_text(open + 1, close),
                             });
                             self.pos = close + 1;
                         }
@@ -922,6 +925,9 @@ impl Lexer<'_> {
         }
     }
 
+    /// The index of the `}` that closes the interpolation whose expression starts at `from`.
+    /// A `"..."` written inside it is a string literal of its own, so its closing quote does not
+    /// end the string the interpolation is in; a `\"` is the quote of such a literal.
     fn interpolation_end(&self, from: usize) -> Option<usize> {
         let mut i = from;
         let mut depth = 0usize;
@@ -930,6 +936,7 @@ impl Lexer<'_> {
                 b'{' => depth += 1,
                 b'}' if depth == 0 => return Some(i),
                 b'}' => depth -= 1,
+                b'\\' if self.bytes.get(i + 1) == Some(&b'"') => i += 1,
                 b'"' => i = self.string_end(i + 1)?,
                 b'\n' => return None,
                 _ => {}
@@ -937,6 +944,45 @@ impl Lexer<'_> {
             i += 1;
         }
         None
+    }
+
+    /// The expression written between the braces at `from` and `close`, ready for the lexer that
+    /// reads it: a `\"` written inside the braces is a quote of a string literal of the
+    /// expression, while a nested `"..."` written plainly is kept as written, escapes and all,
+    /// for the lexer to read as the string it is. An escaped quote's backslash is replaced by a
+    /// space outside the literal, so every token keeps the span it was written at.
+    fn interpolation_text(&self, from: usize, close: usize) -> String {
+        let mut out = String::with_capacity(close - from);
+        let mut i = from;
+        let mut in_string = false;
+        while i < close {
+            match self.bytes[i] {
+                b'\\' if self.bytes.get(i + 1) == Some(&b'"') => {
+                    if in_string {
+                        out.push_str("\" ");
+                    } else {
+                        out.push_str(" \"");
+                    }
+                    in_string = !in_string;
+                    i += 2;
+                }
+                b'"' if !in_string => {
+                    let end = self.string_end(i + 1).unwrap_or(close).min(close);
+                    out.push_str(self.slice(i, end + 1));
+                    i = end + 1;
+                }
+                _ => {
+                    let ch = self
+                        .src
+                        .get(i..)
+                        .and_then(|s| s.chars().next())
+                        .unwrap_or('?');
+                    out.push(ch);
+                    i += ch.len_utf8();
+                }
+            }
+        }
+        out
     }
 
     fn string_end(&self, from: usize) -> Option<usize> {

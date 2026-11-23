@@ -205,6 +205,23 @@ impl RichValue {
             .join("\n")
     }
 
+    /// The words a write of this text over `was` took away and the words it put there, each
+    /// as one line: whitespace as a single space, the words outside the change marked off
+    /// with an ellipsis, and a long change cut. What history shows of a body edit, in place
+    /// of the whole body either side of it.
+    #[must_use]
+    pub fn changed_words(&self, was: &Self) -> (String, String) {
+        let before: Vec<char> = was.written_text().chars().collect();
+        let after: Vec<char> = self.written_text().chars().collect();
+        let (prefix, suffix) = tilo_resource::text::common_ends(&before, &after);
+        let span = |text: &[char]| -> String {
+            let end = text.len().saturating_sub(suffix);
+            let words = text.get(prefix..end).unwrap_or_default();
+            one_line(words, prefix > 0, suffix > 0)
+        };
+        (span(&before), span(&after))
+    }
+
     /// The text as one reader reads it, a line per paragraph: each reference as `read` says it
     /// reads for them (a resource they hold by its title now, one they cannot read as
     /// `unshared`), as its chip does (`tilo_reference::embed::read_text`). What search, rows,
@@ -523,32 +540,6 @@ pub const INSERTED: &str = "strong";
 pub const DELETED: &str = "strike";
 
 impl RichValue {
-    /// What a change made of one paragraph, as its two sides show it: `before` and `after`
-    /// are the paragraph's text at the two sides of the change, and `inserted`/`deleted`
-    /// are the ranges of each the change wrote and removed, as it recorded them.
-    ///
-    /// The before side reads the paragraph as it read and strikes what the change deleted;
-    /// the after side reads it as it reads and marks what the change inserted. Each is one
-    /// paragraph of its own: a note of a hundred paragraphs with one word typed in the
-    /// fortieth shows the fortieth, never the other ninety-nine.
-    #[must_use]
-    pub fn sides(
-        block: &BlockView,
-        before: &str,
-        after: &str,
-        inserted: &[(usize, usize, String)],
-        deleted: &[(usize, usize, String)],
-    ) -> (Self, Self) {
-        (
-            Self {
-                blocks: vec![marked_block(block, before, deleted, DELETED)],
-            },
-            Self {
-                blocks: vec![marked_block(block, after, inserted, INSERTED)],
-            },
-        )
-    }
-
     /// This text with each paragraph cut to what its own marking leaves: the marked runs,
     /// with `words` words of the paragraph around each, so a change deep in a long paragraph
     /// reads with its context and not with the paragraph. A paragraph with no marked run is
@@ -618,259 +609,25 @@ impl RichValue {
     }
 }
 
-/// `block` as one side of a change reads it: its text `text`, with the runs `ranges` names/// covered by the mark `name` (`strong` for an insertion, `strike` for a deletion) and the
-/// paragraph's own marks beside them.
-fn marked_block(
-    block: &BlockView,
-    text: &str,
-    ranges: &[(usize, usize, String)],
-    name: &str,
-) -> BlockView {
-    let mut marks: Vec<MarkSpan> = block
-        .marks
-        .iter()
-        .filter(|mark| mark.end <= text.chars().count())
-        .cloned()
-        .collect();
-    for (start, end, _) in ranges {
-        if start < end {
-            // Runs of one kind that meet read as one mark, so a word typed one character
-            // after another is one run of marked text.
-            match marks.last_mut() {
-                Some(last) if last.name == name && last.end == *start => last.end = *end,
-                _ => marks.push(MarkSpan {
-                    start: *start,
-                    end: *end,
-                    name: name.to_owned(),
-                    value: MarkValue::Bool(true),
-                }),
-            }
-        }
+/// The words one line of history shows of a change: whitespace as a single space, the words
+/// outside the change marked off with an ellipsis, and past [`CHANGED_WORDS`] the start of
+/// them and an ellipsis, so a large paste reads as a glance rather than as itself.
+fn one_line(words: &[char], before: bool, after: bool) -> String {
+    let text: String = words.iter().collect();
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return collapsed;
     }
-    marks.sort_by_key(|span| (span.start, span.end));
-    BlockView {
-        id: block.id.clone(),
-        kind: block.kind.clone(),
-        text: text.to_owned(),
-        marks,
-        attrs: block.attrs.clone(),
-        children: Vec::new(),
+    let mut out = String::new();
+    if before {
+        out.push('…');
     }
+    out.extend(collapsed.chars().take(CHANGED_WORDS));
+    if after || collapsed.chars().count() > CHANGED_WORDS {
+        out.push('…');
+    }
+    out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    tilo_test_env::scenario! {
-        fn a_link_names_its_page_by_path;
-
-        phase a_page_names_one_beside_it_by_the_path_from_where_it_stands;
-        {
-            assert_eq!(relative_path("", "Plan.md"), "Plan.md");
-            assert_eq!(relative_path("Home/", "Home/Groceries.md"), "Groceries.md");
-            assert_eq!(
-                relative_path("Home/Standups/", "Home/Standups/Monday.md"),
-                "Monday.md"
-            );
-            assert_eq!(relative_path("Home/", "Work/Plan.md"), "../Work/Plan.md");
-            assert_eq!(
-                relative_path("A/B/C/", "A/X.md"),
-                "../../X.md",
-                "one step up for each folder of its own above the one they meet at"
-            );
-            assert_eq!(
-                relative_path("Home/", "Home/Ideas (2).md"),
-                "Ideas (2).md",
-                "a name a file name may keep, spaces and brackets alike"
-            );
-        }
-
-        phase a_link_reads_as_the_page_it_names_and_nothing_else;
-        {
-            assert_eq!(
-                bundle_path("Home/", "Groceries.md").as_deref(),
-                Some("Home/Groceries.md")
-            );
-            assert_eq!(
-                bundle_path("A/B/C/", "../../X.md").as_deref(),
-                Some("A/X.md")
-            );
-            assert_eq!(
-                bundle_path("", "Work/Plan.md").as_deref(),
-                Some("Work/Plan.md")
-            );
-            assert_eq!(bundle_path("Home/", "https://example.test/a.md"), None);
-            assert_eq!(bundle_path("Home/", "/etc/passwd"), None);
-            assert_eq!(bundle_path("Home/", "../../escape.md"), None);
-            assert_eq!(bundle_path("Home/", ""), None);
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn a_rich_text_reads_out_its_anchors_excerpt_and_references;
-
-        phase anchors_number_paragraphs_and_the_items_of_a_list_under_it;
-        {
-            let mut v = RichValue::from_text("Intro\nfirst\nsecond\nOutro");
-            for b in v.blocks.get_mut(1..3).unwrap_or_default() {
-                b.kind = "list_item".into();
-            }
-            let names: Vec<String> = v.anchors().into_iter().map(|(a, _)| a).collect();
-            assert_eq!(names, ["¶1", "¶2.1", "¶2.2", "¶3"]);
-            assert_eq!(v.at_anchor("¶2.2").map(|b| b.text.as_str()), Some("second"));
-            assert_eq!(v.at_anchor("2").map(|b| b.text.as_str()), Some("first"));
-            assert_eq!(v.at_anchor("¶3").map(|b| b.text.as_str()), Some("Outro"));
-            assert!(v.at_anchor("¶9").is_none());
-        }
-
-        phase the_excerpt_is_the_first_line_with_text;
-        {
-            assert_eq!(
-                RichValue::from_text("\n  \nHello there\nmore")
-                    .read_excerpt(&mut |_| Reading::AsWritten, ""),
-                "Hello there"
-            );
-            assert!(RichValue::from_text("\n  ").is_empty());
-            assert!(!RichValue::from_text("x").is_empty());
-        }
-
-        phase references_are_read_from_the_marks_in_order_each_once;
-        {
-            let mut v = RichValue::from_text("Ask ");
-            let ada = Reference::Member(crate::ids::MemberId::person("u_ada"));
-            let ch = Reference::resource("so.tilo.chat", "chat.channel", "chat.channel:general");
-            v.push_reference("@Ada", &ada);
-            v.push_text(" in ");
-            v.push_reference("#general", &ch);
-            v.push_text(", thanks ");
-            v.push_reference("@Ada", &ada);
-            assert_eq!(v.references(), [ada, ch.clone()]);
-            assert_eq!(v.written_text(), "Ask @Ada in #general, thanks @Ada");
-            // A reader reads each reference as it reads for them, never by the run alone.
-            let mut read = |r: &Reference| {
-                if *r == ch {
-                    Reading::Unshared
-                } else {
-                    Reading::Title("@Ada Lovelace".into())
-                }
-            };
-            assert_eq!(
-                v.read_text(&mut read, "Not shared with you"),
-                "Ask @Ada Lovelace in Not shared with you, thanks @Ada Lovelace"
-            );
-        }
-    }
-
-    /// The runs of `v`'s first paragraph covered by the mark `name`, as text.
-    fn runs(v: &RichValue, name: &str) -> Vec<String> {
-        v.blocks[0]
-            .marks
-            .iter()
-            .filter(|m| m.name == name)
-            .map(|m| {
-                v.blocks[0]
-                    .text
-                    .chars()
-                    .skip(m.start)
-                    .take(m.end.saturating_sub(m.start))
-                    .collect()
-            })
-            .collect()
-    }
-
-    tilo_test_env::scenario! {
-        fn a_change_to_a_text_reads_as_words_marked_and_struck;
-
-        phase a_change_shows_its_insertions_marked_and_its_deletions_struck;
-        {
-            let block = RichValue::from_text("Groceries and milk").blocks[0].clone();
-            // What the change recorded: the word it removed and the one it wrote.
-            let deleted = [(14, 18, "milk".to_owned())];
-            let inserted = [(14, 19, "bread".to_owned())];
-            let (was, now) = RichValue::sides(
-                &block,
-                "Groceries and milk",
-                "Groceries and bread",
-                &inserted,
-                &deleted,
-            );
-            assert_eq!(was.blocks[0].text, "Groceries and milk");
-            assert_eq!(now.blocks[0].text, "Groceries and bread");
-            assert_eq!(runs(&was, DELETED), ["milk"]);
-            assert!(
-                runs(&was, INSERTED).is_empty(),
-                "before marks nothing written"
-            );
-            assert_eq!(runs(&now, INSERTED), ["bread"]);
-            assert!(runs(&now, DELETED).is_empty(), "after strikes nothing");
-        }
-
-        phase a_word_replaced_reads_as_the_word_not_its_letters;
-        {
-            // "sourdough" and "bread" share letters, which a character diff of the two texts
-            // would mark as untyped; what the change recorded is the word it wrote, whole.
-            let block = RichValue::from_text("Oat milk and bread").blocks[0].clone();
-            let deleted = [(13, 18, "bread".to_owned())];
-            let inserted = [(13, 22, "sourdough".to_owned())];
-            let (was, now) = RichValue::sides(
-                &block,
-                "Oat milk and bread",
-                "Oat milk and sourdough",
-                &inserted,
-                &deleted,
-            );
-            assert_eq!(runs(&now, INSERTED), ["sourdough"]);
-            assert_eq!(runs(&was, DELETED), ["bread"]);
-        }
-
-        phase characters_typed_one_after_another_are_one_marked_run;
-        {
-            let block = RichValue::from_text("a").blocks[0].clone();
-            let inserted = [
-                (1, 2, "x".to_owned()),
-                (2, 3, "y".to_owned()),
-                (3, 4, "z".to_owned()),
-            ];
-            let (_, now) = RichValue::sides(&block, "a", "axyz", &inserted, &[]);
-            assert_eq!(runs(&now, INSERTED), ["xyz"], "one run, not one per key");
-        }
-
-        phase a_long_paragraph_cuts_to_the_change_and_a_few_words_of_context;
-        {
-            let block = RichValue::from_text("x").blocks[0].clone();
-            let before =
-                "the quick brown fox jumps over the lazy dog and then runs far away into the wood";
-            let after =
-                "the quick brown fox leaps over the lazy dog and then runs far away into the wood";
-            let at = after.find("leaps").unwrap_or(0);
-            let inserted = [(at, at + 5, "leaps".to_owned())];
-            let deleted = [(at, at + 5, "jumps".to_owned())];
-            let (was, now) = RichValue::sides(&block, before, after, &inserted, &deleted);
-            let cut = now.related(2);
-            assert_eq!(cut.blocks.len(), 1);
-            assert!(
-                cut.blocks[0].text.starts_with('…'),
-                "{:?}",
-                cut.blocks[0].text
-            );
-            assert!(
-                cut.blocks[0].text.ends_with('…'),
-                "{:?}",
-                cut.blocks[0].text
-            );
-            assert!(
-                cut.blocks[0].text.contains("leaps"),
-                "{:?}",
-                cut.blocks[0].text
-            );
-            assert!(
-                cut.blocks[0].text.chars().count() < now.blocks[0].text.chars().count() / 2,
-                "a few words, not the paragraph: {:?}",
-                cut.blocks[0].text
-            );
-            let struck = was.related(2);
-            assert!(struck.blocks[0].text.contains("jumps"), "{struck:?}");
-        }
-    }
-}
+/// How many characters of a change history shows before it cuts the rest.
+const CHANGED_WORDS: usize = 80;

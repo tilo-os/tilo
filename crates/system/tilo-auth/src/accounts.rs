@@ -39,10 +39,6 @@ impl Accounts {
         Ok(self.accounts()?.into_iter().find(|a| a.name == name))
     }
 
-    pub fn by_uid(&self, uid: u32) -> Result<Option<Account>> {
-        Ok(self.accounts()?.into_iter().find(|a| a.uid == uid))
-    }
-
     fn in_group(&self, account: &Account, group: &str) -> Result<bool> {
         Ok(self.read("etc/group")?.lines().any(|line| {
             let mut fields = line.split(':');
@@ -171,70 +167,19 @@ fn shadow_has_password(shadow: &str, name: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn root() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("etc")).unwrap();
-        std::fs::write(
-            dir.path().join("etc/passwd"),
-            "root:x:0:0:root:/root:/bin/bash\n\
-             greetd:x:977:977::/var/lib/greetd:/sbin/nologin\n\
-             ada:x:1000:1000:Ada Lovelace,,,:/home/ada:/bin/bash\n\
-             bob:x:1001:1001::/home/bob:/bin/bash\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("etc/group"),
-            "wheel:x:10:ada,bob\n\
-             tilo-identity:x:960:ada\n\
-             ada:x:1000:\n",
-        )
-        .unwrap();
-        dir
-    }
-
-    tilo_test_env::scenario! {
-        fn the_machines_accounts_are_read_from_its_files;
-
-        phase accounts_resolve_by_name_and_uid_with_their_display_name;
-        {
-            let dir = root();
-            let accounts = Accounts::new(dir.path());
-            let ada = accounts.by_name("ada").unwrap().unwrap();
-            assert_eq!(ada.uid, 1000);
-            assert_eq!(ada.display_name, "Ada Lovelace");
-            assert_eq!(accounts.by_uid(1001).unwrap().unwrap().display_name, "bob");
-            assert!(accounts.by_name("eve").unwrap().is_none());
-        }
-
-        phase the_admin_is_in_wheel_and_tilo_identity;
-        {
-            let dir = root();
-            let accounts = Accounts::new(dir.path());
-            assert!(
-                accounts
-                    .is_admin(&accounts.by_name("ada").unwrap().unwrap())
-                    .unwrap()
-            );
-            assert!(
-                !accounts
-                    .is_admin(&accounts.by_name("bob").unwrap().unwrap())
-                    .unwrap()
-            );
-        }
-
-        phase only_a_locked_or_disabled_shadow_entry_holds_no_password;
-        {
-            let shadow = "root:!:19000::::::\n\
+    /// The real shadow file is root's alone; the daemon's tests stand in for it.
+    #[test]
+    fn only_a_locked_or_disabled_shadow_entry_holds_no_password() {
+        let shadow = "root:!:19000::::::\n\
                       ada:$y$j9T$salt$hash:19000:0:99999:7:::\n\
                       bob:!$y$j9T$salt$hash:19000::::::\n\
                       greetd:*:19000::::::\n\
                       eve::19000::::::\n";
-            assert!(shadow_has_password(shadow, "ada"));
-            assert!(shadow_has_password(shadow, "eve"));
-            assert!(!shadow_has_password(shadow, "root"));
-            assert!(!shadow_has_password(shadow, "bob"));
-            assert!(!shadow_has_password(shadow, "greetd"));
-            assert!(!shadow_has_password(shadow, "mallory"));
-        }
+        assert!(shadow_has_password(shadow, "ada"));
+        assert!(shadow_has_password(shadow, "eve"));
+        assert!(!shadow_has_password(shadow, "root"));
+        assert!(!shadow_has_password(shadow, "bob"));
+        assert!(!shadow_has_password(shadow, "greetd"));
+        assert!(!shadow_has_password(shadow, "mallory"));
     }
 }

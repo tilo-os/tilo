@@ -1,9 +1,9 @@
 //! The banners on their own: a fixed desktop's notifications for a capture,
 //! a test and the app's own window, staged per scenario.
 
-use tilo_desktop::notifications::{
-    Banner, BannerFeed, Notification, NotificationIconKind, NotificationSeverity,
-    PERSISTENT_DISMISS,
+use tilo_desktop::notifications::{Banner, BannerFeed};
+use tilo_session_core::desktop::notifications::{
+    Notification, NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS,
 };
 use ui::time::Duration;
 use ui::vello::kurbo::Rect;

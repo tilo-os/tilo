@@ -522,22 +522,7 @@ impl PartView {
     /// Where the control assistive technology names `name` stands, in the desktop's logical
     /// layout `(x, y, width, height)`: what a test or a tool presses it by.
     pub fn control_bounds(&mut self, name: &str) -> Option<(f64, f64, f64, f64)> {
-        let open = self.open.as_mut()?;
-        let (ox, oy) = open.widgets.placement().origin;
-        open.widgets
-            .host_mut()
-            .a11y_nodes()
-            .into_iter()
-            .filter(|(_, node)| node.label() == Some(name))
-            .find_map(|(_, node)| node.bounds())
-            .map(|rect| {
-                (
-                    f64::from(ox) + rect.x0,
-                    f64::from(oy) + rect.y0,
-                    rect.width(),
-                    rect.height(),
-                )
-            })
+        self.open.as_mut()?.widgets.control_bounds(name)
     }
 
     /// Stand where the reading puts the view: at its anchor, with the space from there to the

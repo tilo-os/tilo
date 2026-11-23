@@ -1,13 +1,9 @@
 //! A workspace that ran the native Notes app opens the tilolang Notes, hosted as a session starts
-//! it: under the id it took from the native app, its documents kept under the id it was published
-//! as before. The session grants the process, read-only, what the native app kept of the workspace
-//! in the store it wrote; its one-time conversion reads the notebook there and carries every page
-//! over once, each with its title and its body.
+//! it: under the id it took from the native app. The session grants the process, read-only, what
+//! the native app kept of the workspace in the store it wrote; its one-time conversion reads the
+//! notebook there and carries every page over once, each with its title and its body.
 
 use super::*;
-
-/// The id Notes was published as before it took the native app's: its own documents stay there.
-const PUBLISHED_BEFORE: &str = "so.tilo.lang.notes";
 
 /// Where a workspace keeps the native notebook's record. The native app's test harness wrote it
 /// under the package's own primary id instead (`@tilo:package-primary`).
@@ -124,13 +120,12 @@ fn notes_started_as_a_session_does_carries_the_native_notebook_over_once() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let workspace = uuid::Uuid::new_v4();
     let bundle = notes();
-    // The session starts Notes under its id with its documents under the id it had before, and
-    // the host honours that earlier id, as it does for a launch the installed catalogue names.
-    tilolang_tilo::schema::register_previously(NOTES, &[PUBLISHED_BEFORE.to_owned()]);
+    // Notes runs under its own id; what the native app of that id left in the store is read by
+    // the package's own conversion, wherever it wrote.
     let route = tilolang_process::route_of(&bundle.meta, workspace, ADA);
     assert_eq!(
-        route.app_id, PUBLISHED_BEFORE,
-        "Notes' documents stay where it kept them"
+        route.app_id, NOTES,
+        "Notes runs in the document of its own id"
     );
     let broker = Broker::new(route.clone());
     let mut manager = CollaborationManager::with_peer_transport(broker);
@@ -146,10 +141,6 @@ fn notes_started_as_a_session_does_carries_the_native_notebook_over_once() {
     // pages are carried into it.
     let content = tilo_content::ContentStore::memory();
     let connection = Connection::new(manager).expect("the connection joined its route");
-    assert!(
-        connection.governs(),
-        "this device is the workspace's origin"
-    );
     let store = ResourceStore::new(Rc::new(connection.port(None)));
     // The native app's data home, of which the session grants the process the store it wrote;
     // the process keeps its own storage beside it.
@@ -159,7 +150,7 @@ fn notes_started_as_a_session_does_carries_the_native_notebook_over_once() {
     let mut host = TilolangProcess::new(wake()).reading_earlier(native);
     let kept = tilolang_process::hosted::Kept {
         content: Some(content.clone()),
-        ..host.kept(PUBLISHED_BEFORE)
+        ..host.kept(NOTES)
     };
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
@@ -223,30 +214,23 @@ fn notes_started_as_a_session_does_carries_the_native_notebook_over_once() {
     );
 }
 
-/// The route an instance joins keeps an earlier id only when the installed catalogue honours it.
-/// A package's own `previously:` names the document, and the host believes it for the catalogue's
-/// say-so alone: a device where the earlier app was never installed routes the app to its own
-/// document, so the broker admits it as its own worker and it can publish what it keeps, instead
-/// of reading another app's record read-only.
+/// An app's route is its own id, whatever its manifest claimed it was published as before: a
+/// `previously:` claim renames nothing, so a device that never installed the earlier app routes
+/// and keeps the app's own records, and the broker admits it as its own worker.
 #[test]
-fn a_route_keeps_an_earlier_id_only_when_the_catalogue_honours_it() {
+fn a_route_is_the_apps_own_whatever_the_manifest_claims_before() {
     let mut meta = notes().meta;
     // An app id of this test's own: its registration is no other test's.
     meta.app = "so.tilo.lang.route-test".into();
     let workspace = uuid::Uuid::new_v4();
-    let earlier = "so.tilo.lang.route-test-before".to_owned();
-    tilolang_tilo::schema::register_previously(&meta.app, &[]);
+    tilolang_tilo::schema::register_previously(
+        &meta.app,
+        std::slice::from_ref(&"so.tilo.lang.route-test-before".to_owned()),
+    );
     assert_eq!(
         tilolang_process::route_of(&meta, workspace, ADA).app_id,
         meta.app,
-        "no predecessor is honoured, so the route is the app's own"
+        "the route is the app's own, whatever was claimed before"
     );
-    tilolang_tilo::schema::register_previously(&meta.app, std::slice::from_ref(&earlier));
-    assert_eq!(
-        tilolang_process::route_of(&meta, workspace, ADA).app_id,
-        earlier,
-        "an honoured predecessor keeps the route, and its records"
-    );
-    // Leave nothing behind for the process's other tests.
     tilolang_tilo::schema::register_previously(&meta.app, &[]);
 }

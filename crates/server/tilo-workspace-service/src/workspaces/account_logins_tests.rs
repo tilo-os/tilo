@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use accounts::person::PersonAccounts;
+use accounts::person::AccountList;
 use ed25519_dalek::SigningKey;
 use serde_json::json;
 use tilo_account_probe::AccountTester as _;
@@ -30,11 +30,10 @@ use zeroize::Zeroizing;
 use super::account_logins::{
     ASKS_FIRST, AccountLogin, MAY_NOT_USE_PASSWORDS, NOT_NAMED, NOT_ON_A_FOREIGN_DEVICE,
 };
-use super::fixtures::{
-    TestGroupKeys, TestHost, device_cert, governor, signed_pre_admission, test_host_holding,
-};
+use super::fixtures::{TestHost, device_cert, governor, signed_pre_admission, test_host_keyed};
 use super::mail_watch::testing::Watched;
 use super::{MemberDevice, PreAdmitRequest, Workspaces};
+use crate::own_device::KeyService;
 
 /// The mail account both members read.
 const ADDRESS: &str = "team@example.test";
@@ -61,6 +60,8 @@ impl MailServer {
                 smtp: "127.0.0.1:0".into(),
                 imap_wrapped: true,
                 smtp_wrapped: false,
+                layout: tilo_account_probe::stand_in::Layout::Plain,
+                seeded: true,
             })
             .expect("the stand-in mail server listens");
         Self { started }
@@ -118,6 +119,7 @@ struct Members {
     member: Workspaces,
     member_cert: DeviceCert,
     _hosts: (TestHost, TestHost),
+    _keys: (KeyService, KeyService),
     _dirs: (tempfile::TempDir, tempfile::TempDir),
 }
 
@@ -128,12 +130,11 @@ impl Members {
 
     /// The owner's workspace, which a device with `capabilities` joined as its member's.
     async fn with_member(capabilities: DeviceCapabilities) -> Self {
-        let keys = Arc::new(TestGroupKeys::default());
         let owner_dir = tempfile::tempdir().unwrap();
         let member_dir = tempfile::tempdir().unwrap();
         let (owner_key, owner_cert) = governor();
-        let serving =
-            test_host_holding(owner_dir.path(), &owner_key, &owner_cert, Arc::clone(&keys)).await;
+        let (serving, owner_keys) =
+            test_host_keyed(owner_dir.path(), &owner_key, &owner_cert).await;
         let created = serving.workspaces().create("Team").await.unwrap();
         let workspace = created.workspace;
         let (key, cert) = device_cert(&SigningKey::from_bytes(&[31; 32]), "laptop", capabilities);
@@ -151,7 +152,7 @@ impl Members {
             .await
             .unwrap();
         let invitation = tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation);
-        let joined = test_host_holding(member_dir.path(), &key, &cert, keys).await;
+        let (joined, member_keys) = test_host_keyed(member_dir.path(), &key, &cert).await;
         let member = joined.workspaces().clone();
         member.set_member_device(Arc::new(MemberDevice {
             cert: cert.clone(),
@@ -166,6 +167,7 @@ impl Members {
             member,
             member_cert: cert,
             _hosts: (serving, joined),
+            _keys: (owner_keys, member_keys),
             _dirs: (owner_dir, member_dir),
         }
     }
@@ -178,8 +180,7 @@ impl Members {
         .in_workspace(self.workspace.clone())
     }
 
-    /// Whether the owner's device hands the member's device the vault's keys. The fixture's
-    /// devices share one channel key, so this is where a test sees the vault's key holders.
+    /// Whether the owner's device counts the member's device among the vault's key holders.
     async fn member_holds_the_vaults_keys(&self) -> bool {
         self.owner
             .state(&self.workspace)
@@ -205,24 +206,24 @@ impl Members {
     /// The workspace's accounts, made by the owner's device holding `account`: what Settings
     /// writes when the owner adds it.
     async fn keep_account(&self, account: &accounts::Account) {
-        let document = collab_types::workspace_document_id(PersonAccounts::KIND);
+        let document = collab_types::workspace_document_id(AccountList::KIND);
         let id = collab_types::document::DocumentId::parse(&document).unwrap();
         let mut doc = automerge::AutoCommit::new();
         collaboration::resource::genesis(
             &mut doc,
             &collab_types::document::DocumentCheckout::new(
                 id,
-                collab_types::document::ResourceType::new(PersonAccounts::KIND),
+                collab_types::document::ResourceType::new(AccountList::KIND),
             ),
             &self.workspace,
-            |doc| PersonAccounts::initialize(doc).map_err(|error| error.to_string()),
+            |doc| AccountList::initialize(doc).map_err(|error| error.to_string()),
         )
         .unwrap();
         let saved = {
-            let mut replica = Replica::<PersonAccounts>::from_doc(doc)
+            let mut replica = Replica::<AccountList>::from_doc(doc)
                 .in_app(accounts::person::ACCOUNTS_OWNER, "Settings");
             replica
-                .apply_confirmed(PersonAccounts::saving(account))
+                .apply_confirmed(AccountList::saving(account))
                 .unwrap();
             replica.save()
         };
@@ -870,5 +871,173 @@ async fn an_account_a_providers_page_signed_in_is_released_its_access_token_alon
         !token.contains("made-up refresh token") && !token.contains("refresh_token"),
         "nothing the device is released carries the refresh token: {}",
         token.as_str()
+    );
+}
+
+/// The vault's route, as each device seals and opens it.
+fn vault_route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRoute {
+    tilo_peer_state::document_frame::DocumentRoute {
+        app_id: tilo_app_id::apps::PASSWORDS.into(),
+        cluster_id: workspace.to_owned(),
+        document: tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT.into(),
+    }
+}
+
+/// The vault's keys as `device` holds them once they are no longer `held`; the group and
+/// generation it held last when they never move on.
+async fn vault_keys_after(
+    device: &Workspaces,
+    workspace: &str,
+    held: &key_group::ContentKeys,
+) -> key_group::ContentKeys {
+    let mut last = None;
+    let waited = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        loop {
+            let answer = device.own_route_keys(&vault_route(workspace), false).await;
+            if let Some(Ok(keys)) = &answer
+                && !keys.same_write_key(held)
+            {
+                return keys.clone();
+            }
+            last = Some(answer.map(|keys| keys.map(|keys| (keys.workspace(), keys.epoch()))));
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    waited.unwrap_or_else(|_| {
+        panic!(
+            "the vault stayed sealed with keys the member's device held ({:?} at {}): the \
+             device's vault keys stayed at {last:?}",
+            held.workspace(),
+            held.epoch()
+        )
+    })
+}
+
+/// A member whose rules come to refuse Passwords opens nothing the vault keeps after that: the
+/// vault's key group leaves their device out and moves to a new generation, which their device is
+/// never handed. Real key services on both devices, so what each holds is what a device holds.
+#[tokio::test]
+async fn a_member_refused_passwords_opens_nothing_the_vault_keeps_after() {
+    let server = tokio::task::spawn_blocking(MailServer::start)
+        .await
+        .unwrap();
+    let members = Members::new().await;
+    let workspace = members.workspace.clone();
+    members.owner_keeps_the_password(&server).await;
+    // Both devices settle on the keys the vault is sealed with.
+    let mut last = None;
+    let held = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        loop {
+            let route = vault_route(&workspace);
+            let owner = members.owner.own_route_keys(&route, false).await;
+            let member = members.member.own_route_keys(&route, false).await;
+            if let (Some(Ok(owner)), Some(Ok(member))) = (&owner, &member)
+                && owner.same_write_key(member)
+            {
+                return owner.clone();
+            }
+            let at = |answer: Option<Result<key_group::ContentKeys, String>>| {
+                answer.map(|held| held.map(|keys| (keys.workspace(), keys.epoch())))
+            };
+            last = Some((at(owner), at(member)));
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!("the two devices never held the vault's keys alike: owner and member at {last:?}")
+    });
+
+    members
+        .rule_passwords_for_the_member(tilo_action_policy::Answer::Deny)
+        .await;
+    // The owner keeps another password: a write of the vault after the member lost it.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        members.owner.keep_account_password(
+            &workspace,
+            &members.owner_caller(),
+            None,
+            server.login(),
+            Zeroizing::new("a password kept after".into()),
+        ),
+    )
+    .await
+    .expect("the owner's device keeps a password after the member lost Passwords")
+    .unwrap();
+    let next = vault_keys_after(&members.owner, &workspace, &held).await;
+    let artifact = collab_types::document_artifact_id(
+        tilo_app_id::apps::PASSWORDS,
+        &workspace,
+        tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT,
+    );
+    let (metadata, sealed) = next
+        .seal_content(
+            artifact,
+            collab_types::ContentRetention::Delta,
+            b"a password kept after",
+        )
+        .unwrap();
+    assert!(
+        held.open_content(artifact, &metadata, &sealed).is_err(),
+        "the keys the member's device held open nothing sealed after"
+    );
+    // The groups settle in milliseconds; keys handed to the member's device would be there long
+    // before this.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    if let Some(Ok(keys)) = members
+        .member
+        .own_route_keys(&vault_route(&workspace), false)
+        .await
+    {
+        assert!(
+            keys.open_content(artifact, &metadata, &sealed).is_err(),
+            "the member's device holds no key of what is sealed after"
+        );
+    }
+}
+
+/// A branch of a workspace starts with everything its source holds, the passwords its vault keeps
+/// included: its own device opens them there with the branch's own keys.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_branch_opens_the_passwords_its_source_kept() {
+    const BRANCH: &str = "6f2b8a51-6d0f-4d4e-9d6c-5d3b3f1f2a11";
+    let server = tokio::task::spawn_blocking(MailServer::start)
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let (host, _keys) = test_host_keyed(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces();
+    workspaces
+        .offer_own_workspaces(super::OwnWorkspaceOffer::free("tilo.test"))
+        .unwrap();
+    let source = workspaces.create("Template").await.unwrap().workspace;
+    let by = Caller::authenticated(cert.user_public_key, cert.device_public_key)
+        .in_workspace(source.clone());
+    let item = workspaces
+        .keep_account_password(
+            &source,
+            &by,
+            None,
+            server.login(),
+            Zeroizing::new(PASSWORD.into()),
+        )
+        .await
+        .unwrap();
+
+    workspaces
+        .branch_own(&source, BRANCH, "Task", [5; 32])
+        .await
+        .map_err(|not| not.refusal())
+        .unwrap();
+    let opened = workspaces
+        .open_vault(BRANCH)
+        .await
+        .expect("the branch's vault opens on its device");
+    assert!(
+        opened.entry(item.id()).is_some(),
+        "the branch keeps the password its source kept: {opened:?}"
     );
 }

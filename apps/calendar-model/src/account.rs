@@ -1,10 +1,9 @@
-//! The calendar accounts a device keeps: the servers it signs in to and the
-//! calendars each of them holds.
+//! The calendar's shape of the workspace's accounts: the servers it signs in
+//! to and the calendars each of them holds.
 //!
-//! The types are the resource's, read by an agent too. Keeping an account in
-//! the shared store and its secret in the vault, and reading them back, is
-//! the `store` feature: a device that only applies the resource's verbs links
-//! none of it.
+//! The types are the resource's, read by an agent too. Reading the workspace's
+//! account list in this shape, with a password from the vault, is the `store`
+//! feature: a device that only applies the resource's verbs links none of it.
 
 use serde::{Deserialize, Serialize};
 
@@ -143,11 +142,11 @@ impl CalendarAccount {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct AccountStore {
+pub struct CalendarAccounts {
     pub accounts: Vec<CalendarAccount>,
 }
 
-impl AccountStore {
+impl CalendarAccounts {
     pub fn new() -> Self {
         Self::default()
     }

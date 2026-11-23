@@ -8,7 +8,7 @@ impl IndexValue for Name {
     const RECORD_BYTES: usize = 128 * 1024;
 }
 pub(super) fn directory_identity(directory: &PinnedDirectory) -> io::Result<durable::Identity> {
-    durable::identity(&durable::readable_directory(&directory.file)?)
+    durable::directory_identity(directory)
 }
 fn regular(parent: &PinnedDirectory, name: &OsStr) -> io::Result<File> {
     let mut options = OpenOptions::new();

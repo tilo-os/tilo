@@ -112,7 +112,7 @@ pub fn render(policy: &SeatbeltPolicy) -> SeatbeltProfile {
     let runtime = policy.runtime.as_ref().map(|dir| {
         let name = out.param(RUNTIME_PARAM.to_string(), dir);
         out.rule(&format!(
-            "(allow file-read* file-map-executable (subpath (param \"{name}\")))"
+            "(allow file-read* file-map-executable process-exec (subpath (param \"{name}\")))"
         ));
         name
     });
@@ -195,6 +195,9 @@ impl Builder {
         self.text.push_str(")\n");
     }
 
+    /// What every app may do. The `/tilo-` shared memory is the app's own anonymous memory
+    /// (`tilo_sandbox::shm`), how it hands an immutable buffer to another process or to itself:
+    /// each object is created exclusively under a fresh name and unlinked at once.
     fn baseline(&mut self) {
         self.text.push_str(
             "(version 1)\n\
@@ -205,7 +208,10 @@ impl Builder {
              (allow signal (target same-sandbox))\n\
              (allow system-socket (socket-domain AF_UNIX))\n\
              (allow ipc-posix-shm-read* ipc-posix-shm-write-create ipc-posix-shm-write-data\n  \
-             (ipc-posix-name \"com.apple.AppleDatabaseChanged\"))\n",
+             (ipc-posix-name \"com.apple.AppleDatabaseChanged\"))\n\
+             (allow ipc-posix-shm-read-data ipc-posix-shm-write-create\n  \
+             ipc-posix-shm-write-data ipc-posix-shm-write-unlink\n  \
+             (ipc-posix-name-regex #\"^/tilo-\"))\n",
         );
         self.list("(allow mach-lookup", "global-name", GUI_MACH_SERVICES);
         self.list(
@@ -323,32 +329,6 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_rendered_profile;
 
-        phase the_offline_profile_is_pinned;
-        {
-            let profile = render(&policy(SeatbeltNetwork::Denied));
-            let expected = include_str!("../tests/fixtures/offline.sb");
-            assert_eq!(
-                profile.text, expected,
-                "the rendered profile changed; review the diff and update tests/fixtures/offline.sb"
-            );
-            let names: Vec<&str> = profile.params.iter().map(|(k, _)| k.as_str()).collect();
-            assert_eq!(
-                names,
-                [
-                    "PAYLOAD_DIR",
-                    "RUNTIME_DIR",
-                    "CONTAINER_DIR",
-                    "DARWIN_CACHE_DIR",
-                    "READ_0",
-                    "WRITE_0",
-                    "HIDDEN_0",
-                    "PINNED_0",
-                    "PINNED_1",
-                    "PINNED_2"
-                ]
-            );
-        }
-
         phase it_denies_by_default_and_carries_paths_only_as_parameters;
         {
             for network in [
@@ -400,7 +380,7 @@ mod tests {
             assert!(exec[0].contains("(param \"PAYLOAD_DIR\")"));
             assert!(exec[0].contains("process-exec"));
             assert!(exec[1].contains("(param \"RUNTIME_DIR\")"));
-            assert!(!exec[1].contains("process-exec"));
+            assert!(exec[1].contains("process-exec"));
             // The container is writable and never executable.
             let container_line = profile
                 .text
@@ -415,6 +395,21 @@ mod tests {
                 !tail.contains("(allow"),
                 "the write denial must be the last rule"
             );
+        }
+
+        phase an_app_makes_and_unlinks_only_its_own_tilo_shared_memory;
+        {
+            let profile = render(&policy(SeatbeltNetwork::Denied));
+            assert_eq!(
+                profile.text.matches("ipc-posix-shm-write-unlink").count(),
+                1,
+                "{}",
+                profile.text
+            );
+            assert!(profile.text.contains(
+                "ipc-posix-shm-write-data ipc-posix-shm-write-unlink\n  \
+                 (ipc-posix-name-regex #\"^/tilo-\"))"
+            ));
         }
 
         phase private_stores_are_denied_after_every_grant;

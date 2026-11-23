@@ -143,41 +143,6 @@ impl VerifiedRetainedPersonEpoch {
         }
         checked
     }
-    pub fn revalidate_for_retained_helper(
-        &self,
-        proof: &SignedRetainedPersonProof,
-        challenge: &[u8; 32],
-        shell: &runtime_portal::process_binding::ExecutingPeer,
-        installed: &tilo_user_identity::DeviceCert,
-        revocations: &tilo_user_identity::RevocationList,
-        helper: &runtime_portal::retained_role::VerifiedHelperPeer,
-    ) -> io::Result<()> {
-        use std::sync::atomic::Ordering;
-        let checked = (|| {
-            if self.revoked.load(Ordering::Acquire)
-                || proof.claims.execution_id != self.execution_id
-                || proof.claims.certificate != self.certificate
-            {
-                return Err(refused());
-            }
-            proof.verify_for_retained_helper(
-                &self.binding,
-                challenge,
-                shell,
-                installed,
-                revocations,
-                helper,
-            )?;
-            if self.revoked.load(Ordering::Acquire) {
-                return Err(refused());
-            }
-            Ok(())
-        })();
-        if checked.is_err() {
-            self.revoked.store(true, Ordering::Release);
-        }
-        checked
-    }
     pub fn revoke(&self) {
         self.revoked
             .store(true, std::sync::atomic::Ordering::Release);
@@ -231,65 +196,6 @@ impl SignedRetainedPersonProof {
             certificate: self.claims.certificate.clone(),
             revoked: std::sync::atomic::AtomicBool::new(false),
         })
-    }
-    #[cfg(all(target_os = "linux", feature = "client"))]
-    pub fn verify_for_retained_helper(
-        &self,
-        expected: &RetainedLaunchBinding,
-        challenge: &[u8; 32],
-        shell: &runtime_portal::process_binding::ExecutingPeer,
-        installed: &tilo_user_identity::DeviceCert,
-        revocations: &tilo_user_identity::RevocationList,
-        helper: &runtime_portal::retained_role::VerifiedHelperPeer,
-    ) -> io::Result<VerifiedRetainedPersonEpoch> {
-        helper.check_current()?;
-        let entries = self.authenticated_revocations_for_recipient(
-            expected,
-            challenge,
-            shell,
-            installed,
-            revocations,
-            helper.peer().pid(),
-        )?;
-        let mut merged = revocations.clone();
-        for entry in entries {
-            merged.insert(entry).map_err(io::Error::other)?;
-        }
-        if merged.refuses(installed) {
-            return Err(refused());
-        }
-        helper.check_current()?;
-        Ok(VerifiedRetainedPersonEpoch {
-            binding: expected.clone(),
-            execution_id: self.claims.execution_id.clone(),
-            certificate: self.claims.certificate.clone(),
-            revoked: std::sync::atomic::AtomicBool::new(false),
-        })
-    }
-    /// Authenticate revocations for a daemon receiving a genuinely delegated
-    /// helper-bound proof. The actual installed helper role remains the signed
-    /// binding's recipient; no serialized PID can substitute for its ownership.
-    #[cfg(all(target_os = "linux", feature = "client"))]
-    pub fn authenticated_revocations_for_retained_helper(
-        &self,
-        expected: &RetainedLaunchBinding,
-        challenge: &[u8; 32],
-        shell: &runtime_portal::process_binding::ExecutingPeer,
-        installed: &tilo_user_identity::DeviceCert,
-        revocations: &tilo_user_identity::RevocationList,
-        helper: &runtime_portal::retained_role::VerifiedHelperPeer,
-    ) -> io::Result<Vec<tilo_user_identity::RevocationEntry>> {
-        helper.check_current()?;
-        let entries = self.authenticated_revocations_for_recipient(
-            expected,
-            challenge,
-            shell,
-            installed,
-            revocations,
-            helper.peer().pid(),
-        )?;
-        helper.check_current()?;
-        Ok(entries)
     }
     /// Authenticate the complete fresh proof BEFORE returning root-signed
     /// revocations for monotonic root publication. This verifies issuer/root,

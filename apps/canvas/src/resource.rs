@@ -591,9 +591,10 @@ fn artwork_bytes(file: &str) -> Result<Vec<u8>, String> {
 pub fn read_file(path: &str, limit: usize) -> Result<Vec<u8>, String> {
     let cannot = |error: tilo_files::FsError| format!("cannot read {path}: {error}");
     let (dir, name) = tilo_files::file_at(std::path::Path::new(path)).map_err(cannot)?;
-    tilo_files::blocking::read_bounded(&dir, &name, limit)
-        .map_err(cannot)?
-        .ok_or_else(|| format!("{path} is over {limit} bytes"))
+    tilo_files::blocking::read_bounded(&dir, &name, limit).map_err(|error| match error {
+        tilo_files::FsError::FileTooLarge => format!("{path} is over {limit} bytes"),
+        other => cannot(other),
+    })
 }
 
 /// Keep `bytes` in the app's content store; answers their address.

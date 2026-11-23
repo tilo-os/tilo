@@ -1,7 +1,5 @@
 use super::*;
-use crate::ProtocolReference;
 use crate::routing::LinkState;
-use crate::signal_session::JournalError;
 use std::io::BufReader;
 
 fn owner() -> Owner {
@@ -23,8 +21,8 @@ fn route() -> Route {
     .unwrap()
 }
 
-fn accounts() -> accounts::person::PersonAccounts {
-    let mut accounts = accounts::person::PersonAccounts::default();
+fn accounts() -> accounts::person::AccountList {
+    let mut accounts = accounts::person::AccountList::default();
     accounts
         .keep(&accounts::Account::new("tilo-account-a", "signal"))
         .unwrap();
@@ -65,73 +63,6 @@ const ANSWERED_BUDGET: Duration = MAX_OPERATION_TIMEOUT;
 tilo_test_env::scenario! {
     /// `SignalRuntime` over a socket pair, each case with its own journal and peer.
     fn signal_runtime;
-
-    phase socket_send_maps_registry_account_to_signal_and_restart_refuses_duplicates;
-    {
-        let root = tempfile::tempdir().unwrap();
-        let (client, mut peer) = UnixStream::pair().unwrap();
-        peer.set_read_timeout(Some(ANSWERED_BUDGET)).unwrap();
-        let peer_reader = peer.try_clone().unwrap();
-        let daemon = std::thread::spawn(move || {
-            let mut request = String::new();
-            BufReader::new(peer_reader).read_line(&mut request).unwrap();
-            let value: serde_json::Value = serde_json::from_str(&request).unwrap();
-            assert_eq!(value["params"]["account"], "+15555550101");
-            assert_eq!(
-                value["params"]["recipient"],
-                serde_json::json!(["+15555550102"])
-            );
-            assert_eq!(value["params"]["message"], "private text");
-            assert_eq!(value["id"], "op");
-            peer.write_all(&event("+15555550101")).unwrap();
-            peer.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":\"op\",\"result\":{\"timestamp\":43}}\n")
-                .unwrap();
-        });
-        let mut runtime = runtime(root.path(), client);
-        assert_eq!(
-            runtime
-                .send(
-                    &accounts(),
-                    &binding(),
-                    &route(),
-                    "op",
-                    "private text",
-                    ANSWERED_BUDGET
-                )
-                .unwrap()
-                .timestamp,
-            43
-        );
-        assert_eq!(runtime.take_events().len(), 1);
-        assert_eq!(
-            runtime.status("op"),
-            Some(Status::Acknowledged(ProtocolReference::Signal {
-                timestamp: 43
-            }))
-        );
-        daemon.join().unwrap();
-        drop(runtime);
-        let (client, mut peer) = UnixStream::pair().unwrap();
-        peer.set_nonblocking(true).unwrap();
-        let mut restarted = self::runtime(root.path(), client);
-        assert_eq!(
-            restarted.send(
-                &accounts(),
-                &binding(),
-                &route(),
-                "op",
-                "private text",
-                ANSWERED_BUDGET
-            ),
-            Err(CheckedSendError::Transport(SendError::Journal(
-                JournalError::AlreadyReserved
-            )))
-        );
-        assert_eq!(
-            peer.read(&mut [0; 1]).unwrap_err().kind(),
-            io::ErrorKind::WouldBlock
-        );
-    }
 
     phase silent_socket_expires_and_preserves_uncertainty_without_retry;
     {

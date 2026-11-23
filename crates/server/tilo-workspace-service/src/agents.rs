@@ -86,6 +86,8 @@ mod asks;
 mod calendar_connect;
 mod calendars;
 mod carried;
+#[cfg(test)]
+mod device_turn_tests;
 mod engine_actions;
 mod going;
 mod instructions;
@@ -93,6 +95,7 @@ mod issue_work;
 mod learned;
 mod mail;
 mod mail_connect;
+mod narration;
 mod shares;
 mod steps;
 mod sub_agents;
@@ -101,6 +104,7 @@ mod task_waits;
 mod team;
 mod turn_provider;
 mod vault_uses;
+pub mod web_search;
 mod written;
 
 // What a turn reaches of the services its person connected.
@@ -115,6 +119,12 @@ pub mod windows;
 pub use asks::{Answered, AskedIn, Carried, Carries, ServerAsk};
 pub use engine_actions::EngineActions;
 pub use sub_agents::Line;
+/// The engines, and a server on this machine that answers as they and the pages do, for a
+/// test's web tools.
+#[cfg(any(test, feature = "fixture-servers"))]
+pub use tilo_web_search::{Engine, fixtures};
+#[cfg(feature = "apps")]
+pub use web_search::{PROVIDER as WEB_SEARCH_PROVIDER, WebSearch};
 
 /// What a turn's reply says when the turn goes on with what its person wrote next.
 const WENT_ON: &str = "I am going on with what you wrote next, and answer below.";
@@ -145,6 +155,10 @@ const READINGS: usize = 3;
 const TURN_TIME: Duration = Duration::from_secs(180);
 /// The most tokens one model answer may take.
 const ANSWER_TOKENS: u32 = 4096;
+/// The characters a turn's conversation keeps before old answers give way, for the model that
+/// says nothing of its own context ([`tilo_agent_turn::Asked::new`]'s bound): a model whose
+/// descriptor knows its window sizes the conversation to it instead.
+const ASKED_CONTEXT_CHARS: usize = 400_000;
 /// The longest a tool's answer the model is shown, in bytes.
 const MOST_RESULT_BYTES: usize = 24 * 1024;
 /// How long the host waits for one of its own record writes (the reply, the comment) to be taken.
@@ -815,7 +829,7 @@ async fn agent_caller(
     agent: &Agent,
     person: [u8; 32],
 ) -> Result<Caller, String> {
-    let root = tilo_action_policy::PersonId::parse(&agent.keeper)
+    let root = tilo_action_policy::PersonId::parse(&agent.acts_for)
         .ok()
         .and_then(|its| its.root())
         .ok_or("the agent belongs to no person")?;
@@ -873,7 +887,7 @@ impl crate::work::AgentEngine for EngineKeys {
 /// the record that keeps the ask.
 ///
 /// # Errors
-/// The agent names no keeper by their root.
+/// The agent names no person it acts for by their root.
 pub(super) fn agent_turn(workspace: &str, turn: &Turn) -> Result<crate::work::Turn, String> {
     let (app, record) = match &turn.ask {
         Ask::Asked { app, ask, .. } => (app.as_str(), ask.as_str()),
@@ -886,20 +900,20 @@ pub(super) fn agent_turn(workspace: &str, turn: &Turn) -> Result<crate::work::Tu
 /// [`agent_turn`] for `agent` answering at `place` about `record` of `app`.
 ///
 /// # Errors
-/// The agent names no keeper by their root.
+/// The agent names no person it acts for by their root.
 pub(super) fn agent_turn_at(
     agent: &Agent,
     place: String,
     (app, record): (&str, &str),
 ) -> Result<crate::work::Turn, String> {
-    let keeper = tilo_action_policy::PersonId::parse(&agent.keeper)
-        .map_err(|error| format!("the agent names no keeper: {error}"))?
+    let acts_for = tilo_action_policy::PersonId::parse(&agent.acts_for)
+        .map_err(|error| format!("the agent names no person it acts for: {error}"))?
         .root()
-        .ok_or("the agent names no keeper by their root")?;
+        .ok_or("the agent names no person it acts for by their root")?;
     Ok(crate::work::Turn::Agent {
         agent: agent.id.0.clone(),
         place,
-        keeper,
+        acts_for,
         app: app.to_owned(),
         record: record.to_owned(),
     })
@@ -930,6 +944,10 @@ pub struct ServerAgents {
     /// The devices this server placed itself for its workspaces' windows, where it was told
     /// them: none of them is a device a read for a person acts as ([`across`]).
     placed: Option<crate::environment::EnvironmentRegistry>,
+    /// Where a test's web tools ask instead of the public engines and pages: a server on this
+    /// machine, per engine. `None` outside tests, where the tools reach the web.
+    #[cfg(any(test, feature = "fixture-servers"))]
+    web_routes: Option<Vec<(tilo_web_search::Engine, String)>>,
 }
 
 impl ServerAgents {
@@ -985,6 +1003,8 @@ impl ServerAgents {
             initiative: None,
             browsers: None,
             placed: None,
+            #[cfg(any(test, feature = "fixture-servers"))]
+            web_routes: None,
         };
         // What a person answers about a connection of theirs is carried out from the start.
         agents.carries(
@@ -1003,6 +1023,34 @@ impl ServerAgents {
     pub fn scripted(mut self, model: impl Into<Option<Model>>) -> Self {
         self.model = model.into();
         self
+    }
+
+    /// These agents' web tools ask a server on this machine instead of the public engines and
+    /// pages: `routes` names, per engine, the address it answers, and a read reaches any address.
+    #[cfg(any(test, feature = "fixture-servers"))]
+    #[must_use]
+    pub fn web_looking_at(mut self, routes: Vec<(tilo_web_search::Engine, String)>) -> Self {
+        self.web_routes = Some(routes);
+        self
+    }
+
+    /// The web a turn of `workspace` reaches: the public engines and pages, or a test's server
+    /// on this machine. A body that is not text is kept where the workspace's content is.
+    #[allow(
+        clippy::unused_self,
+        reason = "the routes it reaches are a test's, and exist in no other build"
+    )]
+    fn web(&self, workspace: &str) -> web_search::Web {
+        let content =
+            ui::content::session(workspace).unwrap_or_else(ui::content::ContentStore::memory);
+        let web = web_search::Web::new(content);
+        #[cfg(any(test, feature = "fixture-servers"))]
+        {
+            if let Some(routes) = &self.web_routes {
+                return web.looking_at(routes.clone());
+            }
+        }
+        web
     }
 
     /// `agent` of `workspace` working for `person`: as its own approved key ([`agent_caller`]),
@@ -1129,9 +1177,6 @@ impl ServerAgents {
     /// # Errors
     /// The workspace's records could not be read.
     pub async fn look(&self, workspace: &str) -> Result<(), String> {
-        // What a person answered about a use of their vault is carried out
-        // whether or not anything asks an agent now.
-        Box::pin(self.settle_uses(workspace)).await;
         // Boxed, here and in `turns` and `answer`: whoever awaits a round or a turn holds a
         // pointer to it and carries none of it in a future of its own.
         Box::pin(self.look_past(workspace, None)).await
@@ -1172,8 +1217,9 @@ impl ServerAgents {
     /// # Errors
     /// What the workspace owes could not be read.
     pub async fn read_look(&self, workspace: &str) -> Result<LookRead, String> {
-        // What its people answered about what its agents asked them first.
-        self.settle_asks(workspace).await;
+        // What its people answered about what its agents asked them first
+        // (general asks, vault uses, calendar passwords and mail passwords).
+        Box::pin(self.settle_asks(workspace)).await;
         // Taken before anything is read: a turn that begins or goes on from here may answer
         // something newer than what this look reads.
         let reading = self.going.reading();
@@ -1806,17 +1852,13 @@ impl ServerAgents {
                     (Some(day), Some(task)) => Some(day.min(task)),
                     (day, task) => day.or(task),
                 };
-                let keeping = keeping.as_ref();
-                let summarizing = summarizing.as_ref();
+                let own = OwnTools {
+                    keeping: keeping.as_ref(),
+                    summarizing: summarizing.as_ref(),
+                    web: self.web(workspace),
+                };
                 Box::pin(work(
-                    model,
-                    &scope,
-                    &mut turn,
-                    budget,
-                    &mut reply,
-                    going,
-                    keeping,
-                    summarizing,
+                    model, &scope, &mut turn, budget, &mut reply, going, own,
                 ))
                 .await
             }
@@ -1970,14 +2012,18 @@ impl ServerAgents {
         let linked = tokio::task::spawn_blocking(move || asked.linked())
             .await
             .map_err(|error| error.to_string())?
-            .map(|linked| (theirs, linked.model.id));
+            .map(|linked| {
+                let context_chars = linked.model.context_chars();
+                (theirs, linked.model.id, context_chars)
+            });
         match linked {
-            Ok((theirs, name)) => Ok(Arc::new(move || {
+            Ok((theirs, name, context_chars)) => Ok(Arc::new(move || {
                 Some(Box::new(WorkspaceTurns {
                     model: theirs.clone(),
                     name: name.clone(),
                     stop: Arc::clone(&stop),
                     answered: None,
+                    context_chars,
                 }) as Box<dyn PlanTurns>)
             })),
             Err(refused @ ModelRefusal::NoModelLinked { .. }) => {
@@ -2011,7 +2057,7 @@ pub async fn count_spend(
     day: &str,
     cost: u64,
 ) -> Result<(), String> {
-    let keeper = agent.keeper.clone();
+    let keeper = agent.acts_for.clone();
     let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
     let (id, day) = (agent.id.0.clone(), day.to_owned());
     workspaces
@@ -2053,6 +2099,8 @@ struct WorkspaceTurns {
     stop: Arc<AtomicBool>,
     /// What answered the last call, as its person named the provider.
     answered: Option<ModelAnswered>,
+    /// The most characters of conversation this model reads, by its descriptor's context.
+    context_chars: usize,
 }
 
 impl PlanTurns for WorkspaceTurns {
@@ -2097,6 +2145,10 @@ impl PlanTurns for WorkspaceTurns {
 
     fn answered_by(&self) -> Option<ModelAnswered> {
         self.answered.clone()
+    }
+
+    fn context_chars(&self) -> Option<usize> {
+        Some(self.context_chars)
     }
 }
 
@@ -2338,7 +2390,7 @@ pub async fn workspace_agent(
 pub(super) fn keeper_of(agent: &Agent) -> Option<String> {
     tilo_failure::ignored!(
         "an agent whose keeper is no person id is kept by no one the member list names",
-        tilo_action_policy::PersonId::parse(&agent.keeper)
+        tilo_action_policy::PersonId::parse(&agent.acts_for)
     )
     .ok()
     .and_then(|keeper| keeper.root())
@@ -2509,6 +2561,15 @@ async fn invoke_at(
     .map_err(|error| error.to_string())?
 }
 
+/// What a turn carries out itself beside the agent tools: what it keeps about its person
+/// ([`learned`]), what it keeps of a conversation longer than its window ([`summaries`]), and the
+/// public web it looks up in ([`web_search`]).
+struct OwnTools<'a> {
+    keeping: Option<&'a learned::Keeping>,
+    summarizing: Option<&'a summaries::Summarizing>,
+    web: web_search::Web,
+}
+
 /// Work on `turn` with its model through the agent's tools until the model answers, the
 /// budget is spent or its person stops it: how it ended, what it cost, and what answered its
 /// calls where a model did. It asks its model for as long as the model calls tools; nothing
@@ -2522,9 +2583,13 @@ async fn work(
     budget: Option<u64>,
     reply: &mut Reply,
     going: &going::Going,
-    keeping: Option<&learned::Keeping>,
-    summarizing: Option<&summaries::Summarizing>,
+    own: OwnTools<'_>,
 ) -> (Outcome, u64, Option<ModelAnswered>) {
+    let OwnTools {
+        keeping,
+        summarizing,
+        web,
+    } = own;
     let Some(turns) = tokio::task::spawn_blocking(move || model())
         .await
         .ok()
@@ -2545,12 +2610,13 @@ async fn work(
         Ok(server) => server,
         Err(error) => return (Outcome::Failed(error.to_string()), 0, None),
     };
-    // What the turn keeps about its keeper, of what its conversation said before its window, and
-    // in an answer to an ask the view or the document it may answer with, are its own tools
-    // beside the agent tools.
+    // What the turn keeps about its keeper, of what its conversation said before its window, in
+    // an answer to an ask the view or the document it may answer with, and the public web it may
+    // look up, are its own tools beside the agent tools.
     let mut own_tools = learned::with_tools(Vec::new(), keeping);
     own_tools.extend(shares::tools(turn));
     own_tools.extend(summaries::tools(turn));
+    own_tools.extend(web_search::definitions());
     let asked = tilo_agent_turn::Asked {
         history: Vec::new(),
         own_tools,
@@ -2558,6 +2624,7 @@ async fn work(
         budget,
         most_rounds: None,
         output_tokens: ANSWER_TOKENS,
+        context_chars: turns.context_chars().unwrap_or(ASKED_CONTEXT_CHARS),
         result_bytes: MOST_RESULT_BYTES,
         round_time: TURN_TIME,
         key: format!("{}:{}", turn.agent.id.0, turn.cause),
@@ -2578,6 +2645,7 @@ async fn work(
         noted: Mutex::default(),
         at: tokio::sync::Mutex::new((turn, reply)),
         server: &server,
+        web: &web,
     };
     // Every line the turn writes names its workspace and its agent: a server runs the turns of
     // many workspaces at once, and its log says whose step each line is.
@@ -2640,6 +2708,8 @@ struct Answering<'a> {
     at: tokio::sync::Mutex<(&'a mut Turn, &'a mut Reply)>,
     /// The turn's agent tools, which a document it answers with is read through.
     server: &'a McpServer<WorkspaceActionProvider>,
+    /// The public web the turn may look up in ([`web_search`]).
+    web: &'a web_search::Web,
 }
 
 impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_> {
@@ -2681,7 +2751,7 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
             // Waited for, as it always was: handed on, it would stand in front of the tool's
             // own action on the workspace's thread, inside what the tool waits for that action.
             self.noted.lock_recover().1 = None;
-            at.1.doing(&call.name).await;
+            at.1.doing(&narration::said(call)).await;
             timed.noted();
         }
         // The view tool writes on the reply itself.
@@ -2690,7 +2760,7 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
         {
             let mut noted = self.noted.lock_recover();
             if noting == steps::Note::After {
-                noted.1 = Some(call.name.clone());
+                noted.1 = Some(narration::said(call));
             }
             noted.0 = Some(call.name.clone());
         }
@@ -2718,8 +2788,8 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
     }
 
     /// What the turn keeps about its person, and of what its conversation said before its
-    /// window, is carried out here, and the view or document it answers with; every other tool
-    /// is the agent tools'.
+    /// window, is carried out here, the view or document it answers with, and the public web it
+    /// looks up; every other tool is the agent tools'.
     async fn own(&self, call: &ToolCall) -> Option<tilo_agent_turn::Answer> {
         let (text, is_error) = if call.name == shares::ANSWER_WITH_VIEW {
             let at = self.at.lock().await;
@@ -2731,6 +2801,8 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
             summaries::call(self.summarizing, &call.name, &call.input).await
         {
             (text, is_error)
+        } else if web_search::owns(&call.name) {
+            self.web.tool(&call.name, &call.input).await
         } else {
             learned::call(self.keeping, &call.name, &call.input).await?
         };

@@ -34,7 +34,7 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::Fill;
 
 use super::{DesktopSurface, LivenessChoice};
-use crate::i18n::{t, t_args};
+use tilo_session_core::desktop::i18n::{t, t_args};
 
 /// A window whose app stopped answering, as the host last told the shell.
 #[derive(Clone, Debug, PartialEq)]
@@ -630,7 +630,7 @@ mod tests {
             pinned: false,
         };
         let id = tab.id;
-        let tree = super::super::seed_tree(&mut minter, "Office", vec![tab]);
+        let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Office", vec![tab]);
         let (surface, handle) = DesktopSurface::new(tree, 11, Box::new(Notices));
         let mut frame = ui::headless::FrameHarness::for_root(
             ui::state::State::new(),

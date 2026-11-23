@@ -255,6 +255,7 @@ roots = ["Manifest", "Header", "SignedRegistrySnapshot", "CompactRegistrySnapsho
 "Requirement::required" = "unit"
 "Resources" = "struct"
 "Resources.kinds" = "Vec<String> optional"
+"Resources.private" = "Vec<String> optional"
 "Sandbox" = "struct"
 "Sandbox.landlock" = "String"
 "Sandbox.namespaces" = "Vec<String>"

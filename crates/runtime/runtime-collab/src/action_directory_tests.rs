@@ -320,6 +320,7 @@ tilo_test_env::scenario! {
                     resource: action.resource.clone(),
                     fields: action.resource_fields(),
                     template,
+                    unavailable: Vec::new(),
                 })
                 .collect(),
             removed: vec!["gone".into()],

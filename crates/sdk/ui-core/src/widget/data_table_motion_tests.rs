@@ -196,7 +196,7 @@ fn rows_a_click_sort_brings_from_off_screen_fade_in_at_their_slot() {
 }
 
 #[test]
-fn a_sort_by_key_lands_on_the_next_frame() {
+fn a_sort_a_key_makes_or_reduced_motion_lands_at_once() {
     let theme = Theme::dark();
     let mut table = table(hundred(&["00", "03", "02", "01"]));
     settled_frames(&mut table, &theme);
@@ -207,19 +207,16 @@ fn a_sort_by_key_lands_on_the_next_frame() {
     frame(&mut table, &theme);
     assert!(table.moving.rows.is_empty());
     assert!(!table.moving.rows.is_moving(crate::time::now()));
-}
 
-#[test]
-fn under_reduced_motion_a_clicked_sort_lands() {
+    // A click under reduced motion lands the rows at once too.
     let theme = Theme::dark().with_reduce_motion(true);
-    let mut table = table(hundred(&["00", "03", "02", "01"]));
-    settled_frames(&mut table, &theme);
-
+    let mut reduced = self::table(hundred(&["00", "03", "02", "01"]));
+    settled_frames(&mut reduced, &theme);
     crate::motion::note_source(MotionSource::Pointer);
-    assert!(table.toggle_sort(0).is_some());
-    frame(&mut table, &theme);
-    assert!(table.moving.rows.is_empty(), "rows land in place at once");
-    assert!(!Widget::needs_animation_frame(&table));
+    assert!(reduced.toggle_sort(0).is_some());
+    frame(&mut reduced, &theme);
+    assert!(reduced.moving.rows.is_empty(), "rows land in place at once");
+    assert!(!Widget::needs_animation_frame(&reduced));
 }
 
 #[test]

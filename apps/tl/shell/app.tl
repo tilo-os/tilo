@@ -60,9 +60,8 @@ fn loads_style(chosen: Text) -> Bool {
 }
 
 /// The time, to the minute, and the timer Clocks runs beside it: its label and what it has
-/// left (a stopwatch: what it has run), paused when the person paused it. The name is a text of
-/// its own, so a reader hears it; the reading is the number beside it, and a paused timer says
-/// so.
+/// left. What runs now — a call, a timer — is a live activity, which the shell shows from the live
+/// views the index derives. The time's name is a text of its own, so a reader hears it.
 view clock() {
     row(gap: .tight, align: .center) {
         ui.Text(device.time.clock, role: .subheading, numeric: true, lines: 1)
@@ -196,6 +195,13 @@ view bar_part(part: BarPart) {
         for a in device.agents.sessions {
             agent_chip(a)
         }
+    } else if part.kind == .tasks {
+        // What works for the person now: each agent session here, as its own chip.
+        row(gap: .related, align: .center) {
+            for a in device.agents.sessions {
+                agent_chip(a)
+            }
+        }
     } else if part.kind == .status and frames_style() {
         // The canvas's bar: the notices and the person, whose menu holds the style and the
         // workspaces the canvas does not keep on its bar.
@@ -212,10 +218,24 @@ view bar_part(part: BarPart) {
             if not space.compact and not device.tray.items.is_empty() {
                 row(gap: .related, align: .center) {
                     for item in device.tray.items {
-                        ui.Button(item.title, role: .bar)
+                        // A press opens the item's window, or its menu when it is one: the app's
+                        // own, placed by the app. The app's unread count rides the control, and a
+                        // pulsing mark says it wants the person.
+                        ui.Button(
+                            item.title,
+                            role: .bar,
+                            count: item.badge,
+                            alert: item.attention,
+                        ) {
+                            on press: device.open_tray_item(device.tray, key: item.key)
+                        }
                     }
                 }
             }
+            // What is using the camera or the microphone now: a glyph each, naming the first app
+            // in reach and how many more, and a press that opens the quick settings where sound
+            // and capture are changed.
+            capture_status()
             // The device's own status: the sound's level, the connection the machine's traffic
             // leaves on, and the pack's charge. Each reads the resource the session publishes —
             // the sound, the network and the battery `quick.tl` reads and changes too, so the bar
@@ -301,6 +321,36 @@ view person_menu() {
         }
         ui.MenuItem("Overview", icon: .layout_grid, group: "Workspaces") {
             on choose: session.overview()
+        }
+    }
+}
+
+/// What is using the camera or the microphone right now, as the bar's capture indicator: the
+/// glyph of what is watched and of what is heard, naming the first app in reach and how many more,
+/// and a press that opens the quick settings, where the sound and the capture are changed. Nothing
+/// while nothing takes either.
+view capture_status() {
+    let uses = device.sound.uses
+    if not uses.is_empty() {
+        let listening = uses.any(u -> u.kind == .microphone)
+        let watching = uses.any(u -> u.kind == .camera)
+        let first = uses.first()
+        let more = uses.len() - 1
+        let label = if let taking = first {
+            if more == 0 {
+                "Watching {taking.label}"
+            } else {
+                "Watching {taking.label} and {more} more"
+            }
+        } else { "Watching" }
+        ui.Button(
+            label,
+            icon: if watching { .camera } else { .mic },
+            icon_only: space.compact,
+            role: .bar,
+            alert: listening,
+        ) {
+            on press: device.show_surface(device.overlays, surface: "quick-settings")
         }
     }
 }

@@ -284,6 +284,22 @@ def library(crate: Path) -> str | None:
     return found.group(1).replace("-", "_") if found else None
 
 
+def nested_i18n(crate: Path) -> list[str]:
+    """The module paths, below the crate's root, of each public `i18n` module `crate` declares
+    (`desktop::i18n` for `pub mod i18n;` in `src/desktop/mod.rs` or `src/desktop.rs`)."""
+    src = crate / "src"
+    found = []
+    for path in sorted(src.rglob("*.rs")):
+        if not re.search(r"^\s*pub mod i18n\b", path.read_text(), re.MULTILINE):
+            continue
+        parts = list(path.relative_to(src).with_suffix("").parts)
+        if parts[-1] in ("mod", "lib"):
+            parts.pop()
+        if parts:
+            found.append("::".join(parts + ["i18n"]))
+    return found
+
+
 def i18n_modules(root: Path, crates: list[Path]) -> dict[str, Path]:
     """Each path whose resolvers look up a crate's catalogue: `<lib>::i18n`, and `<lib>`
     when the crate's root declares its lookups (`embedded_catalog!(pub fn, ..)`).
@@ -295,6 +311,10 @@ def i18n_modules(root: Path, crates: list[Path]) -> dict[str, Path]:
     modules: dict[str, Path] = {}
     for name, crate in owners.items():
         modules[f"{name}::i18n"] = crate
+        # An `i18n` a crate declares below its root resolves in the same catalogue:
+        # `tilo_session_core::desktop::i18n`.
+        for nested in nested_i18n(crate):
+            modules[f"{name}::{nested}"] = crate
         lib = crate / "src" / "lib.rs"
         if lib.is_file() and ROOT_CATALOGUE.search(lib.read_text()):
             modules[name] = crate

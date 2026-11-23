@@ -532,8 +532,14 @@ impl AppBrokerState {
         {
             return Err(ActionCallError::NotPermitted);
         }
-        // Host services have no cooperative cancellation protocol. Their
-        // Accepted observation is not a cancellable application dispatch.
+        // Host services end through this barrier; a cancellable one is no longer running, so
+        // its stop flag is forgotten with it.
+        if let Ok(mut stops) = self.host_step_stops.lock() {
+            stops.remove(&admitted.id);
+        }
+        // A host service's `Accepted` observation is not an application dispatch: what ends it
+        // is either its own answer or, for a step that declared itself cancellable, its
+        // cancellation, which `complete_host_action` records like any other terminal update.
         if self
             .completed_invocations
             .lock()

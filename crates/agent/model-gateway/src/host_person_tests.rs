@@ -8,6 +8,7 @@ fn only_a_public_address_over_tls_is_a_persons_provider() {
         "https://api.anthropic.com",
         "https://generativelanguage.googleapis.com/v1beta/openai",
         "https://8.8.8.8/v1",
+        "https://1.1.1.1./v1",
         "https://[2606:4700:4700::1111]/v1",
     ] {
         assert!(public_endpoint(public), "{public}");
@@ -18,6 +19,9 @@ fn only_a_public_address_over_tls_is_a_persons_provider() {
         "https://models.lan/v1",
         "https://intranet/v1",
         "https://127.0.0.1/v1",
+        "https://127.0.0.1./v1",
+        "https://2130706433/v1",
+        "https://0x7f.1/v1",
         "https://10.1.2.3/v1",
         "https://192.168.1.4/v1",
         // Where a cloud machine reads its own credentials.
@@ -25,8 +29,15 @@ fn only_a_public_address_over_tls_is_a_persons_provider() {
         "https://100.64.0.1/v1",
         "https://0.0.0.0/v1",
         "https://[::1]/v1",
+        "https://[::ffff:127.0.0.1]/v1",
         "https://[::ffff:10.0.0.1]/v1",
         "https://[fd00::1]/v1",
+        "blob:http://127.0.0.1/x",
+        "blob:https://1.1.1.1/x",
+        "redis://127.0.0.1/",
+        "redis://1.1.1.1/",
+        "file://127.0.0.1/etc/passwd",
+        "file://1.1.1.1/etc/passwd",
         "not an address",
         "",
     ] {

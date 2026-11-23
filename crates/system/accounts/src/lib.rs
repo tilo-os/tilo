@@ -1,21 +1,12 @@
-//! The shared **online-accounts** model + store, used by every Tilo app that consumes
-//! external accounts (Mail, Calendar, and the Settings hub).
-//!
-//! Before this crate, Mail, Calendar and Settings each re-declared their own
-//! `AccountStore`/`Account` structs and only agreed on a JSON path — and the shapes didn't
-//! even match (an account added in Settings' calendar store was invisible to Calendar's).
-//! This crate replaces those divergent copies with one canonical model, one persistence
-//! location, and one encrypted vault for credentials that never belong in the plaintext store.
+//! The online-account model every Tilo app that consumes external accounts shares (Mail,
+//! Calendar, Files and the Settings hub), and one encrypted vault for their credentials.
 //!
 //! - [`Account`] — the type-agnostic envelope. `config` is opaque type-specific JSON,
-//!   (de)serialised by the owning type. **No secret fields live here.**
-//! - [`AccountStore`] — the canonical multi-account store, one pretty-JSON document at
-//!   `$XDG_CONFIG_HOME/tilo/accounts/store.json`, holding every account plus the per-type
-//!   active selection.
+//!   (de)serialised by the owning type. **No secret fields live here.** The accounts
+//!   themselves are the workspace's record ([`person::AccountList`]); this is its shape.
 //! - [`SecretVault`] — the encrypted-at-rest credential store keyed by [`AccountId`] (see
-//!   [`vault`]). Credentials go here, never into [`AccountStore`].
+//!   [`vault`]). Credentials go here, never into the accounts record.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -214,151 +205,6 @@ fn default_true() -> bool {
     true
 }
 
-/// The canonical multi-account store: every configured account of every type, plus which
-/// account is active per type. Persisted as one pretty-JSON document at [`store_path`].
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AccountStore {
-    #[serde(default)]
-    accounts: Vec<Account>,
-    #[serde(default)]
-    active: BTreeMap<AccountTypeId, AccountId>,
-}
-
-impl AccountStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Load the canonical store from the default location, or an empty store when it is missing
-    /// / unreadable. Never an error to the caller.
-    pub fn load() -> Self {
-        match config_root() {
-            Some(root) => Self::load_in(&root),
-            None => Self::new(),
-        }
-    }
-
-    pub fn load_in(config_root: &Path) -> Self {
-        std::fs::read_to_string(store_path_in(config_root))
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    }
-
-    /// Persist the store to the default location.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no config directory is available, or
-    /// [`AccountStore::save_in`] fails.
-    pub fn save(&self) -> std::io::Result<()> {
-        let root = config_root().ok_or_else(|| std::io::Error::other("no config dir"))?;
-        self.save_in(&root)
-    }
-
-    /// Persist the store under an explicit config root.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the store's directory can't be created or the
-    /// file can't be written.
-    pub fn save_in(&self, config_root: &Path) -> std::io::Result<()> {
-        let path = store_path_in(config_root);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let json = serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into());
-        tilo_files::native::atomic::write(&path, json.as_bytes())
-    }
-
-    pub fn all(&self) -> &[Account] {
-        &self.accounts
-    }
-
-    pub fn list(&self, type_id: &AccountTypeId) -> Vec<&Account> {
-        self.accounts
-            .iter()
-            .filter(|a| &a.type_id == type_id)
-            .collect()
-    }
-
-    pub fn get(&self, id: &AccountId) -> Option<&Account> {
-        self.accounts.iter().find(|a| &a.id == id)
-    }
-
-    /// Add or replace (by id) an account, preserving insertion position on replace. If this is
-    /// the type's first account it becomes active.
-    pub fn upsert(&mut self, account: Account) {
-        let type_id = account.type_id.clone();
-        let is_first_of_type = !self.accounts.iter().any(|a| a.type_id == type_id);
-        if let Some(slot) = self.accounts.iter_mut().find(|a| a.id == account.id) {
-            *slot = account;
-        } else {
-            let id = account.id.clone();
-            self.accounts.push(account);
-            if is_first_of_type {
-                self.active.insert(type_id, id);
-            }
-        }
-    }
-
-    /// Remove an account by id. Clears the per-type active pointer if it named the removed
-    /// account, falling back to the type's first remaining one.
-    pub fn remove(&mut self, id: &AccountId) -> bool {
-        let Some(pos) = self.accounts.iter().position(|a| &a.id == id) else {
-            return false;
-        };
-        let removed = self.accounts.remove(pos);
-        if self.active.get(&removed.type_id) == Some(id) {
-            match self.list(&removed.type_id).first() {
-                Some(next) => {
-                    self.active.insert(removed.type_id.clone(), next.id.clone());
-                }
-                None => {
-                    self.active.remove(&removed.type_id);
-                }
-            }
-        }
-        true
-    }
-
-    /// The active account for a type: the explicitly-selected one, else the type's first
-    /// account, else `None`.
-    pub fn active(&self, type_id: &AccountTypeId) -> Option<&Account> {
-        if let Some(id) = self.active.get(type_id)
-            && let Some(a) = self
-                .accounts
-                .iter()
-                .find(|a| &a.id == id && &a.type_id == type_id)
-        {
-            return Some(a);
-        }
-        self.list(type_id).into_iter().next()
-    }
-
-    pub fn set_active(&mut self, type_id: &AccountTypeId, id: &AccountId) {
-        if self
-            .accounts
-            .iter()
-            .any(|a| &a.id == id && &a.type_id == type_id)
-        {
-            self.active.insert(type_id.clone(), id.clone());
-        }
-    }
-
-    pub fn active_id(&self, type_id: &AccountTypeId) -> Option<&AccountId> {
-        self.active(type_id).map(|a| &a.id)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.accounts.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.accounts.len()
-    }
-}
-
 /// Whether an account's sign-in may be sent to `endpoint`: over HTTPS, or
 /// over plain HTTP only to this machine's loopback (`localhost`, `127.0.0.1`,
 /// `[::1]`), which never leaves it. The one rule for every account server:
@@ -376,42 +222,13 @@ pub fn accounts_dir_in(config_root: &Path) -> PathBuf {
     config_root.join("accounts")
 }
 
-pub fn store_path_in(config_root: &Path) -> PathBuf {
-    accounts_dir_in(config_root).join("store.json")
-}
-
 pub fn vault_dir_in(config_root: &Path) -> PathBuf {
     accounts_dir_in(config_root).join("vault")
-}
-
-pub fn store_path() -> Option<PathBuf> {
-    config_root().map(|r| store_path_in(&r))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    struct DemoConfig {
-        host: String,
-        port: u16,
-    }
-
-    fn email(id: &str, host: &str) -> Account {
-        let mut a = Account::new(id, "email");
-        a.display_name = format!("{id} inbox");
-        a.set_config(&DemoConfig {
-            host: host.into(),
-            port: 993,
-        });
-        a
-    }
-
-    fn temp_root() -> PathBuf {
-        std::env::temp_dir().join(format!("tilo-accounts-store-{}", uuid::Uuid::new_v4()))
-    }
 
     #[test]
     fn a_sign_in_goes_over_https_or_to_this_machine_alone() {
@@ -457,75 +274,6 @@ mod tests {
         ] {
             account.config["files_mode"] = invalid;
             assert_eq!(files_mode(&account), None);
-        }
-    }
-
-    #[test]
-    fn store_upserts_by_id_and_tracks_the_active_account_per_type() {
-        {
-            let mut store = AccountStore::new();
-            store.upsert(email("a@x.example", "imap.x"));
-            store.upsert(email("b@y.example", "imap.y"));
-            let mut cal = Account::new("cal-1", "caldav");
-            cal.display_name = "Work".into();
-            store.upsert(cal);
-
-            assert_eq!(store.list(&"email".into()).len(), 2);
-            assert_eq!(store.list(&"caldav".into()).len(), 1);
-
-            store.upsert(email("a@x.example", "imap.new"));
-            assert_eq!(store.list(&"email".into()).len(), 2);
-            assert_eq!(
-                store
-                    .get(&"a@x.example".into())
-                    .unwrap()
-                    .config_as::<DemoConfig>()
-                    .unwrap()
-                    .host,
-                "imap.new"
-            );
-        }
-
-        {
-            let mut store = AccountStore::new();
-            store.upsert(email("a@x.example", "imap.x"));
-            store.upsert(email("b@y.example", "imap.y"));
-            let email_ty: AccountTypeId = "email".into();
-
-            assert_eq!(store.active(&email_ty).unwrap().id, "a@x.example".into());
-            store.set_active(&email_ty, &"b@y.example".into());
-            assert_eq!(store.active(&email_ty).unwrap().id, "b@y.example".into());
-            assert!(store.remove(&"b@y.example".into()));
-            assert_eq!(store.active(&email_ty).unwrap().id, "a@x.example".into());
-        }
-    }
-
-    #[test]
-    fn store_round_trips_through_disk_without_carrying_a_secret() {
-        {
-            let root = temp_root();
-            let mut store = AccountStore::new();
-            store.upsert(email("a@x.example", "imap.x"));
-            store.set_active(&"email".into(), &"a@x.example".into());
-            store.save_in(&root).expect("save");
-
-            let back = AccountStore::load_in(&root);
-            assert_eq!(back, store);
-            let raw = std::fs::read_to_string(store_path_in(&root)).unwrap();
-            assert!(raw.contains('\n'), "the store is written as pretty JSON");
-            std::fs::remove_dir_all(&root).ok();
-        }
-
-        {
-            // The envelope has no secret field; a type's config is plain data, so persisting a store
-            // cannot leak a credential.
-            let root = temp_root();
-            let mut store = AccountStore::new();
-            store.upsert(email("a@x.example", "imap.x"));
-            store.save_in(&root).unwrap();
-            let raw = std::fs::read_to_string(store_path_in(&root)).unwrap();
-            assert!(!raw.to_lowercase().contains("password"));
-            std::fs::remove_dir_all(&root).ok();
         }
     }
 }

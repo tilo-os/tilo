@@ -767,7 +767,7 @@ impl AccountsArea {
             .collect();
         published.extend(model.thunderbird_import_rows());
         published.extend(model.calendar_choice_rows());
-        for account in store.list(&accounts::person::TILO_IDENTITY_TYPE.into()) {
+        for account in store.of_type(accounts::person::TILO_IDENTITY_TYPE) {
             let id = account.id.as_str().to_owned();
             let bindings = ui::tilo_resource::RowBindings::new()
                 .bind(
@@ -803,8 +803,6 @@ impl AccountsArea {
     }
 }
 
-type SessionsRead = Option<(Option<std::time::SystemTime>, Vec<accounts::Account>)>;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AccountViewCommand {
     Add(AccountKind),
@@ -836,7 +834,7 @@ type Settle = Box<dyn FnOnce(&mut AccountsPane, Result<(), String>) -> Step>;
 
 struct Removal {
     id: accounts::AccountId,
-    original_store: accounts::AccountStore,
+    original_store: accounts::person::AccountList,
     original_statuses: accounts::AccountSyncStatusStore,
     credential_changed: bool,
     original_secret: Option<accounts::Secret>,
@@ -885,7 +883,6 @@ pub struct AccountsPane {
     linked: Option<ui::linked_accounts::LinkedAccounts>,
     account_root: AccountRoot,
     seen_accounts: Option<u64>,
-    sessions_read: std::cell::RefCell<SessionsRead>,
     dir: AccountDirectory,
     sync_statuses: accounts::AccountSyncStatusStore,
     /// The sync statuses' file, followed: what the cloud mounts, Mail and Calendar report
@@ -1034,7 +1031,6 @@ impl AccountsPane {
             linked: None,
             account_root,
             seen_accounts: None,
-            sessions_read: std::cell::RefCell::new(None),
         }
     }
 
@@ -1202,6 +1198,17 @@ impl AccountsPane {
         self
     }
 
+    /// The session the pane keeps a typed password in the workspace's vault through, and asks
+    /// for an account's sign-in: the one its window captured, or one a test answers.
+    #[must_use]
+    pub fn with_session_secrets(
+        mut self,
+        session: ui::collaboration::browser_service_sessions::Client,
+    ) -> Self {
+        self.session_secrets = Some(session);
+        self
+    }
+
     #[must_use]
     pub fn with_browser_opener(mut self, opener: std::sync::Arc<dyn BrowserOpener>) -> Self {
         self.opener = opener;
@@ -1341,8 +1348,8 @@ impl AccountsPane {
             || accounts::AccountId::from(format!("{}-{}", kind.slug(), uuid::Uuid::new_v4())),
             accounts::AccountId::from,
         );
-        let mut stored = match (completed.existing_id.is_some(), shared.get(&id)) {
-            (true, Some(stored)) if stored.type_id.as_str() == kind.type_id() => stored.clone(),
+        let mut stored = match (completed.existing_id.is_some(), shared.account(id.as_str())) {
+            (true, Some(stored)) if stored.type_id.as_str() == kind.type_id() => stored,
             (true, Some(_)) => {
                 return Err("account type changed; refresh Settings and try again".into());
             }
@@ -1395,7 +1402,7 @@ impl AccountsPane {
         let kind = view.kind;
         self.clear_form_fields();
         let shared = self.account_root.store();
-        if let Some(stored) = shared.get(&accounts::AccountId::from(view.id.clone())) {
+        if let Some(stored) = shared.account(&view.id) {
             self.form_name.set(stored.display_name.clone());
             if kind == AccountKind::Mail {
                 self.form_email.set(
@@ -1436,14 +1443,11 @@ impl AccountsPane {
                 .unwrap_or_default();
             self.form_server.set(server.into());
         }
-        if shared
-            .get(&accounts::AccountId::from(view.id.clone()))
-            .is_some_and(|account| {
-                account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
-                    && AccountConfig::from_value(account.config.clone())
-                        .is_ok_and(|config| config.auth == accounts::email::AuthMethod::OAuth)
-            })
-        {
+        if shared.account(&view.id).is_some_and(|account| {
+            account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
+                && AccountConfig::from_value(account.config)
+                    .is_ok_and(|config| config.auth == accounts::email::AuthMethod::OAuth)
+        }) {
             self.import_review.status = Some(t("accounts-import-oauth-step"));
             self.changed = true;
             return;
@@ -1502,11 +1506,7 @@ impl AccountsPane {
     }
 
     fn open_reauthentication(&mut self, id: String) {
-        let stored = self
-            .account_root
-            .store()
-            .get(&accounts::AccountId::from(id.clone()))
-            .cloned();
+        let stored = self.account_root.store().account(&id);
         if let Some(account) = stored.as_ref()
             && account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
         {
@@ -1604,7 +1604,7 @@ impl AccountsPane {
         if !self
             .account_root
             .store()
-            .list(&accounts::person::TILO_IDENTITY_TYPE.into())
+            .of_type(accounts::person::TILO_IDENTITY_TYPE)
             .is_empty()
         {
             panel.push(self.browser_identity_card(cx));
@@ -1617,27 +1617,7 @@ impl AccountsPane {
         if self.is_sample {
             return Vec::new();
         }
-        let Some(root) = self.account_root.path() else {
-            return Vec::new();
-        };
-        // Every publication asks for them: read the file again only when it
-        // changed, not on each click and keystroke.
-        let stamp = std::fs::metadata(accounts::store_path_in(&root))
-            .and_then(|meta| meta.modified())
-            .ok();
-        if let Some((seen, sessions)) = &*self.sessions_read.borrow()
-            && stamp.is_some()
-            && *seen == stamp
-        {
-            return sessions.clone();
-        }
-        let sessions: Vec<accounts::Account> = accounts::AccountStore::load_in(&root)
-            .list(&browser_sessions::TYPE.into())
-            .into_iter()
-            .cloned()
-            .collect();
-        *self.sessions_read.borrow_mut() = Some((stamp, sessions.clone()));
-        sessions
+        self.account_root.store().of_type(browser_sessions::TYPE)
     }
 
     /// The sites the person signed in to in Browser, to forget on this device: none, no section.
@@ -1770,7 +1750,7 @@ impl AccountsPane {
     fn browser_identity_card(&self, cx: &ViewCx<Settings>) -> SettingsSection {
         let store = self.account_root.store();
         let mut body = vec![note(&t("accounts-browser-identity-about"))];
-        for account in store.list(&accounts::person::TILO_IDENTITY_TYPE.into()) {
+        for account in store.of_type(accounts::person::TILO_IDENTITY_TYPE) {
             let id = account.id.as_str().to_owned();
             let toggle = if account.enabled {
                 "accounts-browser-identity-hide"
@@ -1890,13 +1870,13 @@ impl AccountsPane {
 
     fn files_handoff_in(
         &self,
-        store: &accounts::AccountStore,
+        store: &accounts::person::AccountList,
         view: &AccountView,
     ) -> Option<ui::tilo_actions::ActionSpec> {
         if !self.may_hand_off_files(view) {
             return None;
         }
-        let account = store.get(&view.id.clone().into())?;
+        let account = store.account(&view.id)?;
         if account
             .config
             .get("use_files")
@@ -1945,9 +1925,13 @@ impl AccountsPane {
             account.id.as_str() == view.id
                 && (account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
                     || account.config.get("import_pending") == Some(&serde_json::Value::Bool(true)))
-        }) || self.account_root.store().get(&id).is_some_and(|account| {
-            account.config.get("pending_reconnect") == Some(&serde_json::Value::Bool(true))
-        });
+        }) || self
+            .account_root
+            .store()
+            .account(id.as_str())
+            .is_some_and(|account| {
+                account.config.get("pending_reconnect") == Some(&serde_json::Value::Bool(true))
+            });
         // A mail grant is not a successful first sync. Only replace the
         // unknown state, never a recorded error, offline or sign-in requirement.
         let not_synced =
@@ -1969,7 +1953,7 @@ impl AccountsPane {
 
         let mut details = vec![view.summary.clone()];
         if view.kind == AccountKind::Mail
-            && let Some(account) = self.account_root.store().get(&id)
+            && let Some(account) = self.account_root.store().account(id.as_str())
         {
             let identities = accounts::email::sender_identities_of(&account.config);
             if !identities.is_empty() {
@@ -2420,13 +2404,13 @@ impl AccountsPane {
             |id| accounts::AccountId::from(id.to_string()),
         );
         let expected_type = Self::account_type(kind);
-        let mut stored = match (existing_id, shared.get(&id)) {
+        let mut stored = match (existing_id, shared.account(id.as_str())) {
             (Some(_), Some(stored))
                 if stored.type_id.as_str() == expected_type
                     || (kind == AccountKind::Mail
                         && stored.type_id.as_str() == accounts::thunderbird::PENDING_TYPE) =>
             {
-                stored.clone()
+                stored
             }
             (Some(_), Some(_)) => {
                 return Err("account type changed; refresh Settings and try again".into());
@@ -2567,7 +2551,7 @@ impl AccountsPane {
             Ok(stored) => stored,
             Err(error) => return settle(self, Err(error)),
         };
-        let kept = self.account_root.store().get(&stored.id).cloned();
+        let kept = self.account_root.store().account(stored.id.as_str());
         let account = stored.clone();
         let password = draft.password.clone();
         Step::vault(
@@ -2732,7 +2716,9 @@ impl AccountsPane {
         let before = self.account_root.store();
         let mut shared = before.clone();
         for account in stored {
-            shared.upsert(account);
+            if let Err(error) = shared.keep(&account) {
+                return settle(self, Err(error.to_string()));
+            }
         }
         let Err(error) = self.account_root.save_store(&shared) else {
             let finished = finish_or_recover(&self.account_root, "account save");
@@ -2836,7 +2822,7 @@ impl AccountsPane {
     fn removal(&mut self, account_id: accounts::AccountId, settle: Settle) -> Step {
         let root = &self.account_root;
         let original_store = root.store();
-        let Some(stored) = original_store.get(&account_id) else {
+        let Some(stored) = original_store.account(account_id.as_str()) else {
             return settle(self, Err(t("accounts-gone")));
         };
         if AccountKind::from_type_id(stored.type_id.as_str()).is_none() {
@@ -2906,11 +2892,10 @@ impl AccountsPane {
         // handoff credential. Best effort, off the UI thread: the account is
         // already gone locally.
         if let (Some(account), Some(secret)) = (
-            removal.original_store.get(&removal.id),
+            removal.original_store.account(removal.id.as_str()),
             removal.original_secret,
         ) && account_credentials::is_cloud_type(account.type_id.as_str())
         {
-            let account = account.clone();
             let credential_store = self.credential_store.clone();
             let _ = crate::device_read::thread(
                 "settings-accounts-worker",
@@ -3038,7 +3023,7 @@ impl AccountsPane {
             let round = self.form_round;
             let id = account.id.clone();
             let typed = draft.password.clone();
-            let original_account = self.account_root.store().get(&id).cloned();
+            let original_account = self.account_root.store().account(id.as_str());
             // An edit that types no password signs in with the entry the account names in the
             // workspace's vault: the session releases it for the calendars to be found, and
             // this device's vault keeps nothing of it.
@@ -3265,7 +3250,7 @@ impl AccountsPane {
                     return;
                 }
                 let account_id = accounts::AccountId::from(id);
-                let Some(account) = self.account_root.store().get(&account_id).cloned() else {
+                let Some(account) = self.account_root.store().account(account_id.as_str()) else {
                     self.reauth_error = Some(t("accounts-gone"));
                     self.changed = true;
                     return;
@@ -3372,8 +3357,7 @@ impl AccountsPane {
         let account = self
             .account_root
             .store()
-            .get(&account_id)
-            .cloned()
+            .account(account_id.as_str())
             .ok_or_else(|| t("accounts-gone"))?;
         let vault = self.account_root.vault_opener();
         let tester = std::sync::Arc::clone(&self.account_tester);
@@ -3393,9 +3377,6 @@ impl AccountsPane {
                 // journalled mutation, which must not be one still running.
                 self.run_in_queue(|pane| {
                     pane.reload();
-                    if let Err(error) = pane.account_root.project() {
-                        tracing::warn!(%error, "the device's account file could not follow the person's accounts");
-                    }
                     Step::Done
                 });
                 self.changed = true;

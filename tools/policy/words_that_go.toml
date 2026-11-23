@@ -146,7 +146,7 @@ idents = ["kind set"]
 generic = ["kind"]
 
 [[word]]
-row = "channel ops, broker (two), publication, CommittedView, committed_surface"
+row = "channel ops, broker, publication, CommittedView, committed_surface"
 idents = ["channel op", "broker", "publication", "committed view", "committed surface"]
 
 [[word]]

@@ -10,8 +10,8 @@ function fixture() {
     async setMuted(value) {operations.push(['mute', value]); state.muted = value;},
     async selectInput(id) {state.inputId = id;}, inputs: async () => [], stats: () => ({captureActive: false})};
   const opened = [];
-  const voice = {call, calls: [], list: async () => [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true}],
-    async open({channel}) { opened.push(channel); if (channel !== 'standup') throw new Error('invalid media binding'); return {call: CALL, epoch: 1, active: true}; }};
+  const voice = {call, calls: [], list: async () => [{channel: 'standup', call: CALL, active: true, people: []}],
+    async open({channel}) { opened.push(channel); if (channel !== 'standup') throw new Error('invalid media binding'); return {call: CALL, active: true}; }};
   const controls = createVoiceControls({voice, workspace: 'workspace-1', gesture: () => true});
   const request = command => ({app: 'so.tilo.chat', workspace: 'workspace-1', record: '', command: {version: 1, intent: 0, command}});
   return {voice, controls, request, operations, opened, state};
@@ -152,20 +152,20 @@ test('a refused microphone answers with the call on, muted, and why', async () =
   assert.equal(status.issue, 'permission_denied');
 });
 
-test('a voice channel shows who is in its call before joining, each person once', async () => {
+test('a voice channel shows who is in its call before joining', async () => {
   const f = fixture();
   const ana = 'a'.repeat(64);
   const ben = 'b'.repeat(64);
   f.voice.calls = [
-    {app: 'so.tilo.chat', record: '', channel: 'voice', call: CALL, active: true,
-      members: [{user: ben, device: '1'}, {user: ana, device: '2'}, {user: ana, device: '3'}]},
-    {app: 'so.tilo.chat', record: '', channel: 'empty', call: CALL, active: true, members: []},
-    {app: 'so.tilo.chat', record: '', channel: 'ended', call: CALL, active: false, members: [{user: ana}]},
-    {app: 'so.tilo.chat', record: 'other', channel: 'voice', call: CALL, active: true, members: [{user: ana}]},
+    {channel: 'voice', call: 'voice', active: true, people: [ana, ben], muted: [ben]},
+    {channel: 'empty', call: 'empty', active: true, people: []},
+    {channel: 'standup', call: 'standup', active: true, people: [ana], cameras: [ana], screens: []},
   ];
   const status = await f.controls.execute(f.request({op: 'status'}));
-  assert.deepEqual(status.rosters, [{channel_id: 'voice', people: [ana, ben]}]);
-  assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', 'other'), [{channel_id: 'voice', people: [ana]}]);
+  assert.deepEqual(status.rosters, [
+    {channel_id: 'standup', people: [ana], cameras: [ana]},
+    {channel_id: 'voice', people: [ana, ben], muted: [ben]},
+  ], 'sorted by channel, and what nobody shows is not written');
 });
 
 test('a watch answers when someone joins the workspace\'s call, and holds while nothing changes', async () => {
@@ -175,7 +175,7 @@ test('a watch answers when someone joins the workspace\'s call, and holds while 
   const controls = createVoiceControls({voice, workspace: 'workspace-1', wait: async () => {
     looks++;
     // Ana joins the standup while the watch is held.
-    if (looks === 3) voice.calls = [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true, members: [{user: ana}]}];
+    if (looks === 3) voice.calls = [{channel: 'standup', call: 'standup', active: true, people: [ana]}];
   }});
   const request = command => ({app: 'so.tilo.chat', workspace: 'workspace-1', record: '', command: {version: 1, intent: 0, command}});
   const seen = await controls.execute(request({op: 'status'}));
@@ -206,20 +206,6 @@ test('the camera and a shared screen turn on in a live call from a gesture, and 
   assert.deepEqual(video.slice(1), [['screen', true], ['camera', false]]);
   const controls = createVoiceControls({voice: f.voice, workspace: 'workspace-1', gesture: () => false});
   await assert.rejects(controls.execute(f.request({op: 'set_screen', on: true})), /gesture/);
-
-  const ana = 'a'.repeat(64);
-  const ben = 'b'.repeat(64);
-  f.voice.calls = [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true,
-    members: [{user: ana, camera: true}, {user: ben, screen: true}]}];
-  assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', ''), [{channel_id: 'standup', people: [ana, ben], cameras: [ana], screens: [ben]}], 'muted is written only when someone is');
-  f.voice.calls[0].members[1].muted = true;
-  assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', ''), [{channel_id: 'standup', people: [ana, ben], cameras: [ana], screens: [ben], muted: [ben]}]);
-  f.voice.calls[0].members.push({user: ben});
-  assert.equal(rostersOf(f.voice.calls, 'so.tilo.chat', '')[0].muted, undefined, 'heard on another device: not muted');
-  f.voice.calls[0].members = [{user: ana, muted: true, deafened: true}, {user: ben, muted: true}];
-  assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', '')[0].deafened, [ana], 'the deafened, among the muted');
-  f.voice.calls[0].members.push({user: ana, muted: true});
-  assert.equal(rostersOf(f.voice.calls, 'so.tilo.chat', '')[0].deafened, undefined, 'hearing on another device: not deafened');
 });
 
 test('deafening is a command of the call: it needs one, and undeafening unmutes only from a gesture', async () => {

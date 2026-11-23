@@ -238,6 +238,10 @@ pub enum Actor {
     /// An app changing its own resources: a trigger it declares, or a migration of its
     /// package.
     App(AppId),
+    /// Someone with no identity in the workspace, by the key (hex) their page made and signs
+    /// each call with: a visitor at a public entry. It is no member and holds only what the
+    /// workspace opens to any key ([`crate::Grantee::AnyKey`]).
+    Visitor(String),
 }
 
 impl Actor {
@@ -263,7 +267,7 @@ impl Actor {
     pub fn member_id(&self) -> Option<&MemberId> {
         match self {
             Self::Member(member) => Some(member),
-            Self::Automation(_) | Self::App(_) => None,
+            Self::Automation(_) | Self::App(_) | Self::Visitor(_) => None,
         }
     }
 
@@ -272,7 +276,7 @@ impl Actor {
     pub fn app(&self) -> Option<&AppId> {
         match self {
             Self::App(app) => Some(app),
-            Self::Member(_) | Self::Automation(_) => None,
+            Self::Member(_) | Self::Automation(_) | Self::Visitor(_) => None,
         }
     }
 
@@ -284,6 +288,7 @@ impl Actor {
             Self::Member(member) => member.actor_bytes(),
             Self::Automation(id) => [b"automation:", id.as_str().as_bytes()].concat(),
             Self::App(app) => [b"app:", app.as_str().as_bytes()].concat(),
+            Self::Visitor(key) => [b"visitor:", key.as_bytes()].concat(),
         }
     }
 
@@ -303,6 +308,9 @@ impl Actor {
         if let Some(app) = bytes.strip_prefix(b"app:") {
             return nonempty(app).map(|app| Self::App(AppId::new(app)));
         }
+        if let Some(key) = bytes.strip_prefix(b"visitor:") {
+            return nonempty(key).map(Self::Visitor);
+        }
         MemberId::of_actor_bytes(bytes).map(Self::Member)
     }
 
@@ -313,6 +321,7 @@ impl Actor {
             Self::Member(member) => member.id(),
             Self::Automation(id) => id.as_str(),
             Self::App(app) => app.as_str(),
+            Self::Visitor(key) => key,
         }
     }
 }
@@ -343,6 +352,7 @@ impl std::fmt::Display for Actor {
             Self::Member(member) => member.fmt(f),
             Self::Automation(id) => write!(f, "automation {}", id.as_str()),
             Self::App(app) => write!(f, "app {app}"),
+            Self::Visitor(key) => write!(f, "visitor {}", key.get(..8).unwrap_or(key)),
         }
     }
 }
@@ -416,6 +426,22 @@ impl Acting {
     #[must_use]
     pub fn agent(id: impl Into<String>) -> Self {
         Self::member(MemberId::agent(id))
+    }
+
+    /// A visitor signing with `key`, a key no certificate in the workspace names
+    /// ([`Actor::Visitor`]).
+    #[must_use]
+    pub fn visitor(key: &[u8; 32]) -> Self {
+        Self::from(Actor::Visitor(hex::encode(key)))
+    }
+
+    /// The key of the visitor acting, when one is.
+    #[must_use]
+    pub fn visitor_key(&self) -> Option<[u8; 32]> {
+        match &self.by {
+            Actor::Visitor(key) => hex::decode(key).ok()?.try_into().ok(),
+            _ => None,
+        }
     }
 
     #[must_use]

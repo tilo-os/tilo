@@ -15,11 +15,8 @@
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::session_actions;
 use tilo_actions::remote::{CatalogueQuery, InvokeArgument, RemoteActionTarget, ViewResourceQuery};
-use tilo_reference::link::{
-    AppId, HostOrigin, Link, LinkSecrets, LinkTarget, Mode, ResourceAddress, ResourceSegment,
-    Scope, WebEntry,
-};
-use tilo_resource::share::{SHARE_INVITE_TYPE, SHARE_TYPE, ShareRequest};
+use tilo_reference::link::share;
+use tilo_resource::share::ShareRequest;
 use ui_core::time::{Duration, Instant};
 use ui_core::{Arrival, CatalogueCall, InvocationCall, RemoteActions};
 
@@ -27,7 +24,8 @@ use ui_core::{Arrival, CatalogueCall, InvocationCall, RemoteActions};
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Why a host's answer cannot make a link.
-pub(crate) const NO_WEB_ENTRY: &str = "This workspace's host serves no web page";
+#[cfg(test)]
+pub(crate) const NO_WEB_ENTRY: &str = share::NO_WEB_ENTRY;
 
 /// The record a root publishes from, as a provider names it.
 pub(crate) struct Publisher<'a> {
@@ -37,14 +35,13 @@ pub(crate) struct Publisher<'a> {
     pub(crate) root: &'a str,
 }
 
-/// What a link is minted for once the locator arrives.
+/// What a link is minted for once the locator arrives: what the caller asked for, and the record
+/// the asking root publishes from.
 struct Minting {
-    provider: String,
-    app: AppId,
-    record: ResourceSegment,
-    resource: Option<ResourceAddress>,
-    view: Option<String>,
-    mode: Mode,
+    request: Box<ShareRequest>,
+    app: String,
+    record: String,
+    root: String,
 }
 
 /// What a minting waits for: the host's locator for the resource, whose entry the link renders
@@ -93,10 +90,6 @@ impl Default for ShareLinks {
             copy_requested: Vec::new(),
         }
     }
-}
-
-pub(crate) fn handles(type_id: &str) -> bool {
-    type_id == SHARE_TYPE || type_id == SHARE_INVITE_TYPE
 }
 
 /// What the minting answered and whether a person is to be told.
@@ -155,8 +148,9 @@ impl ShareLinks {
             ))
         } else {
             let minting = minting(&request, publisher)?;
+            let provider = share::provider(&minting.app, &minting.record)?;
             let call = self.remote.catalogue_page(CatalogueQuery {
-                provider: Some(minting.provider.clone()),
+                provider: Some(provider),
                 view_resource: Some(ViewResourceQuery {
                     id: request.resource,
                     kind: request.kind,
@@ -330,94 +324,16 @@ fn finish(url: &str, copied: Option<bool>) -> Minted {
     }
 }
 
-/// What `request` links to, from the record `publisher` publishes.
+/// What `request` links to, from the record `publisher` publishes: the request as the caller made
+/// it, and the record it is minted under.
 fn minting(request: &ShareRequest, publisher: &Publisher<'_>) -> Result<Minting, String> {
-    let app = AppId::parse(publisher.app).map_err(|error| error.to_string())?;
-    let record =
-        ResourceSegment::new(publisher.record.unwrap_or("")).map_err(|error| error.to_string())?;
-    let provider = format!("record:{}:{}", app.as_str(), record.provider_part());
-    let args = &request.args;
-    let text = |name: &str| args.get(name).and_then(serde_json::Value::as_str);
-    let view = match text("view") {
-        Some(id) => Some(
-            request
-                .views
-                .iter()
-                .find(|view| view.id == id)
-                .ok_or_else(|| format!("This has no view `{id}`"))?,
-        ),
-        None => request
-            .views
-            .iter()
-            .find(|view| view.primary)
-            .or_else(|| request.views.first()),
-    };
-    // Without a view the link names the record alone, which opens in its
-    // app: only a record's root offers the link so ([`tilo_resource::share::offer_resource`]).
-    let Some(view) = view else {
-        let mode = match text("mode").unwrap_or("app") {
-            "app" => Mode::App,
-            "desktop" => Mode::Desktop,
-            other => return Err(format!("Unknown mode `{other}`")),
-        };
-        if args.get("start").is_some_and(|value| !value.is_null()) {
-            return Err("A record's link opens no range".into());
-        }
-        return Ok(Minting {
-            provider,
-            app,
-            record,
-            resource: None,
-            view: None,
-            mode,
-        });
-    };
-    let offset = |name: &str| -> Result<Option<usize>, String> {
-        args.get(name)
-            .filter(|value| !value.is_null())
-            .map(|value| {
-                value
-                    .as_u64()
-                    .and_then(|offset| usize::try_from(offset).ok())
-                    .ok_or_else(|| format!("{name} is not a position in the text"))
-            })
-            .transpose()
-    };
-    let span = match (offset("start")?, offset("end")?) {
-        (None, None) => None,
-        (Some(start), Some(end)) => {
-            if !view.range {
-                return Err(format!("The view `{}` does not open at a range", view.id));
-            }
-            let unit = match text("unit").unwrap_or("chars") {
-                "chars" => tilo_reference::SpanUnit::Chars,
-                "bytes" => tilo_reference::SpanUnit::Bytes,
-                other => return Err(format!("Unknown unit `{other}`")),
-            };
-            Some(tilo_reference::Span::new(start, end, unit))
-        }
-        _ => return Err("A range needs both start and end".into()),
-    };
-    let resource =
-        (request.resource != publisher.root || span.is_some()).then(|| ResourceAddress {
-            kind: request.kind.clone(),
-            id: request.resource.clone(),
-            span,
-        });
-    // A view that opens on the whole desktop is linked there; any other
-    // opens its app alone full tab. The caller may ask for either.
-    let mode = match text("mode").unwrap_or(if view.desktop { "desktop" } else { "app" }) {
-        "app" => Mode::App,
-        "desktop" => Mode::Desktop,
-        other => return Err(format!("Unknown mode `{other}`")),
-    };
+    // The record's provider is what the catalogue lookup names the link's page by.
+    share::provider(publisher.app, publisher.record.unwrap_or(""))?;
     Ok(Minting {
-        provider,
-        app,
-        record,
-        resource,
-        view: (!view.primary).then(|| view.id.clone()),
-        mode,
+        request: Box::new(request.clone()),
+        app: publisher.app.to_owned(),
+        record: publisher.record.unwrap_or("").to_owned(),
+        root: publisher.root.to_owned(),
     })
 }
 
@@ -446,47 +362,20 @@ pub fn host_link(
     }
     // The host does not know which resource is the record's root, so its
     // links always name the resource, which opens the same place.
-    let publisher = Publisher {
-        app,
-        record: Some(record),
-        root: "",
-    };
-    render_at(&minting(request, &publisher)?, locator)
+    share::link(request, app, record, "", locator)
 }
 
 fn render_at(
     minting: &Minting,
     locator: &tilo_actions::remote::ResourceViewLocator,
 ) -> Result<String, String> {
-    if locator.provider != minting.provider {
-        return Err("The workspace's host answered for another record".into());
-    }
-    let entry = locator.web_entry.as_deref().ok_or(NO_WEB_ENTRY)?;
-    let entry = WebEntry::new(entry).map_err(|error| error.to_string())?;
-    let workspace = locator
-        .workspace
-        .parse()
-        .map_err(|_| "The workspace's host named no workspace a link can carry")?;
-    let host = HostOrigin::new(&locator.origin).map_err(|error| error.to_string())?;
-    let target = LinkTarget {
-        scope: Scope::Workspace {
-            host,
-            id: workspace,
-            slug: None,
-        },
-        app: Some(minting.app.clone()),
-        record: Some(minting.record.clone()),
-        resource: minting.resource.clone(),
-        view: minting.view.clone(),
-        discuss: None,
-    };
-    Link {
-        mode: minting.mode,
-        target,
-        secrets: LinkSecrets::default(),
-    }
-    .to_url(&entry)
-    .map_err(|error| error.to_string())
+    share::link(
+        minting.request.as_ref(),
+        &minting.app,
+        &minting.record,
+        &minting.root,
+        locator,
+    )
 }
 
 #[cfg(test)]

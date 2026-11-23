@@ -363,12 +363,13 @@ pub struct Turn {
 fn contract_of(action: &str) -> ActionContract {
     let mut contract = ActionContract {
         // Spending the person's model budget is an act, even though nothing
-        // is edited: a read-only guest does not get to run it.
+        // is edited: a read-only guest does not get to run it. A transform may take its budget,
+        // so a caller that waits no longer stops it: it ends as cancelled.
         kind: ActionKind::Undoable,
         risk: RiskLevel::Low,
         confirmation: ConfirmationPolicy::None,
         retry: RetryPolicy::Idempotent,
-        execution: ExecutionMode::Immediate,
+        execution: ExecutionMode::Background { cancellable: true },
         result: ResultSpec::Json {
             schema: result_schema_of(action),
         },
@@ -1503,6 +1504,39 @@ mod tests {
             let failure = run_until(&call, model.as_ref(), &AtomicBool::new(true)).unwrap_err();
             assert_eq!(failure.code, code::MODEL_UNAVAILABLE);
             assert!(began.try_recv().is_err(), "the model was not asked");
+        }
+
+        phase a_transform_cancelled_while_its_model_answers_stops_the_call;
+        // A transform cancelled while its model answers stops the call rather than running it,
+        // billed, to its end: the model hears the stop and the transform answers no value.
+        {
+            let (began_by, began) = channel();
+            let (told, heard) = channel();
+            let model = Arc::new(Working {
+                began: began_by,
+                told,
+            });
+            let call = bind_wire(
+                "summarise",
+                Some(&format!(
+                    "{ARGUMENTS_JSON_PREFIX}{}",
+                    json!({"input": "text"})
+                )),
+                &store(),
+            )
+            .unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let stopped = Arc::clone(&stop);
+            let worker = Arc::clone(&model);
+            let running = std::thread::spawn(move || run_until(&call, worker.as_ref(), &stopped));
+            began.recv().expect("the model was asked");
+            stop.store(true, Ordering::Relaxed);
+            assert!(
+                heard.recv().expect("the model heard the stop"),
+                "the call under way saw the cancellation"
+            );
+            let failure = running.join().expect("the worker ended").unwrap_err();
+            assert_eq!(failure.code, code::MODEL_UNAVAILABLE);
         }
     }
 }

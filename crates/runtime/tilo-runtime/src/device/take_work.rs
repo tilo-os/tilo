@@ -38,8 +38,9 @@
 //! the server's own runs: a device of another person is refused as every
 //! device outside a workspace is.
 //!
-//! This computer's daemon takes work when [`SERVER_DEVICE_ENV`] names its
-//! server; [`Member`] is the same member for a host that serves nothing else.
+//! This computer's daemon takes work when its login names its server, as a
+//! VM host's ticket leaves it; [`Member`] is the same member for a host that
+//! serves nothing else.
 
 pub(crate) mod files;
 
@@ -52,16 +53,9 @@ use tilo_actions::remote::ActionProvider;
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService};
 use tilo_user_identity::DeviceCert;
 
-/// The UDP port a member's endpoint listens on.
+/// The UDP port a member's endpoint listens on where its device names none
+/// ([`configured_port`](super::services::configured_port)).
 pub const PORT: u16 = 7703;
-/// The device key of the server a member serves, hex: a profile that names one is a member that
-/// takes that server's work.
-pub const SERVER_DEVICE_ENV: &str = "TILO_TAKE_WORK_DEVICE";
-/// The server's endpoint id, hex, when its endpoint is keyed apart from its
-/// device: a Tilo server's is, and the login this member joined with names it.
-/// Without it the endpoint is the device key.
-pub const SERVER_ENDPOINT_ENV: &str = "TILO_TAKE_WORK_ENDPOINT";
-
 /// What a member keeps of its shells, under the profile, and where each
 /// workspace's files are below it.
 #[cfg(target_os = "linux")]
@@ -108,23 +102,6 @@ impl Server {
     pub fn with_endpoint(mut self, endpoint: &str) -> Result<Self, String> {
         self.endpoint = key(endpoint).ok_or_else(|| format!("{endpoint} is not an endpoint id"))?;
         Ok(self)
-    }
-
-    /// The server the environment names ([`SERVER_DEVICE_ENV`]), when it names one: this
-    /// profile is a member that takes work.
-    ///
-    /// # Errors
-    ///
-    /// A server is named but its device key is not usable.
-    pub fn from_env() -> Result<Option<Self>, String> {
-        let Ok(device) = std::env::var(SERVER_DEVICE_ENV) else {
-            return Ok(None);
-        };
-        let server = Self::new(&device)?;
-        match std::env::var(SERVER_ENDPOINT_ENV) {
-            Ok(endpoint) => server.with_endpoint(&endpoint).map(Some),
-            Err(_) => Ok(Some(server)),
-        }
     }
 
     /// The server this computer's login names, for a member whose profile was joined with a
@@ -246,6 +223,7 @@ pub(crate) fn action_service(
             "a member that takes work runs the workspace's shell on Linux",
         )
     })?;
+    workspaces.take_work();
     let (device, endpoint) = (server.device, server.endpoint);
     let entering = Arc::new(Entering::new(Arc::clone(workspaces), server));
     let reads = Arc::new(super::workspaces::Reads {
@@ -427,7 +405,7 @@ pub struct Member {
     /// serves.
     _router: iroh::protocol::Router,
     /// The workspace service holding the workspaces it serves.
-    _workspaces: Arc<ServiceWorkspaces>,
+    workspaces: Arc<ServiceWorkspaces>,
     profile: PathBuf,
 }
 
@@ -462,7 +440,7 @@ impl Member {
         };
         Ok(Self {
             _router: router,
-            _workspaces: workspaces,
+            workspaces,
             profile: profile.to_path_buf(),
         })
     }
@@ -471,6 +449,25 @@ impl Member {
     #[must_use]
     pub fn files(&self, workspace: &str) -> PathBuf {
         files(&self.profile, workspace)
+    }
+
+    /// Enter its person's workspaces as `login`, the login a ticket left, says, as the device
+    /// `key`: the member is then one of its person's servers, found there for their Linux turns.
+    ///
+    /// # Errors
+    ///
+    /// The server the login names did not let it in.
+    pub async fn log_in(
+        &self,
+        key: &SigningKey,
+        login: &tilo_device_identity::login::Device,
+    ) -> Result<(), String> {
+        let lent = Some(self.workspaces.lent());
+        let entered = tilo_api::daemon::enter::connect(key, login, lent).await;
+        self.workspaces
+            .hold(&entered.map_err(|error| format!("{error:#}"))?)
+            .await;
+        Ok(())
     }
 }
 

@@ -100,13 +100,6 @@ upstream `cdylib` dropped the hash from the library filenames, so two builds
 in one Cargo run overwrote each other's outputs (E0460/E0463).
 Remove a copy once its upstream release carries the change.
 
-## Control messages on musl
-
-`vendor/noq-udp` reads a received control message's payload unaligned. musl's
-`cmsghdr` is 4-byte aligned, so the receive timestamp Linux sockets carry is
-not 8-byte aligned, and the upstream alignment assertion panicked the static
-`tilo` command on its first packet. See `vendor/noq-udp/TILO-PATCH.md`.
-
 ## Tables without relocations
 
 `pulldown-cmark` 0.12.2 is the checksum-verified MIT registry release with one
@@ -117,7 +110,7 @@ process before `main`. Same entities, same order, same lookup; see its
 `TILO-PATCH.md` and `PROVENANCE.md`. Remove the copy once upstream generates
 the same layout.
 
-`regex-syntax` 0.8.11 is the checksum-verified MIT/Apache-2.0 registry
+`regex-syntax` 0.8.12 is the checksum-verified MIT/Apache-2.0 registry
 release with its Unicode name tables (`BY_NAME`, `PROPERTY_NAMES`,
 `PROPERTY_VALUES`) and simple case folding table rewritten as string
 literals and integer offsets by `tools/regex-syntax-tables.py`: about 121 KB
@@ -914,16 +907,6 @@ the first line in place when the cursor was on the second line. The patch
 clears every line above the cursor; the terminal app's
 `erasing_below_the_cursor_keeps_what_is_left_of_it` test covers it. See
 `vendor/alacritty_terminal/PROVENANCE.md`.
-## Discord rate limiter reset during a call
-
-`twilight-http-ratelimiting` 0.17.1 is the checksum-verified ISC registry
-release. Its limiter task asserted that no call was in flight when a bucket's
-reset timer fired, which happens whenever a bucket with calls left resets
-during a call; the panic stopped the limiter and failed every later call of
-the Discord worker. The patch backports upstream's removal of that assertion;
-the worker's bridge tests cover it. See
-`vendor/twilight-http-ratelimiting/PROVENANCE.md`.
-
 
 ## Smithay
 

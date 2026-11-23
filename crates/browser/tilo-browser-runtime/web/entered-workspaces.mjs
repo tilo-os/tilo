@@ -46,6 +46,7 @@ const writeEntered = (store, list) => store?.setItem(ENTERED, JSON.stringify(lis
  * `null` when it names none. */
 export function hostDeviceOf(hostCert) {
   const key = hostCert?.device_public_key;
+  // Differs from `hex` in input type: accepts hex strings, nullish keys, and untrusted JSON elements coerced via Number() without throwing.
   const text = typeof key === 'string' ? key : Array.from(key ?? [], byte => Number(byte).toString(16).padStart(2, '0')).join('');
   return HOST_DEVICE.test(text) ? text : null;
 }

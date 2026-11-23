@@ -18,11 +18,14 @@ use ui::widget::Widget;
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::notifications::{
-    BannerFeed, CenterLayout, CenterMetrics, CenterOutcome, ContinuityNotificationId,
-    HistoryActivation, Notification, NotificationCenter, NotificationHost, NotificationLog,
-    NotificationSeverity, NotificationStack,
+    BannerFeed, CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, NotificationHost,
+    NotificationStack,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_session_core::desktop::notifications::{
+    ContinuityNotificationId, HistoryActivation, Notification, NotificationLog,
+    NotificationSeverity,
+};
 
 /// What the person did with a notification that its sender should hear.
 #[derive(Clone, Debug)]
@@ -181,7 +184,7 @@ impl NotificationHost for NoticeState {
         }
     }
     fn invoke_action(&self, id: u64, key: &str) {
-        if key == crate::notifications::NOT_NOW_ACTION {
+        if key == tilo_session_core::desktop::notifications::NOT_NOW_ACTION {
             // Put off, not refused: the ask waits in the centre.
             self.retire_active(id);
             return;
@@ -427,7 +430,7 @@ impl DesktopNotifications {
             .filter(|notification| !crate::is_host_offer(notification))
             .cloned()
             .collect();
-        crate::notifications::encode_history(
+        tilo_session_core::desktop::notifications::encode_history(
             &history,
             |id| self.is_unread(id),
             wall_now,
@@ -442,7 +445,11 @@ impl DesktopNotifications {
         bytes: &[u8],
         wall_now: ui::time::SystemTime,
     ) -> Result<(), serde_json::Error> {
-        let kept = crate::notifications::decode_history(bytes, wall_now, ui::time::now())?;
+        let kept = tilo_session_core::desktop::notifications::decode_history(
+            bytes,
+            wall_now,
+            ui::time::now(),
+        )?;
         if kept.is_empty() {
             return Ok(());
         }
@@ -1338,7 +1345,8 @@ mod tests {
     use super::*;
     use ui::widget::DrawChild;
 
-    use crate::notifications::{RemoteNotificationRoute, RowShape};
+    use crate::notifications::RowShape;
+    use tilo_session_core::desktop::notifications::RemoteNotificationRoute;
 
     /// Where the stack of surfaces over the windows stands the centre on a 1280 by 800 display.
     const PLACE: Rect = Rect::new(892.0, 32.0, 1272.0, 792.0);
@@ -2020,12 +2028,12 @@ mod tests {
                 "Keep with passkey".to_owned(),
             ),
             (
-                crate::notifications::NOT_NOW_ACTION.to_owned(),
-                crate::i18n::t("notification-not-now"),
+                tilo_session_core::desktop::notifications::NOT_NOW_ACTION.to_owned(),
+                tilo_session_core::desktop::i18n::t("notification-not-now"),
             ),
         ];
-        ask.icon_kind = crate::notifications::NotificationIconKind::Permission;
-        ask.dismiss_after = crate::notifications::PERSISTENT_DISMISS;
+        ask.icon_kind = tilo_session_core::desktop::notifications::NotificationIconKind::Permission;
+        ask.dismiss_after = tilo_session_core::desktop::notifications::PERSISTENT_DISMISS;
         ask
     }
 

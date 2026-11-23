@@ -659,7 +659,9 @@ impl Journey {
                         | ValidationError::PassphraseRepeatedPattern => {
                             "installer-preview-password-repetitive"
                         }
-                        ValidationError::Invalid => "installer-preview-password-invalid",
+                        ValidationError::PinTooShort
+                        | ValidationError::PinNotNumeric
+                        | ValidationError::PinPredictable => "installer-preview-password-invalid",
                     })
                 } else if self.password != self.confirmation {
                     Some("installer-preview-password-mismatch")

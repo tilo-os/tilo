@@ -12,7 +12,7 @@
 use tilo_desktop_model::{Tab, TileContent as ModelTile};
 use ui::widget::TileContent;
 
-use crate::i18n::{t, t_args};
+use tilo_session_core::desktop::i18n::{t, t_args};
 
 /// Why a window that runs on another device is not shown in its tab, as the host's session reads
 /// it. The shell decides none of it: a session that reads its workspaces says which holds, and a

@@ -50,6 +50,9 @@ pub const REPORTED: &str = "reported";
 pub const SCOPE: &str = "tilo.new-device";
 /// How long a ticket can be used, in nanoseconds.
 pub const TICKET_LIFETIME_NS: u64 = 10 * 60 * 1_000_000_000;
+/// How long a planned machine's ticket can be used, in nanoseconds: the medium that carries it
+/// may sit on a shelf a day before the machine installs from it.
+pub const PLANNED_TICKET_LIFETIME_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 /// How many wrong secrets a ticket's issuer takes before it takes no more, so a ticket's
 /// endpoint id alone gives a guesser nothing.
 pub const MAX_WRONG_SECRETS: u32 = 10;
@@ -588,14 +591,27 @@ struct SecretState {
 }
 
 impl Secret {
-    /// `ticket`'s secret, issued at `now_ns`.
+    /// `ticket`'s secret, issued at `now_ns`, live for `lifetime_ns`.
     #[must_use]
-    pub fn of(ticket: &Ticket, now_ns: u64) -> Self {
+    pub fn of(ticket: &Ticket, now_ns: u64, lifetime_ns: u64) -> Self {
         Self {
             value: ticket.secret,
-            expires_at_ns: now_ns.saturating_add(TICKET_LIFETIME_NS),
+            expires_at_ns: now_ns.saturating_add(lifetime_ns),
             state: std::sync::Mutex::default(),
         }
+    }
+
+    /// Whether `offered` (hex) is this secret, compared in constant time and without spending
+    /// it: which of several served tickets a call is for.
+    #[must_use]
+    pub fn is(&self, offered: &str) -> bool {
+        let mut bytes = [0u8; 32];
+        hex::decode_to_slice(offered.trim(), &mut bytes).is_ok()
+            && bytes
+                .iter()
+                .zip(self.value.iter())
+                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                == 0
     }
 
     /// Spend the secret for `offered` (hex) at `now_ns`: once, while it is live. A ticket that
@@ -670,20 +686,21 @@ mod tests {
     #[test]
     fn a_secret_is_spent_once_while_it_is_live_and_never_guessed() {
         let ticket = ticket();
-        let secret = Secret::of(&ticket, 0);
+        let secret = Secret::of(&ticket, 0, TICKET_LIFETIME_NS);
         assert_eq!(secret.spend(&hex::encode([1; 32]), 1), Err(Refused::Wrong));
         assert_eq!(secret.spend("not hex", 1), Err(Refused::Wrong));
         assert!(secret.waiting(1));
+        assert!(secret.is(&ticket.secret_hex()) && !secret.is(&hex::encode([1; 32])));
         assert_eq!(secret.spend(&ticket.secret_hex(), 2), Ok(()));
         assert_eq!(secret.spend(&ticket.secret_hex(), 3), Err(Refused::Spent));
 
-        let late = Secret::of(&ticket, 0);
+        let late = Secret::of(&ticket, 0, TICKET_LIFETIME_NS);
         assert_eq!(
             late.spend(&ticket.secret_hex(), TICKET_LIFETIME_NS),
             Err(Refused::Expired)
         );
 
-        let guessed = Secret::of(&ticket, 0);
+        let guessed = Secret::of(&ticket, 0, TICKET_LIFETIME_NS);
         for _ in 0..MAX_WRONG_SECRETS {
             assert_eq!(guessed.spend(&hex::encode([2; 32]), 1), Err(Refused::Wrong));
         }

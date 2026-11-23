@@ -78,14 +78,14 @@ impl Workspaces {
         decision == Decision::Admit
     }
 
-    /// Read the current hosted agent entry for `keeper`, the person who
-    /// approved it. Where a requester is supplied, that exact certified person
+    /// Read the current hosted agent entry for `agent`, kept for the person whose root
+    /// `acts_for` names. Where a requester is supplied, that exact certified person
     /// device must still be admitted to the workspace.
     pub async fn hosted_roster_agent(
         &self,
         workspace: WorkspaceId,
         agent: &str,
-        keeper: &[u8; 32],
+        acts_for: &[u8; 32],
         requester: Option<&DeviceCert>,
     ) -> Option<tilo_workspace_agent::Agent> {
         let id = workspace.to_string();
@@ -97,25 +97,25 @@ impl Workspaces {
             )
             .await
             .ok()??;
-        let entry = roster_entry(&agents, agent, keeper)?;
+        let entry = roster_entry(&agents, agent, acts_for)?;
         if let Some(cert) = requester {
-            if !self.roster_keeper_device(workspace, keeper, cert).await {
+            if !self.acts_for_device(workspace, acts_for, cert).await {
                 return None;
             }
         } else {
-            self.person_device(workspace, *keeper).await?;
+            self.person_device(workspace, *acts_for).await?;
         }
         Some(entry.clone())
     }
 
-    /// Check the requesting keeper's certificate against current governance.
-    pub async fn roster_keeper_device(
+    /// Check the requesting person's certificate against current governance.
+    pub async fn acts_for_device(
         &self,
         workspace: WorkspaceId,
-        keeper: &[u8; 32],
+        acts_for: &[u8; 32],
         cert: &DeviceCert,
     ) -> bool {
-        if &cert.user_public_key != keeper {
+        if &cert.user_public_key != acts_for {
             return false;
         }
         let Ok(governed) = self.workspace(&workspace.to_string()).await else {
@@ -178,11 +178,11 @@ impl Workspaces {
         &self,
         workspace: WorkspaceId,
         agent: &str,
-        keeper: &[u8; 32],
+        acts_for: &[u8; 32],
     ) -> Option<[u8; 32]> {
         let reading = self.reading(workspace).await?;
         let peer = reading.replica.lock();
-        self.approved_agent(&peer, workspace, agent, keeper)
+        self.approved_agent(&peer, workspace, agent, acts_for)
             .map(|(cert, _)| cert.device_public_key)
     }
 
@@ -191,7 +191,7 @@ impl Workspaces {
         peer: &super::StatePeer,
         workspace: WorkspaceId,
         agent: &str,
-        keeper: &[u8; 32],
+        acts_for: &[u8; 32],
     ) -> Option<(DeviceCert, Delegation)> {
         let now_ns = tilo_clock::unix_now_ns();
         let trust = self.trust();
@@ -201,7 +201,7 @@ impl Workspaces {
             .ok()?
             .into_iter()
             .filter(|entry| {
-                entry.acting && entry.agent_id == agent && &entry.user_public_key == keeper
+                entry.acting && entry.agent_id == agent && &entry.user_public_key == acts_for
             })
             .filter_map(|entry| {
                 let device = entry.device_public_key;
@@ -209,7 +209,7 @@ impl Workspaces {
                     return None;
                 };
                 let peer = AuthenticatedPeer {
-                    user_public_key: *keeper,
+                    user_public_key: *acts_for,
                     device_public_key: device,
                     cert,
                 };
@@ -230,10 +230,10 @@ impl Workspaces {
         inside: Option<(&str, &str)>,
     ) -> Option<ViewReadPolicy> {
         let agent = caller.approved_agent()?;
-        let keeper = caller.user_public_key()?;
+        let acts_for = caller.user_public_key()?;
         let created_at = caller.roster_created_at()?;
         let entry = self
-            .hosted_roster_agent(workspace, agent, keeper, None)
+            .hosted_roster_agent(workspace, agent, acts_for, None)
             .await?;
         if entry.created_at != created_at {
             return None;
@@ -260,7 +260,7 @@ impl Workspaces {
         use tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents};
 
         let agent = caller.approved_agent()?;
-        let keeper = caller.user_public_key()?;
+        let acts_for = caller.user_public_key()?;
         let workspace = governed.workspace_id();
         if caller.workspace() != Some(governed.workspace()) || governed.member.is_some() {
             return None;
@@ -268,13 +268,13 @@ impl Workspaces {
         let list = collab_types::workspace_document_id(KIND);
         let bytes = governed.readable_document(OWNER, &list).await.ok()??;
         let agents = super::actions::agents::read_resource_bytes::<WorkspaceAgents>(&bytes).ok()?;
-        let entry = roster_entry(&agents, agent, keeper)?;
+        let entry = roster_entry(&agents, agent, acts_for)?;
         if caller.roster_created_at() != Some(entry.created_at) {
             return None;
         }
         let peer = governed.peer();
         let now_ns = tilo_clock::unix_now_ns();
-        super::hosted_use::person_device_in(&peer, keeper, |device| {
+        super::hosted_use::person_device_in(&peer, acts_for, |device| {
             self.inner.host.environments.of(device, now_ns).is_some()
         })?;
         self.roster_policy_for(
@@ -295,8 +295,8 @@ impl Workspaces {
         inside: Option<(&str, &str)>,
     ) -> Option<ViewReadPolicy> {
         let agent = caller.approved_agent()?;
-        let keeper = caller.user_public_key()?;
-        let (cert, delegation) = self.approved_agent(peer, workspace, agent, keeper)?;
+        let acts_for = caller.user_public_key()?;
+        let (cert, delegation) = self.approved_agent(peer, workspace, agent, acts_for)?;
         if caller.device_public_key() != Some(&cert.device_public_key)
             || session != (&cert, &delegation)
         {
@@ -412,15 +412,15 @@ impl Workspaces {
 fn roster_entry<'a>(
     agents: &'a tilo_workspace_agent::WorkspaceAgents,
     agent: &str,
-    keeper: &[u8; 32],
+    acts_for: &[u8; 32],
 ) -> Option<&'a tilo_workspace_agent::Agent> {
     let entry = agents.get(&tilo_resource::Id::from_raw(agent.to_owned()))?;
     if !entry.is_active()
-        || tilo_action_policy::PersonId::parse(&entry.keeper)
+        || tilo_action_policy::PersonId::parse(&entry.acts_for)
             .ok()?
             .root()
             .as_ref()
-            != Some(keeper)
+            != Some(acts_for)
     {
         return None;
     }

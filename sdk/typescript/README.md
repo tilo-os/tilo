@@ -108,8 +108,10 @@ still works through `ws.resource(path)` and `ws.do(path, args)`.
 ```sh
 bun test                       # against an in-process fake /v1 server
 bunx tsc --noEmit              # types
-TILO_TEST_API_URL=http://127.0.0.1:8080 TILO_TEST_KEY=tilo_sk_… bun test test/integration.test.ts
 ```
+
+`docs/tilo-sh/` documents each round trip as a whole program this repository's
+example runner (`t test docs-examples`) runs against a real API server.
 
 `examples/visa_proof.ts` is the whole story against a real server: a workspace
 per applicant, an agent that fills a form and writes a letter, a reviewer who

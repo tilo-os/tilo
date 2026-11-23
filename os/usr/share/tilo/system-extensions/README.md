@@ -8,7 +8,8 @@ transaction.
 pinned catalogue entries and public verification keys there. They are not
 mutable configuration directories, and private signing keys must never enter
 the image. `state.json` lives at `/var/lib/tilo/system-extensions/state.json`.
-The `system-extension` crate writes it atomically as `root:root` mode `0600`.
+The extension helper (`tilo-extension`) writes it atomically as `root:root`
+mode `0600`.
 It verifies a manifest's Ed25519 signature, an exact base image digest,
 optional exact kernel ABI/architecture, and the local artifact receipt before
 an extension becomes active desired state.

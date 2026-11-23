@@ -46,11 +46,18 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
+import contextlib
+import functools
 import json
 import os
 import shutil
+import signal
+import subprocess
 import sys
+import threading
 import time
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -76,6 +83,162 @@ FILE_CHOOSER = "so.tilo.file-chooser"
 FILE_CHOOSER_STEP = f"{FILE_CHOOSER}.step"
 FILE_CHOOSER_QUESTION = "portal.file-chooser"
 FILE_CHOOSER_RESOURCE = "file-chooser.request"
+# The small picture a walk of an app that shows photographs imports: the same
+# 64-by-64 PNG in two colours that `ui::headless::FIXTURE_PICTURE` carries, kept
+# here as its bytes so a file chooser can be handed a real image.
+FIXTURE_PICTURE_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAEAAAABAAQMAAACQp+OdAAAABlBMVEXyyHpLP7ovf/CwAAAAf0lE"
+    "QVR42j3RsRHAMAhDUcj+QzEKI1BScJAi+nHjdyp0NvjZdx7dBxYMaFAgQbh6XMlRuGBAgwIJwtTj"
+    "So6HLRjQoECCMPW4kuODCwY0KJAgTD2u5BjUggENCiQIU48rOQa+YECDAglCgz329WPBgAYFEgR7"
+    "Zu8/FgxoUCABNS8YGz171qSmDgAAAABJRU5ErkJggg==")
+
+
+class PageServer(SimpleHTTPRequestHandler):
+    """The pages a walk serves on this machine's loopback, without the request
+    each line `http.server` would print into the walk's log."""
+
+    def log_message(self, _format: str, *args) -> None:
+        pass
+
+
+# The stand-in mail server a walk adds a mail account against: the address's own
+# domain, the server names a mail program works out from it, the ports it asks
+# them on, and the address it takes. The tree's stand-in serves them
+# (crates/platform/account-probe/examples/mail_stand_in.rs), staged the way the
+# lounge's mail stories stage one
+# (os/containers/tilo-lounge/stories/shell/mail_provider.py).
+MAIL_DOMAIN = "story.tilo.test"
+MAIL_ADDRESS = f"lab@{MAIL_DOMAIN}"
+MAIL_NAMES = [MAIL_DOMAIN, f"imap.{MAIL_DOMAIN}", f"smtp.{MAIL_DOMAIN}"]
+MAIL_IMAP = f"127.0.0.1:993"
+MAIL_SMTP = f"127.0.0.1:465"
+MAIL_PASSWORD = "walks-stand-in"
+MAIL_CA_BUNDLES = (
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/ssl/cert.pem",
+)
+
+
+def at_path(value, path: str):
+    """What `path` reads in `value`: a dotted walk into dicts and lists (`#len`
+    for how many a list or dict holds), the way the desktop's state is read."""
+    path, _, measure = path.partition("#")
+    at = value
+    for key in path.split("."):
+        at = at.get(key) if isinstance(at, dict) else (
+            at[int(key)] if isinstance(at, list) and key.isdigit() and int(key) < len(at) else None)
+    if measure == "len":
+        return len(at) if isinstance(at, (list, dict)) else None
+    return at
+
+
+class LocalMailServer:
+    """The tree's stand-in mail server, run beside the walk's session as the
+    provider of the address a mail account is added against: the server names in
+    `/etc/hosts`, its IMAP and SMTP sockets on the ports a mail program asks a
+    domain's own servers on, and its certificate in the machine's trust bundles,
+    which is what the session's own connection checks it against. Root stages
+    it, as the lounge's stories stage a mail provider, and takes it out again
+    when the walk ends."""
+
+    def __init__(self, out: Path, password: str = MAIL_PASSWORD):
+        self.dir = out
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.password = password
+        self.password_file = self.dir / "password"
+        self.certificate = self.dir / "certificate.pem"
+        self.log = self.dir / "double.log"
+        self.proc: subprocess.Popen | None = None
+        self.hosts = Path("/etc/hosts")
+        self.hosts_before: bytes | None = None
+        # Each bundle the certificate joined, and what it held before.
+        self.trusted: list[tuple[Path, bytes]] = []
+
+    def binary(self) -> Path:
+        for candidate in (os.environ.get("TILO_MAIL_STAND_IN"),
+                          str(BUILD / "bin/mail-stand-in")):
+            if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+                return Path(candidate)
+        raise Failed("no stand-in mail server to run: the nested-session build stages it as "
+                     "bin/mail-stand-in, or name it with TILO_MAIL_STAND_IN")
+
+    def stage(self) -> dict:
+        if os.geteuid() != 0:
+            raise Failed("staging the mail provider takes root: /etc/hosts, the trust "
+                         "bundles and the mail ports (the walk's check runs as root)")
+        self.password_file.write_text(self.password + "\n")
+        self.password_file.chmod(0o600)
+        self.name_itself()
+        try:
+            self.start()
+            self.trust()
+        except BaseException:
+            self.stop()
+            raise
+        return {"address": MAIL_ADDRESS, "password": self.password,
+                "imap": MAIL_IMAP, "smtp": MAIL_SMTP, "log": str(self.log)}
+
+    def name_itself(self) -> None:
+        self.hosts_before = self.hosts.read_bytes()
+        block = ["", "# a walk's mail provider, at this machine's own loopback"]
+        block += [f"127.0.0.1 {name}" for name in MAIL_NAMES]
+        self.hosts.write_bytes(self.hosts_before + ("\n".join(block) + "\n").encode())
+
+    def start(self) -> None:
+        argv = [str(self.binary()), "--login", MAIL_ADDRESS,
+                "--password-file", str(self.password_file),
+                "--write-certificate", str(self.certificate),
+                "--imap", MAIL_IMAP, "--smtp", MAIL_SMTP]
+        for name in MAIL_NAMES:
+            argv += ["--name", name]
+        with self.log.open("w") as said:
+            self.proc = subprocess.Popen(argv, stdout=said, stderr=subprocess.STDOUT,
+                                         start_new_session=True)
+
+        def serving() -> str | None:
+            text = self.log.read_text(errors="replace") if self.log.is_file() else ""
+            if "mail stand-in: IMAP at" in text:
+                return text
+            if self.proc is not None and self.proc.poll() is not None:
+                raise Failed(f"the stand-in mail server exited: {text[-1500:]}")
+            return None
+
+        until_value("the stand-in mail server to answer", serving, 60, 0.1)
+
+    def trust(self) -> None:
+        certificate = self.certificate.read_bytes()
+        present = [Path(path) for path in MAIL_CA_BUNDLES if Path(path).exists()]
+        if not present:
+            raise Failed(f"this machine has no CA bundle among {MAIL_CA_BUNDLES}")
+        for path in present:
+            bundle = path.resolve()
+            before = bundle.read_bytes()
+            self.trusted.append((bundle, before))
+            bundle.write_bytes(before + b"\n" + certificate)
+
+    def stop(self) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            try:
+                os.killpg(self.proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                self.proc.wait(15)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(self.proc.pid, signal.SIGKILL)
+                self.proc.wait(5)
+        self.proc = None
+        if self.hosts_before is not None:
+            with contextlib.suppress(OSError):
+                self.hosts.write_bytes(self.hosts_before)
+            self.hosts_before = None
+        for bundle, before in self.trusted:
+            with contextlib.suppress(OSError):
+                bundle.write_bytes(before)
+        self.trusted.clear()
 
 
 def until_value(what: str, check, deadline: float = 30.0, step: float = 0.1):
@@ -98,6 +261,27 @@ def app_action(session: Session, app: str, operation: str, resource: str | None 
     return None
 
 
+def row_for(rows: list[dict], resource: str, action: str, kind: str | None = None) -> dict | None:
+    """The catalogue row offering `resource`'s `action`, whichever provider lists
+    it: a workspace's actions are published under the workspace's own provider
+    id, which is not the same string on the next run, so a walk names the
+    resource and the action and lets the desktop say who lists them. Should two
+    providers offer it, the one whose request is answered first wins — the walk
+    called it, so what it does is one thing.
+
+    `kind` names a resource of that kind instead: a run mints a shell's own
+    record ids (`tl:so.tilo.shell:root-cejnvssb`), so the walk gives the kind
+    and the row it stands on is found whichever id the run gave it."""
+    for row in rows:
+        at = address(row)
+        if at is None or at[1] != action:
+            continue
+        if at[0] == resource or (
+                kind is not None and (row.get("resource") or {}).get("kind") == kind):
+            return row
+    return None
+
+
 def value_of(answer: dict | str):
     try:
         return answer["Completed"]["output"]["value"]
@@ -114,6 +298,14 @@ def read_back(session: Session, app: str) -> dict:
     action = until_value(f"{app}'s read on {own}",
                          lambda: app_action(session, app, "read", own), 60)
     return value_of(session.invoke_row(action))
+
+
+def held_in(read, wanted: list[str]) -> list[str]:
+    """The words of `wanted` a read of the app's own record does not hold: what
+    the app says it keeps, read as one text, must name each of them. Words that
+    are there come back empty, so a step fails on exactly what is missing."""
+    text = read if isinstance(read, str) else json.dumps(read, ensure_ascii=False)
+    return [word for word in wanted if word not in text]
 
 
 def notes_held(read: dict) -> int | None:
@@ -148,6 +340,47 @@ def notes_held(read: dict) -> int | None:
 
     walk(read, None)
     return found[0] if found else None
+
+
+# --- the versions a walk names -------------------------------------------------------------------
+
+def source_of(spec: dict, variant: str) -> str | None:
+    """The tree path whose presence means the version still exists: what the
+    version names as its `source`, else its tilolang package's directory, else
+    its native app's. A version whose source is gone was retired by the change
+    under test and is not walked; the walk compares what replaced it."""
+    v = spec[variant]
+    if v.get("source"):
+        return v["source"]
+    if v.get("package"):
+        return f"apps/tl/{v['package']}"
+    native = v.get("native") or (spec.get("native") if variant == "rust" else None)
+    if native:
+        return f"apps/{native.split()[0]}"
+    return None
+
+
+def present(spec: dict, variant: str) -> bool:
+    source = source_of(spec, variant)
+    return source is None or (REPO / source).exists()
+
+
+def apps_of(spec: dict, variant: str) -> str:
+    """The session build's apps this version's session installs: the ones every
+    version of the walk needs (`apps`, such as Files for a launcher walk), and
+    this version's own native app."""
+    v = spec[variant]
+    native = v.get("native") or (spec.get("native", "") if variant == "rust" else "")
+    return " ".join(name for name in f"{spec.get('apps', '')} {native}".split())
+
+
+def live_of(spec: dict, named: list[str]) -> str:
+    """The version a person gets today: the step file's `live`, where it is still
+    in the tree, else the one version left."""
+    live = spec.get("live")
+    if live in named:
+        return live
+    return "tl" if "tl" in named else named[0]
 
 
 # --- the walk ---------------------------------------------------------------------------------
@@ -188,20 +421,56 @@ def control(session: Session, selector) -> dict | None:
             if target.get("name") == selector["menuitem"] and drawn(target)
         ]
         return max(found, key=lambda target: target["rect"][2]) if found else None
-    for target in targets:
-        identity = target.get("identity") or ""
-        if isinstance(selector, dict):
-            if "prefix" in selector:
-                if str(target.get("name", "")).startswith(selector["prefix"]):
-                    return target
-            elif ID_SEP in identity and identity.rsplit(ID_SEP, 1)[-1] == selector["doing"]:
-                return target
-        elif ID_SEP in selector:
-            if identity == selector:
-                return target
-        elif target.get("name") == selector:
-            return target
-    return None
+    return next((target for target in targets if matches(target, selector)), None)
+
+
+def matches(target: dict, selector) -> bool:
+    """Whether `target` is one `selector` names: the same forms `control` takes,
+    minus the menu item's widest-of-a-name choice."""
+    identity = target.get("identity") or ""
+    if isinstance(selector, dict):
+        if "prefix" in selector:
+            return str(target.get("name", "")).startswith(selector["prefix"])
+        return ID_SEP in identity and identity.rsplit(ID_SEP, 1)[-1] == selector.get("doing")
+    if ID_SEP in str(selector):
+        return identity == selector
+    return target.get("name") == selector
+
+
+def provider_addresses(said: str) -> dict:
+    """The addresses a fake model provider server prints, by the name each line
+    gives them (`OPENAI_API=…` becomes `openai-api`)."""
+    found = {}
+    for line in said.splitlines():
+        name, _, value = line.partition("=")
+        if name and value:
+            found[name.strip().lower().replace("_", "-")] = value.strip()
+    return found
+
+
+def session_env(state: Path) -> dict:
+    """What a walk's session is told about the stand-ins beside it: where the
+    wireless display broker listens, so the display sheet finds the walk's
+    stand-in rather than a service this machine does not run."""
+    return {"TILO_PROJECTOR_RUNTIME_DIR": str(state / "projector")}
+
+
+def resolved(served: dict, value):
+    """`value` with every `{"served": "name.path"}` in it replaced by what the
+    run answered under `name`: a provider's id, a stand-in's address, which no
+    step file can know before the run makes them."""
+    if isinstance(value, dict) and "served" in value:
+        at = served
+        for key in str(value["served"]).split("."):
+            at = at.get(key) if isinstance(at, dict) else None
+        if at is None:
+            raise Failed(f"nothing the run served is called {value['served']!r}")
+        return at
+    if isinstance(value, dict):
+        return {key: resolved(served, inner) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [resolved(served, inner) for inner in value]
+    return value
 
 
 def drawn(target: dict) -> bool:
@@ -250,11 +519,308 @@ def hover(session: Session, selector: str, deadline: float = 20.0) -> dict:
     return target
 
 
+# --- a person's other devices -----------------------------------------------------------------
+
+# The sheet a device of the person's is added from, and what its requester prints for the person
+# to compare with what the device they already have shows.
+SHOW_PAIR_DEVICE = ("session:invite", "show-pair-device")
+PAIRING_CODE = "Pairing code: "
+
+
+def devices_of(spec: dict) -> list[dict]:
+    """The devices a walk names, in order, each `{"name", "session_args"?}`: `"devices":
+    ["laptop", "phone"]`, or an entry as an object where one device starts differently (the
+    laptop with two displays). The first is the device every op runs on unless it says
+    otherwise; a walk naming none has one device, and its name is empty."""
+    named = spec.get("devices") or []
+    return [entry if isinstance(entry, dict) else {"name": entry} for entry in named] \
+        or [{"name": ""}]
+
+
+def session_args_of(spec: dict, variant: str, device: str | None = None) -> list[str] | None:
+    """How a device's session starts in `variant`: the version's own arguments (the tilolang
+    shell's `--shell screen`), then the device's (`--output` for a second display). `device`
+    is the first device when None."""
+    entries = devices_of(spec)
+    entry = next((e for e in entries if e["name"] == device), None) if device else entries[0]
+    args = list(spec[variant].get("session_args") or []) + list((entry or {}).get("session_args")
+                                                                or [])
+    return args or None
+
+
+# Where a walk's devices hear each other: the sessions are beside each other on this host's
+# loopback, and the network a check's machine has carries no multicast between them (as the
+# session's own multi-device tests start their devices, crates/session/session/tests/common).
+LAN_NETWORKS_ENV = "TILO_LAN_NETWORKS"
+# What a walk of several devices' sessions say: why a join or a sync did not land is the finding.
+DEVICES_LOG = ("warn,tilo::launch_latency=info,tilo::join_flow=debug,tilo_session::layout=info,"
+               "tilo_peer_state=debug,tilo_session::workspaces=debug,"
+               "tilo_session::person_resources=debug,tilo_endpoint_reachability=debug,"
+               "tilo_network_actor=debug,tilo_session::sync=debug")
+
+
+def devices_env(spec: dict) -> dict | None:
+    """The environment each device's session of the walk starts with: None for a walk of one.
+    A further device is named as the walk names it when it pairs (`phone`); the first is the
+    machine's own."""
+    if len(devices_of(spec)) < 2:
+        return None
+    return {LAN_NETWORKS_ENV: "127.0.0.1", "RUST_LOG": os.environ.get("RUST_LOG", DEVICES_LOG)}
+
+
+def split_on(op: dict, default: str | None) -> tuple[str | None, dict]:
+    """The device an op runs on and the op without that word: `{"on": "phone", "must": [...]}`
+    runs `must` on the phone, an op saying nothing runs on the step's device (`default`, the
+    step's own `"on"`), and None means the first device."""
+    if "on" not in op:
+        return default, op
+    rest = {key: value for key, value in op.items() if key != "on"}
+    return op["on"], rest
+
+
+def at_path(value, path: str):
+    """What `path` names in an action's answer: dotted keys and list places
+    (`layout.displays.0.rect`), `[key=value]` for the first entry of a list whose
+    field reads so (`devices[label=phone].id`), and `#len` at the end for how many a
+    list or map holds. None where the answer has no such place."""
+    path, _, measure = path.partition("#")
+    at = value
+    for part in filter(None, path.split(".")):
+        key, _, test = part.partition("[")
+        if key:
+            if isinstance(at, dict):
+                at = at.get(key)
+            elif isinstance(at, list) and key.isdigit() and int(key) < len(at):
+                at = at[int(key)]
+            else:
+                return None
+        if test:
+            field, _, wanted = test.rstrip("]").partition("=")
+            if not isinstance(at, list):
+                return None
+            at = next((item for item in at if isinstance(item, dict)
+                       and str(item.get(field)) == wanted), None)
+    if measure == "len":
+        return len(at) if isinstance(at, (list, dict)) else None
+    return at
+
+
+def choices_of(row: dict) -> dict:
+    """The first answer a catalogue row's action offers for each parameter that offers some: its
+    schema's `enum`, or the `const` of its first `oneOf`. What a person picks from a list, the
+    walk picks the first of."""
+    found = {}
+    for param in (row.get("action") or {}).get("params") or []:
+        schema = param.get("schema") or {}
+        offered = schema.get("enum") or [o.get("const") for o in schema.get("oneOf") or []
+                                         if isinstance(o, dict) and "const" in o]
+        if offered:
+            found[param["name"]] = offered[0]
+    return found
+
+
+def filled(arg, kept: dict):
+    """`arg` with each `{name}` a walk kept replaced by its value: a string that is
+    only `{name}` becomes the value itself (a revision stays a number), one that
+    names it among other words gets it as text."""
+    if isinstance(arg, str):
+        for name, value in kept.items():
+            if arg == f"{{{name}}}":
+                return value
+        for name, value in kept.items():
+            arg = arg.replace(f"{{{name}}}", value if isinstance(value, str)
+                              else json.dumps(value))
+        return arg
+    if isinstance(arg, dict):
+        return {key: filled(inner, kept) for key, inner in arg.items()}
+    if isinstance(arg, list):
+        return [filled(inner, kept) for inner in arg]
+    return arg
+
+
+class Devices:
+    """The person's devices a walk drives: one headless session each, of the same person, on
+    this host. The first is the walk's own session; each further one is a session on a state
+    of its own, with its own device key, enrolled as the person's next device the way a person
+    adds one (the shell's Add a device sheet, its link, the pairing code approved on the first
+    device), and shown the workspace the first one is in. They meet over the local network, as
+    two devices of one person on one network do."""
+
+    def __init__(self, first: str, session: Session):
+        self.order = [first]
+        self.sessions: dict[str, Session] = {first: session}
+        self.joining: subprocess.Popen | None = None
+        # What fell short of making the devices one person's in one workspace: every step after
+        # it says what that leaves out, so the walk goes on and this is kept in its report.
+        self.trouble: list[str] = []
+        # How long each further device took to become the person's and come up, by phase
+        # (`prepare`, `pair`, `start`, `meet`), in milliseconds: what a walk of devices waits.
+        self.took: dict[str, dict[str, int]] = {}
+
+    def lap(self, name: str, phase: str, began: float) -> float:
+        now = time.monotonic()
+        self.took.setdefault(name, {})[phase] = round((now - began) * 1000)
+        return now
+
+    @property
+    def first(self) -> str:
+        return self.order[0]
+
+    def session(self, name: str | None) -> Session:
+        name = self.first if name in (None, "") else name
+        if name not in self.sessions:
+            raise Failed(f"the step names a device the walk has not: {name!r} "
+                         f"(it has {', '.join(self.order)})")
+        return self.sessions[name]
+
+    def further(self) -> list[str]:
+        return self.order[1:]
+
+    def add(self, name: str, state: Path, *, apps: str, tapps: list[Path], out: Path, tag: str,
+            session_args: list[str] | None, env: dict | None = None) -> Session:
+        """Enroll `name` as the person's next device and start its session on `state`, which
+        `prepare_state` has made: the first device shows the link, the new device's requester
+        takes it and prints its code, the person approves that code on the first device, and
+        the new device's session starts as that person, in the workspace the first one shows."""
+        first = self.sessions[self.first]
+        logs = out / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        began = time.monotonic()
+        first.invoke(SHELL, *SHOW_PAIR_DEVICE, {})
+        until_value("the Add a device sheet's Copy link", lambda: control(first, "Copy link"), 15)
+        first.click_named("Copy link")
+        link = until_value("the device link on the clipboard",
+                           lambda: (first.state_dump() or {}).get("clipboard"), 10)
+        if not str(link).startswith("tilo://pair-device?"):
+            raise Failed("Add a device did not copy a device link")
+        # The link stays out of every log and argument: it is read from a private file.
+        link_file = state / "device-link"
+        link_file.touch(mode=0o600)
+        link_file.write_text(link)
+        said = logs / f"pair-{tag}.log"
+        try:
+            with said.open("w") as log:
+                self.joining = subprocess.Popen(
+                    [str(BUILD / "bin/tilo-session"), "--pair-device-link-file", str(link_file)],
+                    stdout=log, stderr=subprocess.STDOUT,
+                    env={**os.environ, "HOSTNAME": name,
+                         "XDG_CONFIG_HOME": str(state / "config"),
+                         "TILO_IDENTITY_ROOT": str(state / "identity")})
+
+            def code() -> str | None:
+                text = said.read_text(errors="replace")
+                if self.joining.poll() not in (None, 0):
+                    raise Failed(f"the {name} could not pair: {text.strip()[-2000:]}")
+                for line in text.splitlines():
+                    if line.startswith(PAIRING_CODE):
+                        return line[len(PAIRING_CODE):].strip()
+                return None
+
+            shown = until_value(f"the {name} to show a pairing code", code, 20)
+            approve = f"Approve {name} with code {shown}"
+            until_value(f"{approve!r} on the {self.first}", lambda: control(first, approve), 20)
+            first.click_named(approve)
+            if self.joining.wait(timeout=30) != 0:
+                raise Failed(f"the {name} did not finish pairing: {said.read_text()[-2000:]}")
+        finally:
+            if self.joining is not None and self.joining.poll() is None:
+                self.joining.kill()
+                self.joining.wait()
+            self.joining = None
+            link_file.unlink(missing_ok=True)
+        root = "identity/user-identity/pubkey.bin"
+        if (state / root).read_bytes() != (first.state / root).read_bytes():
+            raise Failed(f"the {name} joined as a different person")
+        began = self.lap(name, "pair", began)
+        session = Session(state)
+        session.start(apps=apps, fresh=True, out=logs, tag=tag, tapps=tapps,
+                      session_args=session_args, env=env)
+        began = self.lap(name, "start", began)
+        self.order.append(name)
+        self.sessions[name] = session
+        # The sheet the person added the device from is closed, as they close it.
+        try:
+            first.key("Escape")
+        except Failed:
+            pass
+        try:
+            self.show_same_workspace(name)
+            self.lap(name, "meet", began)
+        except Failed as error:
+            self.lap(name, "meet", began)
+            self.trouble.append(f"{name}: {error}")
+            # What each device holds of the person, where they did not meet: their identity's
+            # files (which of them founds the person's own workspace) and their workspaces.
+            for device, at in ((self.first, first), (name, session)):
+                identity = at.state / "config/tilo/identity"
+                held = ((at.state_dump() or {}).get("held_workspaces")) if at.running() else None
+                self.trouble.append(
+                    f"{device}: identity holds {sorted(p.name for p in identity.iterdir()) if identity.is_dir() else None}; "
+                    f"holds the workspaces {json.dumps(held)}")
+            print(f"  the {name} is not in the {self.first}'s workspace: {error}", file=sys.stderr)
+        return session
+
+    def show_same_workspace(self, name: str) -> str:
+        """Bring the workspace the first device shows to the front on `name`, as the person
+        picks it there: a workspace that arrived from their list stands behind the one the
+        device made for itself."""
+        first, other = self.sessions[self.first], self.sessions[name]
+
+        def front(session: Session) -> str | None:
+            return ((session.state_dump() or {}).get("workspace_tree") or {}).get("active")
+
+        workspace = until_value(f"the workspace the {self.first} shows", lambda: front(first), 30)
+
+        def held() -> bool:
+            tree = (other.state_dump() or {}).get("workspace_tree") or {}
+            return any(w.get("id") == workspace for w in tree.get("workspaces") or [])
+
+        until_value(f"the {name} to hold the {self.first}'s workspace", held, 60, 0.25)
+        if front(other) != workspace:
+            other.invoke(SHELL, "desktop:chrome", "switch-workspace", {"workspace": workspace})
+            until_value(f"the {name} to show the {self.first}'s workspace",
+                        lambda: front(other) == workspace, 30)
+        return workspace
+
+    def stop(self) -> None:
+        """Stop every further device's session; the first is the walk's to stop."""
+        for name in self.further():
+            self.sessions[name].stop()
+
+
+def start_devices(spec: dict, variant: str, session: Session, state: Path, out: Path,
+                  apps: str, tapps: list[Path]) -> Devices | None:
+    """The person's further devices the walk names, each paired to the first device's session
+    `session` and started, or None for a walk of one device. Each device's state sits beside the
+    first one's (`state-tl` and `state-tl-phone`)."""
+    entries = devices_of(spec)
+    if len(entries) < 2:
+        return None
+    devices = Devices(entries[0]["name"], session)
+    try:
+        for entry in entries[1:]:
+            name = entry["name"]
+            began = time.monotonic()
+            own = state.parent / f"{state.name}-{name}"
+            prepare_state(own, apps, build=False)
+            devices.lap(name, "prepare", began)
+            devices.add(name, own, apps=apps, tapps=tapps, out=out, tag=f"{variant}-{name}",
+                        session_args=session_args_of(spec, variant, name),
+                        env=devices_env(spec))
+            print(f"==> {variant}: the {name} paired and up in "
+                  f"{round((time.monotonic() - began) * 1000)} ms", file=sys.stderr)
+    except BaseException:
+        devices.stop()
+        raise
+    return devices
+
+
 class Walk:
     """One version's walk: its session, its steps and what each one found."""
 
     def __init__(self, spec: dict, variant: str, out: Path, state: Path,
-                 discover: bool = False):
+                 discover: bool = False, session: Session | None = None,
+                 devices: Devices | None = None):
         self.spec = spec
         self.variant = variant
         self.v = spec[variant]
@@ -264,10 +830,35 @@ class Walk:
         # so the step file can name the one that is really there.
         self.discover = discover
         self.shots = out / "shots" / variant
-        self.session = Session(state)
+        # A family's walks share one session per version: it is started once, and
+        # each walk starts where the reset after the one before left the desktop.
+        self.shared = session is not None
+        self.session = session or Session(state)
         self.steps: list[dict] = []
         self.window: dict | None = None
         self.appearance: dict | None = None
+        # The stand-in mail server a step started, stopped when the walk ends.
+        self.mail: LocalMailServer | None = None
+        # The frames a step's window drew when its `window_frames` first ran.
+        self.frames_seen: dict[str, int] = {}
+        # The stand-in services this walk started beside the session (op `serve`),
+        # stopped when its session goes.
+        self.services: list = []
+        # What the run answered and a later step may name: a stand-in's address,
+        # a provider's id (`{"served": "provider.id"}`), a page server's address.
+        self.served: dict = {}
+        # The pages a `serve` step put on this machine's loopback.
+        self.pages: ThreadingHTTPServer | None = None
+        # The person's further devices, where the walk names them (`"devices"`): a family's
+        # are started once with its session, a walk of its own starts them after its own.
+        self.devices = devices
+        # The device the op being run is on (None: the first), and each device's appearance
+        # action, which is that device's own.
+        self.device: str | None = None
+        self.step_on: str | None = None
+        self.appearances: dict[str, dict | None] = {}
+        # What an op kept of an answer (`op_use`'s `keep`), for the ops after it.
+        self.kept: dict = {}
 
     def targets(self) -> list[dict]:
         """The controls the desktop offers now, as the walk records them where a
@@ -285,7 +876,7 @@ class Walk:
                  "operation": (address(a) or ("", ""))[1],
                  "application": a.get("app_id"), "resource": (address(a) or ("", ""))[0]}
                 for a in self.session.actions("")
-                if address(a) and (not only_app or a.get("app_id") == self.v["id"])]
+                if address(a) and (not only_app or a.get("app_id") == self.v.get("id"))]
 
     def shot(self, name: str) -> str:
         path = self.shots / f"{name}.png"
@@ -294,7 +885,9 @@ class Walk:
 
     def window_of(self) -> dict | None:
         """The window of the app this walk opens, as the shell holds it."""
-        ident = self.v["id"]
+        ident = self.v.get("id")
+        if ident is None:
+            return None
         found = next((w for w in self.session.windows() if w.get("app_id") == ident), None)
         if found is not None:
             self.window = found
@@ -349,6 +942,11 @@ class Walk:
         looks at what they had."""
         before = (self.window_of() or {}).get("frames") or 0
         self.set_dark(dark)
+        if self.v.get("id") is None:
+            # A walk of the shell has no app window to count frames of: the
+            # shell restyles on its next frame, which a snapshot waits for.
+            time.sleep(0.3)
+            return self.shot(f"{name}-{'dark' if dark else 'light'}")
         # A new theme reaches a window on the next frame it draws: wait for the
         # app's own frame count to move, then shoot what it drew.
         try:
@@ -362,12 +960,33 @@ class Walk:
     # -- the ops a step file may name ------------------------------------------------------
 
     def op(self, op: dict) -> dict:
-        """One op of a step, as the step file writes it, and what it found."""
+        """One op of a step, as the step file writes it, and what it found. An op saying
+        `"on": "phone"` (or every op of a step saying it) runs on that device of the walk's:
+        each op acts on `self.session`, which is that device's session while it runs."""
+        device, op = split_on(op, self.step_on)
         (name, value), = op.items()
         handler = getattr(self, f"op_{name}", None)
         if handler is None:
             raise Failed(f"the step names an op this walk has no way to do: {name!r}")
-        return handler(value) or {}
+        if device in (None, "") or (self.devices is not None and device == self.devices.first):
+            return handler(value) or {}
+        if self.devices is None:
+            raise Failed(f"the op names the device {device!r}, and the walk names no devices")
+        return self.on_device(device, lambda: handler(value) or {})
+
+    def on_device(self, device: str, run):
+        """`run()` with `device`'s session as the walk's: what it presses, reads and shoots is
+        that device's. The first device's session and appearance action are back after."""
+        own, own_appearance = self.session, self.appearance
+        self.appearances[self.devices.first] = own_appearance
+        self.session = self.devices.session(device)
+        self.appearance = self.appearances.get(device)
+        self.device = device
+        try:
+            return run()
+        finally:
+            self.appearances[device] = self.appearance
+            self.session, self.appearance, self.device = own, own_appearance, None
 
     def op_launch(self, value) -> dict:
         """Open the app, waiting for its window unless the value says not to."""
@@ -550,6 +1169,33 @@ class Walk:
             return {"invoked": invoked, "value": value_of(answer)}
         except Failed:
             return {"invoked": invoked}
+
+    def op_holds(self, value) -> dict:
+        """What the app says it keeps now, read back through its own reads: the
+        words named (`["Hello team"]`) must be in one of the reads the app
+        publishes, so what the person made is proved from the app's own state
+        and not only from what its window draws. An app reads its parts apart —
+        a tracker's issues beside its record — so every read it offers is
+        tried, and the one that held them is kept."""
+        wanted = [pick(word, self.variant) for word in value]
+        reads = [row for row in self.session.actions("")
+                 if row.get("app_id") == self.v["id"]
+                 and address(row) is not None and address(row)[1] == "read"]
+        if not reads:
+            raise Failed(f"{self.v['id']} publishes no read to ask")
+        tried: dict[str, str] = {}
+        for row in reads:
+            resource = address(row)[0]
+            try:
+                read = value_of(self.session.invoke_row(row))
+            except Failed as error:
+                tried[resource] = str(error)[:160]
+                continue
+            missing = held_in(read, wanted)
+            if not missing:
+                return {"holds": wanted, "read_at": resource}
+            tried[resource] = f"does not hold {missing}"
+        raise Failed(f"no read of {self.v['id']} holds {wanted}: {tried}")
 
     def op_notes(self, _value) -> dict:
         """How many notes the app holds now, read back through its own read;
@@ -741,6 +1387,758 @@ class Walk:
         """What is asking the person now: a file chooser, a sheet."""
         return {"questions": self.session.control({"op": "questions"})["answer"]["questions"]}
 
+    def op_must(self, value) -> dict:
+        """What a person must see now: every control the list names drawn on the
+        screen, each within the step's patience (`{"see": [...], "within": 10}`, or
+        the list alone). Each entry is a selector as `press` takes one, or a list
+        of selectors of which one is enough — the same thing, named differently
+        by the versions. One missing is the step's failure, named."""
+        wanted = value.get("see") if isinstance(value, dict) else value
+        deadline = float(value.get("within", 10)) if isinstance(value, dict) else 10.0
+        entries = [alternative(entry, self.variant) for entry in wanted]
+        entries = [entry for entry in entries if entry is not None]
+
+        def seen(entry) -> bool:
+            choices = entry if isinstance(entry, list) else [entry]
+            for selector in choices:
+                target = control(self.session, alternative(selector, self.variant) or "")
+                if target is not None and drawn(target):
+                    return True
+            return False
+
+        missing: list = []
+        end = time.monotonic() + deadline
+        while True:
+            missing = [entry for entry in entries if not seen(entry)]
+            if not missing or time.monotonic() > end:
+                break
+            time.sleep(0.05)
+        if missing:
+            raise Failed(f"not on screen: {json.dumps(missing, ensure_ascii=False)}")
+        return {"saw": entries}
+
+    def op_count(self, value) -> dict:
+        """How many controls the selector in `see` is drawn as, which must be
+        `is`: `{"see": "Strips", "is": 2}` — two rows of one name, a list that
+        holds the same style twice, a badge whose number of rows is the finding.
+        The count must hold within ten seconds (`within` sets another patience),
+        so a list still filling in is given its time."""
+        selector = pick(value["see"], self.variant)
+        wanted = int(value["is"])
+        deadline = float(value.get("within", 10))
+
+        def held() -> int:
+            return sum(1 for target in self.session.targets()
+                       if drawn(target) and matches(target, selector))
+
+        def differs() -> int | None:
+            found = held()
+            return None if found == wanted else found
+
+        left = differs()
+        end = time.monotonic() + deadline
+        while left is not None and time.monotonic() < end:
+            time.sleep(0.05)
+            left = differs()
+        if left is not None:
+            raise Failed(f"{selector!r} is drawn {left} time(s), not {wanted}")
+        return {"count": wanted, "of": selector}
+
+    def op_must_not(self, value) -> dict:
+        """What must be gone now: a sheet closed, a banner dismissed. Each
+        selector named must stop being drawn within the patience given."""
+        wanted = value.get("see") if isinstance(value, dict) else value
+        deadline = float(value.get("within", 10)) if isinstance(value, dict) else 10.0
+        entries = [e for e in (alternative(entry, self.variant) for entry in wanted) if e]
+
+        def still() -> list:
+            return [e for e in entries
+                    if (lambda t: t is not None and drawn(t))(control(self.session, e))]
+
+        end = time.monotonic() + deadline
+        while still() and time.monotonic() < end:
+            time.sleep(0.05)
+        left = still()
+        if left:
+            raise Failed(f"still on screen: {json.dumps(left, ensure_ascii=False)}")
+        return {"gone": entries}
+
+    def op_open(self, value) -> dict:
+        """Open another app of the session build by its directory name (`files`,
+        `chat`) as the workspace offers it, and wait for its window: a shell walk
+        needs windows to switch between."""
+        deadline = 120.0
+        if isinstance(value, dict):
+            value, deadline = value["app"], float(value.get("deadline", deadline))
+        ident = value if "." in value else real_apps.app_id(value)
+        began = time.monotonic()
+        self.session.launch(ident, deadline)
+        return {"opened": ident, "waited_ms": round((time.monotonic() - began) * 1000)}
+
+    def op_do(self, value) -> dict:
+        """Run an action by its address and fail the step when it is refused:
+        `[provider, resource, action, args?]`. For what the person does through
+        the shell's own verbs, which every version of the shell publishes."""
+        provider, resource, action = (pick(item, self.variant) for item in value[:3])
+        args = pick(value[3], self.variant) if len(value) > 3 else None
+        answer = self.session.invoke(provider, resource, action, args)
+        if isinstance(answer, dict) and ("Failed" in answer or "Refused" in answer):
+            raise Failed(f"{resource}#{action} answered {json.dumps(answer)[:500]}")
+        return {"did": f"{resource}#{action}"}
+
+    def op_act(self, value) -> dict:
+        """Run the action `resource#action` the desktop lists now, with `args`,
+        whichever provider lists it: `["shortcuts", "create", {...}]`, its
+        answer kept as the step found it. For a workspace's own actions, whose
+        provider id is the workspace's and not the same on the next run. A
+        refusal fails the step, as a person's own press that does nothing is
+        the finding.
+
+        `{"do": [...], "as": "provider"}` keeps what it answered under that
+        name, for a later step to name with `{"served": "provider.id"}`: a
+        provider's id, and a stand-in's address, are the run's own, never the
+        step file's."""
+        named = isinstance(value, dict)
+        parts = value["do"] if named else value
+        as_name = value.get("as") if named else None
+        resource, action = (pick(item, self.variant) for item in parts[:2])
+        args = self.resolve(pick(parts[2], self.variant) if len(parts) > 2 else None)
+        def find():
+            rows = self.session.actions("")
+            return row_for(rows, resource, action) or row_for(
+                rows, resource, action, kind=resource)
+
+        row = until_value(f"the action {resource}#{action}", find, 30)
+        answer = self.session.invoke_row(row, args)
+        if isinstance(answer, dict) and ("Failed" in answer or "Refused" in answer):
+            raise Failed(f"{resource}#{action} answered {json.dumps(answer)[:500]}")
+        try:
+            found = value_of(answer)
+        except Failed:
+            found = None
+        if as_name and found is not None:
+            self.served[as_name] = found
+        return {"acted": f"{resource}#{action}", "provider": row.get("provider"),
+                **({"value": found} if found is not None else {})}
+
+    def resolve(self, value):
+        """A value only the run knows: `{"served": "provider.id"}` is what the
+        step that ran `as` `provider` answered, by the path under it, so a step
+        can name an id or an address the desktop made up rather than one the
+        file wrote."""
+        return resolved(self.served, value)
+
+    def op_serve(self, value) -> dict:
+        """Start the stand-in service the capability under test speaks to, for a
+        machine that has neither a projector nor a model provider of its own:
+        `{"projector": true}` answers the display sheet on the wireless display
+        broker's control socket, under the runtime directory the walk gives the
+        session; `{"model-providers": true}` serves the loopback model providers
+        and answers their addresses, for the walk to configure the person's
+        provider with. It runs until this walk's session stops."""
+        if value.get("projector"):
+            socket = self.state / "projector" / "control.sock"
+            self.service("projector-stand-in", ["--socket", str(socket)], wait=lambda: socket.exists())
+            self.served["projector"] = str(socket)
+            return {"projector": str(socket)}
+        if value.get("model-providers"):
+            out = self.service("fake-model-providers", ["--listen", "127.0.0.1:0"], lines=4)
+            addresses = provider_addresses(out)
+            self.served.update(addresses)
+            return addresses
+        if value.get("pages"):
+            # A browser reaches this machine's loopback and refuses a file path:
+            # the tree's test pages, served where a page can be opened.
+            served = value["pages"]
+            folder = REPO / (served.get("dir") or "apps/browser/test-pages")
+            handler = functools.partial(PageServer, directory=str(folder))
+            self.pages = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            threading.Thread(target=self.pages.serve_forever, daemon=True).start()
+            address = f"http://127.0.0.1:{self.pages.server_port}"
+            if served.get("page"):
+                address = f"{address}/{served['page']}"
+            self.served["pages"] = address
+            return {"pages": address, "dir": str(folder)}
+        raise Failed(f"the step names a stand-in this walk does not know: {json.dumps(value)}")
+
+    def service(self, binary: str, args: list[str], wait=None, lines: int = 0) -> str:
+        """Start `binary` of the session build beside the session, with its own
+        log, and answer what it said on its first `lines` lines once it is up."""
+        path = BUILD / "bin" / binary
+        if not path.is_file():
+            raise Failed(f"the session build has no {binary} ({path})")
+        self.out.mkdir(parents=True, exist_ok=True)
+        log_path = self.out / f"{binary}-{self.variant}.log"
+        log = log_path.open("wb")
+        if not lines:
+            proc = subprocess.Popen([str(path), *args], stdout=log, stderr=subprocess.STDOUT,
+                                    start_new_session=True)
+            self.services.append((proc, log))
+            until_value(f"{binary} to be up (see {log_path})", wait or (lambda: True), 30)
+            return ""
+        proc = subprocess.Popen([str(path), *args], stdout=subprocess.PIPE, stderr=log,
+                                start_new_session=True)
+        self.services.append((proc, log))
+        # Read the pipe itself, never a buffered reader around it: the reader would take
+        # every line the program wrote into its own buffer, and a `select` on the pipe would
+        # then wait for lines already in hand.
+        fd = proc.stdout.fileno()
+        os.set_blocking(fd, False)
+        said: list[str] = []
+        written = b""
+        deadline = time.monotonic() + 20
+        while len(said) < lines and time.monotonic() < deadline:
+            try:
+                chunk = os.read(fd, 65536)
+            except BlockingIOError:
+                chunk = b""
+            if chunk:
+                written += chunk
+                said = [line for line in written.decode(errors="replace").splitlines() if line]
+            elif proc.poll() is not None:
+                break
+            else:
+                time.sleep(0.05)
+        said = said[:lines]
+        log.write((written.decode(errors="replace")).encode())
+        if len(said) < lines:
+            raise Failed(f"{binary} said {said} and no more (see {log_path})")
+        proc.stdout.close()
+        return "\n".join(said)
+
+    def stop_services(self) -> None:
+        """Stop the stand-ins this walk started: their sessions are the walk's."""
+        if self.pages is not None:
+            self.pages.shutdown()
+            self.pages.server_close()
+            self.pages = None
+        for proc, log in self.services:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            log.close()
+        self.services.clear()
+    def published_row(self, value: dict) -> dict | None:
+        """The first action the desktop lists that `value` names: its `action` (the operation),
+        and where given the `kind` of resource it acts on, the start of that resource's address
+        (`resource`), its application (`app`), words the catalogue finds it by (`about`) and the
+        label its resource reads exactly (`label`, the row a person sees: `trip-plan.txt`). A row
+        stands on an instance a person cannot name in advance (an entry, a transfer, a device),
+        so it is found by what it is, never by its id."""
+        for row in self.session.actions(value.get("about") or ""):
+            at = address(row)
+            if at is None or at[1] != value["action"]:
+                continue
+            action = row.get("action") or {}
+            kind = action.get("resource_kind") or (row.get("resource") or {}).get("kind") or ""
+            if value.get("kind") not in (None, kind):
+                continue
+            if value.get("app") not in (None, row.get("app_id")):
+                continue
+            if not at[0].startswith(value.get("resource") or ""):
+                continue
+            if value.get("label") not in (None, (row.get("resource") or {}).get("label")):
+                continue
+            return row
+        return None
+
+    def op_use(self, value) -> dict:
+        """Run the action `value` names by what it is (`published_row`), once the desktop lists
+        it, and fail the step when it is refused or never listed: `{"kind":
+        "files.nearby-transfer", "action": "accept-nearby", "args": {...}}`. In the args,
+        `{resource}` is the address of the resource the action stands on, `{id}` the part of
+        it after its kind (`nearby-transfer:7f3a` gives `7f3a`), `{choice:param}` the first
+        answer the action offers for its parameter `param` (a folder to save to), and `{name}` what an earlier
+        op kept. `"keep": {"name": "path"}` keeps what the answer reads at each path
+        (`at_path`), for a later op on any device; `"expect": {"path": value}` is what it must
+        read there, and a path kept or expected that the answer lacks fails the step."""
+        value = pick(value, self.variant)
+        row = until_value(f"{value.get('kind') or ''}#{value['action']} to be published",
+                          lambda: self.published_row(value), float(value.get("within", 30)))
+        resource = address(row)[0]
+        kept = {**self.kept, "resource": resource, "id": resource.split(":", 1)[-1],
+                **{f"choice:{name}": choice for name, choice in choices_of(row).items()}}
+        args = filled(pick(value.get("args"), self.variant), kept) if "args" in value else None
+        answer = self.session.invoke_row(row, args)
+        if isinstance(answer, dict) and ("Failed" in answer or "Refused" in answer):
+            raise Failed(f"{resource}#{value['action']} answered {json.dumps(answer)[:500]}")
+        found = {"did": f"{resource}#{value['action']}"}
+        try:
+            found["value"] = value_of(answer)
+        except Failed:
+            pass
+        for name, path in (value.get("keep") or {}).items():
+            at = at_path(found.get("value"), path)
+            if at is None:
+                raise Failed(f"the answer of #{value['action']} has nothing at {path!r}: "
+                             f"{json.dumps(found.get('value'))[:1500]}")
+            self.kept[name] = at
+        wrong = {path: at_path(found.get("value"), path)
+                 for path, wanted in (value.get("expect") or {}).items()
+                 if at_path(found.get("value"), path) != filled(wanted, self.kept)}
+        if wrong:
+            raise Failed(f"the answer of #{value['action']} reads {json.dumps(wrong)}, not "
+                         f"{json.dumps({k: value['expect'][k] for k in wrong})}")
+        return found
+
+    def op_published(self, value) -> dict:
+        """The desktop lists the action `value` names (`published_row`) within its patience
+        (`"within"`, ten seconds): what a person can reach from the palette or a row's menu
+        now, such as an incoming transfer's Save."""
+        value = pick(value, self.variant)
+        row = until_value(f"{value.get('kind') or ''}#{value['action']} to be published",
+                          lambda: self.published_row(value), float(value.get("within", 10)))
+        return {"published": f"{address(row)[0]}#{value['action']}",
+                "label": (row.get("action") or {}).get("action_label")}
+
+    def op_has_file(self, value) -> dict:
+        """The device holds a file named `name` whose bytes are `text`'s, anywhere in its own
+        state: where a file sent to it or synced to it landed. The first such file is kept as
+        evidence; one of that name with other bytes is the step's failure, named."""
+        name, wanted = value["name"], value["text"].encode()
+        root = self.session.state
+        seen: list[str] = []
+
+        def found() -> Path | None:
+            seen.clear()
+            for path in root.rglob(name):
+                if not path.is_file() or "nearby-transfers" in path.parts:
+                    continue
+                try:
+                    if path.read_bytes() == wanted:
+                        return path
+                except OSError:
+                    continue
+                seen.append(str(path.relative_to(root)))
+            return None
+
+        try:
+            path = until_value(f"{name} with its bytes on this device", found,
+                               float(value.get("within", 30)), 0.25)
+        except Failed:
+            raise Failed(f"no {name} with the bytes sent on this device"
+                         + (f"; with other bytes at {seen}" if seen else "")) from None
+        return {"has_file": str(path.relative_to(root))}
+
+    def op_push_edge(self, value) -> dict:
+        """Push the pointer past this device's screen edge toward the screen of another device
+        of the person's that the shared layout puts beside it, as a person moving their mouse
+        does: against the edge, a little past it, until the pointer goes on there
+        (`shared_input.driving` names that device). `{"within": s}` is the patience. Which
+        device and which edge are what this device's own state says, never assumed."""
+        patience = float(value.get("within", 20)) if isinstance(value, dict) else 20.0
+
+        def shared() -> dict:
+            return (self.session.state_dump() or {}).get("shared_input") or {}
+
+        def arranged():
+            shown = [d for d in shared().get("displays") or [] if d.get("online")]
+            here = next((d for d in shown if d.get("local")), None)
+            there = next((d for d in shown if not d.get("local")), None)
+            return (here, there) if here and there else None
+
+        here, there = until_value("this device's layout to place another device's screen "
+                                  "beside its own", arranged, patience)
+        x, y, w, h = here["rect"]
+        tx, ty, tw, th = there["rect"]
+        lx, ly, lw, lh = here["local_rect"]
+        middle = (lx + lw / 2, ly + lh / 2)
+
+        def edge(by: float) -> tuple[float, float]:
+            if tx >= x + w:
+                return lx + lw - 1 + by, middle[1]
+            if tx + tw <= x:
+                return lx - by, middle[1]
+            if ty >= y + h:
+                return middle[0], ly + lh - 1 + by
+            return middle[0], ly - by
+
+        def move(by: float) -> None:
+            px, py = edge(by)
+            self.session.control({"op": "pointer_move", "x": px, "y": py})
+
+        # The first push past the edge asks the other device for its input; once it lent it,
+        # pushes past the edge without coming back go on there (resting on the edge again
+        # starts the count over, as it keeps a pointer that only brushes the edge here).
+        device = there.get("device")
+
+        def lent():
+            if device in (shared().get("leases") or []):
+                return True
+            move(0.0)
+            move(10.0)
+            return None
+
+        def crossed():
+            move(10.0)
+            return shared().get("driving")
+
+        try:
+            until_value(f"{device} to lend this device its input", lent, patience, 0.5)
+            driving = until_value(f"the pointer to go on to {device}'s screen",
+                                  crossed, patience, 0.1)
+        except Failed as error:
+            said = {key: shared().get(key) for key in ("leases", "driving", "pointer",
+                                                        "pointer_shown")}
+            raise Failed(f"{error}; this device's shared input reads {json.dumps(said)}") \
+                from None
+        return {"driving": driving, "toward": there.get("device")}
+
+    def op_windows(self, value) -> dict:
+        """How many windows the desktop holds must be `value` (or at least
+        `{"at_least": n}`), within ten seconds."""
+        def count() -> int:
+            return len(self.session.windows())
+        if isinstance(value, dict):
+            wanted = int(value["at_least"])
+            until_value(f"at least {wanted} windows", lambda: count() >= wanted, 10)
+        else:
+            until_value(f"{value} windows", lambda: count() == int(value), 10)
+        return {"windows": count()}
+
+    def op_focused(self, value) -> dict:
+        """The window of `value` (an app's directory name or id) has the
+        keyboard: what a person sees as the window in front."""
+        ident = value if "." in value else real_apps.app_id(value)
+
+        def front():
+            return next((w for w in self.session.windows()
+                         if w.get("app_id") == ident and w.get("window") and w.get("active")),
+                        None)
+        until_value(f"the window of {ident} to have the keyboard", front, 10)
+        return {"focused": ident}
+
+    def search_hit(self, text: str) -> tuple[int, dict] | None:
+        """The open search's row whose title holds `text`, once the search has
+        stopped filling in, with its place in the list the person sees. The
+        shell's own offers to search the web or ask the assistant name any words
+        and find nothing, so they never count."""
+        answer = self.session.search_rows()
+        if answer.get("searching"):
+            return None
+        for index, row in enumerate(answer.get("rows") or []):
+            title = row.get("title") or ""
+            if text.lower() in title.lower() and not title.startswith(
+                    ("Search the web for", "Send to Assistant")):
+                return index, row
+        return None
+
+    def op_result(self, value) -> dict:
+        """The open search lists a row of `value`'s words, within ten seconds."""
+        text = pick(value, self.variant)
+        index, row = until_value(f"a search row of {text!r}", lambda: self.search_hit(text), 10, 0.02)
+        return {"row": index, "title": row.get("title")}
+
+    def op_choose_result(self, value) -> dict:
+        """Choose the open search's row of `value`'s words, as Enter on it does."""
+        text = pick(value, self.variant)
+        index, row = until_value(f"a search row of {text!r}", lambda: self.search_hit(text), 10, 0.02)
+        self.session.invoke(SHELL, SHELL_RESOURCE, "choose-search-row", {"row": index})
+        return {"chose": row.get("title"), "row": index}
+
+    def op_window_of(self, value) -> dict:
+        """A window of the app `value` (directory name or id) is on the desktop."""
+        ident = value if "." in value else real_apps.app_id(value)
+        until_value(f"a window of {ident}",
+                    lambda: any(w.get("app_id") == ident for w in self.session.windows()), 15)
+        return {"window_of": ident}
+
+    def op_close_app(self, value) -> dict:
+        """Close the window of the app `value`, by the tab it holds."""
+        ident = value if "." in value else real_apps.app_id(value)
+        window = next((w for w in self.session.windows() if w.get("app_id") == ident), None)
+        if window is None:
+            raise Failed(f"no window of {ident} to close")
+        self.session.invoke(SHELL, SHELL_RESOURCE, "close-tab", {"tab": str(window["tab"])})
+        until_value(f"the window of {ident} to close",
+                    lambda: all(w.get("app_id") != ident for w in self.session.windows()), 10)
+        return {"closed": ident}
+
+    def op_catalogue(self, value) -> dict:
+        """Every capability the desktop publishes now, kept in the step: each
+        action of the shell and of every app, by the app, the kind of resource it
+        acts on and its operation (`so.tilo.file-explorer files.folder#add-bookmark`),
+        with the words it reads in and the chord that reaches it. Instance ids are
+        left out, so the same capability keys the same on every run and every
+        device. `{"apps": [...]}` keeps only those applications'. The comparison
+        holds this list to main's: one that went with no place named for it in
+        app-walks/moved.json is a regression."""
+        only = set(value.get("apps") or []) if isinstance(value, dict) else set()
+        self.catalogued = {}
+        for row in self.session.actions(""):
+            action = row.get("action") or {}
+            address_of = action.get("address") or {}
+            app = row.get("app_id") or ""
+            if not address_of.get("action") or (only and app not in only):
+                continue
+            kind = action.get("resource_kind") or (row.get("resource") or {}).get("kind") or ""
+            key = f"{app} {kind}#{address_of['action']}"
+            self.catalogued[key] = {
+                "label": action.get("action_label"),
+                **({"shortcut": action["shortcut"]} if action.get("shortcut") else {}),
+                "params": sorted(p.get("name") for p in action.get("params") or []),
+            }
+        return {"capabilities": len(self.catalogued)}
+
+    def op_state(self, value) -> dict:
+        """What the desktop says it shows, as the session's own state reads it:
+        `{"chrome.overlays.overview": true, "notifications#len": 1}` — each dotted
+        path into `state_dump` (`#len` for how many a list holds) must read the
+        value given within ten seconds (`"within"` sets another patience). Both
+        shells publish the same state, so it names the overview being open, the
+        session locked, a banner held, never a control of one shell."""
+        value = pick(value, self.variant)
+        if value is None:
+            return {}
+        wanted = {k: v for k, v in value.items() if k != "within"}
+        deadline = float(value.get("within", 10))
+
+        def read(dump: dict, path: str):
+            return at_path(dump, path)
+
+        def differs() -> dict:
+            dump = self.session.state_dump()
+            return {k: read(dump, k) for k, v in wanted.items() if read(dump, k) != v}
+
+        end = time.monotonic() + deadline
+        left = differs()
+        while left and time.monotonic() < end:
+            time.sleep(0.05)
+            left = differs()
+        if left:
+            raise Failed(f"the desktop's state reads {json.dumps(left)}, "
+                         f"not {json.dumps({k: wanted[k] for k in left})}")
+        return {"state": wanted}
+
+    def op_restart(self, value) -> dict:
+        """End the session and sign in again on the same state, or (`"app"`) quit
+        only this walk's app and open it again: what a person meets after a
+        reboot or a crash. What they chose and made must still be there, which
+        the steps after it assert."""
+        began = time.monotonic()
+        if value == "app":
+            self.quit_app()
+            self.launch()
+        else:
+            self.appearance = None
+            self.session.restart()
+        return {"restarted": value, "took_ms": round((time.monotonic() - began) * 1000)}
+
+    def op_restart_app(self, value) -> dict:
+        """Quit the app `value` (a directory name or its id, `true` for this
+        walk's own app) and open it again through the desktop's launcher: the
+        cold start a person meets when an app stops and they open it again,
+        which must still show what they made. Closing its window ends it as a
+        person's quit does; an app still running without one is forced to end,
+        as a hung app is."""
+        ident = self.v["id"] if value is True else (
+            value if "." in value else real_apps.app_id(value))
+        began = time.monotonic()
+        window = next((w for w in self.session.windows() if w.get("app_id") == ident), None)
+        if window is not None:
+            self.session.invoke(SHELL, SHELL_RESOURCE, "close-tab",
+                                {"tab": str(window["tab"])})
+            until_value(f"the window of {ident} to close",
+                        lambda: all(w.get("app_id") != ident for w in self.session.windows()), 30)
+        # An app exits with its last window; one that stays is ended the way a
+        # person ends an app that will not.
+        try:
+            until_value(f"{ident} to end", lambda: not self.session.processes(ident), 15)
+            forced = False
+        except Failed:
+            forced = True
+            if window is not None:
+                self.session.invoke(SHELL, SHELL_RESOURCE, "force-quit-app",
+                                    {"tab": str(window["tab"])})
+                until_value(f"{ident} to end", lambda: not self.session.processes(ident), 30)
+        self.session.launch(ident, 120)
+        until_value(f"the window of {ident}",
+                    lambda: next((w for w in self.session.windows()
+                                  if w.get("app_id") == ident), None), 60)
+        return {"restarted": ident, "forced": forced,
+                "took_ms": round((time.monotonic() - began) * 1000)}
+
+    def op_window_frames(self, value) -> dict:
+        """How many frames the window of `value` (a directory name or id, `true`
+        for this walk's own app) has drawn, called twice in one step: the second
+        call waits for the window to draw again after the ops between them, which
+        is what a person sees when a choice reaches an open window without
+        reopening it. A window that does not draw again is the step's finding."""
+        ident = self.v["id"] if value is True else (
+            value if "." in value else real_apps.app_id(value))
+
+        def frames() -> int | None:
+            window = next((w for w in self.session.windows() if w.get("app_id") == ident), None)
+            return None if window is None else window.get("frames")
+
+        drawn = frames()
+        if drawn is None:
+            raise Failed(f"no window of {ident} to count the frames of")
+        before = self.frames_seen.get(ident)
+        if before is None:
+            self.frames_seen[ident] = drawn
+            return {"frames": drawn}
+        until_value(f"the window of {ident} to draw again",
+                    lambda: (lambda n: n if n is not None and n > before else None)(frames()),
+                    20, 0.05)
+        self.frames_seen[ident] = frames()
+        return {"frames": frames(), "drew_again": True}
+
+    def op_scroll(self, value) -> dict:
+        """Turn the wheel where the control `at` names, or the middle of the app's
+        window without one: `{"dy": -400}` turns the page down, as a wheel does,
+        and `{"dy": 400, "at": "Appearance"}` turns it back up over that row."""
+        dy = float(value["dy"])
+        at = value.get("at")
+        if at:
+            target = until_value(f"the control {at!r}", lambda: control(self.session, at))
+            x, y, w, h = target["rect"]
+            x, y = x + w / 2, y + h / 2
+        else:
+            window = self.window_of()
+            if window is None or window.get("rect") is None:
+                raise Failed(f"no window of {self.v['id']} to scroll in")
+            left, top, wide, high = window["rect"]
+            x, y = left + wide / 2, top + high / 2
+        self.session.control({"op": "scroll", "x": x, "y": y, "dy": dy})
+        return {"scrolled": dy, "at": at}
+
+    def op_local_mail_server(self, value) -> dict:
+        """Start the tree's stand-in mail server and stage it as the provider of
+        the address a mail account is added against (`lab@story.tilo.test`, its
+        `imap.` and `smtp.` servers on this machine): one made-up login and three
+        made-up messages, a certificate this machine trusts. `value` may name
+        the password (`{"password": ...}`); it is stopped when the walk ends. A
+        session already running reads the trust bundles it started with, so a
+        step that adds an account after this one restarts the session."""
+        if self.mail is None:
+            self.mail = LocalMailServer(self.out / "mail-stand-in")
+        return self.mail.stage()
+
+    def op_read(self, value) -> dict:
+        """Call a read action and hold what it answered to the choices a person
+        made: `{"app": "so.tilo.settings", "operation": "inspect-appearance",
+        "args": {...}, "is": {"theme": "dark"}}` finds the action the app
+        publishes, whatever resource it is on — a bound resource's id changes
+        every run — and requires each dotted path into the answer's value to
+        read the value given (`#len` for how many it lists). `contains` holds
+        the whole answer's words to a text instead, for a read of a document.
+        `"do": [provider, resource, action, args?]` calls an exact address.
+        `{"within": seconds}` asks again while the app catches up with typing
+        that commits a moment later. A read that is refused, or answers
+        something else, is the step's finding."""
+        within = float(value.get("within", 0)) if isinstance(value, dict) else 0.0
+        end = time.monotonic() + within
+
+        def call() -> tuple[str, object]:
+            if "app" in value:
+                app, operation = value["app"], value["operation"]
+                args = value.get("args")
+                row = app_action(self.session, app, operation)
+                if row is None and args:
+                    # Several rows of one operation (a pane's `open-pane`): the one
+                    # whose parameters take the arguments named.
+                    names = set(args)
+                    row = next((a for a in self.session.actions("")
+                                if a.get("app_id") == app and address(a)
+                                and address(a)[1] == operation
+                                and names <= {p.get("name") for p in
+                                              (a.get("action") or {}).get("params") or []}), None)
+                if row is None:
+                    raise Failed(f"{app} publishes no {operation!r}")
+                return f"{app} {operation}", value_of(self.session.invoke_row(row, args))
+            call_parts = value["do"]
+            provider, resource, action = (pick(item, self.variant) for item in call_parts[:3])
+            args = pick(call_parts[3], self.variant) if len(call_parts) > 3 else None
+            return (f"{resource}#{action}",
+                    value_of(self.session.invoke(provider, resource, action, args)))
+
+        def trouble(invoked: str, answer) -> str | None:
+            if "contains" in value:
+                text = pick(value["contains"], self.variant)
+                if text not in json.dumps(answer, ensure_ascii=False):
+                    return (f"{invoked} answered no {text!r}: "
+                            f"{json.dumps(answer, ensure_ascii=False)[:2000]}")
+            wanted = {path: pick(each, self.variant)
+                      for path, each in (value.get("is") or {}).items()}
+            wrong = {path: at_path(answer, path) for path, each in wanted.items()
+                     if at_path(answer, path) != each}
+            if wrong:
+                return (f"{invoked} answered {json.dumps(wrong)} for "
+                        f"{json.dumps({k: wanted[k] for k in wrong})}")
+            return None
+
+        while True:
+            invoked, answer = call()
+            problem = trouble(invoked, answer)
+            if problem is None or time.monotonic() >= end:
+                break
+            time.sleep(0.2)
+        if problem is not None:
+            raise Failed(problem)
+        return {"read": invoked, "is": {path: pick(each, self.variant)
+                                        for path, each in (value.get("is") or {}).items()},
+                "answered": json.dumps(answer, ensure_ascii=False)[:4000],
+                **({"contains": value["contains"]} if "contains" in value else {})}
+
+    def op_do_app(self, value) -> dict:
+        """Run an action the app publishes, found by the app and the operation
+        rather than by a resource id that changes every run:
+        `{"app": "so.tilo.settings", "operation": "open-pane", "args": {"pane":
+        "power"}}`. A refusal fails the step."""
+        app, operation = value["app"], value["operation"]
+        args = value.get("args")
+        names = set(args or ())
+        rows = [a for a in self.session.actions("")
+                if a.get("app_id") == app and address(a) and address(a)[1] == operation]
+        if names:
+            rows = [a for a in rows if names <= {p.get("name") for p in
+                                                 (a.get("action") or {}).get("params") or []}]
+        if not rows:
+            raise Failed(f"{app} publishes no {operation!r} taking {sorted(names)}")
+        answer = self.session.invoke_row(rows[0], args)
+        if isinstance(answer, dict) and ("Failed" in answer or "Refused" in answer):
+            raise Failed(f"{app} {operation} answered {json.dumps(answer)[:500]}")
+        return {"did": f"{app} {operation}", "args": args}
+
+    def op_press_when_any(self, value) -> dict:
+        """Press the first of `selectors` drawn within `within` seconds (ten by
+        default), and say which; none coming is not a failure: a question an app
+        asks only the first time it opens, which it then goes on without."""
+        offered = [s for s in map(lambda o: alternative(o, self.variant), value["selectors"]) if s]
+        deadline = float(value.get("within", 10))
+
+        def shown():
+            for selector in offered:
+                target = control(self.session, selector)
+                if target is not None and drawn(target):
+                    return target
+            return None
+
+        target = until_value(f"one of {offered!r}", shown, deadline)
+        x, y, w, h = target["rect"]
+        self.session.click_at(x + w / 2, y + h / 2)
+        return {"pressed": target.get("name")}
+
+    def op_wait_window(self, value) -> dict:
+        """Wait for the window of the app `value` (a directory name or id) to be
+        the shell's, within `within` seconds (a minute by default)."""
+        ident = value if isinstance(value, str) else value["app"]
+        ident = ident if "." in ident else real_apps.app_id(ident)
+        deadline = float(value.get("within", 60)) if isinstance(value, dict) else 60.0
+        until_value(f"the window of {ident}",
+                    lambda: next((w for w in self.session.windows()
+                                  if w.get("app_id") == ident), None), deadline)
+        return {"window": ident}
+
     def op_theme(self, value) -> dict:
         self.set_dark(bool(value))
         return {"theme": "dark" if value else "light"}
@@ -753,11 +2151,24 @@ class Walk:
         """Write the step's fixture file where a person's file chooser reaches
         it, and record its path: a Markdown file the app imports."""
         name, text = value["name"], value["text"]
-        folder = self.state / "home"
+        folder = self.session.state / "home"
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / name
         path.write_text(text)
         return {"file": str(path)}
+
+    def op_image(self, value) -> dict:
+        """Write a picture where a person's file chooser reaches it, and record
+        its path: `{"name": "beach.png"}` writes a 64-by-64 PNG in two colours
+        (the same picture the framework's own capture tests show), which an app
+        that shows photographs can import."""
+        name = pick(value["name"], self.variant) if isinstance(value["name"], dict) \
+            else value["name"]
+        folder = self.state / "home"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / name
+        path.write_bytes(FIXTURE_PICTURE_PNG)
+        return {"image": str(path)}
 
     def chooser_question(self) -> dict | None:
         """The file chooser asking the person now, if one is."""
@@ -853,23 +2264,43 @@ class Walk:
             # The same errand, reached differently: a menu here, a context menu
             # there. The step says what the person is doing; the version says how.
             ops = ops[self.variant]
+        self.catalogued = None
+        self.frames_seen = {}
+        self.step_on = step.get("on")
         try:
             for op in ops:
                 record["ops"].append({**op, "found": self.op(op)})
+            if self.catalogued is not None:
+                record["catalogue"] = self.catalogued
             if step.get("shot", True):
                 name = f"{index:02d}-{step['id']}"
                 record["shot"] = self.shot(name)
+                if self.devices is not None:
+                    # Each further device is shot too: what reached it is the step's point.
+                    record["device_shots"] = {
+                        device: self.on_device(device, lambda device=device: self.shot(
+                            f"{name}-{device}"))
+                        for device in self.devices.further()}
                 if dark:
                     record["shot_dark"] = self.theme_shot(name, True)
                     self.set_dark(False)
+            budget = step.get("budget_ms")
+            took = round((time.monotonic() - began) * 1000)
+            if budget is not None and took > budget:
+                # Speed is something a person notices: a step slower than its
+                # budget is not walked, whatever it ended up showing.
+                raise Failed(f"took {took} ms, over its budget of {budget} ms")
             if self.discover:
                 record["targets"] = [
                     {k: t[k] for k in ("name", "identity", "rect") if k in t}
                     for t in self.session.targets()]
             record["took_ms"] = round((time.monotonic() - began) * 1000)
+            record["controls"] = sorted({t["name"] for t in self.session.targets()
+                                         if t.get("name") and drawn(t)
+                                         and "/" not in t["name"] and "~" not in t["name"]})
         except Failed as error:
             record["failed"] = str(error)
-            record["took_ms"] = round((time.monotonic() - began) * 1000)
+            record["took_ms"] = record.get("took_ms") or round((time.monotonic() - began) * 1000)
             # What a failed step looks like is the finding: shoot it, and go on.
             # What the app offered instead is the finding too, so a step that
             # cannot be walked says what it was met with.
@@ -890,35 +2321,120 @@ class Walk:
     def walk(self) -> dict:
         spec = self.spec
         self.shots.mkdir(parents=True, exist_ok=True)
-        native = spec.get("native", "")
-        tapps = self.tapps()
         began = time.monotonic()
-        self.session.start(apps=native if self.variant == "rust" else "",
-                           fresh=True, out=self.out / "logs", tag=self.variant,
-                           tapps=tapps)
-        started = round((time.monotonic() - began) * 1000)
-        print(f"==> {self.variant}: session up in {started} ms", file=sys.stderr)
+        started = 0
+        if not self.shared:
+            tapps = self.tapps()
+            began = time.monotonic()
+            self.session.start(apps=apps_of(spec, self.variant),
+                               fresh=True, out=self.out / "logs", tag=self.variant,
+                               tapps=tapps, session_args=session_args_of(spec, self.variant),
+                               env={**session_env(self.state), **devices_env(spec)})
+            try:
+                self.devices = start_devices(spec, self.variant, self.session, self.state,
+                                             self.out, apps_of(spec, self.variant), tapps)
+            except BaseException:
+                self.session.stop()
+                raise
+            started = round((time.monotonic() - began) * 1000)
+            print(f"==> {self.variant}: session up in {started} ms", file=sys.stderr)
+        began = time.monotonic()
         try:
             for index, step in enumerate(spec["steps"], start=1):
                 self.step(index, step)
         finally:
-            found = {"variant": self.variant, "app": self.v["id"], "session_start_ms": started,
+            found = {"variant": self.variant, "app": self.v.get("id") or self.variant,
+                     "session_start_ms": started,
+                     "walk_ms": round((time.monotonic() - began) * 1000),
                      "steps": self.steps}
+            if self.devices is not None:
+                found["devices_ms"] = self.devices.took
+                if self.devices.trouble:
+                    found["devices_trouble"] = self.devices.trouble
             try:
                 if self.discover:
                     found["actions"] = [a for a in self.session.actions("")
-                                        if a.get("app_id") == self.v["id"] and address(a)]
+                                        if address(a) and self.v.get("id") in (None, a.get("app_id"))]
+                    found["state"] = self.session.state_dump()
                     found["windows"] = self.session.windows()
+                    if self.devices is not None:
+                        found["devices"] = {
+                            device: self.on_device(device, lambda: {
+                                "actions": [a for a in self.session.actions("") if address(a)],
+                                "state": self.session.state_dump(),
+                                "windows": self.session.windows()})
+                            for device in self.devices.further()}
             except Failed:
                 pass
-            self.session.stop()
+            if self.mail is not None:
+                # The provider a step staged is the run's, not the session's: it
+                # goes with the walk, and the machine's own files are put back.
+                self.mail.stop()
+                self.mail = None
+            if not self.shared:
+                if self.devices is not None:
+                    self.devices.stop()
+                self.session.stop()
+            self.stop_services()
         return found
+
+    def reset(self) -> None:
+        """Leave the desktop as a fresh sign-in shows it, for the family's next
+        walk: every window closed, nothing over the desktop, no notification
+        held, the light theme. Every device of the walk's is left so."""
+        if self.devices is not None:
+            for device in self.devices.further():
+                self.on_device(device, self.reset_one)
+        self.reset_one()
+
+    def reset_one(self) -> None:
+        for _ in range(2):
+            try:
+                self.session.key("Escape")
+            except Failed:
+                pass
+        # Whatever stands over the desktop is put away by the action that closes a
+        # surface, in either shell: a palette a key did not reach, a panel left open.
+        try:
+            overlays = (self.session.state_dump().get("chrome") or {}).get("overlays") or {}
+        except Failed:
+            overlays = {}
+        for part, shown in overlays.items():
+            if not shown:
+                continue
+            try:
+                if part == "search":
+                    # The launcher draws search and is the one to close it, not the
+                    # session: the shell's search with nothing asked toggles it, as
+                    # its key does.
+                    self.session.invoke(SHELL, SHELL_RESOURCE, "search", {})
+                else:
+                    self.session.invoke(SHELL, "desktop:overlays", "close-surface", {"part": part})
+            except Failed as error:
+                print(f"  reset: closing {part} was refused: {error}", file=sys.stderr)
+        try:
+            until_value("nothing to stand over the desktop", lambda: not any(
+                ((self.session.state_dump().get("chrome") or {}).get("overlays") or {}).values()), 10)
+        except Failed as error:
+            print(f"  reset: {error}", file=sys.stderr)
+        for window in self.session.windows():
+            try:
+                self.session.invoke(SHELL, SHELL_RESOURCE, "close-tab", {"tab": str(window["tab"])})
+            except Failed:
+                pass
+        try:
+            self.session.invoke(SHELL, "session:notifications", "clear")
+        except Failed:
+            pass
+        self.set_dark(False)
+        until_value("every window to close", lambda: not self.session.windows(), 20)
 
     def tapps(self) -> list[Path]:
         """The tilolang app's signed package, built against this state's runtime."""
-        if self.variant != "tl":
-            return []
-        return [build_tapp(self.spec["tl"]["package"], self.out / "build", self.state)]
+        packages = self.v.get("packages") or ([self.v["package"]] if self.v.get("package") else [])
+        packages += [p for p in self.spec.get("packages") or [] if p not in packages]
+        return [build_tapp(package, self.out / "build" / self.variant, self.state)
+                for package in packages]
 
 
 # --- building ---------------------------------------------------------------------------------
@@ -1037,8 +2553,211 @@ def load_walk(name: str | None, path: str | None = None) -> tuple[Path, dict]:
     return at, json.loads(at.read_text())
 
 
+# --- what a lane compares ---------------------------------------------------------------------
+
+BASELINES = WALKS / "baseline"
+# A step is slower in a way a person notices when it takes twice as long and a
+# second more: below that, a shared build node's load moves it as much.
+SLOWER_FACTOR = 2.0
+SLOWER_MARGIN_MS = 1000
+
+
+def summary(report: dict) -> dict:
+    """What a walk found, as the baseline keeps it: per version, per step,
+    whether it was walked, how long it took, and the controls drawn after it.
+    No snapshot and no absolute path: the shots stay in the run's outputs."""
+    return {
+        "walk": report["walk"],
+        "live": report.get("live"),
+        "commit": report.get("commit"),
+        "versions": {
+            variant: {
+                "session_start_ms": found.get("session_start_ms"),
+                "walk_ms": found.get("walk_ms"),
+                "steps": {
+                    step["id"]: {
+                        "walked": "failed" not in step,
+                        "took_ms": step.get("took_ms"),
+                        **({"failed": step["failed"]} if "failed" in step else {}),
+                        **({"controls": step["controls"]} if "controls" in step else {}),
+                        **({"catalogue": step["catalogue"]} if "catalogue" in step else {}),
+                    }
+                    for step in found["steps"]
+                },
+            }
+            for variant, found in report["variants"].items()
+        },
+    }
+
+
+MOVED = WALKS / "moved.json"
+
+
+def moved() -> dict:
+    """Where each capability that left its place lives now: `{"<app> <kind>#<op>":
+    {"to": "<app> <kind>#<op>" | "<what does it now>", "test": "<walk/step or test>"}}`,
+    written by the change that moves or deletes it (core.md, "The rule for every
+    piece")."""
+    return json.loads(MOVED.read_text()) if MOVED.is_file() else {}
+
+
+def compare(now: dict, before: dict) -> dict:
+    """What a person would miss in `now` that `before` had, both summaries.
+
+    Each version walked now is held to the same version before; a version that
+    did not exist before (the tilolang shell, the port that replaced a Rust app)
+    is held to what a person got then — the baseline's live version. A step
+    walked before and not now is a regression, and so is one that became
+    noticeably slower. Controls drawn before and gone now are listed beside
+    them, for the person reading the shots; across two versions they are named
+    differently, so they are listed only between runs of the same version."""
+    regressions: list[dict] = []
+    gone: list[dict] = []
+    elsewhere = moved()
+    held: dict = {}
+    pairs = []
+    for variant in now["versions"]:
+        against = variant if variant in before["versions"] else before.get("live")
+        if against in before["versions"]:
+            pairs.append((variant, against))
+    # The version a person got is gone (the Rust shell or app deleted): what is
+    # live now answers for it too, or what it gave would leave unheard.
+    was_live = before.get("live")
+    if was_live in before["versions"] and was_live not in now["versions"] and now["versions"]:
+        heir = now.get("live") if now.get("live") in now["versions"] else sorted(now["versions"])[0]
+        if (heir, was_live) not in pairs:
+            pairs.append((heir, was_live))
+    for variant, against in pairs:
+        found = now["versions"][variant]
+        held.setdefault(variant, against)
+        base = before["versions"][against]["steps"]
+        for step_id, was in base.items():
+            if not was.get("walked"):
+                continue
+            step = found["steps"].get(step_id)
+            where = {"version": variant, "against": against, "step": step_id}
+            if step is None:
+                regressions.append({**where, "why": "the walk no longer has this step"})
+                continue
+            if not step.get("walked"):
+                regressions.append({**where, "why": f"walked before, now: {step.get('failed')}"})
+                continue
+            took, took_before = step.get("took_ms") or 0, was.get("took_ms") or 0
+            if took > max(took_before * SLOWER_FACTOR, took_before + SLOWER_MARGIN_MS):
+                regressions.append({**where, "why": f"slower: {took} ms, was {took_before} ms"})
+            if "catalogue" in was:
+                have = set(step.get("catalogue") or {})
+                for key in sorted(set(was["catalogue"]) - have):
+                    place = elsewhere.get(key)
+                    if place is None or (place.get("to") in was["catalogue"] and place["to"] not in have):
+                        regressions.append({**where, "why": f"capability gone: {key} "
+                                            f"({was['catalogue'][key].get('label')}), and "
+                                            "app-walks/moved.json names no place for it"})
+            if against == variant:
+                missing = sorted(set(was.get("controls") or []) - set(step.get("controls") or []))
+                if missing:
+                    gone.append({**where, "controls": missing})
+    fixed = [{"version": v, "step": sid}
+             for v, against in held.items()
+             for sid, step in now["versions"][v]["steps"].items()
+             if step.get("walked")
+             and not before["versions"][against]["steps"].get(sid, {}).get("walked", False)]
+    return {"walk": now["walk"], "held_to": held, "baseline_commit": before.get("commit"),
+            "regressions": regressions, "controls_gone": gone, "now_walked": fixed}
+
+
+def write_comparison(comparison: dict, out: Path) -> Path:
+    lines = [f"# {comparison['walk']}: against the baseline of {comparison.get('baseline_commit')}",
+             ""]
+    for variant, against in comparison["held_to"].items():
+        lines.append(f"- **{variant}** held to the baseline's **{against}**")
+    lines += ["", f"## Regressions ({len(comparison['regressions'])})", ""]
+    lines += [f"- {r['version']} `{r['step']}`: {r['why']}" for r in comparison["regressions"]] \
+        or ["None."]
+    lines += ["", "## Controls drawn before and not now (same version; read the shots)", ""]
+    lines += [f"- {g['version']} `{g['step']}`: {', '.join(g['controls'])}"
+              for g in comparison["controls_gone"]] or ["None."]
+    lines += ["", "## Walked now and not before", ""]
+    lines += [f"- {f['version']} `{f['step']}`" for f in comparison["now_walked"]] or ["None."]
+    (out / "compare.md").write_text("\n".join(lines) + "\n")
+    return out / "compare.md"
+
+
+def write_side_by_side(now_dir: Path, base_dir: Path | None, out: Path) -> Path:
+    """One page for a lane: each step with the baseline's shots (the version a
+    person got on main) beside this tree's, per version, and the comparison the
+    check made. Shots are linked where the outputs were brought back to."""
+    now = json.loads((now_dir / "walk.json").read_text())
+    base = json.loads((base_dir / "walk.json").read_text()) if base_dir else None
+
+    def shots_of(report: dict, root: Path, variant: str) -> dict:
+        found = {}
+        for step in report["variants"].get(variant, {}).get("steps", []):
+            cells = []
+            for key in ("shot", "shot_dark"):
+                if step.get(key):
+                    # The run's own path names where it was written on its node:
+                    # the same file under the folder its outputs came back to.
+                    rel = Path(step[key]).parts
+                    at = rel[rel.index("shots"):] if "shots" in rel else rel[-1:]
+                    cells.append(f"![]({Path(os.path.relpath(root, out), *at)})")
+            mark = "" if "failed" not in step else f" **not walked:** {step['failed']}"
+            found[step["id"]] = " ".join(cells) + mark
+        return found
+
+    variants = list(now["variants"])
+    base_live = (base or {}).get("live")
+    columns = ([f"main ({base_live})"] if base else []) + [f"now ({v})" for v in variants]
+    lines = [f"# {now['walk']}: main beside this tree", ""]
+    compare_md = now_dir / "compare.md"
+    if compare_md.is_file():
+        lines += [compare_md.read_text().replace("# ", "## ", 1), ""]
+    lines += ["| Step | " + " | ".join(columns) + " |", "|---|" + "---|" * len(columns)]
+    base_cells = shots_of(base, base_dir, base_live) if base else {}
+    now_cells = {v: shots_of(now, now_dir, v) for v in variants}
+    for step in now["steps"]:
+        row = [base_cells.get(step["id"], "—")] if base else []
+        row += [now_cells[v].get(step["id"], "—") for v in variants]
+        lines.append(f"| **{step['id']}**: {step['said']} | " + " | ".join(row) + " |")
+    (out / "index.md").write_text("\n".join(lines) + "\n")
+    return out / "index.md"
+
+
+def commit_of_tree() -> str | None:
+    """The commit the walked tree is at, where it is a git checkout."""
+    try:
+        return run(["git", "-C", str(REPO), "rev-parse", "HEAD"]).strip() or None
+    except Exception:
+        return None
+
+
+def family_of(name: str) -> list[tuple[Path, dict]]:
+    """The walks of the family `name`, in the order they run: the files whose
+    `family` names it, by their `order` (a walk that locks the screen runs last)
+    and then by name. Empty when no walk names that family."""
+    found = []
+    for path in sorted(WALKS.glob("*.json")):
+        if path == MOVED:
+            continue
+        spec = json.loads(path.read_text())
+        if spec.get("family") == name:
+            found.append((spec.get("order", 50), path.stem, path, spec))
+    return [(path, spec) for _order, _name, path, spec in sorted(found, key=lambda f: f[:2])]
+
+
+def checks() -> list[str]:
+    """What t runs, one check each: every family, and every walk in none."""
+    names = set()
+    for path in WALKS.glob("*.json"):
+        if path == MOVED:
+            continue
+        spec = json.loads(path.read_text())
+        names.add(spec.get("family") or path.stem)
+    return sorted(names)
+
+
 def walks() -> list[str]:
-    return sorted(path.stem for path in WALKS.glob("*.json"))
+    return sorted(path.stem for path in WALKS.glob("*.json") if path != MOVED)
 
 
 def main() -> int:
@@ -1056,7 +2775,22 @@ def main() -> int:
     parser.add_argument("--keep", action="store_true", help="leave the session running")
     parser.add_argument("--discover", action="store_true",
                         help="keep every step's controls in walk.json, while writing a walk")
+    parser.add_argument("--compare", nargs="?", const="", metavar="BASELINE",
+                        help="hold the walk to a baseline (default: app-walks/baseline/WALK.json)"
+                             " and exit 1 on a regression")
+    parser.add_argument("--write-baseline", action="store_true",
+                        help="write this run's summary as app-walks/baseline/WALK.json")
+    parser.add_argument("--side-by-side", type=Path, metavar="NOW",
+                        help="write OUT/index.md from a run's outputs (scripts/headless-examples/walk.sh)")
+    parser.add_argument("--baseline-dir", type=Path,
+                        help="with --side-by-side: the baseline run's outputs")
     options = parser.parse_args()
+    if options.side_by_side:
+        out = (options.out or Path.cwd()).resolve()
+        print(write_side_by_side(options.side_by_side.resolve(),
+                                 options.baseline_dir.resolve() if options.baseline_dir else None,
+                                 out))
+        return 0
     if options.list:
         print("\n".join(walks()))
         return 0
@@ -1064,37 +2798,121 @@ def main() -> int:
         parser.error("name a walk (--list shows them)")
 
     try:
-        path, spec = load_walk(options.app, options.file)
-        app = options.app or path.stem
-        out = (options.out or HERE.parents[1] / "target" / "app-walk" / app).resolve()
+        name = options.app
+        family = [] if options.file else family_of(name)
+        if family:
+            walked = family
+        else:
+            path, spec = load_walk(options.app, options.file)
+            name = name or path.stem
+            walked = [(path, spec)]
+        out = (options.out or HERE.parents[1] / "target" / "app-walk" / name).resolve()
         out.mkdir(parents=True, exist_ok=True)
-        if options.build and spec.get("native"):
-            real_apps.build(apps=spec["native"])
-        # The versions this walk's step file names: a native app that was deleted in the change
+        if options.build:
+            real_apps.build(apps=" ".join(sorted({a for _p, spec in walked for v in VARIANTS
+                                                  if v in spec for a in apps_of(spec, v).split()})))
+        # Each walk's versions still in the tree: a native app that was deleted in the change
         # its tilolang version took over leaves only its `tl` entry, and is walked alone.
-        named = [variant for variant in VARIANTS if variant in spec]
-        if not named:
-            raise Failed(f"the walk names no version: {path}")
-        if options.only is not None and options.only not in named:
-            raise Failed(f"the walk names no {options.only} version: {path}")
-        variants = [options.only] if options.only else named
-        report = {"walk": app, "file": str(path), "variants": {},
-                  "steps": [{"id": s["id"], "said": s["said"]} for s in spec["steps"]]}
-        for variant in variants:
-            print(f"==> {app}: walking the {variant} version", file=sys.stderr)
-            # Each version walks on a session of its own: one desktop's notes are
-            # its own, and the two versions must not meet in a search or a window.
+        named = {path.stem: [v for v in VARIANTS if v in spec and present(spec, v)
+                             and options.only in (None, v)]
+                 for path, spec in walked}
+        for path, spec in walked:
+            if not [v for v in VARIANTS if v in spec and present(spec, v)]:
+                raise Failed(f"the walk names no version still in the tree: {path}")
+        reports = {path.stem: {
+            "walk": path.stem, "file": str(path), "variants": {},
+            "live": live_of(spec, [v for v in VARIANTS if v in spec and present(spec, v)]),
+            "commit": commit_of_tree(),
+            "steps": [{"id": st["id"], "said": st["said"]} for st in spec["steps"]]}
+            for path, spec in walked}
+        out_of = {path.stem: (out / path.stem if family else out) for path, _spec in walked}
+        for variant in VARIANTS:
+            mine = [(path, spec) for path, spec in walked if variant in named[path.stem]]
+            if not mine:
+                continue
+            # Each version walks on a session of its own: one desktop's notes are its own,
+            # and the two versions must not meet in a search or a window. A family's walks
+            # share that session: it starts once, and each walk begins where a reset left it.
             state = ((options.state or out) / f"state-{variant}").resolve()
-            # The session's apps, and the runtime a tilolang package is built against.
-            prepare_state(state, spec.get("native", ""), build=False)
-            walk = Walk(spec, variant, out, state, discover=options.discover)
-            report["variants"][variant] = walk.walk()
-        (out / "walk.json").write_text(json.dumps(report, indent=1))
-        report_path = write_report(report, out) if len(report["variants"]) > 1 else None
-        print(json.dumps({"walk": str(out / "walk.json"),
-                          "report": str(report_path) if report_path else None,
-                          "shots": str(out / "shots")}))
-        return 0
+            apps = " ".join(sorted({a for _p, spec in mine for a in apps_of(spec, variant).split()}))
+            prepare_state(state, apps, build=False)
+            first = mine[0][1]
+            session = None
+            devices = None
+            started = 0
+            if family:
+                packages = []
+                for _p, spec in mine:
+                    v = spec[variant]
+                    for package in (v.get("packages") or ([v["package"]] if v.get("package") else [])) \
+                            + list(spec.get("packages") or []):
+                        if package not in packages:
+                            packages.append(package)
+                tapps = [build_tapp(package, out / "build" / variant, state) for package in packages]
+                session = Session(state)
+                began = time.monotonic()
+                session.start(apps=apps, fresh=True, out=out / "logs", tag=variant, tapps=tapps,
+                              session_args=session_args_of(first, variant),
+                              env={**session_env(state), **devices_env(first)})
+                try:
+                    devices = start_devices(first, variant, session, state, out, apps, tapps)
+                except BaseException:
+                    session.stop()
+                    raise
+                started = round((time.monotonic() - began) * 1000)
+                print(f"==> {name}: the {variant} session up in {started} ms", file=sys.stderr)
+            try:
+                for index, (path, spec) in enumerate(mine):
+                    print(f"==> {path.stem}: walking the {variant} version", file=sys.stderr)
+                    walk = Walk(spec, variant, out_of[path.stem], state,
+                                discover=options.discover, session=session, devices=devices)
+                    found = walk.walk()
+                    if family:
+                        found["session_start_ms"] = started
+                    reports[path.stem]["variants"][variant] = found
+                    print(f"==> {path.stem} ({variant}): {found['walk_ms']} ms", file=sys.stderr)
+                    if session is not None and index + 1 < len(mine):
+                        try:
+                            walk.reset()
+                        except Failed as error:
+                            print(f"  reset after {path.stem} fell short: {error}", file=sys.stderr)
+            finally:
+                if devices is not None:
+                    devices.stop()
+                if session is not None:
+                    session.stop()
+        verdict = 0
+        printed = []
+        for walk_name, report in reports.items():
+            where = out_of[walk_name]
+            where.mkdir(parents=True, exist_ok=True)
+            (where / "walk.json").write_text(json.dumps(report, indent=1))
+            found = summary(report)
+            (where / "summary.json").write_text(json.dumps(found, indent=1) + "\n")
+            report_path = write_report(report, where)
+            if options.write_baseline:
+                BASELINES.mkdir(exist_ok=True)
+                (BASELINES / f"{walk_name}.json").write_text(json.dumps(found, indent=1) + "\n")
+            comparison_path = None
+            if options.compare is not None:
+                at = Path(options.compare) if options.compare else BASELINES / f"{walk_name}.json"
+                if options.compare and not at.is_file():
+                    raise Failed(f"no baseline at {at}")
+                if at.is_file():
+                    comparison = compare(found, json.loads(at.read_text()))
+                    (where / "compare.json").write_text(json.dumps(comparison, indent=1) + "\n")
+                    comparison_path = write_comparison(comparison, where)
+                    for regression in comparison["regressions"]:
+                        print(f"REGRESSION {walk_name} {regression['version']} {regression['step']}: "
+                              f"{regression['why']}", file=sys.stderr)
+                    verdict = verdict or (1 if comparison["regressions"] else 0)
+            times = {v: f.get("walk_ms") for v, f in report["variants"].items()}
+            print(f"==> {walk_name}: walked in {times} ms", file=sys.stderr)
+            printed.append({"walk": str(where / "walk.json"), "report": str(report_path),
+                            "compare": str(comparison_path) if comparison_path else None,
+                            "walk_ms": times})
+        print(json.dumps(printed if family else printed[0]))
+        return verdict
     except Failed as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1

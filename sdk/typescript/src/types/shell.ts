@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.shell@73f3b3a284de9c04";
+export const SURFACE = "so.tilo.shell@1b100649154323c1";
 
 /** One part a person can put on the top bar, in their order. The case's icon is the glyph the settings and the drag ghost show for it. One of "menu", "workspace", "app_menu", "strip", "tasks", "clock", "people", "status", "power", "agent", "spacer". */
 export type BarPartKind = "menu" | "workspace" | "app_menu" | "strip" | "tasks" | "clock" | "people" | "status" | "power" | "agent" | "spacer";
@@ -766,6 +766,10 @@ export interface TiloShell extends tilo.Resource {
   open_first(args: {
     query: string;
   }): Promise<void>;
+  /** Turn the VPN on through its first profile, or off through the one connected: the tile's one press, whichever way it flips. */
+  toggle_vpn(args: {
+    v: unknown;
+  }): Promise<void>;
   /** A shell of one note in the style named, with that place in front, and the style's own settings open over it: what a person sees who opens them from the bar's style menu. */
   a_style_settings(args: {
     style: string;
@@ -797,7 +801,7 @@ export interface TiloShell extends tilo.Resource {
 
 /** The actions `TiloShell` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TILOSHELL_ACTIONS = ["size_place", "size_placeMany", "drew_place", "place_dropped", "place_droppedMany", "open_first", "a_style_settings", "query_show", "query_showMany", "query_retry", "query_retryMany", "detach_place", "show_place", "show_placeMany"] as const;
+export const TILOSHELL_ACTIONS = ["size_place", "size_placeMany", "drew_place", "place_dropped", "place_droppedMany", "open_first", "toggle_vpn", "a_style_settings", "query_show", "query_showMany", "query_retry", "query_retryMany", "detach_place", "show_place", "show_placeMany"] as const;
 
 /** The `tl.so.tilo.shell` kind at `path`. */
 export function tiloShell(ws: tilo.Workspace, path: string): TiloShell {

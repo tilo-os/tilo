@@ -533,6 +533,7 @@ decorator_trait! {
         fn ime_edit_fingerprint(key: &[u8; 32]) -> Option<[u8; 32]>;
         fn ime_content() -> Option<crate::ime::InputContent>;
         fn ime_multiline() -> bool;
+        fn ime_field() -> Option<crate::ime::ImeWindowState>;
         fn presented() -> bool;
         fn arrives_from() -> crate::arriving::Source;
         fn arrival_progress() -> Option<crate::arriving::Progress>;

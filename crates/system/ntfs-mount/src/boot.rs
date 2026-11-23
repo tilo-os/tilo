@@ -40,12 +40,13 @@ impl BootDisks {
     }
 
     pub fn save(&self, path: &Path) -> io::Result<()> {
-        if let Some(dir) = path.parent() {
+        if let Some(dir) = path.parent()
+            && !dir.as_os_str().is_empty()
+        {
             fs::create_dir_all(dir)?;
         }
-        let staged = path.with_extension("new");
-        fs::write(&staged, serde_json::to_vec(self).map_err(io::Error::other)?)?;
-        fs::rename(staged, path)
+        let bytes = serde_json::to_vec(self).map_err(io::Error::other)?;
+        tilo_files::native::atomic::write_regenerable(path, &bytes)
     }
 
     pub fn contains(&self, disk: &str, seq: Option<u64>) -> bool {

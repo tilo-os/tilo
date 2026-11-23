@@ -23,8 +23,8 @@ use rustypipe::model::richtext::ToPlaintext;
 use rustypipe::model::{ChannelItem, PlaylistItem, VideoItem, YouTubeItem};
 
 use crate::service::{
-    ChannelItem as SaidChannel, ChannelPage, PlaylistItem as SaidPlaylist, SearchPage,
-    ServiceError, TrendingPage, VideoItem as SaidVideo,
+    ChannelItem as SaidChannel, ChannelPage, PlaylistItem as SaidPlaylist, PlaylistPage,
+    SearchPage, ServiceError, TrendingPage, VideoItem as SaidVideo,
 };
 
 /// The one rustypipe client of the process, with the runtime its queries wait on.
@@ -304,6 +304,35 @@ pub fn channel(client: &LiveClient, key: &str) -> Result<ChannelPage, ServiceErr
             banner: client.held_picture(&best_thumb(&found.banner)),
             description: found.description.clone(),
             verified: !matches!(found.verification, rustypipe::model::Verification::None),
+        },
+        videos,
+    })
+}
+
+/// A playlist's page, and the videos it holds in the order its maker put them.
+pub fn playlist(client: &LiveClient, key: &str) -> Result<PlaylistPage, ServiceError> {
+    let q = client.query();
+    let found = client.block(tilo_innertube::playlist(&q, key))?;
+    let videos = found
+        .videos
+        .items
+        .into_iter()
+        .map(|v| said_video(v, client))
+        .collect();
+    Ok(PlaylistPage {
+        playlist: SaidPlaylist {
+            thumbnail: client.held_picture(&best_thumb(&found.thumbnail)),
+            key: found.id,
+            title: found.name,
+            channel_key: found
+                .channel
+                .as_ref()
+                .map_or_else(String::new, |c| c.id.clone()),
+            channel_name: found
+                .channel
+                .as_ref()
+                .map_or_else(String::new, |c| c.name.clone()),
+            video_count: found.video_count.cast_signed(),
         },
         videos,
     })

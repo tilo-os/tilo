@@ -37,7 +37,7 @@ __all__ = [
     "Task",
     "TaskData",
     "Upload",
-    "PersonAccount",
+    "ListedAccount",
     "Endpoint",
     "Person",
     "Projected",
@@ -192,7 +192,7 @@ class Upload(TypedDict):
     event: str
     calendar: str
 
-class PersonAccount(TypedDict):
+class ListedAccount(TypedDict):
     type_id: str
     display_name: str
     config: Any
@@ -323,7 +323,7 @@ ForgetEndpointArgs = TypedDict("ForgetEndpointArgs", {
 
 class Calendar(Resource):
     """Calendar — `calendar.calendar`."""
-    __surface__ = "so.tilo.calendar@3f27f7e33fab1547"
+    __surface__ = "so.tilo.calendar@c920d7ea26877f48"
     projects: list[Entry[Project]]
     events: list[Entry[Event]]
     tasks: list[Entry[Task]]
@@ -483,8 +483,8 @@ class Calendar(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.calendar@3f27f7e33fab1547"
-    accounts: list[Entry[PersonAccount]]
+    __surface__ = "so.tilo.calendar@c920d7ea26877f48"
+    accounts: list[Entry[ListedAccount]]
 
     def publish_browser_identity(self,
         *,
@@ -530,7 +530,7 @@ class Accounts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.calendar@3f27f7e33fab1547"
+    __surface__ = "so.tilo.calendar@c920d7ea26877f48"
     people: list[Entry[Person]]
 
     def project_contact(self,

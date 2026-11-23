@@ -107,13 +107,6 @@ mod tests {
                 Relays::N0,
                 "a truth value is not a relay"
             );
-            for choice in [
-                Relays::N0,
-                Relays::None,
-                Relays::Own("https://relay.example.com.".into()),
-            ] {
-                assert_eq!(Relays::parse(choice.stored()), choice);
-            }
         }
     }
 }

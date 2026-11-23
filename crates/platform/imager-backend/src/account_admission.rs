@@ -29,12 +29,7 @@ pub const RECEIVING_DEPENDENCIES: &[&str] = &[
     "/usr/libexec/tilo-installer-source-fixture/source_sessions.py",
 ];
 
-fn hex_digest(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
+use crate::record::is_hex_sha256 as hex_digest;
 
 fn receiving_dependencies<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
 where
@@ -210,12 +205,7 @@ impl ConsumerCapability {
     /// # Errors
     /// Rejects unknown protocols, malformed hashes and noncanonical runtime paths.
     pub fn validate(&self) -> io::Result<()> {
-        let hex = |value: &str| {
-            value.len() == 64
-                && value
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        };
+        let hex = crate::record::is_hex_sha256;
         if self.schema != 1
             || self.protected_grant_protocol != 1
             || !hex(&self.credential_helper_sha256)

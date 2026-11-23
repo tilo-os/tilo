@@ -55,13 +55,9 @@ impl GuestNetworkBinding {
     /// # Errors
     /// The binding could not be written.
     pub fn persist(&self, dir: &std::path::Path) -> io::Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
         let path = dir.join(launcher::egress_proxy::APPLIANCE_NETWORK);
-        let beside = path.with_extension("new");
         let bytes = serde_json::to_vec(self).map_err(io::Error::other)?;
-        std::fs::write(&beside, bytes)?;
-        std::fs::set_permissions(&beside, std::fs::Permissions::from_mode(0o600))?;
-        std::fs::rename(&beside, &path)
+        tilo_files::native::atomic::write_with_mode(&path, &bytes, 0o600)
     }
 
     /// The binding kept in the kept launch's directory `dir`, when one is.
@@ -521,6 +517,76 @@ mod tests {
         drop(proxy);
         GuestNetworkBinding::forget(directory.path());
         assert!(GuestNetworkBinding::read(directory.path()).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn persist_creates_private_stage_under_zero_umask_and_keeps_old_binding_on_failed_replace() {
+        tilo_test_env::in_own_process(
+            module_path!(),
+            "persist_creates_private_stage_under_zero_umask_and_keeps_old_binding_on_failed_replace",
+            || {
+                use std::os::unix::fs::PermissionsExt as _;
+                use tilo_files::native::atomic::test_support::{
+                    Checkpoint, with_failure, with_observer,
+                };
+                use tilo_test_env::file_mode::{on_a_thread_without_chmod, with_zero_umask};
+
+                with_zero_umask(|| {
+                    let dir = tempfile::tempdir().unwrap();
+                    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
+                        .unwrap();
+                    let path = dir.path().join(launcher::egress_proxy::APPLIANCE_NETWORK);
+                    let first = GuestNetworkBinding {
+                        endpoint: "127.0.0.1:1234".parse().unwrap(),
+                        token: "a".repeat(64),
+                    };
+                    let second = GuestNetworkBinding {
+                        endpoint: "127.0.0.1:5678".parse().unwrap(),
+                        token: "b".repeat(64),
+                    };
+
+                    // With umask 0 and chmod/fchmod neutralized, neither the writer nor the
+                    // atomic backend's post-open fchmod can narrow the inode: the stage can
+                    // only be 0600 if openat created it with 0600.
+                    let observed = Arc::new(Mutex::new(None));
+                    let seen = Arc::clone(&observed);
+                    let existed_at_stage = Arc::new(AtomicBool::new(false));
+                    let flag = Arc::clone(&existed_at_stage);
+                    let target = path.clone();
+                    on_a_thread_without_chmod(|| {
+                        with_observer(
+                            move |event| {
+                                if event.checkpoint == Checkpoint::StageCreated {
+                                    let mode =
+                                        event.stage.as_ref().unwrap().metadata.permissions().mode()
+                                            & 0o777;
+                                    *seen.lock().unwrap() = Some(mode);
+                                    flag.store(target.exists(), Ordering::SeqCst);
+                                }
+                            },
+                            || first.persist(dir.path()).unwrap(),
+                        );
+                    });
+                    assert_eq!(*observed.lock().unwrap(), Some(0o600));
+                    assert!(!existed_at_stage.load(Ordering::SeqCst));
+                    assert_eq!(
+                        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                        0o600
+                    );
+                    assert_eq!(
+                        std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+                        0o755
+                    );
+
+                    let failed =
+                        with_failure(Checkpoint::BeforePublish, || second.persist(dir.path()));
+                    assert!(failed.is_err());
+                    assert_eq!(GuestNetworkBinding::read(dir.path()).unwrap(), first);
+                    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+                });
+            },
+        );
     }
 
     #[test]

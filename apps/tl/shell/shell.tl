@@ -84,6 +84,9 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
                 }
             }
         }
+        // The hardware keys' answer stands over all of it, at the foot of the screen, for the
+        // moment after the last key.
+        osd_readout()
     }
 }
 

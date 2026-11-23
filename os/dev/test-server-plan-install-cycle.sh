@@ -17,12 +17,12 @@
 # privileged container on that guest — the way a machine with no bootable
 # medium stages from its live system — and names the second disk by its
 # serial, never by a path. The staged live installer finds the machine's plan
-# and token in its handoff and installs Tilo Server with nobody at the screen.
+# and ticket in its handoff and installs Tilo Server with nobody at the screen.
 #
 # A second guest is the owner's device: the dev disk's session, started
 # headless with the throwaway identity a development profile mints. It plans
-# the machine (`tilo machine add`), answers the machine's enrolment, holds the
-# key the install hands over, lets the first boot and the restart after
+# the machine (`tilo machine add`), serves the ticket the machine joins with,
+# approves its unlock keyslot, holds the key the install hands over, lets the first boot and the restart after
 # `tilo server set-default-start` unlock its disk, and reads the recovery key
 # back with `tilo server recovery-key`.
 #
@@ -571,9 +571,9 @@ for i in $(seq 1 300); do
   sleep 1
 done
 note 'the machine boots its installer'
-# The machine's enrolment ask reaches the owner's session over the peer
-# network. The install, its enrolment and the sibling keyslot are one pass;
-# each ask is answered where the person's devices answer questions.
+# The machine's asks reach the owner's session over the peer network. The
+# install, its join and the sibling keyslot are one pass; each ask is answered
+# where the person's devices answer questions.
 await_owner_question() {
   local kind=$1 label=$2 listed="$out/owner-question-$2.json" resource=""
   # Seconds of the clock, not polls: each poll asks the owner over SSH.
@@ -601,12 +601,12 @@ answer_owner() {
       && action_completed "$out/owner-answer-$verdict.txt"; } \
     || { cat "$out/owner-answer-$verdict.txt" >&2; die "the owner's sheet could not be answered ($verdict)"; }
 }
-enrol_question="$(await_owner_question network.machine-enrol enrol)"
-note "the owner approves the machine's enrolment: $enrol_question"
-answer_owner allow "$enrol_question"
-mark_step 07-enrolled ok
-
+# The machine joins the owner's devices with the ticket the plan staged, which
+# the owner's daemon serves: the person approved it when they planned the
+# machine, so nobody is asked. Only a machine that joined can ask for the
+# unlock keyslot, so that question is the join's proof.
 sibling_question="$(await_owner_question network.device-enrol sibling)"
+mark_step 07-joined ok
 note "the owner approves the machine's unlock keyslot: $sibling_question"
 answer_owner allow "$sibling_question"
 mark_step 08-sibling ok

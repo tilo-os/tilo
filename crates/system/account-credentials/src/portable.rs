@@ -7,7 +7,8 @@ use std::collections::BTreeSet;
 
 use std::path::Path;
 
-use accounts::{Account, AccountId, AccountStore, Secret, SecretVault};
+use accounts::person::AccountList;
+use accounts::{Account, AccountId, Secret, SecretVault};
 use serde::{Deserialize, Serialize};
 use tilo_seal::{Context, Frame, FrameError, Label, SymmetricKey, envelope, migration_password};
 use zeroize::{Zeroize, Zeroizing};
@@ -241,17 +242,16 @@ pub fn seal_selected_accounts(
     if selected.is_empty() || selected.len() > MAX_ACCOUNTS {
         return Err(PortableError::InvalidConfiguration);
     }
-    let store = load_store(root)?;
+    let record = load_record(root)?;
     let vault = SecretVault::open_person(Some(root));
     if vault.recovery_error().is_some() {
         return Err(PortableError::CredentialUnavailable);
     }
     let mut entries = Vec::with_capacity(selected.len());
     for id in selected {
-        let account = store
-            .get(id)
+        let account = record
+            .account(id.as_str())
             .filter(|account| account.owner.is_none())
-            .cloned()
             .ok_or(PortableError::AccountMissing)?;
         let secret = vault.get(id).ok_or(PortableError::CredentialUnavailable)?;
         entries.push(Entry { account, secret });
@@ -310,16 +310,20 @@ pub fn import_sealed_accounts(
     import_bundle(root, &open_bundle(sealed, key, setup_binding)?)
 }
 
-fn load_store(root: &Path) -> Result<AccountStore, PortableError> {
-    match std::fs::read(accounts::store_path_in(root)) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| PortableError::StorageUnavailable),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(AccountStore::new()),
-        Err(_) => Err(PortableError::StorageUnavailable),
-    }
+fn load_record(root: &Path) -> Result<AccountList, PortableError> {
+    let staged =
+        accounts::person::staged_in(root).map_err(|_| PortableError::StorageUnavailable)?;
+    staged
+        .state()
+        .map_err(|_| PortableError::StorageUnavailable)
 }
 
 fn import_bundle(root: &Path, bundle: &Bundle) -> Result<Vec<AccountId>, PortableError> {
-    let mut store = load_store(root)?;
+    let mut record =
+        accounts::person::staged_in(root).map_err(|_| PortableError::StorageUnavailable)?;
+    let existing = record
+        .state()
+        .map_err(|_| PortableError::StorageUnavailable)?;
     // Reading a vault creates no key where none is stored, so a rejection
     // leaves the target untouched. Any existing vault directory must be
     // readable, even when metadata is still empty.
@@ -337,8 +341,8 @@ fn import_bundle(root: &Path, bundle: &Bundle) -> Result<Vec<AccountId>, Portabl
         return Err(PortableError::StorageUnavailable);
     }
     for entry in &bundle.entries {
-        let existing = store.get(&entry.account.id);
-        if existing.is_some_and(|a| a != &entry.account) {
+        let kept = existing.account(entry.account.id.as_str());
+        if kept.as_ref().is_some_and(|a| a != &entry.account) {
             return Err(PortableError::AlreadyPresent);
         }
         let stored = existing_vault
@@ -348,7 +352,7 @@ fn import_bundle(root: &Path, bundle: &Bundle) -> Result<Vec<AccountId>, Portabl
         if stored.as_ref().is_some_and(|s| s.0 != entry.secret) {
             return Err(PortableError::AlreadyPresent);
         }
-        if existing.is_some() && stored.is_none() {
+        if kept.is_some() && stored.is_none() {
             return Err(PortableError::CredentialUnavailable);
         }
     }
@@ -359,7 +363,9 @@ fn import_bundle(root: &Path, bundle: &Bundle) -> Result<Vec<AccountId>, Portabl
     let mut ids = Vec::with_capacity(bundle.entries.len());
     for entry in &bundle.entries {
         vault.put(&entry.account.id, &entry.secret);
-        store.upsert(entry.account.clone());
+        record
+            .apply_confirmed(AccountList::saving(&entry.account))
+            .map_err(|_| PortableError::StorageUnavailable)?;
         ids.push(entry.account.id.clone());
     }
     // Publish grants first: interruption can leave a sealed orphan, never
@@ -367,8 +373,7 @@ fn import_bundle(root: &Path, bundle: &Bundle) -> Result<Vec<AccountId>, Portabl
     vault
         .try_save()
         .map_err(|_| PortableError::StorageUnavailable)?;
-    store
-        .save_in(root)
+    accounts::person::keep_staged_in(root, &mut record)
         .map_err(|_| PortableError::StorageUnavailable)?;
     Ok(ids)
 }
@@ -473,13 +478,17 @@ mod tests {
         let mut vault = SecretVault::open_in(root);
         vault.put(&id, &Secret::password("private account password"));
         vault.try_save().unwrap();
-        let mut store = AccountStore::new();
-        store.upsert(account);
-        store.upsert(Account::new(
-            AccountId::new("not-chosen"),
-            accounts::AccountTypeId::new("webdav"),
-        ));
-        store.save_in(root).unwrap();
+        let mut record = accounts::person::staged_in(root).unwrap();
+        record
+            .apply_confirmed(AccountList::saving(&account))
+            .unwrap();
+        record
+            .apply_confirmed(AccountList::saving(&Account::new(
+                AccountId::new("not-chosen"),
+                accounts::AccountTypeId::new("webdav"),
+            )))
+            .unwrap();
+        accounts::person::keep_staged_in(root, &mut record).unwrap();
         id
     }
 
@@ -523,7 +532,14 @@ mod tests {
                 .unwrap(),
                 selected
             );
-            assert_eq!(AccountStore::load_in(&to).len(), 1);
+            assert_eq!(
+                accounts::person::staged_in(&to)
+                    .unwrap()
+                    .state()
+                    .unwrap()
+                    .len(),
+                1
+            );
             assert_eq!(
                 SecretVault::open_read_only_in(&to)
                     .get(&id)

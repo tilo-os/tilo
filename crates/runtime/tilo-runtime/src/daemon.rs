@@ -1,6 +1,6 @@
 //! Persistent native session shared by independently launched GUI apps and MCP.
 use crate::device::services::Daemon;
-use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, unix};
+use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, host};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -13,236 +13,20 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        Arc, OnceLock,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
+use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
 use tilo_mcp::lines::{Answer, Frame, mcp_answer, read_frame, serve_lines, spawn_reader};
 use tilo_mcp::session_api::{Asking, bridge_stdio};
 
+use crate::daemon_args::invalid;
+pub use crate::daemon_args::{Mode, default_profile, parse_args, validate_profile};
+
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum Mode {
-    /// This computer's daemon over the profile `--profile` names, in an environment kept inside
-    /// it: a VM host's, a test's.
-    Daemon,
-    /// This computer's daemon as the person's login runs it: in their own environment, over the
-    /// default profile.
-    Hold,
-    Connect,
-    RunApp {
-        app_id: String,
-        /// A workspace this profile joined; the profile's own workspace when `None`.
-        workspace: Option<String>,
-        executable: OsString,
-        args: Vec<OsString>,
-    },
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct Args {
-    pub profile: PathBuf,
-    pub mode: Mode,
-    /// `--dev`, for `--daemon` and `--hold` only: serve builds under development, which
-    /// are not installed.
-    pub dev: bool,
-    /// The client chose a standalone profile itself (`--standalone`,
-    /// `--profile` or `TILO_RUNTIME_PROFILE`), so `--connect` attaches to
-    /// that profile even inside a Tilo login, where it otherwise relays to
-    /// the desktop's MCP server ([`crate::session_api`]).
-    pub standalone: bool,
-    /// `--device NAME [--workspace ID]`, for `--connect` only: carry the
-    /// client to that device instead of working here ([`crate::other_devices`]).
-    pub forward: Option<tilo_mcp::devices::Forward>,
-    /// `--workspace ID` without `--device`, for `--connect` only: the
-    /// workspace the client asks this desktop's MCP server to let it work in,
-    /// rather than the one in front of the person. The person decides; it is
-    /// never authority.
-    pub workspace: Option<String>,
-}
-fn invalid(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidInput, message.into())
-}
-
-/// Validate the private profile before any startup side effects.
-pub fn validate_profile(profile: &Path) -> io::Result<()> {
-    if !profile.is_absolute() {
-        return Err(invalid("runtime profile must be absolute"));
-    }
-    unix::check_private_profile(profile)
-}
-
-/// The same persistent profile is used by daemon, app attachment and MCP proxy.
-pub fn default_profile() -> io::Result<PathBuf> {
-    let path = if let Some(value) = std::env::var_os("TILO_RUNTIME_PROFILE") {
-        PathBuf::from(value)
-    } else {
-        let home = tilo_paths::home()
-            .ok_or_else(|| invalid("HOME is missing; set TILO_RUNTIME_PROFILE"))?;
-        #[cfg(target_os = "macos")]
-        let suffix = "Library/Application Support/Tilo/runtime";
-        #[cfg(not(target_os = "macos"))]
-        let suffix = ".local/state/tilo/runtime";
-        home.join(suffix)
-    };
-    if !path.is_absolute() {
-        return Err(invalid("runtime profile must be absolute"));
-    }
-    Ok(path)
-}
-
-/// Parse native modes while preserving opaque application arguments.
-pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Args> {
-    let mut arguments = arguments.into_iter();
-    let mut profile = None;
-    let mut mode = None;
-    let mut dev = false;
-    let mut standalone = false;
-    let mut device = None;
-    let mut workspace = None;
-    while let Some(argument) = arguments.next() {
-        match argument.to_str() {
-            Some("--dev") if !dev => dev = true,
-            Some("--device") if device.is_none() => device = Some(device_named(arguments.next())?),
-            Some("--workspace") if workspace.is_none() => {
-                workspace = Some(workspace_named(arguments.next())?);
-            }
-            Some("--standalone") if !standalone => standalone = true,
-            Some("--profile") if profile.is_none() => {
-                profile = Some(PathBuf::from(
-                    arguments
-                        .next()
-                        .ok_or_else(|| invalid("--profile requires a path"))?,
-                ));
-            }
-            Some("--daemon") if mode.is_none() => mode = Some(Mode::Daemon),
-            Some("--hold") if mode.is_none() => mode = Some(Mode::Hold),
-            Some("--connect") if mode.is_none() => mode = Some(Mode::Connect),
-            Some("--run-app") if mode.is_none() => {
-                mode = Some(parse_run_app(&mut arguments)?);
-                break;
-            }
-            _ => {
-                return Err(invalid(format!(
-                    "unexpected argument: {}",
-                    argument.to_string_lossy()
-                )));
-            }
-        }
-    }
-    let explicit_profile = profile.is_some() || std::env::var_os("TILO_RUNTIME_PROFILE").is_some();
-    let profile = match profile {
-        Some(path) => path,
-        None => default_profile()?,
-    };
-    if !profile.is_absolute() {
-        return Err(invalid("runtime profile must be absolute"));
-    }
-    let mode = mode.ok_or_else(|| invalid("choose --hold, --daemon, --connect [--standalone] [--device NAME] [--workspace ID], or --run-app APP_ID [--workspace WORKSPACE] -- EXECUTABLE"))?;
-    if dev && !matches!(mode, Mode::Daemon | Mode::Hold) {
-        return Err(invalid(
-            "--dev starts a daemon: use it with --hold or --daemon",
-        ));
-    }
-    if mode == Mode::Hold && explicit_profile {
-        return Err(invalid(
-            "--hold runs in the login's own environment: use --daemon with --profile",
-        ));
-    }
-    if standalone && mode != Mode::Connect {
-        return Err(invalid(
-            "--standalone chooses where --connect goes: use it with --connect",
-        ));
-    }
-    let local = device.is_none();
-    let forward = forward_of(&mode, device, workspace.clone())?;
-    let workspace = workspace.filter(|_| local);
-    if workspace.is_some() && (standalone || explicit_profile) {
-        return Err(invalid(
-            "--workspace asks the desktop's MCP server for a workspace, not a standalone runtime",
-        ));
-    }
-    Ok(Args {
-        profile,
-        mode,
-        dev,
-        standalone: standalone || explicit_profile,
-        forward,
-        workspace,
-    })
-}
-
-/// Where `--connect --device NAME [--workspace ID]` goes: `None` without a
-/// device, where `--workspace` asks this desktop's own server for the workspace.
-fn forward_of(
-    mode: &Mode,
-    device: Option<String>,
-    workspace: Option<String>,
-) -> io::Result<Option<tilo_mcp::devices::Forward>> {
-    if (device.is_some() || workspace.is_some()) && *mode != Mode::Connect {
-        return Err(invalid(
-            "--device and --workspace choose where --connect goes: use them with --connect",
-        ));
-    }
-    Ok(device.map(|device| tilo_mcp::devices::Forward { device, workspace }))
-}
-
-/// The device `--device` names, by its name or its endpoint id.
-fn device_named(argument: Option<OsString>) -> io::Result<String> {
-    argument
-        .and_then(|arg| arg.into_string().ok())
-        .map(|name| name.trim().to_owned())
-        .filter(|name| !name.is_empty() && name.len() <= 256)
-        .ok_or_else(|| invalid("--device requires a device's name or endpoint id"))
-}
-
-/// The workspace `--workspace` names, by its id.
-fn workspace_named(argument: Option<OsString>) -> io::Result<String> {
-    argument
-        .and_then(|arg| arg.into_string().ok())
-        .filter(|workspace| uuid::Uuid::parse_str(workspace).is_ok())
-        .ok_or_else(|| invalid("--workspace requires a workspace id"))
-}
-
-/// `--run-app APP_ID [--workspace WORKSPACE] -- EXECUTABLE ARGS...`, after `--run-app`:
-/// the rest of the command line is the app's.
-fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<Mode> {
-    let app_id = arguments
-        .next()
-        .and_then(|arg| arg.into_string().ok())
-        .ok_or_else(|| invalid("--run-app requires an application ID"))?;
-    if app_id.trim().is_empty() || app_id.len() > 4096 {
-        return Err(invalid("invalid application ID"));
-    }
-    let mut next = arguments.next();
-    let mut workspace = None;
-    if next.as_deref().and_then(std::ffi::OsStr::to_str) == Some("--workspace") {
-        workspace = Some(
-            arguments
-                .next()
-                .and_then(|arg| arg.into_string().ok())
-                .filter(|workspace| uuid::Uuid::parse_str(workspace).is_ok())
-                .ok_or_else(|| invalid("--workspace requires a workspace id"))?,
-        );
-        next = arguments.next();
-    }
-    if next.as_deref() != Some(std::ffi::OsStr::new("--")) {
-        return Err(invalid(
-            "--run-app APP_ID [--workspace WORKSPACE] requires -- EXECUTABLE ARGS...",
-        ));
-    }
-    let executable = arguments
-        .next()
-        .ok_or_else(|| invalid("missing app executable"))?;
-    Ok(Mode::RunApp {
-        app_id,
-        workspace,
-        executable,
-        args: arguments.collect(),
-    })
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -430,7 +214,7 @@ struct StartupStages(std::fs::File);
 
 impl StartupStages {
     fn open(profile: &Path) -> io::Result<Self> {
-        let file = unix::private_file(&profile.join(STAGES_FILE))?;
+        let file = host::private_file(&profile.join(STAGES_FILE))?;
         // A daemon started by hand still reports only its own steps.
         file.set_len(0)?;
         Ok(Self(file))
@@ -707,21 +491,19 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
     // A holder is another launcher starting the daemon, which gives up
     // within the startup cap, so waiting for it is bounded by that cap.
     let _start =
-        advisory_lock::FileLock::exclusive(unix::private_file(&profile.join("start.lock"))?)?;
+        advisory_lock::FileLock::exclusive(host::private_file(&profile.join("start.lock"))?)?;
     if let Ok(status) = probe(profile) {
         return Ok(status);
     }
-    let log = unix::private_file(&profile.join("daemon.log"))?;
+    let log = host::private_file(&profile.join("daemon.log"))?;
     // Each start's log and steps are only its own daemon's.
     log.set_len(0)?;
-    unix::private_file(&profile.join(STAGES_FILE))?.set_len(0)?;
+    host::private_file(&profile.join(STAGES_FILE))?.set_len(0)?;
     let mut command = Command::new(std::env::current_exe()?);
     // The person's own daemon runs in their environment, as the user service runs it; one of a
     // profile named apart keeps its environment inside that profile.
-    if std::env::var_os("TILO_RUNTIME_PROFILE").is_none() && default_profile()? == profile {
-        command.arg("--hold");
-    } else {
-        command.arg("--profile").arg(profile).arg("--daemon");
+    if std::env::var_os("TILO_RUNTIME_PROFILE").is_some() || default_profile()? != profile {
+        command.arg("--profile").arg(profile);
     }
     command
         .stdin(Stdio::null())
@@ -747,44 +529,62 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
 pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
     validate_profile(profile)?;
     let mut stages = StartupStages::open(profile)?;
+    stages.enter("locking the device");
+    let device = crate::device::unclaimed::ThisDevice::lock()?;
+    // The native endpoint answers from boot, before anyone's certificate names this device and
+    // while its person's services start: the device's own actions first, the person's once they
+    // run. This process has the device's lock, so only it removes a stale endpoint.
+    let path = profile.join("native.sock");
+    stages.enter("binding the native endpoint");
+    let listener = tilo_files::native::private::bind_socket(&path)?;
+    let native = Arc::new(Native::new(device.answers()));
+    {
+        let native = Arc::clone(&native);
+        std::thread::Builder::new()
+            .name("tilo-native".into())
+            .spawn(move || {
+                if let Err(error) = native.accept(&listener) {
+                    tracing::error!(%error, "the native endpoint stopped taking connections");
+                }
+            })?;
+    }
+    tracing::info!("answering this device's actions on its native endpoint");
+    // Before a person's certificate names this computer's key, a computer of one account's
+    // founds its person; Tilo OS's device, and one handed a ticket, are served with the key alone,
+    // the ticket spent on the way, and the person's services start once a certificate names it.
+    if !device.claimed() {
+        if crate::device::services::founds_a_person() {
+            stages.enter("founding this computer's person");
+            crate::device::services::found_a_person()?;
+        } else {
+            stages.enter("serving this device before anyone's certificate names it");
+            device.spend_handed_ticket();
+            device.until_claimed();
+        }
+    }
+    let locked = device.into_lock();
     let mut stage = |stage: &str| stages.enter(stage);
-    let session = Arc::new(if dev {
-        Daemon::start_in_dev_mode(profile, &mut stage)?
-    } else {
-        Daemon::start_reporting(profile, &mut stage)?
-    });
+    let session = Arc::new(Daemon::start_locked(profile, &mut stage, dev, locked)?);
     // A computer that just logged in takes its workspace in while the device is held (below):
     // nothing is admitted to the workspace before then. The endpoint admits each connection as
     // it comes, and host search starts once the workspace is here, rather than the daemon ending
     // before it could take the workspace in.
     let search = Arc::new(OnceLock::new());
     search_once_held(&session, &search)?;
-    let path = profile.join("native.sock");
-    // The daemon already holds the device's lock. Only that owner may remove a stale
-    // endpoint, and a second daemon cannot reach this point.
-    stages.enter("binding the native endpoint");
-    let listener = tilo_files::native::private::bind_socket(&path)?;
-    stages.enter("answering the status probe");
+    stages.enter("answering as the person");
     drop(stages);
-    let status = Status {
-        version: 1,
-        pid: std::process::id(),
-        workspace: session.workspace().to_owned(),
-    };
     let endpoint = Endpoint {
         session_factory: admitted_per_connection(&session),
-        status,
+        status: Status {
+            version: 1,
+            pid: std::process::id(),
+            workspace: session.workspace().to_owned(),
+        },
         search,
         media: session.media(),
         other_devices: session.other_devices(),
     };
-    std::thread::Builder::new()
-        .name("tilo-native".into())
-        .spawn(move || {
-            if let Err(error) = endpoint.accept(&listener) {
-                tracing::error!(%error, "the native endpoint stopped taking connections");
-            }
-        })?;
+    native.serve_the_person(endpoint);
     // The device is served until the daemon is told to stop, or another takes the device over:
     // the process ends then, its apps' connections with it.
     let held = crate::device::hold(&session);
@@ -793,6 +593,111 @@ pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
     let _ = std::fs::remove_file(&path);
     drop(session);
     held.map_err(|error| io::Error::other(format!("{error:#}")))?;
+    Ok(())
+}
+
+/// A connection the native endpoint takes, with the slot it counts against.
+type Take = Box<dyn Fn(UnixStream, ConnectionSlot) -> io::Result<()> + Send + Sync>;
+
+/// The native endpoint over the daemon's whole life: the device's own actions from boot, and the
+/// person's endpoint once their services run. A connection on a device no certificate names yet
+/// is answered with the device's own actions at once; one on a set-up device while its person's
+/// services start waits on its own thread until they run, so an app is never served the device
+/// alone for its life. The listener itself never waits.
+struct Native {
+    device: Endpoint<crate::device::unclaimed::DeviceOnly>,
+    answers: crate::device::unclaimed::DeviceOnly,
+    person: OnceLock<Take>,
+    /// Told when [`Self::person`] is set.
+    started: (Mutex<()>, Condvar),
+}
+
+impl Native {
+    fn new(device: crate::device::unclaimed::DeviceOnly) -> Self {
+        let answers = device.clone();
+        let factory: tilo_mcp::SessionFactory<_> =
+            Arc::new(move || Ok(McpServer::new(device.clone(), String::new(), String::new())));
+        Self {
+            answers,
+            started: (Mutex::new(()), Condvar::new()),
+            device: Endpoint {
+                session_factory: factory,
+                // No workspace is served yet.
+                status: Status {
+                    version: 1,
+                    pid: std::process::id(),
+                    workspace: String::new(),
+                },
+                search: Arc::new(OnceLock::new()),
+                media: None,
+                other_devices: None,
+            },
+            person: OnceLock::new(),
+        }
+    }
+
+    /// Serve every connection from now on with `endpoint`, the person's.
+    fn serve_the_person<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static>(
+        &self,
+        endpoint: Endpoint<H>,
+    ) {
+        let take: Take = Box::new(move |stream, slot| endpoint.take(stream, slot));
+        assert!(
+            self.person.set(take).is_ok(),
+            "one daemon starts its person's services once"
+        );
+        let _told = self.started.0.lock_recover();
+        self.started.1.notify_all();
+    }
+
+    /// Serve each connection to `listener` as whatever answers when it comes ([`accept`]).
+    fn accept(self: &Arc<Self>, listener: &UnixListener) -> io::Result<()> {
+        accept(listener, |stream, slot| match self.person.get() {
+            Some(person) => person(stream, slot),
+            None if !self.answers.claimed() => self.device.take(stream, slot),
+            None => {
+                let native = Arc::clone(self);
+                std::thread::Builder::new()
+                    .name("tilo-native-wait".into())
+                    .spawn(move || {
+                        let mut told = native.started.0.lock_recover();
+                        let person = loop {
+                            if let Some(person) = native.person.get() {
+                                break person;
+                            }
+                            told = native
+                                .started
+                                .1
+                                .wait(told)
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        };
+                        drop(told);
+                        if let Err(error) = person(stream, slot) {
+                            tracing::debug!(%error, "a native connection that waited while the person's services started was not served");
+                        }
+                    })
+                    .map(drop)
+            }
+        })
+    }
+}
+
+/// Hand each connection to `listener` to `take`, at most [`MAX_CONNECTIONS`] at once. One more
+/// is told there is no room and closed ([`refuse_busy`]).
+fn accept(
+    listener: &UnixListener,
+    take: impl Fn(UnixStream, ConnectionSlot) -> io::Result<()>,
+) -> io::Result<()> {
+    let active = Arc::new(AtomicUsize::new(0));
+    for stream in listener.incoming() {
+        let stream = stream?;
+        if active.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
+            refuse_busy(stream);
+            continue;
+        }
+        active.fetch_add(1, Ordering::Relaxed);
+        take(stream, ConnectionSlot(Arc::clone(&active)))?;
+    }
     Ok(())
 }
 
@@ -902,84 +807,69 @@ fn refuse_busy(mut stream: UnixStream) {
 }
 
 impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> Endpoint<H> {
-    /// Serve each connection to `listener` on its own thread, at most
-    /// [`MAX_CONNECTIONS`] at once. One more is told there is no room and
-    /// closed ([`refuse_busy`]).
-    fn accept(self, listener: &UnixListener) -> io::Result<()> {
-        let active = Arc::new(AtomicUsize::new(0));
-        for stream in listener.incoming() {
-            let stream = stream?;
-            if active.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
-                refuse_busy(stream);
-                continue;
-            }
-            let factory = Arc::clone(&self.session_factory);
-            let status = self.status.clone();
-            let search = Arc::clone(&self.search);
-            let media = self.media.clone();
-            let other_devices = self.other_devices.clone();
-            let active = Arc::clone(&active);
-            active.fetch_add(1, Ordering::Relaxed);
-            let slot = ConnectionSlot(active);
-            std::thread::Builder::new()
-                .name("tilo-native-mcp".into())
-                .spawn(move || {
-                    let _slot = slot;
-                    // The first line says whether the client asks to be
-                    // carried to another device's MCP server; anything else
-                    // is served here, that line first.
-                    let mut reader = match stream.try_clone() {
-                        Ok(clone) => BufReader::new(clone),
-                        Err(error) => {
-                            tracing::debug!(%error, "native runtime client socket");
-                            return;
-                        }
-                    };
-                    let mut first = Vec::new();
-                    if let Err(error) = (&mut reader).take(FIRST_LINE).read_until(b'\n', &mut first)
-                    {
-                        tracing::debug!(%error, "native runtime client disconnected");
+    /// Serve `stream` on its own thread, counted in `slot` while it lasts.
+    fn take(&self, stream: UnixStream, slot: ConnectionSlot) -> io::Result<()> {
+        let factory = Arc::clone(&self.session_factory);
+        let status = self.status.clone();
+        let search = Arc::clone(&self.search);
+        let media = self.media.clone();
+        let other_devices = self.other_devices.clone();
+        std::thread::Builder::new()
+            .name("tilo-native-mcp".into())
+            .spawn(move || {
+                let _slot = slot;
+                // The first line says whether the client asks to be
+                // carried to another device's MCP server; anything else
+                // is served here, that line first.
+                let mut reader = match stream.try_clone() {
+                    Ok(clone) => BufReader::new(clone),
+                    Err(error) => {
+                        tracing::debug!(%error, "native runtime client socket");
                         return;
                     }
-                    if let Some(forward) = first
-                        .strip_suffix(b"\n")
-                        .and_then(tilo_mcp::devices::forward_request)
-                    {
-                        match &other_devices {
-                            // A client asks for nothing more before it is told
-                            // whether the connection opened.
-                            Some(other_devices) if reader.buffer().is_empty() => {
-                                other_devices.serve_forward(stream, &forward);
-                            }
-                            Some(_) => tilo_mcp::devices::refuse_forward(
-                                stream,
-                                "a forward is the only line before its answer".into(),
-                            ),
-                            None => tilo_mcp::devices::refuse_forward(
-                                stream,
-                                "this runtime reaches none of your other devices".into(),
-                            ),
+                };
+                let mut first = Vec::new();
+                if let Err(error) = (&mut reader).take(FIRST_LINE).read_until(b'\n', &mut first) {
+                    tracing::debug!(%error, "native runtime client disconnected");
+                    return;
+                }
+                if let Some(forward) = first
+                    .strip_suffix(b"\n")
+                    .and_then(tilo_mcp::devices::forward_request)
+                {
+                    match &other_devices {
+                        // A client asks for nothing more before it is told
+                        // whether the connection opened.
+                        Some(other_devices) if reader.buffer().is_empty() => {
+                            other_devices.serve_forward(stream, &forward);
                         }
+                        Some(_) => tilo_mcp::devices::refuse_forward(
+                            stream,
+                            "a forward is the only line before its answer".into(),
+                        ),
+                        None => tilo_mcp::devices::refuse_forward(
+                            stream,
+                            "this runtime reaches none of your other devices".into(),
+                        ),
+                    }
+                    return;
+                }
+                let input = io::Cursor::new(first).chain(reader);
+                let server = match factory() {
+                    Ok(server) => Arc::new(server.with_media(media).with_devices(
+                        other_devices.map(|other_devices| {
+                            Arc::new(other_devices) as Arc<dyn tilo_mcp::devices::DeviceDirectory>
+                        }),
+                    )),
+                    Err(error) => {
+                        tracing::debug!(%error, "native MCP session admission unavailable");
                         return;
                     }
-                    let input = io::Cursor::new(first).chain(reader);
-                    let server = match factory() {
-                        Ok(server) => Arc::new(server.with_media(media).with_devices(
-                            other_devices.map(|other_devices| {
-                                Arc::new(other_devices)
-                                    as Arc<dyn tilo_mcp::devices::DeviceDirectory>
-                            }),
-                        )),
-                        Err(error) => {
-                            tracing::debug!(%error, "native MCP session admission unavailable");
-                            return;
-                        }
-                    };
-                    if let Err(error) = serve_connection(stream, input, &server, &status, &search) {
-                        tracing::debug!(%error, "native runtime client disconnected");
-                    }
-                })?;
-        }
+                };
+                if let Err(error) = serve_connection(stream, input, &server, &status, &search) {
+                    tracing::debug!(%error, "native runtime client disconnected");
+                }
+            })?;
         Ok(())
     }
 }
@@ -1168,11 +1058,11 @@ pub fn run_app(
     {
         command.env("TILO_PARTICIPATION", "author");
     }
-    let connections = unix::Connections::prepare(
+    let connections = host::Connections::prepare(
         &mut command,
         app_id,
         workspace.unwrap_or(&status.workspace),
-        &unix::ServiceSockets {
+        &host::ServiceSockets {
             collab: &profile.join(COLLAB_SOCKET),
             identity: &profile.join(IDENTITY_SOCKET),
             blobs: &profile.join(BLOB_SOCKET),
@@ -1240,7 +1130,7 @@ fn default_launch_guard(
     grace: Duration,
 ) -> io::Result<Option<advisory_lock::FileLock>> {
     let directory = profile.join("launches");
-    unix::private_directory(&directory)?;
+    host::private_directory(&directory)?;
     let path = directory.join(format!("{}.lock", blake3::hash(app_id.as_bytes()).to_hex()));
     let deadline = Instant::now().checked_add(grace).ok_or_else(|| {
         io::Error::new(
@@ -1252,7 +1142,7 @@ fn default_launch_guard(
         if activate_existing(profile, app_id)? {
             return Ok(None);
         }
-        match advisory_lock::FileLock::try_exclusive(unix::private_file(&path)?) {
+        match advisory_lock::FileLock::try_exclusive(host::private_file(&path)?) {
             Ok(guard) => {
                 guard.resource_owner()?;
                 return Ok(Some(guard));

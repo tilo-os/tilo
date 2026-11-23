@@ -64,6 +64,12 @@ fn person_key() -> ed25519_dalek::SigningKey {
     ed25519_dalek::SigningKey::from_bytes(&[21; 32])
 }
 
+/// The person everyone here knows by `seed`: the root of a device's certificate and of the one the
+/// devices it meets hear, as [`person`] names them.
+fn person_signing(seed: u8) -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+}
+
 fn workspace_id() -> WorkspaceId {
     WorkspaceId::parse(WORKSPACE).expect("a workspace id")
 }
@@ -242,7 +248,7 @@ fn said(from: u8, msg: neighbour_wire::NeighbourMsg) -> Event {
 /// A device's identity: the person it is a device of, and its name here.
 fn hello(from: u8, label: &str) -> Event {
     let device_key = public(from);
-    let root = ed25519_dalek::SigningKey::from_bytes(&[from; 32]);
+    let root = person_signing(from);
     let mut cert = tilo_user_identity::DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: *device_key.as_bytes(),
@@ -322,6 +328,7 @@ fn call_presence() -> String {
     ui::CallPresence {
         channel: CHANNEL.to_owned(),
         name: "Standup".to_owned(),
+        bridge: None,
     }
     .encode()
 }
@@ -681,6 +688,56 @@ async fn two_devices_in_one_call_hear_each_other_until_a_mute_a_deafen_or_a_leav
         "a left call is over"
     );
     wait_heard("a device that left is heard by no one", &right.probe, false).await;
+    there.close();
+}
+
+/// Two people's devices in one call: each is the person its own certificate names, the other hears
+/// it as that person and no one else, and the audio crosses between them the way it does between
+/// two devices of one person.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_peoples_devices_in_one_call_hear_each_other() {
+    assert_ne!(
+        person_signing(0x11).verifying_key().to_bytes(),
+        person_signing(0x22).verifying_key().to_bytes(),
+        "the two devices are two people's"
+    );
+    let ana = device(&person_signing(0x11), 0x11, "Ana's laptop");
+    let ben = device(&person_signing(0x22), 0x22, "Ben's session");
+    let Pair {
+        left,
+        right,
+        mut here,
+        mut there,
+        ..
+    } = one_call(&ana, &ben).await;
+    // Each side names the other device by the person it is, and by no other.
+    assert_eq!(
+        left.calls.persons(CHANNEL).get(public(0x22).as_bytes()),
+        Some(&person(0x22)),
+        "Ana's side names Ben's device as Ben"
+    );
+    assert_eq!(
+        right.calls.persons(CHANNEL).get(public(0x11).as_bytes()),
+        Some(&person(0x11)),
+        "Ben's side names Ana's device as Ana"
+    );
+    wait_heard("Ben hears Ana", &right.probe, true).await;
+    wait_heard("Ana hears Ben", &left.probe, true).await;
+    // Ana mutes: Ben stops hearing her while she still hears him, as between two of one person's
+    // devices.
+    here.stop_capture();
+    wait_heard("a muted person is not heard", &right.probe, false).await;
+    wait_heard("a muted person still hears the other", &left.probe, true).await;
+    here.start_capture("tone").expect("the test's tone");
+    wait_heard_by(
+        "unmuting is heard again",
+        &right.probe,
+        true,
+        within(Duration::from_secs(3)),
+    )
+    .await;
+    here.close();
+    wait_heard("a person who left is heard by no one", &right.probe, false).await;
     there.close();
 }
 
@@ -1182,13 +1239,206 @@ fn a_channels_roster_says_who_has_a_camera_or_screen_on() {
         call: ui::CallPresence {
             channel: CHANNEL.to_owned(),
             name: "Standup".to_owned(),
+            bridge: None,
         },
         camera: true,
         screen: false,
+        muted: false,
+        deafened: false,
     };
     calls.follow(&mine, Some(&in_call));
     let heard = roster(&calls);
     assert_eq!(heard.people, [person(0xf0), person(0xbb), person(0xaa)]);
     assert_eq!(heard.cameras, [person(0xf0), person(0xaa)]);
     assert_eq!(heard.screens, [person(0xaa)]);
+    assert!(heard.muted.is_empty(), "{heard:?}");
+
+    // Someone mutes, and this device deafens: everyone's roster says it.
+    let muted = sync::InCall {
+        muted: true,
+        ..in_call.clone()
+    };
+    availability_showing(&mine, 0xbb, muted.encode(), false, false);
+    let deafened = sync::InCall {
+        deafened: true,
+        ..in_call
+    };
+    calls.follow(&mine, Some(&deafened));
+    let heard = roster(&calls);
+    assert_eq!(heard.muted, [person(0xf0), person(0xbb)]);
+    assert_eq!(heard.deafened, [person(0xf0)]);
+}
+
+// ---------------------------------------------------------------------------
+// The pictures a call makes of what its devices show.
+// ---------------------------------------------------------------------------
+
+/// Whether this machine can encode the pictures a call sends at all.
+fn has_h264_encoder() -> bool {
+    media::realtime::local_capabilities().can_encode(media::realtime::StreamCodec::H264)
+}
+
+/// One frame a capture hands the encoder: `width` × `height`, filled with `fill`.
+fn captured(width: u32, height: u32, fill: u8) -> pictures::Frame {
+    let pixels = usize::try_from(width)
+        .unwrap_or(0)
+        .saturating_mul(usize::try_from(height).unwrap_or(0))
+        .saturating_mul(4);
+    pictures::Frame {
+        pixels: Arc::from(vec![fill; pixels]),
+        width,
+        height,
+        format: media::realtime::InputFormat::Rgba,
+        captured_at: Instant::now(),
+    }
+}
+
+/// What the encoder thread sent, as the call's live session would have told it to: the layers the
+/// call's devices show, the sources to start over, and every picture it published.
+#[derive(Default)]
+struct Witness {
+    asking: Mutex<pictures::Asking>,
+    sent: Mutex<Vec<pictures::VideoObject>>,
+    own: Mutex<Vec<pictures::VideoObject>>,
+}
+
+impl pictures::Sink for Witness {
+    fn asking(&self, _source: pictures::Source) -> pictures::Asking {
+        self.asking.lock_recover().clone()
+    }
+
+    fn sent(&self, _source: pictures::Source, object: &pictures::VideoObject) {
+        self.sent.lock_recover().push(object.clone());
+    }
+
+    fn own(&self, object: &pictures::VideoObject) {
+        self.own.lock_recover().push(object.clone());
+    }
+}
+
+/// Wait until `count` pictures were sent, or fail saying what was waited for.
+async fn sent(witness: &Arc<Witness>, count: usize, what: &str) -> Vec<pictures::VideoObject> {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let sent = witness.sent.lock_recover().clone();
+        if sent.len() >= count {
+            return sent;
+        }
+        assert!(Instant::now() < deadline, "{what}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// A layer keeps its source's shape inside its box, never grows it, and is even: what 4:2:0
+/// encoders and every tile layout read.
+#[test]
+fn a_picture_keeps_its_sources_shape_within_its_layers_box() {
+    assert_eq!(pictures::fitted((1280, 720), (320, 180)), (320, 180));
+    assert_eq!(pictures::fitted((1920, 1200), (1920, 1080)), (1728, 1080));
+    assert_eq!(pictures::fitted((2560, 1080), (640, 360)), (640, 270));
+    assert_eq!(
+        pictures::fitted((800, 600), (1920, 1080)),
+        (800, 600),
+        "never larger than the source"
+    );
+    assert_eq!(pictures::fitted((1366, 768), (320, 180)), (320, 178));
+}
+
+/// A screen of an odd size is cropped to the even rows and columns the encoder takes, and one too
+/// small to crop is not encoded at all.
+#[test]
+fn an_odd_screen_is_cropped_to_even_rows_and_columns() {
+    let rgba: Arc<[u8]> = Arc::from(vec![9; 5 * 3 * 4]);
+    let frame = pictures::even_rgba(5, 3, rgba).expect("a frame the encoder takes");
+    assert_eq!((frame.width, frame.height), (4, 2));
+    assert_eq!(frame.pixels.len(), 4 * 2 * 4);
+    assert!(pictures::even_rgba(1, 1, Arc::from(vec![0; 4])).is_none());
+    assert!(pictures::even_rgba(4, 2, Arc::from(vec![0; 3])).is_none());
+}
+
+/// A still screen is encoded once: no frame arrives, so nothing more is sent while nobody new
+/// shows it. A device that starts showing it is answered with the keyframe the encoder stands on
+/// — the same picture — not a new encode.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_still_screen_is_encoded_once_and_a_new_reader_starts_at_its_standing_keyframe() {
+    if !has_h264_encoder() {
+        eprintln!("no H.264 encoder on this machine: nothing could encode the pictures");
+        return;
+    }
+    let witness = Arc::new(Witness::default());
+    witness.asking.lock_recover().wanted.insert(
+        pictures::Source::Screen,
+        [pictures::Layer::Low].into_iter().collect(),
+    );
+    let sink: Arc<dyn pictures::Sink> = witness.clone();
+    let sending = pictures::Sending::start(pictures::Source::Screen, pictures::SCREEN_FPS, &sink)
+        .expect("a screen encoder");
+    // One frame, which is all a still screen draws.
+    sending.publish(captured(640, 360, 7));
+    let first = sent(&witness, 1, "the still screen's one picture").await;
+    assert_eq!(first.len(), 1, "a still screen is encoded once");
+    assert!(first[0].keyframe, "a reader starts at a keyframe");
+    assert_eq!(
+        (first[0].width, first[0].height),
+        pictures::Layer::Low.size(pictures::Source::Screen),
+        "the layer the reader shows, not the screen's own size"
+    );
+
+    // No frame arrives and nobody new shows it: nothing more is encoded or sent.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        witness.sent.lock_recover().len(),
+        1,
+        "a still screen sends nothing while nobody new shows it"
+    );
+
+    // A device starts showing the screen afresh: the call asks for a keyframe and the encoder
+    // answers with the picture it stands on, which costs no encode.
+    witness
+        .asking
+        .lock_recover()
+        .restart
+        .insert(pictures::Source::Screen);
+    sending.ask_keyframe();
+    let again = sent(&witness, 2, "the standing keyframe for a new reader").await;
+    assert_eq!(again.len(), 2, "the new reader is answered once");
+    assert_eq!(
+        again[1].sequence, first[0].sequence,
+        "the picture the encoder stands on, not a new one"
+    );
+    assert!(again[1].keyframe);
+    assert_eq!(again[1].layer, pictures::Layer::Low);
+}
+
+/// A received stream that falls behind starts over at its next keyframe: the pictures that would
+/// not decode without the one dropped are not handed to the app.
+#[test]
+fn a_stream_that_falls_behind_starts_over_at_its_next_keyframe() {
+    let mut inbox = pictures::Inbox::default();
+    let big = pictures::INBOX_BYTES / 4;
+    let slow = [7; 32];
+    let fast = [8; 32];
+    let picture_of = |from: [u8; 32], size: usize, keyframe: bool| pictures::Picture {
+        from,
+        source: pictures::Source::Camera,
+        keyframe,
+        object: vec![1; size],
+    };
+    inbox.admit(picture_of(slow, big, true));
+    inbox.admit(picture_of(slow, big, false));
+    inbox.admit(picture_of(fast, big, true));
+    inbox.admit(picture_of(fast, big, false));
+    // One more: the oldest stream gives way whole.
+    inbox.admit(picture_of(fast, big, false));
+    let (queued, cursor) = inbox.take(0, usize::MAX);
+    assert!(queued.iter().all(|picture| picture.from == fast));
+    inbox.take(cursor, usize::MAX);
+    inbox.admit(picture_of(slow, 10, false));
+    assert!(
+        inbox.take(cursor, usize::MAX).0.is_empty(),
+        "not without its keyframe"
+    );
+    inbox.admit(picture_of(slow, 10, true));
+    inbox.admit(picture_of(slow, 10, false));
+    assert_eq!(inbox.take(cursor, usize::MAX).0.len(), 2);
 }

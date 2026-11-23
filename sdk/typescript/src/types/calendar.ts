@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.calendar@3f27f7e33fab1547";
+export const SURFACE = "so.tilo.calendar@c920d7ea26877f48";
 
 export interface Attendee {
   id: string;
@@ -173,7 +173,7 @@ export interface Upload {
   calendar: string;
 }
 
-export interface PersonAccount {
+export interface ListedAccount {
   type_id: string;
   display_name: string;
   config: unknown;
@@ -403,7 +403,7 @@ export function calendar(ws: tilo.Workspace, path: string): Calendar {
 
 /** Accounts — `tilo.accounts`. */
 export interface Accounts extends tilo.Resource {
-  accounts: Array<tilo.Entry<PersonAccount>>;
+  accounts: Array<tilo.Entry<ListedAccount>>;
   publishBrowserIdentity(args: {
     root: string;
     origin: string;

@@ -34,20 +34,20 @@ impl AgentEngine for Keys {
     }
 }
 
-/// The root of the person who keeps the agent: the one the first device's fixture is
+/// The root of the person the agent acts for: the one the first device's fixture is
 /// certified by.
-fn keepers_root() -> SigningKey {
+fn persons_root() -> SigningKey {
     SigningKey::from_bytes(&[1; 32])
 }
 
-/// What somebody asked in Chat's `part` of the agent the person of `keeper` keeps, and the lease
+/// What somebody asked in Chat's `part` of the agent acting for `person`'s person, and the lease
 /// it is claimed under.
-fn turn_in(keeper: &DeviceCert, part: &str) -> (Turn, String) {
+fn turn_in(person: &DeviceCert, part: &str) -> (Turn, String) {
     let lease = format!("turn/scout/{part}");
     let turn = Turn::Agent {
         agent: "scout".to_owned(),
         place: part.to_owned(),
-        keeper: keeper.user_public_key,
+        acts_for: person.user_public_key,
         app: CHAT.to_owned(),
         record: part.to_owned(),
     };
@@ -86,17 +86,17 @@ async fn reads_claim(workspaces: &Workspaces, workspace: &str, lease: &str, devi
     .await;
 }
 
-/// Both devices of the agent's keeper read what started the turn and claim it. Once the claims meet, the
+/// Both devices of the person the agent acts for read what started the turn and claim it. Once the claims meet, the
 /// first keeps the turn and the other's renewal says it lost, so that device stops before it
 /// writes; asked again, it says whose turn it is. A minute after the desktop last wrote, the
 /// laptop takes the turn over.
 #[tokio::test]
 async fn two_devices_start_one_turn_and_exactly_one_answers_until_its_claim_goes_silent() {
     let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let laptop = device_cert(&keepers_root(), "laptop", DeviceCapabilities::member());
+    let laptop = device_cert(&persons_root(), "laptop", DeviceCapabilities::member());
     let (desktop, laptop, workspace) = two_devices((one.path(), two.path()), laptop, 41).await;
-    let keeper = desktop.workspaces().serving_certificate().clone();
-    let (turn, lease) = turn_in(&keeper, "messages-1");
+    let person = desktop.workspaces().serving_certificate().clone();
+    let (turn, lease) = turn_in(&person, "messages-1");
 
     let first = takes_turn(desktop.workspaces(), &workspace, &turn)
         .await
@@ -106,10 +106,10 @@ async fn two_devices_start_one_turn_and_exactly_one_answers_until_its_claim_goes
         laptop.workspaces(),
         &workspace,
         &lease,
-        keeper.device_public_key,
+        person.device_public_key,
     )
     .await;
-    let taken_by = NotTaken::TakenBy(keeper.device_public_key);
+    let taken_by = NotTaken::TakenBy(person.device_public_key);
     match second {
         Ok(lost) => assert!(!lost.renew().await, "the second claim loses once they meet"),
         Err(not_taken) => assert_eq!(not_taken, taken_by),
@@ -146,7 +146,8 @@ async fn two_devices_start_one_turn_and_exactly_one_answers_until_its_claim_goes
 /// the agent's approved key runs it. A device the workspace keeps from what the turn is about
 /// refuses for that reason and writes no claim.
 #[tokio::test]
-async fn only_a_device_that_holds_the_agents_key_or_is_its_keepers_claims_what_it_may_open() {
+async fn only_a_device_that_holds_the_agents_key_or_belongs_to_the_person_it_acts_for_claims_what_it_may_open()
+ {
     let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let other = device_cert(
         &SigningKey::from_bytes(&[42; 32]),
@@ -155,8 +156,8 @@ async fn only_a_device_that_holds_the_agents_key_or_is_its_keepers_claims_what_i
     );
     let reader = other.1.user_public_key;
     let (desktop, laptop, workspace) = two_devices((one.path(), two.path()), other, 42).await;
-    let keeper = desktop.workspaces().serving_certificate().clone();
-    let (turn, _) = turn_in(&keeper, "messages-2");
+    let person = desktop.workspaces().serving_certificate().clone();
+    let (turn, _) = turn_in(&person, "messages-2");
     assert_eq!(
         takes_turn(laptop.workspaces(), &workspace, &turn)
             .await
@@ -170,12 +171,12 @@ async fn only_a_device_that_holds_the_agents_key_or_is_its_keepers_claims_what_i
 
     // Without the agent's key again, the device claims nothing while the grant reaches it.
     laptop.workspaces().run_agents(Arc::new(Keys(false)));
-    let (unopened, lease) = turn_in(&keeper, "messages-3");
+    let (unopened, lease) = turn_in(&person, "messages-3");
     desktop
         .workspaces()
         .put_workspace_grants(
             &workspace,
-            &keeper,
+            &person,
             [42; 32],
             vec![Grant::new(
                 "no-chat",
@@ -183,7 +184,7 @@ async fn only_a_device_that_holds_the_agents_key_or_is_its_keepers_claims_what_i
                 TreePath::workspace(&workspace).app(CHAT),
                 KindSet::READ,
                 Answer::Deny,
-                Grantee::person(hex::encode(keeper.user_public_key)),
+                Grantee::person(hex::encode(person.user_public_key)),
             )],
         )
         .await
@@ -211,15 +212,15 @@ async fn only_a_device_that_holds_the_agents_key_or_is_its_keepers_claims_what_i
     );
     takes_turn(desktop.workspaces(), &workspace, &unopened)
         .await
-        .expect("the keeper's device that opens Chat claims the turn");
+        .expect("the person's device that opens Chat claims the turn");
 }
 
-/// A server of the keeper's whose entry offers no compute never runs their agent; once it offers
+/// A server of the person's whose entry offers no compute never runs their agent; once it offers
 /// compute, it does.
 #[tokio::test]
 async fn a_server_that_offers_no_compute_never_claims() {
     let state = tempfile::tempdir().unwrap();
-    let (key, cert) = device_cert(&keepers_root(), "server", DeviceCapabilities::member());
+    let (key, cert) = device_cert(&persons_root(), "server", DeviceCapabilities::member());
     let server = test_host(state.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Asked").await.unwrap().workspace;

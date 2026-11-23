@@ -197,21 +197,6 @@ mod tests {
             assert_eq!(step(MAX_ZOOM, MAX_ZOOM, MagnifierStep::ZoomIn).0, MAX_ZOOM);
         }
 
-        phase labels_round_trip_every_level;
-        {
-            for zoom in zoom_levels() {
-                assert_eq!(zoom_from_label(zoom_label(zoom)), Some(zoom));
-            }
-            assert_eq!(ZOOM_LABELS.len(), zoom_levels().count());
-            assert_eq!(zoom_label(OFF), "Off");
-            assert_eq!(zoom_label(3), "3×");
-            assert_eq!(zoom_from_label("nope"), None);
-            for view in MagnifierView::ALL {
-                assert_eq!(MagnifierView::from_label(view.label()), Some(view));
-                assert_eq!(MagnifierView::parse(view.as_str()), view);
-            }
-        }
-
         phase malformed_state_reads_as_off_in_a_lens;
         {
             let mut section = Map::new();

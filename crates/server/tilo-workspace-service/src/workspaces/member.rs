@@ -806,7 +806,7 @@ impl Workspaces {
     /// flood of changes is still held here, and a read of it never waits
     /// behind them.
     pub async fn member_ids(&self) -> Vec<WorkspaceId> {
-        let held: Vec<WorkspaceId> = self
+        let kept: Vec<WorkspaceId> = self
             .inner
             .workspaces
             .lock()
@@ -815,7 +815,7 @@ impl Workspaces {
             .filter_map(|workspace| WorkspaceId::parse(workspace))
             .collect();
         let mut ids = Vec::new();
-        for workspace in held {
+        for workspace in kept {
             if self
                 .reading(workspace)
                 .await
@@ -825,6 +825,27 @@ impl Workspaces {
             }
         }
         ids
+    }
+
+    /// Every workspace kept here, a member copy or one this device governs,
+    /// as its governance describes it ([`describe`]).
+    pub async fn described(&self) -> Vec<tilo_desktop_model::Workspace> {
+        let kept: Vec<WorkspaceId> = self
+            .inner
+            .workspaces
+            .lock()
+            .await
+            .keys()
+            .filter_map(|workspace| WorkspaceId::parse(workspace))
+            .collect();
+        let mut described = Vec::new();
+        for workspace in kept {
+            if let Some(reading) = self.reading(workspace).await {
+                let (name, peer) = named_copy(&reading);
+                described.extend(describe(workspace, &name, &peer));
+            }
+        }
+        described
     }
 
     /// Whether the history the device serving `workspace` keeps is in hand on
@@ -2113,6 +2134,32 @@ async fn open_side_by_side(
 
 /// The name a workspace's governance gives it, and its replica, as `reading`
 /// reads them now.
+/// `workspace`, named `name`, as the copy `peer` of it describes it: its
+/// settings and shortcuts, its sandbox and the names it keeps for its people.
+#[must_use]
+pub fn describe(
+    workspace: WorkspaceId,
+    name: &str,
+    peer: &StatePeer,
+) -> Option<tilo_desktop_model::Workspace> {
+    let document = peer.admitted_workspace()?;
+    let mut described = tilo_desktop_model::Workspace::new(workspace, name.to_owned());
+    tilo_peer_state::workspace::adopt_workspace(&mut described, document, &[]);
+    described.sandbox = peer.governance().governed_sandbox().ok()?;
+    // The names the workspace's governance keeps for its people: what every surface showing
+    // someone who is not here reads, from the same list the agent worker's members come from.
+    if let Ok(people) = peer.governance().governed_members(tilo_clock::wall()) {
+        described.named_people(
+            people
+                .members
+                .iter()
+                .filter(|member| !member.removed)
+                .filter_map(|member| Some((member.id.person_id()?, member.name.as_str()))),
+        );
+    }
+    Some(described)
+}
+
 fn named_copy(reading: &super::readings::Reading) -> (String, StatePeer) {
     let peer = reading.replica.read(StatePeer::clone);
     let name = peer.governance().workspace_name().unwrap_or_default();

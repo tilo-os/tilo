@@ -699,6 +699,11 @@ d-7j7tzynq = Show as
 
 d-7j7tzynq-style = Style
 
+d-hnvxrx3k = Toggle vpn
+    .doc = Turn the VPN on through its first profile, or off through the one connected: the tile's one press, whichever way it flips.
+
+d-hnvxrx3k-v = V
+
 d-zm35wbjg = A workspace
     .doc = Adds a workspace, with one row, to `a`, and returns the row's key.
 
@@ -877,6 +882,11 @@ d-dgtjjxex = Person menu
     .w-workspace-settings = Workspace settings
     .w-overview = Overview
 
+d-zlo3t3an = Capture status
+    .w-watching = Watching { $label }
+    .w-watching-and-more = Watching { $label } and { $more } more
+    .w-watching-2 = Watching
+
 d-hac3p23j = Volume status
     .w-volume-muted = Volume, muted
     .w-volume = Volume, { $percent }%
@@ -1010,18 +1020,32 @@ d-clgbrhsn = Notices
     .w-nothing-matches-that = Nothing matches that
     .w-clear-the-search-to-see-every = Clear the search to see every notice
 
+d-ytz24ncc = Undo band
+    .w-notifications-cleared = Notifications cleared
+    .w-undo = Undo
+
 d-wud3t5ro = Notice group
 
 d-t3ywtwqj = Notice row
+    .w-hand-to-agent = Hand to agent
     .w-dismiss = Dismiss
 
 d-yyk2izra = Banner
+    .w-1-more-notification = 1 more notification
+    .w-more-notifications = { $more } more notifications
 
 d-gke2gvrj = Banner full
     .w-open = Open
 
 d-wh7n4fhq = Banner row
     .w-dismiss = Dismiss
+
+d-76zs5p4r = Reply row
+    .w-reply = Reply
+    .w-send = Send
+    .w-write-a-reply-first = Write a reply first
+
+d-ny7ms2ry = Osd readout
 
 d-rcjzvfxp = Overview
     .w-overview = Overview
@@ -1082,6 +1106,8 @@ d-uhzjvuan = People button
     .w-and-others-are-here = { $name } and { $others } others are here
 
 d-uvwnwa4d = Agent chip
+    .w-new = { $name }, { $unseen } new
+    .w-show-who-is-here = Show who is here
     .w-stop = Stop
 
 d-teccuwja = Quick settings
@@ -1095,15 +1121,62 @@ d-d5wzqn37 = Bluetooth tile
     .w-bluetooth = Bluetooth
     .w-this-device-has-no-bluetooth = This device has no Bluetooth
 
+d-6va3umd4 = Vpn tile
+    .w-vpn = VPN
+
 d-uzi5ah2q = Dark tile
     .w-dark-mode = Dark mode
 
 d-s66oqjwe = Quiet tile
     .w-do-not-disturb = Do not disturb
 
+d-fabhsxf6 = Night light tile
+    .w-night-light = Night light
+
+d-vr3zx6ry = Airplane tile
+    .w-airplane-mode = Airplane mode
+
+d-72cehcnn = Mobile tile
+    .w-mobile-data = Mobile data
+
+d-ntsyqtrw = Power mode tile
+    .w-power-saver = Power saver
+    .w-balanced = Balanced
+    .w-performance = Performance
+
 d-w3fe7tjv = Levels
+    .w-unmute = Unmute
+    .w-mute = Mute
     .w-volume = Volume
-    .w-brightness = Brightness
+
+d-wvxjuiww = Sound section
+    .w-sound = Sound
+    .w-unmute-the-microphone = Unmute the microphone
+    .w-mute-the-microphone = Mute the microphone
+    .w-microphone = Microphone
+
+d-thduakjg = Network section
+    .w-wi-fi = Wi-Fi
+    .w-wired-network = Wired network
+    .w-connected = Connected
+    .w-cable-unplugged = Cable unplugged
+    .w-wi-fi-is-off = Wi-Fi is off
+    .w-scanning-for-networks = Scanning for networks
+    .w-enter-the-password-for = Enter the password for { $password_for }
+    .w-password = Password
+    .w-join = Join
+    .w-cancel = Cancel
+    .w-hidden-network = Hidden network
+    .w-join-a-network-that-does-not = Join a network that does not broadcast its name
+    .w-network-name = Network name
+    .w-saved-networks = Saved networks
+
+d-zjz5sskl = Bluetooth section
+    .w-bluetooth = Bluetooth
+    .w-bluetooth-is-off = Bluetooth is off
+    .w-stop-looking = Stop looking
+    .w-look-for-devices = Look for devices
+    .w-no-devices-found = No devices found
 
 d-lcjohgdk = Battery line
 

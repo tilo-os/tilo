@@ -63,8 +63,8 @@
 //! may be gone by then: it lets that agent's next fill of that item at that
 //! site through, once.
 
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::path::Path;
+use std::sync::Mutex;
 
 use accounts::vault_items::{self, Allowance, ItemId, Place, UsedFor, VaultItems};
 use serde::{Deserialize, Serialize};
@@ -82,7 +82,9 @@ use tilo_actions::remote::{
 };
 use tilo_lock::MutexRecover as _;
 
-use super::person_asking::{workspace_store_dir, workspace_store_root};
+use super::person_asking::kept_asks::{
+    KeptAskKind, KeptAskStore, MAX_OPEN_ASKS, TOO_MANY_WAIT, hashed_ask_id,
+};
 use super::workspace_stores::Store;
 use super::{WorkspaceId, Workspaces};
 
@@ -119,15 +121,9 @@ pub use tilo_account_probe::mail_servers::{Found as MailFound, MailServers, Serv
 #[cfg(any(test, feature = "test-support"))]
 pub use tilo_account_probe::stand_in as mail_stand_in;
 
-/// The most asks that wait for one person at a time.
-const MAX_OPEN_ASKS: usize = 32;
-
 /// What [`Workspaces::answer_use`] refuses a second reader of one answer
 /// with: the first is carrying it out, or did.
-pub const CARRIED_OUT: &str = "That answer was carried out already";
-/// What [`Workspaces::answer_use`] refuses an ask this server keeps nothing
-/// under with.
-pub const NOTHING_WAITS: &str = "Nothing waits for an answer under that question";
+pub use super::person_asking::kept_asks::{CARRIED_OUT, NOTHING_WAITS};
 
 /// A turn this server carries out for the person who asked it, as the code that carries it
 /// out knows it.
@@ -252,6 +248,49 @@ impl OpenAsk {
     }
 }
 
+impl KeptAskKind for OpenAsk {
+    type Error = ActionCallError;
+    const DIR: &'static str = "vault-asks";
+    const READ_FAILED: &'static str = "a kept ask about a vault use does not read";
+    const MAX_OPEN: Option<(usize, &'static str)> = Some((MAX_OPEN_ASKS, TOO_MANY_WAIT));
+
+    fn id(&self) -> &str {
+        &self.ask
+    }
+
+    fn workspace(&self) -> &str {
+        &self.workspace
+    }
+
+    fn person(&self) -> &str {
+        &self.person
+    }
+
+    fn started(&self) -> bool {
+        self.started
+    }
+
+    fn set_started(&mut self, started: bool) {
+        self.started = started;
+    }
+
+    fn interrupted(&self) -> bool {
+        self.interrupted
+    }
+
+    fn set_interrupted(&mut self, interrupted: bool) {
+        self.interrupted = interrupted;
+    }
+
+    fn asked_at(&self) -> u64 {
+        self.asked_at_ns
+    }
+
+    fn refused(reason: impl Into<String>) -> Self::Error {
+        refused(reason)
+    }
+}
+
 /// What uses of a vault item by reference keep on this server: what proves a
 /// sign-in at its server before an account is kept, and the asks that wait
 /// for their person's answer, read from the server's disk once.
@@ -259,7 +298,7 @@ pub(super) struct Uses {
     /// The web calls people allowed once and that were not made yet.
     calls: web_call::AllowedOnce,
     pub(super) prover: std::sync::RwLock<std::sync::Arc<dyn tilo_account_probe::AccountTester>>,
-    asks: Mutex<Option<Vec<OpenAsk>>>,
+    asks: KeptAskStore<OpenAsk>,
     /// What people allowed for one fill of a page and no more, until each is
     /// spent or too old. Kept in memory alone: after a restart they are asked
     /// again.
@@ -267,11 +306,11 @@ pub(super) struct Uses {
     /// The calendars turns asked to connect that wait for their person's
     /// password, read from the server's disk once.
     #[cfg(feature = "agents")]
-    pub(super) connects: Mutex<Option<Vec<ConnectAsk>>>,
+    pub(super) connects: KeptAskStore<ConnectAsk>,
     /// The mail accounts turns asked to sign in that wait for their person's
     /// password, read from the server's disk once.
     #[cfg(feature = "agents")]
-    pub(super) mail_connects: Mutex<Option<Vec<MailAsk>>>,
+    pub(super) mail_connects: KeptAskStore<MailAsk>,
 }
 
 /// A person's "allow" for one fill: `agent` may fill what `item` keeps into
@@ -366,12 +405,12 @@ impl Default for Uses {
             prover: std::sync::RwLock::new(std::sync::Arc::new(
                 tilo_account_probe::FindingAccountTester(tilo_account_probe::imap::Reach::any()),
             )),
-            asks: Mutex::default(),
+            asks: KeptAskStore::default(),
             once: Mutex::default(),
             #[cfg(feature = "agents")]
-            connects: Mutex::default(),
+            connects: KeptAskStore::default(),
             #[cfg(feature = "agents")]
-            mail_connects: Mutex::default(),
+            mail_connects: KeptAskStore::default(),
         }
     }
 }
@@ -653,88 +692,13 @@ fn vault_use_scope(
     }
 }
 
-const VAULT_ASKS_DIR: &str = "vault-asks";
-
-fn is_ask_id(ask: &str) -> bool {
-    ask.len() == 32
-        && ask
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn vault_ask_path(dir: &Path, workspace: &str, ask: &str) -> PathBuf {
-    workspace_store_dir(dir, workspace)
-        .join(VAULT_ASKS_DIR)
-        .join(format!("{ask}.json"))
-}
-
-fn keep_vault_ask(dir: &Path, ask: &OpenAsk) -> Result<(), String> {
-    let bytes = serde_json::to_vec(ask).map_err(|error| error.to_string())?;
-    tilo_files::native::atomic::write_creating_parent_with_mode(
-        &vault_ask_path(dir, &ask.workspace, &ask.ask),
-        &bytes,
-        0o600,
-    )
-    .map_err(|error| error.to_string())
-}
-
-fn read_kept_vault_ask(path: &Path) -> Option<OpenAsk> {
-    let read = std::fs::read(path)
-        .map_err(|error| error.to_string())
-        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()));
-    match read {
-        Ok(ask) => Some(ask),
-        Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "a kept ask about a vault use does not read");
-            None
-        }
-    }
-}
-
-fn kept_vault_asks(workspaces_root: &Path) -> Vec<OpenAsk> {
-    let mut asks: Vec<OpenAsk> = std::fs::read_dir(workspaces_root)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .flat_map(|ws| {
-            std::fs::read_dir(ws.path().join(VAULT_ASKS_DIR))
-                .into_iter()
-                .flatten()
-        })
-        .flatten()
-        .filter_map(|file| read_kept_vault_ask(&file.path()))
-        .filter(|ask: &OpenAsk| is_ask_id(&ask.ask))
-        .map(|mut ask| {
-            ask.interrupted = ask.started;
-            ask
-        })
-        .collect();
-    asks.sort_by(|a, b| {
-        a.asked_at_ns
-            .cmp(&b.asked_at_ns)
-            .then_with(|| a.ask.cmp(&b.ask))
-    });
-    asks
-}
-
 impl Workspaces {
-    /// Vault asks loaded once from each workspace's store (never `people/<person>/`).
-    fn hosted_asks(&self) -> MutexGuard<'_, Option<Vec<OpenAsk>>> {
-        let mut asks = self.inner.vault_uses.asks.lock_recover();
-        if asks.is_none() {
-            *asks = Some(kept_vault_asks(&workspace_store_root(&self.inner.dir)));
-        }
-        asks
-    }
-
     /// Forget the ask `ask` in `workspace`: nothing is carried out for it any more.
     fn forget_use(&self, workspace: &str, ask: &str) {
-        if let Some(asks) = self.hosted_asks().as_mut() {
-            asks.retain(|kept| kept.ask != ask);
-        }
-        if is_ask_id(ask) {
-            let _ = std::fs::remove_file(vault_ask_path(&self.inner.dir, workspace, ask));
-        }
+        self.inner
+            .vault_uses
+            .asks
+            .forget(&self.inner.dir, workspace, ask);
     }
 
     /// Who asked `turn`, where it is one this server carries out: the first
@@ -932,7 +896,6 @@ impl Workspaces {
         }
         let belongs = places.iter().map(ToString::to_string).collect();
         self.ask_first(
-            &root,
             using,
             (request, arguments),
             (kind, belongs),
@@ -943,85 +906,71 @@ impl Workspaces {
     /// Keep what `using` asked for with `request` until its person answers:
     /// the ask, and what to show them. `shown` is the kind of the item and
     /// the places the use would send its secret to.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the ask is looked for and kept under one lock, so the same use asked twice at once is kept once"
-    )]
     fn ask_first(
         &self,
-        root: &Path,
         using: AskedTurn,
         (request, arguments): (&InvokeRequest, Map<String, Value>),
         (kind, belongs): (vault_items::ItemKind, Vec<String>),
         (reason, asked_in): (String, Value),
     ) -> Result<TurnUse, ActionCallError> {
         let person = hex::encode(using.person);
-        let mut asks = self.hosted_asks();
-        let open = asks.get_or_insert_with(Vec::new);
-        // Asked the same again while its person has not answered: the one
-        // question stands.
-        if open.iter().any(|kept| {
-            kept.person == person
-                && kept.agent == using.agent
-                && kept.workspace == using.workspace
-                && kept.target() == request.target
-                && kept.arguments == arguments
-        }) {
-            return Ok(TurnUse::Waits);
-        }
-        if open.iter().filter(|kept| kept.person == person).count() >= MAX_OPEN_ASKS {
-            return Err(refused(
-                "Too many questions already wait for this person's answer",
-            ));
-        }
-        let Some(described) = person_vault::described_use(&request.target) else {
-            return Err(UnknownAction);
-        };
-        let asked_at_ns = tilo_clock::unix_now_ns();
-        let ask: String = blake3::hash(
-            format!(
-                "{person}\0{}\0{:?}\0{asked_at_ns}",
-                using.agent, request.invocation
-            )
-            .as_bytes(),
-        )
-        .to_hex()
-        .chars()
-        .take(32)
-        .collect();
-        let mut shown = Map::new();
-        shown.insert("ask".into(), json!(ask));
-        shown.insert("item".into(), json!({"kind": kind, "belongsTo": belongs}));
-        // A page's field: its person is shown where, by the site's name and
-        // by its origin whole.
-        if let Some(site) = shown_site(&request.target, &arguments) {
-            shown.insert("site".into(), site);
-        }
-        let detail = json!({
-            "draft": tilo_actions::Draft::render(&described, &arguments),
-            "use": shown,
-        });
-        let kept = OpenAsk {
-            ask,
-            workspace: using.workspace,
-            person,
-            agent: using.agent,
-            name: using.name,
-            reason,
-            asked_in,
-            detail,
-            started: false,
-            interrupted: false,
-            asked_at_ns,
-            provider: request.target.provider.clone(),
-            resource: request.target.address.resource.clone(),
-            action: request.target.address.action.clone(),
-            arguments,
-        };
-        let _ = root;
-        keep_vault_ask(&self.inner.dir, &kept).map_err(refused)?;
-        open.push(kept.clone());
-        Ok(TurnUse::Asks(Box::new(kept)))
+        let kept = self.inner.vault_uses.asks.keep(
+            &self.inner.dir,
+            &person,
+            (using, arguments),
+            |kept, (using, arguments)| {
+                kept.person == person
+                    && kept.agent == using.agent
+                    && kept.workspace == using.workspace
+                    && kept.target() == request.target
+                    && kept.arguments == *arguments
+            },
+            |(using, arguments)| {
+                let Some(described) = person_vault::described_use(&request.target) else {
+                    return Err(UnknownAction);
+                };
+                let asked_at_ns = tilo_clock::unix_now_ns();
+                let ask = hashed_ask_id(
+                    &person,
+                    &using.agent,
+                    &format!("{:?}", request.invocation),
+                    asked_at_ns,
+                );
+                let mut shown = Map::new();
+                shown.insert("ask".into(), json!(ask));
+                shown.insert("item".into(), json!({"kind": kind, "belongsTo": belongs}));
+                // A page's field: its person is shown where, by the site's name and
+                // by its origin whole.
+                if let Some(site) = shown_site(&request.target, &arguments) {
+                    shown.insert("site".into(), site);
+                }
+                let detail = json!({
+                    "draft": tilo_actions::Draft::render(&described, &arguments),
+                    "use": shown,
+                });
+                Ok(OpenAsk {
+                    ask,
+                    workspace: using.workspace,
+                    person: person.clone(),
+                    agent: using.agent,
+                    name: using.name,
+                    reason,
+                    asked_in,
+                    detail,
+                    started: false,
+                    interrupted: false,
+                    asked_at_ns,
+                    provider: request.target.provider.clone(),
+                    resource: request.target.address.resource.clone(),
+                    action: request.target.address.action.clone(),
+                    arguments,
+                })
+            },
+        )?;
+        Ok(match kept {
+            Some(kept) => TurnUse::Asks(Box::new(kept)),
+            None => TurnUse::Waits,
+        })
     }
 
     /// The question about `ask` could not be put to its person: nothing
@@ -1035,23 +984,16 @@ impl Workspaces {
     /// agents reads answers for. Cheap where none waits.
     #[must_use]
     pub fn open_use_asks(&self, workspace: &str) -> Vec<OpenAsk> {
-        self.hosted_asks()
-            .as_ref()
-            .map(|asks| {
-                asks.iter()
-                    .filter(|ask| ask.workspace == workspace)
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.inner.vault_uses.asks.open(&self.inner.dir, workspace)
     }
 
     /// An answer to `ask` was being carried out when this server stopped:
     /// nobody carries it out now, and it is not carried out a second time.
     pub fn use_interrupted(&self, ask: &OpenAsk) {
-        if ask.interrupted {
-            self.forget_use(&ask.workspace, &ask.ask);
-        }
+        self.inner
+            .vault_uses
+            .asks
+            .forget_if_interrupted(&self.inner.dir, ask);
     }
 
     /// Carry out the person's answer to the ask `ask`: `shown` is the
@@ -1090,30 +1032,8 @@ impl Workspaces {
     /// # Errors
     /// Nothing is kept under that ask ([`NOTHING_WAITS`]), another reader
     /// claimed it ([`CARRIED_OUT`]), or the claim could not be written down.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the claim is read and written under one lock, so two readers of one answer cannot both take it"
-    )]
     pub fn claim_use(&self, ask: &str) -> Result<OpenAsk, ActionCallError> {
-        let claimed = {
-            let mut asks = self.hosted_asks();
-            let Some(kept) = asks
-                .as_mut()
-                .and_then(|asks| asks.iter_mut().find(|kept| kept.ask == ask))
-            else {
-                return Err(refused(NOTHING_WAITS));
-            };
-            if kept.started {
-                return Err(refused(CARRIED_OUT));
-            }
-            kept.started = true;
-            kept.clone()
-        };
-        if let Err(error) = keep_vault_ask(&self.inner.dir, &claimed) {
-            self.forget_use(&claimed.workspace, &claimed.ask);
-            return Err(refused(error));
-        }
-        Ok(claimed)
+        self.inner.vault_uses.asks.claim(&self.inner.dir, ask)
     }
 
     /// Carry out the answer to the ask `claimed` ([`Self::claim_use`]), as
@@ -1242,19 +1162,6 @@ pub(super) fn person_device_in(
         .map(|cert| cert.device_public_key)
 }
 
-/// Whether the member delegated `person`'s work to `server`, this device, as `actor`
-/// ([`collab_types::work_delegation::WorkDelegation`]) in the workspace `peer` holds.
-fn delegated_in(
-    peer: &super::StatePeer,
-    person: &[u8; 32],
-    actor: &tilo_action_policy::MemberId,
-    server: &[u8; 32],
-) -> bool {
-    peer.workspace()
-        .work_delegation(server, person, tilo_clock::wall())
-        .is_some_and(|delegation| delegation.actor() == *actor)
-}
-
 impl Workspaces {
     /// [`person_device_in`] the workspace `workspace` governed here: `None` for
     /// a workspace not governed here, or a person it admits on no device of their own. The
@@ -1319,38 +1226,6 @@ impl Workspaces {
         .await
         .unwrap_or(false)
     }
-
-    /// The device the workspace `workspace` admits `person`'s work on for a turn
-    /// acting as `actor`: this server's own device where they delegated that work
-    /// to it as `actor`, else the newest of their own devices it admits now.
-    /// `None` for a workspace not governed here, or a person whose work no device
-    /// here is admitted on: a turn of theirs does not start. On a device of the person's own, the
-    /// turn is this device's: what it writes for the agent is this device's member write.
-    pub async fn work_device(
-        &self,
-        workspace: WorkspaceId,
-        person: [u8; 32],
-        actor: &tilo_action_policy::MemberId,
-    ) -> Option<[u8; 32]> {
-        if let Ok(device) = self.member_identity()
-            && device.cert.user_public_key == person
-        {
-            return Some(device.cert.device_public_key);
-        }
-        let placed = &self.inner.host.environments;
-        let now_ns = tilo_clock::unix_now_ns();
-        let server = self.governor().device_public_key;
-        self.governing(workspace, |governance| {
-            if delegated_in(governance.peer, &person, actor, &server) {
-                return Some(server);
-            }
-            person_device_in(governance.peer, &person, |device| {
-                placed.of(device, now_ns).is_some()
-            })
-        })
-        .await
-        .flatten()
-    }
 }
 
 impl Workspaces {
@@ -1391,7 +1266,6 @@ impl Workspaces {
     ) -> Result<TurnRelease, ActionCallError> {
         let target = person_vault::page_target();
         let using = self.turn_uses_for(turn, &target).await?;
-        let root = self.workspace_root(&using.workspace);
         let (item, site) = page_wanted(fill).map_err(refused)?;
         let kind = {
             let items = self
@@ -1438,7 +1312,6 @@ impl Workspaces {
             signed: None,
         };
         let asked = self.ask_first(
-            &root,
             using,
             (&request, arguments),
             (kind, vec![site.to_string()]),

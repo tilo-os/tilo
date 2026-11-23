@@ -129,16 +129,10 @@ mod tests {
     fn taking_an_answer_back_stops_the_capture_it_allowed() {
         let grants = DeviceGrants::unkept();
         for device in [DeviceCap::Camera, DeviceCap::Input] {
-            grants
-                .answer("so.tilo.meet", device, Answer::Allow, Lifetime::Session)
-                .unwrap();
+            grants.answer("so.tilo.meet", device, Answer::Allow, Lifetime::Session);
         }
         assert!(grants.taken_back().is_empty());
-        assert!(
-            grants
-                .revoke_here("so.tilo.meet", DeviceCap::Input)
-                .unwrap()
-        );
+        assert!(grants.revoke_here("so.tilo.meet", DeviceCap::Input));
         let taken = grants.taken_back();
         assert!(ended(
             &grants,

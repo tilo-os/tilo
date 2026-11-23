@@ -21,6 +21,9 @@ pub struct AvatarProps {
     /// An empty avatar placeholder: a message that continues its author's run lines up under the
     /// first one's avatar without repeating it.
     pub placeholder: bool,
+    /// Where the person's picture is: a content address (`tilo-blob://<hash>`) or a `data:`
+    /// address a record carries, read as `ui.Image` reads one. The initials show until it is here.
+    pub picture: Option<String>,
 }
 
 impl AvatarProps {
@@ -55,6 +58,9 @@ impl Described for Avatar {
         if props.placeholder {
             avatar = avatar.placeholder();
         }
+        if let Some(picture) = props.picture.filter(|url| !url.is_empty()) {
+            avatar = avatar.with_picture_url(picture);
+        }
         avatar
     }
 
@@ -67,6 +73,23 @@ impl Described for Avatar {
         self.neutral = props.glyph.is_some();
         self.square = props.square || props.glyph.is_some();
         self.placeholder = props.placeholder;
+        let picture = props.picture.filter(|url| !url.is_empty());
+        let shown = match &self.picture {
+            super::Picture::Lazy { url, .. } => Some(url.clone()),
+            super::Picture::None => None,
+        };
+        if picture != shown {
+            self.image = None;
+            match picture {
+                Some(url) => {
+                    self.picture = super::Picture::Lazy {
+                        store: crate::pictures::Pictures::window().store().clone(),
+                        url,
+                    };
+                }
+                None => self.picture = super::Picture::None,
+            }
+        }
         self.dirty = true;
         true
     }

@@ -1156,13 +1156,14 @@ impl Checker<'_> {
                 self.pop_sink();
                 return Ex::error();
             };
-            if !passed_as_is(action, &p.name.name) {
+            if !self.takes_event_value(action, &p.name.name) {
+                let x = &p.name.name;
                 self.err(
                     "E063",
                     action.span,
                     format!(
-                        "the value `{}` carries is passed to the action as it is, as one of its arguments: `{}(...)` with `{}` among them",
-                        e.name, "action", p.name.name
+                        "the value `{}` carries is passed to an action as it is, as one of its arguments (`action(..., {x})`), or computed into this view's own state (`set(state, f({x}))`)",
+                        e.name
                     ),
                 );
                 self.pop_sink();
@@ -1176,6 +1177,7 @@ impl Checker<'_> {
             if scalar {
                 self.st.event_scalars.insert(local);
             }
+            self.st.event_values.insert(local);
             let placeholder = if parts {
                 let part = i32::try_from(i).unwrap_or(0);
                 Ex::host(
@@ -1196,6 +1198,50 @@ impl Checker<'_> {
         let act = self.expr_as(action, &Ty::Action);
         let stmts = self.pop_sink();
         Ex::new(crate::ir::Ek::Seq(stmts, Box::new(act)), Ty::Action)
+    }
+
+    /// Whether the action `e` takes the value `name` of an event in a way that keeps it data the
+    /// host fills: passed to an action as it is ([`passed_as_is`]), or the new value of this view's
+    /// own state computed from it (`set(expr, x.expr)`), which the runtime computes when the event
+    /// fires. View state is the person's presentation, so only a `set` of it may compute: an action
+    /// on a resource takes the value as it is, so what it is called with is what was chosen.
+    fn takes_event_value(&self, e: &ast::Expr, name: &str) -> bool {
+        let ExprKind::Call { callee, args, .. } = &e.kind else {
+            return false;
+        };
+        let names = [name];
+        if let ExprKind::Field { base, name: then } = &callee.kind
+            && then.name == "then"
+            && let [next] = args.as_slice()
+        {
+            let step = |e: &ast::Expr| -> Option<bool> {
+                if self.takes_event_value(e, name) {
+                    Some(true)
+                } else if super::native::mentions(e, &names).is_none() {
+                    Some(false)
+                } else {
+                    None
+                }
+            };
+            return match (step(base), step(&next.value)) {
+                (Some(a), Some(b)) => a || b,
+                _ => false,
+            };
+        }
+        if passed_as_is(e, name) {
+            return true;
+        }
+        // `set(state, value)` of a state this view declares, the value alone reading the event's.
+        matches!(&callee.kind, ExprKind::Ident(f) if f == "set")
+            && self.st.ctx == Ctx::View
+            && matches!(
+                args.as_slice(),
+                [target, value]
+                    if target.name.is_none()
+                        && value.name.is_none()
+                        && matches!(&target.value.kind, ExprKind::Ident(s) if s != name && self.state_named(s).is_some())
+                        && super::native::mentions(&value.value, &names).is_some()
+            )
     }
 
     fn event_param_ty(

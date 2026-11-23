@@ -1,7 +1,9 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    reason = "isolated D-Bus fixtures must construct successfully before production-path assertions"
+    clippy::too_many_lines,
+    clippy::significant_drop_tightening,
+    reason = "isolated D-Bus fixtures must construct successfully before production-path assertions, and one end-to-end journey reads as one test"
 )]
 
 use std::collections::HashMap;
@@ -13,9 +15,7 @@ use tilo_test_env::PrivateBus;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use super::*;
-use crate::external_broker::tests::speaks;
 use crate::routing::LinkState;
-use ui::tilo_resource::SharedResource as _;
 
 const MODEM_PATH: &str = "/org/freedesktop/ModemManager1/Modem/7";
 const SIM_PATH: &str = "/org/freedesktop/ModemManager1/SIM/7";
@@ -332,8 +332,8 @@ fn binding() -> LiveBinding {
         state: LinkState::Linked,
     }
 }
-fn accounts() -> accounts::person::PersonAccounts {
-    let mut accounts = accounts::person::PersonAccounts::default();
+fn accounts() -> accounts::person::AccountList {
+    let mut accounts = accounts::person::AccountList::default();
     accounts
         .keep(&accounts::Account::new("fixture-sim", "sms"))
         .unwrap();
@@ -342,9 +342,122 @@ fn accounts() -> accounts::person::PersonAccounts {
 fn route() -> Route {
     Route::new(Service::Sms, "fixture-sim".into(), "+12025550123".into()).unwrap()
 }
-
 #[tokio::test]
-async fn revoked_sim_permission_refuses_before_hardware_or_journal_writes() {
+async fn sms_send_journey_from_binding_through_refusal_and_uncertainty() {
+    // The binding is bound to its exact owner, the current hardware and the
+    // original permission; a resume that cannot prove all three stops here.
+    let fixture = Fixture::new().await;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("sim.enc");
+    let key = secret_vault::VaultKey::from_slice(&[0x44; 32]).unwrap();
+    let original = SimBinding::new(
+        fixture.server.unique_name().unwrap().to_string(),
+        MODEM_PATH.into(),
+        SIM_PATH.into(),
+        ICCID.into(),
+        7,
+    )
+    .unwrap();
+    original.save(&path, &owner(), &key).unwrap();
+    let ciphertext = std::fs::read(&path).unwrap();
+    assert!(
+        !ciphertext
+            .windows(ICCID.len())
+            .any(|bytes| bytes == ICCID.as_bytes())
+    );
+    let restored = SimBinding::load(&path, &owner(), &key, &fixture.client)
+        .await
+        .unwrap();
+    let permission = fixture.state.lock().unwrap().permission.clone();
+    DbusTransport::new(fixture.client.clone(), restored, permission.clone())
+        .unwrap()
+        .validate()
+        .await
+        .unwrap();
+    let mut foreign = owner();
+    foreign.account = "foreign-sim-account".into();
+    assert!(matches!(
+        SimBinding::load(&path, &foreign, &key, &fixture.client).await,
+        Err(Error::WrongAccount)
+    ));
+    fixture.state.lock().unwrap().iccid = "8901000000000000002".into();
+    let changed = SimBinding::load(&path, &owner(), &key, &fixture.client)
+        .await
+        .unwrap();
+    assert_eq!(
+        DbusTransport::new(fixture.client.clone(), changed, permission.clone())
+            .unwrap()
+            .validate()
+            .await,
+        Err(Error::WrongAccount)
+    );
+    permission.0.store(true, Ordering::Release);
+    let restored = SimBinding::load(&path, &owner(), &key, &fixture.client)
+        .await
+        .unwrap();
+    assert!(DbusTransport::new(fixture.client.clone(), restored, permission).is_err());
+    assert_eq!(std::fs::read(path).unwrap(), ciphertext);
+    assert_eq!(fixture.state.lock().unwrap().creates, 0);
+    assert_eq!(fixture.state.lock().unwrap().sends, 0);
+
+    // A real Send is submitted once, its reservation is durable and encrypted,
+    // and neither a restart nor a repeat can submit it again.
+    let fixture = Fixture::new().await;
+    let root = tempfile::tempdir().unwrap();
+    let mut runtime = fixture.runtime(root.path());
+    let submitted = runtime
+        .send(
+            &accounts(),
+            &binding(),
+            &route(),
+            "op",
+            "private fixture text",
+            ANSWERED_BUDGET,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        submitted,
+        ProtocolReference::Sms {
+            modem_object: MODEM_PATH.into(),
+            message_object: MESSAGE_PATH.into(),
+            daemon_epoch: 7
+        }
+    );
+    assert_eq!(
+        runtime.status("op"),
+        Some(Status::Submitted(submitted.clone()))
+    );
+    drop(runtime);
+    let bytes = std::fs::read(root.path().join(secret_vault::VAULT_FILE)).unwrap();
+    assert!(
+        !bytes
+            .windows(20)
+            .any(|part| part == b"private fixture text")
+    );
+    let mut runtime = fixture.runtime(root.path());
+    assert_eq!(runtime.status("op"), Some(Status::Submitted(submitted)));
+    assert!(
+        runtime
+            .send(
+                &accounts(),
+                &binding(),
+                &route(),
+                "op",
+                "private fixture text",
+                Duration::from_secs(2)
+            )
+            .await
+            .is_err()
+    );
+    {
+        let state = fixture.state.lock().unwrap();
+        assert_eq!((state.creates, state.sends), (1, 1));
+        assert_eq!(state.number, route().recipient());
+    }
+
+    // Revoked permission, a replaced SIM and a replaced daemon all refuse
+    // before any hardware call or journal write.
     let fixture = Fixture::new().await;
     let root = tempfile::tempdir().unwrap();
     let mut runtime = fixture.runtime(root.path());
@@ -370,105 +483,12 @@ async fn revoked_sim_permission_refuses_before_hardware_or_journal_writes() {
             .await
             .is_err()
     );
-    let state = fixture.state.lock().unwrap();
-    assert_eq!((state.creates, state.sends), (0, 0));
-    drop(state);
+    {
+        let state = fixture.state.lock().unwrap();
+        assert_eq!((state.creates, state.sends), (0, 0));
+    }
     assert_eq!(std::fs::read(file).ok(), before);
     assert_eq!(runtime.status("revoked"), None);
-}
-
-#[tokio::test]
-async fn revocation_during_create_never_sends_or_rewrites_the_private_journal() {
-    let fixture = Fixture::new().await;
-    let root = tempfile::tempdir().unwrap();
-    let mut runtime = fixture.runtime(root.path());
-    let file = root.path().join(secret_vault::VAULT_FILE);
-    {
-        let mut state = fixture.state.lock().unwrap();
-        state.fault = Fault::RevokeAfterCreate;
-        state.journal_at_revoke = Some(file.clone());
-    }
-    assert!(matches!(
-        runtime
-            .send(
-                &accounts(),
-                &binding(),
-                &route(),
-                "interrupted",
-                "private fixture text",
-                ANSWERED_BUDGET
-            )
-            .await,
-        Err(CheckedSendError::Transport(SendError::Uncertain))
-    ));
-    let state = fixture.state.lock().unwrap();
-    assert_eq!((state.creates, state.sends), (1, 0));
-    assert_eq!(
-        std::fs::read(file).unwrap(),
-        *state.revoked_bytes.as_ref().unwrap()
-    );
-    drop(state);
-    assert_eq!(runtime.status("interrupted"), Some(Status::Started));
-}
-
-#[tokio::test]
-async fn actual_dbus_send_is_submitted_and_durable_operation_never_retries() {
-    let fixture = Fixture::new().await;
-    let root = tempfile::tempdir().unwrap();
-    let mut runtime = fixture.runtime(root.path());
-    let result = runtime
-        .send(
-            &accounts(),
-            &binding(),
-            &route(),
-            "op",
-            "private fixture text",
-            ANSWERED_BUDGET,
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        result,
-        ProtocolReference::Sms {
-            modem_object: MODEM_PATH.into(),
-            message_object: MESSAGE_PATH.into(),
-            daemon_epoch: 7
-        }
-    );
-    assert_eq!(
-        runtime.status("op"),
-        Some(Status::Submitted(result.clone()))
-    );
-    drop(runtime);
-    let bytes = std::fs::read(root.path().join(secret_vault::VAULT_FILE)).unwrap();
-    assert!(
-        !bytes
-            .windows(20)
-            .any(|part| part == b"private fixture text")
-    );
-    let mut runtime = fixture.runtime(root.path());
-    assert_eq!(runtime.status("op"), Some(Status::Submitted(result)));
-    assert!(
-        runtime
-            .send(
-                &accounts(),
-                &binding(),
-                &route(),
-                "op",
-                "private fixture text",
-                Duration::from_secs(2)
-            )
-            .await
-            .is_err()
-    );
-    let state = fixture.state.lock().unwrap();
-    assert_eq!((state.creates, state.sends), (1, 1));
-    assert_eq!(state.number, route().recipient());
-    drop(state);
-}
-
-#[tokio::test]
-async fn replaced_sim_or_daemon_refuses_before_any_mutation_or_reservation() {
     let fixture = Fixture::new().await;
     let root = tempfile::tempdir().unwrap();
     let mut runtime = fixture.runtime(root.path());
@@ -507,13 +527,46 @@ async fn replaced_sim_or_daemon_refuses_before_any_mutation_or_reservation() {
             .is_err()
     );
     assert_eq!(runtime.status("op"), None);
-    let state = fixture.state.lock().unwrap();
-    assert_eq!((state.creates, state.sends), (0, 0));
-    drop(state);
-}
+    {
+        let state = fixture.state.lock().unwrap();
+        assert_eq!((state.creates, state.sends), (0, 0));
+    }
 
-#[tokio::test]
-async fn sim_switch_wrong_recipient_or_cross_modem_object_after_create_never_sends() {
+    // Revocation during Create reaches no Send and rewrites nothing durable.
+    let fixture = Fixture::new().await;
+    let root = tempfile::tempdir().unwrap();
+    let mut runtime = fixture.runtime(root.path());
+    let file = root.path().join(secret_vault::VAULT_FILE);
+    {
+        let mut state = fixture.state.lock().unwrap();
+        state.fault = Fault::RevokeAfterCreate;
+        state.journal_at_revoke = Some(file.clone());
+    }
+    assert!(matches!(
+        runtime
+            .send(
+                &accounts(),
+                &binding(),
+                &route(),
+                "interrupted",
+                "private fixture text",
+                ANSWERED_BUDGET
+            )
+            .await,
+        Err(CheckedSendError::Transport(SendError::Uncertain))
+    ));
+    {
+        let state = fixture.state.lock().unwrap();
+        assert_eq!((state.creates, state.sends), (1, 0));
+        assert_eq!(
+            std::fs::read(file).unwrap(),
+            *state.revoked_bytes.as_ref().unwrap()
+        );
+    }
+    assert_eq!(runtime.status("interrupted"), Some(Status::Started));
+
+    // A native object that does not answer with this exact message is
+    // uncertain, never sent, and unresendable after a restart.
     for fault in [
         Fault::SwapAfterCreate,
         Fault::WrongRecipient,
@@ -522,10 +575,7 @@ async fn sim_switch_wrong_recipient_or_cross_modem_object_after_create_never_sen
         Fault::IncomingPdu,
     ] {
         let fixture = Fixture::new().await;
-        {
-            let mut state = fixture.state.lock().unwrap();
-            state.fault = fault;
-        }
+        fixture.state.lock().unwrap().fault = fault;
         let root = tempfile::tempdir().unwrap();
         let mut runtime = fixture.runtime(root.path());
         assert_eq!(
@@ -559,28 +609,21 @@ async fn sim_switch_wrong_recipient_or_cross_modem_object_after_create_never_sen
         );
         let state = fixture.state.lock().unwrap();
         assert_eq!((state.creates, state.sends), (1, 0));
-        drop(state);
     }
-}
 
-#[tokio::test]
-async fn send_error_and_response_timeout_are_uncertain_without_delivery_or_retry() {
+    // A native error and a response timeout are the same uncertainty.
     for delayed in [false, true] {
         let fixture_owner = DeadlineFixture::new().await;
         let fixture = &fixture_owner.fixture;
-        {
-            let mut state = fixture.state.lock().unwrap();
-            state.fault = if delayed {
-                Fault::DelaySend
-            } else {
-                Fault::FailSend
-            };
-        }
+        fixture.state.lock().unwrap().fault = if delayed {
+            Fault::DelaySend
+        } else {
+            Fault::FailSend
+        };
         let root = tempfile::tempdir().unwrap();
         let mut runtime = fixture.runtime(root.path());
-        // The operation retains its original end-to-end 250ms deadline.
         // Freeze only fixture time while admitting real D-Bus I/O, then expire
-        // that deadline after the exact Send handler has demonstrably started.
+        // the 250ms operation budget after the exact Send handler started.
         tokio::time::pause();
         let result = {
             let accounts = accounts();
@@ -600,7 +643,6 @@ async fn send_error_and_response_timeout_are_uncertain_without_delivery_or_retry
                         .await
                         .is_none()
                 );
-                // Cross Tokio's millisecond timer tick; the operation budget stays 250ms.
                 tokio::time::advance(Duration::from_millis(251)).await;
             }
             drive_sms_send(send.as_mut(), &fixture.state, false)
@@ -628,40 +670,9 @@ async fn send_error_and_response_timeout_are_uncertain_without_delivery_or_retry
         );
         let state = fixture.state.lock().unwrap();
         assert_eq!((state.creates, state.sends), (1, 1));
-        drop(state);
     }
-}
 
-// Keep the paused runtime runnable while the external private bus admits I/O.
-// Otherwise Tokio can auto-advance the operation timer before the server runs.
-// This wall bound fails an unobservable fixture; it never extends SMS time.
-async fn drive_sms_send(
-    mut send: std::pin::Pin<
-        &mut impl std::future::Future<Output = Result<ProtocolReference, CheckedSendError>>,
-    >,
-    evidence: &Mutex<Evidence>,
-    until_send: bool,
-) -> Option<Result<ProtocolReference, CheckedSendError>> {
-    let started = tilo_clock::now();
-    std::future::poll_fn(|cx| {
-        if let std::task::Poll::Ready(result) = send.as_mut().poll(cx) {
-            return std::task::Poll::Ready(Some(result));
-        }
-        if until_send && evidence.lock().unwrap().sends == 1 {
-            return std::task::Poll::Ready(None);
-        }
-        assert!(
-            started.elapsed() < tilo_test_env::hang_bound(),
-            "private SMS fixture did not reach its controlled RPC phase"
-        );
-        cx.waker().wake_by_ref();
-        std::task::Poll::Pending
-    })
-    .await
-}
-
-#[tokio::test]
-async fn deadline_after_create_stops_before_send_and_keeps_uncertainty_without_retry() {
+    // A deadline that expires during Create stops before Send.
     let fixture_owner = DeadlineFixture::new().await;
     let fixture = &fixture_owner.fixture;
     fixture.state.lock().unwrap().fault = Fault::DelayAfterCreate;
@@ -694,7 +705,6 @@ async fn deadline_after_create_stops_before_send_and_keeps_uncertainty_without_r
             std::task::Poll::Pending
         })
         .await;
-        // Cross Tokio's millisecond timer tick; the operation budget stays 250ms.
         tokio::time::advance(Duration::from_millis(251)).await;
         drive_sms_send(send.as_mut(), &fixture.state, false)
             .await
@@ -706,22 +716,35 @@ async fn deadline_after_create_stops_before_send_and_keeps_uncertainty_without_r
         Err(CheckedSendError::Transport(SendError::Uncertain))
     );
     assert_eq!(runtime.status("op"), Some(Status::Uncertain));
-    assert!(
-        runtime
-            .send(
-                &accounts(),
-                &binding(),
-                &route(),
-                "next",
-                "fixture text",
-                Duration::from_secs(2)
-            )
-            .await
-            .is_err()
-    );
     let state = fixture.state.lock().unwrap();
     assert_eq!((state.creates, state.sends), (1, 0));
-    drop(state);
+}
+
+// Keep the paused runtime runnable while the external private bus admits I/O.
+// Otherwise Tokio can auto-advance the operation timer before the server runs.
+async fn drive_sms_send(
+    mut send: std::pin::Pin<
+        &mut impl std::future::Future<Output = Result<ProtocolReference, CheckedSendError>>,
+    >,
+    evidence: &Mutex<Evidence>,
+    until_send: bool,
+) -> Option<Result<ProtocolReference, CheckedSendError>> {
+    let started = tilo_clock::now();
+    std::future::poll_fn(|cx| {
+        if let std::task::Poll::Ready(result) = send.as_mut().poll(cx) {
+            return std::task::Poll::Ready(Some(result));
+        }
+        if until_send && evidence.lock().unwrap().sends == 1 {
+            return std::task::Poll::Ready(None);
+        }
+        assert!(
+            started.elapsed() < tilo_test_env::hang_bound(),
+            "private SMS fixture did not reach its controlled RPC phase"
+        );
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
+    })
+    .await
 }
 
 fn receive_state(state: &mut Evidence) {
@@ -733,8 +756,9 @@ fn receive_state(state: &mut Evidence) {
     state.class = -1;
     state.timestamp = "2026-10-06T12:34:56+00:00".into();
 }
+
 #[tokio::test]
-async fn received_text_is_exact_complete_and_read_only() {
+async fn received_sms_journey_is_exact_and_refuses_unverifiable_evidence() {
     let fixture = Fixture::new().await;
     receive_state(&mut fixture.state.lock().unwrap());
     let root = tempfile::tempdir().unwrap();
@@ -764,16 +788,13 @@ async fn received_text_is_exact_complete_and_read_only() {
         .unwrap();
     assert_eq!(incoming.id, again.id);
     assert_eq!(runtime.status(&incoming.id), None);
-    let state = fixture.state.lock().unwrap();
-    assert_eq!((state.creates, state.sends), (0, 0));
-    drop(state);
-}
-#[tokio::test]
-async fn received_partial_report_flash_binary_foreign_or_invalid_time_is_refused() {
-    let fixture = Fixture::new().await;
-    let root = tempfile::tempdir().unwrap();
-    let runtime = fixture.runtime(root.path());
-    for case in 0..13 {
+    {
+        let state = fixture.state.lock().unwrap();
+        assert_eq!((state.creates, state.sends), (0, 0));
+    }
+    // Partial, non-text, binary, foreign, badly timed, SIM-swapped and
+    // incomplete native objects are all refused.
+    for case in 0..7 {
         {
             let mut state = fixture.state.lock().unwrap();
             receive_state(&mut state);
@@ -783,17 +804,11 @@ async fn received_partial_report_flash_binary_foreign_or_invalid_time_is_refused
             match case {
                 0 => state.incoming_state = 2,
                 1 => state.incoming_pdu = 3,
-                2 => state.class = 0,
-                3 => state.data.push(1),
-                4 => state.number = "+12025550199".into(),
-                5 => state.timestamp = "not a timestamp".into(),
-                6 => state.timestamp = "1960-01-01T00:00:00Z".into(),
-                7 => state.text.clear(),
-                8 => state.fault = Fault::MissingMember,
-                9 => state.iccid = "8901000000000000002".into(),
-                10 => state.fault = Fault::SwapOnRead,
-                11 => state.fault = Fault::ChangeOnRead,
-                _ => state.incoming_pdu = 32,
+                2 => state.data.push(1),
+                3 => state.number = "+12025550199".into(),
+                4 => state.timestamp = "not a timestamp".into(),
+                5 => state.iccid = "8901000000000000002".into(),
+                _ => state.fault = Fault::SwapOnRead,
             }
         }
         assert!(
@@ -812,7 +827,6 @@ async fn received_partial_report_flash_binary_foreign_or_invalid_time_is_refused
     }
     let state = fixture.state.lock().unwrap();
     assert_eq!((state.creates, state.sends), (0, 0));
-    drop(state);
 }
 
 #[cfg(feature = "signal-broker")]
@@ -943,8 +957,24 @@ async fn wait_inbox(broker: &crate::external_broker::ExternalBroker) {
     }
 }
 #[cfg(feature = "signal-broker")]
+async fn wait_account(supervisor: &Arc<crate::supervisor::AccountSupervisor>, failed: bool) {
+    use tilo_messaging::{AccountState, ServiceAccount};
+    let account = ServiceAccount::new("sms", "fixture-sim");
+    let deadline = tokio::time::Instant::now()
+        .checked_add(tilo_test_env::hang_bound())
+        .expect("bounded fixture deadline");
+    while (supervisor.client().account_state(&account) == AccountState::Failed) != failed {
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+#[cfg(feature = "signal-broker")]
 #[tokio::test]
-async fn subscribed_sms_initial_enumeration_is_private_durable_and_read_only() {
+async fn subscribed_sms_journey_from_enumeration_to_revoked_reply() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // Initial enumeration admits exactly the readable message, durably and
+    // without touching the native object.
     let fixture = Fixture::new().await;
     receive_state(&mut fixture.state.lock().unwrap());
     let root = tempfile::tempdir().unwrap();
@@ -965,7 +995,6 @@ async fn subscribed_sms_initial_enumeration_is_private_durable_and_read_only() {
     {
         let state = fixture.state.lock().unwrap();
         assert_eq!((state.creates, state.sends), (0, 0));
-        drop(state);
     }
     drop(guard);
     tokio::task::yield_now().await;
@@ -986,10 +1015,9 @@ async fn subscribed_sms_initial_enumeration_is_private_durable_and_read_only() {
             .windows(b"private incoming SMS".len())
             .any(|part| part == b"private incoming SMS")
     );
-}
-#[cfg(feature = "signal-broker")]
-#[tokio::test]
-async fn subscribed_sms_added_partial_then_state_complete_persists_once() {
+
+    // A partial message persists nothing until its State completes; an unknown
+    // recipient has no route until the object names the confirmed one.
     let fixture = Fixture::new().await;
     let root = tempfile::tempdir().unwrap();
     let broker = inbox_broker(&fixture, root.path());
@@ -998,6 +1026,7 @@ async fn subscribed_sms_added_partial_then_state_complete_persists_once() {
         let mut state = fixture.state.lock().unwrap();
         receive_state(&mut state);
         state.incoming_state = 2;
+        state.number = "+12025550999".into();
     }
     added(&fixture).await;
     let deadline = tokio::time::Instant::now()
@@ -1017,7 +1046,11 @@ async fn subscribed_sms_added_partial_then_state_complete_persists_once() {
             .messages
             .is_empty()
     );
-    fixture.state.lock().unwrap().incoming_state = 3;
+    {
+        let mut state = fixture.state.lock().unwrap();
+        state.incoming_state = 3;
+        state.number = contact_route().recipient;
+    }
     state_changed(&fixture).await;
     wait_inbox(&broker).await;
     added(&fixture).await;
@@ -1031,193 +1064,12 @@ async fn subscribed_sms_added_partial_then_state_complete_persists_once() {
     assert_eq!(page.messages.len(), 1);
     assert_eq!(page.messages.first().unwrap().delivery, None);
     assert!(!guard.stopped());
-    let state = fixture.state.lock().unwrap();
-    assert_eq!((state.creates, state.sends), (0, 0));
-    drop(state);
-}
-#[cfg(feature = "signal-broker")]
-#[tokio::test]
-async fn subscribed_sms_unknown_recipient_has_no_route_or_private_history() {
-    let fixture = Fixture::new().await;
-    receive_state(&mut fixture.state.lock().unwrap());
-    fixture.state.lock().unwrap().number = "+12025550999".into();
-    let root = tempfile::tempdir().unwrap();
-    let broker = inbox_broker(&fixture, root.path());
-    let guard = broker.start_sms_receiver().await.unwrap();
-    assert!(
-        broker
-            .client()
-            .history()
-            .read(contact_route(), None)
-            .await
-            .unwrap()
-            .messages
-            .is_empty()
-    );
-    assert!(!guard.stopped());
-    fixture.state.lock().unwrap().number = contact_route().recipient;
-    state_changed(&fixture).await;
-    wait_inbox(&broker).await;
-    assert_eq!(
-        broker
-            .client()
-            .history()
-            .read(contact_route(), None)
-            .await
-            .unwrap()
-            .messages
-            .len(),
-        1
-    );
-    let state = fixture.state.lock().unwrap();
-    assert_eq!((state.creates, state.sends), (0, 0));
-    drop(state);
-}
-#[cfg(feature = "signal-broker")]
-#[tokio::test]
-async fn subscribed_sms_sim_change_reports_failed_and_keeps_native_bus_owned_by_host() {
-    use tilo_messaging::{AccountState, ServiceAccount};
-    let fixture = Fixture::new().await;
-    let root = tempfile::tempdir().unwrap();
-    let broker = inbox_broker(&fixture, root.path());
-    let supervisor = crate::supervisor::AccountSupervisor::new(&owner()).unwrap();
-    supervisor.install_sms_receiving(&broker).await.unwrap();
-    let account = ServiceAccount::new("sms", "fixture-sim");
-    assert_eq!(
-        supervisor.client().account_state(&account),
-        AccountState::Ready
-    );
-    fixture.state.lock().unwrap().iccid = "8901000000000000002".into();
-    added(&fixture).await;
-    let deadline = tokio::time::Instant::now()
-        .checked_add(tilo_test_env::hang_bound())
-        .expect("bounded fixture deadline");
-    while supervisor.client().account_state(&account) != AccountState::Failed {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "native SIM change must fail the owned receiver"
-        );
-        tokio::time::sleep(Duration::from_millis(1)).await;
+    {
+        let state = fixture.state.lock().unwrap();
+        assert_eq!((state.creates, state.sends), (0, 0));
     }
-    assert!(!supervisor.client().supports(&contact_route()));
-    assert!(
-        broker
-            .client()
-            .history()
-            .read(contact_route(), None)
-            .await
-            .unwrap()
-            .messages
-            .is_empty()
-    );
-    drop(supervisor);
-    let bus = zbus::fdo::DBusProxy::new(&fixture.client).await.unwrap();
-    assert_eq!(
-        bus.get_name_owner("org.freedesktop.ModemManager1".try_into().unwrap())
-            .await
-            .unwrap(),
-        *fixture.server.unique_name().unwrap()
-    );
-    let state = fixture.state.lock().unwrap();
-    assert_eq!((state.creates, state.sends), (0, 0));
-    drop(state);
-}
 
-#[cfg(feature = "signal-broker")]
-#[tokio::test]
-async fn subscribed_sms_daemon_replacement_never_rebinds_and_fails_owned_receiver() {
-    use tilo_messaging::{AccountState, ServiceAccount};
-    let fixture = Fixture::new().await;
-    let root = tempfile::tempdir().unwrap();
-    let broker = inbox_broker(&fixture, root.path());
-    let supervisor = crate::supervisor::AccountSupervisor::new(&owner()).unwrap();
-    supervisor.install_sms_receiving(&broker).await.unwrap();
-    let account = ServiceAccount::new("sms", "fixture-sim");
-    assert_eq!(
-        supervisor.client().account_state(&account),
-        AccountState::Ready
-    );
-    fixture
-        .server
-        .release_name("org.freedesktop.ModemManager1")
-        .await
-        .unwrap();
-    let replacement = zbus::connection::Builder::address(fixture.bus.address())
-        .unwrap()
-        .name("org.freedesktop.ModemManager1")
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-    assert_ne!(replacement.unique_name(), fixture.server.unique_name());
-    added(&fixture).await;
-    let deadline = tokio::time::Instant::now()
-        .checked_add(tilo_test_env::hang_bound())
-        .expect("bounded fixture deadline");
-    while supervisor.client().account_state(&account) != AccountState::Failed {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "daemon replacement must close its original receiver"
-        );
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-    assert!(!supervisor.client().supports(&contact_route()));
-    assert_eq!(
-        supervisor
-            .client()
-            .history()
-            .read(contact_route(), None)
-            .await,
-        Err(tilo_messaging::HistoryError::Unavailable)
-    );
-    let state = fixture.state.lock().unwrap();
-    assert_eq!((state.creates, state.sends), (0, 0));
-    drop(state);
-}
-
-#[cfg(feature = "signal-broker")]
-#[tokio::test]
-async fn subscribed_sms_persistence_failure_never_publishes_ready_history() {
-    use tilo_messaging::{AccountState, ServiceAccount};
-    let fixture = Fixture::new().await;
-    let root = tempfile::tempdir().unwrap();
-    let broker = inbox_broker(&fixture, root.path());
-    let supervisor = crate::supervisor::AccountSupervisor::new(&owner()).unwrap();
-    supervisor.install_sms_receiving(&broker).await.unwrap();
-    let account = ServiceAccount::new("sms", "fixture-sim");
-    let file = root.path().join("history/history.enc");
-    std::fs::remove_file(&file).unwrap();
-    std::fs::create_dir(&file).unwrap();
-    receive_state(&mut fixture.state.lock().unwrap());
-    added(&fixture).await;
-    let deadline = tokio::time::Instant::now()
-        .checked_add(tilo_test_env::hang_bound())
-        .expect("bounded fixture deadline");
-    while supervisor.client().account_state(&account) != AccountState::Failed {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "non-durable inbox admission must fail"
-        );
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-    assert_eq!(
-        supervisor
-            .client()
-            .history()
-            .read(contact_route(), None)
-            .await,
-        Err(tilo_messaging::HistoryError::Unavailable)
-    );
-    assert!(!supervisor.client().supports(&contact_route()));
-    assert!(file.is_dir());
-    let state = fixture.state.lock().unwrap();
-    assert_eq!((state.creates, state.sends), (0, 0));
-    drop(state);
-}
-
-#[cfg(feature = "signal-broker")]
-#[tokio::test]
-async fn subscribed_sms_excessive_native_inbox_refuses_instead_of_truncating() {
+    // An oversized native inbox is refused rather than truncated.
     let fixture = Fixture::new().await;
     receive_state(&mut fixture.state.lock().unwrap());
     fixture.state.lock().unwrap().inbox_copies = 513;
@@ -1237,19 +1089,77 @@ async fn subscribed_sms_excessive_native_inbox_refuses_instead_of_truncating() {
             .messages
             .is_empty()
     );
-    let state = fixture.state.lock().unwrap();
-    assert_eq!((state.creates, state.sends, state.state_reads), (0, 0, 0));
-    drop(state);
-}
-#[cfg(feature = "signal-broker")]
-#[tokio::test]
-async fn actual_sms_broker_receives_private_durable_exact_route_history_without_native_mutation() {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use tilo_messaging::HistoryHost;
+    {
+        let state = fixture.state.lock().unwrap();
+        assert_eq!((state.creates, state.sends, state.state_reads), (0, 0, 0));
+    }
+
+    // A SIM change, a replaced daemon and a store that cannot persist each
+    // fail the owned receiver instead of publishing a ready history.
+    for failure in ["sim", "daemon", "storage"] {
+        let fixture = Fixture::new().await;
+        let root = tempfile::tempdir().unwrap();
+        let broker = inbox_broker(&fixture, root.path());
+        let supervisor = crate::supervisor::AccountSupervisor::new(&owner()).unwrap();
+        supervisor.install_sms_receiving(&broker).await.unwrap();
+        wait_account(&supervisor, false).await;
+        match failure {
+            "sim" => fixture.state.lock().unwrap().iccid = "8901000000000000002".into(),
+            "daemon" => {
+                fixture
+                    .server
+                    .release_name("org.freedesktop.ModemManager1")
+                    .await
+                    .unwrap();
+                let replacement = zbus::connection::Builder::address(fixture.bus.address())
+                    .unwrap()
+                    .name("org.freedesktop.ModemManager1")
+                    .unwrap()
+                    .build()
+                    .await
+                    .unwrap();
+                assert_ne!(replacement.unique_name(), fixture.server.unique_name());
+            }
+            _ => {
+                let file = root.path().join("history/history.enc");
+                std::fs::remove_file(&file).unwrap();
+                std::fs::create_dir(&file).unwrap();
+                receive_state(&mut fixture.state.lock().unwrap());
+            }
+        }
+        added(&fixture).await;
+        wait_account(&supervisor, true).await;
+        assert!(!supervisor.client().supports(&contact_route()));
+        assert!(
+            supervisor
+                .client()
+                .history()
+                .read(contact_route(), None)
+                .await
+                .is_err()
+        );
+        if failure == "sim" {
+            // The native bus name stays with its host; only the owned receiver
+            // stops.
+            drop(supervisor);
+            let bus = zbus::fdo::DBusProxy::new(&fixture.client).await.unwrap();
+            assert_eq!(
+                bus.get_name_owner("org.freedesktop.ModemManager1".try_into().unwrap())
+                    .await
+                    .unwrap(),
+                *fixture.server.unique_name().unwrap()
+            );
+        }
+        let state = fixture.state.lock().unwrap();
+        assert_eq!((state.creates, state.sends), (0, 0));
+    }
+
+    // The broker's own admission is idempotent, refuses a conflicting native
+    // object, wakes private readers once, and stops on revocation.
     let fixture = Fixture::new().await;
     receive_state(&mut fixture.state.lock().unwrap());
     let root = tempfile::tempdir().unwrap();
-    let hold = Arc::new(ReceiveHold(AtomicBool::new(false)));
+    let hold = Arc::new(ReceiveHold(std::sync::atomic::AtomicBool::new(false)));
     let key = || secret_vault::VaultKey::from_bytes([19; 32]);
     let history_root = root.path().join("history");
     let broker = crate::external_broker::ExternalBroker::new(
@@ -1259,9 +1169,11 @@ async fn actual_sms_broker_receives_private_durable_exact_route_history_without_
         hold.clone(),
     )
     .unwrap();
+    let client = broker.client();
     let wakes = Arc::new(AtomicUsize::new(0));
     let counted = wakes.clone();
-    let _guard = broker
+    let observer = client
+        .history()
         .observe(Arc::new(move || {
             counted.fetch_add(1, Ordering::SeqCst);
         }))
@@ -1278,12 +1190,7 @@ async fn actual_sms_broker_receives_private_durable_exact_route_history_without_
             .await
             .unwrap()
     );
-    let page = broker
-        .client()
-        .history()
-        .read(contact_route(), None)
-        .await
-        .unwrap();
+    let page = client.history().read(contact_route(), None).await.unwrap();
     assert_eq!(page.messages.len(), 1);
     assert_eq!(&*page.messages[0].text, "private incoming SMS");
     assert_eq!(page.messages[0].delivery, None);
@@ -1296,155 +1203,34 @@ async fn actual_sms_broker_receives_private_durable_exact_route_history_without_
         Err(tilo_messaging::SendError::InvalidRequest)
     );
     assert_eq!(wakes.load(Ordering::SeqCst), 1);
-    hold.0.store(true, Ordering::SeqCst);
-    assert_eq!(
-        broker
-            .observe_sms_message(contact_route(), MESSAGE_PATH.into())
-            .await,
-        Err(tilo_messaging::SendError::Revoked)
-    );
-    let state = fixture.state.lock().unwrap();
-    assert_eq!((state.creates, state.sends), (0, 0));
-    drop(state);
-    drop(broker);
-    let reopened = crate::signal_broker::History::open(&history_root, &owner(), key()).unwrap();
-    assert_eq!(
-        reopened.page(contact_route(), 128).unwrap().messages.len(),
-        1
-    );
-    let bytes = std::fs::read(history_root.join("history.enc")).unwrap();
-    assert!(
-        !bytes
-            .windows(20)
-            .any(|part| part == b"private incoming SMS")
-    );
-}
 
-#[cfg(feature = "signal-broker")]
-fn sms_messages_app(
-    broker: &crate::external_broker::ExternalBroker,
-    route: &tilo_contact_directory::routing::Route,
-) -> (
-    ui::framework::testing::TestApp<messages::MessagesShell>,
-    String,
-) {
-    use messages::{MessagesEffect, MessagesShell};
-    use tilo_contact_directory::ContactDirectory;
-    let mut app = ui::framework::testing::TestApp::<MessagesShell>::for_person_with_lent(
-        &owner().actor,
-        broker.client(),
-    )
-    .unwrap();
-    crate::external_broker::tests::project_account_metadata(&owner(), route, &mut app);
-    let directory = app
-        .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
-        .unwrap();
-    directory
-        .invoke(&ContactDirectory::PROJECT_CONTACT.with((route.person.clone(), "Alex".into())))
-        .unwrap();
-    directory
-        .invoke(&ContactDirectory::CONFIRM_ACCOUNT.with((
-            route.person.clone(),
-            route.association.clone(),
-            route.service.clone(),
-            route.scope.clone(),
-            route.recipient.clone(),
-            route.revision.clone(),
-        )))
-        .unwrap();
-    app.settle();
-    app.effect(&MessagesEffect::OpenPerson {
-        person: route.person.as_str().into(),
-    })
-    .unwrap();
-    let choice = serde_json::json!({"service":route.service,"account":owner().account,
-        "recipient":route.recipient,"association":route.association.as_str(),
-        "scope":route.scope,"revision":route.revision})
-    .to_string();
-    app.effect(&MessagesEffect::SelectRoute {
-        choice: choice.clone(),
-    })
-    .unwrap();
-    app.effect(&MessagesEffect::ReadHistory {
-        choice: choice.clone(),
-    })
-    .unwrap();
-    (app, choice)
-}
-
-#[cfg(feature = "signal-broker")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_shared_state() {
-    use messages::MessagesEffect;
-    let fixture = Fixture::new().await;
-    let root = tempfile::tempdir().unwrap();
-    let route = contact_route();
-    let hold = Arc::new(ReceiveHold(std::sync::atomic::AtomicBool::new(false)));
-    let broker = crate::external_broker::ExternalBroker::new(
-        Box::new(fixture.runtime(&root.path().join("journal"))),
-        crate::signal_broker::History::open(
-            &root.path().join("history"),
-            &owner(),
-            secret_vault::VaultKey::from_bytes([19; 32]),
-        )
-        .unwrap(),
-        route.scope.clone(),
-        hold.clone(),
-    )
-    .unwrap();
-    let (mut app, choice) = sms_messages_app(&broker, &route);
-    let guard = broker.start_sms_receiver().await.unwrap();
-    receive_state(&mut fixture.state.lock().unwrap());
-    added(&fixture).await;
-    wait_inbox(&broker).await;
-    assert!(!guard.stopped());
-    assert!(
-        app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |h| {
-                h.a11y_nodes()
-                    .iter()
-                    .any(|(_, node)| speaks(node.label(), "private incoming SMS"))
-            }),
-        "SMS arrival must refresh the selected private view"
-    );
-    assert!(!app.harness().dump_json().contains("private incoming SMS"));
-    {
-        let state = fixture.state.lock().unwrap();
-        assert_eq!((state.creates, state.sends), (0, 0));
-        drop(state);
-    }
-    // Use the same private Messages view and actual native D-Bus adapter.
-    // The receive-only fixture object becomes the newly created outgoing SMS.
-    drop(guard);
+    // The person replies through the broker, the native object becomes the
+    // outgoing SMS, and revocation stops both native submission and private
+    // history writes.
     fixture.state.lock().unwrap().incoming = false;
-    let reply = MessagesEffect::Send {
-        choice: choice.clone(),
-        operation: "sms-native-ui-reply".into(),
-        text: "private SMS reply".into(),
+    let reply = tilo_messaging::SendRequest {
+        route: contact_route(),
+        operation: "sms-native-reply".into(),
+        text: zeroize::Zeroizing::new("private SMS reply".into()),
     };
-    assert!(
-        app.effect(&reply).is_err(),
-        "submission requires explicit effect confirmation"
-    );
-    let receipt = app.effect_confirmed(&reply).unwrap();
+    let receipt = client.send(reply).await.unwrap();
     assert_eq!(
-        receipt.value.unwrap()["status"],
-        "submitted",
+        receipt.delivery,
+        tilo_messaging::Delivery::Submitted,
         "a native Send reply is not evidence of carrier delivery"
     );
+    let page = client.history().read(contact_route(), None).await.unwrap();
     assert!(
-        app.harness()
-            .a11y_nodes()
+        page.messages
             .iter()
-            .any(|(_, node)| speaks(node.label(), "private SMS reply"))
+            .any(|message| message.text.as_str() == "private SMS reply"
+                && message.delivery == Some(tilo_messaging::Delivery::Submitted))
     );
-    assert!(!app.harness().dump_json().contains("private SMS reply"));
     {
         let state = fixture.state.lock().unwrap();
         assert_eq!((state.creates, state.sends), (1, 1));
-        assert_eq!(state.number, route.recipient);
+        assert_eq!(state.number, contact_route().recipient);
         assert_eq!(state.text, "private SMS reply");
-        drop(state);
     }
     let private_files = |directory: &Path| {
         let mut files: Vec<_> = std::fs::read_dir(directory)
@@ -1457,82 +1243,37 @@ async fn actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_sha
         files.sort_by(|left, right| left.0.cmp(&right.0));
         files
     };
-    let before = private_files(&root.path().join("history"));
-    hold.0.store(true, std::sync::atomic::Ordering::SeqCst);
-    let refused = MessagesEffect::Send {
-        choice,
+    let before = private_files(&history_root);
+    hold.0.store(true, Ordering::SeqCst);
+    let refused = tilo_messaging::SendRequest {
+        route: contact_route(),
         operation: "sms-native-revoked-reply".into(),
-        text: "revoked SMS reply".into(),
+        text: zeroize::Zeroizing::new("revoked SMS reply".into()),
     };
-    assert!(app.effect_confirmed(&refused).is_err());
+    assert!(client.send(refused).await.is_err());
     assert_eq!(
-        broker.observe_sms_message(route, MESSAGE_PATH.into()).await,
+        broker
+            .observe_sms_message(contact_route(), MESSAGE_PATH.into())
+            .await,
         Err(tilo_messaging::SendError::Revoked)
     );
     assert_eq!(
-        private_files(&root.path().join("history")),
+        private_files(&history_root),
         before,
         "revocation must stop private history writes as well as native submission"
     );
-    let state = fixture.state.lock().unwrap();
-    assert_eq!((state.creates, state.sends), (1, 1));
-    drop(state);
-}
-
-#[tokio::test]
-async fn encrypted_selected_sim_resume_requires_exact_owner_current_hardware_and_original_permission()
- {
-    let fixture = Fixture::new().await;
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("sim.enc");
-    let key = secret_vault::VaultKey::from_slice(&[0x44; 32]).unwrap();
-    let original = SimBinding::new(
-        fixture.server.unique_name().unwrap().to_string(),
-        MODEM_PATH.into(),
-        SIM_PATH.into(),
-        ICCID.into(),
-        7,
-    )
-    .unwrap();
-    original.save(&path, &owner(), &key).unwrap();
-    let ciphertext = std::fs::read(&path).unwrap();
-    assert!(
-        !ciphertext
-            .windows(ICCID.len())
-            .any(|bytes| bytes == ICCID.as_bytes())
-    );
-    let restored = SimBinding::load(&path, &owner(), &key, &fixture.client)
-        .await
-        .unwrap();
-    let permission = fixture.state.lock().unwrap().permission.clone();
-    DbusTransport::new(fixture.client.clone(), restored, permission.clone())
-        .unwrap()
-        .validate()
-        .await
-        .unwrap();
-    let mut foreign = owner();
-    foreign.account = "foreign-sim-account".into();
-    assert!(matches!(
-        SimBinding::load(&path, &foreign, &key, &fixture.client).await,
-        Err(Error::WrongAccount)
-    ));
-    fixture.state.lock().unwrap().iccid = "8901000000000000002".into();
-    let changed = SimBinding::load(&path, &owner(), &key, &fixture.client)
-        .await
-        .unwrap();
+    drop(client);
+    drop(observer);
+    drop(broker);
+    let reopened = crate::signal_broker::History::open(&history_root, &owner(), key()).unwrap();
     assert_eq!(
-        DbusTransport::new(fixture.client.clone(), changed, permission.clone())
-            .unwrap()
-            .validate()
-            .await,
-        Err(Error::WrongAccount)
+        reopened.page(contact_route(), 128).unwrap().messages.len(),
+        2
     );
-    permission.0.store(true, Ordering::Release);
-    let restored = SimBinding::load(&path, &owner(), &key, &fixture.client)
-        .await
-        .unwrap();
-    assert!(DbusTransport::new(fixture.client.clone(), restored, permission).is_err());
-    assert_eq!(std::fs::read(path).unwrap(), ciphertext);
-    assert_eq!(fixture.state.lock().unwrap().creates, 0);
-    assert_eq!(fixture.state.lock().unwrap().sends, 0);
+    let bytes = std::fs::read(history_root.join("history.enc")).unwrap();
+    assert!(
+        !bytes
+            .windows(20)
+            .any(|part| part == b"private incoming SMS")
+    );
 }

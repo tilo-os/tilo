@@ -83,11 +83,6 @@ pub struct Workspace {
     /// reaches.
     #[serde(default)]
     pub shortcuts: Vec<tilo_automation::SavedShortcut>,
-    /// Which of the saver's devices took the latest fire time of each
-    /// scheduled shortcut, so a schedule runs once across them. Projected
-    /// beside the shortcuts, one map key per schedule.
-    #[serde(default)]
-    pub schedule_claims: Vec<tilo_automation::ScheduleClaim>,
     /// The workspace's bots, projected from its governance on every change: the
     /// installed ones and those a member asked the workspace's host to run. Never
     /// read back from a stored workspace; the workspace's governance is their
@@ -130,8 +125,6 @@ struct StoredWorkspace {
     #[serde(default)]
     shortcuts: Vec<tilo_automation::SavedShortcut>,
     #[serde(default)]
-    schedule_claims: Vec<tilo_automation::ScheduleClaim>,
-    #[serde(default)]
     shared_surfaces: SharedSurfaces,
 }
 
@@ -158,7 +151,6 @@ impl From<StoredWorkspace> for Workspace {
             default_apps: stored.default_apps,
             effect_receipts: stored.effect_receipts,
             shortcuts: stored.shortcuts,
-            schedule_claims: stored.schedule_claims,
             bots: Vec::new(),
             shared_surfaces: stored.shared_surfaces,
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
@@ -920,7 +912,6 @@ impl Workspace {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
-            schedule_claims: Vec::new(),
             bots: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
@@ -938,7 +929,7 @@ impl Workspace {
 
     /// A copy holding what authority decisions read — identity, the workspace's
     /// policy, sandbox, presets, defaults — and none of the layout or
-    /// history: no strips, effect receipts, shortcuts or schedule claims. For
+    /// history: no strips, effect receipts or shortcuts. For
     /// a caller that must not hold the tree while it asks [`Self::answer_at`]
     /// and its kin, so the copy costs the policy, not the workspace's past.
     #[must_use]
@@ -958,7 +949,6 @@ impl Workspace {
             default_apps,
             effect_receipts: _,
             shortcuts: _,
-            schedule_claims: _,
             bots,
             shared_surfaces,
             closed_tabs: _,
@@ -976,7 +966,6 @@ impl Workspace {
             default_apps: default_apps.clone(),
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
-            schedule_claims: Vec::new(),
             bots: bots.clone(),
             shared_surfaces: shared_surfaces.clone(),
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),

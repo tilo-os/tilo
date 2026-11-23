@@ -73,9 +73,9 @@ fn refused(reason: impl Into<String>) -> ActionCallError {
 }
 
 impl ServedTicket {
-    /// Serve `ticket`, issued now, for a computer to become a member device of
-    /// `user_public_key`, entering at `enter`, once `approver` approves it. A certificate whose
-    /// approver `revocations` refuses is never handed on.
+    /// Serve `ticket`, issued now and live for `lifetime_ns`, for a computer to become a member
+    /// device of `user_public_key`, entering at `enter`, once `approver` approves it. A
+    /// certificate whose approver `revocations` refuses is never handed on.
     ///
     /// # Panics
     ///
@@ -88,8 +88,9 @@ impl ServedTicket {
         capability: tilo_user_identity::DeviceCapabilities,
         approver: Arc<dyn Approver>,
         revocations: RevocationList,
+        lifetime_ns: u64,
     ) -> Self {
-        let secret = Secret::of(&ticket, tilo_clock::unix_now_ns());
+        let secret = Secret::of(&ticket, tilo_clock::unix_now_ns(), lifetime_ns);
         Self(Arc::new(Inner {
             ticket,
             secret,
@@ -122,6 +123,23 @@ impl ServedTicket {
     #[must_use]
     pub fn waiting(&self) -> bool {
         self.0.secret.waiting(tilo_clock::unix_now_ns())
+    }
+
+    /// Whether this ticket is done with: nothing waits for it, and every computer that called it
+    /// read how its call ended.
+    fn finished(&self) -> bool {
+        !self.waiting()
+            && self
+                .0
+                .calls
+                .lock_recover()
+                .values()
+                .all(|(_, state)| !matches!(state.update, InvocationUpdate::Accepted { .. }))
+            && (self.0.calls.lock_recover().is_empty() || *self.0.told.borrow())
+    }
+
+    fn has_call(&self, id: &InvocationId) -> bool {
+        self.0.calls.lock_recover().contains_key(id)
     }
 
     fn settle(&self, invocation: InvocationId, update: InvocationUpdate) {
@@ -228,6 +246,109 @@ impl ServedTicket {
             served.settle(invocation, update);
         });
         Ok(receipt)
+    }
+}
+
+/// Several tickets a device serves at once on the one scope its action service admits computers
+/// with no certificate to: a planned machine's, which waits a day for its medium, beside the one
+/// `tilo device add` prints now. A call goes to the ticket whose secret it brings, and is followed
+/// there.
+#[derive(Clone, Default)]
+pub struct ServedTickets(Arc<Mutex<Vec<ServedTicket>>>);
+
+impl std::fmt::Debug for ServedTickets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServedTickets")
+            .field("served", &self.0.lock_recover().len())
+            .finish()
+    }
+}
+
+impl ServedTickets {
+    /// Serve `ticket` beside the others, dropping those that are done with.
+    pub fn serve(&self, ticket: ServedTicket) {
+        let mut served = self.0.lock_recover();
+        served.retain(|kept| !kept.finished());
+        served.push(ticket);
+    }
+
+    /// Stop serving `ticket`: another took its place.
+    pub fn withdraw(&self, ticket: &ServedTicket) {
+        self.0
+            .lock_recover()
+            .retain(|kept| !Arc::ptr_eq(&kept.0, &ticket.0));
+    }
+
+    /// The ticket the call `request` is for: the one that took it already, else the one whose
+    /// secret it brings, else the newest, which refuses it.
+    fn for_request(&self, request: &InvokeRequest) -> Option<ServedTicket> {
+        let served = self.0.lock_recover();
+        if let Some(taken) = served
+            .iter()
+            .find(|kept| kept.has_call(&request.invocation))
+        {
+            return Some(taken.clone());
+        }
+        let secret = match &request.argument {
+            InvokeArgument::Json(argument) => argument
+                .get("secret")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default(),
+            _ => "",
+        };
+        served
+            .iter()
+            .find(|kept| kept.0.secret.is(secret))
+            .or_else(|| served.last())
+            .cloned()
+    }
+
+    fn with_call(&self, id: &InvocationId) -> Option<ServedTicket> {
+        self.0
+            .lock_recover()
+            .iter()
+            .find(|kept| kept.has_call(id))
+            .cloned()
+    }
+}
+
+impl ActionProvider for ServedTickets {
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        let newest = self.0.lock_recover().last().cloned();
+        match newest {
+            Some(served) => served.query(caller, query),
+            None => Pending::ready(Err(ActionCallError::UnknownAction)),
+        }
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        match self.for_request(&request) {
+            Some(served) => served.invoke(caller, request),
+            None => Pending::ready(Err(refused("no ticket is served here any more"))),
+        }
+    }
+
+    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        self.with_call(id)?.observe(caller, id)
+    }
+
+    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        self.with_call(id)?.next_change(caller, id)
+    }
+
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        match self.with_call(id) {
+            Some(served) => served.cancel(caller, id),
+            None => Pending::ready(Err(ActionCallError::UnknownAction)),
+        }
     }
 }
 

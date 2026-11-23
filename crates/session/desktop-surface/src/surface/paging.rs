@@ -11,7 +11,7 @@ use ui::winit::event::MouseScrollDelta;
 
 use tilo_desktop_model::{GroupId, TabId};
 
-use crate::navigation::{self, Admitted, RouteIds};
+use tilo_session_core::desktop::navigation::{self, Admitted, RouteIds};
 
 use super::{DesktopSurface, STEP_TRAVEL_PX, SWIPE_GAP, Swipe};
 

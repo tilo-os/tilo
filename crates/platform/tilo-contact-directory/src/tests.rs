@@ -1,4 +1,8 @@
-use super::ContactDirectory;
+//! The contact directory as Contacts, Mail and the messaging bridges use it: hints projected from
+//! the address book, endpoints and accounts a person confirmed, and the routes messages take.
+
+use super::{ContactDirectory, Projected};
+use crate::routing::{SenderAccount, routes};
 use tilo_resource::{Id, Replica};
 
 fn first() -> Id {
@@ -7,21 +11,89 @@ fn first() -> Id {
 fn second() -> Id {
     Id::from_raw("00000000-0000-4000-8000-000000000002")
 }
-
-fn fixture() -> Result<Replica<ContactDirectory>, Box<dyn std::error::Error>> {
-    let mut record = Replica::<ContactDirectory>::new();
-    record.apply(ContactDirectory::PROJECT_CONTACT.with((first(), "Alex".into())))?;
-    record.apply(ContactDirectory::PROJECT_CONTACT.with((second(), "Alex".into())))?;
-    Ok(record)
+fn third() -> Id {
+    Id::from_raw("00000000-0000-4000-8000-000000000003")
 }
 
+/// Two people of the same name.
+fn fixture() -> Replica<ContactDirectory> {
+    let mut record = Replica::<ContactDirectory>::new();
+    record
+        .apply(ContactDirectory::PROJECT_CONTACT.with((first(), "Alex".into())))
+        .expect("projects");
+    record
+        .apply(ContactDirectory::PROJECT_CONTACT.with((second(), "Alex".into())))
+        .expect("projects");
+    record
+}
+
+/// The person confirms `recipient` on `service` as theirs, under the association `id`.
+fn endpoint(
+    record: &mut Replica<ContactDirectory>,
+    person: Id,
+    id: &str,
+    service: &str,
+    recipient: &str,
+) -> Result<(), String> {
+    record
+        .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
+            person,
+            Id::from_raw(id),
+            service.into(),
+            recipient.into(),
+        )))
+        .map(drop)
+        .map_err(|refused| refused.to_string())
+}
+
+/// The person confirms the account `subject` at `revision` in `scope` of `service` as theirs.
+fn account(
+    record: &mut Replica<ContactDirectory>,
+    person: Id,
+    id: &str,
+    (service, scope, subject): (&str, &str, &str),
+    revision: &str,
+) -> Result<(), String> {
+    record
+        .apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
+            person,
+            Id::from_raw(id),
+            service.into(),
+            scope.into(),
+            subject.into(),
+            revision.into(),
+        )))
+        .map(drop)
+        .map_err(|refused| refused.to_string())
+}
+
+fn forget(record: &mut Replica<ContactDirectory>, person: Id, id: &str) {
+    record
+        .apply_confirmed(ContactDirectory::FORGET_ENDPOINT.with((person, Id::from_raw(id))))
+        .expect("revocation succeeds");
+}
+
+const ALICE: (&str, &str, &str) = ("signal", "signal-main", "aci:alice");
+
+fn sender(id: &str) -> SenderAccount {
+    SenderAccount {
+        id: Id::from_raw(id),
+        service: "signal".into(),
+        scope: "signal-main".into(),
+        enabled: true,
+    }
+}
+
+/// Mailboxes and phone numbers from the address book suggest people and link none of them: one
+/// hint per person and mailbox, exact keys only, every person sharing one offered, and a hint of
+/// a renamed or removed person is stale.
 #[test]
-fn email_hints_offer_each_person_once_per_mailbox_and_go_stale_on_change() {
-    let mut record = fixture().expect("fixture succeeds");
+fn address_book_hints_suggest_people_and_link_nobody() {
+    let mut record = fixture();
     for person in [first(), second()] {
         record
             .apply(ContactDirectory::PROJECT_EMAILS.with((
-                person,
+                person.clone(),
                 vec![
                     "Alice@EXAMPLE.test".into(),
                     "Alice@example.test".into(),
@@ -29,6 +101,11 @@ fn email_hints_offer_each_person_once_per_mailbox_and_go_stale_on_change() {
                 ],
             )))
             .expect("hints project");
+        record
+            .apply(
+                ContactDirectory::PROJECT_PHONES.with((person, vec!["+1 (202) 555-0123".into()])),
+            )
+            .expect("projection succeeds");
     }
     let state = record.state().expect("state loads");
     let hint = |person: Id| super::EmailHint {
@@ -42,40 +119,25 @@ fn email_hints_offer_each_person_once_per_mailbox_and_go_stale_on_change() {
         "one hint per person and mailbox, invalid ones dropped, people kept apart"
     );
     assert!(state.holds(&hint(first())));
-    record
-        .apply(ContactDirectory::PROJECT_CONTACT.with((first(), "Sam".into())))
-        .expect("renamed");
-    record
-        .apply(ContactDirectory::REMOVE_CONTACT.with(second()))
-        .expect("removed");
-    let state = record.state().expect("state loads");
-    assert!(!state.holds(&hint(first())), "a renamed contact is stale");
-    assert!(!state.holds(&hint(second())), "a removed contact is stale");
-    assert_eq!(state.email_hints().len(), 1);
-}
-
-#[test]
-fn email_hints_preserve_ambiguity_case_and_aliases_without_identity_links() {
-    let mut record = fixture().expect("fixture succeeds");
-    for person in [first(), second()] {
-        record
-            .apply(
-                ContactDirectory::PROJECT_EMAILS.with((person, vec!["Alice@EXAMPLE.test".into()])),
-            )
-            .expect("hints project");
-    }
-    let state = record.state().expect("state loads");
     assert_eq!(
         state.email_candidates("Alice@example.test"),
         vec![first(), second()]
     );
-    assert!(state.email_candidates("alice@example.test").is_empty());
-    assert!(state.email_candidates("Alice+work@example.test").is_empty());
-    assert!(
-        state
-            .email_candidates("Alice <Alice@example.test>")
-            .is_empty()
+    for not_the_key in [
+        "alice@example.test",
+        "Alice+work@example.test",
+        "Alice <Alice@example.test>",
+    ] {
+        assert!(
+            state.email_candidates(not_the_key).is_empty(),
+            "{not_the_key}"
+        );
+    }
+    assert_eq!(
+        state.phone_candidates("+12025550123"),
+        vec![first(), second()]
     );
+    assert!(state.phone_candidates("2025550123").is_empty());
     assert!(
         state
             .people
@@ -83,24 +145,34 @@ fn email_hints_preserve_ambiguity_case_and_aliases_without_identity_links() {
             .all(|(_, person)| person.endpoints.is_empty())
     );
     assert!(state.resolve("email", "Alice@example.test").is_err());
+    assert!(state.resolve("sms", "+12025550123").is_err());
+    assert!(
+        state
+            .resolve_account("sms", "carrier", "+12025550123", "assignment-1")
+            .is_err()
+    );
+
     record
-        .apply(ContactDirectory::REMOVE_CONTACT.with(first()))
-        .expect("removal succeeds");
+        .apply(ContactDirectory::PROJECT_CONTACT.with((first(), "Sam".into())))
+        .expect("renamed");
+    let state = record.state().expect("state loads");
+    assert!(!state.holds(&hint(first())), "a renamed contact is stale");
+    record
+        .apply(ContactDirectory::REMOVE_CONTACT.with(second()))
+        .expect("removed");
     assert!(
         record
             .apply(
                 ContactDirectory::PROJECT_EMAILS
-                    .with((first(), vec!["replacement@example.test".into()]))
+                    .with((second(), vec!["replacement@example.test".into()]))
             )
-            .is_err()
+            .is_err(),
+        "a removed person takes no hints"
     );
-    assert_eq!(
-        record
-            .state()
-            .expect("state loads")
-            .email_candidates("Alice@example.test"),
-        vec![second()]
-    );
+    let state = record.state().expect("state loads");
+    assert!(!state.holds(&hint(second())), "a removed contact is stale");
+    assert_eq!(state.email_hints().len(), 1);
+    assert_eq!(state.email_candidates("Alice@example.test"), vec![first()]);
 }
 
 #[test]
@@ -124,204 +196,99 @@ fn email_hint_keys_reject_header_injection_and_do_not_guess_unsupported_mailboxe
     }
 }
 
+/// A confirmed endpoint routes to its person on its service alone; a second person claiming it
+/// is refused; a revoked or deleted person's association id stays reserved, and a removed person
+/// neither comes back through a late projection nor confirms anything new.
 #[test]
-fn duplicate_names_and_cross_service_recipients_keep_distinct_people() {
-    let mut record = fixture().expect("fixture operation succeeds");
-    record
-        .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
-            first(),
-            Id::from_raw("one"),
-            "signal".into(),
-            "+12025550123".into(),
-        )))
-        .expect("fixture operation succeeds");
-    record
-        .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
-            second(),
-            Id::from_raw("two"),
-            "sms".into(),
-            "+12025550123".into(),
-        )))
-        .expect("fixture operation succeeds");
-    let state = record.state().expect("fixture operation succeeds");
+fn confirmed_endpoints_route_to_one_person_and_their_ids_stay_reserved() {
+    let mut record = fixture();
+    endpoint(&mut record, first(), "one", "signal", "+12025550123").expect("confirms");
+    endpoint(&mut record, second(), "two", "sms", "+12025550123").expect("confirms");
+    endpoint(&mut record, first(), "taken", "signal", "recipient").expect("confirms");
+    assert!(
+        endpoint(&mut record, second(), "theirs", "signal", "recipient").is_err(),
+        "a recipient confirmed as one person's is not another's"
+    );
+    let state = record.state().expect("state loads");
     assert_eq!(state.resolve("signal", "+12025550123"), Ok(first()));
     assert_eq!(state.resolve("sms", "+12025550123"), Ok(second()));
+    assert_eq!(state.resolve("signal", "recipient"), Ok(first()));
     assert!(state.resolve("signal", "Alex").is_err());
     assert_eq!(state.people.len(), 2);
-}
 
-#[test]
-fn sequential_conflicting_confirmation_refuses_and_keeps_existing_mapping() {
-    let mut record = fixture().expect("fixture operation succeeds");
-    record
-        .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
-            first(),
-            Id::from_raw("one"),
-            "signal".into(),
-            "recipient".into(),
-        )))
-        .expect("fixture operation succeeds");
-    assert!(
-        record
-            .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
-                second(),
-                Id::from_raw("two"),
-                "signal".into(),
-                "recipient".into()
-            )))
-            .is_err()
-    );
-    assert_eq!(
-        record
-            .state()
-            .expect("fixture operation succeeds")
-            .resolve("signal", "recipient"),
-        Ok(first())
-    );
-}
-
-#[test]
-fn concurrent_conflicting_confirmations_converge_without_choosing_recipient_owner() {
-    let mut left = fixture().expect("fixture operation succeeds");
-    let mut right = left.fork();
-    left.apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
-        first(),
-        Id::from_raw("one"),
-        "signal".into(),
-        "recipient".into(),
-    )))
-    .expect("fixture operation succeeds");
-    right
-        .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
-            second(),
-            Id::from_raw("two"),
-            "signal".into(),
-            "recipient".into(),
-        )))
-        .expect("fixture operation succeeds");
-    left.sync_with(&mut right)
-        .expect("fixture operation succeeds");
-    assert_eq!(
-        left.state().expect("fixture operation succeeds"),
-        right.state().expect("fixture operation succeeds")
-    );
-    assert!(
-        left.state()
-            .expect("fixture operation succeeds")
-            .resolve("signal", "recipient")
-            .is_err()
-    );
-    assert!(
-        right
-            .state()
-            .expect("fixture operation succeeds")
-            .resolve("signal", "recipient")
-            .is_err()
-    );
-}
-
-#[test]
-fn deletion_blocks_delayed_projection_and_recipient_routing() {
-    let mut record = fixture().expect("fixture operation succeeds");
-    record
-        .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
-            first(),
-            Id::from_raw("one"),
-            "signal".into(),
-            "recipient".into(),
-        )))
-        .expect("fixture operation succeeds");
-    record
-        .apply(ContactDirectory::REMOVE_CONTACT.with(first()))
-        .expect("fixture operation succeeds");
-    record
-        .apply(ContactDirectory::PROJECT_CONTACT.with((first(), "Alex new name".into())))
-        .expect("fixture operation succeeds");
-    assert!(
-        record
-            .state()
-            .expect("fixture operation succeeds")
-            .resolve("signal", "recipient")
-            .is_err()
-    );
-    assert!(
-        record
-            .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
-                first(),
-                Id::from_raw("fresh"),
-                "signal".into(),
-                "fresh-recipient".into()
-            )))
-            .is_err()
-    );
-}
-
-#[test]
-fn revoked_association_ids_cannot_be_reused_or_retargeted() {
-    let mut record = fixture().expect("fixture operation succeeds");
-    let endpoint = Id::from_raw("old-association");
-    record
-        .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
-            first(),
-            endpoint.clone(),
-            "sms".into(),
-            "+12025550123".into(),
-        )))
-        .expect("confirmation succeeds");
-    record
-        .apply_confirmed(ContactDirectory::FORGET_ENDPOINT.with((first(), endpoint.clone())))
-        .expect("revocation succeeds");
-    assert!(
-        record
-            .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
-                first(),
-                endpoint.clone(),
-                "sms".into(),
-                "+12025550123".into()
-            )))
-            .is_err()
-    );
-    assert!(
-        record
-            .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
-                second(),
-                endpoint.clone(),
-                "sms".into(),
-                "+12025550123".into()
-            )))
-            .is_err()
-    );
+    forget(&mut record, second(), "two");
+    for person in [second(), first()] {
+        assert!(
+            endpoint(&mut record, person, "two", "sms", "+12025550123").is_err(),
+            "a revoked association is neither reused nor retargeted"
+        );
+    }
     let state = record.state().expect("state loads");
     let historical = state
         .people
-        .get(&first())
+        .get(&second())
         .expect("person remains")
         .endpoints
-        .get(&endpoint)
+        .get(&Id::from_raw("two"))
         .expect("association remains");
     assert!(historical.removed);
     assert_eq!(historical.recipient, "+12025550123");
     assert!(state.resolve("sms", "+12025550123").is_err());
+
+    record
+        .apply(ContactDirectory::REMOVE_CONTACT.with(first()))
+        .expect("deletion succeeds");
+    record
+        .apply(ContactDirectory::PROJECT_CONTACT.with((first(), "Alex new name".into())))
+        .expect("a late projection is taken");
+    assert!(
+        record
+            .state()
+            .expect("state loads")
+            .resolve("signal", "recipient")
+            .is_err()
+    );
+    assert!(endpoint(&mut record, first(), "fresh", "signal", "fresh-recipient").is_err());
+    assert!(
+        endpoint(&mut record, second(), "one", "signal", "+12025550123").is_err(),
+        "a deleted person's association ids stay reserved"
+    );
 }
 
+/// An account is confirmed at one identity revision in one provider scope and routes only so,
+/// from every sender account that can reach it.
 #[test]
-fn identity_revision_and_provider_scope_require_exact_confirmation() {
-    let mut record = fixture().expect("fixture operation succeeds");
-    record
-        .apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
-            first(),
-            Id::from_raw("signal-key"),
-            "signal".into(),
-            "signal-main".into(),
-            "aci:alice".into(),
-            "key-1".into(),
-        )))
-        .expect("confirmation succeeds");
+fn confirmed_accounts_route_by_exact_identity_and_scope() {
+    let mut record = fixture();
+    account(&mut record, first(), "signal-key", ALICE, "key-1").expect("confirms");
+    account(
+        &mut record,
+        first(),
+        "whatsapp",
+        ("whatsapp", "business-a", "US.alice"),
+        "key-1",
+    )
+    .expect("confirms");
+    account(
+        &mut record,
+        first(),
+        "sms",
+        ("sms", "sms-carrier", "aci:alice"),
+        "key-1",
+    )
+    .expect("confirms");
     let state = record.state().expect("state loads");
-    assert_eq!(
-        state.resolve_account("signal", "signal-main", "aci:alice", "key-1"),
-        Ok(first())
-    );
+    for (service, scope, subject) in [
+        ALICE,
+        ("whatsapp", "business-a", "US.alice"),
+        ("sms", "sms-carrier", "aci:alice"),
+    ] {
+        assert_eq!(
+            state.resolve_account(service, scope, subject, "key-1"),
+            Ok(first()),
+            "{service}: one person on several services, none combined"
+        );
+    }
     assert!(
         state
             .resolve_account("signal", "signal-main", "aci:alice", "key-2")
@@ -333,94 +300,15 @@ fn identity_revision_and_provider_scope_require_exact_confirmation() {
             .is_err()
     );
     assert!(
+        state
+            .resolve_account("whatsapp", "business-b", "US.alice", "key-1")
+            .is_err()
+    );
+    assert!(
         state.resolve("signal", "aci:alice").is_err(),
         "compatibility resolver must not bypass identity revision"
     );
-    assert!(
-        record
-            .apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
-                first(),
-                Id::from_raw("new-key"),
-                "signal".into(),
-                "signal-main".into(),
-                "aci:alice".into(),
-                "key-2".into()
-            )))
-            .is_err(),
-        "identity changes require revocation"
-    );
-    record
-        .apply_confirmed(
-            ContactDirectory::FORGET_ENDPOINT.with((first(), Id::from_raw("signal-key"))),
-        )
-        .expect("revocation succeeds");
-    record
-        .apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
-            second(),
-            Id::from_raw("new-key"),
-            "signal".into(),
-            "signal-main".into(),
-            "aci:alice".into(),
-            "key-2".into(),
-        )))
-        .expect("reassignment succeeds after review");
-    let state = record.state().expect("state loads");
-    assert_eq!(
-        state.resolve_account("signal", "signal-main", "aci:alice", "key-2"),
-        Ok(second())
-    );
-    assert!(
-        state
-            .resolve_account("signal", "signal-main", "aci:alice", "key-1")
-            .is_err()
-    );
-}
 
-#[test]
-fn shared_phone_hints_suggest_all_people_without_linking_anyone() {
-    let mut record = fixture().expect("fixture operation succeeds");
-    for person in [first(), second()] {
-        record
-            .apply(
-                ContactDirectory::PROJECT_PHONES.with((person, vec!["+1 (202) 555-0123".into()])),
-            )
-            .expect("projection succeeds");
-    }
-    let state = record.state().expect("state loads");
-    assert_eq!(
-        state.phone_candidates("+12025550123"),
-        vec![first(), second()]
-    );
-    assert!(state.phone_candidates("2025550123").is_empty());
-    assert!(state.resolve("sms", "+12025550123").is_err());
-    assert!(
-        state
-            .resolve_account("sms", "carrier", "+12025550123", "assignment-1")
-            .is_err()
-    );
-}
-
-#[test]
-fn multiple_sender_accounts_each_route_and_preserve_provenance() {
-    use crate::routing::{SenderAccount, routes};
-    let mut record = fixture().expect("fixture operation succeeds");
-    record
-        .apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
-            first(),
-            Id::from_raw("signal-key"),
-            "signal".into(),
-            "signal-main".into(),
-            "aci:alice".into(),
-            "key-1".into(),
-        )))
-        .expect("confirmation succeeds");
-    let sender = |id: &str| SenderAccount {
-        id: Id::from_raw(id),
-        service: "signal".into(),
-        scope: "signal-main".into(),
-        enabled: true,
-    };
-    let state = record.state().expect("state loads");
     let mut senders = vec![sender("personal"), sender("work")];
     let candidates = routes(&state, &first(), "signal", &senders);
     assert_eq!(candidates.len(), 2);
@@ -435,159 +323,37 @@ fn multiple_sender_accounts_each_route_and_preserve_provenance() {
     assert!(routes(&state, &first(), "whatsapp", &senders).is_empty());
 }
 
+/// A new identity for a confirmed account needs revocation or a reviewed replacement: the
+/// replacement keeps who the old one was and is all or nothing, and after revocation the account
+/// may be another person's.
 #[test]
-fn same_person_can_map_to_external_services_without_combining_accounts() {
-    let mut record = fixture().expect("fixture operation succeeds");
-    for (service, scope, subject) in [
-        ("signal", "signal-main", "aci:alice"),
-        ("whatsapp", "business-a", "US.alice"),
-        ("sms", "sms-carrier", "aci:alice"),
-    ] {
-        record
-            .apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
-                first(),
-                Id::from_raw(service),
-                service.into(),
-                scope.into(),
-                subject.into(),
-                "identity-1".into(),
-            )))
-            .expect("confirmation succeeds");
-    }
-    let state = record.state().expect("state loads");
-    assert_eq!(
-        state.resolve_account("signal", "signal-main", "aci:alice", "identity-1"),
-        Ok(first())
-    );
-    assert_eq!(
-        state.resolve_account("sms", "sms-carrier", "aci:alice", "identity-1"),
-        Ok(first())
-    );
-    assert_eq!(
-        state.resolve_account("whatsapp", "business-a", "US.alice", "identity-1"),
-        Ok(first())
-    );
+fn a_confirmed_account_takes_a_new_identity_only_by_review_or_revocation() {
+    let mut record = fixture();
+    account(&mut record, first(), "signal-key", ALICE, "key-1").expect("confirms");
     assert!(
-        state
-            .resolve_account("whatsapp", "business-b", "US.alice", "identity-1")
-            .is_err()
+        account(&mut record, first(), "new-key", ALICE, "key-2").is_err(),
+        "identity changes require revocation"
     );
-}
-
-#[test]
-fn association_ids_remain_reserved_after_person_deletion() {
-    let mut record = fixture().expect("fixture operation succeeds");
-    let endpoint = Id::from_raw("historical");
-    record
-        .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
+    let replace = |revision: &str| {
+        ContactDirectory::REPLACE_ACCOUNT.with((
             first(),
-            endpoint.clone(),
-            "sms".into(),
-            "+12025550123".into(),
-        )))
-        .expect("confirmation succeeds");
-    record
-        .apply(ContactDirectory::REMOVE_CONTACT.with(first()))
-        .expect("deletion succeeds");
-    assert!(
-        record
-            .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
-                second(),
-                endpoint,
-                "sms".into(),
-                "+12025550123".into()
-            )))
-            .is_err()
-    );
-}
-
-#[test]
-fn concurrent_revision_aware_confirmations_refuse_before_routing() {
-    use crate::routing::{SenderAccount, routes};
-    let mut left = fixture().expect("fixture operation succeeds");
-    let mut right = left.fork();
-    left.apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
-        first(),
-        Id::from_raw("first-link"),
-        "signal".into(),
-        "signal-main".into(),
-        "aci:alice".into(),
-        "key-1".into(),
-    )))
-    .expect("confirmation succeeds");
-    right
-        .apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
-            second(),
-            Id::from_raw("second-link"),
+            Id::from_raw("signal-key"),
+            Id::from_raw("new-reference"),
             "signal".into(),
             "signal-main".into(),
             "aci:alice".into(),
-            "key-2".into(),
-        )))
-        .expect("confirmation succeeds");
-    left.sync_with(&mut right).expect("replicas sync");
-    let state = left.state().expect("state loads");
-    assert_eq!(state, right.state().expect("state loads"));
-    for revision in ["key-1", "key-2"] {
-        assert!(
-            state
-                .resolve_account("signal", "signal-main", "aci:alice", revision)
-                .is_err()
-        );
-    }
-    let senders = [SenderAccount {
-        id: Id::from_raw("own"),
-        service: "signal".into(),
-        scope: "signal-main".into(),
-        enabled: true,
-    }];
-    assert!(routes(&state, &first(), "signal", &senders).is_empty());
-    assert!(routes(&state, &second(), "signal", &senders).is_empty());
-}
-
-#[test]
-fn reviewed_revision_replacement_is_atomic_and_keeps_old_attribution() {
-    let mut record = fixture().expect("fixture operation succeeds");
-    let old = Id::from_raw("old-reference");
-    record
-        .apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
-            first(),
-            old.clone(),
-            "signal".into(),
-            "signal-main".into(),
-            "aci:alice".into(),
-            "key-1".into(),
-        )))
-        .expect("confirmation succeeds");
+            revision.into(),
+        ))
+    };
     let before = record.state().expect("state loads");
-    assert!(
-        record
-            .apply_confirmed(ContactDirectory::REPLACE_ACCOUNT.with((
-                first(),
-                old.clone(),
-                Id::from_raw("new-reference"),
-                "signal".into(),
-                "signal-main".into(),
-                "aci:alice".into(),
-                String::new()
-            )))
-            .is_err()
-    );
+    assert!(record.apply_confirmed(replace("")).is_err());
     assert_eq!(
         record.state().expect("state loads"),
         before,
         "refused replacement must not revoke the old route"
     );
     record
-        .apply_confirmed(ContactDirectory::REPLACE_ACCOUNT.with((
-            first(),
-            old.clone(),
-            Id::from_raw("new-reference"),
-            "signal".into(),
-            "signal-main".into(),
-            "aci:alice".into(),
-            "key-2".into(),
-        )))
+        .apply_confirmed(replace("key-2"))
         .expect("reviewed replacement succeeds");
     let state = record.state().expect("state loads");
     assert_eq!(
@@ -604,10 +370,50 @@ fn reviewed_revision_replacement_is_atomic_and_keeps_old_attribution() {
         .get(&first())
         .expect("person remains")
         .endpoints
-        .get(&old)
+        .get(&Id::from_raw("signal-key"))
         .expect("old association remains");
     assert!(historical.removed);
     assert_eq!(historical.revision, "key-1");
+
+    forget(&mut record, first(), "new-reference");
+    account(&mut record, second(), "reassigned", ALICE, "key-3")
+        .expect("reassignment succeeds after review");
+    let state = record.state().expect("state loads");
+    assert_eq!(
+        state.resolve_account("signal", "signal-main", "aci:alice", "key-3"),
+        Ok(second())
+    );
+    assert!(
+        state
+            .resolve_account("signal", "signal-main", "aci:alice", "key-2")
+            .is_err()
+    );
+}
+
+/// Two devices confirm the same recipient, and the same account, for different people at once:
+/// both converge on one state that routes the conflicting ones to nobody.
+#[test]
+fn conflicting_confirmations_on_two_devices_converge_and_route_to_nobody() {
+    let mut left = fixture();
+    let mut right = left.fork();
+    endpoint(&mut left, first(), "one", "signal", "recipient").expect("confirms");
+    endpoint(&mut right, second(), "two", "signal", "recipient").expect("confirms");
+    account(&mut left, first(), "first-link", ALICE, "key-1").expect("confirms");
+    account(&mut right, second(), "second-link", ALICE, "key-2").expect("confirms");
+    left.sync_with(&mut right).expect("replicas sync");
+    let state = left.state().expect("state loads");
+    assert_eq!(state, right.state().expect("state loads"));
+    assert!(state.resolve("signal", "recipient").is_err());
+    for revision in ["key-1", "key-2"] {
+        assert!(
+            state
+                .resolve_account("signal", "signal-main", "aci:alice", revision)
+                .is_err()
+        );
+    }
+    let senders = [sender("own")];
+    assert!(routes(&state, &first(), "signal", &senders).is_empty());
+    assert!(routes(&state, &second(), "signal", &senders).is_empty());
 }
 
 #[test]
@@ -640,16 +446,14 @@ fn legacy_person_records_load_without_email_hints_or_identity_changes() {
 /// removed are tombstoned.
 #[test]
 fn one_projection_of_many_people_is_each_projected_alone() {
-    use super::Projected;
-    let third = Id::from_raw("00000000-0000-4000-8000-000000000003");
-    let mut batched = fixture().expect("fixture succeeds");
-    let mut single = fixture().expect("fixture succeeds");
+    let mut batched = fixture();
+    let mut single = fixture();
     for record in [&mut batched, &mut single] {
         record
             .apply(ContactDirectory::REMOVE_CONTACT.with(second()))
             .expect("removing succeeds");
     }
-    let people = [first(), second(), third.clone()].map(|person| Projected {
+    let people = [first(), second(), third()].map(|person| Projected {
         label: format!("Person {person}"),
         phones: vec!["+12025550123".into()],
         emails: vec![format!("{person}@example.test")],
@@ -687,11 +491,11 @@ fn one_projection_of_many_people_is_each_projected_alone() {
     assert!(batched.people.get(&second()).expect("projected").removed);
     assert_eq!(
         batched.phone_candidates("+12025550123"),
-        vec![third],
+        vec![third()],
         "only a person still in the book is a candidate"
     );
 
-    let mut record = fixture().expect("fixture succeeds");
+    let mut record = fixture();
     let invalid = Projected {
         person: Id::from_raw("not-a-uuid"),
         ..Projected::default()
@@ -708,8 +512,8 @@ fn one_projection_of_many_people_is_each_projected_alone() {
 /// person it belongs to; a shared mailbox, or a removed person, shows none.
 #[test]
 fn a_projected_picture_shows_for_the_one_person_with_that_mailbox() {
-    use super::{MAX_PHOTO_BYTES, Projected};
-    let mut record = fixture().expect("fixture succeeds");
+    use super::MAX_PHOTO_BYTES;
+    let mut record = fixture();
     let person = |id: Id, email: &str, photo: &str| Projected {
         label: format!("Person {id}"),
         phones: Vec::new(),
@@ -730,12 +534,11 @@ fn a_projected_picture_shows_for_the_one_person_with_that_mailbox() {
     assert_eq!(state.photo_for_email("ada@Example.TEST"), Some("QUJD"));
     assert_eq!(state.photo_for_email("nobody@example.test"), None);
 
-    let third = Id::from_raw("00000000-0000-4000-8000-000000000003");
     record
-        .apply(
-            ContactDirectory::PROJECT_CONTACTS
-                .with((vec![person(third, "team@example.test", "R0hJ")], Vec::new())),
-        )
+        .apply(ContactDirectory::PROJECT_CONTACTS.with((
+            vec![person(third(), "team@example.test", "R0hJ")],
+            Vec::new(),
+        )))
         .expect("projecting succeeds");
     let state = record.state().expect("readable");
     assert_eq!(state.photo_for_email("team@example.test"), None);
@@ -760,5 +563,36 @@ fn a_projected_picture_shows_for_the_one_person_with_that_mailbox() {
         record
             .apply(ContactDirectory::PROJECT_CONTACTS.with((vec![oversized], Vec::new())))
             .is_err()
+    );
+}
+
+/// A view of another language reads the directory as a list of its people,
+/// each a value of the surface's `Person`: the collection's entry ids are the
+/// record's, and a reading names no item by id.
+#[test]
+fn a_reading_of_the_directory_is_a_list_of_its_people() {
+    let mut record = fixture();
+    record
+        .apply(ContactDirectory::CONFIRM_ENDPOINT.with((
+            first(),
+            Id::from_raw("00000000-0000-4000-8000-000000000009"),
+            "signal".into(),
+            "+12025550123".into(),
+        )))
+        .expect("the endpoint confirms");
+    let state = record.state().expect("readable");
+    let reading = tilo_resource::read::reading::<ContactDirectory>(&state);
+    let people = reading["people"].as_array().expect("a list of people");
+    assert_eq!(people.len(), 2);
+    let [ada, _] = people.as_slice() else {
+        panic!("two people: {reading}");
+    };
+    assert_eq!(ada["label"], "Alex");
+    assert_eq!(ada["removed"], false);
+    assert_eq!(ada["endpoints"][0]["service"], "signal");
+    assert_eq!(ada["endpoints"][0]["recipient"], "+12025550123");
+    assert!(
+        ada.get("id").is_none(),
+        "a view names no person by an id the surface does not declare: {ada}"
     );
 }

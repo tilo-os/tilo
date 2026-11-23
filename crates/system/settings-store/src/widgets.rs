@@ -375,9 +375,6 @@ mod tests {
             assert_eq!(prefs.calendar.show, ShowMode::Always);
             assert_eq!(prefs.calendar.width, Some(420.0));
             assert!(prefs.system_monitor.enabled);
-            for id in WidgetId::ALL {
-                assert_eq!(prefs_key(id).name(), id.key());
-            }
         }
 
         phase always_is_scoped_to_the_strips_it_names;
@@ -405,28 +402,6 @@ mod tests {
             assert!(prefs.pinned);
             assert_eq!(prefs.edge, DockEdge::BottomLeft);
         }
-
-        phase the_persisted_shape_round_trips;
-        {
-            let mut prefs = WidgetPrefs {
-                enabled: false,
-                show: ShowMode::Always,
-                always_on_strips: vec![3],
-                places: Vec::new(),
-                width: Some(300.0),
-            };
-            prefs.drop_on("edid:A|B|1", 0.25, 1.5);
-            let value = serde_json::to_value(&prefs).unwrap();
-            assert_eq!(
-                value,
-                serde_json::json!({
-                    "enabled": false, "show": "always", "always_on_strips": [3],
-                    "places": [{ "display": "edid:A|B|1", "x": 0.25, "y": 1.0 }],
-                    "width": 300.0
-                })
-            );
-            assert_eq!(serde_json::from_value::<WidgetPrefs>(value).unwrap(), prefs);
-        }
     }
 }
 
@@ -437,6 +412,14 @@ mod place_tests {
     #[test]
     fn a_widget_keeps_a_place_per_display_and_goes_home_when_replugged() {
         let mut prefs = WidgetPrefs::default_for(WidgetId::Music);
+        prefs.drop_on("panel", -0.5, 1.5);
+        let clamped = prefs.place_on(&["panel"]).unwrap();
+        assert_eq!(
+            (clamped.x, clamped.y),
+            (0.0, 1.0),
+            "a place is clamped onto the display"
+        );
+        prefs = WidgetPrefs::default_for(WidgetId::Music);
         prefs.drop_on("panel", 0.0, 1.0);
         prefs.drop_on("monitor", 0.5, 0.5);
         let at = |prefs: &WidgetPrefs, connected: &[&str]| {

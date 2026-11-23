@@ -52,7 +52,7 @@ async fn keep_under_chat(
 }
 
 /// Every agent the workspace kept under Chat is in Assistant's list of them
-/// once its server opens again, with its name, keeper, model and instruction,
+/// once its server opens again, with its name, person, model and instruction,
 /// and opening again copies nothing more.
 #[tokio::test]
 #[allow(
@@ -94,7 +94,7 @@ async fn a_workspaces_agents_kept_under_chat_are_assistants_after_it_opens_again
             (
                 agent.id.0.as_str(),
                 agent.name.as_str(),
-                agent.keeper.as_str(),
+                agent.acts_for.as_str(),
                 agent.model.as_deref(),
                 agent.instruction.as_deref(),
                 agent.is_active(),

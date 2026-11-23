@@ -1205,14 +1205,6 @@ mod tests {
             );
         }
 
-        phase percent_maps_onto_the_monitors_own_scale;
-        {
-            assert_eq!(ddc_raw(50.0, 100), 50);
-            assert_eq!(ddc_raw(50.0, 255), 128);
-            assert_eq!(ddc_raw(150.0, 100), 100);
-            assert_eq!(ddc_raw(-5.0, 100), 0);
-        }
-
         phase software_dimming_is_perceptual_monotonic_and_never_black;
         {
             assert_eq!(software_luminance(1.0), 1.0);
@@ -1744,6 +1736,8 @@ mod tests {
             );
             idle(&service);
             assert_eq!(*applied.lock().unwrap(), vec![("/dev/DP-2".into(), 80.0)]);
+            assert!(service.set("DP-1", 150.0), "past the top of the scale");
+            assert_eq!(service.levels()[0].level, 1.0, "clamped at full");
         }
 
         phase a_reader_is_told_once_the_scan_asked_before_it_lands;

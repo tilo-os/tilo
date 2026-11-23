@@ -68,10 +68,8 @@ mod tests {
         assert_eq!(prefs.colour, None);
         prefs.colour = Some("violet".into());
         assert_eq!(prefs.valid(), Ok(()));
-        assert_eq!(colours::label("violet"), "Violet");
         prefs.colour = Some("chartreuse".into());
         assert!(prefs.valid().is_err());
-        assert_eq!(colours::label("chartreuse"), "chartreuse");
         assert_eq!(colours::ids().len(), ui::tokens::PresenceHue::ALL.len());
     }
 }

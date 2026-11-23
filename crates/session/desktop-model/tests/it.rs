@@ -36,5 +36,7 @@ pub mod projection;
 pub mod stored_tiles;
 #[path = "topology.rs"]
 pub mod topology;
+#[path = "window_state.rs"]
+pub mod window_state;
 #[path = "workspace_name.rs"]
 pub mod workspace_name;

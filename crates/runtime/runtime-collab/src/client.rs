@@ -683,19 +683,18 @@ impl ChannelHandle {
         ))
     }
 
-    /// Hold open what the workspaces holding `records` say of their actions: all of them now,
-    /// then all again whenever one of those workspaces' grants changes, until the stream is
-    /// dropped.
+    /// Hold open what the host says of the `actions` a window shows: all of them now, then all
+    /// again whenever grants change one, until the stream is dropped.
     ///
     /// # Errors
     ///
     /// Returns [`NotAvailable`] when the host refuses or the connection fails.
-    pub async fn held_elsewhere(
+    pub async fn shown_actions(
         &self,
-        records: Vec<crate::held_elsewhere::HeldRecord>,
-    ) -> Result<HeldVerdicts, NotAvailable> {
-        Ok(HeldVerdicts(
-            self.feed(Topic::HeldElsewhere(records)).await?,
+        actions: Vec<crate::shown_actions::ShownAction>,
+    ) -> Result<ActionVerdictFeed, NotAvailable> {
+        Ok(ActionVerdictFeed(
+            self.feed(Topic::ShownActions(actions)).await?,
         ))
     }
 
@@ -1475,15 +1474,15 @@ impl ResourcePages {
     }
 }
 
-/// What the holding workspaces say of the records a [`ChannelHandle::held_elsewhere`] names;
-/// dropping it ends the subscription.
-pub struct HeldVerdicts(Feed);
+/// What the host says of the actions a [`ChannelHandle::shown_actions`] names; dropping it ends
+/// the subscription.
+pub struct ActionVerdictFeed(Feed);
 
-impl HeldVerdicts {
+impl ActionVerdictFeed {
     /// The decisions as they are next.
-    pub async fn read(&self) -> Result<Vec<crate::held_elsewhere::HeldDecision>, NotAvailable> {
+    pub async fn read(&self) -> Result<Vec<crate::shown_actions::ActionDecision>, NotAvailable> {
         match self.0.event().await? {
-            Event::HeldElsewhere(decisions) => Ok(decisions),
+            Event::ShownActions(decisions) => Ok(decisions),
             other => Err(unexpected_event(&other)),
         }
     }

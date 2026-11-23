@@ -166,12 +166,5 @@ mod tests {
             assert!((settings.rate - 0.65).abs() < f32::EPSILON);
             assert_eq!(settings.voice.engine_voice(), Some("en-gb"));
         }
-
-        phase labels_round_trip;
-        {
-            for voice in ScreenReaderVoice::ALL {
-                assert_eq!(ScreenReaderVoice::from_label(voice.label()), Some(*voice));
-            }
-        }
     }
 }

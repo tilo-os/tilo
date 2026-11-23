@@ -59,7 +59,7 @@ impl Media {
         let Some((reading, at)) = self.reading.as_ref() else {
             return offer.map(NowPlaying::offered);
         };
-        tilo_desktop_surface::now_playing::now_playing(
+        tilo_session_core::desktop::now_playing::now_playing(
             reading,
             Some(*at),
             now,

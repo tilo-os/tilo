@@ -49,16 +49,29 @@
     },
     "invite-live": {
       "Ada opens Tilo": 15000,
-      "Ada opens Tilo again": 15000,
       "Ada gives their name": 10000,
       "Ada makes a new workspace, “Garden club”": 15000,
       "Ada makes an invitation link": 10000,
       "Grace opens the invitation on her computer": 15000,
       "Grace joins Garden club": 15000,
       "Ada and Grace see each other in their people lists": 2000,
-      "Grace follows Ada": 5000,
-      "Ada types a line in the note": 10000,
+      "Grace opens Chat": 120000,
+      "Ada writes a line in Chat": 120000,
       "Grace sees Ada’s words": 1000
+    },
+    "cli-login-ticket": {
+      "Ada signs in on her computer": 20000,
+      "Ada asks her computer for a ticket for another": 30000,
+      "The second computer logs in with the ticket": 180000,
+      "Ada puts a file in the workspace from her computer": 60000,
+      "The second computer reads the file from the workspace": 60000
+    },
+    "home-server-joins": {
+      "Ada signs in on her computer": 20000,
+      "Ada asks her computer for a ticket for a home server": 30000,
+      "The home server joins with the ticket": 180000,
+      "Ada puts a file in the workspace from her computer": 60000,
+      "The home server reads the file from its own state": 60000
     },
     "invited-activity": {
       "Ada invites Grace and Lin into a workspace": 90000,

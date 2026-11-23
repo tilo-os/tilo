@@ -1,6 +1,6 @@
 //! YouTube as an outside origin of tilolang packages: the logic that keeps a package's types of
 //! the `youtube` kinds (`type Video (origin: youtube.video)`) in step with YouTube, from the
-//! searches, channels and trending lists its outside effects ask for.
+//! searches, channels, playlists and trending lists its outside effects ask for.
 //!
 //! The app holds nothing of it: it declares its types and hands its effects to the
 //! capabilities (`outside("youtube.search", query)`), and this origin, in native code the
@@ -21,6 +21,7 @@
 #[cfg(feature = "connector")]
 pub mod connector;
 pub mod origin;
+#[cfg(unix)]
 pub mod remote;
 pub mod service;
 pub mod wire;
@@ -29,14 +30,16 @@ pub mod wire;
 pub mod live;
 
 pub use origin::YouTubeOrigin;
+#[cfg(unix)]
 pub use remote::RemoteService;
 pub use service::{
-    ChannelItem, ChannelPage, Live, PlaylistItem, Scripted, SearchPage, Service, ServiceError,
-    TrendingPage, VideoItem, scripted,
+    ChannelItem, ChannelPage, Live, PlaylistItem, PlaylistPage, Scripted, SearchPage, Service,
+    ServiceError, TrendingPage, VideoItem, scripted,
 };
 
 /// The origin kept in step with YouTube over the connector at the far end of `stream`, waking
 /// the instance with `wake` when an answer is ready.
+#[cfg(unix)]
 pub fn remote_origin(
     stream: std::os::unix::net::UnixStream,
     wake: std::sync::Arc<dyn Fn() + Send + Sync>,
@@ -52,17 +55,20 @@ pub fn remote_origin(
 /// Register the YouTube origin's client of the YouTube connector with the platform, so a crate
 /// that keeps a package's records reaches the connector without naming this one
 /// (`tilolang_tilo::origin::remote`).
+#[cfg(unix)]
 pub fn register() {
     tilolang_tilo::origin::register_remote("youtube", CONNECTOR_CLIENT);
 }
 
 /// The client [`register`] hands the platform: a `const` item, so its own type never has to be
 /// named where it is registered.
+#[cfg(unix)]
 const CONNECTOR_CLIENT: &Remote = &|stream, wake| {
     remote_origin(stream, wake).map(|origin| origin as tilolang_tilo::origin::SharedOrigin)
 };
 
 /// The client [`register`] hands the platform.
+#[cfg(unix)]
 type Remote = dyn Fn(
         std::os::unix::net::UnixStream,
         std::sync::Arc<dyn Fn() + Send + Sync>,

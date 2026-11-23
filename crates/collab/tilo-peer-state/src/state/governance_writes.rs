@@ -2,7 +2,7 @@
 //! it moved, then taking it in as every member will.
 use super::{
     AutoCommit, CachedDocument, NeighbourMsg, StatePeer, SystemTime, TransportOrigin, backend, err,
-    now_ns, workspace,
+    now_ns,
 };
 use automerge::transaction::Transactable as _;
 use collab_types::signer::DeviceSigner;
@@ -74,8 +74,6 @@ impl StatePeer {
         // A change that writes no operation leaves the membership as it was.
         let written = doc.get_changes(before);
         crate::members::replay::carry(before, &doc, &written, &self.core.workspace);
-        // The membership change goes first: the media policy is rebound to the
-        // membership it leaves.
         let unrecorded = doc.get_heads();
         // An admission names the device row it writes itself
         // ([`workspace::membership::admit_operations`]).
@@ -103,12 +101,6 @@ impl StatePeer {
                 .workspace_doc
                 .as_deref()
                 .ok_or("missing workspace")?;
-            // A policy the workspace holds is rebound to the security basis its
-            // change moves; one it does not hold yet is its author's, and
-            // initialising it is never this refresh's.
-            if workspace::media::parse(held).map_err(err)?.is_some() {
-                workspace::media::refresh_authorization(held, &mut doc).map_err(err)?;
-            }
             // Only what the change wrote can differ from what is held: the rows of the change
             // committed above, not the operations still open here, which reading the document's
             // changes would close without a stamp.

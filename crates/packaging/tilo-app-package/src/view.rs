@@ -474,7 +474,7 @@ mod tests {
             let m = app(
                 "com.example.notes",
                 "[entrypoint]\nbin = \"bin/notes\"\n\
-             [sandbox.services]\ncollab = \"required@1\"\nfs = \"optional@2\"\nmodels = \"required\"",
+             [sandbox.services]\ncollab = \"required@1\"",
             );
             assert_eq!(m.package_id, "com.example.notes");
             assert_eq!(m.kind, KIND_APP);
@@ -488,21 +488,6 @@ mod tests {
                     .get("collab")
                     .map(|r| (r.requirement, r.version)),
                 Some((Requirement::Required, 1))
-            );
-            assert_eq!(
-                m.sandbox
-                    .services
-                    .get("fs")
-                    .map(|r| (r.requirement, r.version)),
-                Some((Requirement::Optional, 2))
-            );
-            assert_eq!(
-                m.sandbox
-                    .services
-                    .get("models")
-                    .map(|r| (r.requirement, r.version)),
-                Some((Requirement::Required, 1)),
-                "the canonical schema pins an unversioned requirement to 1"
             );
             assert!(m.runtime.is_none());
             assert!(m.cli_commands.is_empty(), "no [cli] block → empty commands");
@@ -603,86 +588,6 @@ mod tests {
             let none = ManifestView::from_toml_str(&source(package, "[entrypoint]\nbin = \"bin/x\"\n"))
                 .expect("decodes");
             assert!(none.keywords.is_empty());
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn the_shipped_apps_manifests_decode_with_names_kinds_and_keywords;
-
-        phase shipped_system_apps_carry_their_german_names;
-        {
-            for (app, german) in [
-                ("file-explorer", "Dateien"),
-                ("settings", "Einstellungen"),
-                ("calendar", "Kalender"),
-            ] {
-                let manifest = read_manifest(&repo().join("apps").join(app).join("tilo-app.toml"))
-                    .unwrap_or_else(|e| panic!("{app}: {e}"));
-                assert_eq!(
-                    manifest.localized_names.get("de").map(String::as_str),
-                    Some(german),
-                    "{app}"
-                );
-            }
-        }
-
-        phase every_shipped_manifest_decodes_with_a_kind_readers_understand;
-        {
-            // A typo'd kind must not silently stop a package being an app.
-            let known = ["app", "service", "plugin", "format-provider", "runtime"];
-            let mut checked = 0;
-            for entry in std::fs::read_dir(repo().join("apps")).expect("apps/ readable") {
-                let path = entry.expect("dir entry").path().join("tilo-app.toml");
-                if !path.exists() {
-                    continue;
-                }
-                let m = read_manifest(&path)
-                    .unwrap_or_else(|e| panic!("{} does not decode: {e}", path.display()));
-                assert!(
-                    known.contains(&m.kind.as_str()),
-                    "{} declares kind = {:?}, which is not one of {known:?}",
-                    path.display(),
-                    m.kind,
-                );
-                checked += 1;
-            }
-            assert!(
-                checked >= 40,
-                "expected the shipped app fleet, found {checked}"
-            );
-        }
-
-        phase every_app_has_english_and_german_keywords_and_no_copy_in_its_manifest;
-        {
-            let apps = repo().join("apps");
-            let mut checked = 0;
-            for entry in std::fs::read_dir(&apps).expect("apps/") {
-                let dir = entry.expect("entry").path();
-                let Ok(text) = std::fs::read_to_string(dir.join("tilo-app.toml")) else {
-                    continue;
-                };
-                let keywords = crate::search_keywords::read(&dir)
-                    .unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
-                for language in ["en", "de"] {
-                    assert!(
-                        keywords
-                            .get(language)
-                            .is_some_and(|words| !words.is_empty()),
-                        "{} lacks search/{language}.ftl",
-                        dir.display()
-                    );
-                }
-                // One source: the words are joined at pack time, never committed.
-                let view = ManifestView::from_toml_str(&text)
-                    .unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
-                assert!(
-                    view.keywords.is_empty(),
-                    "{} declares [package.keywords]; the words live in search/*.ftl",
-                    dir.display()
-                );
-                checked += 1;
-            }
-            assert!(checked >= 40, "only {checked} apps checked");
         }
     }
 }

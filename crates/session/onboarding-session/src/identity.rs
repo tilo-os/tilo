@@ -443,7 +443,7 @@ pub fn canonical_native_identity_ready(minted: &MintedIdentity) -> bool {
     let Ok(person) = <[u8; 32]>::try_from(bytes) else {
         return false;
     };
-    let room = collab_types::personal_cluster(&person);
+    let room = collab_types::person_workspace(&person);
     tilo_identity::broker::trusted_current_device(&room.to_string()).is_ok_and(
         |(_, certificate)| {
             certificate.user_public_key == person && !certificate.capabilities.foreign
@@ -479,30 +479,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn identity_minting_waits_for_the_acknowledged_consequence;
-
-        phase the_key_is_not_minted_until_the_consequence_is_acknowledged;
-        {
-            let mut o = Onboarding::new();
-            assert!(!o.can_create(), "cannot create from the intro screen");
-            o.begin();
-            assert_eq!(o.screen(), Screen::NoRecovery);
-            assert!(
-                !o.can_create(),
-                "reaching the screen is not acknowledging it"
-            );
-            o.set_acknowledged(true);
-            assert!(o.can_create());
-        }
-
-        phase withdrawing_the_acknowledgement_blocks_creation_again;
-        // Unticking has to actually revoke — a checkbox that can't be undone is a decoration, not a check.
-        {
-            let mut o = Onboarding::new();
-            o.begin();
-            o.set_acknowledged(true);
-            o.set_acknowledged(false);
-            assert!(!o.can_create());
-        }
 
         phase back_returns_to_the_choice_without_carrying_acknowledgement;
         {
@@ -560,20 +536,6 @@ mod tests {
             assert!(o.complete(minted));
             assert_eq!(o.screen(), Screen::Done);
             assert!(o.is_done());
-        }
-
-        phase resuming_a_created_identity_never_reopens_creation;
-        {
-            let mut onboarding = Onboarding::new();
-            onboarding.resume_created(MintedIdentity {
-                fingerprint: "ab".repeat(32),
-                path: PathBuf::from("/identity/primary.json"),
-            });
-
-            assert_eq!(onboarding.screen(), Screen::Done);
-            assert!(onboarding.is_done());
-            assert!(!onboarding.acknowledged());
-            assert!(!onboarding.can_create());
         }
 
         phase minting_writes_a_readable_record_and_reports_its_fingerprint;

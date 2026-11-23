@@ -60,7 +60,7 @@ use tilo_desktop_search::record_launch;
 use tilo_desktop_model::TabId;
 
 use crate::DesktopHandle;
-use crate::navigation::{ChromeEffect, LayoutEffect};
+use tilo_session_core::desktop::navigation::{ChromeEffect, LayoutEffect};
 
 /// What one admitted open answers to.
 type Answer = Completer<Result<InvocationReceipt, ActionCallError>>;

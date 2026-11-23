@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-pub use tilo_desktop_surface::now_playing::NowPlaying;
+pub use tilo_session_core::desktop::now_playing::NowPlaying;
 
 /// What the widget's controls do: play or pause, go back a track, skip to the next one.
 pub use tilo_desktop_surface::host::contract::MusicAction;

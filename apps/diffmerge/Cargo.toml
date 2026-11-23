@@ -49,7 +49,7 @@ taffy.workspace = true
 diffmerge-samples = { package = "diffmerge", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # The bound a test waits on work it started by.
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 
 [lints]
 workspace = true

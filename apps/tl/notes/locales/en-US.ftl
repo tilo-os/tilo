@@ -4,7 +4,7 @@
 d-so-tilo-notes = Notes
 
 d-mavvhka7 = Note
-    .doc = A note: a title, a body, the note it stands under and the tags people gave it.
+    .doc = A note: a title, a body, the note it stands under, the tags people gave it and the reactions they left on it.
     .noun = { $count ->
         [one] note
        *[other] notes
@@ -23,6 +23,12 @@ d-ssu2tbnf = Parent
 d-gfk6rqxp = Pinned
 
 d-xcpasjg7 = Tags
+
+d-ddxl7oum = Reactions
+    .doc = Who reacted to the note, by emoji: the person and agent each pill in its header stands for, and whose own reaction a press on it takes back.
+
+d-t6igvr56 = Reacted
+    .doc = The reactions it had in the native Notes app, each emoji with how many reacted with it: who reacted there is not carried, since this app names people only as its own members.
 
 d-erijxfd3 = Source
     .doc = The file the note was imported from, by the address of its content: importing the same file again opens this note rather than making a second one.
@@ -69,7 +75,9 @@ d-qymo5lg2-title = Title
 d-qymo5lg2-body = Body
 
 d-37dxigeq = New sub-note
-    .doc = Starts a note inside `n`'s own, after the notes it already holds: the note the window has open too, so a person writing one starts the note it stands under without finding its row.
+    .doc = Starts a note inside `n`'s own, after the notes it already holds, titled `words` when the caller knows them already (a `/page` in one of `n`'s blocks names the page it makes with the words that stood there): the note the window has open too, so a person writing one starts the note it stands under without finding its row.
+
+d-37dxigeq-words = Words
 
 d-qvjedq2v = Carry native notebook
     .doc = The notebook the native Notes app kept before this app took its id over, carried into this one once: each page a note, under the note its page stood under and in the order its pages stood there, with its title, its body, its tags and the id its page had.
@@ -171,6 +179,11 @@ d-3u3bevec = Untag
 
 d-3u3bevec-t = T
 
+d-jkqp27g7 = React
+    .doc = Adds your reaction with an emoji to a note, or takes it back when you had reacted with it: a press on one of its pills, or the pick of the one its add button opened.
+
+d-jkqp27g7-emoji = Emoji
+
 d-4s5iqnfo = Insert image
     .doc = Puts a picture in a note, where its words end: the person picks the file, and the note keeps the address of its content rather than the picture, and the name it came in as.
     .did = added an image
@@ -191,6 +204,9 @@ d-2e5dloct = Export note
 
 d-cdjz7d5y = Export notebook
     .doc = The notebook as a zip, one Markdown file for each note: a note's own under the folder of the note it stands in, and the pictures it shows in its own `images` folder beside it.
+
+d-hjwb45bx = Export notebook markdown
+    .doc = The notebook as one Markdown document: each note a heading one level deeper than the note it stands under (six at the deepest), its body beneath, and the notes under it after it — the notebook read as one text, in the order the tree keeps it.
 
 d-t4nxxtng = Import markdown
     .doc = Imports a Markdown file as a note, or opens the note that file already made: a note keeps the address of the file it came from, so importing the same file twice makes one note.
@@ -214,8 +230,20 @@ d-l23y3cjf-created = Created
 
 d-l23y3cjf-updated = Updated
 
+d-fxhtpbwf = Import a note as text
+    .doc = Imports a note given as words rather than a file: its title, its body as Markdown, the pictures it shows and the notes its links lead to.
+    .did = imported a note
+
+d-fxhtpbwf-title = Title
+
+d-fxhtpbwf-markdown = Markdown
+
+d-fxhtpbwf-pictures = Pictures
+
+d-fxhtpbwf-links = Links
+
 d-h3zczsen = Import archive
-    .doc = Imports a zip of pages as notes under the notebook, a page under the page that held it, in one change: undo takes the whole import back.
+    .doc = Imports a notebook another tool wrote: a zip of pages, or the JSON a Notion API page listing answers.
     .did = imported a notebook
 
 d-h3zczsen-file = File
@@ -239,7 +267,10 @@ d-i653dg7r = Append to note~present
 
 d-akcqjax3 = Notebook
     .w-outline = Outline
+    .w-reacted-in-the-native-notes = Reacted in the native Notes: { $reacted }
     .w-write-something = Write something
+    .w-image = image
+    .w-page = page
 
 d-x4im3xs5 = Notebook head
 
@@ -248,6 +279,7 @@ d-qrsfr4a5 = Notebook menu
     .w-import-markdown = Import Markdown…
     .w-import-a-notion-export-or-a = Import a Notion export or a zip of Markdown…
     .w-export-the-notebook = Export the notebook…
+    .w-export-the-notebook-as-one-markdown = Export the notebook as one Markdown document…
     .w-new-sub-note = New sub-note
     .w-insert-an-image = Insert an image…
     .w-export-this-note = Export this note…
@@ -263,9 +295,14 @@ d-kdl43aw7 = Notes
 d-xqxkoqbj = Note row
 
 d-6wqou47w = Note editor
+    .w-reacted-in-the-native-notes = Reacted in the native Notes: { $reacted }
     .w-write-something = Write something
+    .w-image = image
+    .w-page = page
 
 d-nki6assy = Note details
+    .w-created = Created
+    .w-moved-here = Moved here
     .w-from = From { $service }
     .w-from-by = From { $service } by { $by }
     .w-edited = Edited

@@ -1,0 +1,150 @@
+# Quickstart
+
+`tilo-vm` puts your build of a Tilo component into a shared dev VM without a
+new VM or a reboot. You get your own **account** in the VM: a Linux user, a
+session, and a stack of layers over the VM's `/usr`.
+
+## Get a VM
+
+Agents usually share one a human already runs. `tilo-vm status` says which
+VM you use and why; with none selected, ask a human which one to use (they
+set it with `tilo-vm vm use <name> --global` or in `vms.toml`). Or make your own:
+
+```sh
+tilo-vm doctor               # hypervisor, KVM, tokens, published disk: each with its fix
+tilo-vm vm create dev        # checks everything first, then downloads the published disk
+tilo-vm vm start
+```
+
+On Linux the VM lives in libvirt's rootless `qemu:///session`, so a human can
+watch it in virt-manager (File > Add Connection > QEMU/KVM user session).
+`vm create` needs a forge token (`FORGEJO_TOKEN`, or an fgj or tea login) to
+download the disk; `tilo-vm guide platforms` covers the rest.
+
+For libvirt, QEMU and WHPX, creation selects and records an unused host SSH
+forwarding port starting at 2222. It checks registered VMs and local TCP bind
+availability. `--ssh-port PORT` requests an exact port and refuses a busy one
+before creating VM files. This is a preflight check, not a reservation: another
+process can take the port before the VM starts. Creating an already registered
+VM remains a no-op and keeps its existing port.
+
+## Set up once, branch many
+
+Set up one VM the way you want every VM to start, then branch it:
+
+```sh
+tilo-vm vm create box        # once
+tilo-vm vm start box         # on a current image; log in, add git/SSH keys, the t token, model API keys, sign in
+tilo-vm vm branch box a b c --stop   # shut box down cleanly, three VMs, each a copy of it, taken in
+tilo-vm vm start a           # a, b and c run side by side and diverge from here
+tilo-vm vm list              # what each VM was branched from, and the bases they share
+tilo-vm vm rm box            # the branches keep working
+```
+
+Making the branches is copy-on-write, so it takes seconds and copies nothing. Each
+branch carries the whole disk (home, keys, vaults, settings) and gets its own
+name, UUID, MAC and SSH port; on first boot it notices the new UUID and gives
+itself a new device identity. `box` itself keeps working and keeps its
+identity; branch it again later for more. Boot `box` at least once on a
+current image before branching it: the guest records its UUID only on an image
+with `tilo-device-branch.service`, and without that record its branches keep
+its device key (`tilo-vm vm upgrade box` first if it runs an older one). A frozen base is deleted only once
+no VM uses it (`tilo-vm guide concepts`, "Branch"). libvirt, WHPX and UTM.
+
+Then `vm branch` boots each branch once beside `box`, which takes a few
+minutes. A branch's new device identity is a new device to every workspace it
+holds, and a workspace takes a new device in only through its host: `box`
+hosts the shell and every workspace it made. A branch first started while
+`box` is off shows its windows "waiting for box to take this device in", and
+one whose `box` was removed waits for good; its secrets, settings and
+workspace list come along with the disk either way. So `vm branch` boots
+`box` (it runs on its own copy-on-write disk, beside its branches) and the
+branches, as many at a time as the host's memory holds, waits until each has
+re-keyed and every workspace `box` hosts has taken it in, and stops them: the
+branches off, `box` as it was before (off, with `--stop`). That needs `box`
+to boot here, and the source and its branches on one network of this host
+(libvirt VMs are, `tilo-vm guide platforms`, "One network for a host's
+VMs"); a branch that cannot reach `box` there is named after a minute rather
+than at the end of the wait. With too little free memory it says so, and `--no-admit` makes
+the branches without booting anything (each is then taken in at its first
+boot while `box` runs; the next `vm branch box` of the same names boots it
+to be taken in).
+
+A board, a laptop or another real machine that runs a Tilo dev image is
+registered instead: `tilo-vm vm add <name> --ssh root@<address>`, or as its
+owner's account, `--ssh <user>@<address> --key <file>` (`tilo-vm guide
+devices`). Every command below then works on it.
+
+## Use it
+
+```sh
+tilo-vm                      # where am I: VM, account, generation, session, next steps
+tilo-vm account create --headless
+tilo-vm swap tilo-session    # sync this worktree, build in the VM, restart your session
+tilo-vm shot -o target/shot.png
+tilo-vm control actions list
+tilo-vm account exec -- sha256sum /usr/bin/tilo-session   # what your account sees (guide swapping)
+tilo-vm rollback             # back to the previous generation
+tilo-vm rollback --forward   # and forward again
+```
+
+## Headful: your desktop on a real display path
+
+```sh
+tilo-vm account create --headful       # own vkms display and seat: real DRM and libinput
+tilo-vm swap tilo-session           # your build, session restarted
+tilo-vm shot -o target/headful.png  # the account compositor's own frame
+tilo-vm input key super             # real keyboard events on the account's seat
+
+tilo-vm seat claim                  # move the session onto seat0, the hypervisor window
+tilo-vm vm shot -o target/seat0.png # the hypervisor's picture of seat0
+tilo-vm seat release                # give seat0 back to greetd
+```
+
+What each picture is:
+
+- `tilo-vm shot` asks the account's compositor to render its current scene into
+  a PNG (`tilo-control snapshot`). It is the same for a headless account, a
+  headful account on its vkms seat, and an account holding seat0; it never reads a
+  display.
+- `tilo-vm vm shot` is the hypervisor's screenshot of the VM's real display,
+  seat0: greetd's greeter, or the account that claimed it. Headless and vkms
+  accounts never appear there. It works without SSH.
+
+## Rules
+
+- The VM comes from `TILO_VM`, then `.tilo-vm` in the worktree, then the
+  default in `vms.toml`.
+- Your account is named after your branch, unless `TILO_VM_ACCOUNT` or
+  `account = "<name>"` in the worktree's `.tilo-vm` names another.
+- Every command that works on an account accepts `--account <name>`: `status`,
+  `swap`, `swap-artifact`, `input`, `control`, `rollback`, `logs`, `shot`,
+  `seat claim|release`, `account create|show|exec|restart|rm` and
+  `account apps install`. All but
+  `status`, `swap`, `swap-artifact`, `input` and `control` also take the name as a
+  positional argument (`tilo-vm logs review-a`).
+- After a command on an account other than your default one, its `next:` hints
+  carry the same `--account`.
+- Every command takes `--json`; a failure is one object,
+  `{"error","hint","see"}`, at the top level (also inside `status` reports).
+  Commands that change something or run long (create, start, restart, swap,
+  rollback, seat, gc, `vm ssh --raw`, ...) write a receipt under
+  `target/dev-runs/`; looking around (status, doctor, guide, lists, logs,
+  `account show`, `account exec`, `vm ssh` without `--raw`) does not.
+- Commands are idempotent: rerunning one that succeeded changes nothing.
+
+Never deploy with raw `ssh`/`scp` into the VM. It bypasses generations, so
+nothing can roll it back, and other agents share that VM. `tilo-vm vm ssh`
+is for looking around; it refuses writes into `/usr`, `/etc`, `/boot` and
+tilo-vm's state unless you pass `--raw`.
+
+Changed a Containerfile, a unit, `/etc` or the package list instead of a
+component? `tilo-vm vm upgrade --from local` builds this worktree's image on t
+and moves the running VM onto it; `tilo-vm image build --disk` builds the image
+and a disk of it on t for `vm create --image`; once main has published the
+commit, `tilo-vm vm upgrade --from sha:<commit>` moves the VM onto that build
+(`tilo-vm guide images`).
+
+Next: `tilo-vm guide concepts`, `tilo-vm guide swapping`,
+`tilo-vm guide driving`, `tilo-vm guide images`, `tilo-vm guide fedora-loop`
+if you used `fedora44-vm-iterate.sh`.

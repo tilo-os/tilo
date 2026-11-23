@@ -413,37 +413,59 @@ mod tests {
         /// `PrivateHistory`, on a thread that waits for its store.
         fn private_history_keeps_actors_apart_and_checkpoints_durably;
 
-        phase colliding_actors_never_recover_each_others_intents_or_receipts;
+        phase a_restart_recovers_its_own_actors_evidence_and_never_a_colliding_ones;
         {
             let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
-            let owner = StorageKey::app("so.tilo.test");
+            let key = StorageKey::app("so.tilo.test");
             let first = b"original actor";
             let bucket = u64::from(blake3::hash(first).as_bytes()[0]) % SLOTS;
             let second = (0_u64..=u64::from(u16::MAX))
                 .map(u64::to_le_bytes)
                 .find(|actor| u64::from(blake3::hash(actor).as_bytes()[0]) % SLOTS == bucket)
                 .expect("a colliding actor bucket exists");
-            let evidence = PrivateAction {
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "body", "edit").unwrap();
+            let entry = PrivateAction {
                 id: [1; 16],
-                hashes: vec![],
-                intent: b"private pending intent".to_vec(),
-                receipt: Some(b"private receipt".to_vec()),
+                hashes: doc.get_heads().iter().map(|hash| hash.0).collect(),
+                intent: b"exact report".to_vec(),
+                receipt: None,
             };
-            let mut history = PrivateHistory::open(store.clone(), &owner, first).unwrap();
-            let key = history.key().clone();
-            history.record(evidence.clone()).unwrap();
+            let mut history = PrivateHistory::open(store.clone(), &key, first).unwrap();
+            let slot = history.key().clone();
+            history.record(entry.clone()).unwrap();
+            history.checkpoint().unwrap();
+            drop(history);
+
+            // An actor whose slot collides never recovers another's intents.
+            let collision = PrivateHistory::open(store.clone(), &key, &second).unwrap();
+            assert_eq!(*collision.key(), slot);
+            assert_eq!(collision.entries().count(), 0);
+            drop(collision);
+
+            let mut history = PrivateHistory::open(store.clone(), &key, first).unwrap();
+            let recovered = history.entries().next().unwrap();
+            assert_eq!(recovered, &entry);
+            assert!(!recovered.is_present_in(&AutoCommit::new()));
+            let loaded = AutoCommit::load(&doc.save()).unwrap();
+            assert!(recovered.is_present_in(&loaded));
+            history.record(entry.clone()).unwrap();
+            let mut changed = entry.clone();
+            changed.intent.push(0);
+            assert!(history.record(changed).is_err());
+            let mut admitted = entry;
+            admitted.receipt = Some(b"private admission".to_vec());
+            history.record(admitted.clone()).unwrap();
             history.checkpoint().unwrap();
             history.flush().unwrap();
             drop(history);
-            let recovered = PrivateHistory::open(store.clone(), &owner, first).unwrap();
-            assert_eq!(
-                recovered.entries().cloned().collect::<Vec<_>>(),
-                vec![evidence]
-            );
-            drop(recovered);
-            let collision = PrivateHistory::open(store.clone(), &owner, &second).unwrap();
-            assert_eq!(*collision.key(), key);
-            assert_eq!(collision.entries().count(), 0);
+            let history = PrivateHistory::open(store.clone(), &key, first).unwrap();
+            assert_eq!(history.entries().cloned().collect::<Vec<_>>(), [admitted.clone()]);
+            assert_eq!(history.durability(), Durability::Durable);
+            assert!(loaded.has_change(&ChangeHash(admitted.hashes[0])));
+            drop(history);
+            let collision = PrivateHistory::open(store, &key, &second).unwrap();
+            assert_eq!(collision.entries().count(), 0, "nor its receipts");
         }
 
         phase successive_actors_reuse_bounded_owner_slots_without_touching_live_writers;
@@ -717,46 +739,6 @@ mod tests {
             let writer = crate::DocWriter::try_start(&owner).unwrap();
             writer.try_flush().unwrap();
             assert_eq!(writer.private_actions(&doc).unwrap(), vec![evidence]);
-        }
-
-        phase checkpoint_restart_preserves_retry_and_rejects_orphaned_document_history;
-        {
-            let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
-            let key = StorageKey::app("so.tilo.test");
-            let mut doc = AutoCommit::new();
-            doc.put(automerge::ROOT, "body", "edit").unwrap();
-            let hashes = doc.get_heads().iter().map(|hash| hash.0).collect();
-            let entry = PrivateAction {
-                id: [1; 16],
-                hashes,
-                intent: b"exact report".to_vec(),
-                receipt: None,
-            };
-            let mut history = PrivateHistory::open(store.clone(), &key, b"actor").unwrap();
-            history.record(entry.clone()).unwrap();
-            history.checkpoint().unwrap();
-            drop(history);
-            let mut history = PrivateHistory::open(store.clone(), &key, b"actor").unwrap();
-            let recovered = history.entries().next().unwrap();
-            assert_eq!(recovered, &entry);
-            assert!(!recovered.is_present_in(&AutoCommit::new()));
-            let loaded = AutoCommit::load(&doc.save()).unwrap();
-            assert!(recovered.is_present_in(&loaded));
-            history.record(entry.clone()).unwrap();
-            let mut changed = entry.clone();
-            changed.intent.push(0);
-            assert!(history.record(changed).is_err());
-            let mut admitted = entry;
-            admitted.receipt = Some(b"private admission".to_vec());
-            history.record(admitted.clone()).unwrap();
-            history.checkpoint().unwrap();
-            drop(history);
-            let history = PrivateHistory::open(store, &key, b"actor").unwrap();
-            assert_eq!(history.entries().next(), Some(&admitted));
-            assert_eq!(history.durability(), Durability::Durable);
-            assert!(
-                loaded.has_change(&ChangeHash(admitted.hashes[0]))
-            );
         }
     }
 }

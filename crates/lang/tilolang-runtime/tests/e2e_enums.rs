@@ -425,4 +425,103 @@ view folders(f: Folder) {
             "a text whose type declares nothing starts empty"
         );
     }
+    /// The cases of an enum are elements of a set and of a map's sets, and values of a map:
+    /// added, removed and read back as the cases they are, so an alarm keeps the days it rings.
+    #[test]
+    fn enum_cases_are_kept_in_sets_and_maps() {
+        const ALARMS: &str = r#"app so.tilo.alarms "Alarms"
+
+enum Weekday {
+    mon
+    tue
+    wed
+}
+
+type Alarm {
+    days: Set<Weekday>
+    by_person: Map<Set<Weekday>>
+    first: Map<Weekday>
+}
+
+root Alarm
+
+default view alarm for Alarm
+
+action ring_on(a: Alarm, d: Weekday) {
+    a.days.add(d)
+    a.by_person.add("ada", d)
+    a.first.put("ada", d)
+}
+
+action quiet_on(a: Alarm, d: Weekday) {
+    a.days.remove(d)
+    a.by_person.remove("ada", d)
+}
+
+fn said(d: Weekday) -> Text {
+    match d {
+        .mon => "Mon",
+        .tue => "Tue",
+        .wed => "Wed",
+    }
+}
+
+view alarm(a: Alarm) {
+    text(a.days.map(d -> said(d)).join(" "))
+    text((a.by_person.get("ada") ?? []).map(d -> said(d)).join(" "))
+    text(if let d = a.first.get("ada") { said(d) } else { "-" })
+    text(if a.days.contains(Weekday.tue) { "rings Tuesday" } else { "quiet Tuesday" })
+}
+"#;
+        let app = App::compile(ALARMS, &[]);
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        app.load(&rt);
+        let alarm = rt.create("Alarm").unwrap();
+        let ids = &app.compiled.ids;
+        let day = |case: &str| {
+            Value::Enum(EnumValue {
+                ty: ids.get("Weekday").unwrap().to_owned(),
+                variant: ids.get(&format!("Weekday.{case}")).unwrap().to_owned(),
+                fields: std::collections::BTreeMap::default(),
+            })
+        };
+        let run = |action: &str, case: &str| {
+            rt.invoke_action(
+                &me(),
+                (
+                    app.action(action).as_str(),
+                    vec![Value::resource(&alarm), day(case)],
+                ),
+            )
+            .unwrap_or_else(|e| panic!("{action}({case}): {e}"));
+        };
+        run("ring_on", "mon");
+        run("ring_on", "tue");
+        run("ring_on", "wed");
+        run("quiet_on", "mon");
+        let mut view = rt
+            .open_view(&me(), &app.view("alarm"), vec![Value::resource(&alarm)])
+            .unwrap();
+        view.poll_patches().unwrap();
+        let mut shown = texts(&view);
+        // A set keeps no order of its own: compare the days whatever order they come in.
+        for line in shown.iter_mut().take(2) {
+            let mut days: Vec<&str> = line.split(' ').collect();
+            days.sort_unstable();
+            *line = days.join(" ");
+        }
+        assert_eq!(
+            shown,
+            ["Tue Wed", "Tue Wed", "Wed", "rings Tuesday"],
+            "{}",
+            dump(view.tree())
+        );
+        let Value::List(days) = rt.read(&alarm, "days").unwrap() else {
+            panic!("a set reads as a list");
+        };
+        assert!(
+            days.contains(&day("tue")) && days.contains(&day("wed")) && days.len() == 2,
+            "the set holds the cases themselves: {days:?}"
+        );
+    }
 }

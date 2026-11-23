@@ -10,7 +10,7 @@
 
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -19,12 +19,13 @@ use ntfs_mount::grants::GrantStore;
 use ntfs_mount::identity::Identity;
 use ntfs_mount::policy::DriveFacts;
 use ntfs_mount::protocol::{
-    self, Consent, Drive, Mode, Placement, ReadOnlyReason, Request, Response,
+    self, Consent, Drive, Mode, Placement, ReadOnlyReason, RememberOffer, Request, Response,
 };
 use ntfs_mount::service::{Backend, Caller, Candidate, Health, MountRequest, Service, server};
 use ntfs_mount::topology::{Controller, Link, Topology};
 
 const UID: u32 = 1000;
+const OTHER: u32 = 1001;
 
 #[derive(Default)]
 struct World {
@@ -140,13 +141,30 @@ struct Running {
     caller: Arc<Mutex<Caller>>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
-    _dir: tempfile::TempDir,
+    _owned: Option<tempfile::TempDir>,
 }
+
+/// Socket names in one directory, so a restarted service can share it.
+static SOCKETS: AtomicU32 = AtomicU32::new(0);
 
 impl Running {
     fn start(drives: Vec<Candidate>) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("control.sock");
+        let path = dir.path().to_path_buf();
+        Self::build(Some(dir), &path, drives)
+    }
+
+    /// A server over `drives`, keeping its grants in `dir`: a service that
+    /// starts again over the same directory is the same computer.
+    fn at(dir: &Path, drives: Vec<Candidate>) -> Self {
+        Self::build(None, dir, drives)
+    }
+
+    fn build(owned: Option<tempfile::TempDir>, dir: &Path, drives: Vec<Candidate>) -> Self {
+        let socket = dir.join(format!(
+            "control-{}.sock",
+            SOCKETS.fetch_add(1, Ordering::Relaxed)
+        ));
         let listener = UnixListener::bind(&socket).unwrap();
         let world = Arc::new(Mutex::new(World {
             drives,
@@ -156,7 +174,7 @@ impl Running {
         let stop = Arc::new(AtomicBool::new(false));
         let mut service = Service::new(
             Fake(Arc::clone(&world)),
-            GrantStore::new(dir.path().join("grants")),
+            GrantStore::new(dir.join("grants")),
         );
         let (who, halt) = (Arc::clone(&caller), Arc::clone(&stop));
         let thread = std::thread::spawn(move || {
@@ -177,7 +195,7 @@ impl Running {
             caller,
             stop,
             thread: Some(thread),
-            _dir: dir,
+            _owned: owned,
         }
     }
 
@@ -188,6 +206,11 @@ impl Running {
 
     fn as_person(&self, request: Request) -> Response {
         *self.caller.lock().unwrap() = Caller::Person { uid: UID };
+        protocol::call(&self.socket, request, tilo_test_env::hang_bound()).unwrap()
+    }
+
+    fn as_other(&self, request: Request) -> Response {
+        *self.caller.lock().unwrap() = Caller::Person { uid: OTHER };
         protocol::call(&self.socket, request, tilo_test_env::hang_bound()).unwrap()
     }
 
@@ -226,6 +249,15 @@ impl Drop for Running {
     }
 }
 
+/// The Windows partition's facts, changed in one way, under another id.
+fn altered(id: &str, change: impl FnOnce(&mut DriveFacts)) -> Candidate {
+    let mut drive = windows_partition();
+    drive.id = id.into();
+    drive.name = id.split(':').next().unwrap().into();
+    change(&mut drive.facts);
+    drive
+}
+
 fn consent(mode: Mode, remember: bool) -> Option<Consent> {
     Some(Consent { mode, remember })
 }
@@ -254,6 +286,18 @@ tilo_test_env::scenario! {
         assert!(
             service.world.lock().unwrap().mounted.is_empty(),
             "listing mounts nothing"
+        );
+
+        service
+            .world
+            .lock()
+            .unwrap()
+            .drives
+            .push(altered("nvme7n1p1:1", |facts| facts.on_install_disk = false));
+        assert_eq!(
+            service.drive("nvme7n1p1:1").preselect,
+            Mode::OpenSafely,
+            "Open is pre-selected only for the install's own disk"
         );
 
         assert!(matches!(
@@ -384,6 +428,148 @@ tilo_test_env::scenario! {
             again.remembered.is_some(),
             "remembered, so it pre-selects Open safely"
         );
+
+        let mut another = forged_stick(9);
+        another.facts.identity.volume = Some(99);
+        service.world.lock().unwrap().drives.push(another);
+        let stranger = service.drive("sdb1:9");
+        assert!(stranger.needs_consent);
+        assert!(
+            stranger.remembered.is_none(),
+            "only for the stick with the same IDs"
+        );
+    }
+
+    phase nothing_but_the_motherboard_and_its_own_disk_earns_open;
+    {
+        let service = Running::start(vec![windows_partition()]);
+        assert!(matches!(
+            service.open("nvme0n1p3:1", consent(Mode::Open, true)),
+            Response::Opened { .. }
+        ));
+
+        // The same identifiers at another place, or on other hardware: each
+        // asks again, and each is treated as a drive nobody has seen.
+        type Change = fn(&mut DriveFacts);
+        let cases: [(&str, Placement, Change); 6] = [
+            (
+                "nvme1n1p3:1",
+                Placement::Internal,
+                |facts| {
+                    facts.topology.device_path =
+                        "devices/pci0000:00/0000:00:1c.4/0000:3e:00.0/nvme/nvme1/nvme1n1/nvme1n1p3"
+                            .into();
+                },
+            ),
+            ("nvme0n1p4:1", Placement::External, |facts| {
+                facts.topology.controller = Some(Controller::NvmeBehindBridge);
+            }),
+            ("sdb1:1", Placement::External, |facts| {
+                facts.topology.hotplug_link = Some(Link::ExternalPci);
+            }),
+            ("sda2:1", Placement::External, |facts| {
+                facts.topology.removable = true;
+            }),
+            ("sdc1:1", Placement::External, |facts| {
+                facts.present_at_boot = false;
+            }),
+            ("loop0p1:1", Placement::External, |facts| {
+                facts.topology.virtual_device = true;
+            }),
+        ];
+        let mut world = service.world.lock().unwrap();
+        for (id, _, change) in cases {
+            world.drives.push(altered(id, change));
+        }
+        drop(world);
+
+        for (id, placement, _) in cases {
+            let drive = service.drive(id);
+            assert_eq!(drive.placement, placement, "{id}");
+            assert!(drive.needs_consent, "{id}: must ask again");
+            assert_eq!(drive.preselect, Mode::OpenSafely, "{id}: treated as new");
+            assert!(drive.remembered.is_none(), "{id}");
+        }
+
+        // Each identifier alone voids the memory of the drive in this place.
+        let swaps: [Change; 4] = [
+            |facts| facts.identity.drive = Some("wwn:other".into()),
+            |facts| facts.identity.partition = Some("guid-2".into()),
+            |facts| facts.identity.volume = Some(1),
+            |facts| facts.identity.volume = None,
+        ];
+        let mut world = service.world.lock().unwrap();
+        for (at, swap) in swaps.into_iter().enumerate() {
+            world.drives.push(altered(&format!("nvme9n1p{}:1", at + 1), swap));
+        }
+        drop(world);
+        for at in 1..=4 {
+            let drive = service.drive(&format!("nvme9n1p{at}:1"));
+            assert!(drive.needs_consent, "swapped identifier {at}");
+            assert_eq!(drive.preselect, Mode::OpenSafely);
+        }
+
+        // What a drive may keep: nothing for one with no identifier at all.
+        let mut world = service.world.lock().unwrap();
+        world.drives.push(altered("nvme0n1p5:1", |facts| {
+            facts.identity.partition = None;
+        }));
+        world.drives.push(altered("nvme0n1p6:1", |facts| {
+            facts.identity = Identity::default();
+        }));
+        drop(world);
+        assert_eq!(
+            service.drive("nvme0n1p5:1").can_remember,
+            RememberOffer::OpenSafely,
+            "missing an identifier, Open cannot be kept"
+        );
+        assert_eq!(
+            service.drive("nvme0n1p6:1").can_remember,
+            RememberOffer::Nothing
+        );
+    }
+
+    phase a_remembered_drive_survives_a_restart_and_belongs_to_one_person;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let first = Running::at(dir.path(), vec![windows_partition()]);
+        assert!(matches!(
+            first.open("nvme0n1p3:1", consent(Mode::OpenSafely, true)),
+            Response::Opened { .. }
+        ));
+        assert_eq!(first.remembered().len(), 1);
+        drop(first);
+
+        let restarted = Running::at(dir.path(), vec![windows_partition()]);
+        let drive = restarted.drive("nvme0n1p3:1");
+        assert!(!drive.needs_consent, "the choice outlives the service");
+        assert_eq!(drive.preselect, Mode::OpenSafely);
+        assert!(drive.mounted.is_none(), "a choice is not a mount");
+        assert_eq!(restarted.remembered().len(), 1);
+        assert!(
+            matches!(
+                restarted.as_other(Request::Remembered),
+                Response::Remembered { drives } if drives.is_empty()
+            ),
+            "another person on this computer sees none of them"
+        );
+        let Response::Drives { drives } = restarted.as_other(Request::Drives) else {
+            panic!("no drive list");
+        };
+        assert!(
+            drives.iter().all(|drive| drive.needs_consent),
+            "and is asked about every drive"
+        );
+
+        let grant = restarted.remembered()[0].grant.clone();
+        assert!(matches!(
+            restarted.as_person(Request::Forget { grant }),
+            Response::Done
+        ));
+        drop(restarted);
+        let after = Running::at(dir.path(), vec![windows_partition()]);
+        assert!(after.remembered().is_empty(), "forgetting outlives it too");
+        assert!(after.drive("nvme0n1p3:1").needs_consent);
     }
 
     phase an_unclean_volume_opens_read_only_in_either_mode;
@@ -439,5 +625,51 @@ tilo_test_env::scenario! {
         service.wait_until("the logged-out person's drive is closed", |world| {
             world.mounted.is_empty()
         });
+    }
+
+    phase housekeeping_runs_once_at_start_without_waiting_an_interval;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("control.sock");
+        let listener = tilo_files::native::socket::bind(&socket).unwrap();
+        let world = Arc::new(Mutex::new(World {
+            drives: vec![windows_partition()],
+            ..World::default()
+        }));
+        let mut service = Service::new(
+            Fake(Arc::clone(&world)),
+            GrantStore::new(dir.path().join("grants")),
+        );
+        assert!(matches!(
+            service.handle(
+                Caller::Shell { uid: UID },
+                Request::Open {
+                    drive: "nvme0n1p3:1".into(),
+                    consent: consent(Mode::Open, false),
+                },
+            ),
+            Response::Opened { .. }
+        ));
+        assert_eq!(world.lock().unwrap().mounted.len(), 1);
+        world.lock().unwrap().logged_out = true;
+
+        // Even with a long housekeeping interval and stop already set, startup
+        // housekeeping runs once before the poll loop and unmounts the stale
+        // drive immediately.
+        let stop = AtomicBool::new(true);
+        server::serve(
+            &listener,
+            &mut service,
+            |_| Ok(Caller::Shell { uid: UID }),
+            server::Pacing {
+                housekeeping: Duration::from_secs(60),
+                idle_exit: None,
+            },
+            &stop,
+        );
+        assert!(
+            world.lock().unwrap().mounted.is_empty(),
+            "startup housekeeping must close the logged-out person's drive at once"
+        );
     }
 }

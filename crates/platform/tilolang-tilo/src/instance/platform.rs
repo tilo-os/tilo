@@ -160,6 +160,22 @@ pub trait Platform {
         Err("this host keeps no files".to_owned())
     }
 
+    /// Offer `bytes` of `mime` (`text/plain` or an image type) as what the person copied: what
+    /// `clipboard.copy` and `clipboard.copy_image` reach. A platform that serves no clipboard
+    /// answers false.
+    fn copy_clipboard(&self, mime: &str, bytes: &[u8]) -> bool {
+        let _ = (mime, bytes);
+        false
+    }
+
+    /// What the person's selection holds of the first of `types` it offers, as its media type and
+    /// bytes: what `clipboard.paste` and `clipboard.paste_image` read. A platform that serves no
+    /// clipboard answers none.
+    fn paste_clipboard(&self, types: &[&str]) -> Option<(String, Vec<u8>)> {
+        let _ = types;
+        None
+    }
+
     /// What wakes the instance when work it waits for is ready (an index read off the frame).
     fn waker(&self) -> Waker;
 
@@ -199,6 +215,20 @@ impl BlobHost for PlatformBlobs {
 
     fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
         self.0.keep_content(name, media, bytes)
+    }
+}
+
+/// The person's clipboard, as the platform running the instance answers it: what a copy offers
+/// the device, and what a paste reads off it.
+pub struct PlatformClipboard(pub(super) Rc<dyn Platform>);
+
+impl tilolang_runtime::clipboard::ClipboardHost for PlatformClipboard {
+    fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
+        self.0.copy_clipboard(mime, bytes)
+    }
+
+    fn paste(&self, types: &[&str]) -> Option<(String, Vec<u8>)> {
+        self.0.paste_clipboard(types)
     }
 }
 

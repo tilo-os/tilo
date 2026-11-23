@@ -57,7 +57,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 const DESKTOP_APP: &str = "so.tilo.browser-desktop";
 const DESKTOP_DOCUMENT: &str = "desktop";
 /// Chat's app.
-const CHAT_APP: &str = tilo_peer_state::workspace::media::CHAT_APP;
+const CHAT_APP: &str = "so.tilo.chat";
 /// The type ids of Chat's text channel and message, as its items record them.
 const CHAT_TEXT_CHANNEL: &str = "q7llygsa";
 const CHAT_MESSAGE: &str = "hk2t6bvk";

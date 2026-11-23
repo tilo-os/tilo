@@ -59,7 +59,7 @@ tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-ide
 uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 tempfile.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 

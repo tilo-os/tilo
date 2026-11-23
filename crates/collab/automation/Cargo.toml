@@ -37,7 +37,7 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 model = ["dep:tilo-resource"]
 
 [dev-dependencies]
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

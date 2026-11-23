@@ -2418,13 +2418,13 @@ fn workspaces(session: &Session) -> Vec<(String, Vec<String>)> {
             .iter()
             .map(|workspace| {
                 (
-                    tilo_desktop_surface::names::workspace(&workspace.name),
+                    tilo_session_core::desktop::names::workspace(&workspace.name),
                     workspace
                         .strips
                         .iter()
                         .enumerate()
                         .map(|(at, strip)| {
-                            tilo_desktop_surface::names::strip_named(&strip.name, at)
+                            tilo_session_core::desktop::names::strip_named(&strip.name, at)
                         })
                         .collect(),
                 )
@@ -2462,7 +2462,7 @@ fn strips_holding(session: &Session, tab: u64) -> Vec<String> {
             .map(|(at, strip)| {
                 format!(
                     "{}/{}",
-                    tilo_desktop_surface::names::strip_named(&strip.name, at),
+                    tilo_session_core::desktop::names::strip_named(&strip.name, at),
                     strip.id.0
                 )
             })

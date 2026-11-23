@@ -681,7 +681,7 @@ async fn list_models(
         let mut value = reqwest::header::HeaderValue::from_str(header.value.as_str())
             .map_err(|_| ModelError::new(ErrorKind::Authentication))?;
         value.set_sensitive(header.secret);
-        request = request.header(header.name, value);
+        request = request.header(header.name.as_ref(), value);
     }
     let mut response = request.send().await.map_err(|error| {
         ModelError::new(if error.is_timeout() {

@@ -811,32 +811,6 @@ pub enum CatchUp {
     RunOnce,
 }
 
-/// One of the saver's devices taking one fire time of a schedule, so the
-/// saver's other devices leave it. Kept with the workspace's shortcuts, one
-/// per schedule: a claim on a later fire time replaces an earlier one.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ScheduleClaim {
-    pub shortcut: String,
-    /// Index of the schedule among the shortcut's triggers.
-    pub trigger: usize,
-    /// The fire time taken, in milliseconds since the Unix epoch.
-    pub due_ms: i64,
-    pub device: String,
-}
-
-impl ScheduleClaim {
-    /// The schedule this claims a fire time of: `shortcut/trigger`.
-    #[must_use]
-    pub fn key(&self) -> String {
-        format!("{}/{}", self.shortcut, self.trigger)
-    }
-
-    #[must_use]
-    pub fn supersedes(&self, other: &Self) -> bool {
-        (self.due_ms, other.device.as_str()) > (other.due_ms, self.device.as_str())
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FocusTransition {

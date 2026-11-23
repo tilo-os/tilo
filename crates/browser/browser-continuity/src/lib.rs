@@ -23,6 +23,10 @@ use serde::{Deserialize, Serialize};
 pub mod completion;
 #[cfg(all(unix, feature = "native"))]
 pub mod snapshot;
+// Backends without capture still name a snapshot type; nothing there reads a source file.
+#[cfg(not(all(unix, feature = "native")))]
+#[path = "snapshot/unsupported.rs"]
+pub mod snapshot;
 
 // The session vocabulary, the engine launch boundary and the projection
 // location live in browser-continuity-core, which the UI toolkit and the

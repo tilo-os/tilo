@@ -4,6 +4,7 @@
 use super::super::*;
 use super::draw_to_populate;
 use super::drive;
+use super::layout_height;
 use super::ml_input;
 use super::mods;
 use super::shaped_row;
@@ -258,6 +259,34 @@ tilo_test_env::scenario! {
                 "End went to the end of the second line"
             );
         }
+
+        // Left and Right walk every byte of a wrapped paragraph, across the rows it wraps onto.
+        {
+            let text = "alpha beta gamma delta epsilon zeta eta theta";
+            let mut ti = ml_input(text, 120.0, 400.0);
+            assert!(ti.multiline_shaped);
+            let rows = ti
+                .single_layout
+                .as_ref()
+                .map_or(0, |layout| layout.buffer.layout_runs().count());
+            assert!(rows > 2, "the paragraph wraps onto {rows} rows");
+            let mut doc = AutoCommit::new();
+            ti.set_cursor_pos(0);
+            for (key, end) in [(NamedKey::ArrowRight, text.len()), (NamedKey::ArrowLeft, 0)] {
+                let mut presses = 0;
+                while ti.cursor_pos() != end && presses <= 2 * text.len() {
+                    let before = ti.cursor_pos();
+                    drive(&mut ti, &mut doc, &named_key(key), mods(false, false));
+                    presses += 1;
+                    assert_ne!(
+                        ti.cursor_pos(),
+                        before,
+                        "{key:?} stopped at byte {before} after {presses} presses"
+                    );
+                }
+                assert_eq!(ti.cursor_pos(), end, "{key:?} reaches the end of the text");
+            }
+        }
     }
 
     phase multiline_wraps_at_unicode_line_breaks;
@@ -327,7 +356,7 @@ tilo_test_env::scenario! {
         {
             let mut composer = TextInput::local().multiline(true);
             composer.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
-            let height = measured_height(&mut composer, &theme, 320.0);
+            let height = layout_height(&mut composer, &theme, 320.0);
             assert!(
                 height >= 48.0,
                 "a composer in a phone's window stands at the touch target: {height}"
@@ -401,7 +430,7 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn clearing_and_opt_outs_leave_a_local_field_as_it_was;
 
-    phase clearing_direct_binding_preserves_interaction_and_cannot_write_stale_object;
+    phase clearing_the_binding_leaves_the_field_as_it_was_and_a_local_field_keeps_working;
     {
         let _settled = crate::motion::testing::settled();
         let mut doc = AutoCommit::new();
@@ -451,11 +480,8 @@ tilo_test_env::scenario! {
         ));
         assert_eq!(input.value(), "draft!");
         assert_eq!(doc.text(&stale).expect("stale text"), "historical");
-    }
 
-    phase clearing_without_a_binding_is_a_noop_for_local_users;
-    {
-        let _settled = crate::motion::testing::settled();
+        // A field that was never bound keeps working as a local one.
         let mut doc = AutoCommit::new();
         let state = crate::LocalState::new(String::from("local"));
         let mut local_input = TextInput::from_state(&state);
@@ -497,30 +523,5 @@ tilo_test_env::scenario! {
         assert!(input.autocorrection_preview_key.is_none());
         assert!(input.autocorrection_preview.is_none());
         assert_eq!(input.text, "teh mispeled words");
-    }
-}
-
-fn measured_height(ti: &mut TextInput, theme: &Theme, width: f32) -> f32 {
-    let mut taffy = TaffyTree::<()>::new();
-    let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
-        std::collections::HashMap::new();
-    let node = ti.build_layout(&mut taffy, theme, &mut node_map);
-    let mut tr = TextRenderer::new();
-    tr.set_text_scale(theme.text_scale);
-    let size = Widget::measure(
-        ti,
-        taffy::Size {
-            width: Some(width),
-            height: None,
-        },
-        taffy::Size {
-            width: taffy::AvailableSpace::Definite(width),
-            height: taffy::AvailableSpace::MaxContent,
-        },
-        &mut tr,
-    );
-    match taffy.style(node).unwrap().size.height.into_option() {
-        Some(fixed) => fixed,
-        None => size.height,
     }
 }

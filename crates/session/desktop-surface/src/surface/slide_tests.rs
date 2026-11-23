@@ -58,7 +58,7 @@ impl Shell {
     fn new() -> Self {
         let mut minter = IdMinter::new(9);
         let notes = tab(&mut minter, "Notes");
-        let mut tree = seed_tree(&mut minter, "Office", vec![notes]);
+        let mut tree = tilo_session_core::desktop::seed_tree(&mut minter, "Office", vec![notes]);
         let workspace = &mut tree.workspaces[0];
         let mut strips = vec![workspace.strips[0].id];
         for name in ["Research", "Reading"] {

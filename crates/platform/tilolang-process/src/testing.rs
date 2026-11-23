@@ -29,6 +29,8 @@ pub type Routed = Rc<RefCell<Vec<(RouteSpec, CollabRequest)>>>;
 #[derive(Default)]
 pub struct Workspace {
     store: RefCell<Store>,
+    /// The once-only actions a connection ran and kept done, by address and inputs.
+    done: RefCell<Vec<((String, serde_json::Value), serde_json::Value)>>,
     /// The stamps of the writes the store took, oldest first.
     written: RefCell<Vec<tilo_resource_store::Stamp>>,
 }
@@ -39,6 +41,28 @@ impl Workspace {
     /// # Errors
     /// Why the store refused the write.
     pub fn command(&self, command: Command) -> Result<Reply, String> {
+        if let Command::Turn {
+            address,
+            inputs,
+            answer,
+        } = command
+        {
+            let key = (address, inputs);
+            let ran = self
+                .done
+                .borrow()
+                .iter()
+                .find(|(done, _)| *done == key)
+                .map(|(_, answer)| answer.clone());
+            return Ok(Reply::Turn(match (ran, answer) {
+                (Some(ran), _) => wire::Turn::Done(ran),
+                (None, Some(answer)) => {
+                    self.done.borrow_mut().push((key, answer.clone()));
+                    wire::Turn::Done(answer)
+                }
+                (None, None) => wire::Turn::Take,
+            }));
+        }
         if command.writes() {
             let stamps = stamps_of(&command);
             return match wire::write(&mut self.store.borrow_mut(), command) {

@@ -90,7 +90,10 @@ impl Apps {
     }
 
     /// The held launches the person answered since the last look, with their answers: `None`
-    /// for one they declined.
+    /// for one they declined, or one someone else in the workspace answered meanwhile. The
+    /// question about that one is withdrawn, as the answer is the workspace's: the member who
+    /// allowed it on their own device answered it for everyone, and the launch starts with
+    /// what the workspace grants now.
     pub(crate) fn answered_reach(&self) -> Vec<(Option<Answer>, ReachFirst)> {
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         let mut answered = Vec::new();
@@ -98,6 +101,14 @@ impl Apps {
         for (mut asked, first) in asked {
             match std::pin::Pin::new(&mut asked).poll(&mut context) {
                 std::task::Poll::Ready(answer) => answered.push((answer, first)),
+                std::task::Poll::Pending
+                    if self
+                        .workspace_named(&first.workspace)
+                        .answers_reach(&first.app) =>
+                {
+                    drop(asked);
+                    answered.push((None, first));
+                }
                 std::task::Poll::Pending => self.reach.waiting.borrow_mut().push((asked, first)),
             }
         }

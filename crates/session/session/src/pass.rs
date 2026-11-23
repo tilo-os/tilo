@@ -275,9 +275,12 @@ impl Session {
         self.windows.step(&mut self.compositor, now);
         // The overview's windows fly between the session and the overview: its panel names them, the
         // session says where each stands, and the compositor draws their own pixels.
-        self.shared
-            .overview
-            .step(&self.shared.handle, &self.shared.desktop, now);
+        self.shared.overview.step(
+            &self.shared.handle,
+            &self.shared.desktop,
+            now,
+            self.compositor.frames_presented(),
+        );
         // The session this pass laid out is published before it is drawn: whoever reads the session's
         // state reads the session the frame about to be presented shows, not the one before it.
         self.control
@@ -313,9 +316,11 @@ impl Session {
         let after = Instant::now();
         let answering = self.serve_drawn_frame();
         self.follow_shell_over_frame()?;
-        // A send taken since this pass's settle — a tool's, answered over the frame just drawn, or
-        // the canvas's, asked as the shell was read over it — goes to Chat now: a message never
-        // waits for the next wake of the loop, nor for the frame that wake draws.
+        // A notification the person handed to their agent, and a send taken since this pass's
+        // settle — a tool's, answered over the frame just drawn, or the canvas's, asked as the
+        // shell was read over it — go to Chat now: a message never waits for the next wake of the
+        // loop, nor for the frame that wake draws.
+        self.shared.deliver_hands();
         self.shared.deliver_sends();
         // What search and the session's steps read of what the session publishes is read once the
         // frame is out: a key's turn draws what it opens before anything is read, and the reading
@@ -706,7 +711,9 @@ impl Session {
             let person = engine.identity().device_cert.user_public_key;
             self.shared.settings.sync(&self.shared.records, &person);
         }
-        // What was sent since the last look, by a box, an agent or a script.
+        // What was handed to an agent, and what was sent since the last look, by a box, an agent
+        // or a script.
+        self.shared.deliver_hands();
         self.shared.deliver_sends();
         self.follow_power()?;
         if let Some(comforts) = &mut self.comforts {
@@ -753,6 +760,11 @@ impl Session {
         // What the apps copied since the last pass joins the history; a copy chosen in it is pasted
         // once the panel let the keyboard go.
         self.shared.clipboard.follow(&mut self.compositor);
+        // What the tilolang apps copied goes on the clipboard as the person's own copy, and what
+        // they paste is read off the selection: their processes hold no display to do it on.
+        if let Some(clipboard) = self.shared.table.clipboard() {
+            clipboard.follow(&self.shared.clipboard, &mut self.compositor);
+        }
         // The question about a display change, before the sheets are placed: one that just opened
         // stands on this pass's displays.
         if let Some(confirm) = self.shared.display_confirm.as_ref() {
@@ -765,6 +777,11 @@ impl Session {
             self.displays.awaiting_confirmation().is_some(),
             &self.shared.invocations,
         );
+        // The verification of an AirDrop receiver, before the sheets are placed: one that just
+        // opened stands on this pass's display.
+        self.shared
+            .air_drop_consent
+            .follow(self.shared.nearby.as_ref(), self.shared.portal.as_ref());
         self.place_sheets();
         // What the async work this session started answered since the last pass.
         self.shared.landings.land();

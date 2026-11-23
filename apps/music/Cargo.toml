@@ -92,11 +92,11 @@ tilo-innertube = { path = "../../crates/platform/tilo-innertube", optional = tru
 [dev-dependencies]
 # Tests build their image fixtures.
 image = { workspace = true, features = ["png"] }
-test-http = { path = "../../crates/dev/test-http" }
+test-http = { path = "../../tools/test-http" }
 tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 serial_test.workspace = true
 tempfile.workspace = true
-tilo-test-env = { path = "../../crates/dev/test-env", features = ["document"] }
+tilo-test-env = { path = "../../tools/test-env", features = ["document"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]

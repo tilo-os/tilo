@@ -153,7 +153,7 @@ tilo_test_env::scenario! {
             .route()
             .expect("the person's own cluster carries their record");
         assert_eq!(route.app_id, APP);
-        assert_eq!(route.cluster_id, collab_types::personal_cluster(&ROOT_KEY));
+        assert_eq!(route.cluster_id, collab_types::person_workspace(&ROOT_KEY));
         assert_eq!(route.document.as_deref(), Some(laptop.checkout().id.as_str()));
 
         // Another device of the person derives the very same route for the

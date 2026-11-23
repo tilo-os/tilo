@@ -1,9 +1,11 @@
 """Checks for the offline portions of review-only speech release staging."""
 import importlib.util
 import io
+import os
 from pathlib import Path
 import tempfile
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location(
@@ -13,7 +15,23 @@ staging = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(staging)
 
 
+def http_error(url: str, code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(url, code, f"HTTP {code}", {}, None)
+
+
 class SpeechCatalogPreparation(unittest.TestCase):
+    def setUp(self):
+        # The verified artifacts of one test do not stand in for another's.
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.cache = Path(temporary.name)
+        environment = patch.dict(os.environ, {staging.CACHE_ENV: str(self.cache)})
+        environment.start()
+        self.addCleanup(environment.stop)
+        sleeping = patch.object(staging.time, "sleep", lambda _seconds: None)
+        sleeping.start()
+        self.addCleanup(sleeping.stop)
+
     def test_transport_refuses_plaintext_and_plaintext_redirects(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
@@ -53,6 +71,47 @@ class SpeechCatalogPreparation(unittest.TestCase):
             notice = (destination / "artifacts/whisper-base-LICENSE").read_bytes()
             self.assertEqual(len(notice), 1063)
             self.assertEqual(staging.hashlib.sha256(notice).hexdigest(), "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d")
+
+    def test_a_flaky_host_is_retried_and_its_artifact_is_kept(self):
+        data = b"public-fixture"
+        digest = staging.hashlib.sha256(data).hexdigest()
+        url = "https://example.invalid/weights"
+        answers = [http_error(url, 502), http_error(url, 503), io.BytesIO(data)]
+        with patch.object(staging.urllib.request, "build_opener") as opener:
+            opener.return_value.open.side_effect = answers
+            with tempfile.TemporaryDirectory() as directory:
+                destination = Path(directory) / "weights"
+                staging.stage(destination, url, len(data), digest)
+                self.assertEqual(destination.read_bytes(), data)
+            self.assertEqual(opener.return_value.open.call_count, 3)
+            # A later run of the same artifact fetches nothing.
+            with tempfile.TemporaryDirectory() as directory:
+                destination = Path(directory) / "weights"
+                staging.stage(destination, url, len(data), digest)
+                self.assertEqual(destination.read_bytes(), data)
+            self.assertEqual(opener.return_value.open.call_count, 3)
+
+    def test_a_host_that_keeps_failing_names_the_url_and_the_status(self):
+        url = "https://example.invalid/weights"
+        with patch.object(staging.urllib.request, "build_opener") as opener:
+            opener.return_value.open.side_effect = http_error(url, 502)
+            with tempfile.TemporaryDirectory() as directory:
+                with self.assertRaises(staging.DownloadError) as raised:
+                    staging.stage(Path(directory) / "weights", url, 3,
+                                  staging.hashlib.sha256(b"bad").hexdigest())
+            self.assertIn(url, str(raised.exception))
+            self.assertIn("HTTP 502", str(raised.exception))
+            self.assertEqual(opener.return_value.open.call_count, staging.TRIES)
+
+    def test_a_refused_answer_is_not_retried(self):
+        url = "https://example.invalid/weights"
+        with patch.object(staging.urllib.request, "build_opener") as opener:
+            opener.return_value.open.side_effect = http_error(url, 404)
+            with tempfile.TemporaryDirectory() as directory:
+                with self.assertRaises(urllib.error.HTTPError):
+                    staging.stage(Path(directory) / "weights", url, 3,
+                                  staging.hashlib.sha256(b"bad").hexdigest())
+            self.assertEqual(opener.return_value.open.call_count, 1)
 
     def test_preparation_never_overwrites_an_existing_directory(self):
         with tempfile.TemporaryDirectory() as directory:

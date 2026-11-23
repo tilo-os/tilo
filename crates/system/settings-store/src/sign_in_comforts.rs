@@ -269,35 +269,8 @@ mod tests {
             assert!(SignInComforts::changes(&us, &us).is_empty());
         }
 
-        phase plain_values_round_trip_in_the_token_shape;
+        phase an_input_method_engine_names_no_keyboard_layout;
         {
-            let comforts = SignInComforts {
-                screen_reader: true,
-                screen_reader_rate: 140,
-                screen_reader_voice: ScreenReaderVoice::German,
-                language: Some("de-DE".into()),
-                ..SignInComforts::default()
-            }
-            .with_keyboard_source("de:nodeadkeys");
-            let value = serde_json::to_value(&comforts).unwrap();
-            assert_eq!(
-                value,
-                json!({
-                    "screen_reader": true,
-                    "screen_reader_rate": 140,
-                    "screen_reader_voice": "german",
-                    "language": "de-DE",
-                    "xkb_layout": "de",
-                    "xkb_variant": "nodeadkeys",
-                    "text_scale": 1.0,
-                    "high_contrast": false,
-                })
-            );
-            assert_eq!(SignInComforts::from_value(&value), comforts);
-            assert_eq!(
-                comforts.screen_reader_settings().voice.engine_voice(),
-                Some("de")
-            );
             assert_eq!(
                 SignInComforts::default()
                     .with_keyboard_source("ime/rime")

@@ -1,7 +1,13 @@
 tilo_test_env::scenario! {
     fn directory_disclosure_prefers_reads_to_private_views;
 
-    phase directory_disclosure_prefers_document_reads_to_private_views;
+    phase directory_disclosure_prefers_a_document_read_then_a_read_of_the_record;
+    // A record is disclosed through the read of its document; failing that,
+    // through the read of the record itself — a record with no document read,
+    // whose own window views (Show history, render) come before History's
+    // `review-restore`, a read of the record, is disclosed through that read:
+    // whoever may read the record sees it, an agent included, so its listing
+    // reaches the record's actions (Terminal's session and its `run`).
     {
         let view = ActionSpec::operation(
             "render",
@@ -48,15 +54,7 @@ tilo_test_env::scenario! {
             snapshot.roots[0].visibility.as_ref().unwrap().action,
             "render"
         );
-    }
 
-    phase directory_disclosure_prefers_a_read_of_the_record_to_private_views;
-    // A record with no document read, whose own window views (Show history,
-    // render) come before History's `review-restore`, a read of the record, is
-    // disclosed through that read: whoever may read the record sees it, an agent
-    // included, so its listing reaches the record's actions (Terminal's session
-    // and its `run`). A document read still comes first.
-    {
         let view = |id: &str| {
             ActionSpec::operation(
                 id,
@@ -76,7 +74,6 @@ tilo_test_env::scenario! {
             .with_action(view("render"))
             .with_action(review)
             .with_action(view("read").reads_document());
-        let (app, _) = declared_directory(0);
         for (resource, disclosed) in [(&session, "review"), (&readable, "read")] {
             let row = app.directory_resource_row(resource, "", true).unwrap();
             assert_eq!(row.visibility.as_ref().unwrap().action, disclosed);
@@ -420,10 +417,9 @@ tilo_test_env::scenario! {
             calls_before,
             "local resolution never rebuilds live resources"
         );
-    }
-
-    phase retained_local_directory_pins_are_bounded_without_evicting_pending_reports;
-    {
+        // The same pin asked for again is one held snapshot, not another; a
+        // revision the app never published is no pin at all, and the pin
+        // holds until it is dropped.
         let (mut app, _) = declared_directory(1);
         publish_declared_directory(&mut app);
         let revision = app.action_directory_revision();

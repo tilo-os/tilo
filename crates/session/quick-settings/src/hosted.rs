@@ -346,9 +346,15 @@ pub struct NotificationCentre {
     /// The notices the centre keeps, newest first.
     #[serde(default)]
     pub notices: Vec<Notice>,
+    /// The live banners, newest first, by their ids: what a shell that draws the stack itself shows.
+    #[serde(default)]
+    pub banners: Vec<u64>,
     /// The notice up as a banner now, by its id.
     #[serde(default)]
     pub banner: Option<u64>,
+    /// Whether a Clear all can still be undone, so the centre offers Undo.
+    #[serde(default)]
+    pub undo: bool,
 }
 
 /// A notice the centre keeps.

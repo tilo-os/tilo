@@ -778,14 +778,24 @@ pub struct BlockEditor {
     find_active: Option<usize>,
     window_find: bool,
     find_reveal: bool,
-    /// The block a view last asked the editor to show (`reveal`), as it asked: the ask it
+    /// The heading a view last asked the editor to show (`reveal`), as it asked: the ask it
     /// answers again only when it changes.
     revealed: Option<String>,
+    /// The block last asked for by its place (`reveal`), as it was asked: a view asking for a
+    /// heading again after it is not asking for that heading anew.
+    revealed_block: Option<String>,
+    /// The formatting a view last asked for (`format`), as it asked: the ask it answers again
+    /// only when it changes.
+    asked_format: Option<String>,
     /// Presence keys from the host whose model owns the blocks
     /// ([`Self::set_presence_key`]); the editor's own block-id keys otherwise.
     presence_key: Option<present::PresenceKeyFn>,
     pub(super) body: Option<crate::block_editor_body::BodyBinding>,
 }
+
+/// What a `reveal` that names a block by its place in the document starts with (`¶5:1`, counted
+/// from 0); a heading's place among the headings is the bare number.
+const BLOCK_PLACE: char = '¶';
 
 fn is_whole_word(text: &str, start: usize, end: usize) -> bool {
     let apart = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
@@ -976,6 +986,8 @@ impl BlockEditor {
             window_find: false,
             find_reveal: false,
             revealed: None,
+            revealed_block: None,
+            asked_format: None,
             presence_key: None,
             body: None,
         };
@@ -2050,25 +2062,61 @@ impl BlockEditor {
         self.dirty = true;
     }
 
-    /// Show the heading a view asks for (`reveal: "3:1"`): the place of the heading among the
-    /// document's headings, then the count the view changes with each ask, so asking for a heading
-    /// already shown shows it again. The caret goes to the heading's start and the scroll keeps it
-    /// in view.
+    /// Show the block a view asks for (`reveal`): a heading by its place among the document's
+    /// headings (`"3:1"`), or any block by its place in the document (`"¶5:4"`, the sixth block:
+    /// what a search hit on a paragraph asks for), then the count the asker changes with each
+    /// ask, so asking for a block already shown shows it again. The caret goes to the block's
+    /// start and the scroll keeps it in view.
+    ///
+    /// A heading's ask and a block's are told apart: a view whose heading ask stands while a
+    /// block was asked for is not asking for that heading anew.
     pub fn reveal_asked(&mut self, asked: Option<String>) {
-        if asked == self.revealed {
+        let Some(ask) = asked else {
+            self.revealed = None;
             return;
+        };
+        let Some((at, _count)) = ask.rsplit_once(':') else {
+            return;
+        };
+        let index = if let Some(place) = at.trim().strip_prefix(BLOCK_PLACE) {
+            if self.revealed_block.as_ref() == Some(&ask) {
+                return;
+            }
+            let index = place
+                .parse::<usize>()
+                .ok()
+                .filter(|&index| index < self.blocks.len());
+            self.revealed_block = Some(ask);
+            index
+        } else {
+            if self.revealed.as_ref() == Some(&ask) {
+                return;
+            }
+            let index = at
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .and_then(|place| self.heading_block(place));
+            self.revealed = Some(ask);
+            index
+        };
+        if let Some(index) = index {
+            self.focus_block(index, CursorPlacement::Start);
         }
-        self.revealed.clone_from(&asked);
-        let Some(at) = asked.as_deref().and_then(|ask| ask.split(':').next()) else {
-            return;
-        };
-        let Ok(place) = at.trim().parse::<usize>() else {
-            return;
-        };
-        let Some(index) = self.heading_block(place) else {
-            return;
-        };
-        self.focus_block(index, CursorPlacement::Start);
+    }
+
+    /// Take the ask a view made of a new editor (`reveal`), showing only a block the window asked
+    /// for: a heading's place the view asked of the document shown before is no place in this
+    /// one, and is taken as answered.
+    pub fn reveal_opened(&mut self, asked: Option<String>) {
+        let of_block = asked
+            .as_deref()
+            .is_some_and(|ask| ask.trim_start().starts_with(BLOCK_PLACE));
+        if of_block {
+            self.reveal_asked(asked);
+        } else {
+            self.revealed = asked;
+        }
     }
 
     /// The block the heading at `place` among the document's headings (`Self::headings`) stands
@@ -2712,6 +2760,13 @@ impl BlockEditor {
     pub fn with_slash_commands(mut self, link_pages: bool, host: &[SlashHostCommand]) -> Self {
         self.set_slash_commands(link_pages, host);
         self
+    }
+
+    /// Offer the commands the editor itself carries out besides the block kinds, a picture and a
+    /// page of its own, leaving a link to another page offered as it stands.
+    pub fn set_slash_host(&mut self, host: &[SlashHostCommand]) {
+        self.host_commands = host.to_vec();
+        self.refresh_slash_commands();
     }
 
     /// The slash command the person chose that only the host can carry
@@ -10546,6 +10601,7 @@ impl Widget for BlockEditor {
         let edited = self.take_body_edits();
         let followed = self.follow_body();
         self.publish_headings();
+        self.publish_slash_request();
         let mut changed = false;
         for child in self.children_mut() {
             changed |= child.update(state, path);

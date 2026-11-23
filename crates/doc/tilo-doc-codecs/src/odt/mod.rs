@@ -6,7 +6,7 @@ pub mod changes;
 pub mod columns;
 pub mod comments;
 #[cfg(test)]
-mod container;
+pub(crate) mod container;
 pub mod content;
 pub mod export;
 pub mod headers;

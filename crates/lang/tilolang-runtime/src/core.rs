@@ -22,7 +22,8 @@ use crate::value::Value;
 use Imp::{
     Abort, ActCall, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet, ActThen,
     ActUndo, Actions, ActorEq, ActorId, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt,
-    BytesLength, CallFn, CallMembers, ChangeView, CollCount, CollCounted, CollEmpty, CollInsert,
+    BytesLength, CallFn, CallMembers, ChangeView, ClipboardCopyImage, ClipboardCopyText,
+    ClipboardPasteImage, ClipboardPasteText, CollCount, CollCounted, CollEmpty, CollInsert,
     CollInsertAs, CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace,
     CollRelatives, CollRemove, CollWhere, CollWhereWith, CountBy, DateShow, DayParse, DayPart,
     DayShift, DayStartOfWeek, DayWeekday, Describe, DescribeRef, DurationText, Earlier, EditField,
@@ -150,6 +151,9 @@ pub struct Core {
     /// The device's files (`Runtime::set_blobs`): the content store a file's bytes are kept in,
     /// and the chooser the person picks with. Until the host sets one, it holds no files.
     pub blobs: RefCell<Option<Box<dyn crate::blob::BlobHost>>>,
+    /// The person's clipboard (`Runtime::set_clipboard`): what a copy offers and what a paste
+    /// reads. Until the host sets one, nothing copies and nothing pastes.
+    pub clipboard: RefCell<Option<Box<dyn crate::clipboard::ClipboardHost>>>,
     /// What names actors; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     /// How a day or a time of day reads in a sentence; its stored text until the host says
@@ -345,6 +349,7 @@ impl Core {
             models: RefCell::new(None),
             web: RefCell::new(None),
             blobs: RefCell::new(None),
+            clipboard: RefCell::new(None),
             names: RefCell::new(None),
             shown: RefCell::new(None),
             shown_by: RefCell::new(None),
@@ -543,6 +548,9 @@ impl Core {
             | WebText | BytesLength => self.web_import(imp, a),
             FilePart | FileSize | FileText | FileFiles => self.file_import(imp, a),
             FileOfText | FileOfBytes | FileAt | FileZip => self.file_make(imp, a),
+            ClipboardCopyText | ClipboardCopyImage | ClipboardPasteText | ClipboardPasteImage => {
+                self.clipboard_import(imp, a)
+            }
             JsonParse | JsonDecode | JsonEncode | StageReading => self.json_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt | ArgAt

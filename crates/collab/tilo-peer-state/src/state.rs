@@ -40,12 +40,14 @@ mod governance;
 pub use governance::GovernanceHeads;
 mod governance_writes;
 pub use facades::{
-    PeerGovernance, PeerGovernanceMut, PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox,
-    PeerOutboxMut, PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut,
+    PeerGovernance, PeerGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPublication,
+    PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut,
 };
 pub(crate) use governance_writes::{commit_governance, wall_secs};
 mod app_versions;
+mod calls;
 pub use app_versions::InstalledApp;
+pub use calls::CallGate;
 mod bot_members;
 pub(crate) mod certificate_renewal;
 mod delegates;
@@ -59,12 +61,12 @@ pub use copies::{
 };
 mod leases;
 pub use leases::{CLOCK_SKEW_NS, LEASES_KEY, Lease, LeaseClaim, unranked, vm_lease, vm_rank};
-mod bot_schedules;
-pub use bot_schedules::{BOT_SCHEDULES_KEY, trigger_mark};
+mod schedules;
+pub use schedules::{SCHEDULES_KEY, trigger_mark};
 mod done;
 pub use done::{DONE_KEY, Done, mail_send_lease};
 #[cfg(test)]
-mod bot_schedules_tests;
+mod schedules_tests;
 #[cfg(test)]
 pub(crate) mod test_desktops;
 pub use delegates::{ActingAs, DelegateInactive, GovernedAgent, GovernedDelegateRow};
@@ -84,33 +86,21 @@ pub use local_outbox::Reseal;
 mod governed_coverage;
 mod held;
 mod joined;
-mod media_governance;
 mod native_publication;
 mod publication;
 mod workspace_grants;
 pub use workspace_grants::workspace_grants_of;
-mod work_delegations;
-pub(crate) use work_delegations::rows_kept as work_delegation_rows_kept;
-pub use work_delegations::{DelegatedWork, work_delegations_of};
 mod keeping_devices;
 pub use keeping_devices::{
     WORKSPACE_KEEPING_DEVICES_KEY, holder_role, keeping_device_keys_of, keeping_devices_of,
 };
-mod personal;
+mod change_hashes;
 pub(crate) mod seed;
 mod workspace_name;
 mod workspace_settings;
 use held::Held;
 pub use held::{MAX_HELD_BYTES, MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPUTS};
 pub use native_publication::NativePublicationCut;
-pub use personal::device_grants::{DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept, Refusal};
-pub use personal::link::{AdmittedFrame, PERSONAL_ALPN, PersonalSync, update_person_resource};
-pub use personal::machines::{self as machines, MachineRecovery};
-pub use personal::scopes::{device_resource, resource_owner};
-pub use personal::{
-    DEVICE_FACTS, ENROLLMENT_KIND, PeerPersonal, PersonalStore, WIFI_KIND, WORKSPACES_KIND,
-    store_path,
-};
 pub use seed::{seed_workspace, seed_workspace_at, workspace_seed};
 mod compaction_set;
 mod sealed_compaction;
@@ -377,15 +367,8 @@ pub struct StatePeer {
     workspace_host: bool,
     /// The device whose copy this is, once the device's own program said so
     /// ([`Self::write_as_device`]): what lets the copy keep, as that device's
-    /// own change, a work delegation's form that a base it adopts lacks.
     /// Never persisted.
     own_device: Option<[u8; 32]>,
-    /// The newest base of its governor this copy refused, by its generation.
-    /// While the workspace document the copy holds is of an earlier one, its
-    /// governor governs by roles and grants the copy does not hold, and the
-    /// copy takes in no write on those it holds
-    /// ([`Self::behind_its_governor`]). Never persisted.
-    refused_base: Option<u64>,
     /// The governance this copy holds now, when this peer is the copy as it
     /// judges a write by the governance the write was written under
     /// ([`Self::judged_under`]): what a cut kept since is read from. Boxed:
@@ -541,8 +524,6 @@ pub(crate) fn supersedes(held: &DeviceCert, incoming: &DeviceCert) -> bool {
 
 pub use governed_rows::RowError;
 pub(crate) use governed_rows::{GovernedIdentity, RedemptionReceipt};
-#[cfg(test)]
-pub(crate) use governed_rows::{WorkspaceDelegation, WorkspaceDelegationPermissions};
 pub(crate) use invitation_receipts::StoredReceipt;
 
 /// The map at `key` of a governed workspace document.
@@ -558,10 +539,6 @@ pub(crate) fn governed_map(doc: &AutoCommit, key: &str) -> Result<automerge::Obj
 mod delivery_admission_resource_tests;
 
 #[cfg(test)]
-#[path = "state/media_tests.rs"]
-mod workspace_media_native_tests;
-
-#[cfg(test)]
 #[path = "state/bot_members_tests.rs"]
 pub(crate) mod bot_members_tests;
 
@@ -572,8 +549,6 @@ mod administrators_tests;
 #[path = "state/admitting_tests.rs"]
 mod admitting_tests;
 #[cfg(test)]
-#[path = "state/compaction_behind_tests.rs"]
-mod compaction_behind_tests;
 #[cfg(test)]
 #[path = "state/durable_tests.rs"]
 mod durable_tests;
@@ -618,8 +593,6 @@ mod sealed_before_reader_sets_tests;
 #[path = "state/sealed_compaction_tests.rs"]
 mod sealed_compaction_tests;
 #[cfg(test)]
-#[path = "state/sealed_tests.rs"]
-mod sealed_tests;
 #[cfg(test)]
 #[path = "state/sharing_tests.rs"]
 mod sharing_tests;

@@ -7,13 +7,7 @@
 use std::sync::Arc;
 
 /// What an application declared it may do on the API under its own identity.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct AppActionAccess {
-    /// Read the catalogue of actions the person using the app is offered.
-    pub query: bool,
-    /// Invoke actions other apps publish, as this app.
-    pub invoke: bool,
-}
+pub use tilo_app_package::manifest::ActionAccess as AppActionAccess;
 
 /// Where declared access is read from, by package id.
 pub type AppActionAccessResolver = Arc<dyn Fn(&str) -> AppActionAccess + Send + Sync>;
@@ -27,3 +21,21 @@ pub fn nothing_declared() -> AppActionAccessResolver {
 /// The resource kinds an application declared in its signed manifest, by
 /// package id: what it may reach in its own node.
 pub type AppResourceKindsResolver = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nothing_declared_returns_empty_manifest_action_access() {
+        let access: tilo_app_package::manifest::ActionAccess = nothing_declared()("so.tilo.notes");
+        assert_eq!(
+            access,
+            AppActionAccess {
+                query: false,
+                invoke: false,
+            }
+        );
+        assert!(access.is_empty());
+    }
+}

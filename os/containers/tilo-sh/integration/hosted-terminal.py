@@ -44,13 +44,17 @@ HOSTED_TERMINAL_CLI is the `tilo` command `--agent` runs, and
 HOSTED_TERMINAL_API_URL the API it points at (default: API_URL).
 HOSTED_TERMINAL_PLANS is the plans file the provider writes and the account
 HOSTED_TERMINAL_ACCOUNT is named in it (default: the account the local stack
-places its workspaces' VMs for). Prints one JSON line, and keeps what it read
-in OUT_DIR.
+places its workspaces' VMs for). HOSTED_TERMINAL_ASKS and
+HOSTED_TERMINAL_ANSWERS name the person's page: the FIFO it reads each answer
+from and the file it records the question it drew, since a Linux command
+reaches outside the workspace's records and the host asks the person before it
+runs. Prints one JSON line, and keeps what it read in OUT_DIR.
 """
 
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import os
 import re
@@ -60,12 +64,15 @@ import time
 
 from pathlib import Path
 
-from approver import Person
+from page_person import PagePerson
 from tilo import AsyncTilo, Invocation, ProtocolError, Refused
 
 import plans
 
 API_URL, SERVER_KEY, OUT = sys.argv[1:4]
+# The phase this run is (`--terminal`, `--gui`, ...), which names each
+# question it asks the person on their page.
+PHASE = sys.argv[4] if len(sys.argv) > 4 else "--all"
 
 # How History names the runs of each key: the name a key is made with is the
 # agent it is (the API test's `history_names_a_minted_keys_agent_by_the_name_it
@@ -77,10 +84,9 @@ CLI = os.environ.get("HOSTED_TERMINAL_CLI", "tilo")
 CLI_API_URL = os.environ.get("HOSTED_TERMINAL_API_URL", API_URL)
 # The person answering what the host asks before a command runs: a Terminal
 # run reaches outside the workspace's records, so a person's access puts it
-# to them, and `tilo-approve` is the approving device that answers.
-APPROVER = os.environ.get("HOSTED_TERMINAL_APPROVER", "")
-PERSON_ROOT = os.environ.get("HOSTED_TERMINAL_ROOT", "")
-SERVER = os.environ.get("HOSTED_TERMINAL_SERVER", "")
+# to them, and their page's question sheet answers (integration/page_person.py).
+ASKS = os.environ.get("HOSTED_TERMINAL_ASKS", "")
+ANSWERS = os.environ.get("HOSTED_TERMINAL_ANSWERS", "")
 
 # The account the stack's server places its workspaces' VMs for: the one the
 # plans file admits by (os/containers/tilo-sh/vm-host.sh). The provider names
@@ -218,18 +224,23 @@ async def state() -> dict[str, object]:
     return kept
 
 
-def person() -> Person:
-    """The person the check holds, as the device that answers their hosts."""
-    return Person(APPROVER, PERSON_ROOT, SERVER, check=check)
+def person() -> PagePerson:
+    """The person the check holds, answering on their page's sheet."""
+    return PagePerson(ASKS, ANSWERS, check=check)
 
 
-async def asked(one: Person, call: object, answer: str = "allow", within: int = 120) -> tuple[object, list[dict]]:
+# How each question this run asks the person is named on the page: the phase,
+# and its place in it, so the answer the page records is this run's.
+asked_before = itertools.count(1)
+
+
+async def asked(one: PagePerson, call: object, answer: str = "allow", within: int = 120) -> tuple[object, list[dict]]:
     """`call`, with the person answering what the host asks before it runs.
 
     A Terminal run reaches outside the workspace's records, so the host puts
     it to the person and the call waits: they answer beside it, as a person at
     their shell would."""
-    started = one.begin(answer, within)
+    started = one.begin(answer, f"{PHASE.lstrip('-')}-{next(asked_before)}")
     result = await call
     questions = await one.settle(started, within)
     return result, questions
@@ -625,7 +636,7 @@ async def isolated() -> dict[str, object]:
         await person_client.aclose()
 
 
-async def vm_memory(ows: object, one: Person, what: str) -> dict[str, object]:
+async def vm_memory(ows: object, one: PagePerson, what: str) -> dict[str, object]:
     """What the VM holds in memory now, and the apps session's processes."""
     answer, _ = await asked(one, outcome(ows.do("terminal#run", command=GUI_MEMORY_COMMAND)))  # type: ignore[attr-defined]
     output = str((answer or {}).get("output") or "")
@@ -745,7 +756,7 @@ async def gui() -> dict[str, object]:
 
 async def main() -> int:
     os.makedirs(OUT, exist_ok=True)
-    phase = sys.argv[4] if len(sys.argv) > 4 else "--all"
+    phase = PHASE
     report: dict[str, object] = {"workspace": (await state())["workspace"]}
     previous = os.path.join(OUT, "terminal.json")
     if os.path.isfile(previous):

@@ -848,7 +848,7 @@ def incompatible(before: dict[str, str], now: dict[str, str], encoding: str) -> 
 
 def interface_files(root: Path = ROOT) -> list[Path]:
     """Every committed interface: one per owning crate, at its root."""
-    return sorted(root.glob(f"crates/*/*/{FILE}"))
+    return sorted([*root.glob(f"crates/*/*/{FILE}"), *root.glob(f"tools/*/{FILE}")])
 
 
 def toml_string(value: str) -> str:
@@ -1060,14 +1060,15 @@ def files_at(revision: str, root: Path = ROOT) -> dict[str, str]:
     """Interface name -> the path of its file at `revision`, wherever it was:
     an interface whose number moved to another crate is still compared."""
     listed = subprocess.run(
-        ["git", "ls-tree", "-r", "--name-only", revision, "--", "crates"],
+        ["git", "ls-tree", "-r", "--name-only", revision, "--", "crates", "tools"],
         cwd=root,
         capture_output=True,
         text=True,
     )
     found = {}
     for rel in listed.stdout.splitlines():
-        if rel.count("/") != 3 or not rel.endswith(f"/{FILE}"):
+        depth = 2 if rel.startswith("tools/") else 3
+        if rel.count("/") != depth or not rel.endswith(f"/{FILE}"):
             continue
         text = at_revision(root, revision, rel)
         if text is None:

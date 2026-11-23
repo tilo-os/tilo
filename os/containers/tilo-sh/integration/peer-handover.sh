@@ -48,7 +48,7 @@ login_holder=$(holder_pid)
 wait_for 30 "the login's holder ended" bash -c "! kill -0 '$login_holder' 2>/dev/null"
 
 say "an agent's tilo starts the device's holder"
-"${computer[@]}" "$(dirname "$tilo")/tilo-runtime" --hold 2>"$scratch/agent-holder.log" &
+"${computer[@]}" "$(dirname "$tilo")/tilo-runtime" 2>"$scratch/agent-holder.log" &
 agent=$!
 pids+=("$agent")
 # Asked only while a holder is up: `tilo folders` starts one when none answers.
@@ -61,7 +61,7 @@ sys.exit(0 if d.get("running") and (d.get("peer") or {}).get("mounted") else 1)'
 wait_for 120 "the agent's holder shows the folder" socket_up
 
 say "the user service's holder starts, and takes the device over"
-"${computer[@]}" TILO_PEER_SERVICE=1 "$(dirname "$tilo")/tilo-runtime" --hold 2>"$scratch/service-holder.log" &
+"${computer[@]}" TILO_PEER_SERVICE=1 "$(dirname "$tilo")/tilo-runtime" 2>"$scratch/service-holder.log" &
 service=$!
 pids+=("$service")
 wait_for 60 "the agent's holder stepped down" bash -c "! kill -0 $agent 2>/dev/null"

@@ -74,13 +74,21 @@ pub fn listed_version<'a>(
     Some((&entry.entry, artifact))
 }
 
+fn program_url(raw: &str) -> Result<reqwest::Url, RegistryError> {
+    let url = reqwest::Url::parse(raw).map_err(|_| RegistryError::UnsafeEndpoint)?;
+    if !tilo_net::secure_endpoint(&url) {
+        return Err(RegistryError::UnsafeEndpoint);
+    }
+    Ok(url)
+}
+
 /// Download the program `bot` binds, refusing more bytes than it declares and
 /// any bytes that do not hash to its signed BLAKE3.
 ///
 /// # Errors
 /// Transport errors, an unsafe URL, or [`RegistryError::ProgramMismatch`].
 pub fn fetch_bot_program(bot: &BotArtifact) -> Result<Vec<u8>, RegistryError> {
-    let url = reqwest::Url::parse(&bot.program_url).map_err(|_| RegistryError::UnsafeEndpoint)?;
+    let url = program_url(&bot.program_url)?;
     let bytes = fetch_bounded(&url, bot.program_size_bytes, "bot program")?;
     if bytes.len() as u64 != bot.program_size_bytes {
         return Err(RegistryError::ProgramMismatch(format!(
@@ -123,6 +131,10 @@ mod tests {
 
     fn serve_once(body: Vec<u8>) -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        serve_once_on(listener, body)
+    }
+
+    fn serve_once_on(listener: std::net::TcpListener, body: Vec<u8>) -> String {
         let origin = format!("http://{}", listener.local_addr().unwrap());
         std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
@@ -150,5 +162,40 @@ mod tests {
             fetch_bot_program(swapped.bot().unwrap()),
             Err(RegistryError::ProgramMismatch(_))
         ));
+    }
+
+    #[test]
+    fn a_fetched_program_refuses_unsafe_endpoints_and_allows_local_hosts() {
+        let program = b"{\"id\":\"echo\"}".to_vec();
+        for unsafe_base in [
+            "http://apps.tilo.so",
+            "http://localhost.apps.tilo.so",
+            "https://placeholder:placeholder@apps.tilo.so",
+            "https://placeholder@apps.tilo.so",
+            "http://placeholder@127.0.0.1:8080",
+            "http://placeholder:placeholder@127.0.0.1:8080",
+            "http://placeholder:placeholder@[::1]:8080",
+            "file:///tmp/bots",
+        ] {
+            let refused = bot("1.0.0", &program, unsafe_base);
+            assert!(
+                matches!(
+                    fetch_bot_program(refused.bot().unwrap()),
+                    Err(RegistryError::UnsafeEndpoint)
+                ),
+                "unsafe bot program base was not refused: {unsafe_base}"
+            );
+        }
+        for safe in ["http://[::1]:8080/", "http://tilo.localhost:8080/"] {
+            assert!(program_url(safe).is_ok(), "safe bot URL refused: {safe}");
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _ = serve_once_on(listener, program.clone());
+        let local_sub = bot("1.0.0", &program, &format!("http://tilo.localhost:{port}"));
+        assert_eq!(
+            fetch_bot_program(local_sub.bot().unwrap()).unwrap(),
+            program
+        );
     }
 }

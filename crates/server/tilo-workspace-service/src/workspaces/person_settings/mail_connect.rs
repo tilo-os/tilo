@@ -39,8 +39,7 @@
 //! same account told twice adds nothing: signed in already, it is refused in
 //! words; asked for and not yet answered, the one question stays.
 
-use std::path::{Path, PathBuf};
-use std::sync::MutexGuard;
+use std::path::Path;
 
 use accounts::vault_items::{ItemId, ItemKind, Place, UsedFor};
 use serde::{Deserialize, Serialize};
@@ -51,12 +50,11 @@ use tilo_actions::remote::person_vault::ItemRef;
 use tilo_actions::remote::{
     ActionCallError as ActionError, CatalogueRow, InvokeRequest, RemoteActionTarget,
 };
-use tilo_lock::MutexRecover as _;
 
 use super::{answers_in_public, argument};
 use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::{AskedTurn, CARRIED_OUT, HostedTurn, NOTHING_WAITS};
-use crate::workspaces::person_asking::workspace_store_root;
+use crate::workspaces::hosted_use::{AskedTurn, HostedTurn};
+use crate::workspaces::person_asking::kept_asks::{KeptAskKind, hashed_ask_id};
 use crate::workspaces::workspace_stores::Store;
 
 /// Sign a mail account in by a turn's telling, from its address alone.
@@ -216,6 +214,51 @@ impl MailAsk {
     }
 }
 
+impl KeptAskKind for MailAsk {
+    type Error = ActionError;
+    const DIR: &'static str = ASKS_DIR;
+    const READ_FAILED: &'static str = "a kept ask to sign a mail account in does not read";
+    // Deliberate: mail sign-in asks are deduplicated per (person, workspace, address)
+    // and retries replace the spent ask rather than accumulating, with no open-ask cap.
+    const MAX_OPEN: Option<(usize, &'static str)> = None;
+
+    fn id(&self) -> &str {
+        &self.ask
+    }
+
+    fn workspace(&self) -> &str {
+        &self.workspace
+    }
+
+    fn person(&self) -> &str {
+        &self.person
+    }
+
+    fn started(&self) -> bool {
+        self.started
+    }
+
+    fn set_started(&mut self, started: bool) {
+        self.started = started;
+    }
+
+    fn interrupted(&self) -> bool {
+        self.interrupted
+    }
+
+    fn set_interrupted(&mut self, interrupted: bool) {
+        self.interrupted = interrupted;
+    }
+
+    fn asked_at(&self) -> u64 {
+        self.asked_at_ms
+    }
+
+    fn refused(reason: impl Into<String>) -> Self::Error {
+        refused(reason)
+    }
+}
+
 /// How a turn's asking to sign a mail account in went.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TurnMailConnect {
@@ -337,85 +380,6 @@ fn refused_by(why: &str, ask: &MailAsk) -> Option<String> {
     })
 }
 
-/// Whether `ask` is an ask's id: what names a file here.
-fn is_ask_id(ask: &str) -> bool {
-    ask.len() == 32
-        && ask
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn ask_path(root: &Path, ask: &str) -> PathBuf {
-    root.join(ASKS_DIR).join(format!("{ask}.json"))
-}
-
-/// An ask's id for `person`'s agent `agent`, told apart by `what` and the
-/// time.
-fn ask_id(person: &str, agent: &str, what: &str, at_ms: u64) -> String {
-    blake3::hash(format!("{person}\0{agent}\0{what}\0{at_ms}").as_bytes())
-        .to_hex()
-        .chars()
-        .take(32)
-        .collect()
-}
-
-/// Keep `ask` under its workspace's `root`, readable by this server alone.
-fn keep(root: &Path, ask: &MailAsk) -> Result<(), String> {
-    let bytes = serde_json::to_vec(ask).map_err(|error| error.to_string())?;
-    tilo_files::native::atomic::write_creating_parent_with_mode(
-        &ask_path(root, &ask.ask),
-        &bytes,
-        0o600,
-    )
-    .map_err(|error| error.to_string())
-}
-
-/// The ask kept at `path`. One that does not read is said and left out: it
-/// signs nothing in.
-fn read_kept(path: &Path) -> Option<MailAsk> {
-    let read = std::fs::read(path)
-        .map_err(|error| error.to_string())
-        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()));
-    match read {
-        Ok(ask) => Some(ask),
-        Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "a kept ask to sign a mail account in does not read");
-            None
-        }
-    }
-}
-
-/// Every ask kept under the workspaces' stores in `stores`, oldest first. One
-/// that was started is read back interrupted, and one whose question never
-/// reached its person (the server stopped between keeping it and asking) is
-/// taken away: nobody was asked, so nothing waits.
-fn kept_under(stores: &Path) -> Vec<MailAsk> {
-    let mut asks = Vec::new();
-    let files = std::fs::read_dir(stores)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .flat_map(|workspace| {
-            std::fs::read_dir(workspace.path().join(ASKS_DIR))
-                .into_iter()
-                .flatten()
-        })
-        .flatten();
-    for file in files {
-        let Some(mut ask) = read_kept(&file.path()).filter(|ask| is_ask_id(&ask.ask)) else {
-            continue;
-        };
-        ask.interrupted = ask.started;
-        asks.push(ask);
-    }
-    asks.sort_by(|a, b| {
-        a.asked_at_ms
-            .cmp(&b.asked_at_ms)
-            .then_with(|| a.ask.cmp(&b.ask))
-    });
-    asks
-}
-
 /// The ids of every item the workspace's vault keeps now.
 async fn kept_items(workspaces: &Workspaces, workspace: &str) -> Result<Vec<String>, String> {
     Ok(workspaces
@@ -465,25 +429,13 @@ async fn take_out(workspaces: &Workspaces, workspace: &str, id: &ItemId) {
 }
 
 impl Workspaces {
-    /// The asks to sign a mail account in this server keeps, read from its
-    /// disk the first time.
-    fn mail_connects(&self) -> MutexGuard<'_, Option<Vec<MailAsk>>> {
-        let mut asks = self.inner.vault_uses.mail_connects.lock_recover();
-        if asks.is_none() {
-            *asks = Some(kept_under(&workspace_store_root(&self.inner.dir)));
-        }
-        asks
-    }
-
     /// Forget the ask `ask` of `workspace`: nothing is signed in for it any
     /// more.
     fn forget_mail_connect(&self, workspace: &str, ask: &str) {
-        if let Some(asks) = self.mail_connects().as_mut() {
-            asks.retain(|kept| kept.ask != ask);
-        }
-        if is_ask_id(ask) {
-            let _ = std::fs::remove_file(ask_path(&self.workspace_root(workspace), ask));
-        }
+        self.inner
+            .vault_uses
+            .mail_connects
+            .forget(&self.inner.dir, workspace, ask);
     }
 
     /// Whose turn `turn` is, where it may ask `target`, the signing in of a
@@ -598,10 +550,6 @@ impl Workspaces {
     /// an address and what its person said alone; the account is signed in
     /// already; its provider signs in on a page of its own; or no server
     /// this server may ask was found for it.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the ask is looked for and kept under one lock, so the same account asked twice at once is kept once"
-    )]
     pub async fn connect_mail_for_turn(
         &self,
         turn: &HostedTurn<'_>,
@@ -615,7 +563,6 @@ impl Workspaces {
         let account = said(asked.name.as_deref())?.unwrap_or_default();
         let named =
             said(asked.incoming_server.as_deref())?.zip(said(asked.outgoing_server.as_deref())?);
-        let root = self.workspace_root(&using.workspace);
         if self
             .workspace_accounts(&using.workspace)
             .await
@@ -626,16 +573,18 @@ impl Workspaces {
             return Err(refused(ALREADY));
         }
         let person = hex::encode(using.person);
-        let waits = |asks: &[MailAsk]| {
-            asks.iter().any(|waits| {
+        // Told of the same account again while its person has not answered:
+        // the one question stays, and no server is asked anything.
+        if self
+            .inner
+            .vault_uses
+            .mail_connects
+            .any(&self.inner.dir, |waits| {
                 waits.person == person
                     && waits.workspace == using.workspace
                     && waits.address == address
             })
-        };
-        // Told of the same account again while its person has not answered:
-        // the one question stays, and no server is asked anything.
-        if self.mail_connects().as_deref().is_some_and(waits) {
+        {
             return Ok(TurnMailConnect::Waits);
         }
         let servers = self
@@ -653,49 +602,53 @@ impl Workspaces {
         ];
         // What their vault keeps now is theirs whatever comes of this.
         let known = kept_items(self, &using.workspace).await.map_err(refused)?;
-        let asked_at_ms = tilo_clock::unix_now_ms();
-        let ask = ask_id(
+        let kept = self.inner.vault_uses.mail_connects.keep(
+            &self.inner.dir,
             &person,
-            &using.agent,
-            &format!("{:?}", request.invocation),
-            asked_at_ms,
-        );
-        let kept = MailAsk {
-            ask,
-            workspace: using.workspace,
-            person,
-            agent: using.agent,
-            name: using.name,
-            username: username
-                .or(servers.username)
-                .unwrap_or_else(|| address.clone()),
-            address,
-            account,
-            reads: servers.reads.name,
-            reads_port: servers.reads.port,
-            sends: servers.sends.name,
-            sends_port: servers.sends.port,
-            belongs_to,
-            found: servers.found.to_owned(),
-            refused_by: String::new(),
-            asked_in,
-            started: false,
-            interrupted: false,
-            asked_at_ms,
-            known,
-        };
-        let mut asks = self.mail_connects();
-        let open = asks.get_or_insert_with(Vec::new);
-        if open.iter().any(|waits| {
-            waits.person == kept.person
-                && waits.workspace == kept.workspace
-                && waits.address == kept.address
-        }) {
-            return Ok(TurnMailConnect::Waits);
-        }
-        keep(&root, &kept).map_err(refused)?;
-        open.push(kept.clone());
-        Ok(TurnMailConnect::Asks(Box::new(kept)))
+            (using, address),
+            |waits, (using, address)| {
+                waits.person == person
+                    && waits.workspace == using.workspace
+                    && waits.address == *address
+            },
+            |(using, address)| {
+                let asked_at_ms = tilo_clock::unix_now_ms();
+                let ask = hashed_ask_id(
+                    &person,
+                    &using.agent,
+                    &format!("{:?}", request.invocation),
+                    asked_at_ms,
+                );
+                Ok(MailAsk {
+                    ask,
+                    workspace: using.workspace,
+                    person: person.clone(),
+                    agent: using.agent,
+                    name: using.name,
+                    username: username
+                        .or(servers.username)
+                        .unwrap_or_else(|| address.clone()),
+                    address,
+                    account,
+                    reads: servers.reads.name,
+                    reads_port: servers.reads.port,
+                    sends: servers.sends.name,
+                    sends_port: servers.sends.port,
+                    belongs_to,
+                    found: servers.found.to_owned(),
+                    refused_by: String::new(),
+                    asked_in,
+                    started: false,
+                    interrupted: false,
+                    asked_at_ms,
+                    known,
+                })
+            },
+        )?;
+        Ok(match kept {
+            Some(kept) => TurnMailConnect::Asks(Box::new(kept)),
+            None => TurnMailConnect::Waits,
+        })
     }
 
     /// The question about `ask` could not be put to its person, or it is
@@ -710,15 +663,10 @@ impl Workspaces {
     /// where none waits.
     #[must_use]
     pub fn open_mail_connects(&self, workspace: &str) -> Vec<MailAsk> {
-        self.mail_connects()
-            .as_ref()
-            .map(|asks| {
-                asks.iter()
-                    .filter(|ask| ask.workspace == workspace)
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.inner
+            .vault_uses
+            .mail_connects
+            .open(&self.inner.dir, workspace)
     }
 
     /// Claim the ask `ask` for the one reader of its answer that carries it
@@ -728,33 +676,14 @@ impl Workspaces {
     /// it carries it out ([`Self::carry_out_mail_connect`]).
     ///
     /// # Errors
-    /// Nothing is kept under that ask ([`NOTHING_WAITS`]), another reader
-    /// claimed it ([`CARRIED_OUT`]), or the claim could not be written down.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the claim is read and written under one lock, so two readers of one answer cannot both take it"
-    )]
+    /// Nothing is kept under that ask ([`crate::workspaces::hosted_use::NOTHING_WAITS`]), another
+    /// reader claimed it ([`crate::workspaces::hosted_use::CARRIED_OUT`]), or the claim could not
+    /// be written down.
     pub fn claim_mail_connect(&self, ask: &str) -> Result<MailAsk, ActionError> {
-        let claimed = {
-            let mut asks = self.mail_connects();
-            let Some(kept) = asks
-                .as_mut()
-                .and_then(|asks| asks.iter_mut().find(|kept| kept.ask == ask))
-            else {
-                return Err(refused(NOTHING_WAITS));
-            };
-            if kept.started {
-                return Err(refused(CARRIED_OUT));
-            }
-            kept.started = true;
-            kept.clone()
-        };
-        let said = keep(&self.workspace_root(&claimed.workspace), &claimed);
-        if let Err(error) = said {
-            self.forget_mail_connect(&claimed.workspace, &claimed.ask);
-            return Err(refused(error));
-        }
-        Ok(claimed)
+        self.inner
+            .vault_uses
+            .mail_connects
+            .claim(&self.inner.dir, ask)
     }
 
     /// Carry out what the person answered where they were asked for the
@@ -805,7 +734,7 @@ impl Workspaces {
             Ok(None) => Ok(MailCarried::Declined),
             Err(why) => match refused_by(&why, claimed) {
                 Some(server) => self
-                    .ask_mail_again(claimed, &root, server)
+                    .ask_mail_again(claimed, server)
                     .await
                     .map(|again| MailCarried::AsksAgain(Box::new(again))),
                 None => Err(why),
@@ -816,15 +745,10 @@ impl Workspaces {
     /// Keep a new ask for the account `spent` kept, after `server` did not
     /// take the password typed for it: the same servers, and the items the
     /// vault keeps now.
-    async fn ask_mail_again(
-        &self,
-        spent: &MailAsk,
-        root: &Path,
-        server: String,
-    ) -> Result<MailAsk, String> {
+    async fn ask_mail_again(&self, spent: &MailAsk, server: String) -> Result<MailAsk, String> {
         let asked_at_ms = tilo_clock::unix_now_ms();
         let again = MailAsk {
-            ask: ask_id(&spent.person, &spent.agent, &spent.ask, asked_at_ms),
+            ask: hashed_ask_id(&spent.person, &spent.agent, &spent.ask, asked_at_ms),
             refused_by: server,
             started: false,
             interrupted: false,
@@ -832,11 +756,10 @@ impl Workspaces {
             known: kept_items(self, &spent.workspace).await?,
             ..spent.clone()
         };
-        keep(root, &again)?;
-        self.mail_connects()
-            .get_or_insert_with(Vec::new)
-            .push(again.clone());
-        Ok(again)
+        self.inner
+            .vault_uses
+            .mail_connects
+            .insert(&self.inner.dir, again)
     }
 
     /// Sign the account `kept` names in with what `item` keeps in the vault

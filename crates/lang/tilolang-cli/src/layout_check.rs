@@ -1371,7 +1371,7 @@ fn button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<Stri
                 | ui::a11y::Role::ListItem
                 | ui::a11y::Role::TreeItem
         ) && !access.state.disabled
-            && access.name.as_deref() == Some(label)
+            && access.answers_to(label)
     });
     if pressable
         && node.rect[2] > 0.0
@@ -1393,7 +1393,7 @@ fn drawn_row_named(node: &ui::headless::InspectionNode, label: &str) -> Option<u
             access.role,
             ui::a11y::Role::ListItem | ui::a11y::Role::TreeItem
         ) && !access.state.disabled
-            && access.name.as_deref() == Some(label)
+            && access.answers_to(label)
     });
     if row && node.rect[2] > 0.0 && node.rect[3] > 0.0 {
         return Some(ui::kurbo::Rect::new(

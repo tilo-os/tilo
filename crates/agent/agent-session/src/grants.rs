@@ -1,10 +1,10 @@
 //! The signing grants of the agents a workspace's host runs for it.
 //!
 //! An agent on the workspace's roster (`tilo.workspace.agent`) signs what it changes with a
-//! device key of its own, certified under its keeper's root, with a root-signed delegation
-//! that names its one workspace. Its keeper asks for that grant from a certified session
+//! device key of its own, certified under its person's root, with a root-signed delegation
+//! that names its one workspace. Its person asks for that grant from a certified session
 //! (`request-grant` with the roster entry's `agentId`, on provider `agents`); the host
-//! generates the key, puts the proposal to the keeper's approving device in one consent step
+//! generates the key, puts the proposal to the person's approving device in one consent step
 //! and, once approved, opens the agent's signing session ([`AgentSessions`]), which the
 //! workspace's actions sign that agent's changes through. [`AgentSupervisor`] holds every
 //! grant: pending, approved, or settled (denied, expired, revoked), and keeps them across
@@ -152,7 +152,7 @@ impl AgentSessions {
         device: &[u8; 32],
         workspace: WorkspaceId,
         agent: &str,
-        keeper: &[u8; 32],
+        acts_for: &[u8; 32],
         created_at: RosterCreatedAt,
     ) -> bool {
         self.links
@@ -163,7 +163,7 @@ impl AgentSessions {
                 *created == created_at
                     && delegation.scope.workspaces.as_slice() == [workspace]
                     && delegation.delegate.agent_id() == Some(agent)
-                    && &delegation.user_public_key == keeper
+                    && &delegation.user_public_key == acts_for
             })
     }
 
@@ -264,7 +264,7 @@ impl AgentSessions {
 }
 
 /// The incarnation of an existing hosted roster entry. The signed proposal supplies
-/// its id, keeper and single workspace.
+/// its id, person and single workspace.
 pub type RosterCreatedAt = i64;
 
 /// Opens the signing session of an approved roster grant, on its own thread.
@@ -274,7 +274,7 @@ pub(crate) type RosterSpawner =
 /// What a host gives its supervisor: the approver for new grants, and the
 /// server's register of agent devices.
 pub trait AgentHostLink: Send + Sync {
-    /// Ask the keeper's approving device to certify `key` as the roster agent `proposal`
+    /// Ask the person's approving device to certify `key` as the roster agent `proposal`
     /// describes, in one consent step. Returns the pairing code the approver shows; `done`
     /// later receives the agent's certificate and root-signed delegation, or why there are
     /// none.
@@ -312,7 +312,7 @@ pub type ApprovalDone = Box<dyn FnOnce(Result<(DeviceCert, Delegation), String>)
 struct Grant {
     proposal: DelegateProposal,
     /// The person whose root approves it and keeps the agent.
-    keeper: [u8; 32],
+    acts_for: [u8; 32],
     roster_created_at: RosterCreatedAt,
     state: GrantState,
     /// The agent's key while the approver has not answered.
@@ -486,7 +486,7 @@ impl AgentSupervisor {
             .map(|(state, _)| state.receipt())
     }
 
-    /// Ask the keeper's approver for the grant of roster agent `agent`. Returns the pairing
+    /// Ask the person's approver for the grant of roster agent `agent`. Returns the pairing
     /// code the approver shows, or none for a grant already approved.
     fn request_grant(
         &self,
@@ -501,12 +501,12 @@ impl AgentSupervisor {
         getrandom::fill(&mut secret).map_err(|error| error.to_string())?;
         let key = SigningKey::from_bytes(&secret);
         let device = key.verifying_key().to_bytes();
-        let keeper = requester.user_public_key;
+        let acts_for = requester.user_public_key;
         let proposal = grant_proposal(request, now_ns, agent)?;
         let mut grants = self.grants();
         let prior = grants.iter().position(|grant| {
             grant.id() == agent
-                && grant.keeper == keeper
+                && grant.acts_for == acts_for
                 && grant.proposal.scope.workspaces == proposal.scope.workspaces
         });
         if let Some(grant) = prior.and_then(|index| grants.get(index)) {
@@ -532,7 +532,7 @@ impl AgentSupervisor {
         let answered = agent.to_owned();
         let done: ApprovalDone = Box::new(move |outcome| {
             if let Some(supervisor) = me.upgrade() {
-                supervisor.approval_answered(&answered, device, keeper, outcome);
+                supervisor.approval_answered(&answered, device, acts_for, outcome);
             }
         });
         // Hold the grants across enqueue so a fast answer sees its pending grant,
@@ -544,7 +544,7 @@ impl AgentSupervisor {
         }
         grants.push(Grant {
             proposal,
-            keeper,
+            acts_for,
             roster_created_at: created_at,
             state: GrantState::Pending,
             key: Some(key),
@@ -562,13 +562,13 @@ impl AgentSupervisor {
         &self,
         id: &str,
         device: [u8; 32],
-        keeper: [u8; 32],
+        acts_for: [u8; 32],
         outcome: Result<(DeviceCert, Delegation), String>,
     ) {
         let mut grants = self.grants();
         let Some(grant) = grants.iter_mut().find(|grant| {
             grant.id() == id
-                && grant.keeper == keeper
+                && grant.acts_for == acts_for
                 && grant.state == GrantState::Pending
                 && grant
                     .key
@@ -583,7 +583,7 @@ impl AgentSupervisor {
         let approved = outcome.and_then(|(cert, delegation)| {
             if cert.device_public_key != device
                 || delegation.device_public_key != device
-                || delegation.user_public_key != keeper
+                || delegation.user_public_key != acts_for
             {
                 return Err("the approval names a different identity".into());
             }
@@ -676,7 +676,7 @@ impl AgentSupervisor {
             .find(|grant| {
                 grant.id() == id
                     && grant.is_in(workspace)
-                    && the_persons_session(caller, &grant.keeper)
+                    && the_persons_session(caller, &grant.acts_for)
             })
             .ok_or("no such agent")?;
         if let (Some(identity), Some(link)) = (&grant.identity, self.link()) {
@@ -754,8 +754,8 @@ impl AgentSupervisor {
             };
             let mut grant = Grant {
                 proposal: saved.proposal,
-                // Only an approved grant has an identity, and it names its keeper's root.
-                keeper: [0; 32],
+                // Only an approved grant has an identity, and it names its person's root.
+                acts_for: [0; 32],
                 roster_created_at,
                 state: saved.state,
                 key: None,
@@ -780,7 +780,7 @@ impl AgentSupervisor {
                                 == identity.delegation.scope.workspaces
                                 && grant.proposal.admits(&identity.delegation).is_ok() =>
                         {
-                            grant.keeper = identity.delegation.user_public_key;
+                            grant.acts_for = identity.delegation.user_public_key;
                             grant.identity = Some(identity);
                         }
                         Some(_) | None => {
@@ -821,7 +821,7 @@ impl AgentSupervisor {
                 scope: delegation.scope.clone(),
                 expires_at_ns: delegation.expires_at_ns,
             },
-            keeper: delegation.user_public_key,
+            acts_for: delegation.user_public_key,
             roster_created_at: created_at,
             state: GrantState::Approved,
             key: None,

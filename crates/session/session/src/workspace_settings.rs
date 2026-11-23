@@ -72,7 +72,7 @@ pub fn document_access_pane(
     mut recipients: Vec<tilo_sheets::workspace_settings::Choice>,
 ) -> tilo_sheets::workspace_settings::DocumentAccess {
     use sheet::Choice;
-    use tilo_desktop_surface::i18n::t;
+    use tilo_session_core::desktop::i18n::t;
     use tilo_sheets::workspace_settings as sheet;
     routes = routes
         .into_iter()
@@ -96,7 +96,7 @@ pub fn document_access_pane(
                 } else {
                     let name = crate::app_names::listed_name(&document)
                         .unwrap_or_else(|| document.clone());
-                    tilo_desktop_surface::i18n::t_args(
+                    tilo_session_core::desktop::i18n::t_args(
                         "workspace-settings-access-app-default",
                         &[("app", name.into())],
                     )

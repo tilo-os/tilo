@@ -1,6 +1,6 @@
 //! Reviewed held-source and authorized-descriptor byte pipeline.
 use super::{CHUNK, JobResult, first_diff, hash_source_exact, read_exact_fill};
-use crate::media_model::SourceIdentity;
+use crate::imager_model::SourceIdentity;
 use sha2::{Digest, Sha256};
 use std::{
     fs::{File, OpenOptions},

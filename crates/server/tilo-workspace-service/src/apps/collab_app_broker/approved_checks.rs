@@ -171,12 +171,14 @@ fn start(context: &ApprovedCheckContext) -> Result<tokio::sync::oneshot::Receive
         .spawn(move || {
             // A host adapter panic must retain a terminal refusal, never leave
             // an uncertain execution retryable or permanently marked Running.
-            let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // It unwinds to this panic boundary: outside one, a release
+            // build's panic hook ends the whole process.
+            let reply = tilo_rt::panic_boundary::isolate(|| {
                 worker
                     .recheck()
                     .and_then(|()| service.run(&worker))
                     .and_then(|reply| matched_reply(&worker, reply))
-            }))
+            })
             .unwrap_or_else(|_| {
                 Err("approved-check host worker panicked; outcome unobserved".into())
             });

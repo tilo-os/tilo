@@ -755,7 +755,7 @@ fn a_shared_page_is_said_to_be_pictured_in_the_pass_its_tile_takes_it() {
 /// both wait for nothing.
 #[test]
 fn an_app_that_hands_nothing_over_is_said_to_withhold_its_page() {
-    use tilo_desktop_surface::i18n::t;
+    use tilo_session_core::desktop::i18n::t;
 
     let (withheld, overdue) = (
         t("session-window-share-page-withheld"),
@@ -1005,7 +1005,7 @@ fn a_page_handed_over_in_parts_is_drawn_whole_on_the_watching_shell() {
 /// and both wait for nothing.
 #[test]
 fn a_page_too_large_to_carry_is_said_to_be_on_both_devices() {
-    use tilo_desktop_surface::i18n::t;
+    use tilo_session_core::desktop::i18n::t;
 
     let (too_large, overdue) = (
         t("session-window-share-page-too-large"),
@@ -1227,7 +1227,7 @@ impl TwoWindows {
             );
         };
         let tree = host.session.handle().read(Clone::clone);
-        let front = tilo_desktop_surface::navigation::active_route(&tree)
+        let front = tilo_session_core::desktop::navigation::active_route(&tree)
             .map(|route| route.tab)
             .filter(|tab| tabs.contains(tab))
             .unwrap_or(tabs[0]);

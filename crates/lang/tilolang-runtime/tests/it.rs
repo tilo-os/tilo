@@ -16,6 +16,8 @@ mod abi_parity;
 mod authority;
 #[path = "boundaries.rs"]
 mod boundaries;
+#[path = "clipboard.rs"]
+mod clipboard;
 #[path = "counter.rs"]
 mod counter;
 #[path = "e2e_abi.rs"]
@@ -34,22 +36,28 @@ mod e2e_counter;
 mod e2e_enums;
 #[path = "e2e_layout.rs"]
 mod e2e_layout;
+#[path = "e2e_mail_files.rs"]
+mod e2e_mail_files;
 #[path = "e2e_native.rs"]
 mod e2e_native;
 #[path = "e2e_native_ui.rs"]
 mod e2e_native_ui;
 #[path = "e2e_notes.rs"]
 mod e2e_notes;
-#[path = "e2e_notes_import.rs"]
-mod e2e_notes_import;
 #[path = "e2e_todo.rs"]
 mod e2e_todo;
 #[path = "effects.rs"]
 mod effects;
+#[path = "event_values.rs"]
+mod event_values;
 #[path = "filters.rs"]
 mod filters;
 #[path = "foreign_readings.rs"]
 mod foreign_readings;
+#[path = "held_records.rs"]
+mod held_records;
+#[path = "interpolation.rs"]
+mod interpolation;
 #[path = "json.rs"]
 mod json;
 #[path = "list.rs"]

@@ -11,13 +11,13 @@ use tilo_actions::remote::session_actions::INVITE_RESOURCE;
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::DesktopAsk;
-use tilo_desktop::overlays::{Overlay, Overlays, Part};
+use tilo_desktop::overlays::{Overlay, Overlays, Part, SwitcherScope};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
-use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_peer_state::join::Role;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
+use tilo_session_core::desktop::navigation::ChromeEffect;
 
 use crate::windows::{reaching, windows};
 
@@ -202,6 +202,10 @@ pub(crate) struct TrayItem {
     pub title: String,
     /// Whether choosing it opens its menu rather than its window.
     pub menu: bool,
+    /// How many unread notifications the app that owns it has, as its badge shows.
+    pub badge: i64,
+    /// Whether it wants the person: a pulsing dot, as a status notifier says with `NeedsAttention`.
+    pub attention: bool,
 }
 
 /// The styles every installed package offers (shell.md §6).
@@ -339,6 +343,9 @@ pub(crate) struct Surfaces {
     /// whoever asks for the shell's state reads it. It turns with the surface itself, so a person's
     /// press answers at once rather than a frame later.
     pub(crate) overview: Rc<std::cell::Cell<bool>>,
+    /// The shell's desktop handle, read before opening the switcher so an empty walk never leaves
+    /// the switcher up holding the keyboard.
+    pub(crate) handle: DesktopHandle,
 }
 
 impl Surfaces {
@@ -377,13 +384,27 @@ impl Surfaces {
             }
             return;
         }
-        self.panel_closes();
         if let Some(surface) = Overlay::named(surface) {
             if self.overlays.here() == surface {
+                self.panel_closes();
+                if surface == Overlay::Switcher {
+                    self.overlays.forget_walk();
+                }
                 self.overlays.show(Overlay::Rest);
             } else {
+                if surface == Overlay::Switcher
+                    && crate::windows::switcher_walk_empty_in(
+                        &self.handle,
+                        SwitcherScope::Workspace,
+                    )
+                {
+                    return;
+                }
+                self.panel_closes();
                 self.overlays.show(surface);
             }
+        } else {
+            self.panel_closes();
         }
         self.clear_beside();
         self.settled();
@@ -403,9 +424,21 @@ impl Surfaces {
             self.overlays.open(Part::QuickSettings, None);
             return;
         }
-        self.panel_closes();
         if let Some(surface) = Overlay::named(name) {
+            if surface == Overlay::Switcher
+                && crate::windows::switcher_walk_empty_in(&self.handle, SwitcherScope::Workspace)
+            {
+                if self.overlays.here() == Overlay::Switcher {
+                    self.overlays.forget_walk();
+                    self.overlays.show(Overlay::Rest);
+                    self.settled();
+                }
+                return;
+            }
+            self.panel_closes();
             self.overlays.show(surface);
+        } else {
+            self.panel_closes();
         }
         self.clear_beside();
         self.settled();
@@ -644,7 +677,7 @@ impl DeviceLists {
             window.origin_app = crate::app_names::app_name(&window.app_key);
         }
         if self.surfaces.overlays.revealed(now)
-            && let Some(at) = reaching(&self.surfaces.overlays, &windows)
+            && let Some(at) = reaching(&self.surfaces.overlays, &windows, tree.active)
         {
             for (index, window) in windows.iter_mut().enumerate() {
                 window.focused = index == at;
@@ -674,19 +707,31 @@ impl DeviceLists {
     }
 
     /// The running applications' tray items, in the order they registered: each's key, the app's
-    /// own words for it, and whether choosing it opens a menu rather than its window.
+    /// own words for it, whether choosing it opens a menu rather than its window, and the app's
+    /// own unread count. An item the protocol asks to hide (`Passive`) is left out, as the bar
+    /// draws none of it.
     fn tray_items(&self) -> Vec<TrayItem> {
         self.tray.as_ref().map_or_else(Vec::new, |tray| {
             tray.snapshot()
                 .into_iter()
-                .map(|item| TrayItem {
-                    key: item.key,
-                    title: if item.title.trim().is_empty() {
-                        item.id
-                    } else {
-                        item.title
-                    },
-                    menu: item.item_is_menu,
+                .filter(|item| item.status != tilo_tray::ItemStatus::Passive)
+                .map(|item| {
+                    let badge = item
+                        .address
+                        .owner_app
+                        .as_deref()
+                        .map_or(0, |app| i64::from(self.surfaces.notices.app_badge(app)));
+                    TrayItem {
+                        key: item.key,
+                        title: if item.title.trim().is_empty() {
+                            item.id
+                        } else {
+                            item.title
+                        },
+                        menu: item.item_is_menu,
+                        badge,
+                        attention: item.status == tilo_tray::ItemStatus::NeedsAttention,
+                    }
                 })
                 .collect()
         })
@@ -1172,7 +1217,7 @@ mod tests {
             view: String::new(),
             pinned: false,
         };
-        let tree = tilo_desktop_surface::seed_tree(&mut minter, "Shell", vec![tab]);
+        let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Shell", vec![tab]);
         let (_surface, handle) =
             tilo_desktop_surface::DesktopSurface::new(tree.clone(), 5, Box::new(Blank));
         assert!(!windows(&tree, &handle)[0].not_responding);
@@ -1184,12 +1229,30 @@ mod tests {
     }
 
     fn surfaces(status_panel: bool, shell: bool) -> Surfaces {
+        struct Blank;
+
+        impl tilo_desktop_surface::TileSource for Blank {
+            fn tile(
+                &mut self,
+                _: &tilo_desktop_model::Workspace,
+                tab: &tilo_desktop_model::Tab,
+            ) -> ui::widget::TileHost {
+                ui::widget::TileHost::new(ui::widget::TileContent::Notice {
+                    title: tab.title.clone(),
+                    detail: String::new(),
+                })
+            }
+        }
+
+        let (_surface, handle) =
+            tilo_desktop_surface::DesktopSurface::new(Layout::default(), 1, Box::new(Blank));
         Surfaces {
             status_panel,
             shell,
             overlays: Overlays::new(),
             notices: tilo_desktop_surface::DesktopNotifications::default(),
             overview: Rc::new(std::cell::Cell::new(false)),
+            handle,
         }
     }
 

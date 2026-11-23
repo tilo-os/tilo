@@ -1,0 +1,67 @@
+{
+  "app": "capture",
+  "said": "Take a screenshot and mark it up",
+  "family": "capture",
+  "live": "rust",
+  "rust": {},
+  "steps": [
+    {
+      "id": "screenshot",
+      "said": "Take a screenshot from its action: the studio keeps the shot, which the editor that follows opens only on a kept one",
+      "ops": [
+        {
+          "act": [
+            "desktop.capture-studio",
+            "screenshot",
+            {
+              "source": "display"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "annotate",
+      "said": "Mark it up from the action: the editor's canvas and tools stand over the desktop",
+      "ops": [
+        {
+          "act": [
+            "desktop.capture-studio",
+            "annotate"
+          ]
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "keep",
+      "said": "Draw a stroke and keep it from the action: the marked picture is kept as a screenshot of its own, and the desktop comes back",
+      "ops": [
+        {
+          "act": [
+            "desktop.capture-studio",
+            "annotate",
+            {
+              "shape": "pen",
+              "color": "#ff545c",
+              "width": 6,
+              "points": [
+                "40,40",
+                "400,40"
+              ],
+              "keep": true
+            }
+          ]
+        },
+        {
+          "must": {
+            "see": [
+              "topbar_workspace_pill"
+            ],
+            "within": 10
+          }
+        }
+      ]
+    }
+  ]
+}

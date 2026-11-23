@@ -149,17 +149,12 @@ impl Store for PageWorkspaces {
 
     fn read_ownership(&self, workspace: WorkspaceId, hash: [u8; 32]) -> Result<Vec<u8>, String> {
         let name = tilo_peer_state::owner::ownership_run_name(workspace, hash);
-        // What a build kept under the name the code gives it reads too.
-        let between = tilo_peer_state::owner::ownership_name_between(workspace, hash);
-        if let Some(bytes) = [&name, &between]
-            .into_iter()
-            .find_map(|name| self.runs.lock_recover().get(name).cloned().flatten())
-        {
+        let kept = self.runs.lock_recover().get(&name).cloned().flatten();
+        if let Some(bytes) = kept {
             return Ok(bytes);
         }
         self.store
             .load_workspaces_run(&name)
-            .or_else(|| self.store.load_workspaces_run(&between))
             .ok_or_else(|| format!("the run of ownership {name} is not kept"))
     }
 
@@ -445,6 +440,15 @@ impl Replicas {
                 .collect())
         })?
         .ok()
+    }
+
+    /// What each call of `workspace_id` allows, by channel, as the workspace keeps it.
+    pub(crate) fn call_rules(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Option<BTreeMap<String, collab_types::calls::CallRule>> {
+        self.with_workspace(workspace_id, |view| Ok(view.peer().governance().calls()))?
+            .ok()
     }
 
     /// The workspaces' governance, as the channels' directory reads it.

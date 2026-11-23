@@ -24,7 +24,7 @@ use tilo_sheets::uninstall::{App, Going, Removal, UninstallEffect, UninstallStat
 use crate::Shared;
 use crate::i18n::{t, t_args};
 use crate::platform::notice::{Notice, Notices};
-use tilo_desktop_surface::notifications::NotificationIconKind;
+use tilo_session_core::desktop::notifications::NotificationIconKind;
 use ui::i18n::ArgValue;
 
 /// The two app sheets, and what they were answered.

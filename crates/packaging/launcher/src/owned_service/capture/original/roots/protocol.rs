@@ -1,8 +1,7 @@
 //! Closed source identity table: metadata alone never supplies mount authority.
 use super::{
     Deserialize, Facts, File, FromRawFd, LIMIT, MAX_BYTES, OsStrExt, Path, Projection, RawFd,
-    SEALS, Seek, Serialize, Write, identity, io, open_target, placement_shape, readonly, refused,
-    root,
+    Serialize, identity, io, open_target, placement_shape, readonly, refused, root,
 };
 use sha2::{Digest, Sha256};
 use std::os::unix::fs::FileExt;
@@ -131,29 +130,8 @@ pub(in crate::owned_service::capture::original) fn publish(
     if bytes.len() as u64 > MAX_BYTES {
         return Err(refused("Original mounted receipt exceeds bound"));
     }
-    let raw = unsafe {
-        libc::memfd_create(
-            c"tilo-original-mounted-receipt".as_ptr(),
-            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-        )
-    };
-    if raw < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let mut token = unsafe { File::from_raw_fd(raw) };
-    token.write_all(&bytes)?;
-    token.rewind()?;
-    if unsafe { libc::fcntl(raw, libc::F_ADD_SEALS, SEALS) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if raw == FD {
-        if unsafe { libc::fcntl(raw, libc::F_SETFD, 0) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        std::mem::forget(token);
-    } else if unsafe { libc::dup3(raw, FD, 0) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let token = crate::fd::sealed_memfd(c"tilo-original-mounted-receipt", &bytes)?;
+    crate::fd::publish_at_fd(token, FD)?;
     Ok(())
 }
 /// Signed original worker only; named/unsealed files and ordinary request JSON cannot mint this type.

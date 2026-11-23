@@ -962,7 +962,7 @@ mod tests {
             );
             let targets = send_targets(
                 "ws",
-                &[ada.clone(), helper, general],
+                &[ada, helper, general],
                 &[],
                 "look",
             )

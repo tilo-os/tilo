@@ -28,7 +28,7 @@ fi
 # ARM guests get a software TPM on the virt machine's sysbus interface for
 # what is not PCR-bound (the TPM-and-secret sign-in wrapper). No AAVMF build
 # is taken to measure, and its Secure Boot key stores stay refused.
-tilo_vm_qemu="$repo/crates/dev/tilo-vm/src/qemu"
+tilo_vm_qemu="$repo/tools/tilo-vm/src/qemu"
 if grep -Fq 'Arch::Aarch64 => "tpm-tis-device,tpmdev=tpm0".into()' "$tilo_vm_qemu/swtpm.rs" \
   && grep -Fq 'so only what is not PCR-bound is tested' "$tilo_vm_qemu/firmware.rs" \
   && grep -Fq 'aarch64 VM Secure Boot key stores are not verified yet' "$tilo_vm_qemu/firmware.rs" \

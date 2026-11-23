@@ -249,7 +249,7 @@ fn auth_said(error: &tilo_server_protocol::auth::AuthError) -> String {
 const ENTER_TRIES: u32 = 3;
 
 /// Enter the workspace, asking again a few times with a growing pause.
-async fn connect_retrying(key: &SigningKey, device: &Device) -> Result<Entered> {
+pub(crate) async fn connect_retrying(key: &SigningKey, device: &Device) -> Result<Entered> {
     let mut pause = std::time::Duration::from_secs(1);
     let mut last = None;
     for _ in 0..ENTER_TRIES {
@@ -589,31 +589,31 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
     }
     let agent = agent::given(agent);
     let login_place = Place::here(crate::identity::paths())?;
-    let place = DaemonPlace::of(login_place.dir(), &this_device_public_key()?)
-        .map_err(anyhow::Error::msg)?;
-    ensure_daemon(&place)?;
+    let device_key = this_device_public_key()?;
+    let place = DaemonPlace::of(login_place.dir(), &device_key).map_err(anyhow::Error::msg)?;
     let runtime = runtime()?;
     let said = named.map_or_else(|| label(&agent.name, &hostname()), str::to_owned);
     eprintln!("Asking your device to add this computer; it may ask you to approve it…");
-    runtime.block_on(async {
-        let client = Client::open(crate::api::Reach {
-            api: None,
-            key_file: None,
-            json: false,
-        })?;
-        let workspace = client.founded_workspace().await?;
-        client
-            .act(
-                &workspace,
-                "devices",
-                tilo_device_identity::login::LOG_IN,
-                &json!({"ticket": parsed.encode(), "agent": agent.name, "label": said}),
-                "Log in",
-            )
-            .await?;
-        Ok::<(), anyhow::Error>(())
-    })?;
-    // The daemon kept the login; one serving it hands this computer its workspace.
+    // A computer no person's certificate names yet logs in itself: its daemon serves the device
+    // key alone until then, with no API to ask, and takes the person's workspaces up once the
+    // certificate is here.
+    let claimed = tilo_device_identity::login::claimed(&login_place, &device_key);
+    if claimed {
+        ensure_daemon(&place)?;
+        asked_daemon(&runtime, ticket, &agent, &said)?;
+    } else {
+        let key = this_device_key()?;
+        runtime.block_on(tilo_api::daemon::enter::log_in_here(
+            &key,
+            &login_place,
+            ticket,
+            &agent.name,
+            Some(&said),
+        ))?;
+        // The daemon serving the device alone takes the login up; one is started where none runs.
+        ensure_daemon(&place)?;
+    }
+    // The login is kept; the daemon serving it hands this computer its workspace.
     let (key, device) = load(&login_place)?.ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
     let days = device.cert.expires_at_ns.map_or(0, |end| {
         end.saturating_sub(device.cert.issued_at_ns) / (24 * 3600 * 1_000_000_000)
@@ -640,7 +640,9 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
             Some("this computer could not enter your workspace"),
         );
     }
-    restart_after_login(&place)?;
+    if claimed {
+        restart_after_login(&place)?;
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -718,6 +720,33 @@ pub(crate) fn report(
     if let Err(error) = reported {
         debug_why("reporting a login's step", &error);
     }
+}
+
+/// Ask this computer's daemon, which serves a person already, to log in with `ticket`.
+fn asked_daemon(
+    runtime: &tokio::runtime::Runtime,
+    ticket: &str,
+    agent: &Agent,
+    said: &str,
+) -> Result<()> {
+    runtime.block_on(async {
+        let client = Client::open(crate::api::Reach {
+            api: None,
+            key_file: None,
+            json: false,
+        })?;
+        let workspace = client.founded_workspace().await?;
+        client
+            .act(
+                &workspace,
+                "devices",
+                tilo_device_identity::login::LOG_IN,
+                &json!({"ticket": ticket.trim(), "agent": agent.name, "label": said}),
+                "Log in",
+            )
+            .await?;
+        Ok::<(), anyhow::Error>(())
+    })
 }
 
 /// How long `tilo login` waits for the daemon it logged in to end before starting the one the
@@ -1038,14 +1067,6 @@ mod tests {
             // A login that is not one says what to do, not what it holds.
             std::fs::write(place.dir().join("login.json"), b"{}").unwrap();
             assert_eq!(load(&place).unwrap_err().to_string(), LOGIN_DAMAGED);
-        }
-
-        phase a_label_names_the_agent_and_the_computer_within_bounds;
-        {
-            assert_eq!(
-                label("Reviewer", "build-box"),
-                "Reviewer on build-box"
-            );
         }
     }
 

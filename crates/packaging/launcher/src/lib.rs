@@ -43,6 +43,8 @@ pub mod memory_monitor;
 pub mod memory_pressure;
 pub mod mesa_seed;
 #[cfg(target_os = "linux")]
+mod mountinfo;
+#[cfg(target_os = "linux")]
 pub mod netproxy;
 #[cfg(target_os = "linux")]
 pub mod ordinary_child;
@@ -55,6 +57,8 @@ pub mod priority;
 pub mod profile;
 #[cfg(target_os = "linux")]
 pub mod provider_sandbox;
+#[cfg(target_os = "linux")]
+mod validate;
 // Where it lives: hosts that start no launcher hold the apps they start themselves
 // (`runtime_portal::launch_hold`).
 #[cfg(unix)]
@@ -76,3 +80,4 @@ pub mod services;
 pub mod system_authority;
 #[cfg(target_os = "linux")]
 pub mod system_stats;
+pub mod user_namespaces;

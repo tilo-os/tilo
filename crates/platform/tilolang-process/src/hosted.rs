@@ -41,7 +41,7 @@ use tilo_actions::{
     ResourceSpec,
 };
 use tilo_render_protocol::WireError;
-use tilo_render_protocol::patch::{ActionCatalogue, ToUi, Transport};
+use tilo_render_protocol::patch::{ToUi, Transport};
 use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
@@ -100,6 +100,10 @@ pub struct Spec {
     /// instance that shows nothing draws no window, offers no window verb, and runs the app's
     /// actions on its document alone.
     pub shows: Shows,
+    /// Where the workspace's resources open on the web, as the session handed it
+    /// (`InstanceRequest::link_home`): what `share-link` mints under, and nothing where the
+    /// workspace's host serves no page.
+    pub link_home: Option<tilolang_tilo::share::LinkHome>,
 }
 
 impl Spec {
@@ -121,6 +125,7 @@ impl Spec {
             language: String::new(),
             access: None,
             shows: Shows::View,
+            link_home: None,
         }
     }
 
@@ -162,7 +167,7 @@ impl Transport for NoView {
 }
 
 /// The documents a native app of the package's id `app` kept in `record`'s workspace on this
-/// device, when this device governs the workspace (none elsewhere), each by the id it holds (a
+/// device, each by the id it holds (a
 /// store keys a document by a name made from its id), else by the key it is stored under: its
 /// records, which the package now under that id carries over once with a migration of
 /// its own. They are read under `app`, not under the id of `record`'s route: a package published
@@ -181,9 +186,6 @@ fn earlier_documents(
     let Some(documents) = documents else {
         return Vec::new();
     };
-    if !record.governs() {
-        return Vec::new();
-    }
     let workspace = record.route().cluster_id.to_string();
     let workspace = workspace.as_str();
     let keys = match documents.documents(app, workspace) {
@@ -503,6 +505,8 @@ struct HostPlatform {
     content: Option<tilo_content::ContentStore>,
     /// The person's own chooser, which the session opened for this instance.
     chooser: Option<std::sync::Arc<dyn tilo_dialogs::FilePicker>>,
+    /// The person's clipboard, which the session opened for this instance.
+    clipboard: Option<std::sync::Arc<tilo_clipboard::service::Connected>>,
     /// What a person asking for a file is told when the session opened no chooser.
     no_chooser: String,
 }
@@ -666,6 +670,21 @@ impl Platform for HostPlatform {
         crate::files::keep(store, name, media, bytes)
     }
 
+    /// `clipboard.copy` and `clipboard.copy_image`: the person's copy, offered on the selection
+    /// the session holds, as any app's copy is.
+    fn copy_clipboard(&self, mime: &str, bytes: &[u8]) -> bool {
+        self.clipboard
+            .as_ref()
+            .is_some_and(|clipboard| clipboard.copy(mime, bytes))
+    }
+
+    /// `clipboard.paste` and `clipboard.paste_image`: what the person's selection holds.
+    fn paste_clipboard(&self, types: &[&str]) -> Option<(String, Vec<u8>)> {
+        self.clipboard
+            .as_ref()
+            .and_then(|clipboard| clipboard.paste(types))
+    }
+
     fn waker(&self) -> Waker {
         Arc::clone(&self.wake)
     }
@@ -707,6 +726,8 @@ pub struct Kept {
     pub content: Option<tilo_content::ContentStore>,
     /// The person's chooser, when the session opened one for this instance.
     pub chooser: Option<std::sync::Arc<dyn tilo_dialogs::FilePicker>>,
+    /// The person's clipboard, when the session opened one for this instance.
+    pub clipboard: Option<std::sync::Arc<tilo_clipboard::service::Connected>>,
 }
 
 /// What the actions of the rows a window shows answered, by resource and action: a window asks
@@ -995,6 +1016,7 @@ impl Hosted {
             builds: Rc::clone(&builds),
             content: kept.content.clone(),
             chooser: kept.chooser.clone(),
+            clipboard: kept.clipboard.clone(),
             no_chooser: crate::files::NO_CHOOSER.to_owned(),
         };
         let mut instance = Instance::new(
@@ -1012,9 +1034,8 @@ impl Hosted {
             Rc::new(tilolang_tilo::names::Installed),
             window,
         );
-        // The device that governs the workspace is its documents' origin: the package's migrations
-        // run there, once, over what a native app of the package's id kept there too.
-        instance.set_origin(connection.governs());
+        // What a native app of the package's id kept on this device: the package's migrations carry
+        // it over on the device whose turn each one is.
         instance.set_earlier(earlier_documents(
             kept.earlier.as_ref(),
             &spec.app,
@@ -1581,17 +1602,16 @@ impl Hosted {
         for package in host.packages() {
             for doc in &whole {
                 let id = tilolang_tilo::publish::resource_id(&package.meta.app, doc);
-                let under = format!("{id}/");
                 let named: std::collections::BTreeSet<String> = texts
                     .iter()
                     .map(|path| tilolang_tilo::publish::resource_id(&package.meta.app, path))
                     .collect();
+                // A paragraph's entry stands while the resource it is in is named: what the
+                // resource holds now was published with it.
                 let vanished: Vec<String> = self
-                    .search_entries
-                    .range(id.clone()..)
-                    .take_while(|(key, _)| **key == id || key.starts_with(&under))
-                    .map(|(key, _)| key.clone())
-                    .filter(|key| !named.contains(key))
+                    .entries_under(&id)
+                    .into_iter()
+                    .filter(|key| !named.contains(tilolang_tilo::search::split_anchor(key).0))
                     .collect();
                 for key in vanished {
                     self.search_entries.remove(&key);
@@ -1756,8 +1776,23 @@ impl Hosted {
         let packages = host.packages();
         for path in texts {
             for package in &packages {
-                let entry = tilolang_tilo::search::index_entry_at(host, &package.meta, path);
-                if let Some(entry) = entry {
+                let id = tilolang_tilo::publish::resource_id(&package.meta.app, path);
+                let entries = tilolang_tilo::search::index_entries_at(host, &package.meta, path);
+                // What the resource published before and no longer does goes: a paragraph
+                // deleted, or the whole resource once it holds no text, though it is still
+                // there. What is published under it is the entries of its own resources.
+                let before: Vec<String> = self
+                    .entries_under(&id)
+                    .into_iter()
+                    .filter(|key| tilolang_tilo::search::keys_resource(key, &id))
+                    .collect();
+                for key in before {
+                    if !entries.iter().any(|entry| entry.resource == key) {
+                        self.search_entries.remove(&key);
+                        remove.push(key);
+                    }
+                }
+                for entry in entries {
                     self.search_entries
                         .insert(entry.resource.clone(), entry.clone());
                     upsert.push(entry);
@@ -1768,37 +1803,25 @@ impl Hosted {
         for package in &packages {
             for path in gone {
                 let id = tilolang_tilo::publish::resource_id(&package.meta.app, path);
-                self.drop_entry(&id, &mut remove);
-            }
-        }
-        // A resource that holds no text any more is no entry, though it is still there: only its
-        // own entry goes, as what it published under it is the entries of its own resources.
-        for package in &packages {
-            let upserted: std::collections::BTreeSet<&str> =
-                upsert.iter().map(|entry| entry.resource.as_str()).collect();
-            for path in texts {
-                let id = tilolang_tilo::publish::resource_id(&package.meta.app, path);
-                if !upserted.contains(id.as_str()) && self.search_entries.remove(&id).is_some() {
-                    remove.push(id);
+                for key in self.entries_under(&id) {
+                    self.search_entries.remove(&key);
+                    remove.push(key);
                 }
             }
         }
         (upsert, remove)
     }
 
-    /// Drop the index entry of `id`, and those of the resources published under it.
-    fn drop_entry(&mut self, id: &str, remove: &mut Vec<String>) {
+    /// The keys of the index entries of `id`: its own, its paragraphs' and those of the resources
+    /// published under it, and theirs.
+    fn entries_under(&self, id: &str) -> Vec<String> {
         let under = format!("{id}/");
-        let held: Vec<String> = self
-            .search_entries
+        self.search_entries
             .range(id.to_owned()..)
-            .take_while(|(key, _)| key.as_str() == id || key.starts_with(&under))
+            .take_while(|(key, _)| key.starts_with(id))
             .map(|(key, _)| key.clone())
-            .collect();
-        for key in held {
-            self.search_entries.remove(&key);
-            remove.push(key);
-        }
+            .filter(|key| tilolang_tilo::search::keys_resource(key, id) || key.starts_with(&under))
+            .collect()
     }
 
     /// Offer the instance's action directory on its connection, once it is connected, and
@@ -1942,7 +1965,7 @@ impl Hosted {
             .as_deref()
             .and_then(collab_types::person_document_context);
         let reaches = profile_record.is_none()
-            || person.and_then(collab_types::personal_cluster_of) == Some(route.cluster_id);
+            || person.and_then(collab_types::person_workspace_of) == Some(route.cluster_id);
         if !reaches {
             let update = failed(
                 invocation,
@@ -2166,6 +2189,10 @@ impl Hosted {
     /// Build the action `address` names for `invoker`, through the spec the instance publishes
     /// now, and run it: building it runs it, as the invoker's step, and its writes go to the
     /// store; the host's own vocabulary is answered by the runtime, as the invoker's.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one invocation's routing: the app's edits, its verbs, its host vocabulary and the system's link"
+    )]
     fn invoke(
         &mut self,
         address: &ActionAddress,
@@ -2276,10 +2303,21 @@ impl Hosted {
         if encoded.type_id == <OpenEffect as tilo_resource::Effect>::OPERATION {
             return self.open_from_action(&encoded.payload, by_person);
         }
+        if tilo_resource::share::handles(&encoded.type_id) {
+            return self.shared(encoded.payload.as_slice());
+        }
         Err(Refused::new(
             "action_unknown",
             format!("the tilolang host does not run `{}`", encoded.type_id),
         ))
+    }
+
+    /// The link to the resource the `share-link` frame `payload` names, minted under the
+    /// workspace's page as the session named it to this host: the frame is the app's own, so a
+    /// person copying a link, the palette and an agent asking for one all hear the same URL.
+    fn shared(&self, payload: &[u8]) -> Result<tilo_actions::ActionOutput, Refused> {
+        tilolang_tilo::share::answer(payload, &self.bundle.meta.app, self.spec.link_home.as_ref())
+            .map_err(|why| Refused::new("action_failed", why))
     }
 
     fn open_from_action(
@@ -2433,6 +2471,10 @@ impl Hosted {
             EDIT_TYPE.to_owned(),
             tilo_resource::read::TYPE.to_owned(),
             tilo_actions::remote::APPLICATION_ACTIVATE_TYPE.to_owned(),
+            // The system's own verbs every resource with a view offers, which this host mints
+            // ([`tilolang_tilo::share`]) rather than the app.
+            tilo_resource::share::SHARE_TYPE.to_owned(),
+            tilo_resource::share::SHARE_INVITE_TYPE.to_owned(),
         ]);
         let registry = tilo_actions::ActionRegistry::with(tilolang_tilo::action::register_actions);
         let violations = tilo_actions::validate_surface(&resources, &registry, &handlers);
@@ -2448,12 +2490,15 @@ impl Hosted {
             self.directory.withdraw();
             self.directory_behind = false;
             self.directory_from = None;
-            if !self
-                .published
-                .as_ref()
-                .is_some_and(|(held, _)| held.is_empty())
-            {
-                say_catalogue(&mut self.instance, &[], |_| true, false);
+            if self.published.is_none() {
+                // The window may hold a surface the broker did not take: it holds none now.
+                say_surface(
+                    &mut self.instance,
+                    &SurfaceDelta {
+                        reset: true,
+                        ..SurfaceDelta::default()
+                    },
+                );
             }
             if self
                 .published
@@ -2491,7 +2536,6 @@ impl Hosted {
             .as_ref()
             .map(|(held, state)| (state, held.as_slice()));
         let (delta, state) = SurfacePublication::next(prior, &descriptors);
-        self.offer(&delta, &descriptors);
         if delta.is_empty() || self.send_surface(delta) {
             self.published = Some((descriptors, state));
             self.published_from = Some((surface, inputs));
@@ -2501,31 +2545,6 @@ impl Hosted {
             self.published = None;
             self.published_from = None;
         }
-    }
-
-    /// Offer the window the person's command palette `descriptors`, the actions the instance
-    /// publishes on its connection: the window offers them the way it offers its own, with the
-    /// labels, keys and icons the app gives them. The window holds what the broker holds, so it
-    /// is sent what `delta` changes of that; all of it when the broker starts over.
-    fn offer(&mut self, delta: &SurfaceDelta, descriptors: &[ActionDescriptor]) {
-        if delta.reset {
-            say_catalogue(&mut self.instance, descriptors, |_| true, false);
-            return;
-        }
-        if delta.is_empty() {
-            return;
-        }
-        let changed: HashSet<&str> = delta
-            .resources
-            .iter()
-            .map(|resource| resource.resource.as_str())
-            .collect();
-        say_catalogue(
-            &mut self.instance,
-            descriptors,
-            |resource| changed.contains(resource),
-            true,
-        );
     }
 
     /// Run the next action the person chose at the window as their own step: the same api an
@@ -2631,13 +2650,6 @@ impl Hosted {
         let Some(delta) = state.relabel(descriptors, &changed) else {
             return false;
         };
-        // The window's palette shows the labels the person types into, which are what moved.
-        say_catalogue(
-            &mut self.instance,
-            descriptors,
-            |resource| changed.contains(&resource),
-            true,
-        );
         if !delta.is_empty() && !self.send_surface(delta) {
             // What the broker holds is no longer what was patched: a later turn sends the
             // surface whole, as a reset.
@@ -2649,9 +2661,12 @@ impl Hosted {
         true
     }
 
-    /// Hand the broker `delta` of the instance's surface. Whether it took it: a document on this
-    /// device alone has no broker, and its window's catalogue is all there is to publish to.
-    fn send_surface(&self, delta: SurfaceDelta) -> bool {
+    /// Hand the window and the broker `delta` of the instance's surface. Whether the broker took
+    /// it: a document on this device alone has no broker, and its window's catalogue is all there
+    /// is to publish to. The window takes it whether or not the broker does: a surface the broker
+    /// did not take is sent again whole, which the window takes as well.
+    fn send_surface(&mut self, delta: SurfaceDelta) -> bool {
+        say_surface(&mut self.instance, &delta);
         self.connection.is_local()
             || self
                 .connection
@@ -2867,38 +2882,17 @@ fn returned(host: &tilolang_tilo::host::Host, action: &DynAction) -> tilo_action
     }
 }
 
-/// Tell the window of `instance` the actions `descriptors` offers: all of them, or, `changed`
-/// only, the actions of the resources `changed` names with every resource offered, in order
-/// ([`ActionCatalogue::Changed`]).
-fn say_catalogue(
-    instance: &mut Instance,
-    descriptors: &[ActionDescriptor],
-    names: impl Fn(&str) -> bool,
-    changed: bool,
-) {
-    let mut resources: Vec<String> = Vec::new();
-    let mut actions: Vec<&ActionDescriptor> = Vec::with_capacity(descriptors.len());
-    for descriptor in descriptors {
-        let resource = descriptor.address.resource.as_str();
-        if changed && !resources.iter().rev().any(|held| held == resource) {
-            resources.push(resource.to_owned());
-        }
-        if names(resource) {
-            actions.push(descriptor);
-        }
-    }
-    let actions = match serde_json::to_vec(&actions) {
-        Ok(actions) => actions,
+/// Tell the window of `instance` the change `delta` of the surface the instance publishes, as
+/// the broker takes it: the actions the person's command palette offers there.
+fn say_surface(instance: &mut Instance, delta: &SurfaceDelta) {
+    let bytes = match serde_json::to_vec(delta) {
+        Ok(bytes) => bytes,
         Err(error) => {
-            tracing::error!(%error, "an action catalogue did not encode");
+            tracing::error!(%error, "an action surface did not encode");
             return;
         }
     };
-    instance.say(ToUi::Actions(if changed {
-        ActionCatalogue::Changed { actions, resources }
-    } else {
-        ActionCatalogue::All(actions)
-    }));
+    instance.say(ToUi::Actions(bytes));
     // The window takes it now, not on the frame after.
     instance.flush();
 }

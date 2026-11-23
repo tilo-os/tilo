@@ -45,6 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from clock_imports import CLOCK_PATTERN, clock_imports  # noqa: E402
 from judged import Judged, add_staged_argument, judged  # noqa: E402
 from rust_source import (  # noqa: E402
     code_only,
@@ -76,14 +77,12 @@ GROUPED_TIME = re.compile(rf"\btime::(?:{CLOCK_ITEM}\b|\{{[^}}]*\b{CLOCK_ITEM}\b
 # The clock types `ui::time` names. `now()` on one reads the machine whatever
 # module path it is reached by, where `ui::time::now()` is the reading a test
 # holds still and a host lends.
-CLOCK_TYPES = r"(?:Instant|SystemTime)"
 CLOCK_READ = re.compile(
     rf"\b(?P<module>ui|ui_core|tilo_ui|crate|tilo_host)\s*::\s*time\s*::"
-    rf"\s*(?P<clock>{CLOCK_TYPES})\s*::\s*now\s*\("
+    rf"\s*(?P<clock>{CLOCK_PATTERN})\s*::\s*now\s*\("
 )
-BARE_READ = re.compile(rf"(?<![\w:])(?P<clock>{CLOCK_TYPES})\s*::\s*now\s*\(")
-USE_STATEMENT = re.compile(r"\buse\s+[^;]*;", re.DOTALL)
-RENAMED = re.compile(rf"\b{CLOCK_TYPES}\s+as\b")
+BARE_READ = re.compile(rf"(?<![\w:])(?P<clock>{CLOCK_PATTERN})\s*::\s*now\s*\(")
+TIME_GLOB = re.compile(r"\btime\s*::\s*(?:\*|\{[^}]*\*(?!\w))")
 # A file that never names the clock module cannot read it or import from it.
 CLOCK_MENTION = re.compile(r"\b(?:ui|ui_core|tilo_ui|crate|tilo_host)\s*::\s*time\b")
 
@@ -151,27 +150,6 @@ def clock_modules(relative: Path) -> tuple[str, ...]:
     return (*named, "crate") if inside else named
 
 
-def clock_imports(text: str, modules: tuple[str, ...]) -> list[tuple[int, str, bool]]:
-    """The clock types a file's `use` statements bring in, and from which clock module.
-
-    ``(offset, type, from the clock module)`` per statement. A renamed import
-    (`Instant as Clock`) binds another name, and a bare `Instant::now()` after
-    it is not the clock module's; a glob (`use ui::time::*`) brings in both types.
-    """
-    found: list[tuple[int, str, bool]] = []
-    for statement in USE_STATEMENT.finditer(text):
-        body = statement.group()
-        from_clock = any(
-            re.search(rf"\b{module}\s*::\s*time\b", body) for module in modules
-        )
-        renamed = set(RENAMED.findall(body))
-        glob = from_clock and re.search(r"\btime\s*::\s*\*", body) is not None
-        for name in ("Instant", "SystemTime"):
-            if name not in renamed and (glob or re.search(rf"\b{name}\b", body)):
-                found.append((statement.start(), name, from_clock))
-    return found
-
-
 def audit_reads(files: Judged) -> list[Violation]:
     """A clock type read past the clock module, in either spelling."""
     violations: list[Violation] = []
@@ -195,7 +173,12 @@ def audit_reads(files: Judged) -> list[Violation]:
                 )
             # The bare name is whichever import of it is in scope: the nearest
             # one before the read, which is the file's or the test module's own.
-            imports = clock_imports(text, modules)
+            module_pattern = re.compile(rf"\b(?:{'|'.join(modules)})\s*::\s*time\b")
+            imports = clock_imports(
+                text,
+                lambda body: module_pattern.search(body) is not None,
+                lambda body: TIME_GLOB.search(body) is not None,
+            )
             for found in BARE_READ.finditer(text):
                 clock = found.group("clock")
                 in_scope = [
@@ -212,7 +195,7 @@ def audit_reads(files: Judged) -> list[Violation]:
 def audit_pins(files: Judged) -> list[Violation]:
     """Every wall-clock pin in the tree sits where only its caller can reach it."""
     violations: list[Violation] = []
-    for scope in (Path("crates"), Path("apps")):
+    for scope in (Path("crates"), Path("tools"), Path("apps")):
         for relative, text in files.sources(scope, errors="strict"):
             hits = list(CAPTURE_PIN.finditer(text)) + list(PROCESS_PIN.finditer(text))
             if not hits:

@@ -117,7 +117,8 @@ Tokens:
 - `calendar` is a day `2026-06-29` (a Date), an instant `2026-06-29T07:02Z` or
   `2026-06-29T07:02:30Z` (a Time, in UTC), or a month `2026-08` (only as a filter's value), as
   search writes them.
-- `string` is `"..."`; `{expr}` inside it interpolates.
+- `string` is `"..."`; `{expr}` inside it interpolates, and the expression holds a string literal
+  of its own (`"{f("x")}"`, written plainly or escaped as `{f(\"x\")}`).
 - `reference` is `@app.Type:id`, `doc/item` for an item of a document, and an optional
   `@version` (`@so.tilo.todo.Todo:01J8/3K`). An older reference's `/field:item` steps still
   read, as the item of its last step.

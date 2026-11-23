@@ -1,0 +1,125 @@
+{
+  "app": "quick-settings",
+  "said": "Quick settings",
+  "family": "shell",
+  "live": "rust",
+  "apps": "file-explorer chat settings terminal",
+  "rust": {},
+  "tl": {
+    "session_args": [
+      "--shell",
+      "screen"
+    ]
+  },
+  "steps": [
+    {
+      "id": "signed-in",
+      "said": "Sign in: the desktop is there, nothing open, nothing over it",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "state": {
+            "chrome.session_locked": false,
+            "chrome.overlays.search": false,
+            "chrome.overlays.overview": false,
+            "chrome.overlays.strips": false,
+            "chrome.overlays.quick-settings": false,
+            "chrome.overlays.centre": false
+          }
+        },
+        {
+          "windows": 0
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "open",
+      "said": "Open quick settings: the controls are there",
+      "ops": [
+        {
+          "do": [
+            "so.tilo.session",
+            "desktop:chrome",
+            "quick-settings"
+          ]
+        },
+        {
+          "state": {
+            "rust": {
+              "chrome.overlays.quick-settings": true
+            },
+            "tl": null
+          }
+        },
+        {
+          "must": [
+            {
+              "tl": "Quick settings",
+              "rust": null
+            },
+            {
+              "tl": "Dark mode",
+              "rust": null
+            },
+            {
+              "tl": "Lock",
+              "rust": null
+            },
+            {
+              "tl": "Wi-Fi",
+              "rust": null
+            },
+            {
+              "tl": "Bluetooth",
+              "rust": null
+            }
+          ]
+        }
+      ],
+      "dark": true,
+      "budget_ms": 10000
+    },
+    {
+      "id": "dark",
+      "said": "Switch to the dark theme: the whole desktop turns dark",
+      "ops": [
+        {
+          "theme": true
+        }
+      ],
+      "budget_ms": 10000
+    },
+    {
+      "id": "close",
+      "said": "Escape closes the panel",
+      "ops": [
+        {
+          "key": "Escape"
+        },
+        {
+          "state": {
+            "rust": {
+              "chrome.overlays.quick-settings": false
+            },
+            "tl": null
+          }
+        },
+        {
+          "must_not": [
+            {
+              "tl": "Quick settings",
+              "rust": null
+            }
+          ]
+        },
+        {
+          "theme": false
+        }
+      ],
+      "budget_ms": 10000
+    }
+  ]
+}

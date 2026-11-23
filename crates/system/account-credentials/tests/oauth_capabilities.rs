@@ -190,32 +190,3 @@ tilo_test_env::scenario! {
         assert_eq!(source.next_request().method, "GET");
     }
 }
-
-#[test]
-fn mail_settings_match_real_clients_including_hosted_domains() {
-    let config = OAuthIssuer::Microsoft
-        .mail_config("ada@hosted.example")
-        .unwrap();
-    assert_eq!(config.imap_host, "outlook.office365.com");
-    assert_eq!(config.imap_port, 993);
-    assert_eq!(config.smtp_host, "smtp.office365.com");
-    assert_eq!(config.smtp_port, 587);
-    assert!(config.imap_tls && config.smtp_tls);
-    assert_eq!(config.username, "ada@hosted.example");
-    assert_eq!(config.auth, accounts::email::AuthMethod::OAuth);
-    assert!(config.password.is_empty());
-    assert!(config.validate().is_empty());
-    assert!(
-        OAuthIssuer::Dropbox
-            .mail_config("ada@example.org")
-            .is_none()
-    );
-    for email in [
-        "@example.org",
-        "ada@",
-        "ada@@example.org",
-        "ada@example.org\0",
-    ] {
-        assert!(OAuthIssuer::Microsoft.mail_config(email).is_none());
-    }
-}

@@ -16,10 +16,51 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 #[derive(Clone)]
 pub struct Client {
-    bridge: InitialReadBridge,
+    to: To,
     busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
+
+/// Who answers a client's requests.
+#[derive(Clone)]
+enum To {
+    /// The session, on the window's own route.
+    Session(InitialReadBridge),
+    /// A test, answering as the session would ([`Client::answering`]).
+    #[cfg(feature = "test-support")]
+    Answering(std::sync::Arc<Answer>),
+}
+
+/// What a test answers each request with, as the session would.
+#[cfg(feature = "test-support")]
+type Answer = dyn Fn(BrowserServiceSessionCommand) -> Result<BrowserServiceSessionReply, String>
+    + Send
+    + Sync;
+
 impl Client {
+    /// A client whose requests `answer` answers, as the session would: for a test of an app's
+    /// side of these requests, which runs no session.
+    #[cfg(feature = "test-support")]
+    pub fn answering(
+        answer: impl Fn(BrowserServiceSessionCommand) -> Result<BrowserServiceSessionReply, String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self {
+            to: To::Answering(std::sync::Arc::new(answer)),
+            busy: Default::default(),
+        }
+    }
+
+    /// The workspace the client's route is in: `None` for one a test answers.
+    fn workspace(&self) -> Option<String> {
+        match &self.to {
+            To::Session(bridge) => Some(bridge.workspace()),
+            #[cfg(feature = "test-support")]
+            To::Answering(_) => None,
+        }
+    }
+
     /// Capture this window's connection to the session while the native host
     /// constructs its component: `None` outside a session (a test, a
     /// `--data-dir` profile), which keeps its own stores.
@@ -33,7 +74,7 @@ impl Client {
     /// [`Self::capture`], or why there is none.
     fn captured() -> Result<Self, &'static str> {
         service_capture_bridge().map(|bridge| Self {
-            bridge,
+            to: To::Session(bridge),
             busy: Default::default(),
         })
     }
@@ -49,8 +90,8 @@ impl Client {
             let mut kept = kept.borrow_mut();
             let why = match Self::captured() {
                 Ok(captured) => {
-                    let workspace = captured.bridge.workspace();
-                    kept.retain(|client| client.bridge.workspace() != workspace);
+                    let workspace = captured.workspace();
+                    kept.retain(|client| client.workspace() != workspace);
                     kept.push(captured.another());
                     return Some(captured);
                 }
@@ -58,7 +99,7 @@ impl Client {
             };
             let found = workspace.and_then(|workspace| {
                 kept.iter()
-                    .find(|client| client.bridge.workspace() == workspace)
+                    .find(|client| client.workspace().as_deref() == Some(workspace))
                     .map(Self::another)
             });
             // A window an app builds in a workspace runs in a session: one with no route to it
@@ -78,7 +119,7 @@ impl Client {
     #[must_use]
     pub fn another(&self) -> Self {
         Self {
-            bridge: self.bridge.clone(),
+            to: self.to.clone(),
             busy: Default::default(),
         }
     }
@@ -102,7 +143,17 @@ impl Client {
         {
             return Err("This account could not be opened".into());
         }
-        let received = match self.bridge.service_request(command, wake) {
+        let asked = match &self.to {
+            To::Session(bridge) => bridge.service_request(command, wake),
+            #[cfg(feature = "test-support")]
+            To::Answering(answer) => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                tx.send(answer(command))
+                    .map(|()| rx)
+                    .map_err(|error| error.to_string())
+            }
+        };
+        let received = match asked {
             Ok(received) => received,
             Err(error) => {
                 self.busy.store(false, std::sync::atomic::Ordering::Release);

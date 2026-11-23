@@ -206,7 +206,7 @@ impl<'a> Validator<'a> {
             | ToUi::History(_)
             | ToUi::Took { .. } => Ok(()),
             ToUi::Actions(catalogue) => {
-                self.carried(catalogue.bytes(), "over the limit of bytes in a catalogue")
+                self.carried(catalogue.len(), "over the limit of bytes in a catalogue")
             }
             ToUi::Heard(heard) => {
                 self.carried(heard.len(), "over the limit of bytes in what was heard")

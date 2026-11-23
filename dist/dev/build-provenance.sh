@@ -75,7 +75,12 @@ sums_of() {
         # `cargo-freshness.sh` does: everything but the build output, the caches and git's own
         # directory. Both name files from the tree's root as `./PATH`.
         if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            # The directories that are no input are left out of the listing itself, not only
+            # out of the digest: git then never reads them, and a check whose reads are traced
+            # (the session build t runs) is not rebuilt when a walk or a doc is added there.
             git ls-files -z --cached --others --exclude-standard -- :/ \
+                ':!:docs' ':!:.claude' ':!:dist/dev' ':!:scripts/headless-examples' \
+                ':!:target' ':!:os/output' \
                 | grep -zvxF -f <(git ls-files -z --deleted -- :/ | tr '\0' '\n') \
                 | sed -z 's|^|./|'
         else

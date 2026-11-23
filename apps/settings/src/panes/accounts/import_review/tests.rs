@@ -51,7 +51,7 @@ tilo_test_env::scenario! {
         review.commit(&root, review.revision).unwrap();
         let store = root.store();
         assert!(
-            store.list(&"email".into()).is_empty(),
+            store.of_type("email").is_empty(),
             "old Mail readers cannot activate pending metadata"
         );
         let account = store.get(&id).unwrap();
@@ -86,7 +86,7 @@ tilo_test_env::scenario! {
         original.display_name = "Existing owner label".into();
         original.config = serde_json::json!({"owner_extension": "preserve-me"});
         let mut store = root.store();
-        store.upsert(original.clone());
+        store.keep(&original).unwrap();
         root.save_store(&store).unwrap();
         let mut review = review(&root, candidate("person@example.org"));
         let old = review.revision;
@@ -98,7 +98,7 @@ tilo_test_env::scenario! {
             "stale choice cannot commit"
         );
         review.commit(&root, review.revision).unwrap();
-        assert_eq!(root.store().get(&original.id), Some(&original));
+        assert_eq!(root.store().get(&original.id), Some(original.clone()));
         let pending = review.begin(&root).unwrap();
         review.cancel().unwrap();
         assert!(
@@ -119,7 +119,7 @@ tilo_test_env::scenario! {
             .select("account1:id1", "password", true, review.revision)
             .unwrap();
         let mut store = root.store();
-        store.upsert(accounts::Account::new("newer", "caldav"));
+        store.keep(&accounts::Account::new("newer", "caldav")).unwrap();
         root.save_store(&store).unwrap();
         assert!(review.commit(&root, review.revision).is_err());
         assert_eq!(root.store().len(), 1);

@@ -28,8 +28,6 @@ mod destination_security_windows_tests;
 pub mod folders;
 #[cfg(any(feature = "installation", feature = "destination"))]
 pub(crate) mod hardware_text;
-#[cfg(all(test, target_os = "linux", feature = "installation"))]
-mod home_transfer_promotion_tests;
 #[cfg(feature = "installation")]
 pub mod import_actions;
 #[cfg(feature = "installation")]

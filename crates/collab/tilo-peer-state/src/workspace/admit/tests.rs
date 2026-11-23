@@ -164,7 +164,6 @@ fn admit(
             owner,
             administrators: &[],
             now_ns: crate::workspace::saved_shortcut::ns_at(NOW),
-            keeps_delegations: false,
         },
         changes,
     )
@@ -686,8 +685,7 @@ tilo_test_env::scenario! {
                 owner: &owner_root(),
                 administrators: &[],
                 now_ns: NOW_NS + 700_000_000,
-                keeps_delegations: false,
-            },
+                },
             &batch,
         )
         .expect("the certificate is valid at the instant the save arrives");
@@ -873,11 +871,6 @@ fn a_forbidden_change_is_refused_even_from_the_governor() {
         crate::durability::put(doc, BTreeMap::from([(route, durable_receipt(6))])).unwrap();
     });
 
-    let plain = governed();
-    let malformed_media = changes_after(&plain, |doc| {
-        doc.put(ROOT, media::FIELD, "not bytes").unwrap();
-    });
-
     let mut recorded = governed();
     tilo_desktop_model::projection::project_effect_receipts(
         &mut recorded,
@@ -903,12 +896,6 @@ fn a_forbidden_change_is_refused_even_from_the_governor() {
             "Durability",
         ),
         (
-            "a malformed media policy",
-            &plain,
-            &malformed_media,
-            "Media",
-        ),
-        (
             "an effect receipt rewritten",
             &recorded,
             &receipt_rewrite,
@@ -925,7 +912,6 @@ fn a_forbidden_change_is_refused_even_from_the_governor() {
         let refused_as = match &refusal {
             WorkspaceRefusal::Coverage(_) => "Coverage",
             WorkspaceRefusal::Durability(_) => "Durability",
-            WorkspaceRefusal::Media(_) => "Media",
             WorkspaceRefusal::ReceiptImmutable => "ReceiptImmutable",
             _ => "another refusal",
         };
@@ -1209,7 +1195,7 @@ tilo_test_env::scenario! {
             &workspace.admin,
             &workspace.admin_key,
             reached,
-            &[GovernanceRow::Settings, GovernanceRow::Media],
+            &[GovernanceRow::Settings, GovernanceRow::Versions],
         );
         let batch = changes_after(before, |doc| {
             doc.put(ROOT, "name", "Renamed").unwrap();

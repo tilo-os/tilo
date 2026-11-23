@@ -4,6 +4,7 @@
 //! person, within an agent's bounds. What it lists is what it can run;
 //! what people alone are offered it is not; what it writes is by the agent,
 //! for the person; and an action that asks first goes to the person.
+use super::agent_mcp::tool;
 use super::*;
 use serde_json::{Value, json};
 use tilo_mcp::McpServer;
@@ -11,31 +12,6 @@ use tilo_session_actions::SessionActions;
 use ui::tilo_resource::Resource as _;
 
 const TASKS: &str = "so.tilo.tasks";
-
-/// What a tool call answers, and whether it failed.
-async fn tool(server: &McpServer<SessionActions>, name: &str, arguments: Value) -> (String, bool) {
-    let answer = server
-        .handle(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                       "params": {"name": name, "arguments": arguments}}))
-        .await
-        .expect("a call is answered");
-    let result = &answer["result"];
-    let text = result["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|block| block["text"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    (
-        if text.is_empty() {
-            answer.to_string()
-        } else {
-            text
-        },
-        result["isError"] == true || answer.get("error").is_some(),
-    )
-}
 
 /// What a tool call answers, the answer whole: a listing's rows and what each
 /// names, for a test that needs them.

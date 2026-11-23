@@ -485,7 +485,55 @@ impl Instance {
             self.send_bound(Level::Root);
             self.send_bound(Level::Detail);
         }
-        changed
+        self.tell_reveal() || changed
+    }
+
+    /// Tell the editors of the text that holds the paragraph a search hit asked for to show it
+    /// ([`super::Revealing`]): each editor bound to the field of that resource holding it, which
+    /// the window draws now, asked for the block at the paragraph's place in that text
+    /// (`¶<place>:<count>`). The ask waits while the window draws none, as it does before the
+    /// view it opened runs. What the view says of the editor's `reveal` afterwards is its own ask
+    /// again, which the editor tells apart from a block's. Whether an editor was told.
+    fn tell_reveal(&mut self) -> bool {
+        let Some(revealing) = self.revealing.take() else {
+            return false;
+        };
+        let count = self.reveals.wrapping_add(1);
+        let ask = format!("{BLOCK_PLACE}{}:{count}", revealing.block.place);
+        let mut told = Vec::new();
+        for level in [Level::Root, Level::Detail] {
+            let Some(sent) = self.level_mut(level).and_then(|view| view.sent.as_mut()) else {
+                continue;
+            };
+            let mut editors = Vec::new();
+            editors_of(sent, &revealing.resource, &mut Vec::new(), &mut editors);
+            let patches: Vec<ui::Patch> = editors
+                .into_iter()
+                .filter(|(_, field)| *field == revealing.block.field)
+                .map(|(path, _)| ui::Patch::SetProp {
+                    path,
+                    name: REVEAL.to_owned(),
+                    value: Some(ui::Value::Opt(Some(Box::new(ui::Value::Text(ask.clone()))))),
+                })
+                .collect();
+            if patches.is_empty() {
+                continue;
+            }
+            for patch in &patches {
+                // Kept as the window holds it: later patches are against it.
+                if patch.clone().apply(sent).is_err() {
+                    tracing::debug!("an editor's reveal did not apply to the tree sent");
+                }
+            }
+            told.push(ToUi::Patch { level, patches });
+        }
+        if told.is_empty() {
+            self.revealing = Some(revealing);
+            return false;
+        }
+        self.reveals = count;
+        self.out.extend(told);
+        true
     }
 
     /// The opens the views asked for.
@@ -684,4 +732,32 @@ fn in_place_of(node: &crate::runtime::UiNode) -> Option<ResourceRef> {
         ty: chosen.target.ty.clone(),
     };
     wire::runtime_resource(&resource)
+}
+
+/// The state of an editor of rich text that names the block it shows.
+const REVEAL: &str = "reveal";
+
+/// What an editor's `reveal` that names a block by its place in the text starts with; a
+/// heading's place among the headings is the bare number.
+const BLOCK_PLACE: char = '¶';
+
+/// The editors under `node` (at `path` from the root) bound to a field of the resource published
+/// as `resource` that show a block they are asked for (`reveal`): each one's path, and the field.
+fn editors_of(
+    node: &ui::Node,
+    resource: &str,
+    path: &mut Vec<String>,
+    out: &mut Vec<(Vec<String>, String)>,
+) {
+    if let Some((target, field)) = node.binding.as_ref().and_then(ui::Binding::field)
+        && target == resource
+        && ui::description(&node.kind).is_some_and(|described| described.state(REVEAL).is_some())
+    {
+        out.push((path.clone(), field.to_owned()));
+    }
+    for child in &node.children {
+        path.push(child.key.clone());
+        editors_of(child, resource, path, out);
+        path.pop();
+    }
 }

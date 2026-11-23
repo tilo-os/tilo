@@ -58,14 +58,6 @@ pub struct Region {
 }
 
 impl Region {
-    /// What the resource holds, read as any resource is.
-    ///
-    /// # Errors
-    /// A named item is not this read's to answer.
-    pub fn read_document(&self, item: Option<&tilo_resource::Id>) -> Result<Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-
     /// The formats as the `locale` settings section keeps them; none until a device of theirs
     /// sent any.
     #[must_use]
@@ -103,7 +95,7 @@ impl Region {
     }
 }
 
-#[resource(kind = "tilo.region", read_content = Region::read_document)]
+#[resource(kind = "tilo.region", read_content = tilo_resource::read::fields)]
 impl Region {
     /// Keep the person's formats, as the `locale` settings section names them; a value that
     /// is not one of its format's is not kept, and its format's default is.

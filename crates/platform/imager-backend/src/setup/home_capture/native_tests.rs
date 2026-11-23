@@ -237,8 +237,6 @@ mod signed_export;
 
 mod live_filesystems;
 
-mod retained_projection;
-
 mod credentials;
 
 mod retained_home_projection;

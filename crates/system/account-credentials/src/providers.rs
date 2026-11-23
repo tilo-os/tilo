@@ -419,6 +419,7 @@ mod tests {
             assert_eq!(config.smtp_port, 587);
             assert_eq!(config.username, config.email);
             assert_eq!(config.auth, accounts::email::AuthMethod::OAuth);
+            assert!(config.password.is_empty(), "a grant is not a password");
             assert!(config.imap_tls && config.smtp_tls);
             assert!(config.validate().is_empty());
             for email in [

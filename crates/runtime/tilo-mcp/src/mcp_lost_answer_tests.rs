@@ -11,35 +11,59 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 
-/// Notes whose next answers to an admission are lost after the action was admitted, as an
-/// answer is when the session carrying it is taken over. The same invocation asked again is
-/// answered what it is and not done again, as every provider keeps its invocations.
+/// Notes behind a workspace that fails the way a real one does:
+/// - `lost`: once set, its count of the next answers to an admission are lost after the action
+///   was admitted, as an answer is when the session carrying it is taken over. The same
+///   invocation asked again is answered what it is and not done again, as every provider keeps
+///   its invocations.
+/// - `mute`: the apps' catalogues go unanswered, as a workspace that just started does while it
+///   opens the documents a listing reads: a path is not resolved, and nothing is invoked.
+/// - `unserved`: an installed app that is not running is refused a start as not serving this
+///   caller yet, as a workspace just made does.
 #[derive(Clone)]
-struct Losing {
+struct Faulty {
     notes: Notes,
-    lost: Arc<Mutex<u32>>,
+    lost: Arc<Mutex<Option<u32>>>,
     admitted: Arc<Mutex<HashSet<InvocationId>>>,
     /// The actions done, by name, in order.
     done: Arc<Mutex<Vec<String>>>,
+    mute: Arc<Mutex<bool>>,
+    held: Arc<Mutex<Vec<Unanswered>>>,
+    unserved: Arc<Mutex<bool>>,
 }
 
-impl Losing {
-    fn new(lost: u32) -> Self {
+/// A catalogue page asked and held unanswered.
+type Unanswered = tilo_actions::remote::Completer<Result<CataloguePage, ActionCallError>>;
+
+impl Faulty {
+    fn new(notes: Notes) -> Self {
         Self {
-            notes: Notes::new(true),
-            lost: Arc::new(Mutex::new(lost)),
+            notes,
+            lost: Arc::default(),
             admitted: Arc::default(),
             done: Arc::default(),
+            mute: Arc::default(),
+            held: Arc::default(),
+            unserved: Arc::default(),
         }
     }
 }
 
-impl ActionProvider for Losing {
+impl ActionProvider for Faulty {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        let of_an_app = query
+            .provider
+            .as_deref()
+            .is_some_and(|provider| tilo_actions::remote::provider_workspace(provider).is_none());
+        if of_an_app && *self.mute.lock().unwrap() {
+            let (unanswered, answer) = tilo_actions::remote::pending();
+            self.held.lock().unwrap().push(unanswered);
+            return answer;
+        }
         self.notes.query(caller, query)
     }
 
@@ -49,6 +73,20 @@ impl ActionProvider for Losing {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
+        if request.target.address.action == "start" && *self.unserved.lock().unwrap() {
+            let refused = ActionCallError::NotReady;
+            let error = tilo_actions::ActionFailure {
+                code: refused.code().to_owned(),
+                message: refused.to_string(),
+                details: None,
+                retryable: false,
+            };
+            let failed = InvocationUpdate::Failed { invocation, error };
+            return Pending::ready(Ok(InvocationState::new(invocation, failed).receipt()));
+        }
+        if self.lost.lock().unwrap().is_none() {
+            return self.notes.invoke(caller, request);
+        }
         if !self.admitted.lock().unwrap().insert(invocation) {
             let accepted = InvocationUpdate::Accepted { invocation };
             return Pending::ready(Ok(InvocationState::new(invocation, accepted).receipt()));
@@ -60,8 +98,8 @@ impl ActionProvider for Losing {
         let admitted = self.notes.invoke(caller, request);
         let lost = {
             let mut lost = self.lost.lock().unwrap();
-            let losing = *lost > 0;
-            *lost = lost.saturating_sub(1);
+            let losing = lost.is_some_and(|left| left > 0);
+            *lost = lost.map(|left| left.saturating_sub(1));
             losing
         };
         if lost {
@@ -88,13 +126,14 @@ impl ActionProvider for Losing {
 }
 
 tilo_test_env::scenario! {
-    fn an_action_whose_answer_was_lost_answers_what_it_did;
+    fn a_call_whose_answer_was_lost_or_refused_for_now_is_asked_again_by_its_id;
 
-    phase it_is_asked_again_and_done_once;
+    phase an_action_whose_answer_was_lost_is_asked_again_and_done_once;
     // The delete was done, but its answer was lost twice: the call is answered that it
     // succeeded, not that it failed, and the delete was done once.
     {
-        let notes = Losing::new(2);
+        let notes = Faulty::new(Notes::new(true));
+        *notes.lost.lock().unwrap() = Some(2);
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -112,77 +151,14 @@ tilo_test_env::scenario! {
             );
         });
     }
-}
 
-/// Notes whose apps' catalogues go unanswered while `mute` holds, as a workspace that just
-/// started does while it opens the documents a listing reads: a path is not resolved, and
-/// nothing is invoked.
-#[derive(Clone)]
-struct Opening {
-    notes: Notes,
-    mute: Arc<Mutex<bool>>,
-    held: Arc<Mutex<Vec<Unanswered>>>,
-}
-
-/// A catalogue page asked and held unanswered.
-type Unanswered = tilo_actions::remote::Completer<Result<CataloguePage, ActionCallError>>;
-
-impl ActionProvider for Opening {
-    fn query(
-        &self,
-        caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        let of_an_app = query
-            .provider
-            .as_deref()
-            .is_some_and(|provider| tilo_actions::remote::provider_workspace(provider).is_none());
-        if of_an_app && *self.mute.lock().unwrap() {
-            let (unanswered, answer) = tilo_actions::remote::pending();
-            self.held.lock().unwrap().push(unanswered);
-            return answer;
-        }
-        self.notes.query(caller, query)
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.notes.invoke(caller, request)
-    }
-
-    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.notes.observe(caller, id)
-    }
-
-    fn here(&self, caller: &Caller) -> Option<Vec<Here>> {
-        self.notes.here(caller)
-    }
-
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        self.notes.cancel(caller, id)
-    }
-
-    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
-        self.notes.resource_search()
-    }
-}
-
-tilo_test_env::scenario! {
-    fn a_write_whose_path_went_unanswered_is_asked_again_by_its_id;
-
-    phase it_is_told_its_id_and_what_to_do;
+    phase a_write_whose_path_went_unanswered_is_told_its_id_and_what_to_do;
     // A write whose path the workspace did not resolve in time is told so typed, with what
     // to do and the invocation id to do it under; asked again under that id once the
     // workspace answers, it is done.
     {
-        let opening = Opening {
-            notes: Notes::new(true),
-            mute: Arc::new(Mutex::new(true)),
-            held: Arc::default(),
-        };
+        let opening = Faulty::new(Notes::new(true));
+        *opening.mute.lock().unwrap() = true;
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .start_paused(true)
@@ -224,74 +200,14 @@ tilo_test_env::scenario! {
                 assert_eq!(renamed, [id], "done once, under the id it was told");
             });
     }
-}
 
-/// Notes that are installed and not running, in a workspace that refuses to start them as not
-/// serving this caller yet while `unserved` holds, as a workspace just made does.
-#[derive(Clone)]
-struct Unserved {
-    notes: Notes,
-    unserved: Arc<Mutex<bool>>,
-}
-
-impl ActionProvider for Unserved {
-    fn query(
-        &self,
-        caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        self.notes.query(caller, query)
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let invocation = request.invocation;
-        if request.target.address.action == "start" && *self.unserved.lock().unwrap() {
-            let refused = ActionCallError::NotReady;
-            let error = tilo_actions::ActionFailure {
-                code: refused.code().to_owned(),
-                message: refused.to_string(),
-                details: None,
-                retryable: false,
-            };
-            let failed = InvocationUpdate::Failed { invocation, error };
-            return Pending::ready(Ok(InvocationState::new(invocation, failed).receipt()));
-        }
-        self.notes.invoke(caller, request)
-    }
-
-    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.notes.observe(caller, id)
-    }
-
-    fn here(&self, caller: &Caller) -> Option<Vec<Here>> {
-        self.notes.here(caller)
-    }
-
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        self.notes.cancel(caller, id)
-    }
-
-    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
-        self.notes.resource_search()
-    }
-}
-
-tilo_test_env::scenario! {
-    fn a_write_whose_app_the_workspace_did_not_start_yet_is_asked_again;
-
-    phase it_is_told_not_ready_with_its_id;
+    phase a_write_whose_app_the_workspace_did_not_start_yet_is_told_not_ready_with_its_id;
     // A write in an app the workspace would not start yet, as it does not serve this caller
     // yet, is told so as not ready, with its invocation id; asked again under that id once the
     // workspace serves it, it starts the app and is done.
     {
-        let unserved = Unserved {
-            notes: Notes::new(false),
-            unserved: Arc::new(Mutex::new(true)),
-        };
+        let unserved = Faulty::new(Notes::new(false));
+        *unserved.unserved.lock().unwrap() = true;
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .start_paused(true)

@@ -236,6 +236,13 @@ pub struct InstanceRequest {
     /// where the session holds no policy for the workspace; the broker decides either way.
     #[serde(with = "policy_text")]
     pub access: Option<MemberAccess>,
+    /// Where the workspace's resources open on the web, as the session knows it
+    /// (`tilolang_tilo::share::LinkHome`, as JSON): what the instance's host mints a resource's
+    /// `share-link` under. `None` where the workspace's host serves no page, and then the link is
+    /// refused with the system's own words.
+    ///
+    /// Always written, as every field of a packet is.
+    pub link_home: Option<String>,
 }
 
 /// The descriptors one instance arrives with.
@@ -264,6 +271,11 @@ pub struct InstanceFds {
     /// ask. `None` on a session that serves none.
     #[serde(with = "crate::packet::optional_fd")]
     pub chooser: Option<Descriptor>,
+    /// The instance's connection to the person's clipboard: what `clipboard.copy` offers and
+    /// `clipboard.paste` reads, since its process holds no display to do either on. `None` on a
+    /// session that serves none.
+    #[serde(with = "crate::packet::optional_fd")]
+    pub clipboard: Option<Descriptor>,
 }
 
 #[cfg(unix)]
@@ -295,6 +307,11 @@ impl InstanceFds {
                 .transpose()?,
             chooser: self
                 .chooser
+                .as_ref()
+                .map(Descriptor::try_clone)
+                .transpose()?,
+            clipboard: self
+                .clipboard
                 .as_ref()
                 .map(Descriptor::try_clone)
                 .transpose()?,
@@ -527,6 +544,26 @@ pub fn take() -> Option<Descriptor> {
     None
 }
 
+/// Start `command` holding the other end of a new link, as its stdin, named by [`FD_ENV`]: a
+/// tilolang host reads it there, and a launcher takes it off stdin and places it at [`CHILD_FD`]
+/// in the sandbox it starts. Answers this end and the child. Every tilolang host is handed its
+/// link this way, whatever starts it.
+///
+/// Stdin, rather than a descriptor placed in a `pre_exec` step: that step makes
+/// `Command::spawn` `fork()` the caller, which for the compositor's session is the whole desktop.
+///
+/// # Errors
+/// No link could be made, or the program did not start.
+#[cfg(unix)]
+pub fn spawn(mut command: std::process::Command) -> io::Result<(Descriptor, std::process::Child)> {
+    let (ours, theirs) = pair()?;
+    command
+        .env(FD_ENV, "0")
+        .stdin(std::process::Stdio::from(theirs));
+    let child = command.spawn()?;
+    Ok((ours, child))
+}
+
 /// Close `link` for good, both ways: whatever the other end sends from now on fails at once
 /// instead of waiting unread in a process that no longer reads it.
 ///
@@ -615,6 +652,7 @@ mod tests {
                 name: Some("plan.md".into()),
             }),
             installed: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
+            link_home: None,
             access: Some(MemberAccess::person(
                 tilo_action_policy::WorkspacePolicy::new(
                     "7a110d00-0000-4000-8000-000000000001",
@@ -675,6 +713,7 @@ mod tests {
                 (unnamed, Some(connection()), (None, Some(connection()), None)),
                 (nothing, None, (None, None, None)),
             ] {
+                let clipboard = chooser.is_some().then(connection);
                 let had = (origin.is_some(), content.is_some(), chooser.is_some());
                 ToProcess::Instance {
                     request: Box::new(request.clone()),
@@ -686,6 +725,7 @@ mod tests {
                         origin,
                         content,
                         chooser,
+                        clipboard,
                     },
                 }
                 .send(&session)
@@ -705,6 +745,11 @@ mod tests {
                     (fds.origin.is_some(), fds.content.is_some(), fds.chooser.is_some()),
                     had,
                     "the instance's own chooser and content store cross with it"
+                );
+                assert_eq!(
+                    fds.clipboard.is_some(),
+                    had.2,
+                    "the instance's clipboard connection crosses with it"
                 );
             }
         }

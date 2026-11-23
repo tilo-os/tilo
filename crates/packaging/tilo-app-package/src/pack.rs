@@ -48,6 +48,12 @@ impl SigningIdentity {
         Self::Ed25519(ed25519_dalek::SigningKey::from_bytes(seed))
     }
 
+    /// Load an Ed25519 signing identity from a publisher key file
+    /// ([`registry_types::key_file`]).
+    pub fn from_key_file(path: &Path) -> Result<Self, registry_types::key_file::KeyFileError> {
+        registry_types::key_file::load(path).map(Self::from_signing_key)
+    }
+
     /// Public-key bytes — used for the manifest's `publisher.identity`
     /// field and the signed-root's `publisher_identity` slot.
     pub fn public_key_bytes(&self) -> [u8; 32] {
@@ -387,4 +393,19 @@ pub fn pack_with_signature(
     signature: [u8; 64],
 ) -> Result<Packed, PackError> {
     prepare(payload_dir, manifest, publisher_identity, Vec::new())?.finish(signature)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signing_identity_loads_from_key_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("publisher.json");
+        let key = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
+        std::fs::write(&path, registry_types::key_file::encode(&key)).unwrap();
+        let loaded = SigningIdentity::from_key_file(&path).unwrap();
+        assert_eq!(loaded.public_key_bytes(), key.verifying_key().to_bytes());
+    }
 }

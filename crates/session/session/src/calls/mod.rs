@@ -111,50 +111,42 @@ impl Calls {
     /// any), so a voice channel shows a join or a leave on this pass.
     pub(crate) fn follow(&self, sync: &sync::Client, own: Option<&sync::InCall>) {
         let live = sync.calls();
-        let mut people: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        let mut cameras: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        let mut screens: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        let devices = callers_in(&live);
-        for call in &live {
-            let in_call = people.entry(call.channel.clone()).or_default();
-            for caller in &call.people {
-                let Some(person) = &caller.user else {
-                    continue;
-                };
-                in_call.insert(person.clone());
-                if caller.camera {
-                    cameras
-                        .entry(call.channel.clone())
-                        .or_default()
-                        .insert(person.clone());
-                }
-                if caller.screen {
-                    screens
-                        .entry(call.channel.clone())
-                        .or_default()
-                        .insert(person.clone());
-                }
-            }
-        }
         // This device's own call: nobody here hears it from this session, so it is said from what
         // the session itself published.
-        if let (Some(call), Some(person)) = (own, sync.own().user) {
-            let channel = &call.call.channel;
-            people
-                .entry(channel.clone())
-                .or_default()
-                .insert(person.clone());
-            if call.camera {
-                cameras
-                    .entry(channel.clone())
-                    .or_default()
-                    .insert(person.clone());
-            }
-            if call.screen {
-                screens.entry(channel.clone()).or_default().insert(person);
+        let person = sync.own().user;
+        let device = *sync.publisher().as_bytes();
+        // What the calls of the workspaces this device is in allow, and whose each member device
+        // is: whom a channel list leaves out.
+        let mut rules = BTreeMap::new();
+        let mut persons = BTreeMap::new();
+        if let Some(engine) = sync.engine() {
+            for workspace in live_sessions_of(sync).keys() {
+                let (its_rules, its_persons) = engine.call_gate(workspace);
+                rules.extend(its_rules);
+                persons.extend(its_persons);
             }
         }
-        let rosters = rosters_of(people, cameras, screens);
+        let channels = tilo_live::calls::channels(
+            &live,
+            own.map(|call| tilo_live::calls::Own {
+                device,
+                person: person.as_deref(),
+                call,
+            }),
+            &persons,
+            &rules,
+        );
+        let rosters: Vec<Roster> = channels.iter().map(roster_of).collect();
+        // The other devices of each channel: this one's pictures are never heard back here.
+        let devices: BTreeMap<String, BTreeMap<[u8; 32], String>> = channels
+            .iter()
+            .map(|channel| {
+                let mut persons = channel.persons();
+                persons.remove(&device);
+                (channel.channel.clone(), persons)
+            })
+            .filter(|(_, persons)| !persons.is_empty())
+            .collect();
         let said = format!("{rosters:?}");
         let moved = {
             let mut last = self.said.lock_recover();
@@ -357,52 +349,17 @@ struct People {
     revision: u64,
 }
 
-/// The rosters each of the workspace's voice channels shows, as everyone in them says: who is in a
-/// call there, and who has a camera or screen on.
-fn rosters_of(
-    people: BTreeMap<String, BTreeSet<String>>,
-    mut cameras: BTreeMap<String, BTreeSet<String>>,
-    mut screens: BTreeMap<String, BTreeSet<String>>,
-) -> Vec<Roster> {
-    people
-        .into_iter()
-        .map(|(channel_id, people)| Roster {
-            cameras: cameras
-                .remove(&channel_id)
-                .unwrap_or_default()
-                .into_iter()
-                .collect(),
-            screens: screens
-                .remove(&channel_id)
-                .unwrap_or_default()
-                .into_iter()
-                .collect(),
-            channel_id,
-            people: people.into_iter().collect(),
-            ..Roster::default()
-        })
-        .collect()
-}
-
-/// Which person each device in `live` 's channels is, channel by channel: a call shows its people's
-/// pictures from the devices presence names.
-fn callers_in(live: &[LiveCall]) -> BTreeMap<String, BTreeMap<[u8; 32], String>> {
-    let mut devices: BTreeMap<String, BTreeMap<[u8; 32], String>> = BTreeMap::new();
-    for call in live {
-        for caller in &call.people {
-            let Some(person) = &caller.user else {
-                continue;
-            };
-            let Ok(device) = caller.id.parse::<iroh::EndpointId>() else {
-                continue;
-            };
-            devices
-                .entry(call.channel.clone())
-                .or_default()
-                .insert(*device.as_bytes(), person.clone());
-        }
+/// The roster a voice channel shows of `channel`'s call: who is in it, and what each of them shows.
+fn roster_of(channel: &tilo_live::calls::Channel) -> Roster {
+    Roster {
+        channel_id: channel.channel.clone(),
+        people: channel.people(),
+        cameras: channel.cameras(),
+        screens: channel.screens(),
+        muted: channel.muted(),
+        deafened: channel.deafened(),
+        bridges: channel.bridges(),
     }
-    devices
 }
 
 /// The workspace live sessions this session is in now: a call's voice and pictures run on the one its

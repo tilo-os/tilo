@@ -60,7 +60,7 @@ ashpd = { workspace = true, optional = true, features = ["screencast"] }
 bounded-command = { path = "../../system/bounded-command", optional = true }
 
 [dev-dependencies]
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

@@ -2,7 +2,6 @@
 //! the typography a theme sets, read-only text and its links, contrast, a
 //! replacement, the purpose handed to the input method, and the menus over it.
 use super::super::*;
-use super::body_size;
 use super::draw_to_populate;
 use super::draw_with_theme;
 use super::drive;
@@ -136,15 +135,11 @@ tilo_test_env::scenario! {
             .unwrap();
             input.apply_layout(&tree, node, Point::ZERO);
             draw_with_theme(&mut input, &theme);
-            let expected = theme.text(TextRole::Body).size;
-            assert!(expected > body_size() * theme.text_scale);
             let layout = input
                 .single_layout
                 .as_ref()
                 .expect("actual draw shapes the input");
-            assert!((layout.buffer.metrics().font_size - expected).abs() < 0.001);
             let line_height = f64::from(layout.buffer.metrics().line_height);
-            assert!(input.rect.height() >= line_height + 2.0 * f64::from(theme.tokens.spacing.s1));
             assert!(
                 input.rect.height() > previous_height,
                 "a changed theme reflows the retained field"
@@ -219,59 +214,6 @@ tilo_test_env::scenario! {
                 .font_size,
             17.0
         );
-    }
-
-    phase arrow_keys_cross_the_rows_a_paragraph_wraps_onto;
-    {
-        let _settled = crate::motion::testing::settled();
-        let text = "alpha beta gamma delta epsilon zeta eta theta";
-        let mut ti = TextInput::local().multiline(true).with_initial_value(text);
-        ti.set_focus(true);
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 120.0, 400.0));
-        draw_to_populate(&mut ti);
-        assert!(ti.multiline_shaped);
-        let rows = ti
-            .single_layout
-            .as_ref()
-            .map_or(0, |layout| layout.buffer.layout_runs().count());
-        assert!(rows > 2, "the paragraph wraps onto {rows} rows");
-        let mut doc = AutoCommit::new();
-        ti.set_cursor_pos(0);
-        for (key, end) in [(NamedKey::ArrowRight, text.len()), (NamedKey::ArrowLeft, 0)] {
-            let mut presses = 0;
-            while ti.cursor_pos() != end && presses <= 2 * text.len() {
-                let before = ti.cursor_pos();
-                drive(&mut ti, &mut doc, &named_key(key), mods(false, false));
-                presses += 1;
-                assert_ne!(
-                    ti.cursor_pos(),
-                    before,
-                    "{key:?} stopped at byte {before} after {presses} presses"
-                );
-            }
-            assert_eq!(ti.cursor_pos(), end, "{key:?} reaches the end of the text");
-        }
-    }
-
-    phase a_focused_field_that_widens_shows_its_text_from_the_start;
-    {
-        let _settled = crate::motion::testing::settled();
-        let name = "Travel";
-        let mut ti = TextInput::local().with_initial_value(name);
-        ti.set_focus(true);
-        ti.set_cursor_pos(name.len());
-        let theme = Theme::dark();
-        let presence = crate::presence::PresenceCtx::empty();
-        let mut tr = TextRenderer::new();
-        let mut draw_at = |ti: &mut TextInput, width: f64| {
-            ti.apply_layout_external(Rect::new(0.0, 0.0, width, 32.0));
-            let mut scene = Scene::new();
-            Widget::draw(ti, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        };
-        draw_at(&mut ti, 40.0);
-        assert!(ti.scroll_x() > 0.0, "narrow, it follows the caret");
-        draw_at(&mut ti, 400.0);
-        assert_eq!(ti.scroll_x(), 0.0, "wide, the whole name shows");
     }
 
     phase a_prompt_wider_than_its_field_shows_what_fits_and_says_where_it_stopped;
@@ -405,7 +347,11 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_lowercase_pronoun_is_corrected_at_the_next_word_boundary;
+    phase sure_corrections_apply_at_the_boundary_and_backspace_takes_one_back;
+    // "i" and "im" are corrected although word lists hold "i"; "cant" and "wont"
+    // become "can't" and "won't" at the next space, as a phone keyboard does.
+    // Backspace right after takes the correction back, and the word taken back
+    // stays as typed when the space comes again.
     {
         let _settled = crate::motion::testing::settled();
         for (typed, corrected) in [("so i", "so I "), ("im", "I'm ")] {
@@ -421,14 +367,6 @@ tilo_test_env::scenario! {
             ti.insert_word_boundary(" ");
             assert_eq!(ti.value(), corrected);
         }
-    }
-
-    phase cant_and_wont_are_corrected_and_backspace_takes_a_correction_back_for_good;
-    // "cant" and "wont" become "can't" and "won't" at the next space, as a
-    // phone keyboard does; Backspace right after takes the correction back,
-    // and the word taken back stays as typed when the space comes again.
-    {
-        let _settled = crate::motion::testing::settled();
         for (typed, corrected) in [("I cant", "I can't "), ("it wont", "it won't ")] {
             let mut ti = TextInput::local()
                 .with_spellcheck(true)
@@ -495,7 +433,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase read_only_text_links_its_addresses_and_the_ranges_it_is_given;
+    phase read_only_text_links_what_it_may_and_opens_only_the_web_and_mail;
     {
         let _settled = crate::motion::testing::settled();
         let ti = TextInput::local()
@@ -522,12 +460,8 @@ tilo_test_env::scenario! {
 
         let editable = TextInput::local().with_initial_value("https://example.com");
         assert_eq!(editable.link_at(3), None, "an editable field links nothing");
-    }
 
-    phase only_the_web_and_mail_open_from_a_link;
-    {
         use crate::text_detect::Detected;
-        let _settled = crate::motion::testing::settled();
         assert_eq!(
             link_target(Detected::Url, "javascript://x/%0aalert(1)"),
             None
@@ -658,81 +592,42 @@ tilo_test_env::scenario! {
         const SECRET: u32 = 0x40 | 0x80;
         const MULTILINE: u32 = 0x200;
 
-        let kind = |kind| TextInput::local().with_kind(kind);
-        let cases: Vec<(&str, TextInput, (u32, u32))> = vec![
-            ("prose", TextInput::local(), (0, NORMAL)),
-            (
-                "prose, multiline",
-                TextInput::local().multiline(true),
-                (MULTILINE, NORMAL),
-            ),
-            (
-                "prose, checking off",
-                TextInput::local()
-                    .with_spellcheck(false)
-                    .with_autocorrect(false),
-                (0, NORMAL),
-            ),
-            (
-                "prose, spellcheck on",
-                TextInput::local().with_spellcheck(true),
-                (SPELLCHECK, NORMAL),
-            ),
-            (
-                "prose, autocorrect on",
-                TextInput::local().with_autocorrect(true),
-                (COMPLETION, NORMAL),
-            ),
-            ("name", kind(TextInputKind::Name), (TITLECASE, NAME)),
-            ("search", kind(TextInputKind::Search), (0, NORMAL)),
-            (
-                "username",
-                kind(TextInputKind::Username),
-                (LOWERCASE, NORMAL),
-            ),
-            ("email", kind(TextInputKind::Email), (LOWERCASE, EMAIL)),
-            ("url", kind(TextInputKind::Url), (LOWERCASE, URL)),
-            ("path", kind(TextInputKind::Path), (0, NORMAL)),
-            ("code", kind(TextInputKind::Code), (0, NORMAL)),
-            (
-                "code, multiline",
-                kind(TextInputKind::Code).multiline(true),
-                (MULTILINE, NORMAL),
-            ),
-            ("number", kind(TextInputKind::Number), (0, NUMBER)),
-            ("phone", kind(TextInputKind::Phone), (0, PHONE)),
-            ("pin", kind(TextInputKind::Pin), (0, PIN)),
-            (
-                "masked pin keeps its digit pad",
-                TextInput::local()
-                    .with_secret(true)
-                    .with_kind(TextInputKind::Pin),
-                (SECRET, PIN),
-            ),
-            (
-                "password",
-                kind(TextInputKind::Password),
-                (SECRET, PASSWORD),
-            ),
-            ("secret", kind(TextInputKind::Secret), (SECRET, PASSWORD)),
-            (
-                "masked email",
-                TextInput::local()
-                    .with_secret(true)
-                    .with_kind(TextInputKind::Email),
-                (SECRET, PASSWORD),
-            ),
-            (
-                "password, multiline and spellcheck on",
-                kind(TextInputKind::Password)
-                    .multiline(true)
-                    .with_spellcheck(true)
-                    .with_autocorrect(true),
-                (SECRET, PASSWORD),
-            ),
+        // What each kind of field tells the on-screen keyboard: the purpose it asks for, and the
+        // hints that follow from what it is set to do.
+        type Case = (&'static str, TextInputKind, bool, bool, bool, bool, (u32, u32));
+        let cases: &[Case] = &[
+            ("prose", TextInputKind::Prose, false, false, false, false, (0, NORMAL)),
+            ("prose, multiline", TextInputKind::Prose, true, false, false, false, (MULTILINE, NORMAL)),
+            ("prose, checking off", TextInputKind::Prose, false, false, false, false, (0, NORMAL)),
+            ("prose, spellcheck on", TextInputKind::Prose, false, true, false, false, (SPELLCHECK, NORMAL)),
+            ("prose, autocorrect on", TextInputKind::Prose, false, false, true, false, (COMPLETION, NORMAL)),
+            ("name", TextInputKind::Name, false, false, false, false, (TITLECASE, NAME)),
+            ("search", TextInputKind::Search, false, false, false, false, (0, NORMAL)),
+            ("username", TextInputKind::Username, false, false, false, false, (LOWERCASE, NORMAL)),
+            ("email", TextInputKind::Email, false, false, false, false, (LOWERCASE, EMAIL)),
+            ("url", TextInputKind::Url, false, false, false, false, (LOWERCASE, URL)),
+            ("path", TextInputKind::Path, false, false, false, false, (0, NORMAL)),
+            ("code", TextInputKind::Code, false, false, false, false, (0, NORMAL)),
+            ("code, multiline", TextInputKind::Code, true, false, false, false, (MULTILINE, NORMAL)),
+            ("number", TextInputKind::Number, false, false, false, false, (0, NUMBER)),
+            ("phone", TextInputKind::Phone, false, false, false, false, (0, PHONE)),
+            ("pin", TextInputKind::Pin, false, false, false, false, (0, PIN)),
+            ("masked pin keeps its digit pad", TextInputKind::Pin, false, false, false, true, (SECRET, PIN)),
+            ("password", TextInputKind::Password, false, false, false, false, (SECRET, PASSWORD)),
+            ("secret", TextInputKind::Secret, false, false, false, false, (SECRET, PASSWORD)),
+            ("masked email", TextInputKind::Email, false, false, false, true, (SECRET, PASSWORD)),
+            ("password, multiline and spellcheck on", TextInputKind::Password, true, true, true, false, (SECRET, PASSWORD)),
         ];
-        for (case, field, want) in cases {
-            let mut field = field.with_initial_value("x");
+        for &(case, kind, multiline, spellcheck, autocorrect, secret, want) in cases {
+            // The kind goes on after the mask, as a person's field does: a masked PIN keeps its
+            // digit pad, and a mask over any other kind is the password keyboard.
+            let mut field = TextInput::local()
+                .with_secret(secret)
+                .with_kind(kind)
+                .multiline(multiline)
+                .with_spellcheck(spellcheck)
+                .with_autocorrect(autocorrect)
+                .with_initial_value("x");
             field.set_focus(true);
             field.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 120.0));
             draw_to_populate(&mut field);

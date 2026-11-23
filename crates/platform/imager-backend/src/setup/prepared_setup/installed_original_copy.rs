@@ -15,7 +15,7 @@ struct Record {
     manifest: Manifest,
 }
 fn root() -> io::Result<()> {
-    if rustix::process::geteuid().as_raw() != 0 {
+    if !crate::native_root::is_root() {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     Ok(())

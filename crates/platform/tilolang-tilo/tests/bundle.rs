@@ -37,24 +37,23 @@ fn today() -> Bundle {
 }
 
 /// Every text `node` and the nodes inside it show.
-fn texts_of(node: &UiNode, out: &mut Vec<String>) {
-    out.extend(node.props.values().filter_map(|value| match value {
-        Value::Text(text) => Some(text.clone()),
-        _ => None,
-    }));
-    for child in &node.children {
-        texts_of(child, out);
-    }
+fn texts_of(node: &UiNode) -> Vec<String> {
+    crate::fixtures::nodes(node)
+        .into_iter()
+        .flat_map(|node| node.props.values())
+        .filter_map(|value| match value {
+            Value::Text(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The keys of the lists under `node`.
-fn lists(node: &UiNode, out: &mut Vec<String>) {
-    if node.kind == "list" {
-        out.push(node.key.clone());
-    }
-    for child in &node.children {
-        lists(child, out);
-    }
+fn lists(node: &UiNode) -> Vec<String> {
+    node.of_kind("list")
+        .into_iter()
+        .map(|list| list.key.clone())
+        .collect()
 }
 
 #[test]
@@ -88,13 +87,13 @@ fn a_bundle_draws_the_rows_of_the_packages_it_uses() {
     replica.commit();
     let mut view = replica.view(&bundle.meta.app);
     let mut keys = Vec::new();
-    lists(view.tree(), &mut keys);
+    keys.extend(lists(view.tree()));
     let mut shown = Vec::new();
-    texts_of(view.tree(), &mut shown);
+    shown.extend(texts_of(view.tree()));
     for key in &keys {
         for i in 0..view.list_len(key).unwrap_or(0) {
             if let Some(row) = view.row(key, i).unwrap() {
-                texts_of(row, &mut shown);
+                shown.extend(texts_of(row));
             }
         }
     }

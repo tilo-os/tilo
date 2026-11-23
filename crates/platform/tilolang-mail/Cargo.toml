@@ -12,6 +12,7 @@ mail-engine = { path = "../mail-engine", optional = true }
 # The workspace's accounts and their sign-ins, as the session tells the connector them.
 accounts = { path = "../../system/accounts", optional = true }
 tilolang-tilo = { path = "../tilolang-tilo" }
+wire-frame = { path = "../../system/wire-frame" }
 tilo-content = { path = "../../system/content", optional = true }
 # Whether the device is online: an unreachable mail server is tried again when the network
 # comes back, followed on a thread of its own.
@@ -22,6 +23,12 @@ tokio = { workspace = true, features = ["rt"], optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 jiff.workspace = true
+# The formatted alternative of what a message says: the Markdown the composer edits, rendered
+# as the document system renders one.
+tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs", default-features = false, features = [
+    "html",
+    "markdown",
+] }
 uuid.workspace = true
 tracing.workspace = true
 

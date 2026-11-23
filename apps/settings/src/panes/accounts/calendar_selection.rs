@@ -32,8 +32,7 @@ impl AccountsPane {
         let account = self
             .account_root
             .store()
-            .get(&accounts::AccountId::from(id))
-            .cloned()
+            .account(id)
             .filter(|account| account.type_id.as_str() == "nextcloud" && account.enabled)
             .ok_or("This Nextcloud account is unavailable or disabled")?;
         self.cancel_form();
@@ -117,7 +116,8 @@ impl AccountsPane {
         match secret {
             Ok((kept, secret))
                 if !secret.password.is_empty()
-                    && self.account_root.store().get(&account.id) == Some(&account) =>
+                    && self.account_root.store().account(account.id.as_str())
+                        == Some(account.clone()) =>
             {
                 self.calendar_baseline = Some((Some(account.clone()), kept));
                 let tester = std::sync::Arc::clone(&self.account_tester);
@@ -197,15 +197,20 @@ impl AccountsPane {
         let previous = self
             .form_account_id
             .as_ref()
-            .and_then(|id| store.get(&accounts::AccountId::from(id.clone())))
-            .and_then(|account| account.config.get("calendars"))
-            .and_then(serde_json::Value::as_array);
+            .and_then(|id| store.account(id))
+            .and_then(|account| {
+                account
+                    .config
+                    .get("calendars")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+            });
         self.calendar_choices = calendars
             .into_iter()
             .map(|calendar| {
                 // No selection yet means a new setup, not an explicit opt-out.
                 // An existing list (even an empty one) is authoritative.
-                let selected = previous.is_none_or(|values| {
+                let selected = previous.as_ref().is_none_or(|values| {
                     values.iter().any(|value| {
                         value.get("id").and_then(serde_json::Value::as_str)
                             == Some(calendar.href.as_str())
@@ -349,8 +354,7 @@ impl AccountsPane {
             let account = self
                 .account_root
                 .store()
-                .get(&source.id)
-                .cloned()
+                .account(source.id.as_str())
                 .ok_or("The Nextcloud account was removed")?;
             if account.type_id != source.type_id
                 || !account.enabled
@@ -395,7 +399,7 @@ impl AccountsPane {
                     .and_then(|draft| draft.assigned_id.as_ref())
             })
             .ok_or_else(|| t("accounts-calendar-details-changed"))?;
-        if self.account_root.store().get(id) != original.as_ref() {
+        if self.account_root.store().account(id.as_str()).as_ref() != original.as_ref() {
             return Err(t("accounts-calendar-details-changed"));
         }
         if let Some(draft) = &self.form_candidate

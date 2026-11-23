@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::api::{self, split_id};
 use crate::http::read_json;
-use crate::{ICloudDrive, Service, is_icloud_host, now_millis, valid_name};
+use crate::{ICloudDrive, Service, is_icloud_host, valid_name};
 
 pub struct Upload {
     source: ICloudDrive,
@@ -158,7 +158,7 @@ impl Upload {
         if let (Some(receipt), Value::Object(map)) = (&single.receipt, &mut data) {
             map.insert("receipt".into(), Value::String(receipt.clone()));
         }
-        let now = now_millis();
+        let now = tilo_clock::unix_now_ms();
         let body = json!({
             "data": data,
             "command": "add_file",

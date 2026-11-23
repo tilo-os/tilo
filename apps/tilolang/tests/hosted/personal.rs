@@ -11,7 +11,7 @@ fn picked(session: &mut Session) -> Vec<String> {
     let mut picked: Vec<String> = super::accessible(session)
         .into_iter()
         .filter(|node| node.role == ui::a11y::Role::TreeItem && node.state.selected)
-        .filter_map(|node| node.name)
+        .filter_map(|node| node.shown_name().map(str::to_owned))
         .collect();
     picked.dedup();
     picked

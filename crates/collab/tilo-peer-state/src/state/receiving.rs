@@ -80,7 +80,6 @@ impl StatePeer {
         let written = written_route(&message);
         let mut candidate = self.clone();
         let received = candidate.receive_with_context(source, message, now, retained_replay, exact);
-        self.remember_refused_base(&candidate);
         let mut report = received.inspect_err(|error| {
             // A device that could not decide the frame has not refused it:
             // what waited for the writer stays waiting for it.
@@ -334,19 +333,9 @@ impl StatePeer {
             .collect())
     }
 
-    /// Keep what `candidate`, this copy's own clone, learnt while it decided
-    /// a message: the base of its governor it refused. A refused message
-    /// leaves nothing else of itself here.
-    fn remember_refused_base(&mut self, candidate: &Self) {
-        self.refused_base = self.refused_base.max(candidate.refused_base);
-    }
     /// Admit changes to the workspace's document
-    /// ([`Self::receive_workspace_changes`]), and note a newer base of its
-    /// governor that this copy refuses: governance the copy then knows of
-    /// and does not hold. Until it holds a base that new, it takes in no
-    /// write on the roles and grants it holds
-    /// ([`Self::behind_its_governor`]). A device that could not decide the
-    /// batch has not refused it.
+    /// ([`Self::receive_workspace_changes`]). A device that could not decide
+    /// the batch has not refused it.
     fn receive_workspace_batch(
         &mut self,
         source: [u8; 32],
@@ -355,22 +344,7 @@ impl StatePeer {
         now: SystemTime,
         strict_report: bool,
     ) -> Result<AdmissionReport, AdmissionError> {
-        let decided =
-            self.receive_workspace_changes(source, received, workspace_changes, now, strict_report);
-        if decided
-            .as_ref()
-            .is_err_and(|error| !error.is_device_failure())
-            && self
-                .certificate(&source, now)
-                .is_ok_and(|cert| self.governs_history(&cert.user_public_key))
-            && let workspace::base::Lineage::Newer { base, .. } =
-                workspace::base::lineage(self.core.workspace_doc.as_deref(), workspace_changes)
-        {
-            self.refused_base = self
-                .refused_base
-                .max(Some(workspace::base::generation(&base)));
-        }
-        decided
+        self.receive_workspace_changes(source, received, workspace_changes, now, strict_report)
     }
     pub(crate) fn receive(
         &mut self,
@@ -569,11 +543,9 @@ impl StatePeer {
         let owner = self.core.owner;
         let administrators = self.administrator_roots();
         let from = hex::encode(source);
-        let keeper = self.workspace_keeper(now);
         // The one workspace admission the shell's workspace tree runs too.
         let workspace::AdmittedWorkspace {
             mut candidate,
-            media,
             rebased,
         } = workspace::admit_workspace_changes(
             workspace::WorkspaceAdmission {
@@ -583,12 +555,11 @@ impl StatePeer {
                 owner: &owner,
                 administrators: &administrators,
                 now_ns: now_ns(now),
-                keeps_delegations: keeper.is_some(),
             },
             workspace_changes,
         )?;
         if rebased && let Some(before) = self.core.workspace_doc.as_deref() {
-            self.carry_over_base(before, keeper, &mut candidate)?;
+            self.carry_over_base(before, &mut candidate)?;
         }
         // The workspace's owner is the person its governance names, not the
         // person of the device this replica was joined through: a member's
@@ -612,10 +583,6 @@ impl StatePeer {
                 .as_deref()
                 .is_none_or(|doc| doc.base_heads() != candidate.base_heads());
         let lacks_history = self.newly_waiting(&candidate);
-        if let Some(policy) = &media {
-            self.validate_media_bindings(policy, false)
-                .map_err(crate::AdmissionError::malformed)?;
-        }
         // The rows the change left as they were keep what reading them took.
         let candidate = match self.core.workspace_doc.as_ref() {
             Some(held) => held.followed_by(candidate),
@@ -672,17 +639,11 @@ impl StatePeer {
     fn carry_over_base(
         &self,
         before: &automerge::AutoCommit,
-        keeper: Option<[u8; 32]>,
         candidate: &mut automerge::AutoCommit,
     ) -> Result<(), AdmissionError> {
         if let Some(device) = self.own_device {
             let actor = self.workspace_actor_for(&device);
             workspace::base::carried(before, candidate, &actor)
-                .map_err(crate::AdmissionError::malformed)?;
-        }
-        if let Some(device) = keeper {
-            let actor = self.workspace_actor_for(&device);
-            super::work_delegations::carried(before, candidate, &actor)
                 .map_err(crate::AdmissionError::malformed)?;
         }
         Ok(())
@@ -719,31 +680,6 @@ impl StatePeer {
                 })
                 .ok_or(error),
         }
-    }
-
-    /// This copy's own device, when it knows it and it is a member whose work
-    /// writes here: such a copy keeps the work delegations it holds where a
-    /// base lacks them.
-    fn workspace_keeper(&self, now: SystemTime) -> Option<[u8; 32]> {
-        let owner = self.core.owner;
-        self.own_device.filter(|device| {
-            self.certificate(device, now).is_ok_and(|cert| {
-                let access = workspace::SenderAccess::Member {
-                    person: cert.user_public_key,
-                    foreign: backend::member::foreign(cert, &self.core.origin),
-                };
-                workspace::writes_workspace(
-                    self.core.workspace_doc.as_deref(),
-                    &self.core.workspace,
-                    &workspace::Writer {
-                        key: &hex::encode(device),
-                        access,
-                    },
-                    &owner,
-                    now_ns(now),
-                )
-            })
-        })
     }
 
     pub(super) fn receive_document(

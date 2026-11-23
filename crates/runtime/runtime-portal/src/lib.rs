@@ -52,7 +52,6 @@ pub mod process_binding;
 pub mod process_link;
 #[cfg(unix)]
 pub mod request_rendezvous;
-pub mod retained_role;
 pub mod service_socket;
 /// The actions connection a session hands a surface app.
 pub mod surface_actions;
@@ -68,7 +67,7 @@ pub mod workspace_terminal;
 /// this version (docs/architecture/compatibility.md); `interface.toml`
 /// holds the schema, and the repository policy fails a change to it that
 /// keeps the number.
-pub const RUNTIME_INTERFACE_VERSION: u32 = 35;
+pub const RUNTIME_INTERFACE_VERSION: u32 = 36;
 
 use std::env;
 use std::io;

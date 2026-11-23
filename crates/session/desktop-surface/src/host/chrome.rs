@@ -10,10 +10,10 @@ use tilo_desktop_model::{StripId, WorkspaceId};
 
 use crate::DesktopHandle;
 use crate::host::contract::DesktopRules;
+use ui::vello::kurbo::Rect;
 /// The machine's link, as the toolkits' surfaces draw it: the bar's status cluster and the lock
 /// screen's footer share the one reading.
 pub use ui::widget::{LinkKind, LinkStatus};
-use vello::kurbo::Rect;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VolumeState {
     pub level: f32,
@@ -60,7 +60,7 @@ impl SystemStatus {
     }
     pub fn summary(&self) -> String {
         if self.summary.is_empty() {
-            crate::i18n::t("desktop-system-status")
+            tilo_session_core::desktop::i18n::t("desktop-system-status")
         } else {
             self.summary.clone()
         }
@@ -271,9 +271,12 @@ impl ArrivalNotice {
         let short = first.split_whitespace().next().unwrap_or(first);
         let others = self.names.len().saturating_sub(1);
         if others == 0 {
-            crate::i18n::t_args("topbar-arrived-one", &[("name", short.into())])
+            tilo_session_core::desktop::i18n::t_args(
+                "topbar-arrived-one",
+                &[("name", short.into())],
+            )
         } else {
-            crate::i18n::t_args(
+            tilo_session_core::desktop::i18n::t_args(
                 "topbar-arrived-more",
                 &[("name", short.into()), ("count", others.into())],
             )
@@ -540,7 +543,9 @@ pub trait ChromeSource {
     /// # Errors
     /// The refusal, in words for the person.
     fn may_delete_workspace(&self, _workspace: WorkspaceId) -> Result<(), String> {
-        Err(crate::i18n::t("desktop-cannot-delete-workspace"))
+        Err(tilo_session_core::desktop::i18n::t(
+            "desktop-cannot-delete-workspace",
+        ))
     }
     /// Whether the person may branch the workspace `workspace` : they read all of it. Asked after
     /// whether they may make a workspace at all.
@@ -836,7 +841,7 @@ impl Placement {
                 .iter()
                 .map(|display| BarPlace {
                     display: display.id,
-                    rect: crate::display_rect(display),
+                    rect: tilo_session_core::desktop::display_rect(display),
                     full: Some(display.id) == in_use,
                 })
                 .collect(),

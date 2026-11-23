@@ -167,10 +167,10 @@ fn published<A: ResourceApp>(app: &mut TestApp<A>, resource: &str) -> Vec<String
 tilo_test_env::scenario! {
     fn a_settings_section_is_edited_by_its_person_and_kept_apart;
 
-    phase a_click_on_a_persons_settings_section_is_stored_both_ways;
-    // A click on a control bound to a field of a settings section kept in the
-    // person's records stores the change in the settings document, both ways.
+    phase a_settings_section_is_edited_by_click_and_path_and_checked_by_its_model;
     {
+        // A click on a control bound to a field of a settings section kept in the person's
+        // records stores the change in the settings document, both ways.
         let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
         let control = checkbox(&mut app, "high_contrast");
         app.harness().click_named(&control).unwrap();
@@ -185,13 +185,8 @@ tilo_test_env::scenario! {
             !app.settings::<Display>().get().high_contrast,
             "second click stored"
         );
-    }
-
-    phase a_settings_section_is_edited_by_path_and_checked_by_its_model;
-    {
-        let mut app = TestApp::<BoardApp>::new().unwrap();
-        let control = checkbox(&mut app, "high_contrast");
         app.harness().click_named(&control).unwrap();
+        app.settle();
         assert!(app.settings::<Display>().get().high_contrast);
 
         // Its field edits and verbs are published beside the app's resource.
@@ -279,33 +274,6 @@ tilo_test_env::scenario! {
         let mut app = TestApp::<MappingApp>::new().unwrap();
         app.harness().click_named("large").unwrap();
         assert!((app.settings::<Display>().get().scale - 2.0).abs() < f64::EPSILON);
-    }
-
-    phase a_settings_section_is_kept_in_the_settings_document_alone;
-    {
-        let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
-        // The person record of playback is declared and kept open; the display
-        // section is the settings document's, with no record of its own.
-        assert_eq!(app.open_person_resources(), 1);
-        assert!(published(&mut app, "settings:test.display").contains(&"field-edit".to_owned()));
-        app.call_on(
-            "settings:test.display",
-            "field-edit",
-            serde_json::json!({ "edit": { "path": [{ "field": "high_contrast" }], "op": "set", "value": true } }),
-        )
-        .unwrap();
-        assert_eq!(app.open_person_resources(), 1, "a write keeps no record");
-        assert!(app.settings::<Display>().get().high_contrast);
-        app.call_on(
-            "settings:test.display",
-            "undo",
-            serde_json::json!({ "steps": 1 }),
-        )
-        .unwrap();
-        assert!(
-            !app.settings::<Display>().get().high_contrast,
-            "and it is the person's step"
-        );
     }
 
     phase a_section_is_published_and_changed_without_a_window;
@@ -471,7 +439,7 @@ tilo_test_env::scenario! {
         assert!(app.invoke(Board::RETITLE.with("not theirs")).is_err());
     }
 
-    phase a_verb_of_the_persons_record_is_undoable_and_decided_in_their_own_workspace;
+    phase a_verb_of_the_persons_record_is_undoable_and_decided_where_it_is_kept;
     // A verb of the person's own record keeps what it does: a destructive one
     // Undo takes back is undoable, so it runs at once and asks nothing, and it
     // needs what it declares. The person's own workspace holds the record and
@@ -518,13 +486,28 @@ tilo_test_env::scenario! {
     phase declared_records_are_published_and_committed_though_no_view_shows_them;
     {
         let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
+        // The person record of playback is declared and kept open; the display section is the
+        // settings document's, with no record of its own.
+        assert_eq!(app.open_person_resources(), 1);
+        assert!(published(&mut app, "settings:test.display").contains(&"field-edit".to_owned()));
         app.call_on(
             "settings:test.display",
             "field-edit",
             serde_json::json!({ "edit": { "path": [{ "field": "high_contrast" }], "op": "set", "value": true } }),
         )
         .unwrap();
+        assert_eq!(app.open_person_resources(), 1, "a write keeps no record");
         assert!(app.settings::<Display>().get().high_contrast);
+        app.call_on(
+            "settings:test.display",
+            "undo",
+            serde_json::json!({ "steps": 1 }),
+        )
+        .unwrap();
+        assert!(
+            !app.settings::<Display>().get().high_contrast,
+            "and it is the person's step"
+        );
         app.call_on(
             "person:test.playback",
             "mute",

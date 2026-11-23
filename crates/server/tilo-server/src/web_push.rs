@@ -592,10 +592,17 @@ pub(crate) mod tests {
             "https://[2002:a00:7::]/send/abc",
             "https://[fd00::7]/send/abc",
             "https://[fe80::1]/send/abc",
+            "blob:http://127.0.0.1/x",
+            "redis://127.0.0.1/",
+            "file://127.0.0.1/etc/passwd",
         ] {
             assert!(
                 push.subscribe(&ADA, subscription(own)).is_err(),
                 "{own} names this machine or its network and was kept"
+            );
+            assert!(
+                public_endpoint(own).is_err(),
+                "{own} must be refused by public_endpoint"
             );
         }
         assert!(

@@ -459,7 +459,7 @@ fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
                     .map(|group| group.width.permille())
                     .collect::<Vec<_>>(),
                 home.strips[0].window_groups[1].maximized,
-                tilo_desktop_surface::navigation::active_route(tree).map(|route| route.tab),
+                tilo_session_core::desktop::navigation::active_route(tree).map(|route| route.tab),
                 tree.active_strip.get(&workspace_ids[0]).copied(),
             )
         });

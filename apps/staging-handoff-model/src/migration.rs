@@ -1,91 +1,289 @@
 //! Secret-free source hints. These types grant neither a mount nor a copy; consumers must
 //! re-attest the source before using it.
-use super::{Extent, Handoff, HostOs, is_guid};
+use super::{Extent, Handoff, HostOs, is_guid, is_operation_id};
 use serde::{Deserialize, Serialize};
-use std::fmt::Write as _;
+use std::path::PathBuf;
+
+pub const SCHEMA: u32 = 1;
+pub const MAX_BYTES: usize = 64 * 1024;
+pub const DEFERRED_ORIGINAL_UID: u32 = 1000;
+pub const MAX_EXCLUSIONS: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Migration {
-    schema: u32,
-    operation_id: String,
-    categories: Categories,
+    pub schema: u32,
+    pub operation_id: String,
+    pub categories: Categories,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub home_policy: HomePolicy,
+    pub home: Home,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "present_policy"
+        deserialize_with = "present_computer_applications_scope"
     )]
-    home_policy: Option<Policy>,
-    home: Home,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pending_computer_applications_scope: Option<PendingComputerApplicationsScope>,
+    pub pending_computer_applications_scope: Option<ComputerApplicationsScope>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "present_inventory"
+        deserialize_with = "present_flatpak_inventory"
     )]
-    flatpak_inventory: Option<FlatpakInventory>,
+    pub flatpak_inventory: Option<serde_json::Value>,
+    /// Consent metadata, not a path grant: the receiving producer revalidates each path under its
+    /// own pinned source.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub home_exclusions: Vec<NativePath>,
+    /// Absent on every earlier plan, so released forms keep parsing with their original meaning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    deferred_handoff: Option<DeferredHandoff>,
+    pub deferred_handoff: Option<DeferredHandoff>,
 }
 
+/// Names an exact operation and journal digest, never a path, profile name, credential or content
+/// key, so installation media can carry it without private source data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DeferredHandoff {
-    schema: u32,
-    original_uid: u32,
-    journal_sha256: [u8; 32],
+pub struct DeferredHandoff {
+    pub schema: u32,
+    pub original_uid: u32,
+    pub journal_sha256: [u8; 32],
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Categories {
-    home: bool,
-    flatpak: bool,
-    accounts: bool,
+pub struct Categories {
+    pub home: bool,
+    pub flatpak: bool,
+    pub accounts: bool,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-enum Policy {
+pub enum HomePolicy {
+    #[default]
     Copy,
     AccessReadOnly,
     AccessReadWrite,
 }
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    value == &T::default()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Home {
-    volume: Volume,
+pub struct Home {
+    pub volume: SourceVolume,
+    /// Relative to the top-level filesystem, including any Btrfs subvolume root from mountinfo;
+    /// native byte names round-trip without UTF-8 loss.
     relative: NativePath,
     inode: u64,
     original_uid: u32,
+    /// Btrfs subvolume UUID/tree ID distinguish reused inode numbers; the native durability service
+    /// supplies this binding.
     #[serde(deserialize_with = "required_subvolume")]
     subvolume: Option<Identity>,
 }
+
+impl Home {
+    #[must_use]
+    pub fn new(
+        volume: SourceVolume,
+        relative: NativePath,
+        inode: u64,
+        original_uid: u32,
+        subvolume: Option<Identity>,
+    ) -> Self {
+        Self {
+            volume,
+            relative,
+            inode,
+            original_uid,
+            subvolume,
+        }
+    }
+
+    #[must_use]
+    pub fn relative(&self) -> &NativePath {
+        &self.relative
+    }
+
+    #[must_use]
+    pub fn inode(&self) -> u64 {
+        self.inode
+    }
+
+    #[must_use]
+    pub fn original_uid(&self) -> u32 {
+        self.original_uid
+    }
+
+    #[must_use]
+    pub fn subvolume(&self) -> Option<&Identity> {
+        self.subvolume.as_ref()
+    }
+
+    pub fn validate_subvolume(&self) -> Result<(), String> {
+        let volume = &self.volume;
+        match (&self.subvolume, volume.filesystem) {
+            (Some(id), Filesystem::Btrfs) => {
+                if !id.binds_btrfs(&volume.filesystem_uuid, self.inode) {
+                    return Err("migration Btrfs identity differs".into());
+                }
+            }
+            (None, Filesystem::Ext4 | Filesystem::Xfs) => {}
+            _ => return Err("migration subvolume identity differs".into()),
+        }
+        Ok(())
+    }
+
+    pub fn validate_identity(&self) -> Result<(), String> {
+        let volume = &self.volume;
+        let source = Extent {
+            first_lba: volume.first_lba,
+            last_lba: volume.last_lba,
+        };
+        if volume.disk_bytes == 0
+            || volume.disk_bytes >= super::MAX_LBA
+            || self.inode == 0
+            || self.inode >= super::MAX_LBA
+            || ![
+                &volume.disk_guid,
+                &volume.partition_guid,
+                &volume.filesystem_uuid,
+            ]
+            .into_iter()
+            .all(|v| non_nil_guid(v))
+            || !matches!(volume.sector_bytes, 512 | 4096)
+            || !source.valid()
+            || volume
+                .last_lba
+                .checked_add(1)
+                .and_then(|n| n.checked_mul(volume.sector_bytes))
+                .is_none_or(|end| end > volume.disk_bytes)
+        {
+            return Err(
+                "migration source or consent differs from retained Linux installation".into(),
+            );
+        }
+        self.validate_subvolume()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "platform", content = "units", deny_unknown_fields)]
-enum NativePath {
+pub enum NativePath {
     Unix(Vec<u8>),
+    Windows(Vec<u16>),
 }
+
+impl NativePath {
+    #[cfg(any(unix, windows))]
+    pub fn encode(path: &std::path::Path) -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            Self::Unix(path.as_os_str().as_bytes().to_vec())
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            Self::Windows(path.as_os_str().encode_wide().collect())
+        }
+    }
+
+    /// The number of native units the path occupies.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Unix(units) => units.len(),
+            Self::Windows(units) => units.len(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn decode(&self) -> Result<PathBuf, String> {
+        if self.len() > 4096 {
+            return Err("persisted migration path exceeds bounds".into());
+        }
+        match self {
+            #[cfg(unix)]
+            Self::Unix(bytes) if !bytes.contains(&0) => {
+                use std::os::unix::ffi::OsStringExt;
+                Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes.clone())))
+            }
+            #[cfg(windows)]
+            Self::Windows(units) if !units.contains(&0) => {
+                use std::os::windows::ffi::OsStringExt;
+                Ok(PathBuf::from(std::ffi::OsString::from_wide(units)))
+            }
+            _ => Err("persisted migration path has a platform mismatch or NUL".into()),
+        }
+    }
+
+    /// Whether this path is a normalized non-empty relative path (at most 4096 code units,
+    /// no NUL, and no empty, `.` or `..` segments).
+    #[must_use]
+    pub fn is_normalized_relative(&self) -> bool {
+        match self {
+            Self::Unix(bytes) => valid_unix_relative(bytes),
+            Self::Windows(units) => valid_windows_relative(units),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Identity {
+pub struct Identity {
     volume: Vec<u8>,
     inode: u64,
 }
+
+impl Identity {
+    #[must_use]
+    pub fn new(volume: Vec<u8>, inode: u64) -> Self {
+        Self { volume, inode }
+    }
+
+    #[must_use]
+    pub fn binds_filesystem(&self, filesystem_uuid: &str) -> bool {
+        let durable = (self.volume.len() == 17 && self.volume.first() == Some(&1))
+            || (self.volume.len() == 41 && self.volume.first() == Some(&3));
+        durable
+            && parse_guid_bytes(filesystem_uuid)
+                .is_some_and(|bytes| self.volume.get(1..17) == Some(bytes.as_slice()))
+    }
+
+    #[must_use]
+    pub fn binds_btrfs(&self, filesystem_uuid: &str, inode: u64) -> bool {
+        self.inode == inode
+            && self.volume.len() == 41
+            && self.volume.first() == Some(&3)
+            && parse_guid_bytes(filesystem_uuid)
+                .is_some_and(|bytes| self.volume.get(1..17) == Some(bytes.as_slice()))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Volume {
-    disk_guid: String,
-    disk_bytes: u64,
-    sector_bytes: u64,
-    partition_guid: String,
-    first_lba: u64,
-    last_lba: u64,
-    filesystem_uuid: String,
-    filesystem: Filesystem,
+pub struct SourceVolume {
+    pub disk_guid: String,
+    pub disk_bytes: u64,
+    pub sector_bytes: u64,
+    pub partition_guid: String,
+    pub first_lba: u64,
+    pub last_lba: u64,
+    pub filesystem_uuid: String,
+    pub filesystem: Filesystem,
 }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum Filesystem {
+pub enum Filesystem {
     Ext4,
     Xfs,
     Btrfs,
@@ -164,10 +362,92 @@ struct Deployment {
     deploy_sha256: [u8; 32],
 }
 
-fn present_inventory<'de, D: serde::Deserializer<'de>>(
+struct UniqueJsonSeed;
+
+impl<'de> serde::de::DeserializeSeed<'de> for UniqueJsonSeed {
+    type Value = serde_json::Value;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_any(UniqueJsonValue)
+    }
+}
+
+struct UniqueJsonValue;
+
+impl<'de> serde::de::Visitor<'de> for UniqueJsonValue {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a JSON value without repeated object keys")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Bool(v))
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::from(v))
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::from(v))
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> {
+        serde_json::Number::from_f64(v)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| E::custom("non-finite JSON number"))
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::String(v.to_owned()))
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::String(v))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut items = Vec::new();
+        while let Some(item) = seq.next_element_seed(UniqueJsonSeed)? {
+            items.push(item);
+        }
+        Ok(serde_json::Value::Array(items))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut object = serde_json::Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if object.contains_key(&key) {
+                return Err(serde::de::Error::custom(format!("duplicate field `{key}`")));
+            }
+            let value = map.next_value_seed(UniqueJsonSeed)?;
+            object.insert(key, value);
+        }
+        Ok(serde_json::Value::Object(object))
+    }
+}
+
+fn present_flatpak_inventory<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
-) -> Result<Option<FlatpakInventory>, D::Error> {
-    FlatpakInventory::deserialize(deserializer).map(Some)
+) -> Result<Option<serde_json::Value>, D::Error> {
+    let value = deserializer.deserialize_any(UniqueJsonValue)?;
+    if value.is_null() {
+        return Err(serde::de::Error::custom("flatpak_inventory cannot be null"));
+    }
+    serde_json::from_value::<FlatpakInventory>(value.clone()).map_err(serde::de::Error::custom)?;
+    Ok(Some(value))
 }
 
 fn required_subvolume<'de, D: serde::Deserializer<'de>>(
@@ -176,26 +456,110 @@ fn required_subvolume<'de, D: serde::Deserializer<'de>>(
     Option::<Identity>::deserialize(deserializer)
 }
 
-fn present_policy<'de, D: serde::Deserializer<'de>>(
+fn present_computer_applications_scope<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
-) -> Result<Option<Policy>, D::Error> {
-    Policy::deserialize(deserializer).map(Some)
+) -> Result<Option<ComputerApplicationsScope>, D::Error> {
+    ComputerApplicationsScope::deserialize(deserializer).map(Some)
 }
 
 fn non_nil_guid(value: &str) -> bool {
     is_guid(value) && value.bytes().any(|b| b.is_ascii_hexdigit() && b != b'0')
 }
 
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte.saturating_sub(b'0')),
+        b'a'..=b'f' => Some(byte.saturating_sub(b'a').saturating_add(10)),
+        b'A'..=b'F' => Some(byte.saturating_sub(b'A').saturating_add(10)),
+        _ => None,
+    }
+}
+
+fn parse_guid_bytes(value: &str) -> Option<[u8; 16]> {
+    if !is_guid(value) {
+        return None;
+    }
+    let mut bytes = [0u8; 16];
+    let mut hex = value.bytes().filter(|b| *b != b'-');
+    for slot in &mut bytes {
+        let hi = hex_nibble(hex.next()?)?;
+        let lo = hex_nibble(hex.next()?)?;
+        *slot = (hi << 4) | lo;
+    }
+    hex.next().is_none().then_some(bytes)
+}
+
+fn valid_unix_relative(path: &[u8]) -> bool {
+    !path.is_empty()
+        && path.len() <= 4096
+        && !path.contains(&0)
+        && path
+            .split(|b| *b == b'/')
+            .all(|p| !p.is_empty() && p != b"." && p != b"..")
+}
+
+fn valid_windows_relative(units: &[u16]) -> bool {
+    const SLASH: u16 = b'/' as u16;
+    const BACKSLASH: u16 = b'\\' as u16;
+    const DOT: u16 = b'.' as u16;
+    const COLON: u16 = b':' as u16;
+    !units.is_empty()
+        && units.len() <= 4096
+        && !units.contains(&0)
+        && units
+            .split(|u| *u == SLASH || *u == BACKSLASH)
+            .all(|p| !p.is_empty() && p != [DOT] && p != [DOT, DOT] && !p.contains(&COLON))
+}
+
+/// Descriptive scope for pending Computer applications composition across reboot.
+/// Never authority on its own; each consumer re-verifies against the registered declaration.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PendingComputerApplicationsScope {
-    schema: u32,
-    source_operation: String,
-    applications_operation: String,
-    staging_operation: String,
-    staging_plan_sha256: String,
-    setup_binding: String,
-    identity_public_key: [u8; 32],
+pub struct ComputerApplicationsScope {
+    pub schema: u32,
+    pub source_operation: String,
+    pub applications_operation: String,
+    pub staging_operation: String,
+    pub staging_plan_sha256: String,
+    pub setup_binding: String,
+    pub identity_public_key: [u8; 32],
+}
+
+impl ComputerApplicationsScope {
+    /// Validate the scope's own fields, canonical operation IDs, distinctness, digest and binding.
+    pub fn validate_fields(&self, expected_source_operation: &str) -> Result<(), String> {
+        let operations = [
+            &self.source_operation,
+            &self.applications_operation,
+            &self.staging_operation,
+        ];
+        if self.schema != 1
+            || operations.iter().any(|id| !is_operation_id(id))
+            || self.source_operation == self.applications_operation
+            || self.source_operation == self.staging_operation
+            || self.applications_operation == self.staging_operation
+            || self.source_operation != expected_source_operation
+            || !lower_hex_digest(&self.staging_plan_sha256)
+            || self.setup_binding.is_empty()
+            || self.setup_binding.len() > 256
+            || self.setup_binding.chars().any(char::is_control)
+        {
+            return Err("pending Computer applications scope differs".into());
+        }
+        Ok(())
+    }
+
+    /// Validate the scope against its carrying migration plan's operation and consent.
+    pub fn validate_for_migration(&self, migration: &Migration) -> Result<(), String> {
+        self.validate_fields(&migration.operation_id)?;
+        if !migration.categories.home
+            || migration.categories.flatpak
+            || migration.home_policy != HomePolicy::AccessReadWrite
+        {
+            return Err("pending Computer applications scope differs".into());
+        }
+        Ok(())
+    }
 }
 
 impl Migration {
@@ -209,60 +573,65 @@ impl Migration {
         self.validate_context(Some(handoff))
     }
 
+    /// Validate reviewed Home exclusions: normalized relative Unix paths within bounds,
+    /// only permitted when Home data is selected.
+    pub fn validate_home_exclusions(&self) -> Result<(), String> {
+        if self.home_exclusions.is_empty() {
+            return Ok(());
+        }
+        if !self.categories.home {
+            return Err("Home exclusions require selected Home data".into());
+        }
+        if self.home_exclusions.len() > MAX_EXCLUSIONS {
+            return Err("too many excluded source subtrees".into());
+        }
+        for exclusion in &self.home_exclusions {
+            if !matches!(exclusion, NativePath::Unix(_)) {
+                return Err("excluded source subtree is not a Unix native path".into());
+            }
+            if !exclusion.is_normalized_relative() {
+                return Err("excluded source subtree is not a normalized relative path".into());
+            }
+        }
+        Ok(())
+    }
+
     fn validate_source(&self, handoff: Option<&Handoff>) -> Result<(), String> {
         let volume = &self.home.volume;
-        let NativePath::Unix(path) = &self.home.relative;
+        let NativePath::Unix(path) = &self.home.relative else {
+            return Err(
+                "migration source or consent differs from retained Linux installation".into(),
+            );
+        };
         let source = Extent {
             first_lba: volume.first_lba,
             last_lba: volume.last_lba,
         };
-        if self.schema != 1
+        if self.schema != SCHEMA
             || !is_guid(&self.operation_id)
             || self.deferred_handoff.as_ref().is_some_and(|handoff| {
-                handoff.schema != 1
-                    || handoff.original_uid != 1000
+                handoff.schema != SCHEMA
+                    || handoff.original_uid != DEFERRED_ORIGINAL_UID
                     || handoff.original_uid != self.home.original_uid
                     || handoff.journal_sha256 == [0; 32]
             })
             || !(self.categories.home || self.categories.flatpak || self.categories.accounts)
-            || (self.home_policy.is_some_and(|p| p != Policy::Copy) && !self.categories.home)
+            || (self.home_policy != HomePolicy::Copy && !self.categories.home)
             || handoff.is_some_and(|h| {
                 self.operation_id != h.operation_id
                     || h.host_os != HostOs::Linux
                     || !volume.disk_guid.eq_ignore_ascii_case(&h.disk_guid)
                     || volume.disk_bytes != h.disk_size_bytes
             })
-            || volume.disk_bytes == 0
-            || volume.disk_bytes >= super::MAX_LBA
-            || self.home.inode >= super::MAX_LBA
-            || ![
-                &volume.disk_guid,
-                &volume.partition_guid,
-                &volume.filesystem_uuid,
-            ]
-            .into_iter()
-            .all(|v| non_nil_guid(v))
-            || !matches!(volume.sector_bytes, 512 | 4096)
-            || !source.valid()
-            || volume
-                .last_lba
-                .checked_add(1)
-                .and_then(|n| n.checked_mul(volume.sector_bytes))
-                .is_none_or(|end| end > volume.disk_bytes)
-            || self.home.inode == 0
-            || path.is_empty()
-            || path.len() > 4096
-            || path.contains(&0)
+            || !valid_unix_relative(path)
             || path.split(|b| *b == b'/').count() > 128
-            || path
-                .split(|b| *b == b'/')
-                .any(|p| p.is_empty() || p == b"." || p == b"..")
         {
             return Err(
                 "migration source or consent differs from retained Linux installation".into(),
             );
         }
-        self.validate_subvolume()?;
+        self.home.validate_identity()?;
+        self.validate_home_exclusions()?;
         if let Some(handoff) = handoff {
             for staged in [&handoff.staging_esp, &handoff.staging_root] {
                 if volume.partition_guid.eq_ignore_ascii_case(&staged.partuuid)
@@ -278,65 +647,17 @@ impl Migration {
         Ok(())
     }
 
-    fn validate_subvolume(&self) -> Result<(), String> {
-        let volume = &self.home.volume;
-        match (&self.home.subvolume, volume.filesystem) {
-            (Some(id), Filesystem::Btrfs) => {
-                let uuid = volume.filesystem_uuid.replace('-', "").to_ascii_lowercase();
-                let identity_uuid =
-                    id.volume
-                        .iter()
-                        .skip(1)
-                        .take(16)
-                        .fold(String::new(), |mut text, byte| {
-                            let _ = write!(text, "{byte:02x}");
-                            text
-                        });
-                if id.inode != self.home.inode
-                    || id.volume.len() != 41
-                    || id.volume.first() != Some(&3)
-                    || identity_uuid != uuid
-                {
-                    return Err("migration Btrfs identity differs".into());
-                }
-            }
-            (None, Filesystem::Ext4 | Filesystem::Xfs) => {}
-            _ => return Err("migration subvolume identity differs".into()),
-        }
-        Ok(())
-    }
-
     fn validate_context(&self, handoff: Option<&Handoff>) -> Result<(), String> {
         self.validate_source(handoff)?;
         if let Some(scope) = &self.pending_computer_applications_scope {
-            let operations = [
-                &scope.source_operation,
-                &scope.applications_operation,
-                &scope.staging_operation,
-            ];
-            if scope.schema != 1
-                || operations
-                    .iter()
-                    .any(|id| !non_nil_guid(id) || **id != id.to_ascii_lowercase())
-                || operations[0] == operations[1]
-                || operations[0] == operations[2]
-                || operations[1] == operations[2]
-                || scope.source_operation != self.operation_id
-                || !self.categories.home
-                || self.categories.flatpak
-                || self.home_policy != Some(Policy::AccessReadWrite)
-                || !lower_hex_digest(&scope.staging_plan_sha256)
-                || scope.setup_binding.is_empty()
-                || scope.setup_binding.len() > 256
-                || scope.setup_binding.chars().any(char::is_control)
-            {
-                return Err("pending Computer applications scope differs".into());
-            }
+            scope.validate_for_migration(self)?;
         }
-        if let Some(inventory) = &self.flatpak_inventory {
+        if let Some(raw) = &self.flatpak_inventory {
             if !self.categories.flatpak {
                 return Err("Flatpak inventory lacks migration consent".into());
             }
+            let inventory: FlatpakInventory =
+                serde_json::from_value(raw.clone()).map_err(|e| e.to_string())?;
             match inventory {
                 FlatpakInventory::Protected(binding) => {
                     if binding.kind != "protected-original-flatpak"
@@ -357,6 +678,7 @@ impl Migration {
         Ok(())
     }
 }
+
 pub(super) fn lower_hex_digest(value: &str) -> bool {
     value.len() == 64
         && value
@@ -429,7 +751,7 @@ impl ReviewedInventory {
         }
         for source in &self.installations {
             if !source.installation.valid()
-                || source.source_plan.len() > super::MAX_BYTES
+                || source.source_plan.len() > MAX_BYTES
                 || source.repositories.len() > 4096
                 || source.deployments.len() > 100_000
             {

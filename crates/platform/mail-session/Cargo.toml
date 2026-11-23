@@ -39,6 +39,8 @@ web-time = "1"
 # The stand-in mail server a test signs in to over XOAUTH2, with its own
 # certificate: no real password, no real server.
 tilo-account-probe = { path = "../account-probe", features = ["test-support"] }
+# Waits bounded by the test's own deadline.
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

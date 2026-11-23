@@ -171,6 +171,44 @@ pub fn may_manage_strip(
     }
 }
 
+/// Whether `requester` may set the state of window `tab` ([`crate::window_state`]): it is the
+/// window's person's, so they may, and so may their agents, which ask as them. Anyone else among
+/// the state's `readers` (a reader set's text) may too, when the one deciding holds them: the
+/// device that opened the window does, from the record. A moderator governs the window's place,
+/// not what its person sees in it.
+///
+/// # Errors
+///
+/// [`Refusal::Others`] for anyone else.
+pub fn may_set_window_state(
+    requester: &Requester<'_>,
+    authors: &Authors,
+    tab: u64,
+    readers: Option<&str>,
+) -> Result<(), Refusal> {
+    let reads = || {
+        let person = collab_types::Readers::parse(requester.person);
+        match (readers.and_then(collab_types::Readers::parse), person) {
+            (Some(collab_types::Readers::EveryMember), _) => {
+                shares_windows(requester.person, requester.members)
+            }
+            (
+                Some(collab_types::Readers::People(people)),
+                Some(collab_types::Readers::People(person)),
+            ) => person.iter().all(|key| people.contains(key)),
+            _ => false,
+        }
+    };
+    if made_by(authors, tab, requester.person) || reads() {
+        Ok(())
+    } else {
+        Err(Refusal::Others {
+            id: tab,
+            owner: authors.get(&tab).cloned(),
+        })
+    }
+}
+
 /// Whether `requester` may add a workspace beside this one: whoever governs it,
 /// as for its strips.
 ///
@@ -226,6 +264,11 @@ pub fn may_command(
             .filter(|candidate| candidate.id == *group)
             .flat_map(|candidate| &candidate.tabs)
             .try_for_each(|tab| may_rearrange_window(requester, authors, tab.id)),
+        // Readers beyond the window's person are judged by the device that opened it, which
+        // holds them.
+        DesktopCommand::SetWindowState { tab, .. } => {
+            may_set_window_state(requester, authors, *tab, None)
+        }
         DesktopCommand::ClaimNamespace { .. }
         | DesktopCommand::SavePreset { .. }
         | DesktopCommand::AssignPreset { .. } => Ok(()),

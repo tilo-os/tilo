@@ -1,8 +1,13 @@
 //! The runtime executable's command line, shared by every host binary.
 
-use crate::{daemon, profile};
-use std::{ffi::OsString, io, path::Path};
+use crate::daemon;
+#[cfg(unix)]
+use crate::profile;
+#[cfg(unix)]
+use std::path::Path;
+use std::{ffi::OsString, io};
 
+#[cfg(unix)]
 #[allow(
     clippy::disallowed_methods,
     reason = "called from `run` before tracing or any other thread starts, so no other thread can read the environment concurrently; the profile variables must reach this process and every child it spawns"
@@ -31,10 +36,13 @@ pub const CONSENT_HELPER_ARG: &str = "--device-consent";
 fn run() -> io::Result<()> {
     // The app surfaces changes are decided against live in the content store
     // the apps this runtime hosts keep their content in.
-    let content = tilo_content_device::for_app();
-    tilo_workspace_service::apps::decide_receipt_against_surfaces(move |_, hash| {
-        content.read(hash)
-    });
+    #[cfg(unix)]
+    {
+        let content = tilo_content_device::for_app();
+        tilo_workspace_service::apps::decide_receipt_against_surfaces(move |_, hash| {
+            content.read(hash)
+        });
+    }
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     // The tools a hosted workspace offers an agent, without a workspace or a session:
     // `tools/docs/reference/mcp_tools.py` writes their reference from this answer, so the page
@@ -61,14 +69,16 @@ fn run() -> io::Result<()> {
         return tilo_dialogs::confined::run_consent_helper();
     }
     let args = daemon::parse_args(arguments)?;
-    match args.mode {
-        daemon::Mode::Daemon => {
+    if args.mode == daemon::Mode::Daemon {
+        if args.standalone {
+            // A profile named apart keeps the daemon's environment inside it.
             daemon::validate_profile(&args.profile)?;
+            #[cfg(unix)]
             configure_profile(&args.profile)?;
+        } else {
+            // The person's own profile, made on the first start.
+            crate::host::private_directory(&args.profile)?;
         }
-        // The person's own profile, made on the first start.
-        daemon::Mode::Hold => crate::unix::private_directory(&args.profile)?,
-        _ => {}
     }
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
@@ -78,7 +88,7 @@ fn run() -> io::Result<()> {
         .with_writer(std::io::stderr)
         .try_init();
     match args.mode {
-        daemon::Mode::Daemon | daemon::Mode::Hold => daemon::serve(&args.profile, args.dev),
+        daemon::Mode::Daemon => daemon::serve(&args.profile, args.dev),
         daemon::Mode::Connect => daemon::connect(
             &args.profile,
             args.standalone,
@@ -106,6 +116,7 @@ fn run() -> io::Result<()> {
 pub fn host(program: &str) -> std::process::ExitCode {
     // Untrusted Automerge bytes are decoded in worker processes started from
     // this executable; each of them is served here and exits.
+    #[cfg(unix)]
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return std::process::ExitCode::from(code);
     }

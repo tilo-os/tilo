@@ -1,35 +1,19 @@
-//! Desktop notifications: the model, the live banners, the retained history and the centre, shared
-//! by every host. A host owns a [`NotificationLog`] and answers the effects only it can perform
+//! Desktop notifications as the shell draws them: the live banners and the centre, over the log
+//! every host keeps ([`tilo_session_core::desktop::notifications`]). A host owns a [`NotificationLog`] and answers the effects only it can perform
 //! (telling a sender it closed, routing an action to another device) through [`NotificationHost`]:
 //! the native desktop feeds the log from the notification service, the browser its own notices.
 
 use std::cell::Ref;
 
+use tilo_session_core::desktop::notifications::{HistoryActivation, Notification, NotificationLog};
+
 mod center;
-mod history;
-mod log;
-mod model;
-mod persistence;
 mod reader;
 mod stack;
 
 pub use center::{
     CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, RowControl, RowShape,
 };
-pub use history::{
-    HistoryActivation, HistoryRow, RowIdentity, accessible_description, group_key, group_label,
-    history_rows, relative_time,
-};
-pub use log::{CLEAR_UNDO_WINDOW, NotificationLog, RELEASE_GRACE};
-pub use model::INLINE_REPLY;
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-pub use model::ScheduledNotificationTarget;
-pub use model::{
-    ContinuityNotificationId, DEFAULT_DISMISS_AFTER, MAX_HISTORY, MAX_NOTIFICATIONS,
-    NOT_NOW_ACTION, Notification, NotificationIconKind, NotificationPerson, NotificationSeverity,
-    PERSISTENT_DISMISS, RemoteNotificationRoute, lock_suppressed_label,
-};
-pub(crate) use persistence::{decode_history, encode_history};
 pub use stack::{Banner, BannerAsk, BannerFeed, CORNER_INSET, NotificationStack, transient_slot};
 
 /// What the banner stack and the notification centre need from the desktop that shows them. Reads
@@ -108,70 +92,13 @@ pub trait NotificationHost {
     fn changed(&self) {}
 }
 
-/// Why fresh banners are being held: what the bar's silenced bell and the notification centre's
-/// header say.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum QuietReason {
-    /// The person turned Do Not Disturb on.
-    DoNotDisturb,
-    /// The person is presenting: their screen is on a projector.
-    Presenting,
-    /// Their screen, or an app of theirs, is shared with others.
-    Sharing,
-    /// Their focus schedule holds until this local time, as `H:MM` .
-    FocusUntil(String),
-}
-
-/// [`QuietReason`] in the desktop's language.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-pub fn quiet_label(reason: &QuietReason) -> String {
-    match reason {
-        QuietReason::DoNotDisturb => crate::i18n::t("notification-quiet-do-not-disturb"),
-        QuietReason::Presenting => crate::i18n::t("notification-quiet-presenting"),
-        QuietReason::Sharing => crate::i18n::t("notification-quiet-sharing"),
-        QuietReason::FocusUntil(time) => crate::i18n::t_args(
-            "notification-quiet-focus-until",
-            &[("time", time.clone().into())],
-        ),
+#[cfg(test)]
+mod copy_lint_tests {
+    /// The banners and the centre build every string from the catalogue.
+    #[test]
+    fn copy_builders_take_catalogue_strings_not_english_literals() {
+        tilo_copy_lint::CopyLint::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/notifications"))
+            .min_files(2)
+            .check();
     }
-}
-
-/// What a sender calls itself, as it may be shown: one short line with no control characters.
-/// `None` when it names nothing, and a file it runs from is no name: a program that calls itself
-/// `/usr/bin/notes` names nothing.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-pub fn sender_words(app_name: &str) -> Option<String> {
-    let words = app_name
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(64)
-        .collect::<String>();
-    let words = words.trim();
-    (!words.is_empty() && !words.contains('/')).then(|| words.to_owned())
-}
-
-/// What a sender that nobody vouched for says it is, shown as its claim: one short line, never as
-/// an app's verified name. `None` when it claims nothing.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-pub fn sender_claim(app_name: &str) -> Option<String> {
-    sender_words(app_name)
-        .map(|name| crate::i18n::t_args("notification-sender-claims", &[("name", name.into())]))
-}
-
-/// What a notification's default action is labelled, in the desktop's language.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-pub fn open_action_label() -> String {
-    crate::i18n::t("notification-open")
-}
-
-/// Host calendar-alarm actions, in the desktop's language.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-pub fn alarm_action_labels() -> Vec<(String, String)> {
-    vec![
-        (
-            "dismiss".into(),
-            crate::i18n::t("notification-alarm-dismiss"),
-        ),
-        ("snooze".into(), crate::i18n::t("notification-alarm-snooze")),
-    ]
 }

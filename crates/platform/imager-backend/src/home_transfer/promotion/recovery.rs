@@ -173,46 +173,6 @@ impl AdoptionProof {
         }
         Ok(())
     }
-    pub fn verify_inventory(
-        &self,
-        expected: &BTreeSet<PathBuf>,
-        installation: Option<&Path>,
-    ) -> Result<(), String> {
-        for path in expected {
-            if self
-                .items
-                .get(&self.scope.join(path))
-                .map_err(|e| e.to_string())?
-                .is_none()
-            {
-                return Err("Adoption plan omitted original completed user data".into());
-            }
-        }
-        for path in self.selected_items() {
-            let path = path.map_err(|e| e.to_string())?;
-            if expected.contains(&path) || installation.is_some_and(|root| path.starts_with(root)) {
-                continue;
-            }
-            if installation.is_some_and(|root| root.starts_with(&path)) {
-                let root = self.target(&path).map_err(|e| e.to_string())?;
-                let container = path.parent().ok_or("Missing installation ancestor")?;
-                let name = path
-                    .file_name()
-                    .ok_or("Missing installation ancestor name")?;
-                let directory = parent(&root, container).map_err(|e| e.to_string())?;
-                if metadata_nofollow(&directory.file, Path::new(name))
-                    .map_err(|e| e.to_string())?
-                    .is_dir()
-                {
-                    continue;
-                }
-            }
-            return Err(
-                "Unreviewed data was added outside the approved application installation".into(),
-            );
-        }
-        Ok(())
-    }
     pub fn target(&self, path: &Path) -> io::Result<Arc<PinnedDirectory>> {
         if !path.as_os_str().is_empty() {
             decoded(&NativePath::encode(path))?;

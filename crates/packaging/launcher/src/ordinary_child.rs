@@ -55,41 +55,14 @@ fn same(a: &File, b: &File) -> io::Result<bool> {
     Ok((a.dev(), a.ino()) == (b.dev(), b.ino()))
 }
 fn stopped(fd: &impl AsRawFd) -> io::Result<bool> {
-    let mut p = libc::pollfd {
-        fd: fd.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    if unsafe { libc::poll(&raw mut p, 1, 0) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if p.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
-        return Err(denied());
-    }
-    Ok(p.revents & libc::POLLIN != 0)
+    crate::fd::pidfd_exited(fd).map_err(|_| denied())
 }
 fn kernel_pid(fd: &OwnedFd) -> io::Result<u32> {
-    let mut bytes = Vec::new();
-    File::open(format!("/proc/self/fdinfo/{}", fd.as_raw_fd()))?
-        .take(4097)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > 4096 {
-        return Err(denied());
-    }
-    let mut found = None;
-    for line in std::str::from_utf8(&bytes)
-        .map_err(io::Error::other)?
-        .lines()
-    {
-        if let Some(value) = line.strip_prefix("Pid:") {
-            let value = value.trim();
-            if found.is_some() || !value.bytes().all(|b| b.is_ascii_digit()) {
-                return Err(denied());
-            }
-            found = Some(value.parse::<u32>().map_err(io::Error::other)?);
-        }
-    }
-    found.filter(|pid| *pid > 1).ok_or_else(denied)
+    let pid = crate::fd::fdinfo_u64(fd, b"Pid:", 4096)
+        .map_err(|_| denied())?
+        .filter(|pid| *pid > 1)
+        .ok_or_else(denied)?;
+    u32::try_from(pid).map_err(io::Error::other)
 }
 fn tagged_send(stream: &mut UnixStream, tag: u8, fd: impl std::os::fd::AsFd) -> io::Result<()> {
     fd_transport::send_with_fd(stream.as_fd(), &[tag], fd)?;
@@ -205,35 +178,11 @@ fn target_environment(peer: &ExecutingPeer) -> io::Result<Vec<(String, String)>>
     Ok(result)
 }
 fn protected_launcher() -> io::Result<File> {
-    for path in ["/", "/usr", "/usr/libexec", "/usr/libexec/tilo"] {
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
-            .open(path)?;
-        let facts = file.metadata()?;
-        if facts.uid() != 0 || facts.mode() & 0o022 != 0 {
-            return Err(denied());
-        }
-    }
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open("/usr/libexec/tilo/tilo-launcher")?;
-    let facts = file.metadata()?;
-    if !facts.is_file()
-        || facts.uid() != 0
-        || facts.nlink() != 1
-        || facts.mode() & 0o7022 != 0
-        || facts.mode() & 0o111 == 0
-    {
-        return Err(denied());
-    }
-    let mut magic = [0; 4];
-    std::os::unix::fs::FileExt::read_exact_at(&file, &mut magic, 0)?;
-    if &magic != b"\x7fELF" {
-        return Err(denied());
-    }
-    Ok(file)
+    crate::fd::protected_executable(
+        &["/", "/usr", "/usr/libexec", "/usr/libexec/tilo"],
+        "/usr/libexec/tilo/tilo-launcher",
+    )
+    .map_err(|_| denied())
 }
 /// Root alone retains and reaps this actual Child.
 pub struct OwnedOrdinaryChild {
@@ -725,35 +674,8 @@ const BOOTSTRAP_MAGIC: &[u8; 4] = b"TCB1";
 const BOOTSTRAP_REFUSED: &[u8; 4] = b"TCB0";
 const HELPER_PROGRAM: &str = "/usr/libexec/tilo-prepared-setup";
 fn protected_consuming_helper() -> io::Result<File> {
-    for path in ["/", "/usr", "/usr/libexec"] {
-        let held = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
-            .open(path)?;
-        let facts = held.metadata()?;
-        if facts.uid() != 0 || facts.mode() & 0o022 != 0 {
-            return Err(denied());
-        }
-    }
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(HELPER_PROGRAM)?;
-    let facts = file.metadata()?;
-    if !facts.is_file()
-        || facts.uid() != 0
-        || facts.nlink() != 1
-        || facts.mode() & 0o7022 != 0
-        || facts.mode() & 0o111 == 0
-    {
-        return Err(denied());
-    }
-    let mut magic = [0; 4];
-    std::os::unix::fs::FileExt::read_exact_at(&file, &mut magic, 0)?;
-    if &magic != b"\x7fELF" {
-        return Err(denied());
-    }
-    Ok(file)
+    crate::fd::protected_executable(&["/", "/usr", "/usr/libexec"], HELPER_PROGRAM)
+        .map_err(|_| denied())
 }
 fn exact_parent(pid: u32, parent: u32) -> io::Result<()> {
     let mut bytes = Vec::new();
@@ -1030,15 +952,6 @@ impl ManagedConsumingBootstrap {
         }
         exact_parent(self.peer.pid(), std::process::id())
     }
-    /// Send the single child-created direct Shell proof endpoint on the existing authenticated root
-    /// bootstrap transport.
-    pub fn delegate_shell(&mut self, stream: &mut UnixStream) -> io::Result<()> {
-        self.check()?;
-        let endpoint = self.shell_endpoint.as_ref().ok_or_else(denied)?;
-        send_consuming_bootstrap(stream, &mut self.child, &self.peer, endpoint)?;
-        self.shell_endpoint.take();
-        self.check()
-    }
     /// Queue the frozen command before shared delegation.
     pub fn delegate_shell_command(
         &mut self,
@@ -1117,16 +1030,10 @@ impl ManagedConsumingBootstrap {
             routing,
         })
         .map_err(io::Error::other)?;
-        if bytes.is_empty() || bytes.len() > 64 * 1024 {
-            return Err(denied());
-        }
         self.control.write_all(b"C")?;
-        self.control.write_all(
-            &u32::try_from(bytes.len())
-                .map_err(|_| denied())?
-                .to_be_bytes(),
-        )?;
-        self.control.write_all(&bytes)?;
+        crate::services::json_framing(64 * 1024)
+            .write(&mut self.control, &bytes)
+            .map_err(|_| denied())?;
         self.command_sent = true;
         if !target.current() {
             return Err(denied());
@@ -1257,14 +1164,10 @@ impl ConsumingBootstrapEntry {
                 if self.command_received {
                     return Err(denied());
                 }
-                let mut length = [0; 4];
-                self.control.read_exact(&mut length)?;
-                let length = u32::from_be_bytes(length) as usize;
-                if length == 0 || length > 64 * 1024 {
-                    return Err(denied());
-                }
-                let mut bytes = vec![0; length];
-                self.control.read_exact(&mut bytes)?;
+                let bytes = crate::services::json_framing(64 * 1024)
+                    .read(&mut self.control)
+                    .map_err(|_| denied())?
+                    .ok_or_else(denied)?;
                 let wire: RoutedCommandWire =
                     serde_json::from_slice(&bytes).map_err(io::Error::other)?;
                 digest(&wire.command)?;

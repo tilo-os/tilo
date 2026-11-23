@@ -47,8 +47,7 @@ pub(crate) fn import(context: &ProcessContext) -> Result<(), String> {
             continue;
         };
         let path = inbox.join(&name);
-        let Ok(Some(bytes)) = tilo_files::blocking::read_bounded(&data, &path, MAX_ENTRY_BYTES)
-        else {
+        let Ok(bytes) = tilo_files::blocking::read_bounded(&data, &path, MAX_ENTRY_BYTES) else {
             continue;
         };
         let Ok(parsed) = serde_json::from_slice::<Value>(&bytes) else {

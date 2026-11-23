@@ -3,7 +3,7 @@
 //! copy beside one would leave the person's unsaved work in a window nobody sees: each tab such an
 //! app left says so instead, and Restart there ends the old app and opens it again in that tab.
 
-use tilo_desktop_surface::outcome::Outcome;
+use tilo_session_core::desktop::outcome::Outcome;
 
 use super::{Apps, Launch, as_this_machine_knows_it};
 

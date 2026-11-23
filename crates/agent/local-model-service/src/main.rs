@@ -2054,33 +2054,33 @@ mod tests {
             sha256: "a".repeat(64),
             size_bytes: 10,
         };
-        let manifest = system_extension::ExtensionManifest {
-            schema_version: system_extension::SCHEMA_VERSION,
+        let manifest = tilo_extension::system_extension::ExtensionManifest {
+            schema_version: tilo_extension::system_extension::SCHEMA_VERSION,
             id: "selector-runtime".into(),
-            kind: system_extension::ExtensionKind::LocalModelRuntime,
+            kind: tilo_extension::system_extension::ExtensionKind::LocalModelRuntime,
             version: "test".into(),
-            artifact: system_extension::PinnedArtifact {
+            artifact: tilo_extension::system_extension::PinnedArtifact {
                 source: pin.url.clone(),
                 sha256: pin.sha256.clone(),
                 size_bytes: pin.size_bytes,
             },
-            target: system_extension::ImageConstraint {
+            target: tilo_extension::system_extension::ImageConstraint {
                 base_image_digest: format!("sha256:{}", "b".repeat(64)),
                 architecture: None,
                 kernel_abi: None,
             },
             requires_reboot: false,
         };
-        let signed = system_extension::SignedExtensionManifest::sign(
+        let signed = tilo_extension::system_extension::SignedExtensionManifest::sign(
             manifest,
             "selector-test-key",
             &ed25519_dalek::SigningKey::from_bytes(&[5; 32]),
         )
         .unwrap();
         let runtime = SignedRuntime {
-            accepted: system_extension::AcceptedExtension {
+            accepted: tilo_extension::system_extension::AcceptedExtension {
                 signed,
-                artifact: system_extension::ArtifactReceipt {
+                artifact: tilo_extension::system_extension::ArtifactReceipt {
                     sha256: pin.sha256.clone(),
                     size_bytes: pin.size_bytes,
                 },

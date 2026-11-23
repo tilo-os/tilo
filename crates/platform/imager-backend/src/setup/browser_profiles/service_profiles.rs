@@ -344,7 +344,8 @@ fn discover_candidate(
                 (AccountProvider::Chromium, "Google Chrome") => Some(
                     crate::setup::service_sessions::source::chromium_linux::ChromiumBrand::Chrome,
                 ),
-                (AccountProvider::Chromium, "Chromium") => Some(
+                // Ungoogled Chromium keeps its v11 cookies under the same keyring entry as Chromium.
+                (AccountProvider::Chromium, "Chromium" | "Ungoogled Chromium") => Some(
                     crate::setup::service_sessions::source::chromium_linux::ChromiumBrand::Chromium,
                 ),
                 _ => None,
@@ -423,35 +424,49 @@ fn chromium_store(profile: &Arc<PinnedDirectory>) -> io::Result<bool> {
     }
 }
 fn chromium_names(root: &Arc<PinnedDirectory>) -> io::Result<Vec<(String, Vec<String>, Provider)>> {
-    let entries = cap_std::fs::Dir::from_std_file(
-        super::super::migration_durability::readable_directory(&root.file)?,
-    );
-    let mut names = Vec::new();
-    for (index, entry) in entries.entries()?.enumerate() {
-        if index >= MAX_PROFILE_DIRECTORIES {
-            return Err(invalid("Too many browser source directories"));
-        }
-        let name = entry?.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if name != "Default" && !name.starts_with("Profile ") {
-            continue;
-        }
-        names.push((name.to_owned(), vec![name.to_owned()], Provider::Chromium));
-    }
-    Ok(names)
+    Ok(super::chromium_names(root)?
+        .into_iter()
+        .map(|name| (name.clone(), vec![name], Provider::Chromium))
+        .collect())
 }
 fn firefox_names(root: &Arc<PinnedDirectory>) -> io::Result<Vec<(String, Vec<String>, Provider)>> {
-    let mut file = storage(root)?.open_read("profiles.ini".as_ref(), Privacy::Inherit)?;
-    if file.metadata()?.len() > MAX_INI {
-        return Err(invalid("Browser source index is too large"));
-    }
-    let bytes = crate::record::read_bounded(&mut file, MAX_INI, || {
-        invalid("Browser source index is too large")
-    })?;
-    firefox_sections(std::str::from_utf8(&bytes).map_err(invalid)?)?
+    super::firefox_index(root)?
         .into_iter()
         .map(|(label, path)| Ok((label, components(Path::new(&path))?, Provider::Firefox)))
         .collect()
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn ungoogled_chromium_website_sessions_are_capturable() {
+        let home = tempfile::tempdir().unwrap();
+        let profile = home.path().join(".config/ungoogled-chromium/Default");
+        fs::create_dir_all(profile.join("Network")).unwrap();
+        let cookies = rusqlite::Connection::open(profile.join("Network/Cookies")).unwrap();
+        cookies
+            .execute_batch(
+                "PRAGMA user_version=24;
+                 CREATE TABLE meta(key TEXT, value INTEGER);
+                 INSERT INTO meta VALUES('version', 24);
+                 CREATE TABLE cookies(host_key TEXT, name TEXT, value TEXT);",
+            )
+            .unwrap();
+        drop(cookies);
+        let candidates = crate::account_sources::discover(&crate::account_sources::SourceRoots {
+            home: home.path().into(),
+            config: home.path().join(".config"),
+        });
+        let discovery =
+            discover_without_slack_package(home.path(), &candidates.candidates).unwrap();
+        let source = discovery
+            .sources
+            .iter()
+            .find(|source| source.application == "Ungoogled Chromium")
+            .expect("the ungoogled Chromium source is discovered");
+        assert!(source.supports_encrypted_cookie_capture());
+    }
 }

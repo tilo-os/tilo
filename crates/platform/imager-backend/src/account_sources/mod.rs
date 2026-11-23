@@ -210,6 +210,15 @@ fn append_home_profiles(home: &Path, inventory: &mut Inventory) {
 }
 
 pub fn metadata(root: &Path, path: &Path) -> Result<Option<Zeroizing<String>>, ()> {
+    let Some(bytes) = metadata_bytes(root, path)? else {
+        return Ok(None);
+    };
+    let text = std::str::from_utf8(&bytes).map_err(|_| ())?;
+    Ok(Some(Zeroizing::new(text.to_owned())))
+}
+
+/// The bounded bytes of the file at `path` below `root`, refusing a link anywhere in between.
+pub fn metadata_bytes(root: &Path, path: &Path) -> Result<Option<Zeroizing<Vec<u8>>>, ()> {
     let exists = std::fs::symlink_metadata(path);
     match exists {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -236,14 +245,14 @@ pub fn metadata(root: &Path, path: &Path) -> Result<Option<Zeroizing<String>>, (
     if !file.metadata().map_err(|_| ())?.is_file() {
         return Err(());
     }
-    let mut text = Zeroizing::new(String::new());
+    let mut bytes = Zeroizing::new(Vec::new());
     file.take(MAX_CONFIG + 1)
-        .read_to_string(&mut text)
+        .read_to_end(&mut bytes)
         .map_err(|_| ())?;
-    if text.len() as u64 > MAX_CONFIG {
+    if bytes.len() as u64 > MAX_CONFIG {
         return Err(());
     }
-    Ok(Some(text))
+    Ok(Some(bytes))
 }
 
 fn check_components(root: &Path, path: &Path) -> Result<(), ()> {

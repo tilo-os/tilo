@@ -14,7 +14,7 @@ use tilo_actions::remote::{
     workspace_governance_child, workspace_governance_operation, workspace_member,
 };
 use tilo_peer_state::join::Role;
-use tilo_server_protocol::workspaces::JoinReply;
+use tilo_server_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
 use tilo_user_identity::DeviceCert;
 
 use super::{
@@ -22,7 +22,9 @@ use super::{
     ServiceWorkspaceActions, UNLIST, VERBS, WAIT_LIST,
 };
 use crate::app_serving::AppActionServer as _;
-use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
+use crate::workspaces::tests::{
+    governor, guest_device, is_banned, signed_pre_admission, test_host,
+};
 use crate::workspaces::{PreAdmitRequest, SetMemberRoleRequest, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
@@ -258,7 +260,6 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
         .chain(&[NAME])
         .chain(&[
             governance::UNBAN,
-            governance::CALL,
             governance::REMOVE_MEMBER,
             governance::BAN,
         ])
@@ -510,6 +511,21 @@ async fn an_editor_invites_up_to_her_own_role_and_no_further() {
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
 
+    // An Editor by role alone governs nothing: she reads neither the pending
+    // invitations nor the wait list.
+    assert!(workspaces.pending(&workspace, &ada).await.is_err());
+    assert!(matches!(
+        workspaces
+            .page_workspaces(
+                &ada,
+                WorkspacesRequest::WaitList {
+                    workspace: workspace.clone()
+                }
+            )
+            .await,
+        WorkspacesReply::Refused(_)
+    ));
+
     // Granted invite, Ada invites up to her own role and no further: the
     // workspace's own decision, refused with its reason.
     grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
@@ -724,14 +740,21 @@ async fn banning_is_decided_by_grants_and_ending_a_call_waits_for_everyone() {
     };
 
     // An Editor holds no grant on banning, and is not told a ban exists:
-    // unknown and forbidden answer alike.
+    // unknown and forbidden answer alike. Someone outside the workspace is
+    // answered the same.
     assert_eq!(
         invoke(&host, workspace_id, &caller(&ada), ban(&bo)).await,
         Err(ActionCallError::UnknownAction)
     );
+    let (_stranger_key, stranger) = guest_device();
+    assert_eq!(
+        invoke(&host, workspace_id, &caller(&stranger), ban(&ada)).await,
+        Err(ActionCallError::UnknownAction)
+    );
 
     // The Moderator role's grant on banning lets Bo ban Ada, with no
-    // confirmation beside the grant.
+    // confirmation beside the grant, and a retry of that invocation changes
+    // nothing more.
     workspaces
         .set_member_role(
             &workspace,
@@ -744,7 +767,11 @@ async fn banning_is_decided_by_grants_and_ending_a_call_waits_for_everyone() {
         )
         .await
         .unwrap();
-    invoke(&host, workspace_id, &caller(&bo), ban(&ada))
+    let banned = ban(&ada);
+    invoke(&host, workspace_id, &caller(&bo), banned.clone())
+        .await
+        .unwrap();
+    invoke(&host, workspace_id, &caller(&bo), banned)
         .await
         .unwrap();
     let members = workspaces.summary(&workspace).await.unwrap().members;
@@ -754,15 +781,27 @@ async fn banning_is_decided_by_grants_and_ending_a_call_waits_for_everyone() {
             .any(|member| member.root() == Some(ada.user_public_key) && member.removed),
         "{members:?}"
     );
-
-    let end = request(
-        &workspace,
-        governance::CALL,
-        json!({ "operation": "end", "call": hex::encode([9; 32]), "epoch": 1 }),
+    assert!(
+        is_banned(workspaces, &workspace, &owner, ada.user_public_key).await,
+        "Ada is kept out"
     );
-    assert_eq!(
-        invoke(&host, workspace_id, &caller(&owner), end).await,
-        Err(ActionCallError::confirmation_required())
+
+    // The owner unbans her, and she may enter again; a retry of that
+    // invocation is the same change, not another.
+    let unban = request(
+        &workspace,
+        governance::UNBAN,
+        json!({ "person": person(&ada) }),
+    );
+    invoke(&host, workspace_id, &caller(&owner), unban.clone())
+        .await
+        .unwrap();
+    invoke(&host, workspace_id, &caller(&owner), unban)
+        .await
+        .unwrap();
+    assert!(
+        !is_banned(workspaces, &workspace, &owner, ada.user_public_key).await,
+        "the ban is lifted"
     );
 
     server.shutdown().await;
@@ -815,6 +854,12 @@ async fn a_member_granted_removing_removes_anyone_but_the_owner() {
     let removed = invoke(&host, workspace_id, &caller(&bo), remove(&ada))
         .await
         .unwrap();
+    assert!(
+        invoke(&host, workspace_id, &caller(&bo), remove(&owner))
+            .await
+            .is_err(),
+        "a moderator removes no owner"
+    );
     assert!(
         removed.as_array().is_some_and(|people| people
             .iter()
@@ -910,6 +955,10 @@ fn roles(listed: &Value) -> Vec<(String, String)> {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one workspace's role changes, who makes them and who may not are one story"
+)]
 async fn a_role_is_changed_on_a_member_never_on_someone_the_workspace_does_not_hold() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
@@ -980,6 +1029,90 @@ async fn a_role_is_changed_on_a_member_never_on_someone_the_workspace_does_not_h
             .all(|(who, _)| *who != person(&stranger)),
         "{listed}"
     );
+
+    // A Moderator holds no grant on changing roles: the action does not
+    // exist for Bo either.
+    let cy = admit(workspaces, &workspace, &owner, 3).await;
+    workspaces
+        .set_member_role(
+            &workspace,
+            &owner,
+            SetMemberRoleRequest {
+                request_id: [34; 32],
+                user_public_key: bo.user_public_key,
+                role: Role::Moderator,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        invoke(
+            &host,
+            workspace_id,
+            &caller(&bo),
+            place_request(&workspace, &cy, "viewer")
+        )
+        .await,
+        Err(ActionCallError::UnknownAction)
+    );
+
+    // An Editor granted set-role hands out roles up to her own, and never
+    // changes an administrator's: only the owner and whom the workspace is
+    // kept for unmake those.
+    let dee = admit(workspaces, &workspace, &owner, 4).await;
+    grant(workspaces, &workspace, &owner, &dee, governance::ADD_MEMBER).await;
+    grant(workspaces, &workspace, &owner, &dee, governance::SET_ROLE).await;
+    invoke(
+        &host,
+        workspace_id,
+        &caller(&dee),
+        place_request(&workspace, &cy, "viewer"),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        invoke(
+            &host,
+            workspace_id,
+            &caller(&dee),
+            place_request(&workspace, &cy, "moderator")
+        )
+        .await,
+        Err(ActionCallError::Refused { .. })
+    ));
+    invoke(
+        &host,
+        workspace_id,
+        &caller(&owner),
+        request(
+            &workspace,
+            super::ADD_MEMBER,
+            json!({ "person": person(&cy), "role": "administrator" }),
+        ),
+    )
+    .await
+    .unwrap();
+    let administrator = invoke(
+        &host,
+        workspace_id,
+        &caller(&dee),
+        place_request(&workspace, &cy, "viewer"),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&administrator, ActionCallError::Refused { reason } if reason.contains("may not unmake or remove an administrator")),
+        "{administrator:?}"
+    );
+    // The owner's devices change anyone's role.
+    invoke(
+        &host,
+        workspace_id,
+        &caller(&owner),
+        place_request(&workspace, &cy, "editor"),
+    )
+    .await
+    .unwrap();
     server.shutdown().await;
 }
 

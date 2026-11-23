@@ -343,3 +343,67 @@ async fn a_listing_of_an_apps_own_page_walks_its_notebook_whole() {
     let distinct: std::collections::HashSet<&&String> = noted.iter().collect();
     assert_eq!(distinct.len(), NOTES, "no note is listed twice: {noted:?}");
 }
+
+/// An app's listing names the actions its root resource offers, each under the
+/// root it is published on, so an agent calls one straight from the app's
+/// listing rather than walking into the root first.
+#[tokio::test]
+async fn an_app_lists_its_roots_actions_under_the_root() {
+    // An app whose only actions are on its root resource: a notebook that holds
+    // nothing yet, so its level lists no item and its root holds what it offers.
+    let notes = Notes::new(true).live();
+    let root = notes.row("", NOTEBOOK, "notes.notebook", "Notes", None, false);
+    let new_note = notes.row(
+        "",
+        NOTEBOOK,
+        "notes.notebook",
+        "Notes",
+        Some((
+            "new-note",
+            "New note",
+            vec![ActionParam::optional("title", ParamType::Text, "Text")],
+            tilo_actions::OperationKind::Effect,
+        )),
+        false,
+    );
+    *notes.published_kinds.lock().unwrap() = Some(vec![root, new_note]);
+
+    let server = agent(&notes);
+    let (text, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
+    assert!(!failed, "{text}");
+    assert!(text.contains("#new-note"), "{text}");
+    assert_eq!(
+        text.matches("#new-note").count(),
+        1,
+        "the app lists its root's action once: {text}"
+    );
+    // What the app's listing names it by takes its parameters here.
+    let (page, failed) = tool(&server, "tilo_ls", json!({"path": "notes#new-note"})).await;
+    assert!(!failed && page.contains("title"), "{page}");
+    // And it runs where the listing names it: on the root it is published on.
+    let (done, failed) = tool(
+        &server,
+        "tilo_do",
+        json!({"path": "notes#new-note", "args": {"title": "Plan"}}),
+    )
+    .await;
+    assert!(!failed, "{done}");
+    let (resource, action, _) = notes.invoked().last().cloned().expect("new-note ran");
+    assert_eq!(resource, notes.id(NOTEBOOK), "{done}");
+    assert_eq!(action, "new-note", "{done}");
+
+    // A root that holds its actions in its own level names each once, never beside
+    // what the app's listing already took from it.
+    let live = Notes::new(true).live();
+    let server = agent(&live);
+    let (app, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
+    assert!(!failed, "{app}");
+    assert_eq!(app.matches("#new-note").count(), 1, "listed once: {app}");
+    let (root, failed) = tool(&server, "tilo_ls", json!({"path": "notes/Notebook"})).await;
+    assert!(!failed, "{root}");
+    assert_eq!(
+        root.matches("#new-note").count(),
+        1,
+        "the root's own: {root}"
+    );
+}

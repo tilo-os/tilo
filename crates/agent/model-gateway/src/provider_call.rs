@@ -221,7 +221,9 @@ impl Post<'_> {
             let mut value = reqwest::header::HeaderValue::from_str(header.value.as_str())
                 .map_err(|_| unsendable())?;
             value.set_sensitive(header.secret);
-            headers.insert(header.name, value);
+            let name = reqwest::header::HeaderName::from_bytes(header.name.as_bytes())
+                .map_err(|_| unsendable())?;
+            headers.insert(name, value);
         }
         if !self.resend {
             return self.once(&headers, body, self.budget).await;

@@ -156,7 +156,7 @@ impl crate::apps::services::AgentRoster for KeptAgents {
             .map(|(_, agent)| crate::apps::services::ListedAgent {
                 id: agent.clone(),
                 name: agent.clone(),
-                keeper: String::new(),
+                acts_for: String::new(),
             })
             .collect()
     }

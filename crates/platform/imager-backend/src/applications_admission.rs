@@ -15,11 +15,7 @@ impl ConsumerCapability {
     /// # Errors
     /// Refuses unsupported protocols and malformed exact artifact digests.
     pub fn validate(&self) -> io::Result<()> {
-        let digest = |v: &str| {
-            v.len() == 64
-                && v.bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        };
+        let digest = crate::record::is_hex_sha256;
         if self.schema != 1
             || self.subset_protocol != SUBSET_PROTOCOL
             || !digest(&self.prepared_helper_sha256)

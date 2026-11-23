@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tube@94e8224758f4dea1";
+export const SURFACE = "so.tilo.tube@5738a7401a7c766a";
 
 /** The arguments of `subscribe`. */
 export interface SubscribeArgs {
@@ -49,6 +49,26 @@ export interface ForgetArgs {
 
 /** The arguments of `delete_history`. */
 export interface DeleteHistoryArgs {
+}
+
+/** The arguments of `set_autoplay`. */
+export interface SetAutoplayArgs {
+  on: boolean;
+}
+
+/** The arguments of `set_speed`. */
+export interface SetSpeedArgs {
+  speed: number;
+}
+
+/** The arguments of `set_quality`. */
+export interface SetQualityArgs {
+  quality: string;
+}
+
+/** The arguments of `set_captions`. */
+export interface SetCaptionsArgs {
+  on: boolean;
 }
 
 /** The arguments of `end_search`. */
@@ -105,7 +125,6 @@ export interface Video extends tilo.Resource {
   pkbzjs7l: string;  // stream
   jfam7tjf: boolean;  // live
   bifohbpv: boolean;  // liked
-  vvtm26ea: boolean;  // watch_later
   "4mojz3hw": boolean;  // trending
   "5o5fpqgh": string;  // found_for
   /** Likes the video, or takes the like back. */
@@ -114,7 +133,7 @@ export interface Video extends tilo.Resource {
   }): Promise<void>;
   /** Runs `like` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   likeMany(items: LikeArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Keeps the video to watch later, or takes it off the list. */
+  /** Puts the video on the workspace's watch queue, or takes it off. A video put on it goes after the ones already waiting, so the queue plays in the order people added to it. */
   watch_later(args?: {
     saved?: boolean;
   }): Promise<void>;
@@ -128,15 +147,17 @@ export interface Video extends tilo.Resource {
   progress(args: {
     at: number;
   }): Promise<void>;
-  /** Takes one video out of the history. */
+  /** Takes one video out of the person's own history. */
   forget(): Promise<void>;
   /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Asks the service for where the video's bytes play from again, after the player could not show them: the address the client holds is the service's alone to write, and the answer it gives now is what the player opens. */
+  retry_playback(): Promise<void>;
 }
 
 /** The actions `Video` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const VIDEO_ACTIONS = ["like", "likeMany", "watch_later", "watch_laterMany", "play", "resume", "progress", "forget", "forgetMany"] as const;
+export const VIDEO_ACTIONS = ["like", "likeMany", "watch_later", "watch_laterMany", "play", "resume", "progress", "forget", "forgetMany", "retry_playback"] as const;
 
 /** The `tl.so.tilo.tube.Video` kind at `path`. */
 export function video(ws: tilo.Workspace, path: string): Video {
@@ -151,12 +172,17 @@ export interface Playlist extends tilo.Resource {
   zvfpfva3: string;  // channel_name
   "6cllrl7x": number;  // video_count
   "4xvzshd7": string;  // thumbnail
+  dge65utd: string[];  // video_keys
   p3yw6p2h: string;  // found_for
+  /** Asks the service for what the playlist holds, in its maker's order. */
+  refresh_playlist(): Promise<void>;
+  /** Plays the playlist from its first video. */
+  play_playlist(): Promise<void>;
 }
 
 /** The actions `Playlist` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PLAYLIST_ACTIONS = [] as const;
+export const PLAYLIST_ACTIONS = ["refresh_playlist", "play_playlist"] as const;
 
 /** The `tl.so.tilo.tube.Playlist` kind at `path`. */
 export function playlist(ws: tilo.Workspace, path: string): Playlist {
@@ -178,11 +204,44 @@ export function subscription(ws: tilo.Workspace, path: string): Subscription {
   return resourceProxy(ws, path, SURFACE, SUBSCRIPTION_ACTIONS) as unknown as Subscription;
 }
 
+/** QueuedVideo — `tl.so.tilo.tube.QueuedVideo`. */
+export interface QueuedVideo extends tilo.Resource {
+  o3xolmld: string;  // key
+}
+
+/** The actions `QueuedVideo` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const QUEUEDVIDEO_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.tube.QueuedVideo` kind at `path`. */
+export function queuedVideo(ws: tilo.Workspace, path: string): QueuedVideo {
+  return resourceProxy(ws, path, SURFACE, QUEUEDVIDEO_ACTIONS) as unknown as QueuedVideo;
+}
+
+/** PlaybackPrefs — `tl.so.tilo.tube.PlaybackPrefs`. */
+export interface PlaybackPrefs extends tilo.Resource {
+  "5twttwwn": string;  // member
+  vze2yftu: boolean;  // autoplay
+  "5bpxm33f": number;  // speed
+  lesyml4z: string;  // quality
+  u3fgpv6e: boolean;  // captions
+}
+
+/** The actions `PlaybackPrefs` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PLAYBACKPREFS_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.tube.PlaybackPrefs` kind at `path`. */
+export function playbackPrefs(ws: tilo.Workspace, path: string): PlaybackPrefs {
+  return resourceProxy(ws, path, SURFACE, PLAYBACKPREFS_ACTIONS) as unknown as PlaybackPrefs;
+}
+
 /** WatchEntry — `tl.so.tilo.tube.WatchEntry`. */
 export interface WatchEntry extends tilo.Resource {
   noppuxpb: string;  // key
   stuii7l7: string;  // title
   j37y2bbw: string;  // channel_name
+  "7mtvj3xd": string | null;  // member
   dmm6f63t: string;  // watched
   omff5ciz: number;  // progress
 }
@@ -203,17 +262,45 @@ export interface YouTube extends tilo.Resource {
   qnfjkti5: Array<tilo.Entry<Video>>;  // videos
   v5sh2bpr: Array<tilo.Entry<Playlist>>;  // playlists
   iputtmua: Array<tilo.Entry<Subscription>>;  // subscriptions
+  jgjqgesf: Array<tilo.Entry<QueuedVideo>>;  // queue
   hv25j74h: Array<tilo.Entry<WatchEntry>>;  // history
+  epgpppzy: Array<tilo.Entry<PlaybackPrefs>>;  // playback
   bqesicxq: string;  // search_text
   hcmy6dp7: string;  // search_state
   zjw3anaz: string;  // search_trouble
   nnvco6w3: string;  // feed_state
   r3ksw6bn: string;  // trouble
   qv7t2mza: boolean;  // online
-  /** Deletes the watch history: everything the person watched. */
+  /** Plays the queue from its oldest video: what was put on it first plays first. */
+  play_queue(): Promise<void>;
+  /** Deletes the person's own watch history, and the entries carried from before it recorded members, which this history shows them; nobody else's. */
   delete_history(): Promise<void>;
   /** Runs `delete_history` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   delete_historyMany(items: DeleteHistoryArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Each of these keeps one of the person's own playback preferences: the record is theirs, made the first time they set one, and every other member reads their own. */
+  set_autoplay(args: {
+    on: boolean;
+  }): Promise<void>;
+  /** Runs `set_autoplay` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_autoplayMany(items: SetAutoplayArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** How fast videos play for the person: 0.25 to 3, 1 for the usual speed. */
+  set_speed(args: {
+    speed: number;
+  }): Promise<void>;
+  /** Runs `set_speed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_speedMany(items: SetSpeedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The tallest picture the person wants, as YouTube names it; `auto` takes the best that fits. */
+  set_quality(args: {
+    quality: string;
+  }): Promise<void>;
+  /** Runs `set_quality` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_qualityMany(items: SetQualityArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Whether videos show their captions for the person. */
+  set_captions(args: {
+    on: boolean;
+  }): Promise<void>;
+  /** Runs `set_captions` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_captionsMany(items: SetCaptionsArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Searches YouTube: the service answers with channels, playlists and videos, written where the search view lists them. The answer arrives through the platform's network, never the app's. */
   search(args?: {
     query?: string;
@@ -234,7 +321,7 @@ export interface YouTube extends tilo.Resource {
 
 /** The actions `YouTube` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const YOUTUBE_ACTIONS = ["delete_history", "delete_historyMany", "search", "end_search", "end_searchMany", "refresh_feed", "load_trending", "play_again"] as const;
+export const YOUTUBE_ACTIONS = ["play_queue", "delete_history", "delete_historyMany", "set_autoplay", "set_autoplayMany", "set_speed", "set_speedMany", "set_quality", "set_qualityMany", "set_captions", "set_captionsMany", "search", "end_search", "end_searchMany", "refresh_feed", "load_trending", "play_again"] as const;
 
 /** The `tl.so.tilo.tube.YouTube` kind at `path`. */
 export function youTube(ws: tilo.Workspace, path: string): YouTube {

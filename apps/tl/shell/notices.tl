@@ -1,16 +1,17 @@
-/// The notifications: the banner that arrives, and the centre that keeps them. Both are views
-/// of the centre the session publishes (`device.notifications`), grouped by what sent them: an
-/// app, or the agent task that did. Each notice carries its sender's own actions, in the order
-/// its sender put them (`device.act`).
+/// The notifications: the banners that arrive, and the centre that keeps them. Both are views of
+/// the centre the session publishes (`device.notifications`), grouped by what sent them: an app, or
+/// the agent task that did. Each notice carries its sender's own actions, in the order its sender
+/// put them (`device.act`), and a notice that offers a reply takes the person's words back to its
+/// sender (`device.reply`).
 ///
-/// A banner is the centre's newest notice, lifted out of it; a group is an app's or a task's
-/// notices together. Nothing here decides what a notice means: its kind, its sender and its
-/// actions are the sender's. It is a surface over the windows, so it holds no sidebar of its own.
+/// Banners are a stack, newest first, as many as fit; what does not fit is one row that opens the
+/// centre, where every one waits. The session takes a banner away a few seconds after it arrived,
+/// so the stack empties by itself.
 ///
-/// The notification centre is a floating panel at the screen's trailing edge, over what it
-/// covers, on the theme's material as every notification centre is: its header says how many
-/// are waiting and holds the way to clear them all, and each sender's group opens as one on the
-/// toolkit's disclosure motion when it arrives.
+/// The notification centre is a floating panel at the screen's trailing edge, over what it covers,
+/// on the theme's material as every notification centre is: its header says how many are waiting
+/// and holds the way to clear them all, an Undo band brings them back after a Clear all, and each
+/// sender's group opens as one on the toolkit's disclosure motion.
 view notices() {
     state query: Text = ""
     let all = device.notifications.notices
@@ -33,6 +34,9 @@ view notices() {
                 }
             }
             body: {
+                if device.notifications.undo {
+                    undo_band()
+                }
                 if all.is_empty() {
                     ui.EmptyState("Nothing to catch up on", icon: .bell)
                 } else {
@@ -54,6 +58,17 @@ view notices() {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Bring back what a Clear all took, while the session still holds it.
+view undo_band() {
+    row(gap: .related, align: .center, wrap: true) {
+        ui.Text("Notifications cleared", role: .caption, secondary: true)
+        spacer
+        ui.Button("Undo", role: .secondary, size: .small) {
+            on press: device.undo_clear(device.notifications)
         }
     }
 }
@@ -113,9 +128,10 @@ view notice_group(sender: Text, notices: List<device.Notice>) {
     }
 }
 
-/// One notice: its title, what it says, its sender, its actions and the way to dismiss it. An
-/// unread one is lifted and bears a dot in the person's colour, toned by its kind, so a failure
-/// reads as one at a glance.
+/// One notice: its title, what it says, its sender, its actions, the way to hand it to the
+/// person's agent and the way to dismiss it. An unread one is lifted and bears a dot in the
+/// person's colour, toned by its kind, so a failure reads as one at a glance. Pressing it opens
+/// what it names.
 view notice_row(n: device.Notice) {
     ui.ListRow(n.title, secondary: n.body, meta: n.from, selected: not n.seen) {
         trailing: {
@@ -129,12 +145,22 @@ view notice_row(n: device.Notice) {
                 ui.Badge(dot: not n.seen)
             }
         }
+        on activate: device.open_notice(device.notifications, notification: n.number)
     }
     row(gap: .related, align: .center, wrap: true) {
         for a in n.actions {
-            ui.Button(a.label, size: .small) {
-                on press: device.act(device.notifications, notification: n.number, action: a.key)
+            if a.key != "inline-reply" {
+                ui.Button(a.label, size: .small) {
+                    on press: device.act(
+                        device.notifications,
+                        notification: n.number,
+                        action: a.key,
+                    )
+                }
             }
+        }
+        ui.Button("Hand to agent", icon: .sparkles, size: .small, role: .plain) {
+            on press: device.hand_to_agent(device.notifications, notification: n.number)
         }
         ui.Button("Dismiss", icon: .x, icon_only: true, size: .small, role: .plain) {
             on press: device.dismiss(device.notifications, notification: n.number)
@@ -142,31 +168,61 @@ view notice_row(n: device.Notice) {
     }
 }
 
-/// A banner: the newest notice, risen over the windows, with its first action and a dismiss. The
-/// session takes it away when it is dismissed or its sender closes it, and names the one it has
-/// up (`banner`), so the banner and the centre never disagree about what just arrived.
-/// What the person was told is held back while notifications are silenced.
-///
-/// A wide screen shows the toolkit's banner; a narrow one shows the notice as a row with its
-/// actions under it, so nothing is cut at any text size.
+/// The banners standing now, newest first, as many as fit, and a row that opens the centre when
+/// more wait behind them than show. What the person was told is held back while notifications are
+/// silenced.
 view banner() {
     let centre = device.notifications
-    if let n = centre.notices.find(n -> n.number == (centre.banner ?? -1)) {
-        if (centre.quiet ?? "") == "" {
-            if space.compact or space.width < 44.0 {
-                banner_row(n)
-            } else {
-                banner_full(n)
+    if (centre.quiet ?? "") == "" {
+        let ids = standing_banners(centre)
+        if not ids.is_empty() {
+            let shown = ids.take(3)
+            let more = ids.len() - shown.len()
+            stack(gap: .related) {
+                for id in shown {
+                    if let n = centre.notices.find(n -> n.number == id) {
+                        if space.compact or space.width < 44.0 {
+                            banner_row(n)
+                        } else {
+                            banner_full(n)
+                        }
+                    }
+                }
+                if more > 0 {
+                    ui.Button(
+                        if more == 1 {
+                            "1 more notification"
+                        } else { "{more} more notifications" },
+                        icon: .bell,
+                        size: .small,
+                        role: .plain,
+                    ) {
+                        on press: device.show_surface(device.overlays, surface: "centre")
+                    }
+                }
             }
         }
     }
 }
 
-/// A banner on a wide screen: the notice with its kind's tone, what sent it, its first
-/// action. Each part it has is the part it shows: a notice that says nothing puts no line under
-/// the title, and one with no sender names none above it.
+/// The ids of the banners standing now: the stack the session publishes, else the one banner an
+/// older session names.
+fn standing_banners(centre: device.Notifications) -> List<Int> {
+    if not centre.banners.is_empty() {
+        return centre.banners
+    }
+    if let one = centre.banner {
+        return [one]
+    }
+    return []
+}
+
+/// A banner on a wide screen: the notice with its kind's tone, what sent it, its actions and its
+/// reply. Each part it has is the part it shows: a notice that says nothing puts no line under the
+/// title, and one with no sender names none above it.
 view banner_full(n: device.Notice) {
     let actions = n.actions
+    let can_reply = actions.any(a -> a.key == "inline-reply")
     ui.Banner(
         n.title,
         message: if n.body != "" { n.body },
@@ -185,10 +241,14 @@ view banner_full(n: device.Notice) {
         )
         on dismiss: device.dismiss(device.notifications, notification: n.number)
     }
+    if can_reply {
+        reply_row(n)
+    }
 }
 
 /// A banner on a narrow screen: the notice as a row with what sent it, its actions under it.
 view banner_row(n: device.Notice) {
+    let can_reply = n.actions.any(a -> a.key == "inline-reply")
     stack(gap: .related) {
         ui.ListRow(
             n.title,
@@ -203,20 +263,44 @@ view banner_row(n: device.Notice) {
                     } else if n.kind == "warning" { .warning } else { .info },
                 )
             }
+            on activate: device.open_notice(device.notifications, notification: n.number)
         }
         row(gap: .related, wrap: true) {
             for a in n.actions {
-                ui.Button(a.label, size: .small) {
-                    on press: device.act(
-                        device.notifications,
-                        notification: n.number,
-                        action: a.key,
-                    )
+                if a.key != "inline-reply" {
+                    ui.Button(a.label, size: .small) {
+                        on press: device.act(
+                            device.notifications,
+                            notification: n.number,
+                            action: a.key,
+                        )
+                    }
                 }
             }
             ui.Button("Dismiss", icon: .x, icon_only: true, size: .small, role: .plain) {
                 on press: device.dismiss(device.notifications, notification: n.number)
             }
+        }
+        if can_reply {
+            reply_row(n)
+        }
+    }
+}
+
+/// The way to answer a banner that offers a reply: what the person types goes back to its sender,
+/// and the banner takes it there and goes.
+view reply_row(n: device.Notice) {
+    state draft: Text = ""
+    row(gap: .related, align: .center, wrap: true) {
+        ui.TextInput(bind: draft, placeholder: "Reply", fill)
+        ui.Button(
+            "Send",
+            role: .primary,
+            size: .small,
+            enabled: draft != "",
+            description: "Write a reply first",
+        ) {
+            on press: device.reply(device.notifications, notification: n.number, text: draft)
         }
     }
 }

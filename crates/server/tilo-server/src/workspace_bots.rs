@@ -262,6 +262,7 @@ pub async fn enabled(workspaces: &Workspaces, workspace: &str) -> Result<bool, S
 }
 
 pub mod discord;
+pub mod discord_voice;
 pub mod installed;
 pub mod membership;
 pub mod requested;

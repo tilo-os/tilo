@@ -1702,8 +1702,19 @@ impl Compositor {
         selection: Selection,
         mime: &str,
     ) -> Result<clipboard_history::Pull, Error> {
+        self.pull_selection_up_to(selection, mime, clipboard_history::MAX_COPY_BYTES)
+    }
+
+    /// [`Compositor::pull_selection`] held to `limit` bytes: what an app pastes of an image,
+    /// which is larger than a copy the history keeps.
+    pub fn pull_selection_up_to(
+        &mut self,
+        selection: Selection,
+        mime: &str,
+        limit: usize,
+    ) -> Result<clipboard_history::Pull, Error> {
         let reader = self.receive_selection(selection, mime)?;
-        clipboard_history::Pull::new(reader, mime).map_err(Error::Io)
+        clipboard_history::Pull::bounded(reader, mime, limit).map_err(Error::Io)
     }
 
     /// The executables of display tools the person trusts: their risky changes apply without asking
@@ -2206,6 +2217,15 @@ impl Compositor {
         (drew, layers)
     }
 
+    /// Whether a surface's draw handed to another thread is still to be shown.
+    fn surfaces_drawing(&self) -> bool {
+        self.data
+            .state
+            .surfaces
+            .iter()
+            .any(|surface| surface.layers().iter().any(|layer| layer.frame.unshown()))
+    }
+
     /// Draw a frame on every output that can take one and tell clients it was shown.
     pub fn render(&mut self) -> Result<(), Error> {
         self.sync_text_input();
@@ -2278,9 +2298,10 @@ impl Compositor {
                 Instant::now(),
                 Some(drawn),
             );
-        } else if !self.owes_frame() {
-            // Nothing was drawn and nothing is owed: no frame will answer this turn's input. A
-            // frame held for the display's next blank still answers it when it is drawn.
+        } else if !self.owes_frame() && !self.surfaces_drawing() {
+            // Nothing was drawn and nothing is on its way: no frame will answer this turn's input.
+            // A frame held for the display's next blank, or a surface's draw still on another
+            // thread, answers it when it is shown.
             self.recorder.settle_unpainted_input();
         }
         // The frame is on the output now, so the clients that drew it hear about it before anything
@@ -2375,11 +2396,8 @@ impl Compositor {
     /// # Errors
     /// The frame they drew could not be drawn.
     pub fn settle_surface_draws(&mut self) -> Result<(), Error> {
+        let drawing = self.surfaces_drawing();
         let state = &self.data.state;
-        let drawing = state
-            .surfaces
-            .iter()
-            .any(|surface| surface.layers().iter().any(|layer| layer.frame.unshown()));
         let owed = state
             .space
             .outputs()

@@ -13,11 +13,7 @@ use crate::{
     setup::portable_transfer::{ExportReview, ImportReview, Purpose},
 };
 use sha2::{Digest, Sha256};
-use std::{
-    collections::BTreeSet,
-    io::{Read, Write},
-    sync::atomic::AtomicBool,
-};
+use std::{collections::BTreeSet, io::Write, sync::atomic::AtomicBool};
 use tilo_files::native::atomic::{Privacy, StorageDirectory};
 use zeroize::Zeroizing;
 #[derive(Serialize, Deserialize)]
@@ -53,14 +49,7 @@ fn read(storage: &StorageDirectory, name: &str, bound: u64) -> io::Result<Vec<u8
     if file.metadata()?.len() > bound {
         return Err(invalid());
     }
-    let mut bytes = Vec::new();
-    (&mut file)
-        .take(bound.checked_add(1).ok_or_else(invalid)?)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > bound {
-        return Err(invalid());
-    }
-    Ok(bytes)
+    crate::record::read_bounded(&mut file, bound, invalid)
 }
 fn manifest(handle: &PreparedAccounts, binding: &str, group: [u8; 32]) -> io::Result<Manifest> {
     let store = Accounts::read(&handle.config_root()).map_err(|_| invalid())?;

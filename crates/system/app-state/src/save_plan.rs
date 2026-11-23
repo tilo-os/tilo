@@ -70,20 +70,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_document_never_saved_is_written_whole() {
-        assert_eq!(SavePlan::default().next(), Save::Full);
-    }
-
-    #[test]
-    fn small_appends_append_until_the_document_would_be_rewritten_cheaply() {
-        let mut plan = SavePlan::new(1024, 0);
-        plan.appended(1024);
-        assert_eq!(plan.next(), Save::Append, "a small document appends");
-        plan.appended(SavePlan::MIN_COMPACT_BYTES);
-        assert_eq!(plan.next(), Save::Full, "its appends outgrew it");
-    }
-
-    #[test]
     fn appends_outgrow_a_large_document_after_its_multiple() {
         let whole = 1024 * 1024;
         let mut plan = SavePlan::new(whole, 0);

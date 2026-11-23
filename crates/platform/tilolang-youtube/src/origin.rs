@@ -7,9 +7,10 @@
 //! asked for, writes the answer into the package's records as one change of the origin (through
 //! [`tilolang_runtime::Runtime::write_origin`]), and says what became of the effect.
 //!
-//! **What is kept.** A search's channels, playlists and videos; a channel's videos; the videos
-//! YouTube lists as trending; and where a video's bytes play from. Each is keyed by the
-//! service's own id, so asking again never shows the same channel or video twice.
+//! **What is kept.** A search's channels, playlists and videos; a channel's videos; a playlist's
+//! videos, with the order its maker put them in; the videos YouTube lists as trending; and where
+//! a video's bytes play from. Each is keyed by the service's own id, so asking again never shows
+//! the same channel or video twice.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
@@ -24,8 +25,8 @@ use tilolang_tilo::runtime::origin::OriginWrite;
 use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
 
 use crate::service::{
-    ChannelItem, ChannelPage, PlaylistItem, SearchPage, Service, ServiceError, TrendingPage,
-    VideoItem,
+    ChannelItem, ChannelPage, PlaylistItem, PlaylistPage, SearchPage, Service, ServiceError,
+    TrendingPage, VideoItem,
 };
 
 /// What the origin reads of each youtube kind it keeps in step, from the package's metadata.
@@ -47,6 +48,7 @@ struct Types {
 enum Pending {
     Search { query: String },
     Channel { key: String },
+    Playlist { key: String },
     Subscriptions { keys: Vec<String> },
     Trending,
     Stream { key: String },
@@ -56,6 +58,7 @@ enum Pending {
 enum Answered {
     Search(SearchPage),
     Channel(ChannelPage),
+    Playlist(PlaylistPage),
     Trending(TrendingPage),
     /// The newest videos of each channel asked for, in the order asked.
     Subscriptions(Vec<ChannelPage>),
@@ -165,6 +168,7 @@ impl YouTubeOrigin {
                 query: query.clone(),
             },
             Pending::Channel { key } => Pending::Channel { key: key.clone() },
+            Pending::Playlist { key } => Pending::Playlist { key: key.clone() },
             Pending::Subscriptions { keys } => Pending::Subscriptions { keys: keys.clone() },
             Pending::Trending => Pending::Trending,
             Pending::Stream { key } => Pending::Stream { key: key.clone() },
@@ -214,6 +218,7 @@ fn answer(service: &dyn Service, pending: &Pending) -> Result<Answered, ServiceE
     match pending {
         Pending::Search { query } => service.search(query).map(Answered::Search),
         Pending::Channel { key } => service.channel(key).map(Answered::Channel),
+        Pending::Playlist { key } => service.playlist(key).map(Answered::Playlist),
         Pending::Trending => service.trending().map(Answered::Trending),
         Pending::Stream { key } => service.stream(key).map(Answered::Stream),
         Pending::Subscriptions { keys } => {
@@ -309,6 +314,7 @@ impl Origin for YouTubeOrigin {
             capability,
             "youtube.search"
                 | "youtube.channel"
+                | "youtube.playlist"
                 | "youtube.subscriptions"
                 | "youtube.trending"
                 | "youtube.stream"
@@ -345,6 +351,9 @@ impl Origin for YouTubeOrigin {
                 query: payload.as_str().unwrap_or_default().to_owned(),
             },
             "youtube.channel" => Pending::Channel {
+                key: payload.as_str().unwrap_or_default().to_owned(),
+            },
+            "youtube.playlist" => Pending::Playlist {
                 key: payload.as_str().unwrap_or_default().to_owned(),
             },
             "youtube.trending" => Pending::Trending,
@@ -483,6 +492,7 @@ impl YouTubeOrigin {
                 Self::state_writes(t, pending, "done", "", &mut writes);
             }
             Ok(Answered::Channel(page)) => writes.extend(channel_writes(host, t, page)),
+            Ok(Answered::Playlist(page)) => writes.extend(playlist_writes(host, t, page)),
             Ok(Answered::Trending(page)) => writes.extend(trending_writes(host, t, page)),
             Ok(Answered::Subscriptions(pages)) => {
                 for page in pages {
@@ -515,7 +525,10 @@ impl YouTubeOrigin {
         let (what, why) = match pending {
             Pending::Search { .. } => ("search_state", "search_trouble"),
             Pending::Subscriptions { .. } => ("feed_state", "feed_trouble"),
-            Pending::Channel { .. } | Pending::Trending | Pending::Stream { .. } => return,
+            Pending::Channel { .. }
+            | Pending::Playlist { .. }
+            | Pending::Trending
+            | Pending::Stream { .. } => return,
         };
         let mut fields = Vec::new();
         put(&t.root_ty, &mut fields, what, Self::text(state));
@@ -634,6 +647,45 @@ fn channel_writes(host: &Host, t: &Types, page: &ChannelPage) -> Vec<OriginWrite
         &t.channels_field,
         "key",
         &[(page.channel.key.clone(), fields)],
+    );
+    let videos: Vec<(String, Vec<(String, Value)>)> = page
+        .videos
+        .iter()
+        .map(|v| (v.key.clone(), video_fields(&t.video, v, "")))
+        .collect();
+    writes.extend(upsert_writes(
+        host,
+        &t.video,
+        &t.root,
+        &t.videos_field,
+        "key",
+        &videos,
+    ));
+    writes
+}
+
+/// A playlist's page: the playlist, the keys of the videos it holds in its maker's order, and the
+/// videos themselves, which a page shows by following those keys.
+fn playlist_writes(host: &Host, t: &Types, page: &PlaylistPage) -> Vec<OriginWrite> {
+    let mut fields = playlist_fields(&t.playlist, &page.playlist, None);
+    put(
+        &t.playlist,
+        &mut fields,
+        "video_keys",
+        Value::List(
+            page.videos
+                .iter()
+                .map(|v| Value::text(v.key.as_str()))
+                .collect(),
+        ),
+    );
+    let mut writes = upsert_writes(
+        host,
+        &t.playlist,
+        &t.root,
+        &t.playlists_field,
+        "key",
+        &[(page.playlist.key.clone(), fields)],
     );
     let videos: Vec<(String, Vec<(String, Value)>)> = page
         .videos

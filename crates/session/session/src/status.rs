@@ -3,7 +3,7 @@
 //! a frame only copies what was read.
 
 use tilo_desktop::chrome::{LinkKind, LinkStatus, SystemStatus};
-use tilo_desktop_surface::now_playing::NowPlaying;
+use tilo_session_core::desktop::now_playing::NowPlaying;
 
 use crate::i18n::{t, t_args};
 use crate::platform::readings::{Handover, Machine, Reading};

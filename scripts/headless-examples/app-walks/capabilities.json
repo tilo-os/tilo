@@ -1,0 +1,312 @@
+{
+  "app": "capabilities",
+  "said": "Every capability the shell and the apps publish",
+  "live": "rust",
+  "apps": "code-editor word-processor chat settings sheets tasks file-explorer browser terminal pdf-viewer activity photos calendar",
+  "packages": [
+    "notes",
+    "tasks",
+    "chat",
+    "mail",
+    "tube",
+    "agent",
+    "today",
+    "board"
+  ],
+  "rust": {},
+  "tl": {
+    "session_args": [
+      "--shell",
+      "screen"
+    ]
+  },
+  "steps": [
+    {
+      "id": "signed-in",
+      "said": "Sign in: every capability the desktop and its installed apps publish before anything is open",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "catalogue": true
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "open-code-editor",
+      "said": "Open code-editor",
+      "ops": [
+        {
+          "open": {
+            "app": "code-editor",
+            "deadline": 30
+          }
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-word-processor",
+      "said": "Open word-processor",
+      "ops": [
+        {
+          "open": {
+            "app": "word-processor",
+            "deadline": 30
+          }
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-chat",
+      "said": "Open chat",
+      "ops": [
+        {
+          "open": {
+            "app": "chat",
+            "deadline": 30
+          }
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-settings",
+      "said": "Open settings",
+      "ops": [
+        {
+          "open": {
+            "app": "settings",
+            "deadline": 30
+          }
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-sheets",
+      "said": "Open sheets",
+      "ops": [
+        {
+          "open": {
+            "app": "sheets",
+            "deadline": 30
+          }
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-tasks",
+      "said": "Open tasks",
+      "ops": [
+        {
+          "open": {
+            "app": "tasks",
+            "deadline": 30
+          }
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-file-explorer",
+      "said": "Open file-explorer",
+      "ops": [
+        {
+          "open": {
+            "app": "file-explorer",
+            "deadline": 30
+          }
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-browser",
+      "said": "Open browser",
+      "ops": [
+        {
+          "open": {
+            "app": "browser",
+            "deadline": 30
+          }
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-terminal",
+      "said": "Open terminal",
+      "ops": [
+        {
+          "open": {
+            "app": "terminal",
+            "deadline": 30
+          }
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-pdf-viewer",
+      "said": "Open pdf-viewer",
+      "ops": [
+        {
+          "open": {
+            "app": "pdf-viewer",
+            "deadline": 30
+          }
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-activity",
+      "said": "Open activity",
+      "ops": [
+        {
+          "open": {
+            "app": "activity",
+            "deadline": 30
+          }
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-photos",
+      "said": "Open photos",
+      "ops": [
+        {
+          "open": {
+            "app": "photos",
+            "deadline": 30
+          }
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-calendar",
+      "said": "Open calendar",
+      "ops": [
+        {
+          "open": {
+            "app": "calendar",
+            "deadline": 30
+          }
+        }
+      ],
+      "shot": true
+    },
+    {
+      "id": "open-tl-notes",
+      "said": "Open the tilolang notes",
+      "ops": [
+        {
+          "open": {
+            "app": "so.tilo.notes",
+            "deadline": 30
+          }
+        }
+      ]
+    },
+    {
+      "id": "open-tl-tasks",
+      "said": "Open the tilolang tasks",
+      "ops": [
+        {
+          "open": {
+            "app": "so.tilo.lang.tasks",
+            "deadline": 30
+          }
+        }
+      ]
+    },
+    {
+      "id": "open-tl-chat",
+      "said": "Open the tilolang chat",
+      "ops": [
+        {
+          "open": {
+            "app": "so.tilo.chat",
+            "deadline": 30
+          }
+        }
+      ]
+    },
+    {
+      "id": "open-tl-mail",
+      "said": "Open the tilolang mail",
+      "ops": [
+        {
+          "open": {
+            "app": "so.tilo.mail",
+            "deadline": 30
+          }
+        }
+      ]
+    },
+    {
+      "id": "open-tl-tube",
+      "said": "Open the tilolang tube",
+      "ops": [
+        {
+          "open": {
+            "app": "so.tilo.tube",
+            "deadline": 30
+          }
+        }
+      ]
+    },
+    {
+      "id": "open-tl-agent",
+      "said": "Open the tilolang agent",
+      "ops": [
+        {
+          "open": {
+            "app": "so.tilo.agent",
+            "deadline": 30
+          }
+        }
+      ]
+    },
+    {
+      "id": "open-tl-today",
+      "said": "Open the tilolang today",
+      "ops": [
+        {
+          "open": {
+            "app": "so.tilo.lang.today",
+            "deadline": 30
+          }
+        }
+      ]
+    },
+    {
+      "id": "open-tl-board",
+      "said": "Open the tilolang board",
+      "ops": [
+        {
+          "open": {
+            "app": "so.tilo.lang.board",
+            "deadline": 30
+          }
+        }
+      ]
+    },
+    {
+      "id": "everything-open",
+      "said": "With every app open: every capability the shell and the apps publish",
+      "ops": [
+        {
+          "catalogue": true
+        }
+      ]
+    }
+  ]
+}

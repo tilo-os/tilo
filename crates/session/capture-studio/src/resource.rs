@@ -81,6 +81,39 @@ pub enum CaptureEffect {
     #[effect(kind = "outside")]
     #[effect(own_device, attended, icon = "history")]
     SaveReplay,
+    /// Annotate the last screenshot
+    ///
+    /// Opens the markup editor on the screenshot just taken, where the
+    /// person draws on it and keeps or sends the marked picture as the
+    /// screenshot itself. A stroke given here is drawn on it as a drag with
+    /// that tool is, so a shortcut, the palette or an agent marks the
+    /// picture a person does; `keep` saves it at once, as the editor's Save
+    /// does.
+    #[effect(kind = "outside")]
+    #[effect(own_device, attended, icon = "pencil")]
+    Annotate {
+        /// The shape to draw: `pen`, `highlighter`, `arrow`, `rectangle` or
+        /// `redact`. Nothing drawn without one.
+        #[param("The shape to draw: pen, highlighter, arrow, rectangle or redact")]
+        shape: Option<String>,
+        /// The ink, as `#rrggbb` in the picture's own pixels: the tool's own
+        /// colour without.
+        #[param("The ink, as #rrggbb (the tool's own colour without)")]
+        color: Option<String>,
+        /// The line's width in the picture's own pixels: the tool's own
+        /// without.
+        #[param("The line's width in the picture's pixels (the tool's own without)")]
+        width: Option<f32>,
+        /// The points it is drawn through, each `x,y` in the picture's own
+        /// pixels: one is a dot, two or more a line. A redaction spans its
+        /// first and last.
+        #[param("The points, each x,y in the picture's pixels")]
+        points: Option<Vec<String>>,
+        /// Whether to keep the marked picture now, rather than open the
+        /// editor for more marks.
+        #[param("Whether to keep the marked picture now, rather than open the editor")]
+        keep: Option<bool>,
+    },
 }
 
 /// The studio app: the capture bar over [`Capture`].
@@ -130,6 +163,13 @@ mod tests {
             CaptureEffect::PauseRecording,
             CaptureEffect::ResumeRecording,
             CaptureEffect::SaveReplay,
+            CaptureEffect::Annotate {
+                shape: None,
+                color: None,
+                width: None,
+                points: None,
+                keep: None,
+            },
         ]
         .iter()
         .map(Effect::id)
@@ -143,7 +183,8 @@ mod tests {
                 "stop-recording",
                 "pause-recording",
                 "resume-recording",
-                "save-replay"
+                "save-replay",
+                "annotate"
             ]
         );
     }

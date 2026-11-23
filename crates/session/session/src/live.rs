@@ -710,6 +710,8 @@ impl Shared {
             let epoch = keys.epoch();
             live_session.set_keys(keys);
             live_session.set_roster(roster);
+            let (rules, persons) = self.engine.call_gate(&workspace.to_string());
+            live_session.set_calls(rules, persons);
             self.stand(
                 workspace,
                 LiveState::Open {
@@ -757,6 +759,9 @@ impl Shared {
         tracing::debug!(%workspace, relay = %hex::encode(serving),
             local = serving == self.device, epoch,
             "the live session opened");
+        // What the workspace's calls allow: whose call media the live session opens and sends.
+        let (rules, persons) = self.engine.call_gate(&workspace.to_string());
+        live_session.set_calls(rules, persons);
         let open = LiveState::Open {
             relay: relayer(&devices, serving, self.device),
             epoch,

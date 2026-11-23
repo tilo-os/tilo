@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Two members of one workspace read the same mailbox in the tilolang Mail, and either answers from it.
 
-Ada's session hosts the workspace and Bo's joins it ([`two_people.joined`]); both open the tree's
-tilolang Mail, installed as a signed package. A message comes into the workspace's mailbox the way
-`tilo migrate` brings one in, through Mail's own `deliver_message` action on Ada's session. Both
-windows list it: the workspace keeps one mailbox, not one per person. Each of them then opens it
+Ada's session hosts the workspace and Bo's joins it ([`two_people.joined`]). Ada opens the tree's
+tilolang Mail, installed as a signed package, on the strip they share, and lets it reach the
+network; the window comes to Bo's shell as well, his own device running it with the grant Ada
+gave, so he is asked nothing. A message comes into the workspace's mailbox the way `tilo migrate`
+brings one in, through Mail's own `deliver_message` action on Ada's session, and opens no window
+of its own. Both windows list it: the workspace keeps one mailbox, not one per person. Each of them then opens it
 and presses Reply, and their composer answers the message's sender under "Re:" its subject.
 
     python3 scripts/headless-examples/mail-two-members-proof.py --out DIR [--build]
@@ -77,6 +79,38 @@ def title_of(session: Session) -> str:
     return windows[0].get("title") or ""
 
 
+def own_mail_window(session: Session) -> dict | None:
+    """The Mail window `session`'s own device runs and has mapped: not the tab of one that is
+    only held for it, or still waits on a question."""
+    return next((w for w in mail_windows(session)
+                 if w.get("window") is not None and w.get("rect")), None)
+
+
+def comes_to(session: Session, deadline: float = 180.0) -> dict:
+    """The Mail window another member opened on the shared strip, run by `session`'s own device.
+    The network grant it needs is the workspace's, so the device asks its person nothing: a
+    question it put up before the grant arrived is taken down once it does."""
+    try:
+        return until(f"{session.tag}'s own Mail window on the shared strip",
+                     lambda: own_mail_window(session), deadline, 0.25)
+    except Failed as failed:
+        state = session.state_dump()
+        raise Failed(f"{failed}; its Mail windows: {mail_windows(session)}; its overlays: "
+                     f"{state.get('chrome', {}).get('overlays')}; its notices: "
+                     f"{state.get('notifications')}; its questions: "
+                     f"{session.control({'op': 'questions'}).get('answer')}") from failed
+
+
+def one_window_each(sessions: dict[str, Session]) -> dict[str, int]:
+    """Each shell shows the one Mail window on the shared strip, and nothing a delivery opened."""
+    counts = {who: len(mail_windows(session)) for who, session in sessions.items()}
+    if any(count != 1 for count in counts.values()):
+        raise Failed(f"one delivery left these Mail windows: {counts}; "
+                     + "; ".join(f"{who}: {mail_windows(session)}"
+                                 for who, session in sessions.items()))
+    return counts
+
+
 def open_mail(session: Session, deadline: float = 180.0) -> dict:
     """Open the tilolang Mail through the desktop's own launcher. The app asks for the network it
     reaches its accounts' servers over, which the shell puts to the workspace's people: the window
@@ -88,6 +122,7 @@ def open_mail(session: Session, deadline: float = 180.0) -> dict:
         if window is not None:
             return window
         if any(target["name"] == "Allow" for target in targets_of(session)):
+            print(f"==> {session.tag} allows {MAIL} the network it names", file=sys.stderr)
             session.click_named("Allow")
         return None
 
@@ -219,14 +254,15 @@ def main() -> int:
         with joined(out, apps="", tapps=mail_tapp(out / "tapps"), names=("Ada", "Bo")) as (
                 ada, bo, workspace, _link):
             summary["workspace"] = workspace
-            # Ada lets the workspace's Mail reach the servers it names; the grant is the
-            # workspace's, so Bo opens it without a sheet of his own.
+            # Ada opens Mail on the strip they share and lets it reach the servers it names;
+            # the grant is the workspace's, so Bo's device runs the window without a sheet.
             open_mail(ada)
-            open_mail(bo)
+            comes_to(bo)
             no_error_notices({"Ada": ada, "Bo": bo})
             for session in (ada, bo):
                 shown(session, out, "opened")
             summary["delivered"] = deliver(ada)
+            summary["windows"] = one_window_each({"Ada": ada, "Bo": bo})
             # One mailbox for the workspace: the message reaches Bo's window too.
             summary["ada"] = list_it(ada, out)
             summary["bo"] = list_it(bo, out)

@@ -398,14 +398,15 @@ impl tilolang_tilo::runtime::NameHost for Names {
 }
 
 /// Every text `node` and the nodes inside it show.
-fn texts_of(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
-    out.extend(node.props.values().filter_map(|value| match value {
-        tilolang_runtime::Value::Text(text) => Some(text.clone()),
-        _ => None,
-    }));
-    for child in &node.children {
-        texts_of(child, out);
-    }
+fn texts_of(node: &tilolang_runtime::UiNode) -> Vec<String> {
+    crate::fixtures::nodes(node)
+        .into_iter()
+        .flat_map(|node| node.props.values())
+        .filter_map(|value| match value {
+            tilolang_runtime::Value::Text(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// What `replica` reads of `post` as a line: the post's `excerpt`, run as its person.
@@ -447,7 +448,7 @@ fn plain_paths(
 ) -> Vec<(&'static str, String)> {
     view.poll_patches().unwrap();
     let mut row = Vec::new();
-    texts_of(view.tree(), &mut row);
+    row.extend(texts_of(view.tree()));
     let hits = tilolang_tilo::search::every_hit(&replica.host);
     let found = hits
         .iter()

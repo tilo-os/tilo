@@ -91,6 +91,23 @@ fn open(service: &mut Service<Fake>, caller: Caller, kill_switch: bool) -> Respo
     response
 }
 
+/// A carrier with more than one socket and relay, so a plan and its kill
+/// switch are seen with both address families.
+fn rich_link(kill_switch: bool) -> crate::protocol::ClientLink {
+    crate::protocol::ClientLink {
+        routes: Routes::All,
+        kill_switch,
+        carrier: crate::protocol::Carrier {
+            udp_ports: vec![40_000, 40_001],
+            relays: vec![
+                "203.0.113.7".parse().unwrap(),
+                "2001:db8::7".parse().unwrap(),
+            ],
+        },
+        ..crate::protocol::tests::link()
+    }
+}
+
 tilo_test_env::scenario! {
     fn the_service_opens_guards_and_undoes_tunnels_for_their_owner;
 
@@ -133,6 +150,151 @@ tilo_test_env::scenario! {
         );
         assert!(!service.backend().interface_exists(CLIENT_INTERFACE));
         assert_eq!(service.backend().saved.last(), Some(&Record::default()));
+    }
+
+    phase every_plan_guards_only_its_owner_and_lets_through_only_what_it_names;
+    // The nftables a plan writes: the rules that keep one person's traffic
+    // theirs, the kill switch that holds the rest, the exit that forwards only
+    // its tunnel, and a profile block that lets through only what it names.
+    // What real traffic does under them is the namespaces check's.
+    {
+        let mut service = service();
+        let (_, fd) = service.handle(
+            PERSON,
+            Request::OpenClient {
+                link: rich_link(true),
+            },
+        );
+        assert!(fd.is_some());
+        let lines = service.backend().lines();
+        assert!(
+            lines
+                .iter()
+                .filter(|line| line.contains("rule add"))
+                .all(|line| line.contains("uidrange 1000-1000")),
+            "no rule reaches another person's traffic"
+        );
+        let script = service
+            .backend()
+            .commands
+            .iter()
+            .find_map(|command| command.input.clone())
+            .expect("an nft script");
+        for line in [
+            "meta skuid 1000 jump owner",
+            "oifname \"tilovpn0\" return",
+            "udp sport { 40000, 40001 } return",
+            "ip daddr { 203.0.113.7 } return",
+            "ip6 daddr { 2001:db8::7 } return",
+        ] {
+            assert!(script.contains(line), "missing {line}");
+        }
+        assert!(script.contains("ip daddr { 10.0.0.0/8"));
+        assert!(script.contains("ip6 daddr { fe80::/10"));
+        assert_eq!(
+            service.handle(PERSON, Request::CloseClient).0,
+            Response::Done
+        );
+
+        service.handle(
+            PERSON,
+            Request::OpenExit {
+                link: ExitLink { mtu: 1400 },
+            },
+        );
+        let script = service
+            .backend()
+            .commands
+            .iter()
+            .rev()
+            .find_map(|command| command.input.clone())
+            .expect("an exit script");
+        for line in [
+            "ip saddr 100.100.64.0/24 oifname != \"tiloexit0\" masquerade",
+            "iifname \"tiloexit0\" ip saddr != 100.100.64.0/24 drop",
+            "oifname \"tiloexit0\" ct state != { established, related } drop",
+            "iifname != \"tiloexit0\" oifname != \"tiloexit0\" drop",
+        ] {
+            assert!(script.contains(line), "missing {line}");
+        }
+        service.handle(PERSON, Request::CloseExit);
+
+        assert_eq!(hold(&mut service, PERSON, false), Response::Done);
+        let script = service
+            .backend()
+            .commands
+            .iter()
+            .rev()
+            .find_map(|command| command.input.clone())
+            .expect("a profile block script");
+        for allowed in [
+            "oifname \"lo\" return",
+            "meta oifkind { \"tun\", \"wireguard\", \"ppp\" } return",
+            "rt ipsec exists return",
+            "udp sport 68 udp dport 67 return",
+            "udp sport 546 udp dport 547 return",
+            "nd-neighbor-solicit",
+            "ip daddr { 198.51.100.7 } return",
+            "ip6 daddr { 2001:db8::7 } return",
+        ] {
+            assert!(script.contains(allowed), "missing {allowed}");
+        }
+        assert!(
+            script
+                .trim_end()
+                .ends_with("reject with icmpx admin-prohibited\n  }\n}"),
+            "what nothing let through is refused"
+        );
+        assert!(!script.contains("skuid"), "a block is not the kill switch");
+
+        hold(&mut service, PERSON, true);
+        let script = service
+            .backend()
+            .commands
+            .iter()
+            .rev()
+            .find_map(|command| command.input.clone())
+            .expect("a profile block script");
+        assert!(script.contains("ip daddr { 10.0.0.0/8"));
+        assert!(script.contains("ip6 daddr { fe80::/10"));
+        service.handle(PERSON, Request::ReleaseProfileBlock);
+
+        let before = service.backend().commands.len();
+        let (response, fd) = service.handle(
+            PERSON,
+            Request::OpenClient {
+                link: crate::protocol::ClientLink {
+                    routes: Routes::Networks {
+                        networks: vec![
+                            "192.168.1.0/24".parse().unwrap(),
+                            "10.20.0.0/16".parse().unwrap(),
+                        ],
+                    },
+                    ..crate::protocol::tests::link()
+                },
+            },
+        );
+        assert!(matches!(response, Response::Opened { .. }) && fd.is_some());
+        let routes: Vec<String> = service.backend().commands[before..]
+            .iter()
+            .map(|command| command.args.join(" "))
+            .collect();
+        assert!(
+            routes.contains(&"-4 route replace 192.168.1.0/24 dev tilovpn0 table 5270".to_owned())
+        );
+        assert!(
+            routes.contains(&"-4 route replace 10.20.0.0/16 dev tilovpn0 table 5270".to_owned())
+        );
+        assert!(
+            !routes.iter().any(|line| line.contains("default")),
+            "only the home networks are routed"
+        );
+        assert!(
+            !routes
+                .iter()
+                .any(|line| line.starts_with("-6 rule add priority 5263")),
+            "IPv6 is left alone"
+        );
     }
 
     phase another_person_cannot_touch_a_tunnel_while_its_owner_is_logged_in;
@@ -476,6 +638,123 @@ tilo_test_env::scenario! {
         assert_eq!(
             next.backend().lines(),
             ["delete table inet tilo_device_vpn_profile"]
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    fn the_socket_loop_answers_with_descriptors_and_stops_promptly;
+
+    phase requests_carry_descriptors_and_refuse_bad_callers_or_envelopes;
+    {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("control.sock");
+        let listener = tilo_files::native::socket::bind(&socket).unwrap();
+        let allow = Arc::new(Mutex::new(Ok(PERSON)));
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut service = service();
+
+        let thread = std::thread::spawn({
+            let allow = Arc::clone(&allow);
+            let stop = Arc::clone(&stop);
+            move || {
+                super::server::serve(
+                    &listener,
+                    &mut service,
+                    |_| allow.lock().unwrap().clone(),
+                    super::server::Pacing {
+                        // Far longer than the 500 ms poll ceiling so a stop
+                        // cannot hide behind a short housekeeping period.
+                        housekeeping: Duration::from_secs(10),
+                        idle_exit: None,
+                    },
+                    &stop,
+                );
+            }
+        });
+
+        let bound = tilo_test_env::hang_bound();
+        let (response, fd) = crate::protocol::call(
+            &socket,
+            &Request::OpenClient {
+                link: crate::protocol::tests::link(),
+            },
+            bound,
+        )
+        .unwrap();
+        assert!(matches!(response, Response::Opened { .. }));
+        assert!(fd.is_some(), "opening a tunnel returns its descriptor");
+
+        let (response, fd) = crate::protocol::call(&socket, &Request::CloseClient, bound).unwrap();
+        assert_eq!(response, Response::Done);
+        assert!(fd.is_none());
+
+        // Unauthorized caller is refused before sending a request byte. Because
+        // the server refuses without reading and closes, writing the request
+        // can race with the close and see a broken pipe; ignore the write
+        // result and read the refusal line directly.
+        *allow.lock().unwrap() = Err("not the seat shell".into());
+        {
+            let mut stream = tilo_files::native::socket::connect(&socket).unwrap();
+            stream.set_read_timeout(Some(bound)).unwrap();
+            stream.set_write_timeout(Some(bound)).unwrap();
+            let mut line = serde_json::to_vec(&crate::protocol::Envelope {
+                protocol: crate::protocol::PROTOCOL_VERSION,
+                request: Request::Status,
+            })
+            .unwrap();
+            line.push(b'\n');
+            let _ = stream.write_all(&line);
+            let (answer, fd) =
+                crate::fdpass::read_line_with_fd(&stream, crate::protocol::MAX_LINE_BYTES).unwrap();
+            let response: Response = serde_json::from_slice(&answer).unwrap();
+            assert_eq!(
+                response,
+                Response::Refused {
+                    reason: "not the seat shell".into()
+                }
+            );
+            assert!(fd.is_none());
+        }
+
+        // Wrong protocol version and malformed JSON are refused.
+        *allow.lock().unwrap() = Ok(PERSON);
+        for (raw, expected) in [
+            (
+                r#"{"protocol":99,"request":{"op":"status"}}"#,
+                "unsupported protocol version",
+            ),
+            ("{not json", "malformed request"),
+        ] {
+            let mut stream = tilo_files::native::socket::connect(&socket).unwrap();
+            stream.set_read_timeout(Some(bound)).unwrap();
+            stream.set_write_timeout(Some(bound)).unwrap();
+            stream.write_all(raw.as_bytes()).unwrap();
+            stream.write_all(b"\n").unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Response>(&line).unwrap(),
+                Response::Refused {
+                    reason: expected.into()
+                }
+            );
+        }
+
+        // Stopping must wake within the 500 ms poll ceiling rather than waiting
+        // out the 10 s housekeeping interval.
+        let stopping = Instant::now();
+        stop.store(true, Ordering::Release);
+        thread.join().unwrap();
+        assert!(
+            stopping.elapsed() < Duration::from_secs(2),
+            "server took {:?} to stop with a 10 s housekeeping interval",
+            stopping.elapsed()
         );
     }
 }

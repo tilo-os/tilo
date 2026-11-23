@@ -5,84 +5,15 @@
 use std::path::Path;
 
 use anyhow::Result;
-use serde_json::Value;
 
+use super::Stopped;
 use super::state::{Journal, Place, RunState};
-use super::workspace::{Answer, Call, Invocation, Status, Workspace};
-use super::{Lander, Stopped, thunderbird};
+use super::thunderbird;
+use super::workspace::{Call, Invocation, Status, Workspace};
 
-/// A workspace that keeps every action it is asked, and a server that keeps the person's mail
-/// accounts as the real one answers them.
-#[derive(Default)]
-struct Recorded {
-    actions: Vec<(String, String, Value)>,
-    /// Every account the person asked the server to add, as it was asked.
-    added: Vec<Value>,
-    /// The accounts the server keeps, as it lists them: never a password.
-    kept: Vec<Value>,
-    /// The server's refusal of every account added, in its words.
-    refuses: Option<String>,
-    /// The server answers an account added and then does not list it.
-    forgets: bool,
-}
+pub(super) mod test_env;
 
-impl Workspace for Recorded {
-    fn act(&mut self, run: &Invocation, action: &str, args: Value) -> Result<Answer> {
-        self.actions.push((run.id.clone(), action.to_owned(), args));
-        Ok(Answer::of(None))
-    }
-
-    fn ask(&mut self, action: &str, args: Value) -> Result<Answer> {
-        self.actions.push((String::new(), action.to_owned(), args));
-        Ok(Answer::of(None))
-    }
-
-    fn person(&mut self, path: &str, action: &str, args: Value) -> Result<Value> {
-        anyhow::ensure!(path == thunderbird::MAIL_ACCOUNTS, "asked {path}");
-        match action {
-            "list" => Ok(serde_json::json!({"accounts": self.kept})),
-            "add" => {
-                self.added.push(args.clone());
-                if let Some(why) = &self.refuses {
-                    return Err(super::workspace::Refused::coded("refused", why.clone()).into());
-                }
-                let account = serde_json::json!({
-                    "id": args["address"], "address": args["address"],
-                    "displayName": args["displayName"],
-                    "incomingHost": args["incomingHost"], "incomingPort": args["incomingPort"],
-                    "outgoingHost": args["outgoingHost"], "outgoingPort": args["outgoingPort"],
-                    "hasSecret": args.get("password").is_some(),
-                });
-                if !self.forgets {
-                    self.kept.push(account.clone());
-                }
-                Ok(account)
-            }
-            other => anyhow::bail!("no workspace/mail-accounts#{other}"),
-        }
-    }
-
-    fn put(&mut self, bytes: &[u8]) -> Result<String> {
-        Ok(format!("tilo.content:{}", blake3::hash(bytes).to_hex()))
-    }
-}
-
-impl Recorded {
-    fn of(&self, action: &str) -> Vec<&Value> {
-        self.actions
-            .iter()
-            .filter(|(_, name, _)| name == action)
-            .map(|(_, _, args)| args)
-            .collect()
-    }
-}
-
-/// What the person was told and asked during a migration.
-#[derive(Default)]
-struct Told {
-    lines: Vec<String>,
-    asked: Vec<String>,
-}
+use self::test_env::{Recorded, Told, land_as};
 
 fn run_once(home: &Path, place: &Place, workspace: &mut dyn Workspace) -> Result<Journal> {
     migrate_saying(home, place, workspace, true, &mut Told::default())
@@ -97,43 +28,19 @@ fn migrate_saying(
     told: &mut Told,
 ) -> Result<Journal> {
     let review = place.review(thunderbird::SOURCE)?.expect("reviewed");
-    let mut journal = place.journal(thunderbird::SOURCE)?;
-    journal.brought.clear();
-    journal.already_there = 0;
-    let run = Invocation {
+    told.yes = yes;
+    let invocation = Invocation {
         id: "run-1".into(),
         title: thunderbird::summary(&review),
     };
-    let lines = std::cell::RefCell::new(Vec::new());
-    let asked = std::cell::RefCell::new(Vec::new());
-    let mut progress = |line: &str| lines.borrow_mut().push(line.to_owned());
-    let mut confirm = |question: &str| {
-        asked.borrow_mut().push(question.to_owned());
-        Ok(yes)
-    };
-    let result = {
-        let mut lander = Lander {
-            workspace,
-            opened: std::collections::BTreeSet::new(),
-            landing_in: None,
-            invocation: &run,
-            journal: &mut journal,
-            place,
-            source: thunderbird::SOURCE,
-            progress: &mut progress,
-            confirm: &mut confirm,
-        };
-        thunderbird::land(home, &review, &mut lander)
-    };
-    told.lines.extend(lines.into_inner());
-    told.asked.extend(asked.into_inner());
-    journal.state = match &result {
-        Ok(()) => RunState::Complete,
-        Err(error) if error.is::<Stopped>() => RunState::Stopped,
-        Err(_) => RunState::Failed,
-    };
-    place.keep_journal(thunderbird::SOURCE, &journal)?;
-    result.map(|()| journal)
+    land_as(
+        place,
+        thunderbird::SOURCE,
+        &invocation,
+        workspace,
+        told,
+        |lander| thunderbird::land(home, &review, lander),
+    )
 }
 
 /// The sample profile, reviewed, and where a run keeps its state.
@@ -485,13 +392,6 @@ fn a_runs_change_in_effect_is_found_by_the_id_history_keeps() {
 }
 
 #[test]
-fn a_run_counts_one_thing_in_the_singular() {
-    assert_eq!(super::services::counted(1, "issues"), "1 issue");
-    assert_eq!(super::services::counted(3, "issues"), "3 issues");
-    assert_eq!(super::services::counted(0, "messages"), "0 messages");
-}
-
-#[test]
 fn a_step_that_waits_for_its_person_answers_pending_not_failed() {
     let pending = Call::of(&serde_json::json!({
         "status": "pending", "invocation_id": "9c19",
@@ -619,6 +519,9 @@ fn a_review_names_what_it_could_not_read() {
 
 #[test]
 fn the_terminal_counts_one_thing_in_the_singular() {
+    assert_eq!(super::services::counted(1, "issues"), "1 issue");
+    assert_eq!(super::services::counted(3, "issues"), "3 issues");
+    assert_eq!(super::services::counted(0, "messages"), "0 messages");
     let one = super::sentences(&serde_json::json!({
         "source": "thunderbird", "state": "complete", "brought": {"accounts": 1, "contacts": 2},
     }));

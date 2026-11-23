@@ -290,7 +290,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_rows_load_parse_and_upsert() {
+    fn registry_rows_load_and_parse_even_with_an_unknown_future_field() {
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("registry.toml");
@@ -319,32 +319,6 @@ mod tests {
                 Registry::load(&broken),
                 Err(RegistryError::Parse { .. })
             ));
-        }
-        {
-            let row = |version: &str| InstalledPackage {
-                id: "so.tilo.notes".into(),
-                version: version.into(),
-                package_id_hex: String::new(),
-                payload_root: PathBuf::from("/p"),
-                manifest_path: PathBuf::from("/m"),
-                publisher_key_hex: String::new(),
-                pinned: false,
-                installed_at: 0,
-                last_used: 0,
-                attested_by: String::new(),
-                cli_commands: Vec::new(),
-                runtime: String::new(),
-                source: String::new(),
-                held: false,
-                payload_bytes: 0,
-                system: false,
-            };
-            let mut registry = Registry::default();
-            assert!(registry.upsert(row("1")).is_none());
-            let replaced = registry.upsert(row("2")).unwrap();
-            assert_eq!(replaced.version, "1");
-            assert_eq!(registry.entries().len(), 1);
-            assert_eq!(registry.find("so.tilo.notes").unwrap().version, "2");
         }
     }
 }

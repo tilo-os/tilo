@@ -578,15 +578,15 @@ grep -Fqx 'ListenStream=%t/tilo/services/ush.sock' "$ush_socket"
 grep -Fqx 'Service=tilo-ush.service' "$ush_socket"
 grep -Fqx 'SocketMode=0600' "$ush_socket"
 grep -Fqx 'Backlog=16' "$ush_socket"
-grep -Fqx 'ProtectHostname=private' "$ush_service"
 grep -Fqx 'Environment=TILO_USH_BIN=/usr/libexec/tilo-ush' "$ush_service"
 grep -Fqx 'PartOf=tilo-graphical-session.target' "$ush_service"
-if grep -Fqx 'ProtectHostname=yes' "$ush_service"; then
-  fail 'ush supervisor denies Bubblewrap the nested guest hostname'
-fi
-for incompatible in ProtectKernelTunables ProtectKernelModules ProtectKernelLogs; do
-  if grep -Eq "^${incompatible}=(yes|true|1)$" "$ush_service"; then
-    fail "ush supervisor blocks nested guest mounts with $incompatible"
+# A user manager gives a unit with any of these a user namespace of its own, where
+# the root-owned device key reads as owned by 65534 and is refused.
+for namespaced in PrivateTmp PrivateIPC PrivateUsers ProtectHostname ProtectClock \
+                  ProtectControlGroups ProtectKernelTunables ProtectKernelModules \
+                  ProtectKernelLogs ProtectSystem ProtectHome ReadWritePaths; do
+  if grep -Eq "^${namespaced}=" "$ush_service"; then
+    fail "ush supervisor runs in a user namespace of its own with $namespaced"
   fi
 done
 grep -Fqx 'PartOf=tilo-graphical-session.target' "$ush_socket"

@@ -1042,6 +1042,17 @@ impl Workspaces {
         mut command: tilo_resource_store::wire::Command,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
         let workspace = context.workspace_id();
+        if let tilo_resource_store::wire::Command::Turn {
+            address,
+            inputs,
+            answer,
+        } = command
+        {
+            return self
+                .once_turn(workspace, context.app_id(), address, inputs, answer)
+                .await
+                .map(tilo_resource_store::wire::Reply::Turn);
+        }
         let device = self.member_identity()?;
         let writing = command.writes();
         if writing {
@@ -1075,6 +1086,47 @@ impl Workspaces {
         let governed = state.lock_owned().await;
         self.write_resources(governed, device, context.app_id(), command)
             .await
+    }
+
+    /// Whether this device runs `app`'s action `address` on `inputs`, which runs once in
+    /// `workspace` ([`crate::work::Turn::Once`]); with `done`, keep that it ran and let the turn
+    /// go. Asking again while this device runs it renews its claim.
+    #[cfg(feature = "apps")]
+    async fn once_turn(
+        &self,
+        workspace: &str,
+        app: &str,
+        address: String,
+        inputs: serde_json::Value,
+        answer: Option<serde_json::Value>,
+    ) -> Result<tilo_resource_store::wire::Turn, String> {
+        use crate::work::{NotTaken, Turn};
+        use tilo_resource_store::wire::Turn as Answer;
+        if address.split_once('/').map(|(of, _)| of) != Some(app) {
+            return Err(format!(
+                "{app} runs only its own actions once, not {address}"
+            ));
+        }
+        let turn = Turn::Once { address, inputs };
+        if let Some(answer) = answer {
+            crate::work::keep_done(self, workspace, &turn, answer).await?;
+            self.write_lease(workspace, &turn.lease(), 0).await?;
+            let kept = crate::work::turn_done(self, workspace, &turn).await;
+            return Ok(Answer::Done(kept.unwrap_or_default()));
+        }
+        Ok(
+            match crate::work::takes_turn(self, workspace, &turn).await {
+                Ok(_claim) => Answer::Take,
+                Err(NotTaken::Done(answer)) => Answer::Done(answer),
+                Err(NotTaken::Ineligible(why)) => {
+                    tracing::debug!(%workspace, lease = %turn.lease(), %why, "a once-only action waits for a device that may run it");
+                    Answer::Later
+                }
+                Err(NotTaken::TakenBy(_) | NotTaken::Waiting { .. } | NotTaken::Unwritten(_)) => {
+                    Answer::Later
+                }
+            },
+        )
     }
 
     /// Carry out the write `command` of `app` on the workspace `governed` holds, as `device`,
@@ -1355,7 +1407,8 @@ fn stamp_resource_invoker(
         | Command::Position { .. }
         | Command::PageAt { .. }
         | Command::Contents { .. }
-        | Command::Fields { .. } => {}
+        | Command::Fields { .. }
+        | Command::Turn { .. } => {}
     }
 }
 

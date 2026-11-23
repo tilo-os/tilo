@@ -3,7 +3,6 @@ app so.tilo.lang.tasks "Tasks" (
     category: .office,
     tagline: "Issues of the workspace, on a list and a board",
     keywords: ["tasks", "issues", "issue tracker", "kanban", "board", "to-do", "todo", "tickets", "projects", "agent tasks"],
-    previously: so.tilo.lang.todo,
 )
 
 use so.tilo.lang.discussion as discussion

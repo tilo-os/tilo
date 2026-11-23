@@ -3,8 +3,12 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+//! The content store as its callers drive it: a workspace keeping what people import, a store
+//! that refuses, repairs and collects, and sealed content shared between members' devices.
+
 use super::*;
 use std::io::Read;
+use std::time::{Duration, SystemTime};
 
 const TINY_PNG: &[u8] = &[
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
@@ -14,6 +18,9 @@ const TINY_PNG: &[u8] = &[
     0x42, 0x60, 0x82,
 ];
 
+const WORKSPACE: &str = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+const OTHER_WORKSPACE: &str = "00000000-0000-4000-8000-000000000000";
+
 fn limits(item: usize, total: usize, entries: usize) -> ContentLimits {
     ContentLimits {
         max_item_bytes: item,
@@ -21,249 +28,6 @@ fn limits(item: usize, total: usize, entries: usize) -> ContentLimits {
         max_entries: entries,
         max_scan_entries: 64,
     }
-}
-
-#[test]
-fn png_dimensions_come_from_the_header() {
-    let m = sniff(TINY_PNG);
-    assert_eq!(m.mime, "image/png");
-    assert_eq!((m.w, m.h), (1, 1));
-    assert_eq!(m.len, TINY_PNG.len() as u64);
-}
-
-#[test]
-fn unknown_content_still_reports_its_length() {
-    let m = sniff(b"not an image at all");
-    assert_eq!(m.mime, "");
-    assert_eq!((m.w, m.h), (0, 0));
-    assert_eq!(m.len, 19, "length is knowable even when the format is not");
-}
-
-#[test]
-fn image_format_reads_the_signature_alone() {
-    let format = |bytes: &[u8]| image_format(bytes).map(|format| format.extension);
-    assert_eq!(format(b"\x89PNG\r\n\x1a\n"), Some("png"));
-    assert_eq!(format(&[0xff, 0xd8, 0xff, 0xe0]), Some("jpg"));
-    assert_eq!(format(b"GIF89a"), Some("gif"));
-    assert_eq!(format(b"RIFFxxxxWEBP"), Some("webp"));
-    assert_eq!(format(b"  <svg xmlns=\"\"/>"), Some("svg"));
-    assert_eq!(format(b"<?xml version=\"1.0\"?><svg/>"), Some("svg"));
-    assert_eq!(format(b"<?xml version=\"1.0\"?><html/>"), None);
-    assert_eq!(format(b"not an image"), None);
-}
-
-#[test]
-fn memory_and_directory_stores_round_trip_by_address() {
-    let dir = tempfile::tempdir().unwrap();
-    for store in [ContentStore::memory(), ContentStore::in_dir(dir.path())] {
-        let hash = store.put(TINY_PNG).unwrap();
-        assert_eq!(hash, hash_bytes(TINY_PNG));
-        assert_eq!(store.read(&hash).as_deref(), Some(TINY_PNG));
-        assert!(store.has(&hash));
-        assert_eq!(store.state(&hash), ContentState::Resolved);
-        let missing = hash_bytes(b"never stored");
-        assert_eq!(store.read(&missing), None);
-        assert_eq!(store.state(&missing), ContentState::Unavailable);
-        assert_eq!(store.put(TINY_PNG).unwrap(), hash);
-    }
-}
-
-#[test]
-fn a_store_is_a_handle_not_a_process_global() {
-    let a = ContentStore::memory();
-    let b = ContentStore::memory();
-    let hash = a.put(b"only in a").unwrap();
-    let clone = a.clone();
-    drop(a);
-    assert!(clone.has(&hash), "clones share one store");
-    assert!(!b.has(&hash), "separate stores share nothing");
-}
-
-#[test]
-fn many_items_are_kept_together_and_answer_in_order() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = ContentStore::in_dir(dir.path().join("plain"));
-    let items: Vec<Vec<u8>> = (0..40).map(|n| format!("item {n}").into_bytes()).collect();
-    let refs: Vec<&[u8]> = items.iter().map(Vec::as_slice).collect();
-    let kept = store.put_public_many(&refs);
-    assert_eq!(kept.len(), items.len(), "one answer for each item");
-    for (item, kept) in items.iter().zip(&kept) {
-        let kept = kept.as_ref().expect("the item is kept");
-        assert_eq!(store.read(kept), Some(item.clone()), "the bytes come back");
-    }
-    // The same set again is a no-op that answers the same addresses.
-    let again = store.put_public_many(&refs);
-    assert_eq!(again.len(), refs.len());
-    assert!(again.iter().all(Result::is_ok));
-
-    // A workspace's store keeps a batch through its wrapper.
-    let stores =
-        WorkspaceStores::in_dir(dir.path().join("workspaces"), limits(1024, 16 * 1024, 64));
-    let workspace = stores.get("6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b").unwrap();
-    let kept = workspace.put_public_many(&refs);
-    assert!(kept.iter().all(Result::is_ok), "the wrapper keeps a batch");
-    let first = kept.first().and_then(|kept| kept.as_ref().ok());
-    assert_eq!(
-        first.and_then(|hash| workspace.read(hash)),
-        items.first().cloned(),
-        "the first item reads back"
-    );
-}
-#[test]
-fn directory_writes_and_reads_stream() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = ContentStore::in_dir(dir.path());
-    let big: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
-    let stored = store
-        .put_reader(&mut big.as_slice(), "application/octet-stream")
-        .unwrap();
-    assert_eq!(stored.hash, hash_bytes(&big));
-    assert_eq!(stored.len, big.len() as u64);
-    let mut reader = store.open(&stored.hash).unwrap();
-    let mut back = Vec::new();
-    reader.read_to_end(&mut back).unwrap();
-    assert_eq!(back, big);
-}
-
-#[test]
-fn directory_store_rejects_traversal_and_malformed_addresses() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = ContentStore::in_dir(dir.path());
-    assert!(store.read("../../etc/passwd").is_none());
-    assert!(!store.has("../escape"));
-}
-
-#[test]
-fn corrupt_content_is_never_observable() {
-    let dir = tempfile::tempdir().unwrap();
-    let hash = hash_bytes(b"good");
-    let shard = dir.path().join(&hash[..2]);
-    std::fs::create_dir_all(&shard).unwrap();
-    std::fs::write(shard.join(&hash), b"corrupt").unwrap();
-    std::fs::write(dir.path().join(".incoming-dead-0"), b"partial").unwrap();
-    let store = ContentStore::new(DirBackend::with_limits(dir.path(), limits(8, 16, 4)));
-    assert!(store.read(&hash).is_none(), "a verifying read refuses it");
-    assert!(!store.has(&hash));
-    let mut reader = store.open(&hash).unwrap();
-    let mut sink = Vec::new();
-    assert_eq!(
-        reader.read_to_end(&mut sink).unwrap_err().kind(),
-        std::io::ErrorKind::InvalidData,
-        "a streaming read fails at the end"
-    );
-    assert_eq!(store.put(b"good").unwrap(), hash);
-    assert_eq!(store.read(&hash).as_deref(), Some(b"good".as_slice()));
-}
-
-#[test]
-fn quotas_hold_across_restarts_and_refuse_without_evicting() {
-    let dir = tempfile::tempdir().unwrap();
-    let l = limits(4, 6, 4);
-    {
-        let s = ContentStore::new(DirBackend::with_limits(dir.path(), l));
-        s.put(b"abc").unwrap();
-        s.put(b"de").unwrap();
-    }
-    let s = ContentStore::new(DirBackend::with_limits(dir.path(), l));
-    assert_eq!(
-        s.put(b"fgh"),
-        Err(ContentError::TotalQuotaExceeded {
-            attempted: 8,
-            limit: 6
-        })
-    );
-    assert_eq!(
-        s.put(b"12345"),
-        Err(ContentError::ItemTooLarge {
-            actual: 5,
-            limit: 4
-        })
-    );
-    assert!(s.has(&hash_bytes(b"abc")), "a refusal evicts nothing");
-    let memory = ContentStore::new(MemoryBackend::new(limits(4, 6, 2)));
-    memory.put(b"abc").unwrap();
-    memory.put(b"de").unwrap();
-    assert_eq!(
-        memory.put(b"x"),
-        Err(ContentError::EntryLimitExceeded { limit: 2 })
-    );
-}
-
-#[test]
-fn collection_removes_exactly_what_the_live_set_omits() {
-    let dir = tempfile::tempdir().unwrap();
-    for store in [ContentStore::memory(), ContentStore::in_dir(dir.path())] {
-        let keep = store.put(b"kept").unwrap();
-        let a = store.put(b"a").unwrap();
-        let b = store.put(b"b").unwrap();
-        let collected = store
-            .collect_unreferenced(&BTreeSet::from([keep.clone()]))
-            .unwrap();
-        let mut expected = vec![a.clone(), b.clone()];
-        expected.sort();
-        assert_eq!(collected.hashes, expected);
-        assert_eq!(collected.bytes, 2);
-        assert!(store.has(&keep));
-        assert!(!store.has(&a) && !store.has(&b));
-    }
-}
-
-#[test]
-fn concurrent_writers_on_one_root_cannot_race_past_the_quota() {
-    let dir = tempfile::tempdir().unwrap();
-    let l = limits(4, 6, 4);
-    let first = ContentStore::new(DirBackend::with_limits(dir.path(), l));
-    let second = ContentStore::new(DirBackend::with_limits(dir.path(), l));
-    let barrier = std::sync::Barrier::new(2);
-    let (one, two) = std::thread::scope(|scope| {
-        let a = scope.spawn(|| {
-            barrier.wait();
-            first.put(b"abcd")
-        });
-        let b = scope.spawn(|| {
-            barrier.wait();
-            second.put(b"efgh")
-        });
-        (a.join().unwrap(), b.join().unwrap())
-    });
-    assert_eq!(usize::from(one.is_ok()) + usize::from(two.is_ok()), 1);
-}
-
-#[test]
-fn an_earlier_layout_still_reads() {
-    let old = tempfile::tempdir().unwrap();
-    let new = tempfile::tempdir().unwrap();
-    ContentStore::in_dir(old.path()).put(TINY_PNG).unwrap();
-    let store = ContentStore::new(DirBackend::new(new.path()).reading_also(old.path()));
-    assert_eq!(store.read(&hash_bytes(TINY_PNG)).as_deref(), Some(TINY_PNG));
-}
-
-#[test]
-fn the_shared_session_directory_wins() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().to_path_buf();
-    let store = ContentStore::for_app_with(&|name| {
-        (name == SHARED_STORE_ENV).then(|| path.clone().into_os_string())
-    });
-    let hash = store.put(b"shared").unwrap();
-    assert_eq!(
-        ContentStore::in_dir(dir.path()).read(&hash).as_deref(),
-        Some(b"shared".as_slice())
-    );
-}
-
-#[test]
-fn inputs_dedupe_and_persist_into_a_store() {
-    let mut inputs = ContentInputs::new();
-    let a = inputs.add(TINY_PNG.to_vec());
-    assert_eq!(inputs.add(TINY_PNG), a);
-    assert_eq!(inputs.len(), 1);
-    assert_eq!(inputs.content(&a).as_deref(), Some(TINY_PNG));
-    let store = ContentStore::memory();
-    store.put_inputs(&inputs).unwrap();
-    assert!(store.has(&a));
-    let chain = (NoContent, &store);
-    assert_eq!(chain.content(&a).as_deref(), Some(TINY_PNG));
 }
 
 fn probed(backend: DirBackend) -> (ContentStore, Arc<DirBackend>) {
@@ -279,166 +43,6 @@ fn item_path(root: &std::path::Path, hash: &str) -> std::path::PathBuf {
     root.join(&hash[..2]).join(hash)
 }
 
-#[test]
-fn has_does_not_rehash_a_verified_item() {
-    let dir = tempfile::tempdir().unwrap();
-    let big: Vec<u8> = (0..300_000u32).map(|i| (i % 253) as u8).collect();
-    let (store, backend) = probed(DirBackend::new(dir.path()));
-    let hash = store.put(&big).unwrap();
-    for _ in 0..1000 {
-        assert!(store.has(&hash));
-        assert_eq!(store.state(&hash), ContentState::Resolved);
-    }
-    assert_eq!(
-        count(&backend.probes().verifications),
-        0,
-        "the writer hashed the item as it streamed in"
-    );
-    // Another backend on the same root has hashed nothing yet: once, then never again.
-    let (other, other_backend) = probed(DirBackend::new(dir.path()));
-    for _ in 0..1000 {
-        assert!(other.has(&hash));
-    }
-    assert_eq!(count(&other_backend.probes().verifications), 1);
-    // A repeated put of the same content is idempotent without reading the item again either.
-    assert_eq!(other.put(&big).unwrap(), hash);
-    assert_eq!(count(&other_backend.probes().verifications), 1);
-}
-
-#[test]
-fn has_reverifies_after_external_modification() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = ContentStore::in_dir(dir.path());
-    let hash = store.put(b"original").unwrap();
-    assert!(store.has(&hash));
-    let path = item_path(dir.path(), &hash);
-    let before = std::fs::metadata(&path).unwrap().modified().unwrap();
-    // Same length, different bytes, rewritten in place (same inode), with a later mtime.
-    std::fs::write(&path, b"tampered").unwrap();
-    std::fs::File::options()
-        .write(true)
-        .open(&path)
-        .unwrap()
-        .set_modified(
-            before
-                .checked_add(std::time::Duration::from_secs(1))
-                .unwrap(),
-        )
-        .unwrap();
-    assert!(!store.has(&hash), "a changed file is verified again");
-    assert_eq!(store.state(&hash), ContentState::Unavailable);
-    assert!(store.read(&hash).is_none());
-    // Replaced by another file holding the right bytes: verified again, and intact.
-    let replacement = dir.path().join("replacement");
-    std::fs::write(&replacement, b"original").unwrap();
-    std::fs::rename(&replacement, &path).unwrap();
-    assert!(store.has(&hash));
-}
-
-#[test]
-fn new_put_does_not_rescan_when_generation_unchanged() {
-    let dir = tempfile::tempdir().unwrap();
-    let (first, first_backend) = probed(DirBackend::new(dir.path()));
-    first.put(b"one").unwrap();
-    first.put(b"two").unwrap();
-    first.put(b"three").unwrap();
-    assert_eq!(
-        count(&first_backend.probes().scans),
-        1,
-        "only the cold start scans the store"
-    );
-    let (second, second_backend) = probed(DirBackend::new(dir.path()));
-    second.put(b"four").unwrap();
-    assert_eq!(count(&second_backend.probes().scans), 1);
-    first.put(b"five").unwrap();
-    assert_eq!(
-        count(&first_backend.probes().scans),
-        2,
-        "another writer's put makes the kept index stale"
-    );
-    first.put(b"six").unwrap();
-    assert_eq!(count(&first_backend.probes().scans), 2);
-}
-
-#[test]
-fn a_kept_index_still_counts_every_writer() {
-    let dir = tempfile::tempdir().unwrap();
-    // "one" + "two" + "three" = 11 bytes; room for one more byte.
-    let l = limits(8, 12, 64);
-    let (first, _) = probed(DirBackend::with_limits(dir.path(), l));
-    let (second, second_backend) = probed(DirBackend::with_limits(dir.path(), l));
-    first.put(b"one").unwrap();
-    second.put(b"two").unwrap();
-    first.put(b"three").unwrap();
-    first.put(b"4").unwrap();
-    assert_eq!(
-        second.put(b"5"),
-        Err(ContentError::TotalQuotaExceeded {
-            attempted: 13,
-            limit: 12
-        }),
-        "the second backend's kept total misses the first's later writes"
-    );
-    assert_eq!(count(&second_backend.probes().scans), 2);
-}
-
-#[test]
-fn index_recovers_from_external_deletion_before_refusing() {
-    let dir = tempfile::tempdir().unwrap();
-    let (store, backend) = probed(DirBackend::with_limits(dir.path(), limits(4, 6, 4)));
-    let abc = store.put(b"abc").unwrap();
-    store.put(b"de").unwrap();
-    assert_eq!(count(&backend.probes().scans), 1);
-    std::fs::remove_file(item_path(dir.path(), &abc)).unwrap();
-    assert_eq!(store.put(b"fgh"), Ok(hash_bytes(b"fgh")));
-    assert_eq!(
-        count(&backend.probes().scans),
-        2,
-        "the over-counting index was rescanned before refusing"
-    );
-    // A real refusal still refuses, against the store's true total.
-    assert_eq!(
-        store.put(b"ij"),
-        Err(ContentError::TotalQuotaExceeded {
-            attempted: 7,
-            limit: 6
-        })
-    );
-}
-
-#[test]
-fn durable_publish_syncs_the_directory_and_regenerable_does_not() {
-    let dir = tempfile::tempdir().unwrap();
-    let (store, backend) = probed(DirBackend::new(dir.path()));
-    store.put(b"first").unwrap();
-    assert!(
-        count(&backend.probes().dir_syncs) > 0,
-        "durable content syncs the directory that gained it"
-    );
-    let (dirs, files) = (
-        count(&backend.probes().dir_syncs),
-        count(&backend.probes().file_syncs),
-    );
-    assert!(files > 0, "durable content syncs what it gained");
-    store.put(b"first").unwrap();
-    assert_eq!(
-        (
-            count(&backend.probes().dir_syncs),
-            count(&backend.probes().file_syncs)
-        ),
-        (dirs, files),
-        "content already kept is put again without waiting on the disk"
-    );
-    let cache = tempfile::tempdir().unwrap();
-    let (store, backend) = probed(DirBackend::new(cache.path()).regenerable());
-    store.put(b"first").unwrap();
-    assert_eq!(
-        count(&backend.probes().dir_syncs),
-        0,
-        "regenerable content does not pay for a sync"
-    );
-}
-
 fn files_under(root: &std::path::Path) -> Vec<Vec<u8>> {
     let mut found = Vec::new();
     for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
@@ -452,152 +56,21 @@ fn files_under(root: &std::path::Path) -> Vec<Vec<u8>> {
     found
 }
 
-#[test]
-fn a_sealing_store_keeps_ciphertext_its_references_alone_open() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = ContentStore::in_dir(dir.path()).sealing();
-    let picture = [TINY_PNG, &vec![7_u8; 3 * 64 * 1024 + 5]].concat();
-    let reference = store.put(&picture).unwrap();
-
-    let parsed = ContentRef::parse(&reference).unwrap();
-    assert!(parsed.is_sealed());
-    assert_eq!(parsed.to_string(), reference);
-    assert_ne!(
-        parsed.address(),
-        hash_bytes(&picture),
-        "stored under the ciphertext's address"
-    );
-    assert_eq!(
-        content_address(&reference).as_deref(),
-        Some(parsed.address())
-    );
-    assert_eq!(store.read(&reference).as_deref(), Some(picture.as_slice()));
-    let mut streamed = Vec::new();
-    store
-        .open(&reference)
-        .unwrap()
-        .read_to_end(&mut streamed)
-        .unwrap();
-    assert_eq!(streamed, picture);
-    assert!(store.has(&reference));
-    assert_eq!(store.state(&reference), ContentState::Resolved);
-
-    let on_disk = files_under(dir.path());
-    assert!(!on_disk.is_empty());
-    assert!(
-        on_disk
-            .iter()
-            .all(|file| !file.windows(64).any(|w| w == &picture[..64])),
-        "nothing on disk holds the plaintext"
-    );
-    let stored = store.read(parsed.address()).unwrap();
-    assert!(
-        verify(parsed.address(), &stored),
-        "the address alone reads ciphertext"
-    );
-    assert_ne!(stored, picture);
-
-    // The same store opened without sealing (a host, another device) reads the
-    // sealed reference; the same bytes put again get a key of their own.
-    let plain = ContentStore::in_dir(dir.path());
-    assert_eq!(plain.read(&reference).as_deref(), Some(picture.as_slice()));
-    assert_ne!(store.put(&picture).unwrap(), reference);
-    let mut forged = parsed.address().to_owned();
-    forged.push_str(".AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-    assert!(store.read(&forged).is_none(), "another key opens nothing");
+/// Bytes that differ at every position a part could begin.
+fn varied(len: usize) -> Vec<u8> {
+    (0..len)
+        .map(|n| u8::try_from(n.wrapping_mul(7).wrapping_add(n / 251) % 256).unwrap_or(0))
+        .collect()
 }
 
-#[test]
-fn plain_references_still_read_and_reseal_on_the_next_write() {
-    let dir = tempfile::tempdir().unwrap();
-    let plain = ContentStore::in_dir(dir.path());
-    let old = plain.put(TINY_PNG).unwrap();
-    assert_eq!(old, hash_bytes(TINY_PNG));
-    assert!(
-        plain.reseal(&old).is_none(),
-        "a store that does not seal keeps it"
-    );
-
-    let store = ContentStore::in_dir(dir.path()).sealing();
-    assert_eq!(
-        store.read(&old).as_deref(),
-        Some(TINY_PNG),
-        "an old reference reads"
-    );
-    let resealed = store.reseal(&old).unwrap();
-    assert!(is_sealed(&resealed));
-    assert!(store.reseal(&resealed).is_none());
-    assert_eq!(store.read(&resealed).as_deref(), Some(TINY_PNG));
-    assert!(store.reseal(&"0".repeat(64)).is_none(), "content not here");
-
-    let live = BTreeSet::from([resealed.clone()]);
-    let collected = store.collect_unreferenced(&live).unwrap();
-    assert_eq!(collected.hashes, vec![old.clone()]);
-    assert!(!store.has(&old));
-    assert_eq!(store.read(&resealed).as_deref(), Some(TINY_PNG));
+fn scratch(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("tilo-content-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
 }
 
-#[test]
-fn inputs_persisted_into_a_sealing_store_answer_their_references() {
-    let mut inputs = ContentInputs::new();
-    let address = inputs.add(TINY_PNG);
-    let store = ContentStore::memory().sealing();
-    let references = store.put_inputs(&inputs).unwrap();
-    let reference = references.get(&address).unwrap();
-    assert!(is_sealed(reference));
-    assert_eq!(store.read(reference).as_deref(), Some(TINY_PNG));
-    assert!(!store.has(&address), "nothing kept in the clear");
-
-    let plain = ContentStore::memory();
-    assert_eq!(
-        plain.put_inputs(&inputs).unwrap().get(&address),
-        Some(&address)
-    );
-}
-
-#[test]
-fn references_parse_strictly() {
-    let address = "a".repeat(64);
-    assert!(valid_reference(&address));
-    assert!(!is_sealed(&address));
-    assert!(!valid_reference(&format!("{address}.short")));
-    assert!(!valid_reference(&format!(
-        "{}.{}",
-        "a".repeat(63),
-        "A".repeat(43)
-    )));
-    assert!(valid_reference(&format!("{address}.{}", "A".repeat(43))));
-    assert_eq!(
-        content_address(&format!("{}.{}", "B".repeat(64), "A".repeat(43))),
-        Some("b".repeat(64))
-    );
-}
-
-#[test]
-fn another_device_keeps_sealed_content_exactly_from_its_reference_and_bytes() {
-    let picture = [TINY_PNG, &vec![3_u8; 70 * 1024]].concat();
-    let reference = ContentStore::memory().sealing().put(&picture).unwrap();
-    assert!(names(&reference, &picture));
-    assert!(!names(&reference, TINY_PNG), "other bytes");
-    assert!(names(&hash_bytes(TINY_PNG), TINY_PNG), "a plain reference");
-
-    let elsewhere = ContentStore::memory();
-    elsewhere.put_as(&reference, &picture).unwrap();
-    assert!(
-        elsewhere.has(content_address(&reference).as_deref().unwrap()),
-        "kept under the writer's address"
-    );
-    assert_eq!(
-        elsewhere.read(&reference).as_deref(),
-        Some(picture.as_slice())
-    );
-    assert!(!elsewhere.has(&hash_bytes(&picture)), "never in the clear");
-    assert_eq!(
-        elsewhere.put_as(&reference, TINY_PNG),
-        Err(ContentError::HashMismatch)
-    );
-}
-
+/// A store whose items are sealed under the workspace member's key: what the shell hands the
+/// sync so a device gets ciphertext, never the file itself.
 struct Members<B>(B, tilo_seal::SymmetricKey);
 
 impl<B: ContentBackend> ContentBackend for Members<B> {
@@ -643,8 +116,513 @@ impl Read for Metered<'_> {
     }
 }
 
+/// A person imports files into a workspace: the inputs they picked are deduplicated and kept,
+/// the workspace keeps its own content and answers for no other's, and collection lets go of
+/// exactly what no record names, once its writer has had time to name it.
 #[test]
-fn a_sealing_store_refuses_an_oversized_item_at_the_limit() {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one journey through a workspace's store, kept together so each later check reuses what the person already did"
+)]
+fn a_workspace_keeps_what_people_import_and_lets_go_of_nothing_else() {
+    // The picker's inputs: the same picture picked twice is one item.
+    let mut inputs = ContentInputs::new();
+    let address = inputs.add(TINY_PNG.to_vec());
+    assert_eq!(inputs.add(TINY_PNG), address, "one address for one file");
+    assert_eq!(inputs.content(&address).as_deref(), Some(TINY_PNG));
+
+    let dir = scratch("workspace");
+    let stores = WorkspaceStores::in_dir(&dir, ContentLimits::default());
+    let store = stores.get(WORKSPACE).unwrap();
+    let references = store.put_inputs(&inputs).unwrap();
+    assert!(store.has(references.get(&address).unwrap()), "kept");
+    let chain = (NoContent, &store);
+    assert_eq!(chain.content(&address).as_deref(), Some(TINY_PNG));
+
+    // A workspace is one store however its id is written; another's is another store.
+    let written = store.put(b"the report").unwrap();
+    assert_eq!(
+        stores
+            .get(&WORKSPACE.to_uppercase().replace('-', ""))
+            .unwrap()
+            .read(&written),
+        Some(b"the report".to_vec()),
+        "a workspace is one store however its id is written"
+    );
+    let other = stores.get(OTHER_WORKSPACE).unwrap();
+    assert_eq!(other.read(&written), None, "no other workspace answers");
+    assert!(stores.get("../elsewhere").is_err());
+    assert!(stores.get("").is_err());
+    assert!(other.put(b"twelve bytes").is_ok(), "its own room");
+
+    // Collection spares what was written since, lets go of what no record names, and keeps
+    // what a record does name.
+    let collecting = WorkspaceStores::in_dir(dir.join("collecting"), ContentLimits::default());
+    let store = collecting.get(WORKSPACE).unwrap();
+    let named = store.put(b"a file the tree names").unwrap();
+    let replaced = store.put(b"the version it replaced").unwrap();
+    let live = BTreeSet::from([named.clone()]);
+    let long_ago = SystemTime::UNIX_EPOCH;
+    assert!(
+        collecting
+            .collect(WORKSPACE, &live, long_ago)
+            .unwrap()
+            .hashes
+            .is_empty(),
+        "content written since is spared: its writer may not have named it yet"
+    );
+    let later = SystemTime::now() + std::time::Duration::from_secs(60);
+    let collected = collecting.collect(WORKSPACE, &live, later).unwrap();
+    assert_eq!(collected.hashes, std::slice::from_ref(&replaced));
+    assert!(store.has(&named), "what the workspace names stays");
+    assert!(!store.has(&replaced));
+    assert_eq!(collecting.workspaces(), [WORKSPACE]);
+
+    // Writing content already here is a fresh write, so a record may name it soon.
+    let again = store.put(b"uploaded again").unwrap();
+    std::fs::File::options()
+        .append(true)
+        .open(item_path(&dir.join("collecting").join(WORKSPACE), &again))
+        .unwrap()
+        .set_modified(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let a_while_ago = SystemTime::now() - std::time::Duration::from_secs(60);
+    assert_eq!(store.put(b"uploaded again").unwrap(), again);
+    assert!(
+        collecting
+            .collect(WORKSPACE, &BTreeSet::new(), a_while_ago)
+            .unwrap()
+            .hashes
+            .is_empty(),
+        "a rewrite spares it from collection"
+    );
+
+    // A workspace is bounded by its own limits, and a page's upload outlives it.
+    let tight = WorkspaceStores::in_dir(dir.join("tight"), limits(1 << 20, 24, 1024));
+    let packed = tight.get(WORKSPACE).unwrap();
+    packed.put(b"twelve bytes").unwrap();
+    assert!(packed.put(b"and twelve more").is_err());
+    assert!(
+        tight
+            .get(OTHER_WORKSPACE)
+            .unwrap()
+            .put(b"twelve bytes")
+            .is_ok()
+    );
+    let app = ContentStore::new(FilesBackend::new(
+        tilo_paths::AppPaths::memory("so.tilo.test").data(),
+        ContentLimits::default(),
+    ));
+    let upload = app.put(b"a photo an unsent draft names").unwrap();
+    let reopened = ContentStore::new(FilesBackend::new(
+        tilo_paths::AppPaths::memory("so.tilo.test").data(),
+        ContentLimits::default(),
+    ));
+    assert_eq!(
+        reopened.read(&upload).as_deref(),
+        Some(&b"a photo an unsent draft names"[..]),
+        "the upload outlives the page that made it"
+    );
+    assert!(
+        reopened
+            .collect_unreferenced(&BTreeSet::from([upload.clone()]))
+            .unwrap()
+            .hashes
+            .is_empty(),
+        "what a record names stays"
+    );
+    assert_eq!(
+        reopened
+            .collect_unreferenced(&BTreeSet::new())
+            .unwrap()
+            .hashes,
+        vec![upload.clone()]
+    );
+    assert!(!reopened.has(&upload));
+
+    // An app's files store counts its quota and collects what no record names.
+    let tight_files = ContentStore::new(FilesBackend::new(
+        tilo_paths::AppPaths::memory("so.tilo.quota").data(),
+        limits(1 << 20, 8, 1024),
+    ));
+    let kept = tight_files.put(b"12345").unwrap();
+    assert!(matches!(
+        tight_files.put(b"67890"),
+        Err(ContentError::TotalQuotaExceeded { .. })
+    ));
+    assert_eq!(
+        tight_files
+            .collect_unreferenced(&BTreeSet::new())
+            .expect("a files store collects")
+            .hashes,
+        vec![kept]
+    );
+    assert!(tight_files.put(b"67890").is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Stores keep addressing the same bytes, refuse past their limits without evicting, repair a
+/// torn item on the next write, and are told what content is by its first bytes.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one journey through a store: keep, stream, refuse, repair, collect and sniff, sharing one fixture"
+)]
+fn stores_keep_refuse_and_repair_what_people_and_peers_put_in_them() {
+    let dir = tempfile::tempdir().unwrap();
+    for store in [ContentStore::memory(), ContentStore::in_dir(dir.path())] {
+        let hash = store.put(TINY_PNG).unwrap();
+        assert_eq!(hash, hash_bytes(TINY_PNG));
+        assert_eq!(store.put(TINY_PNG).unwrap(), hash, "one address, put twice");
+        assert_eq!(store.read(&hash).as_deref(), Some(TINY_PNG));
+        assert!(store.has(&hash));
+        assert_eq!(store.state(&hash), ContentState::Resolved);
+        let missing = hash_bytes(b"never stored");
+        assert_eq!(store.read(&missing), None);
+        assert_eq!(store.state(&missing), ContentState::Unavailable);
+
+        // A store is a handle: clones share it, separate stores share nothing.
+        let clone = store.clone();
+        assert!(clone.has(&hash));
+        assert!(!ContentStore::memory().has(&hash));
+
+        // Read and write stream, whatever the size.
+        let big: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let stored = store
+            .put_reader(&mut big.as_slice(), "application/octet-stream")
+            .unwrap();
+        assert_eq!(stored.hash, hash_bytes(&big));
+        assert_eq!(stored.len, big.len() as u64);
+        let mut back = Vec::new();
+        store
+            .open(&stored.hash)
+            .unwrap()
+            .read_to_end(&mut back)
+            .unwrap();
+        assert_eq!(back, big);
+
+        // An address reaches here from documents and peers: nothing else is a name.
+        assert!(store.read("../../etc/passwd").is_none());
+        assert!(!store.has("../escape"));
+
+        // A batch answers once per item, in order, and putting the set again is a no-op.
+        let items: Vec<Vec<u8>> = (0..40).map(|n| format!("item {n}").into_bytes()).collect();
+        let refs: Vec<&[u8]> = items.iter().map(Vec::as_slice).collect();
+        let kept = store.put_public_many(&refs);
+        assert_eq!(kept.len(), items.len(), "one answer for each item");
+        for (item, kept) in items.iter().zip(&kept) {
+            assert_eq!(store.read(kept.as_ref().unwrap()), Some(item.clone()));
+        }
+        assert!(store.put_public_many(&refs).iter().all(Result::is_ok));
+    }
+
+    // A torn item is never observable, and the next write of the right bytes repairs it.
+    let dir = tempfile::tempdir().unwrap();
+    let hash = hash_bytes(b"good");
+    std::fs::create_dir_all(dir.path().join(&hash[..2])).unwrap();
+    std::fs::write(item_path(dir.path(), &hash), b"corrupt").unwrap();
+    std::fs::write(dir.path().join(".incoming-dead-0"), b"partial").unwrap();
+    let store = ContentStore::new(DirBackend::with_limits(dir.path(), limits(8, 16, 4)));
+    assert!(store.read(&hash).is_none(), "a verifying read refuses it");
+    assert!(!store.has(&hash));
+    let mut sink = Vec::new();
+    assert_eq!(
+        store
+            .open(&hash)
+            .unwrap()
+            .read_to_end(&mut sink)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidData,
+        "a streaming read fails at the end"
+    );
+    assert_eq!(store.put(b"good").unwrap(), hash);
+    assert_eq!(store.read(&hash).as_deref(), Some(b"good".as_slice()));
+
+    // A file changed behind the store's back is verified again.
+    let hash = store.put(b"original").unwrap();
+    let path = item_path(dir.path(), &hash);
+    let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::fs::write(&path, b"tampered").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(before.checked_add(Duration::from_secs(1)).unwrap())
+        .unwrap();
+    assert!(!store.has(&hash), "a changed file is verified again");
+    assert_eq!(store.state(&hash), ContentState::Unavailable);
+    std::fs::write(dir.path().join("replacement"), b"original").unwrap();
+    std::fs::rename(dir.path().join("replacement"), &path).unwrap();
+    assert!(
+        store.has(&hash),
+        "the right bytes under the name are intact"
+    );
+
+    // Quotas hold across a restart and refuse without evicting what is kept.
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let s = ContentStore::new(DirBackend::with_limits(dir.path(), limits(4, 6, 4)));
+        s.put(b"abc").unwrap();
+        s.put(b"de").unwrap();
+    }
+    let s = ContentStore::new(DirBackend::with_limits(dir.path(), limits(4, 6, 4)));
+    assert_eq!(
+        s.put(b"fgh"),
+        Err(ContentError::TotalQuotaExceeded {
+            attempted: 8,
+            limit: 6
+        })
+    );
+    assert_eq!(
+        s.put(b"12345"),
+        Err(ContentError::ItemTooLarge {
+            actual: 5,
+            limit: 4
+        })
+    );
+    assert!(s.has(&hash_bytes(b"abc")), "a refusal evicts nothing");
+    let memory = ContentStore::new(MemoryBackend::new(limits(4, 6, 2)));
+    memory.put(b"abc").unwrap();
+    memory.put(b"de").unwrap();
+    assert_eq!(
+        memory.put(b"x"),
+        Err(ContentError::EntryLimitExceeded { limit: 2 })
+    );
+
+    // Two writers racing one root cannot both take the last room.
+    let dir = tempfile::tempdir().unwrap();
+    let first = ContentStore::new(DirBackend::with_limits(dir.path(), limits(4, 6, 4)));
+    let second = ContentStore::new(DirBackend::with_limits(dir.path(), limits(4, 6, 4)));
+    let barrier = std::sync::Barrier::new(2);
+    let (one, two) = std::thread::scope(|scope| {
+        let a = scope.spawn(|| {
+            barrier.wait();
+            first.put(b"abcd")
+        });
+        let b = scope.spawn(|| {
+            barrier.wait();
+            second.put(b"efgh")
+        });
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    assert_eq!(usize::from(one.is_ok()) + usize::from(two.is_ok()), 1);
+
+    // An index that over-counts after an external deletion is rescanned before it refuses.
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _) = probed(DirBackend::with_limits(dir.path(), limits(4, 6, 4)));
+    let abc = store.put(b"abc").unwrap();
+    store.put(b"de").unwrap();
+    std::fs::remove_file(item_path(dir.path(), &abc)).unwrap();
+    assert_eq!(
+        store.put(b"fgh"),
+        Ok(hash_bytes(b"fgh")),
+        "the over-counting index is rescanned rather than refusing"
+    );
+    assert_eq!(
+        store.put(b"ij"),
+        Err(ContentError::TotalQuotaExceeded {
+            attempted: 7,
+            limit: 6
+        })
+    );
+
+    // An earlier layout still reads, and the session's shared store wins where there is one.
+    let old = tempfile::tempdir().unwrap();
+    let new = tempfile::tempdir().unwrap();
+    ContentStore::in_dir(old.path()).put(TINY_PNG).unwrap();
+    let store = ContentStore::new(DirBackend::new(new.path()).reading_also(old.path()));
+    assert_eq!(store.read(&hash_bytes(TINY_PNG)).as_deref(), Some(TINY_PNG));
+    let shared = tempfile::tempdir().unwrap();
+    let path = shared.path().to_path_buf();
+    let store = ContentStore::for_app_with(&|name| {
+        (name == SHARED_STORE_ENV).then(|| path.clone().into_os_string())
+    });
+    let hash = store.put(b"shared").unwrap();
+    assert_eq!(
+        ContentStore::in_dir(shared.path()).read(&hash).as_deref(),
+        Some(b"shared".as_slice())
+    );
+
+    // Collection keeps exactly the live set.
+    let dir = tempfile::tempdir().unwrap();
+    for store in [ContentStore::memory(), ContentStore::in_dir(dir.path())] {
+        let keep = store.put(b"kept").unwrap();
+        let a = store.put(b"a").unwrap();
+        let b = store.put(b"b").unwrap();
+        let collected = store
+            .collect_unreferenced(&BTreeSet::from([keep.clone()]))
+            .unwrap();
+        let mut expected = vec![a.clone(), b.clone()];
+        expected.sort();
+        assert_eq!(collected.hashes, expected);
+        assert_eq!(collected.bytes, 2);
+        assert!(store.has(&keep));
+        assert!(!store.has(&a) && !store.has(&b));
+    }
+
+    // Durable content waits for the disk that gained it; a cache does not pay for that.
+    let dir = tempfile::tempdir().unwrap();
+    let (durable, backend) = probed(DirBackend::new(dir.path()));
+    durable.put(b"first").unwrap();
+    assert!(
+        count(&backend.probes().dir_syncs) > 0,
+        "durable content syncs the directory that gained it"
+    );
+    let (dirs, files) = (
+        count(&backend.probes().dir_syncs),
+        count(&backend.probes().file_syncs),
+    );
+    assert!(files > 0, "durable content syncs what it gained");
+    durable.put(b"first").unwrap();
+    assert_eq!(
+        (
+            count(&backend.probes().dir_syncs),
+            count(&backend.probes().file_syncs)
+        ),
+        (dirs, files),
+        "content already kept is put again without waiting on the disk"
+    );
+    let cache = tempfile::tempdir().unwrap();
+    let (cache, cache_backend) = probed(DirBackend::new(cache.path()).regenerable());
+    cache.put(b"first").unwrap();
+    assert_eq!(
+        count(&cache_backend.probes().dir_syncs),
+        0,
+        "regenerable content does not pay for a sync"
+    );
+
+    // Content describes itself from its first bytes, or says only how long it is.
+    let m = sniff(TINY_PNG);
+    assert_eq!(m.mime, "image/png");
+    assert_eq!((m.w, m.h), (1, 1));
+    assert_eq!(m.len, TINY_PNG.len() as u64);
+    let m = sniff(b"not an image at all");
+    assert_eq!(m.mime, "");
+    assert_eq!((m.w, m.h), (0, 0));
+    assert_eq!(m.len, 19, "length is knowable even when the format is not");
+    let format = |bytes: &[u8]| image_format(bytes).map(|format| format.extension);
+    assert_eq!(format(b"\x89PNG\r\n\x1a\n"), Some("png"));
+    assert_eq!(format(&[0xff, 0xd8, 0xff, 0xe0]), Some("jpg"));
+    assert_eq!(format(b"GIF89a"), Some("gif"));
+    assert_eq!(format(b"RIFFxxxxWEBP"), Some("webp"));
+    assert_eq!(format(b"  <svg xmlns=\"\"/>"), Some("svg"));
+    assert_eq!(format(b"<?xml version=\"1.0\"?><svg/>"), Some("svg"));
+    assert_eq!(format(b"<?xml version=\"1.0\"?><html/>"), None);
+    assert_eq!(format(b"not an image"), None);
+}
+
+/// Members' devices seal the same bytes to one item under their key; a reader with the
+/// reference opens it, a store without the secret still serves it, and a large item waits in a
+/// file beside the store rather than in memory.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one journey through sealing: put, reseal, read elsewhere, spill, parts, all on one store"
+)]
+fn sealed_content_is_one_item_for_members_and_reads_by_reference_elsewhere() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContentStore::in_dir(dir.path()).sealing();
+    let picture = [TINY_PNG, &vec![7_u8; 3 * 64 * 1024 + 5]].concat();
+    let reference = store.put(&picture).unwrap();
+    assert!(is_sealed(&reference));
+    assert_eq!(store.read(&reference).as_deref(), Some(picture.as_slice()));
+    assert!(names(&reference, &picture));
+    assert!(!names(&reference, TINY_PNG), "other bytes");
+    assert_eq!(store.size(&reference), Some(picture.len() as u64));
+
+    // A piece reads from the chunk it is in, whatever the offset.
+    for (from, len) in [(0, 10), (65_530, 20), (3 * 65_536, 200), (5, 0)] {
+        let (size, piece) = store.read_range(&reference, from, len).unwrap();
+        assert_eq!(size, picture.len() as u64);
+        let start = usize::try_from(from).unwrap();
+        let end = (start + usize::try_from(len).unwrap()).min(picture.len());
+        assert_eq!(piece, picture[start..end], "{from}+{len}");
+    }
+
+    // Content kept in the clear before sealing reads, is resealed, and the clear copy goes.
+    let plain = ContentStore::in_dir(dir.path());
+    let old = plain.put(TINY_PNG).unwrap();
+    assert_eq!(old, hash_bytes(TINY_PNG));
+    assert!(
+        plain.reseal(&old).is_none(),
+        "a store that does not seal keeps it"
+    );
+    assert_eq!(
+        store.read(&old).as_deref(),
+        Some(TINY_PNG),
+        "an old reference reads"
+    );
+    let resealed = store.reseal(&old).unwrap();
+    assert!(is_sealed(&resealed));
+    assert!(store.reseal(&resealed).is_none());
+    assert!(store.reseal(&"0".repeat(64)).is_none(), "content not here");
+    assert_eq!(
+        store
+            .collect_unreferenced(&BTreeSet::from([resealed, reference]))
+            .unwrap()
+            .hashes,
+        std::slice::from_ref(&old)
+    );
+    assert!(!store.has(&old));
+
+    // The picker's inputs sealed on their way in keep nothing in the clear.
+    let mut inputs = ContentInputs::new();
+    let address = inputs.add(TINY_PNG);
+    let sealed = ContentStore::memory().sealing();
+    let references = sealed.put_inputs(&inputs).unwrap();
+    assert!(is_sealed(references.get(&address).unwrap()));
+    assert_eq!(
+        sealed.read(references.get(&address).unwrap()).as_deref(),
+        Some(TINY_PNG)
+    );
+    assert!(!sealed.has(&address), "nothing kept in the clear");
+    assert_eq!(
+        ContentStore::memory()
+            .put_inputs(&inputs)
+            .unwrap()
+            .get(&address),
+        Some(&address)
+    );
+
+    // A reference is an address, or an address and a key, and nothing else is one.
+    let address = "a".repeat(64);
+    assert!(valid_reference(&address));
+    assert!(!is_sealed(&address));
+    assert!(!valid_reference(&format!("{address}.short")));
+    assert!(!valid_reference(&format!(
+        "{}.{}",
+        "a".repeat(63),
+        "A".repeat(43)
+    )));
+    assert!(valid_reference(&format!("{address}.{}", "A".repeat(43))));
+    assert_eq!(
+        content_address(&format!("{}.{}", "B".repeat(64), "A".repeat(43))),
+        Some("b".repeat(64))
+    );
+
+    // Another device keeps the writer's reference from the reference and the bytes alone.
+    let picture = [TINY_PNG, &vec![3_u8; 70 * 1024]].concat();
+    let reference = ContentStore::memory().sealing().put(&picture).unwrap();
+    assert!(names(&reference, &picture));
+    assert!(names(&hash_bytes(TINY_PNG), TINY_PNG), "a plain reference");
+    let elsewhere = ContentStore::memory();
+    elsewhere.put_as(&reference, &picture).unwrap();
+    assert!(
+        elsewhere.has(content_address(&reference).as_deref().unwrap()),
+        "kept under the writer's address"
+    );
+    assert_eq!(
+        elsewhere.read(&reference).as_deref(),
+        Some(picture.as_slice())
+    );
+    assert!(!elsewhere.has(&hash_bytes(&picture)), "never in the clear");
+    assert_eq!(
+        elsewhere.put_as(&reference, TINY_PNG),
+        Err(ContentError::HashMismatch)
+    );
+
+    // Past the item limit the read stops at the limit, not after holding it whole.
     let dir = tempfile::tempdir().unwrap();
     let store = ContentStore::new(Members(
         DirBackend::with_limits(dir.path(), limits(4096, 1 << 20, 16)),
@@ -664,19 +642,12 @@ fn a_sealing_store_refuses_an_oversized_item_at_the_limit() {
             limit: 4096
         })
     );
-    assert_eq!(
-        read.get(),
-        4097,
-        "refused at the limit, not once it has been read and held whole"
-    );
+    assert_eq!(read.get(), 4097, "refused at the limit");
     assert!(files_under(dir.path()).is_empty(), "and nothing is kept");
-}
 
-#[test]
-fn a_large_item_is_sealed_from_a_file_beside_the_store() {
+    // Past what a store keeps in memory, the item waits in a file beside it and seals from
+    // there, leaving nothing behind.
     let secret = tilo_seal::SymmetricKey::generate().unwrap();
-    // Past what a sealing store keeps in memory: what it hashes waits in a file beside its own
-    // content, and the second pass seals from there.
     let picture = [TINY_PNG, &vec![4_u8; 2 * 1024 * 1024 + 17]].concat();
     let dir = tempfile::tempdir().unwrap();
     let store = ContentStore::new(Members(DirBackend::new(dir.path()), secret.clone())).sealing();
@@ -687,7 +658,6 @@ fn a_large_item_is_sealed_from_a_file_beside_the_store() {
     };
     let sealed = store.put_reader(&mut reader, "image/png").unwrap();
     assert_eq!(read.get(), picture.len(), "read once");
-
     let mut hash = convergent_hasher(&secret);
     hash.update(&picture);
     let key = tilo_seal::SymmetricKey::from_bytes(*hash.finalize().as_bytes());
@@ -695,17 +665,18 @@ fn a_large_item_is_sealed_from_a_file_beside_the_store() {
     assert_eq!(content_address(&sealed.hash), Some(hash_bytes(&buffered)));
     assert_eq!(
         store.read(&sealed.hash).as_deref(),
-        Some(picture.as_slice()),
-        "and it opens as the reference says"
+        Some(picture.as_slice())
     );
-    let leftover = std::fs::read_dir(dir.path())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with(".sealing-"))
-        .count();
-    assert_eq!(leftover, 0, "no spill file is left behind");
-
+    assert_eq!(
+        std::fs::read_dir(dir.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".sealing-"))
+            .count(),
+        0,
+        "no spill file is left behind"
+    );
     let in_memory = ContentStore::new(Members(MemoryBackend::default(), secret)).sealing();
     let mut again = Metered {
         bytes: &picture,
@@ -715,14 +686,16 @@ fn a_large_item_is_sealed_from_a_file_beside_the_store() {
         in_memory.put_reader(&mut again, "image/png").unwrap().hash,
         sealed.hash
     );
-}
 
-#[test]
-fn the_same_bytes_stored_twice_by_members_are_one_sealed_item() {
+    // Members of one workspace seal the same bytes to one item, kept once; another workspace's
+    // members seal them to other ciphertext; a reader with only the reference opens it.
     let picture = [TINY_PNG, &vec![9_u8; 64 * 1024 + 3]].concat();
-    let secret = tilo_seal::SymmetricKey::generate().unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let store = ContentStore::new(Members(DirBackend::new(dir.path()), secret)).sealing();
+    let store = ContentStore::new(Members(
+        DirBackend::new(dir.path()),
+        tilo_seal::SymmetricKey::generate().unwrap(),
+    ))
+    .sealing();
     let reference = store.put(&picture).unwrap();
     assert!(is_sealed(&reference));
     let kept = files_under(dir.path());
@@ -733,22 +706,17 @@ fn the_same_bytes_stored_twice_by_members_are_one_sealed_item() {
         "the same bytes, put again, are named alike"
     );
     assert_eq!(files_under(dir.path()), kept, "and kept once");
-    assert_eq!(store.read(&reference).as_deref(), Some(picture.as_slice()));
     assert!(
         files_under(dir.path())
             .iter()
             .all(|file| !file.windows(64).any(|w| w == &picture[..64])),
         "sealed all the same"
     );
-    // A reader with no secret (a device opening the record, a host) reads it
-    // by its reference, as any sealed item.
     let reader = ContentStore::in_dir(dir.path());
     assert_eq!(reader.read(&reference).as_deref(), Some(picture.as_slice()));
     let fresh = reader.sealing().put(&picture).unwrap();
     assert_ne!(fresh, reference);
     assert_eq!(store.read(&fresh).as_deref(), Some(picture.as_slice()));
-    assert!(names(&reference, &picture));
-
     let elsewhere = tempfile::tempdir().unwrap();
     let other = ContentStore::new(Members(
         DirBackend::new(elsewhere.path()),
@@ -761,21 +729,8 @@ fn the_same_bytes_stored_twice_by_members_are_one_sealed_item() {
         content_address(&reference),
         "members of another workspace seal the same bytes to other ciphertext"
     );
-    assert_ne!(
-        other.read(content_address(&theirs).unwrap().as_str()),
-        store.read(content_address(&reference).unwrap().as_str())
-    );
-}
 
-/// Bytes that differ at every position a part could begin.
-fn varied(len: usize) -> Vec<u8> {
-    (0..len)
-        .map(|n| u8::try_from(n.wrapping_mul(7).wrapping_add(n / 251) % 256).unwrap_or(0))
-        .collect()
-}
-
-#[test]
-fn content_larger_than_a_part_is_kept_in_parts_and_reads_whole() {
+    // Content of any size is kept in parts and reads whole; a piece reads only its parts.
     let big = limits(64 << 20, 1 << 30, 64);
     for store in [
         ContentStore::new(MemoryBackend::new(big)),
@@ -786,7 +741,6 @@ fn content_larger_than_a_part_is_kept_in_parts_and_reads_whole() {
         assert_eq!(stored.len, bytes.len() as u64);
         assert_eq!(store.size(&stored.hash), Some(bytes.len() as u64));
         assert!(store.read(&stored.hash).unwrap() == bytes, "read whole");
-        // A piece across two parts reads only what it asks for.
         let from = PART_BYTES as u64 - 10;
         let (size, piece) = store.read_range(&stored.hash, from, 30).unwrap();
         assert_eq!(size, bytes.len() as u64);
@@ -795,7 +749,6 @@ fn content_larger_than_a_part_is_kept_in_parts_and_reads_whole() {
             .read_range(&stored.hash, bytes.len() as u64 - 5, 100)
             .unwrap();
         assert_eq!(tail, bytes[bytes.len() - 5..]);
-        // Content of one part or less is that one item.
         let small = store.put_parts(&mut &bytes[..1000]).unwrap();
         assert_eq!(store.read(&small.hash).unwrap(), bytes[..1000]);
         let exact = store.put_parts(&mut &bytes[..PART_BYTES]).unwrap();
@@ -806,35 +759,14 @@ fn content_larger_than_a_part_is_kept_in_parts_and_reads_whole() {
         let empty = store.put_parts(&mut &[][..]).unwrap();
         assert_eq!(store.read(&empty.hash).unwrap(), Vec::<u8>::new());
     }
-}
 
-#[test]
-fn sealed_content_reads_a_piece_from_where_it_is() {
-    let store = ContentStore::new(MemoryBackend::new(limits(64 << 20, 1 << 30, 64))).sealing();
-    let bytes = varied(3 * tilo_seal::content::CHUNK + 77);
-    let reference = store.put(&bytes).unwrap();
-    assert_eq!(store.size(&reference), Some(bytes.len() as u64));
-    for (from, len) in [(0, 10), (65_530, 20), (3 * 65_536, 200), (5, 0)] {
-        let (size, piece) = store.read_range(&reference, from, len).unwrap();
-        assert_eq!(size, bytes.len() as u64);
-        let from = usize::try_from(from).unwrap();
-        let to = (from + usize::try_from(len).unwrap()).min(bytes.len());
-        assert_eq!(piece, bytes[from..to], "{from}+{len}");
-    }
-}
-
-#[test]
-fn content_in_parts_is_not_here_until_every_part_is() {
+    // A part missing leaves the whole not here; a file that begins like a list is itself.
     let whole = ContentStore::new(MemoryBackend::new(limits(64 << 20, 1 << 30, 64)));
     let bytes = varied(PART_BYTES + 3);
     let stored = whole.put_parts(&mut bytes.as_slice()).unwrap();
     let other = ContentStore::new(MemoryBackend::new(limits(64 << 20, 1 << 30, 64)));
     other.put(&whole.read_item_whole(&stored.hash)).unwrap();
     assert!(other.read(&stored.hash).is_none(), "a part is missing");
-}
-
-#[test]
-fn a_file_that_begins_like_a_list_reads_as_itself() {
     let store = ContentStore::new(MemoryBackend::new(limits(1 << 20, 1 << 22, 64)));
     let mut bytes = b"TCL\x01".to_vec();
     bytes.extend_from_slice(&[2, 0, 0, 0]);

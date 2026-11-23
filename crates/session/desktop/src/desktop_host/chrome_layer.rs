@@ -5,9 +5,12 @@ use std::rc::Rc;
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{Layout, Strip, StripId, TabId, Workspace, WorkspaceId};
-use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, Destination, LayoutEffect};
-use tilo_desktop_surface::{DesktopHandle, HostAction, HostActionSource, NotificationLayer, names};
+use tilo_desktop_surface::{DesktopHandle, HostAction, HostActionSource, NotificationLayer};
 use tilo_resource::Effect;
+use tilo_session_core::desktop::names;
+use tilo_session_core::desktop::navigation::{
+    ActivityView, ChromeEffect, Destination, LayoutEffect,
+};
 use ui::presence::PresenceCtx;
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 use ui::widget::DrawChild;
@@ -640,7 +643,7 @@ impl DesktopChrome {
     /// The display the person is working on, while the shell spans several: where a card without a
     /// caret is centred.
     fn working_display(&self) -> Option<Rect> {
-        tilo_desktop_surface::working_display(&self.rules.tree())
+        tilo_session_core::desktop::working_display(&self.rules.tree())
     }
 
     /// Where the overview stands while the shell spans several displays: on the one the person works
@@ -823,7 +826,7 @@ impl DesktopChrome {
         }
     }
 
-    fn dispatch(&self, verb: impl Into<tilo_desktop_surface::navigation::Verb>) {
+    fn dispatch(&self, verb: impl Into<tilo_session_core::desktop::navigation::Verb>) {
         if let Err(error) = self.handle.dispatch(verb) {
             tracing::warn!(%error, "desktop chrome");
         }
@@ -1507,7 +1510,7 @@ impl DesktopChrome {
         let joining = join.is_some();
         let workspace = if let Some(id) = join {
             let Some(joined) = WorkspaceId::parse(id) else {
-                self.handle.acknowledge(tilo_desktop_surface::i18n::t(
+                self.handle.acknowledge(tilo_session_core::desktop::i18n::t(
                     "desktop-joined-workspace-unknown",
                 ));
                 return;
@@ -1581,7 +1584,7 @@ impl DesktopChrome {
     fn window_tab(&self, step: Option<isize>, nth: Option<usize>) -> Option<u64> {
         self.handle.read(|tree| {
             let workspace = tree.active_workspace()?;
-            let strip_id = tree.active_strip.get(&workspace.id()).copied()?;
+            let strip_id = tree.active_strip_for(workspace)?;
             let strip = workspace.strips.iter().find(|s| s.id == strip_id)?;
             let index = match (step, nth) {
                 (_, Some(nth)) => nth,
@@ -1604,9 +1607,8 @@ impl DesktopChrome {
         let next = self.handle.read(|tree| {
             let workspace = tree.active_workspace()?;
             let current = tree
-                .active_strip
-                .get(&workspace.id())
-                .and_then(|id| workspace.strips.iter().position(|s| s.id == *id))
+                .active_strip_for(workspace)
+                .and_then(|id| workspace.strips.iter().position(|s| s.id == id))
                 .unwrap_or(0);
             let strip = workspace.strips.get(pick(current)?)?;
             Some((workspace.id().to_string(), strip.id.0.to_string()))
@@ -2043,7 +2045,7 @@ impl DesktopChrome {
                 .map(|display| {
                     (
                         display.monitor.clone(),
-                        tilo_desktop_surface::display_rect(display),
+                        tilo_session_core::desktop::display_rect(display),
                     )
                 })
                 .collect();
@@ -2876,5 +2878,25 @@ impl Widget for DesktopChrome {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    /// The strip navigator's own affordances — the ribbon, each strip's label while the labels
+    /// are open, New strip and a strip's Rename and Remove. The navigator paints them into its
+    /// own rect instead of composing children, so they are named here for the harnesses and
+    /// agents that press what they see.
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        self.navigator.test_rects(&self.navigator_frame)
+    }
+
+    /// The shell's search field while its card stands over the windows. The card takes the keys
+    /// by the shell's own rule, so no focus in the tree reaches the field: named here, the input
+    /// method serves it (and the on-screen keyboard shows for it) as it serves any focused field.
+    fn ime_field(&self) -> Option<ui::ime::ImeWindowState> {
+        if !self.search.is_open() {
+            return None;
+        }
+        let search = self.handle.search_palette();
+        let search = search.borrow();
+        ui::ime::ImeWindowState::from_widget(search.palette().field_widget())
     }
 }

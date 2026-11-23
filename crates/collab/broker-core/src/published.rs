@@ -182,14 +182,27 @@ fn validate_resource_range_binding(
     Ok(())
 }
 
+/// A published surface as the broker takes it: the actions it offers, and why each row it left
+/// out was refused.
+#[derive(Debug)]
+pub struct ValidSurface {
+    pub actions: Vec<PublishedAction>,
+    /// One reason per row refused, naming its address.
+    pub refused: Vec<String>,
+}
+
 /// The checks every published surface passes, whichever request carried it:
 /// addresses non-empty, unique and separator-free, kinds and labels present,
 /// contracts and parameters valid, resource views consistent.
-pub fn validate_published_surface(
-    rows: Vec<PublishedAction>,
-) -> Result<Vec<PublishedAction>, String> {
+///
+/// An address that breaks those rules refuses the whole surface: the table that carried it cannot
+/// be trusted to say which row is which. A row that is only incomplete (no kind or label, a contract
+/// or a parameter that does not hold) is left out alone, so one unnamed resource does not silence
+/// every other action its app offers.
+pub fn validate_published_surface(rows: Vec<PublishedAction>) -> Result<ValidSurface, String> {
     let mut seen = std::collections::HashSet::with_capacity(rows.len());
     let mut actions = Vec::with_capacity(rows.len());
+    let mut refused = Vec::new();
     for published in rows {
         if published.resource.is_empty()
             || published.action.is_empty()
@@ -202,37 +215,46 @@ pub fn validate_published_surface(
                     .into(),
             ));
         }
-        if published.resource_kind.trim().is_empty()
-            || published.resource_label.trim().is_empty()
-            || published.action_label.trim().is_empty()
-        {
-            return Err(failed(
-                "exported actions require non-empty kind and labels".into(),
-            ));
+        match row_problem(&published) {
+            Some(problem) => refused.push(format!(
+                "`{}#{}`: {problem}",
+                published.resource, published.action
+            )),
+            None => actions.push(published),
         }
-        if let Some(reason) = published.contract.validate_declaration().into_iter().next() {
-            return Err(failed(format!(
-                "invalid exported action contract: {reason}"
-            )));
-        }
-        let mut parameter_names = std::collections::HashSet::new();
-        for parameter in &published.params {
-            if !parameter_names.insert(parameter.name.as_ref()) {
-                return Err(failed(
-                    "exported action parameter names must be unique".into(),
-                ));
-            }
-            if let Some(reason) = parameter.validate_declaration().into_iter().next() {
-                return Err(failed(format!(
-                    "invalid exported action parameter `{}`: {reason}",
-                    parameter.name
-                )));
-            }
-        }
-        actions.push(published);
     }
     validate_resource_view_descriptors(&actions)?;
-    Ok(actions)
+    Ok(ValidSurface { actions, refused })
+}
+
+/// What keeps `published`, a row with a sound address, from being offered: `None` when nothing.
+fn row_problem(published: &PublishedAction) -> Option<String> {
+    if published.resource_kind.trim().is_empty()
+        || published.resource_label.trim().is_empty()
+        || published.action_label.trim().is_empty()
+    {
+        return Some(format!(
+            "exported actions require non-empty kind and labels: kind {:?}, label {:?}, action \
+             label {:?}",
+            published.resource_kind, published.resource_label, published.action_label
+        ));
+    }
+    if let Some(reason) = published.contract.validate_declaration().into_iter().next() {
+        return Some(format!("invalid exported action contract: {reason}"));
+    }
+    let mut parameter_names = std::collections::HashSet::new();
+    for parameter in &published.params {
+        if !parameter_names.insert(parameter.name.as_ref()) {
+            return Some("exported action parameter names must be unique".into());
+        }
+        if let Some(reason) = parameter.validate_declaration().into_iter().next() {
+            return Some(format!(
+                "invalid exported action parameter `{}`: {reason}",
+                parameter.name
+            ));
+        }
+    }
+    None
 }
 
 /// Recheck the resource-view invariants after decoding an untrusted action

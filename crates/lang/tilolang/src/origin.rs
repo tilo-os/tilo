@@ -59,13 +59,26 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
     ("post", "Posts a payload; the development sink logs it."),
     (
         "smtp.send",
-        "Sends a message from a mail account of the workspace's settings: (account, to, cc, \
-         subject, body, the Message-ID it answers, the References it continues).",
+        "Sends a message from a mail account of the workspace's settings: (account, the name and \
+         address it goes from, to, cc, bcc, subject, body, the Message-ID it answers, the \
+         References it continues, its calendar invitation). What it says goes out as the words \
+         alone and as the formatted alternative of them.",
     ),
     (
         "imap.check",
         "Asks a mail account for its mail now: (the account's key). What its server holds comes \
          in as it does when the server is heard from, and the account says how it stands.",
+    ),
+    (
+        "imap.older",
+        "Asks a mail account's server for the messages older than the oldest one the workspace \
+         holds: (the account's key, the mailbox's key). They come in as the server's changes do.",
+    ),
+    (
+        "imap.purge",
+        "Deletes messages of a mail account from its server for good, its trash emptied of them: \
+         (the account's key, the keys of its messages). A message the account no longer holds is \
+         passed over.",
     ),
     (
         "youtube.search",
@@ -75,6 +88,11 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
     (
         "youtube.channel",
         "Asks YouTube for a channel's videos: (the channel's key).",
+    ),
+    (
+        "youtube.playlist",
+        "Asks YouTube for what a playlist holds: (the playlist's key). Its videos are written \
+         where the playlist's page reads them, in the order its maker put them.",
     ),
     (
         "youtube.subscriptions",
@@ -449,6 +467,11 @@ pub const KINDS: &[OriginKind] = &[
             ),
             field("unread", "Int", "How many unread messages it holds."),
             field("total", "Int", "How many messages it holds."),
+            field(
+                "more",
+                "Bool",
+                "Whether its server holds messages older than the ones the workspace holds.",
+            ),
         ],
     },
     OriginKind {

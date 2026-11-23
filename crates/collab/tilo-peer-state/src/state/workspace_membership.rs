@@ -6,6 +6,64 @@ use tilo_action_policy::{Change, Grantee, Role, TreePath, roles};
 use tilo_user_identity::DeviceCert;
 
 impl StatePeer {
+    /// Write a row that is the calling device's own, a lease claim, a schedule's answer or work
+    /// kept done: no other device signs for it.
+    fn apply_own_row(
+        &mut self,
+        caller: &DeviceCert,
+        command: &WorkspaceMembershipCommand,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let own = |caller: &DeviceCert| {
+            if key.device_public_key() == caller.device_public_key {
+                Ok(())
+            } else {
+                Err(String::from("a device's own row is written by that device"))
+            }
+        };
+        match command {
+            WorkspaceMembershipCommand::Lease { id, ttl_ms, rank } => {
+                own(caller)?;
+                let before = self.workspace_heads().unwrap_or_default();
+                if *ttl_ms == 0 {
+                    self.workspace_mut().release_lease(caller, id, now)?;
+                } else {
+                    self.workspace_mut().take_lease(
+                        caller,
+                        id,
+                        std::time::Duration::from_millis(*ttl_ms),
+                        *rank,
+                        now,
+                    )?;
+                }
+                Ok(self.workspace_heads().unwrap_or_default() != before)
+            }
+            WorkspaceMembershipCommand::AnswerSchedule {
+                automation,
+                trigger,
+                mark,
+                answered_ms,
+            } => {
+                own(caller)?;
+                self.workspace_mut().answer_schedule(
+                    caller,
+                    automation,
+                    usize::try_from(*trigger).map_err(|error| error.to_string())?,
+                    mark,
+                    *answered_ms,
+                    now,
+                )
+            }
+            WorkspaceMembershipCommand::KeepDone { id, answer } => {
+                own(caller)?;
+                self.workspace_mut()
+                    .keep_done(caller, id, answer.clone(), now)
+            }
+            _ => Ok(false),
+        }
+    }
+
     /// Apply a bot command (install, renew, uninstall, pause, resume,
     /// appearance, adopt); `None` for every other command.
     fn apply_bot_command(
@@ -149,6 +207,9 @@ impl StatePeer {
                 key,
                 now,
             ),
+            Change::RetiredSetMemberRoles { .. } => {
+                Err("roles are assigned one at a time".to_owned())
+            }
             Change::DefineRole { .. }
             | Change::RemoveRole { .. }
             | Change::SetMemberCustomRole { .. }
@@ -337,6 +398,9 @@ impl PeerWorkspaceMut<'_> {
         if let Some(outcome) = self.peer.apply_app_command(caller, command, key, now) {
             return outcome;
         }
+        if let Some(outcome) = self.peer.apply_call_command(caller, command, key, now) {
+            return outcome;
+        }
         self.signed_for_caller(caller, key, now)?;
         if matches!(
             command,
@@ -379,38 +443,6 @@ impl PeerWorkspaceMut<'_> {
         if let WorkspaceMembershipCommand::Unshare { share } = command {
             return self.peer.apply_unshare(caller, share, key, now);
         }
-        if let WorkspaceMembershipCommand::RevokeWorkDelegation { server } = command {
-            // A delegation is the member's own device's: only that device can
-            // take it back, so it is revoked where it was signed.
-            if key.device_public_key() != caller.device_public_key {
-                return Err("a delegation is revoked by the device that signed it".into());
-            }
-            return self.peer.workspace_mut().revoke_work_delegation(
-                server,
-                &caller.user_public_key,
-                key,
-                now,
-            );
-        }
-        if let WorkspaceMembershipCommand::Lease { id, ttl_ms, rank } = command {
-            // A claim is the claiming device's own: no other signs for it.
-            if key.device_public_key() != caller.device_public_key {
-                return Err("a lease is claimed by its own device".into());
-            }
-            let before = self.peer.workspace_heads().unwrap_or_default();
-            if *ttl_ms == 0 {
-                self.peer.workspace_mut().release_lease(caller, id, now)?;
-            } else {
-                self.peer.workspace_mut().take_lease(
-                    caller,
-                    id,
-                    std::time::Duration::from_millis(*ttl_ms),
-                    *rank,
-                    now,
-                )?;
-            }
-            return Ok(self.peer.workspace_heads().unwrap_or_default() != before);
-        }
-        Ok(false)
+        self.peer.apply_own_row(caller, command, key, now)
     }
 }

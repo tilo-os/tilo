@@ -198,9 +198,7 @@ fn serve(
                 &listener,
                 &mut service,
                 |stream| {
-                    peer_facts::facts(stream)
-                        .map_err(|error| format!("unidentified caller: {error}"))
-                        .and_then(|facts| peer::decide(&seat, &facts))
+                    peer_facts::server::identify_peer(stream, |facts| peer::decide(&seat, facts))
                 },
                 server::Pacing {
                     housekeeping: Duration::from_millis(50),

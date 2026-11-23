@@ -424,7 +424,7 @@ pub fn admit(
     let grant = admit_request(
         target,
         ReadMediaPurpose::OriginalRegistration,
-        plan.operation_id,
+        plan.0.operation_id,
         source_plans,
         cancel,
     )?;
@@ -690,10 +690,7 @@ fn target_eligible(selected: &TargetDrive, purpose: ReadMediaPurpose) -> bool {
         // The medium may now host the booted system: that permits read ownership only.
         ReadMediaPurpose::BootPending => {
             selected.kind.is_removable_class()
-                && (selected.removable
-                    || selected.tran.as_deref().is_some_and(|value| {
-                        matches!(value.to_ascii_lowercase().as_str(), "usb" | "sd" | "mmc")
-                    }))
+                && (selected.removable || selected.external_transport())
         }
     }
 }

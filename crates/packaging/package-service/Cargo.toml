@@ -28,7 +28,6 @@ service = [
     "package-store/store",
     "dep:bounded-command",
     "dep:app-cli",
-    "dep:install",
     "dep:runtime-bundle",
     "dep:clap",
     "dep:anyhow",
@@ -54,10 +53,6 @@ tilo-app-package = { path = "../tilo-app-package" }
 # keeps none of its own.
 package-store = { path = "../package-store" }
 app-cli = { path = "../app-cli", optional = true }
-# The collection `tilo-install` runs after every change (payload size sweep,
-# orphaned trees and staging, unused runtime builds), run after the daemon's
-# own installs and removals too.
-install = { path = "../install", optional = true }
 runtime-bundle = { path = "../runtime-bundle", optional = true }
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 
@@ -77,7 +72,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"], optional = t
 libc = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 # Bounds the test transport's waits (`test-support`).
-tilo-test-env = { path = "../../dev/test-env", optional = true }
+tilo-test-env = { path = "../../../tools/test-env", optional = true }
 
 # systemd notify (sd_notify); missing environment variables are tolerated.
 sd-notify = { workspace = true, optional = true }
@@ -96,7 +91,7 @@ app-registry = { path = "../app-registry" }
 getrandom.workspace = true
 tokio = { workspace = true, features = ["full"] }
 ed25519-dalek.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [[test]]
 name = "it"

@@ -1,7 +1,8 @@
-//! The compiler's command line (`tilolangc`): `check`, `build`, `fmt` and `ids`.
+//! The compiler's commands, which the language's tool runs: `check`, `fmt` and `ids`.
 //!
-//! `tilolangc build` writes the compiled module next to the sources. The language's tool, `tilolang`
-//! (`crates/lang/tilolang-cli`), runs these commands too, and builds and runs packages as Tilo apps.
+//! A person types them as `tilolang check`, `tilolang fmt` and `tilolang ids`
+//! (`crates/lang/tilolang-cli`). `tilolang build` compiles a package into a signed Tilo app, its
+//! payload holding the compiled module.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -23,20 +24,15 @@ use crate::source::{
 pub type Published = fn(&[PathBuf]) -> Result<Vec<PackageMeta>, String>;
 
 pub const USAGE: &str = "usage:
-  tilolangc check [dir] [--json] [--watch] [--write-ids] [--path <dir>]... [--import <app.wasm>]...
-  tilolangc build [dir] [--out <dir>] [--path <dir>]... [--import <app.wasm>]...
-  tilolangc fmt [dir] [--check]
-  tilolangc ids [dir] [--rename <old> <new>]
+  tilolang check [dir] [--json] [--watch] [--write-ids] [--path <dir>]...
+  tilolang fmt [dir] [--check]
+  tilolang ids [dir] [--rename <old> <new>]
 
 [dir] is a package directory (default: the current directory). Every .tl file in it is part of
 the package. `use` imports are found among the package's sibling directories and in each
 --path, which names a package directory or a directory of packages. `check` fails while the
 package's ids lock (app.ids) is out of date and says what changed; --write-ids writes it.
-`build` writes the lock and the module, <app id>.wasm, to --out (default target/tilolang).";
-
-/// The commands this module handles: a host binary dispatches to [`main`] when its first argument is one
-/// of them.
-pub const COMMANDS: &[&str] = &["check", "build", "fmt", "ids"];
+`tilolang build` compiles the package into a signed Tilo app.";
 
 #[derive(Debug, Default)]
 #[allow(
@@ -49,8 +45,6 @@ struct Options {
     watch: bool,
     check: bool,
     write_ids: bool,
-    out: Option<PathBuf>,
-    imports: Vec<PathBuf>,
     search: Vec<PathBuf>,
     rename: Option<(String, String)>,
     published: Option<Published>,
@@ -65,10 +59,6 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
             "--watch" => o.watch = true,
             "--check" => o.check = true,
             "--write-ids" => o.write_ids = true,
-            "--out" => o.out = Some(PathBuf::from(it.next().ok_or("--out needs a directory")?)),
-            "--import" => o.imports.push(PathBuf::from(
-                it.next().ok_or("--import needs a path to an app.wasm")?,
-            )),
             "--path" => o
                 .search
                 .push(PathBuf::from(it.next().ok_or("--path needs a directory")?)),
@@ -89,21 +79,6 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
     Ok(o)
 }
 
-fn read_imports(paths: &[PathBuf]) -> Result<Vec<PackageMeta>, String> {
-    paths
-        .iter()
-        .map(|p| {
-            let bytes = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
-            PackageMeta::from_wasm(&bytes).ok_or_else(|| {
-                format!(
-                    "{}: not a tilolang package (no tilolang.meta section)",
-                    p.display()
-                )
-            })
-        })
-        .collect()
-}
-
 fn report(diags: &[Diagnostic], json: bool) {
     if json {
         println!("{}", diagnostics_json(diags));
@@ -114,14 +89,13 @@ fn report(diags: &[Diagnostic], json: bool) {
     }
 }
 
-/// The metadata `dir`'s imports may name besides package directories: already built modules (`--import`)
-/// and what the tool's `published` finds.
+/// The metadata `dir`'s imports may name besides package directories: what the tool's `published`
+/// finds (native apps and the platform's packages).
 fn published(dir: &Path, o: &Options) -> Result<Vec<PackageMeta>, String> {
-    let mut extra = read_imports(&o.imports)?;
-    if let Some(published) = o.published {
-        extra.extend(published(&search_of(dir, &o.search))?);
+    match o.published {
+        Some(published) => published(&search_of(dir, &o.search)),
+        None => Ok(Vec::new()),
     }
-    Ok(extra)
 }
 
 fn build_all(
@@ -164,7 +138,7 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
                         eprintln!("{}: the source catalogue updated", b.dir.display());
                     } else {
                         eprintln!(
-                            "{}: the source catalogue (locales/en-US.ftl) is out of date; write it with `tilolangc check --write-ids` (or `build`), and commit it with the sources",
+                            "{}: the source catalogue (locales/en-US.ftl) is out of date; write it with `tilolang check --write-ids`, and commit it with the sources",
                             b.dir.display()
                         );
                         current = false;
@@ -215,13 +189,13 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
                     // The same entries, written another way (out of the tool's order): a build would rewrite the
                     // file, so the lock is not what the sources say it is.
                     eprintln!(
-                        "{}: the ids lock is not what the tool writes (its entries in another order); write it with `tilolangc check --write-ids` (or `build`), and commit it with the sources",
+                        "{}: the ids lock is not what the tool writes (its entries in another order); write it with `tilolang check --write-ids`, and commit it with the sources",
                         b.dir.display()
                     );
                 } else {
                     explain(b, &changes, "is out of date");
                     eprintln!(
-                        "  write it with `tilolangc check --write-ids` (or `build`), and commit it with the sources"
+                        "  write it with `tilolang check --write-ids`, and commit it with the sources"
                     );
                 }
                 current = false;
@@ -289,34 +263,6 @@ fn check(dir: &Path, o: &Options) -> Result<bool, String> {
         }
         std::thread::sleep(Duration::from_millis(300));
     }
-}
-
-fn build(dir: &Path, o: &Options) -> Result<bool, String> {
-    let built = match build_all(dir, o, &mut OsEntropy::default()) {
-        Ok(built) => built,
-        Err(error) => return failed(error, o.json),
-    };
-    for b in &built {
-        let changes = lock_changes(b);
-        if write_ids(b)? {
-            explain(b, &changes, "updated");
-        }
-        if write_catalogue(b)? {
-            eprintln!("{}: the source catalogue updated", b.dir.display());
-        }
-    }
-    if let Some(root) = built.last() {
-        let out = o
-            .out
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("target").join("tilolang"));
-        std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-        let path = out.join(format!("{}.wasm", root.compiled.meta.app));
-        std::fs::write(&path, &root.compiled.wasm)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        eprintln!("wrote {}", path.display());
-    }
-    Ok(true)
 }
 
 /// The canonical text of every file of the package in `dir`, with the files whose plain `//` comments it
@@ -393,7 +339,11 @@ pub fn main_with(args: &[String], published: Published) -> ExitCode {
 fn run(args: &[String], published: Option<Published>) -> ExitCode {
     let result = (|| {
         let (cmd, rest) = args.split_first().ok_or(USAGE)?;
-        if matches!(cmd.as_str(), "-h" | "--help" | "help") {
+        if matches!(cmd.as_str(), "-h" | "--help" | "help")
+            || rest
+                .first()
+                .is_some_and(|a| matches!(a.as_str(), "-h" | "--help"))
+        {
             eprintln!("{USAGE}");
             return Ok(true);
         }
@@ -402,7 +352,6 @@ fn run(args: &[String], published: Option<Published>) -> ExitCode {
         let dir = o.dir.clone().unwrap_or_else(|| PathBuf::from("."));
         match cmd.as_str() {
             "check" => check(&dir, &o),
-            "build" => build(&dir, &o),
             "fmt" => fmt(&dir, &o),
             "ids" => ids(&dir, &o),
             _ => Err(USAGE.to_string()),

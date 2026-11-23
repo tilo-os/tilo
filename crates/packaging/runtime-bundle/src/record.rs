@@ -76,9 +76,7 @@ impl VerificationRecord {
     #[must_use]
     pub fn read(dir: &Path, root_hash: &str) -> Option<Self> {
         let path = dir.join(format!("{root_hash}.json"));
-        let bytes = tilo_files::native::bounded::read(&path, MAX_RECORD_BYTES)
-            .ok()
-            .flatten()?;
+        let bytes = tilo_files::native::bounded::read(&path, MAX_RECORD_BYTES).ok()?;
         let record: Self = serde_json::from_slice(&bytes).ok()?;
         (record.version == VERSION && record.root_hash == root_hash).then_some(record)
     }

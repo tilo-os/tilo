@@ -280,4 +280,58 @@ tilo_test_env::scenario! {
             ]
         );
     }
+
+    phase a_block_a_search_hit_names_by_its_place_is_shown_and_the_headings_ask_stays_answered;
+    {
+        let mut blocks = vec![
+            BlockContent::paragraph("b0", "Intro"),
+            BlockContent::paragraph("b1", "Plan"),
+            BlockContent::paragraph("b2", "The budget is tight"),
+            BlockContent::paragraph("b3", "Then"),
+        ];
+        blocks[1].kind = BlockKind::Heading(2);
+        let mut editor = BlockEditor::new();
+        editor.present_blocks(&blocks);
+        // The person chose the note's first heading in its map.
+        editor.reveal_asked(Some("0:1".into()));
+        assert_eq!(editor.focused_index(), Some(1));
+
+        // A search hit on the third paragraph opens the note: the window asks for that block by
+        // its place, whatever kind it is.
+        editor.reveal_asked(Some("¶2:1".into()));
+        assert_eq!(
+            editor.focused_index(),
+            Some(2),
+            "the paragraph the hit names is shown"
+        );
+        // The view still says the heading it asked for before: that is no new ask.
+        editor.reveal_asked(Some("0:1".into()));
+        assert_eq!(
+            editor.focused_index(),
+            Some(2),
+            "the heading asked for before is not shown again"
+        );
+        // The same paragraph hit again is shown again; one past the end shows nothing.
+        editor.focus_block(0, CursorPlacement::End);
+        editor.reveal_asked(Some("¶2:2".into()));
+        assert_eq!(editor.focused_index(), Some(2));
+        editor.reveal_asked(Some("¶9:3".into()));
+        assert_eq!(editor.focused_index(), Some(2));
+
+        // A new editor shows the block it is asked for at once, and takes a heading asked of the
+        // note before as answered.
+        let mut opened = BlockEditor::new();
+        opened.present_blocks(&blocks);
+        opened.reveal_opened(Some("¶3:4".into()));
+        assert_eq!(opened.focused_index(), Some(3));
+        let mut another = BlockEditor::new();
+        another.present_blocks(&blocks);
+        another.reveal_opened(Some("0:1".into()));
+        another.reveal_asked(Some("0:1".into()));
+        assert_ne!(
+            another.focused_index(),
+            Some(1),
+            "a heading asked of the note shown before is no place in this one"
+        );
+    }
 }

@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use accounts::email::{AccountConfig, AuthMethod, TYPE_ID};
-use accounts::person::PersonAccounts;
+use accounts::person::AccountList;
 use accounts::{Account, AccountId};
 use tilo_resource::Invoke;
 
@@ -19,9 +19,9 @@ use super::{ReviewGroup, ReviewItem, ServiceAddress, ServiceError};
 /// The address is invalid, the account is already there, or the vault could not be written.
 pub fn connect(
     config_root: &Path,
-    record: &PersonAccounts,
+    record: &AccountList,
     address: &ServiceAddress,
-) -> Result<(AccountId, Invoke<PersonAccounts>), ServiceError> {
+) -> Result<(AccountId, Invoke<AccountList>), ServiceError> {
     let email = address.login.trim().to_ascii_lowercase();
     let Some((_, domain)) = email.split_once('@') else {
         return Err(ServiceError::InvalidAddress);
@@ -34,6 +34,8 @@ pub fn connect(
         username: email.clone(),
         ..AccountConfig::default()
     };
+    // The address alone names the provider's servers, or its own `imap.` and
+    // `smtp.` names for a domain no provider is known by.
     let known = config.autofill_from_email();
     let server = address.server.trim();
     if !server.is_empty() {
@@ -44,10 +46,6 @@ pub fn connect(
         if !known {
             config.smtp_host = server.replacen("imap.", "smtp.", 1);
         }
-    }
-    if config.imap_host.is_empty() {
-        config.imap_host = format!("imap.{domain}");
-        config.smtp_host = format!("smtp.{domain}");
     }
     if config.auth == AuthMethod::OAuth {
         // Gmail and Outlook refuse a password; their sign-in is Mail's own.
@@ -71,7 +69,7 @@ pub fn connect(
         &account,
         accounts::Secret::password(address.secret.to_string()),
     )?;
-    Ok((id, PersonAccounts::saving(&account)))
+    Ok((id, AccountList::saving(&account)))
 }
 
 /// The account itself, as the one thing this source brings.
@@ -101,10 +99,10 @@ pub fn review(account: &Account) -> (String, Vec<ReviewGroup>) {
 ///
 /// # Errors
 /// The record no longer holds the account.
-pub fn publish(record: &PersonAccounts, account: &str) -> Result<Invoke<PersonAccounts>, String> {
+pub fn publish(record: &AccountList, account: &str) -> Result<Invoke<AccountList>, String> {
     let mut stored = record
         .account(account)
         .ok_or_else(|| "the mail account is gone".to_owned())?;
     stored.config["import_pending"] = serde_json::Value::Bool(false);
-    Ok(PersonAccounts::saving(&stored))
+    Ok(AccountList::saving(&stored))
 }

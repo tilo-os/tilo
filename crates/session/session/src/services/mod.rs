@@ -47,6 +47,7 @@ use crate::tools;
 pub(crate) mod accounts;
 pub(crate) mod app_wire;
 pub(crate) mod chooser;
+pub(crate) mod clipboard;
 
 /// How a client reaches a service of this session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +99,9 @@ pub(crate) enum Service {
     /// The files an app asks the person for, chosen in the session's own file chooser, and the
     /// links and files it opens, in the app that takes them ([`chooser`]).
     Chooser,
+    /// The person's clipboard, for the apps that hold no display of their own to offer or read a
+    /// selection on ([`clipboard`]).
+    Clipboard,
 }
 
 /// One service of this desktop: its name, how it is reached, and what serves it.
@@ -143,6 +147,11 @@ pub(crate) const TABLE: &[Row] = &[
         name: launcher::services::CHOOSER_SERVICE,
         reach: Reach::Launcher,
         owner: Owner::Session(Service::Chooser),
+    },
+    Row {
+        name: launcher::services::CLIPBOARD_SERVICE,
+        reach: Reach::Launcher,
+        owner: Owner::Session(Service::Clipboard),
     },
     Row {
         name: launcher::services::COMPAT_SERVICE,
@@ -220,6 +229,8 @@ pub(crate) struct Served {
     accounts: Option<accounts::Served>,
     /// The files apps ask the person for, and the links and files they open.
     chooser: Option<chooser::Served>,
+    /// The person's clipboard, for the apps that hold no display of their own.
+    clipboard: Option<clipboard::Served>,
 }
 
 /// What a session serves its services with.
@@ -332,6 +343,13 @@ pub(crate) fn start(mut serving: Serving) -> Served {
                     .ok()
                 });
             }
+            Service::Clipboard => {
+                served.clipboard = clipboard::serve(serving.wake.clone())
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "the clipboard service is unavailable");
+                    })
+                    .ok();
+            }
             Service::DataUsage => {}
         }
     }
@@ -352,6 +370,11 @@ impl Served {
     /// The files and links the apps ask this session for, while it serves them.
     pub(crate) const fn chooser(&self) -> Option<&chooser::Served> {
         self.chooser.as_ref()
+    }
+
+    /// The person's clipboard, served to the tilolang apps that hold no display of their own.
+    pub(crate) const fn clipboard(&self) -> Option<&clipboard::Served> {
+        self.clipboard.as_ref()
     }
 
     /// Count what this device's traffic did since the last pass into the person's settings, on the
@@ -405,33 +428,18 @@ fn identity(
 }
 
 /// What the identity service knows of the apps it signs for: the person records their surfaces
-/// declare, and the ids each had before as the installed catalogue believes them.
-struct InstalledApps {
-    earlier: tilo_action_policy::EarlierIds,
-}
+/// declare.
+struct InstalledApps;
 
 impl InstalledApps {
-    /// The catalogue as this login holds it; an unreadable one leaves the apps with the ids they
-    /// have now.
     fn read() -> Self {
-        let earlier = match app_catalogue::apps::earlier_ids_from_env() {
-            Ok(earlier) => earlier,
-            Err(error) => {
-                tracing::warn!(%error, "the installed apps are not read: no earlier app ids");
-                tilo_action_policy::EarlierIds::default()
-            }
-        };
-        Self { earlier }
+        Self
     }
 }
 
 impl PersonResourceTypes for InstalledApps {
     fn person_resource_types(&self, app_id: &str) -> Vec<String> {
         tilo_workspace_service::apps::SurfacePersonDocuments.person_resource_types(app_id)
-    }
-
-    fn earlier_ids(&self, app_id: &str) -> Vec<String> {
-        self.earlier.of(app_id).to_vec()
     }
 
     fn reads_documents_of(&self, reader: &str, owner: &str) -> bool {
@@ -995,6 +1003,7 @@ mod tests {
                 Service::Windows,
                 Service::Accounts,
                 Service::Chooser,
+                Service::Clipboard,
             ] {
                 assert!(
                     TABLE

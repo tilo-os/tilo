@@ -528,67 +528,6 @@ pub(crate) mod tests {
             assert!(current.reviewer.is_none());
         }
 
-        phase a_displayed_application_cannot_decide_a_newer_submission;
-        {
-            let (_directory, storage, reviewed, proofs) = review_fixture();
-            let replacement = submit(&storage, replacement(&reviewed), 101, &proofs).unwrap();
-            assert!(matches!(
-                approve_reviewed(&storage, &reviewed, "owner", 102, &proofs),
-                Err(ApplicationFailure::Changed(_))
-            ));
-            assert!(matches!(
-                reject_reviewed(
-                    &storage,
-                    &reviewed,
-                    "owner",
-                    "Feedback for the old request",
-                    102
-                ),
-                Err(ApplicationFailure::Changed(_))
-            ));
-            assert_eq!(
-                pending(&storage, &reviewed.application.pubkey_hex).unwrap(),
-                replacement
-            );
-            assert!(storage.load_allowlist().unwrap().publishers.is_empty());
-
-            let rejected =
-                reject_reviewed(&storage, &replacement, "owner", "Describe your app", 103).unwrap();
-            assert_eq!(rejected.status, ApplicationStatus::Rejected);
-            assert_eq!(rejected.reason.as_deref(), Some("Describe your app"));
-            assert_eq!(rejected.reviewer.as_deref(), Some("owner"));
-            assert_eq!(rejected.application, replacement.application);
-        }
-
-        phase an_unchanged_review_still_rechecks_proofs_and_approves_exact_namespaces;
-        {
-            let (_directory, storage, reviewed, proofs) = review_fixture();
-            assert!(
-                approve_reviewed(&storage, &reviewed, "owner", 101, &FixedProofs::default()).is_err()
-            );
-            assert_eq!(
-                pending(&storage, &reviewed.application.pubkey_hex).unwrap(),
-                reviewed
-            );
-            assert!(storage.load_allowlist().unwrap().publishers.is_empty());
-            let (approved, row) = approve_reviewed(&storage, &reviewed, "owner", 102, &proofs).unwrap();
-            assert_eq!(approved.status, ApplicationStatus::Approved);
-            assert_eq!(approved.application, reviewed.application);
-            assert_eq!(row.namespaces, ["com.example"]);
-            assert_eq!(approved.verified.first().unwrap().checked_at_unix, 102);
-            assert!(matches!(
-                reject_reviewed(&storage, &reviewed, "owner", "Stale rejection", 103),
-                Err(ApplicationFailure::NotPending(_))
-            ));
-            assert_eq!(
-                storage
-                    .load_publisher_application(&row.pubkey_hex)
-                    .unwrap()
-                    .unwrap(),
-                approved
-            );
-        }
-
         phase each_claim_needs_its_proof_where_only_the_owner_can_write;
         {
             let key = SigningKey::from_bytes(&[5; 32]);

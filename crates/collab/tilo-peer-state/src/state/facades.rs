@@ -8,19 +8,6 @@
 //! reaches the peer's core through it that the peer did not already expose.
 use super::StatePeer;
 
-/// The media-call governance of a peer's workspace, read side: the security
-/// metadata proofs and the admitted Chat bindings a call is checked against.
-#[derive(Clone, Copy)]
-pub struct PeerMediaGovernance<'peer> {
-    pub(crate) peer: &'peer StatePeer,
-}
-
-/// The media-call governance of a peer's workspace, write side: authoring the workspace
-/// media policy and reconciling it with verified revocations.
-pub struct PeerMediaGovernanceMut<'peer> {
-    pub(crate) peer: &'peer mut StatePeer,
-}
-
 /// What a peer's workspace governs, read side: who may read, name and write
 /// its checkpoints, run its tasks and administer it, and the roots its effect
 /// history and checkpoints currently stand at.
@@ -88,18 +75,6 @@ impl StatePeer {
     #[must_use]
     pub fn governance_mut(&mut self) -> PeerGovernanceMut<'_> {
         PeerGovernanceMut { peer: self }
-    }
-
-    /// Read this peer's workspace media governance.
-    #[must_use]
-    pub fn media(&self) -> PeerMediaGovernance<'_> {
-        PeerMediaGovernance { peer: self }
-    }
-
-    /// Author or reconcile this peer's workspace media governance.
-    #[must_use]
-    pub fn media_mut(&mut self) -> PeerMediaGovernanceMut<'_> {
-        PeerMediaGovernanceMut { peer: self }
     }
 
     /// Check against, or read, the workspace this peer's workspace governs.

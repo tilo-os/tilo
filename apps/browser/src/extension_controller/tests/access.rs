@@ -133,8 +133,15 @@ tilo_test_env::scenario! {
             let rows = controller.library_rows(|_| true);
             let row = ui::widget::find_test_id(rows[0].as_ref(), &format!("browser.extension.{id}"))
                 .expect("its row");
+            // What a screen reader reads of the row: its name, what describes it and its value.
             row.accessibility()
-                .and_then(|node| node.value)
+                .map(|node| {
+                    [node.name, node.description, node.value]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
                 .unwrap_or_default()
         };
         let revocable = |controller: &ExtensionController| {

@@ -359,6 +359,77 @@ class DocExampleTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("no API server to serve the examples with", output)
 
+    def test_an_example_of_a_host_runs_on_that_host(self) -> None:
+        self.book(MANIFEST.replace('["python", "typescript"]', '["sh"]'))
+        self.page("""
+            ```sh example=on-a-stack host=stack
+            test "$TILO_HOST_NAME" = stack
+            ```
+            """)
+        with mock.patch.dict(os.environ, {"TILO_HOST_NAME": "stack"}):
+            status, output = self.run_tool(
+                "run", "--host", "stack", "--tilo", str(self.executable("bin/tilo", "#!/bin/sh\n"))
+            )
+        self.assertEqual(status, 0, output)
+        self.assertIn("ok   on-a-stack [sh]", output)
+        self.assertNotIn("skip", output)
+
+    def test_a_host_example_is_left_out_without_its_host(self) -> None:
+        api, tilo = self.shell_book("""
+            ```sh example=on-a-stack host=stack
+            exit 9
+            ```
+
+            ```sh example=listing
+            exit 0
+            ```
+            """)
+        status, output = self.run_tool("run", "--api", str(api), "--tilo", str(tilo))
+        self.assertEqual(status, 0, output)
+        self.assertIn("ok   listing [sh]", output)
+        self.assertNotIn("on-a-stack [sh]", output)
+        self.assertIn("skip on-a-stack", output)
+        self.assertIn("it runs on host stack", output)
+
+    def test_a_host_belongs_to_one_example(self) -> None:
+        self.page(PYTHON + TYPESCRIPT.replace("first-workspace", "first-workspace host=stack"))
+        status, output = self.check()
+        self.assertEqual(status, 1)
+        self.assertIn("names more than one host", output)
+
+    def test_a_host_needs_an_example(self) -> None:
+        self.page(PYTHON + TYPESCRIPT, """
+            ```python host=stack
+            print("part of one")
+            ```
+            """)
+        status, output = self.check()
+        self.assertEqual(status, 1)
+        self.assertIn("host= names the environment an example runs in", output)
+
+    def test_run_names_an_example_that_runs_on_a_host(self) -> None:
+        api, tilo = self.shell_book("""
+            ```sh example=on-a-stack host=stack
+            exit 0
+            ```
+            """)
+        status, output = self.run_tool(
+            "run", "--api", str(api), "--tilo", str(tilo), "--only", "on-a-stack"
+        )
+        self.assertEqual(status, 1)
+        self.assertIn("it runs on host stack, with --host stack", output)
+
+    def test_list_names_the_host_of_an_example(self) -> None:
+        self.book(MANIFEST.replace('["python", "typescript"]', '["sh"]'))
+        self.page("""
+            ```sh example=on-a-stack host=stack
+            exit 0
+            ```
+            """)
+        status, output = self.run_tool("list")
+        self.assertEqual(status, 0, output)
+        self.assertIn("on-a-stack  docs/tilo-sh/index.md:3  sh  on host stack", output)
+
 
 if __name__ == "__main__":
     unittest.main()

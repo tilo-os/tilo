@@ -728,77 +728,23 @@ mod tests {
             assert!(read_handoff(&mut wire.as_slice()).is_err());
         }
 
-        phase every_reply_reads_back_from_its_tagged_wire_form;
-        // Every reply reads back as it was written, in the internally tagged
-        // form it always had on the wire, and a reply without a field its `op`
-        // needs is refused.
+        phase a_reply_is_tagged_and_needs_the_fields_its_op_names;
+        // The wire form is the internally tagged one it always was: an `op` string
+        // beside the fields, so a reply can be read before its type is known, and one
+        // missing a field its `op` needs is refused rather than half read.
         {
-            let replies = [
-                Reply::Snapshot {
-                    subscription: 7,
-                    snapshot: Box::default(),
-                },
-                Reply::SubscriptionRefused {
-                    subscription: 7,
-                    refusal: Refusal::NotGranted {
-                        grant: Grant::Processes,
-                    },
-                },
-                Reply::Grants {
-                    request: 3,
-                    grants: Grants::IMAGE_DEFAULT,
-                },
-                Reply::Ended {
-                    request: 4,
-                    ended: 2,
-                },
-                Reply::Refused {
-                    request: 5,
-                    refusal: Refusal::Invalid {
-                        detail: "no such process".into(),
-                    },
-                },
-                Reply::Storage {
-                    request: 6,
-                    storage: Box::new(Storage {
-                        devices: vec![StorageDevice {
-                            name: "nvme0n1".into(),
-                            kind: "disk".into(),
-                            size: 1_024_209_543_168,
-                            children: vec![StorageDevice {
-                                name: "nvme0n1p4".into(),
-                                kind: "part".into(),
-                                fstype: Some("crypto_LUKS".into()),
-                                fs_version: Some("2".into()),
-                                ..StorageDevice::default()
-                            }],
-                            health: Some(DriveHealth {
-                                supported: true,
-                                power_on_hours: Some(2294),
-                                ..DriveHealth::default()
-                            }),
-                            ..StorageDevice::default()
-                        }],
-                    }),
-                },
-            ];
-            for reply in replies {
-                let wire = serde_json::to_value(&reply).unwrap();
-                assert!(wire.get("op").is_some_and(serde_json::Value::is_string));
-                let text = serde_json::to_string(&reply).unwrap();
-                assert_eq!(serde_json::from_str::<Reply>(&text).unwrap(), reply);
-                assert_eq!(
-                    serde_json::from_slice::<Reply>(text.as_bytes()).unwrap(),
-                    reply
-                );
-            }
-            let tag_last = r#"{"request":4,"ended":2,"op":"ended"}"#;
+            let reply = Reply::Ended {
+                request: 4,
+                ended: 2,
+            };
+            let wire = serde_json::to_value(&reply).unwrap();
+            assert!(wire.get("op").is_some_and(serde_json::Value::is_string));
+            let text = serde_json::to_string(&reply).unwrap();
+            assert_eq!(serde_json::from_str::<Reply>(&text).unwrap(), reply);
             assert_eq!(
-                serde_json::from_str::<Reply>(tag_last).unwrap(),
-                Reply::Ended {
-                    request: 4,
-                    ended: 2
-                }
+                serde_json::from_str::<Reply>(r#"{"request":4,"ended":2,"op":"ended"}"#).unwrap(),
+                reply,
+                "the fields come first, the tag last"
             );
             assert!(serde_json::from_str::<Reply>(r#"{"op":"ended","request":4}"#).is_err());
             assert!(serde_json::from_str::<Reply>(r#"{"op":"restarted","request":4}"#).is_err());

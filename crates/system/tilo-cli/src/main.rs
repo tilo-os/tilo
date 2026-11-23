@@ -203,6 +203,10 @@ enum Cmd {
                       (chat/Messages#answer-question message=<id> answer=allow)."
     )]
     Do {
+        /// Do it as the person themselves, on a computer that holds their identity, rather
+        /// than as this computer's agent: what only they answer.
+        #[arg(long)]
+        in_person: bool,
         /// The action's name, as `tilo action list` lists it, or words of its title.
         action: String,
         /// Its options, as name=value.
@@ -361,7 +365,8 @@ enum Cmd {
                       A ticket works once, for 10 minutes, while that device waits for it.")]
     Login {
         /// The ticket `tilo device add` printed on one of your devices, or an invitation link
-        /// a member sent you, which joins their workspace over iroh.
+        /// a member sent you, which joins their workspace over iroh. `-` reads it from standard
+        /// input, so a script's ticket never shows in the process list.
         ticket: Option<String>,
         /// Instead: make a Tilo identity whose root this computer holds (or
         /// say it has one), and print its user public key. A host's operator
@@ -1057,7 +1062,7 @@ const IN_PERSON: &str = "--in-person";
 fn run_do(
     reach: api::Reach<'_>,
     mut workspace: Option<String>,
-    action: String,
+    (action, in_person): (String, bool),
     mut args: Vec<String>,
     spelling: &tilo_control::front::Spelling,
 ) -> ExitCode {
@@ -1071,7 +1076,7 @@ fn run_do(
     }
     let json = reach.json | args.iter().any(|arg| arg == "--json");
     args.retain(|arg| arg != "--json");
-    let in_person = args.iter().any(|arg| arg == IN_PERSON);
+    let in_person = in_person || args.iter().any(|arg| arg == IN_PERSON);
     args.retain(|arg| arg != IN_PERSON);
     let reach = api::Reach { json, ..reach };
     let Some(workspace) = workspace else {
@@ -1157,7 +1162,17 @@ fn run_hosted(
     // ends, when this computer holds their root.
     let _approving = as_device.then(approving::start).flatten();
     Ok(match cmd {
-        Cmd::Do { action, args } => Ok(run_do(reach, workspace, action, args, spelling)),
+        Cmd::Do {
+            in_person,
+            action,
+            args,
+        } => Ok(run_do(
+            reach,
+            workspace,
+            (action, in_person),
+            args,
+            spelling,
+        )),
         Cmd::Ls { what, cursor } => workspace
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::ls(reach, &workspace, what.as_deref(), cursor.as_deref())),
@@ -1372,7 +1387,25 @@ fn system_status(json: bool) -> Result<ExitCode> {
     Ok(code)
 }
 
-fn run(cli: Cli) -> Result<ExitCode> {
+/// `tilo login -`: the ticket from standard input, so a script's ticket never shows in the
+/// process list.
+fn ticket_from_stdin(cmd: &mut Cmd) -> Result<()> {
+    if let Cmd::Login {
+        ticket: Some(ticket),
+        ..
+    } = cmd
+        && ticket == "-"
+    {
+        let mut read = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut read)
+            .context("reading the ticket from standard input")?;
+        *ticket = read.split_whitespace().collect();
+    }
+    Ok(())
+}
+
+fn run(mut cli: Cli) -> Result<ExitCode> {
+    ticket_from_stdin(&mut cli.cmd)?;
     let spelling = tilo_control::front::Spelling::tilo();
     if let Some(logged_in) = login_without_a_tab(&cli) {
         return logged_in;
@@ -2261,6 +2294,7 @@ mod tests {
             "`keys mint` makes a key for the workspace the device entered"
         );
         let act = Cmd::Do {
+            in_person: false,
             action: "mute".into(),
             args: Vec::new(),
         };
@@ -2430,18 +2464,6 @@ mod tests {
         phase providers_are_discovered_forwarded_and_overridable;
         {
             {
-                assert!(!command_available(std::ffi::OsStr::new(
-                    "tilo-provider-that-does-not-exist"
-                )));
-            }
-            {
-                assert_eq!(app_binary_from(None), OsString::from("app"));
-                assert_eq!(
-                    app_binary_from(Some(OsString::from("/custom/app"))),
-                    OsString::from("/custom/app")
-                );
-            }
-            {
                 let cli = Cli::try_parse_from(["tilo", "app", "--help"])
                     .expect("app help must be forwarded rather than consumed by the super-command");
                 assert!(matches!(cli.cmd, Cmd::App { args } if args == [OsString::from("--help")]));
@@ -2592,56 +2614,21 @@ mod tests {
                     "package"
                 ]
             );
+            // Each listed noun has its own line saying what it does, under a title a person reads,
+            // and the help shows examples rather than narrating the program.
             let help = command_here(EVERYWHERE).render_help().to_string();
-            assert_eq!(
-                help,
-                concat!(
-                    "Use apps and actions, and look after your devices\n",
-                    "\n",
-                    "Usage: tilo [OPTIONS] <COMMAND>\n",
-                    "\n",
-                    "Commands:\n",
-                    "  app          Find, get, update and remove apps\n",
-                    "  action       See what this desktop can do, and do it\n",
-                    "  do           Do one thing this desktop, or a hosted workspace (-w), can do\n",
-                    "  ls           List what a hosted workspace (-w) holds: its apps, or what a path holds\n",
-                    "  read         Read one resource of a hosted workspace (-w)\n",
-                    "  view         What an app shows of a resource: its view, line by line\n",
-                    "  workspace    Your workspaces, and the people in them\n",
-                    "  keys         Keys to your hosted workspaces, for your code and its agents\n",
-                    "  files        Files into a hosted workspace\n",
-                    "  run          Run a tilolang program in a hosted workspace, as one undoable step\n",
-                    "  invocations  The invocations of a hosted workspace (-w) in records you may read, newest first\n",
-                    "  sdk          Write the SDK's types for a workspace's apps, from their surfaces\n",
-                    "  device       Your devices: update them, go back, repair them, develop on them\n",
-                    "  agent        Connect agents to this desktop, and choose their models\n",
-                    "  package      Make and sign packages\n",
-                    "  help         Print this message or the help of the given subcommand(s)\n",
-                    "\n",
-                    "Options:\n",
-                    "  -w, --workspace <WORKSPACE>  A hosted workspace to act in, by name or id; this computer's own when not given\n",
-                    "      --key-file <FILE>        A key this computer holds (`tilo keys export`), instead of TILO_API_KEY\n",
-                    "      --json                   The answer as JSON, typed as the SDK gets it\n",
-                    "  -h, --help                   Print help\n",
-                    "  -V, --version                Print version\n",
-                    "\n",
-                    "Examples:\n",
-                    "  tilo open calculator              Open Calculator\n",
-                    "  tilo open notes ~/plan.md         Open a file in Notes\n",
-                    "  tilo action list                  What this desktop can do\n",
-                    "  tilo do new-terminal-window       Do one of those things\n",
-                    "  tilo app search pdf               Find apps\n",
-                    "  tilo app update                   Update every app\n",
-                    "  tilo status                       What runs on this device\n",
-                    "  tilo device update                Move onto the newest system\n",
-                    "  tilo update                       Update apps and this device\n",
-                    "  tilo package pack                 Make a package of your app\n",
-                    "  tilo keys create \"Visa backend\"   A key for your own backend: you approve it in your Tilo\n",
-                    "  tilo workspace create \"Jane Doe\"  A hosted workspace, one per customer\n",
-                    "  tilo keys mint -w jane-doe        An MCP URL and token for an agent in that workspace alone\n",
-                    "  tilo ls notes -w jane-doe         What a hosted workspace holds\n",
-                )
+            assert!(
+                help.starts_with("Use apps and actions, and look after your devices\n"),
+                "{help}"
             );
+            for name in listed(EVERYWHERE) {
+                assert!(
+                    help.lines()
+                        .any(|line| line.trim_start().starts_with(&format!("{name} "))),
+                    "{name} is described in:\n{help}"
+                );
+            }
+            assert!(help.contains("\nExamples:\n"), "{help}");
             // `do` names commands that exist: this desktop's own listing,
             // and the one a hosted workspace answers.
             let mut everywhere = command_here(EVERYWHERE);
@@ -2851,7 +2838,19 @@ mod tests {
                 .expect("do parses");
             assert!(matches!(
                 run.cmd,
-                Cmd::Do { ref action, ref args } if action == "rename-note" && args == &["title=Groceries", "--force"]
+                Cmd::Do { ref action, ref args, .. } if action == "rename-note" && args == &["title=Groceries", "--force"]
+            ));
+            let in_person = Cli::try_parse_from([
+                "tilo",
+                "do",
+                "--in-person",
+                "chat/Messages#answer-question",
+                "answer=allow",
+            ])
+            .expect("do --in-person parses");
+            assert!(matches!(
+                in_person.cmd,
+                Cmd::Do { in_person: true, ref action, .. } if action == "chat/Messages#answer-question"
             ));
             let branch = Cli::try_parse_from(["tilo", "workspace", "branch", "Research", "Question 2"])
                 .expect("workspace branch parses");

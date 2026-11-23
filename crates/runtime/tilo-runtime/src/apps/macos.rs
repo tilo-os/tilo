@@ -3,13 +3,17 @@
 //!
 //! The launcher's contract is that its caller has verified the payload
 //! against the package's signed root first ([`verify_installed`]);
-//! an unverifiable payload is refused before it reaches the launcher. The
+//! an unverifiable payload is refused before it reaches the launcher. A
+//! package whose entrypoint is a runtime's binary (a tilolang app on the
+//! tilolang runtime) runs that binary from the installed runtime package,
+//! verified the same way, over its own payload (`TILO_APP_MODULE`), as the
+//! Linux launcher runs it. The
 //! app inherits its service connections already handshaken with its
 //! identity, so a sandbox that denies it every socket path still
 //! collaborates.
 
 use super::{Apps, Launch, Sockets};
-use crate::unix::{ServiceConnections, ServiceSockets};
+use crate::host::{ServiceConnections, ServiceSockets};
 use app_catalogue::apps::InstalledApp;
 use std::ffi::OsString;
 use std::os::fd::AsRawFd as _;
@@ -27,6 +31,12 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
         .gui_bin()
         .filter(|bin| !bin.is_empty())
         .ok_or_else(|| format!("{} has no window to open", app.app_id))?;
+    let runtime = manifest
+        .entrypoint
+        .runtime
+        .as_deref()
+        .map(|runtime| runtime_payload(catalog, app, runtime))
+        .transpose()?;
     if apps.data_home.as_os_str().is_empty() {
         return Err("refusing to launch: HOME is not set, so the app has nowhere to write".into());
     }
@@ -66,13 +76,22 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
         OsString::from(tilo_capture::broker::CAPTURE_FD_ENV),
         OsString::from(capture.app_end.as_raw_fd().to_string()),
     ));
+    if runtime.is_some() {
+        env.push((
+            OsString::from(launcher::manifest::APP_MODULE_ENV),
+            app.payload_root.clone().into_os_string(),
+        ));
+    }
     let (capabilities, egress) = apps.launch_capabilities(app, &manifest);
     let request = launcher_macos::LaunchRequest {
         package_id: app.app_id.to_string(),
-        executable: app.payload_root.join(executable),
+        executable: runtime
+            .as_deref()
+            .unwrap_or(&app.payload_root)
+            .join(executable),
         args: Vec::new(),
         payload_dir: app.payload_root.clone(),
-        runtime_dylib_dir: None,
+        runtime_dir: runtime,
         container_dir: container,
         capabilities,
         egress,
@@ -208,7 +227,8 @@ impl tilo_capture::broker::Answers for DeviceAnswers {
             crate::apps::device_cap(device),
             answer,
             Lifetime::UntilRevoked,
-        )
+        );
+        Ok(())
     }
 }
 
@@ -224,7 +244,6 @@ pub(super) fn verify_installed(
     catalog: &package_store::Catalog,
     app: &InstalledApp,
 ) -> Result<(), String> {
-    use package_store::integrity;
     let refuse = |why: String| format!("refusing to launch {}: {why}", app.app_id);
     let package = catalog
         .list()
@@ -232,35 +251,74 @@ pub(super) fn verify_installed(
         .into_iter()
         .find(|package| package.manifest_path == app.manifest_path)
         .ok_or_else(|| refuse("it is no longer installed".into()))?;
-    let report = integrity::verify(&package, &package.payload_root)
-        .map_err(|error| refuse(error.to_string()))?;
+    verify_package(&package).map_err(refuse)
+}
+
+/// The payload of the installed runtime package that provides `runtime` (`<name>/<version>`,
+/// the app's `[entrypoint] runtime`), proven as the app's own is: the app's binary is there.
+///
+/// # Errors
+///
+/// When no installed package provides it, or the one that does fails [`verify_package`]; the
+/// launch is refused.
+fn runtime_payload(
+    catalog: &package_store::Catalog,
+    app: &InstalledApp,
+    runtime: &str,
+) -> Result<std::path::PathBuf, String> {
+    let refuse = |why: String| format!("refusing to launch {}: {why}", app.app_id);
+    let provides = |package: &package_store::registry::InstalledPackage| {
+        let manifest = std::fs::read_to_string(&package.manifest_path)
+            .ok()
+            .and_then(|source| tilo_app_package::Manifest::from_toml_str(&source).ok());
+        manifest.is_some_and(|manifest| {
+            manifest.package.kind == tilo_app_package::Kind::Runtime
+                && manifest.package.provides.as_deref() == Some(runtime)
+        })
+    };
+    let package = catalog
+        .list()
+        .map_err(|error| refuse(error.to_string()))?
+        .into_iter()
+        .find(provides)
+        .ok_or_else(|| {
+            refuse(format!(
+                "the runtime it runs on, {runtime}, is not installed"
+            ))
+        })?;
+    verify_package(&package).map_err(|why| refuse(format!("its runtime {runtime}: {why}")))?;
+    Ok(package.payload_root)
+}
+
+/// Prove `package` is still what was installed: its record's signature by its publisher, the
+/// manifest and every payload file against the signed hashes, no file it did not ship, and a
+/// publisher key this profile has not revoked. The error says which check failed.
+fn verify_package(package: &package_store::registry::InstalledPackage) -> Result<(), String> {
+    use package_store::integrity;
+    let report =
+        integrity::verify(package, &package.payload_root).map_err(|error| error.to_string())?;
     if let Some(fault) = report.faults.first() {
-        return Err(refuse(format!(
-            "its payload changed after install ({fault})"
-        )));
+        return Err(format!("its payload changed after install ({fault})"));
     }
     if let Some(unexpected) = report.unexpected.first() {
-        return Err(refuse(format!(
+        return Err(format!(
             "its payload holds a file the package did not ship ({unexpected})"
-        )));
+        ));
     }
     let signed = integrity::read_record(
-        &integrity::record_dir(&package),
+        &integrity::record_dir(package),
         &package.id,
         &package.package_id_hex,
     )
-    .map_err(|error| refuse(error.to_string()))?;
+    .map_err(|error| error.to_string())?;
     use tilo_app_package::TrustFile as _;
     let revoked = match tilo_app_package::default_revoked_keys_path() {
         Some(path) => tilo_app_package::RevocationList::load(&path)
-            .map_err(|error| refuse(format!("the revocation list is unreadable ({error})")))?,
+            .map_err(|error| format!("the revocation list is unreadable ({error})"))?,
         None => tilo_app_package::RevocationList::default(),
     };
     if let Some(entry) = revoked.find(&signed.root.publisher_identity) {
-        return Err(refuse(format!(
-            "its publisher's key is revoked ({})",
-            entry.reason
-        )));
+        return Err(format!("its publisher's key is revoked ({})", entry.reason));
     }
     Ok(())
 }

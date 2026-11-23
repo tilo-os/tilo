@@ -1,0 +1,149 @@
+{
+  "app": "photos",
+  "said": "Photos",
+  "family": "apps",
+  "live": "rust",
+  "rust": {
+    "id": "so.tilo.photos",
+    "native": "photos"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Photos on an empty library",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "wait_for": "Open"
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    },
+    {
+      "id": "empty",
+      "said": "The empty library says so and offers to open a photograph",
+      "ops": [
+        {
+          "must": [
+            "Open",
+            "Timeline",
+            "Albums",
+            "People"
+          ]
+        },
+        {
+          "read": {
+            "app": "so.tilo.photos",
+            "operation": "read",
+            "is": {
+              "photos": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "import",
+      "said": "Open a photograph from the person's files",
+      "ops": [
+        {
+          "image": {
+            "name": "beach.png"
+          }
+        },
+        {
+          "press": "Open"
+        },
+        {
+          "choose": {
+            "name": "beach.png"
+          }
+        },
+        {
+          "wait_for": {
+            "title": "beach.png"
+          }
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "viewer",
+      "said": "The photograph opens in the viewer",
+      "ops": [
+        {
+          "must": [
+            "Library"
+          ]
+        },
+        {
+          "read": {
+            "app": "so.tilo.photos",
+            "operation": "read",
+            "is": {
+              "photos": 1
+            }
+          }
+        },
+        {
+          "read": {
+            "app": "so.tilo.photos",
+            "operation": "read"
+          }
+        }
+      ]
+    },
+    {
+      "id": "back",
+      "said": "Back in the timeline the photograph is a card of the library",
+      "ops": [
+        {
+          "press": "Library"
+        },
+        {
+          "must": [
+            "beach.png"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "open-again",
+      "said": "Open the photograph from the grid again, then come back",
+      "ops": [
+        {
+          "click": "beach.png"
+        },
+        {
+          "wait_for": {
+            "title": "beach.png"
+          }
+        },
+        {
+          "press": "Library"
+        },
+        {
+          "must": [
+            "beach.png"
+          ]
+        }
+      ],
+      "dark": true
+    }
+  ]
+}

@@ -229,7 +229,7 @@ fn is_empty_scenario(scenario: Option<&str>) -> bool {
 
 /// What a capture shows in place of the person's `CalDAV` accounts: sample accounts whose servers
 /// answer from bundled sample calendars, never the network.
-pub(crate) struct SampleAccounts(pub(crate) crate::AccountStore);
+pub(crate) struct SampleAccounts(pub(crate) crate::CalendarAccounts);
 
 /// The moment a capture shows as now: the same day and time on every run,
 /// so the sample calendar, today's highlight and the now line never move.
@@ -375,7 +375,7 @@ impl ResourceApp for CalendarShell {
     const ARGUMENTS: usize = 1;
 
     const PERSON_RESOURCES: &'static [ui::framework::PersonKind] = &[
-        ui::framework::PersonKind::shared::<accounts::person::PersonAccounts>(),
+        ui::framework::PersonKind::shared::<accounts::person::AccountList>(),
         ui::framework::PersonKind::shared::<tilo_contact_directory::ContactDirectory>(),
     ];
 
@@ -449,7 +449,7 @@ impl ResourceApp for CalendarShell {
     fn fixture(fixture: &mut Fixture<Calendar>) {
         fixture.provide(ShotNow(shot_now()));
         if !is_empty_scenario(fixture.scenario()) {
-            fixture.provide(SampleAccounts(crate::AccountStore::sample()));
+            fixture.provide(SampleAccounts(crate::CalendarAccounts::sample()));
         }
     }
 

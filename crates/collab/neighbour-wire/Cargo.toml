@@ -40,7 +40,7 @@ thiserror.workspace = true
 # The production codec; tests pin every variant's exact encoding.
 serde_json.workspace = true
 # The environment a placement test's devices are asked in.
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

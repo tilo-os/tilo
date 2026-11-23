@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use ui::storage::{Scope, SettingsSchema};
 
-use crate::account::AccountStore;
+use crate::account::CalendarAccounts;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CalendarDisplay {
@@ -24,7 +24,7 @@ impl SettingsSchema for CalendarDisplay {
 
 impl CalendarDisplay {
     #[must_use]
-    pub fn applied_to(&self, accounts: &AccountStore) -> AccountStore {
+    pub fn applied_to(&self, accounts: &CalendarAccounts) -> CalendarAccounts {
         let mut shown = accounts.clone();
         for account in &mut shown.accounts {
             if let Some(collapsed) = self.collapsed.get(&account.id) {
@@ -49,7 +49,7 @@ mod tests {
 
     #[test]
     fn the_persons_choices_override_what_the_accounts_say() {
-        let accounts = AccountStore::sample();
+        let accounts = CalendarAccounts::sample();
         let calendar = accounts
             .all_calendars()
             .next()

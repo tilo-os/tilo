@@ -1,0 +1,188 @@
+{
+  "app": "accounts",
+  "said": "Accounts",
+  "family": "settings",
+  "live": "rust",
+  "apps": "calendar",
+  "packages": [
+    "mail"
+  ],
+  "rust": {
+    "id": "so.tilo.settings",
+    "native": "settings"
+  },
+  "steps": [
+    {
+      "id": "stand-in",
+      "said": "Stage the tree's stand-in mail server as the address's provider and sign in again",
+      "ops": [
+        {
+          "local_mail_server": {
+            "password": "walks-stand-in"
+          }
+        },
+        {
+          "restart": "session"
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        }
+      ],
+      "budget_ms": 180000
+    },
+    {
+      "id": "mail-open",
+      "said": "Open Mail with no account, and let it use the internet",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "do_app": {
+            "app": "so.tilo.mail",
+            "operation": "open"
+          }
+        },
+        {
+          "press_when_any": {
+            "selectors": [
+              "Allow"
+            ],
+            "within": 30
+          }
+        },
+        {
+          "wait_window": {
+            "app": "so.tilo.mail",
+            "within": 120
+          }
+        }
+      ],
+      "budget_ms": 150000
+    },
+    {
+      "id": "accounts-open",
+      "said": "Open Settings' Accounts page and the Add Email form",
+      "ops": [
+        {
+          "wait_for": "actions"
+        },
+        {
+          "do_app": {
+            "app": "so.tilo.settings",
+            "operation": "open-pane",
+            "args": {
+              "pane": "external_accounts"
+            }
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Add Email"
+          }
+        },
+        {
+          "press": "Add Email"
+        },
+        {
+          "wait_for": {
+            "shown": "Save account"
+          }
+        }
+      ],
+      "dark": true,
+      "budget_ms": 60000
+    },
+    {
+      "id": "add-account",
+      "said": "Add the mail account with its name, address and password",
+      "ops": [
+        {
+          "click": "Display name"
+        },
+        {
+          "type": "Ada"
+        },
+        {
+          "click": "Email address"
+        },
+        {
+          "type": "lab@story.tilo.test"
+        },
+        {
+          "click": "Password or app password"
+        },
+        {
+          "type": "walks-stand-in"
+        },
+        {
+          "press": "Save account"
+        },
+        {
+          "wait_for": {
+            "shown": "Ada"
+          }
+        },
+        {
+          "must_not": [
+            "Save account"
+          ]
+        }
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "in-mail",
+      "said": "Mail lists the account's inbox",
+      "ops": [
+        {
+          "press_when_any": {
+            "selectors": [
+              "Allow"
+            ],
+            "within": 10
+          }
+        },
+        {
+          "wait_window": {
+            "app": "so.tilo.mail",
+            "within": 60
+          }
+        },
+        {
+          "must": {
+            "see": [
+              "Welcome to the lab"
+            ],
+            "within": 60
+          }
+        }
+      ],
+      "budget_ms": 150000
+    },
+    {
+      "id": "in-calendar",
+      "said": "Calendar lists the account too",
+      "ops": [
+        {
+          "open": "calendar"
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "must": {
+            "see": [
+              "lab@story.tilo.test"
+            ],
+            "within": 30
+          }
+        }
+      ],
+      "budget_ms": 60000
+    }
+  ]
+}

@@ -27,6 +27,12 @@
 #   TILO_WORKSPACES_OPERATOR_SOCKET  that socket (default: the workspace's state
 #                               directory, operator.sock)
 #
+# An operator sheds load without stopping the host by writing `spectator-only`
+# or `back-soon` to
+# $TILO_WORKSPACES_STATE/$TILO_WORKSPACES_PERSISTENT/server/mode (`normal`
+# opens it again), which takes effect without a restart and outlives one;
+# `GET /mode` on the host's listener says which one is in force.
+#
 # The pages reach the host's live session through the host's own iroh packet
 # relay, over websockets, which the deployment publishes beside the HTTP
 # routes: it binds TILO_WORKSPACES_LIVE, and pages dial TILO_WORKSPACES_LIVE_ORIGIN

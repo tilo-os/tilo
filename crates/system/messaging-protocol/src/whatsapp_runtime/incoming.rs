@@ -8,7 +8,7 @@ use zeroize::Zeroize;
 
 /// Current host ownership and reviewed direct route; never supplied by an app.
 pub struct IncomingContext<'a> {
-    pub accounts: &'a accounts::person::PersonAccounts,
+    pub accounts: &'a accounts::person::AccountList,
     pub binding: &'a LiveBinding,
     pub source: &'a Arc<Client>,
     pub route: &'a Route,

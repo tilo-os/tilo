@@ -3907,4 +3907,6 @@ impl crate::window_view::PublishingWindow for InstallerApp {
 }
 
 #[cfg(test)]
+pub(super) mod host_journeys_tests;
+#[cfg(test)]
 mod tests;

@@ -2,7 +2,7 @@ use super::*;
 use crate::semantic_document_read::retirement::measure_test_allocations;
 
 #[test]
-fn warm_multiline_preparation_allocates_nothing() {
+fn warm_preparation_allocates_nothing() {
     let mut tr = crate::font_catalog::fixture_renderer();
     let theme = Theme::dark();
     for highlighted in [false, true] {
@@ -25,6 +25,34 @@ fn warm_multiline_preparation_allocates_nothing() {
             "highlighted={highlighted}: {allocations:?}"
         );
     }
+
+    // A measure and a shape after it reuse what the draw prepared, attributed text included.
+    let mut input = TextInput::local()
+        .multiline(true)
+        .with_initial_value("styled e\u{301}\nשלום 👩‍💻\n");
+    input.set_rich_spans(Some(vec![RichSpan::new(&input.text).bold(true)]));
+    let style = input.multiline_style(theme.text_scale);
+    let width = 300.0;
+    let content_width = (f64::from(width) - input.ml_left() - input.ml_pad_x()) as f32;
+    input.ensure_shaped_layout(&mut tr, &theme, &style, content_width);
+    let before = input.single_layout.as_ref().unwrap().height();
+    let ((), stats) = measure_test_allocations(|| {
+        Widget::measure(
+            &mut input,
+            taffy::Size {
+                width: Some(width),
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(width),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut tr,
+        );
+        input.ensure_shaped_layout(&mut tr, &theme, &style, content_width);
+    });
+    assert_eq!(input.single_layout.as_ref().unwrap().height(), before);
+    assert_eq!(stats.requested, 0, "{stats:?}");
 }
 
 tilo_test_env::scenario! {
@@ -205,38 +233,6 @@ fn preparation_tracks_unobserved_text_marks_theme_ime_and_renderer() {
             "warm transition {transition}: {stats:?}"
         );
     }
-}
-
-#[test]
-fn measure_keeps_warm_attributed_preparation() {
-    let mut tr = crate::font_catalog::fixture_renderer();
-    let theme = Theme::dark();
-    let mut input = TextInput::local()
-        .multiline(true)
-        .with_initial_value("styled é\nשלום 👩‍💻\n");
-    input.set_rich_spans(Some(vec![RichSpan::new(&input.text).bold(true)]));
-    let style = input.multiline_style(theme.text_scale);
-    let width = 300.0;
-    let content_width = (f64::from(width) - input.ml_left() - input.ml_pad_x()) as f32;
-    input.ensure_shaped_layout(&mut tr, &theme, &style, content_width);
-    let before = input.single_layout.as_ref().unwrap().height();
-    let ((), stats) = measure_test_allocations(|| {
-        Widget::measure(
-            &mut input,
-            taffy::Size {
-                width: Some(width),
-                height: None,
-            },
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(width),
-                height: taffy::AvailableSpace::MaxContent,
-            },
-            &mut tr,
-        );
-        input.ensure_shaped_layout(&mut tr, &theme, &style, content_width);
-    });
-    assert_eq!(input.single_layout.as_ref().unwrap().height(), before);
-    assert_eq!(stats.requested, 0, "{stats:?}");
 }
 
 #[test]

@@ -400,7 +400,7 @@ pub(crate) fn copy_keys(step: &str) -> (&'static str, &'static str) {
 
 /// `step` , described for the broker's catalogue.
 fn descriptor(step: &str) -> tilo_actions::ActionDescriptor {
-    use tilo_desktop_surface::i18n::t;
+    use tilo_session_core::desktop::i18n::t;
     let (label, description) = copy_keys(step);
     tilo_actions::ActionDescriptor {
         did: None,

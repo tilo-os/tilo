@@ -12,16 +12,6 @@ homepage.workspace = true
 name = "tilolang"
 path = "src/lib.rs"
 
-# The compiler's command line, under its full name and its short one. `tilolang` is the host
-# app's binary: the full build tool, which adds `run`.
-[[bin]]
-name = "tilolangc"
-path = "src/main.rs"
-
-[[bin]]
-name = "tlc"
-path = "src/main.rs"
-
 [dependencies]
 # The tokens, spans and reference literals its parser reads, which the toolkit's editor shares.
 tilolang-lex = { version = "0.1.0", path = "../tilolang-lex" }
@@ -49,7 +39,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # A target's cases are the phases of one test (`scenario!`).
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 # Reads the toolkit's sources for the widgets it describes, as its registry's build does.
 tilo-component-scan = { version = "0.1.0", path = "../../sdk/tilo-component-scan" }
 wasmparser = { version = "0.252", default-features = false, features = ["std", "validate", "features", "simd"] }

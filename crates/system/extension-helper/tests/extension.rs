@@ -8,6 +8,10 @@
     clippy::arithmetic_side_effects,
     reason = "test helpers fail the test on any I/O error"
 )]
+#![allow(
+    clippy::too_many_lines,
+    reason = "a journey asserts every step of one person's use in order"
+)]
 
 mod support;
 
@@ -144,56 +148,6 @@ tilo_test_env::scenario! {
         assert_eq!(
             String::from_utf8_lossy(&out.stderr),
             "tilo-extension: this image has no extension no-such-extension-anywhere\n"
-        );
-    }
-
-    phase unknown_id_is_refused;
-    {
-        let machine = Machine::new();
-        assert_eq!(machine.run_on("install", "nvidia"), 1);
-        assert!(!machine.layout.desired("nvidia").exists());
-    }
-
-    phase status_prints_the_status_file_or_not_installed;
-    {
-        let machine = Machine::new();
-        assert_eq!(machine.run("status"), 0);
-        machine.manifest(
-            &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
-            None,
-        );
-        assert_eq!(machine.run("install"), 0);
-        assert_eq!(machine.run("status"), 0);
-        assert_eq!(machine.run_on("status", "nvidia"), 2);
-    }
-
-    phase the_status_file_keeps_its_python_form;
-    {
-        let machine = Machine::new();
-        machine.manifest(
-            &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
-            None,
-        );
-        assert_eq!(machine.run("install"), 0);
-        let text = fs::read_to_string(machine.layout.status("media-codecs")).unwrap();
-        let value: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(
-            text,
-            tilo_extension::py::Dumps::INDENTED.dumps(&value) + "\n"
-        );
-        assert!(
-            text.starts_with("{\n  \"base\": {\n    \"architecture\": \"x86_64\",\n"),
-            "{text}"
-        );
-        let keys: Vec<&String> = value.as_object().unwrap().keys().collect();
-        let mut sorted = keys.clone();
-        sorted.sort();
-        assert_eq!(keys, sorted);
-        let updated = value["updated"].as_str().unwrap();
-        assert_eq!(updated.len(), "2026-10-14T00:00:00Z".len());
-        assert!(
-            updated.ends_with('Z') && updated.as_bytes()[10] == b'T',
-            "{updated}"
         );
     }
 }
@@ -376,22 +330,11 @@ tilo_test_env::scenario! {
             base_packages_sha256(&lines),
             support::sha256_hex(b"tilo.base-packages.v1\na 1:2-3.noarch\nb 0:1-1.x86_64\n")
         );
+        assert_eq!(
+            base_packages_sha256::<&str>(&[]),
+            support::sha256_hex(b"tilo.base-packages.v1\n")
+        );
     }
-}
-
-#[test]
-fn the_device_computes_the_publishers_fingerprint() {
-    let rpm = "bash 0:5.3.0-2.fc44.x86_64\ngpg-pubkey 0:6d9f90a6-6470bd3b.(none)\n\
-               zlib-ng-compat 0:2.2.5-2.fc44.x86_64\naudit-libs 0:4.1.1-1.fc44.x86_64\n";
-    let lines: Vec<&str> = rpm.lines().collect();
-    assert_eq!(
-        base_packages_sha256(&lines),
-        "5a21779b0a9aca5bb5638fa2177fbbd69c074ed1611aaab0071468cbb6c24e13"
-    );
-    assert_eq!(
-        base_packages_sha256::<&str>(&[]),
-        support::sha256_hex(b"tilo.base-packages.v1\n")
-    );
 }
 
 tilo_test_env::scenario! {
@@ -423,6 +366,8 @@ tilo_test_env::scenario! {
                 assert!(entry.download_bytes > 0);
                 // The image is linked into the search path as it was downloaded.
                 assert!(entry.installed_bytes >= entry.download_bytes);
+                // The size the owner is told before downloading it.
+                assert!(entry.installed_bytes >= 2_000_000_000);
             } else {
                 assert!(
                     !entry.hosts.contains("code.tilo.so"),
@@ -460,425 +405,6 @@ tilo_test_env::scenario! {
             );
         }
     }
-
-    phase catalogue_declares_the_size_the_owner_is_told;
-    {
-        let entry = Catalogue::parse(
-            &fs::read(catalogue_dir().join("windows-compat.json")).unwrap(),
-            RAW_ID,
-        )
-        .unwrap();
-        assert!(entry.installed_bytes >= 2_000_000_000);
-    }
-}
-
-tilo_test_env::scenario! {
-    fn install_and_refresh_build_the_verified_parts_an_owner_opted_into;
-
-    phase installs_verified_parts_and_reports_status;
-    {
-        let machine = Machine::new();
-        machine.manifest(
-            &[
-                machine.artifact(rpm("libavcodec-freeworld", "7.1.1")),
-                machine.artifact(rpm("x265-libs", "4.1")),
-            ],
-            None,
-        );
-        assert_eq!(machine.run("install"), 0);
-        assert_eq!(
-            fs::read_to_string(machine.codecs().join("usr/lib64/libavcodec-freeworld.so")).unwrap(),
-            "libavcodec-freeworld 7.1.1"
-        );
-        let release = machine.release("tilo-codecs");
-        assert_eq!(
-            (
-                release["ID"].as_str(),
-                release["VERSION_ID"].as_str(),
-                release["ARCHITECTURE"].as_str()
-            ),
-            ("fedora", "44", "x86-64")
-        );
-        assert_eq!(release["TILO_BASE_PACKAGES"], machine.fingerprint());
-        let status = machine.status();
-        assert_eq!(status["state"], "installed");
-        assert_eq!(status["desired"], true);
-        assert_eq!(
-            status["parts"],
-            json!({"tilo-codecs": "enabled", "tilo-codecs-mesa": "waiting"})
-        );
-        assert!(
-            status["message"]
-                .as_str()
-                .unwrap()
-                .contains("waiting for a matching Mesa build")
-        );
-        assert_eq!(status["generation"], 1);
-        assert_eq!(machine.host.merges.get(), 1);
-        assert!(!machine.part("tilo-codecs-mesa").exists());
-        let objects = machine.layout.objects("media-codecs");
-        assert_eq!(
-            fs::read_dir(objects).unwrap().count(),
-            2,
-            "verified downloads are kept for activation"
-        );
-        assert!(
-            !machine
-                .layout
-                .cache("media-codecs")
-                .join("partial")
-                .exists()
-        );
-        let record: Value = serde_json::from_slice(
-            &fs::read(
-                machine
-                    .codecs()
-                    .join("usr/share/tilo-extension/tilo-codecs.json"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            record["packages"],
-            json!(["libavcodec-freeworld", "x265-libs"])
-        );
-        assert_eq!(record["requires_base"]["gstreamer1"], "0:1.26.5-1.fc44");
-    }
-
-    phase refresh_without_changes_neither_downloads_nor_remerges;
-    {
-        let machine = Machine::new();
-        let codecs = vec![machine.artifact(rpm("libavcodec-freeworld", "1.0"))];
-        machine.manifest(&codecs, None);
-        assert_eq!(machine.run("install"), 0);
-        machine.host.requests.borrow_mut().clear();
-        machine.manifest(&codecs, None);
-        assert_eq!(machine.run("refresh"), 0);
-        assert!(machine.rpm_requests().is_empty());
-        assert_eq!(machine.host.merges.get(), 1);
-        assert_eq!(machine.status()["revision"], 2);
-    }
-
-    phase refresh_without_opt_in_does_nothing;
-    {
-        let machine = Machine::new();
-        machine.manifest(
-            &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
-            None,
-        );
-        assert_eq!(machine.run("refresh"), 0);
-        assert!(machine.host.requests.borrow().is_empty());
-        assert_eq!(machine.status()["state"], "not-installed");
-    }
-
-    phase mesa_part_arrives_when_published;
-    {
-        let machine = Machine::new();
-        let codecs = vec![machine.artifact(rpm("libavcodec-freeworld", "1.0"))];
-        machine.manifest(&codecs, None);
-        machine.run("install");
-        machine.manifest(
-            &codecs,
-            Some(&[machine.artifact(rpm("mesa-va-drivers-freeworld", "25.2.4"))]),
-        );
-        assert_eq!(machine.run("refresh"), 0);
-        assert!(machine.part("tilo-codecs-mesa").is_dir());
-        assert_eq!(machine.status()["parts"]["tilo-codecs-mesa"], "enabled");
-        assert_eq!(machine.status()["message"], "");
-    }
-
-    phase installer_seed_is_adopted_once;
-    {
-        let machine = Machine::new();
-        let seed = machine.layout.seed("media-codecs");
-        fs::create_dir_all(seed.parent().unwrap()).unwrap();
-        fs::write(&seed, "owner opted in during installation\n").unwrap();
-        machine.manifest(
-            &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
-            None,
-        );
-        assert_eq!(machine.run_on("refresh", "all"), 0);
-        assert_eq!(machine.status()["state"], "installed");
-        machine.run("remove");
-        assert_eq!(machine.run_on("refresh", "all"), 0);
-        assert_eq!(
-            machine.status()["state"],
-            "not-installed",
-            "a removal sticks"
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Refusals: every mismatch refuses the whole transaction and changes nothing.
-// ---------------------------------------------------------------------------
-
-fn assert_refused(machine: &Machine, fragment: &str) {
-    assert_eq!(machine.run("install"), 1);
-    let status = machine.status();
-    assert_eq!(status["state"], "failed");
-    let error = status["last_error"].as_str().unwrap();
-    assert!(error.contains(fragment), "{error:?} lacks {fragment:?}");
-    assert!(!machine.codecs().exists());
-    assert_eq!(machine.host.merges.get(), 0);
-}
-
-tilo_test_env::scenario! {
-    fn every_mismatch_refuses_the_whole_transaction_and_changes_nothing;
-
-    phase manifest_signed_by_another_key;
-    {
-        let machine = Machine::new();
-        let publish = Publish {
-            key: ROGUE,
-            ..Publish::default()
-        };
-        machine.manifest_with(
-            &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
-            None,
-            &publish,
-        );
-        assert_refused(&machine, "signature is not valid");
-    }
-
-    phase manifest_changed_after_signing;
-    {
-        let machine = Machine::new();
-        let data = machine.manifest(
-            &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
-            None,
-        );
-        machine.host.web.borrow_mut().insert(
-            machine.manifest_url(None),
-            replace_bytes(&data, b"\"size\": ", b"\"size\": 1"),
-        );
-        assert_refused(&machine, "signature is not valid");
-    }
-
-    phase artifact_bytes_do_not_match_the_pin;
-    {
-        let machine = Machine::new();
-        let entry = machine.artifact(rpm("libavcodec-freeworld", "1.0"));
-        machine.manifest(std::slice::from_ref(&entry), None);
-        let size = usize::try_from(entry["size"].as_u64().unwrap()).unwrap();
-        let evil = serde_json::to_vec(
-            &json!({"name": "libavcodec-freeworld", "nvra": entry["package"],
-            "files": {"usr/lib64/libavcodec.so": "evil"}}),
-        )
-        .unwrap();
-        let mut forged = evil[..evil.len().min(size)].to_vec();
-        forged.resize(size, b' ');
-        machine
-            .host
-            .web
-            .borrow_mut()
-            .insert(entry["urls"][0].as_str().unwrap().to_owned(), forged);
-        assert_refused(&machine, "does not match the signed manifest");
-    }
-
-    phase artifact_larger_than_the_pin;
-    {
-        let machine = Machine::new();
-        let entry = machine.artifact(rpm("libavcodec-freeworld", "1.0"));
-        machine.manifest(std::slice::from_ref(&entry), None);
-        machine
-            .host
-            .web
-            .borrow_mut()
-            .get_mut(entry["urls"][0].as_str().unwrap())
-            .unwrap()
-            .extend_from_slice(b"more");
-        assert_refused(&machine, "larger than the signed manifest");
-    }
-
-    phase manifest_for_another_base;
-    {
-        let machine = Machine::new();
-        machine.manifest(
-            &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
-            None,
-        );
-        let mut other_lines: Vec<&str> = BASE_PACKAGES.to_vec();
-        other_lines.push("extra 0:1-1.x86_64");
-        let other = base_packages_sha256(&other_lines);
-        let publish = Publish {
-            fingerprint: Some(other.clone()),
-            ..Publish::default()
-        };
-        machine.manifest_with(
-            &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
-            None,
-            &publish,
-        );
-        let mine = machine.manifest_url(None);
-        let theirs = machine.manifest_url(Some(&other));
-        let mut web = machine.host.web.borrow_mut();
-        let (data, sig) = (web[&theirs].clone(), web[&format!("{theirs}.sig")].clone());
-        web.insert(mine.clone(), data);
-        web.insert(format!("{mine}.sig"), sig);
-        drop(web);
-        assert_refused(&machine, "for another base");
-    }
-
-    phase manifest_for_another_release;
-    {
-        let machine = Machine::new();
-        let publish = Publish {
-            version_id: "45",
-            ..Publish::default()
-        };
-        machine.manifest_with(
-            &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
-            None,
-            &publish,
-        );
-        assert_refused(&machine, "for another base");
-    }
-
-    phase artifact_from_a_host_the_image_does_not_allow;
-    {
-        let machine = Machine::new();
-        let entry = machine.artifact_at(
-            rpm("libavcodec-freeworld", "1.0"),
-            "https://code.tilo.so/mirror/libavcodec.rpm",
-        );
-        machine.manifest(&[entry], None);
-        assert_refused(&machine, "not allowed for this extension");
-    }
-
-    phase artifact_over_plain_http;
-    {
-        let machine = Machine::new();
-        let entry = machine.artifact_at(
-            rpm("libavcodec-freeworld", "1.0"),
-            "http://download1.rpmfusion.org/x.rpm",
-        );
-        machine.manifest(&[entry], None);
-        assert_refused(&machine, "not plain HTTPS");
-    }
-
-    phase artifact_url_that_climbs_or_carries_a_query;
-    {
-        for url in [
-            "https://download1.rpmfusion.org/free/../x.rpm",
-            "https://download1.rpmfusion.org/free/%2e%2E/x.rpm",
-            "https://download1.rpmfusion.org/x.rpm?mirror=1",
-            "https://download1.rpmfusion.org/x.rpm#f",
-        ] {
-            let machine = Machine::new();
-            machine.manifest(
-                &[machine.artifact_at(rpm("libavcodec-freeworld", "1.0"), url)],
-                None,
-            );
-            assert_refused(&machine, "has an unexpected form");
-        }
-        let machine = Machine::new();
-        let entry = machine.artifact_at(
-            rpm("libavcodec-freeworld", "1.0"),
-            "https://u@download1.rpmfusion.org/x.rpm",
-        );
-        machine.manifest(&[entry], None);
-        assert_refused(&machine, "not plain HTTPS");
-        let machine = Machine::new();
-        let entry = machine.artifact_at(
-            rpm("libavcodec-freeworld", "1.0"),
-            "https://download1.rpmfusion.org:x/x.rpm",
-        );
-        machine.manifest(&[entry], None);
-        assert_refused(&machine, "Port could not be cast to integer value as 'x'");
-    }
-
-    phase part_the_image_does_not_know;
-    {
-        let machine = Machine::new();
-        republish_with(&machine, |data| {
-            data["parts"][0]["name"] = json!("tilo-anything");
-        });
-        assert_refused(&machine, "part this image does not allow");
-    }
-
-    phase unknown_fields_such_as_commands;
-    {
-        let machine = Machine::new();
-        republish_with(&machine, |data| {
-            data["parts"][0]["post_install"] = json!("rm -rf /");
-        });
-        assert_refused(&machine, "unknown fields");
-    }
-
-    phase package_that_replaces_a_base_package;
-    {
-        let machine = Machine::new();
-        machine.manifest(&[machine.artifact(rpm("glibc", "2.99"))], None);
-        assert_refused(&machine, "would replace a package of this system");
-    }
-
-    phase file_that_is_not_the_named_package;
-    {
-        let machine = Machine::new();
-        let mut entry = machine.artifact(rpm("x265-libs", "1.0"));
-        entry["package"] = json!("libavcodec-freeworld-1.0-1.fc44.x86_64");
-        machine.manifest(&[entry], None);
-        assert_refused(&machine, "the file is x265-libs");
-    }
-
-    phase older_revision_than_already_accepted;
-    {
-        let machine = Machine::new();
-        let codecs = vec![machine.artifact(rpm("libavcodec-freeworld", "1.0"))];
-        machine.manifest_with(
-            &codecs,
-            None,
-            &Publish {
-                revision: Some(5),
-                ..Publish::default()
-            },
-        );
-        assert_eq!(machine.run("install"), 0);
-        machine.manifest_with(
-            &codecs,
-            None,
-            &Publish {
-                revision: Some(4),
-                ..Publish::default()
-            },
-        );
-        assert_eq!(machine.run("refresh"), 1);
-        let status = machine.status();
-        assert_eq!(status["state"], "installed", "the working extension stays");
-        assert!(
-            status["last_error"]
-                .as_str()
-                .unwrap()
-                .contains("refusing a downgrade")
-        );
-        assert!(machine.codecs().is_dir());
-    }
-
-    phase failed_refresh_keeps_the_working_extension;
-    {
-        let machine = Machine::new();
-        machine.manifest(
-            &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
-            None,
-        );
-        machine.run("install");
-        let publish = Publish {
-            key: ROGUE,
-            ..Publish::default()
-        };
-        machine.manifest_with(
-            &[machine.artifact(rpm("libavcodec-freeworld", "2.0"))],
-            None,
-            &publish,
-        );
-        assert_eq!(machine.run("refresh"), 1);
-        assert_eq!(machine.status()["state"], "installed");
-        assert_eq!(
-            fs::read_to_string(machine.codecs().join("usr/lib64/libavcodec-freeworld.so")).unwrap(),
-            "libavcodec-freeworld 1.0"
-        );
-    }
 }
 
 fn replace_bytes(data: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
@@ -888,6 +414,543 @@ fn replace_bytes(data: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
         std::str::from_utf8(to).unwrap(),
     )
     .into_bytes()
+}
+
+/// Every file in `dir`, with its bytes, so a test can damage them and put them back.
+fn snapshot(dir: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let data = fs::read(&path).unwrap();
+            (path, data)
+        })
+        .collect()
+}
+
+fn restore(files: &[(std::path::PathBuf, Vec<u8>)]) {
+    for (path, data) in files {
+        fs::write(path, data).unwrap();
+    }
+}
+
+/// The base with gstreamer at `version`, as an update that changes it boots.
+fn boot_gstreamer(machine: &Machine, version: &str) {
+    let updated: Vec<String> = machine
+        .host
+        .packages
+        .borrow()
+        .iter()
+        .map(|p| {
+            if p.starts_with("gstreamer1 ") {
+                format!("gstreamer1 0:{version}-1.fc44.x86_64")
+            } else {
+                p.clone()
+            }
+        })
+        .collect();
+    *machine.host.packages.borrow_mut() = updated;
+}
+
+/// Publish the codecs resolved for gstreamer `version`, with the Mesa part.
+fn publish_for_gstreamer(machine: &Machine, version: &str, mesa: &[Value]) {
+    let mut data: Value = serde_json::from_slice(&machine.manifest(
+        &[machine.artifact(rpm("libavcodec-freeworld", version))],
+        Some(mesa),
+    ))
+    .unwrap();
+    data["parts"][0]["requires_base"]["gstreamer1"] = json!(format!("0:{version}-1.fc44"));
+    machine.publish(&serde_json::to_vec(&data).unwrap(), support::TRUSTED, None);
+}
+
+/// A host whose connection drops as soon as a download starts.
+struct DropsOff(Fake);
+
+impl tilo_extension::Host for DropsOff {
+    fn rpm_query_all(&self, layout: &Layout) -> tilo_extension::Result<Vec<String>> {
+        self.0.rpm_query_all(layout)
+    }
+    fn http_open(
+        &self,
+        url: &str,
+        offset: u64,
+    ) -> Result<Box<dyn tilo_extension::Response>, tilo_extension::HttpError> {
+        "limited".clone_into(&mut self.0.online.borrow_mut());
+        Err(tilo_extension::HttpError::Unreachable(format!(
+            "{url} {offset}: Network is unreachable"
+        )))
+    }
+    fn connectivity(&self) -> String {
+        self.0.connectivity()
+    }
+    fn machine(&self) -> String {
+        "x86_64".to_owned()
+    }
+    fn euid(&self) -> u32 {
+        0
+    }
+}
+
+/// The owner turns the media codecs on, keeps them through refreshes, repairs,
+/// updates and rollbacks of the base, and turns them off again: every state the
+/// status file reports, and every refusal on the way that must leave the
+/// working extension in place.
+#[test]
+fn an_owner_keeps_codecs_through_refreshes_updates_and_rollbacks_then_removes_them() {
+    let machine = Machine::new();
+    // An id this image has no entry for is refused before anything is chosen.
+    assert_eq!(machine.run_on("install", "nvidia"), 1);
+    assert!(!machine.layout.desired("nvidia").exists());
+
+    // Nothing chosen yet: status says so, and activation and refresh read
+    // neither rpm nor the network.
+    assert_eq!(
+        machine.run("status"),
+        0,
+        "nothing installed, and it says so"
+    );
+    assert_eq!(machine.run("activate"), 0);
+    assert_eq!(machine.host.rpm_queries.get(), 0);
+    assert_eq!(
+        (machine.host.merges.get(), machine.host.unmerges.get()),
+        (0, 0)
+    );
+    assert_eq!(machine.run("refresh"), 0);
+    assert!(machine.host.requests.borrow().is_empty());
+    assert_eq!(machine.status()["state"], "not-installed");
+
+    // Opting in offline waits without an error.
+    "none".clone_into(&mut machine.host.online.borrow_mut());
+    assert_eq!(machine.run("install"), 0);
+    let status = machine.status();
+    assert_eq!(status["state"], "waiting-for-network");
+    assert_eq!(status["last_error"], "");
+    assert!(machine.host.requests.borrow().is_empty());
+    "full".clone_into(&mut machine.host.online.borrow_mut());
+
+    // Online, but nothing published for this base yet: reported, and the
+    // choice kept for the daily retry.
+    assert_eq!(machine.run("install"), 1);
+    let status = machine.status();
+    assert_eq!(status["state"], "failed");
+    assert_eq!(
+        status["desired"], true,
+        "the choice is kept for the daily retry"
+    );
+    assert!(
+        status["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("Not available for this version of Tilo yet")
+    );
+
+    // A connection lost mid-install waits instead of failing.
+    let drops = DropsOff(Fake::default());
+    *drops.0.packages.borrow_mut() = machine.host.packages.borrow().clone();
+    "full".clone_into(&mut drops.0.online.borrow_mut());
+    assert_eq!(
+        tilo_extension::main(&drops, &machine.layout, &args(&["install:media-codecs"])),
+        0
+    );
+    let status = machine.status();
+    assert_eq!(
+        (status["state"].as_str(), status["last_error"].as_str()),
+        (Some("waiting-for-network"), Some(""))
+    );
+
+    // Published now. The first artifact's first mirror is gone, part of it
+    // was downloaded before, and the cache sits on another mount than the
+    // verified store.
+    let mut libavcodec = machine.artifact(rpm("libavcodec-freeworld", "7.1.1"));
+    let url = libavcodec["urls"][0].as_str().unwrap().to_owned();
+    libavcodec["urls"]
+        .as_array_mut()
+        .unwrap()
+        .insert(0, json!("https://download1.rpmfusion.org/gone.rpm"));
+    let codecs = vec![libavcodec, machine.artifact(rpm("x265-libs", "4.1"))];
+    machine.manifest(&codecs, None);
+    let partial = machine.layout.cache("media-codecs").join("partial");
+    fs::create_dir_all(&partial).unwrap();
+    let bytes = machine.host.web.borrow()[&url].clone();
+    fs::write(
+        partial.join(codecs[0]["sha256"].as_str().unwrap()),
+        &bytes[..10],
+    )
+    .unwrap();
+    machine.host.cross_device.set(true);
+    assert_eq!(machine.run("install"), 0, "{}", machine.status());
+    assert!(
+        machine.host.requests.borrow().contains(&(url, 10)),
+        "the partial download resumes by offset, from the next mirror"
+    );
+    let library = machine.codecs().join("usr/lib64/libavcodec-freeworld.so");
+    assert_eq!(
+        fs::read_to_string(&library).unwrap(),
+        "libavcodec-freeworld 7.1.1"
+    );
+    let release = machine.release("tilo-codecs");
+    assert_eq!(
+        (
+            release["ID"].as_str(),
+            release["VERSION_ID"].as_str(),
+            release["ARCHITECTURE"].as_str()
+        ),
+        ("fedora", "44", "x86-64")
+    );
+    assert_eq!(release["TILO_BASE_PACKAGES"], machine.fingerprint());
+    let status = machine.status();
+    assert_eq!(status["state"], "installed");
+    assert_eq!(status["desired"], true);
+    assert_eq!(
+        status["parts"],
+        json!({"tilo-codecs": "enabled", "tilo-codecs-mesa": "waiting"})
+    );
+    assert!(
+        status["message"]
+            .as_str()
+            .unwrap()
+            .contains("waiting for a matching Mesa build")
+    );
+    assert_eq!(status["generation"], 1);
+    assert_eq!(machine.host.merges.get(), 1);
+    assert!(!machine.part("tilo-codecs-mesa").exists());
+    assert_eq!(
+        fs::read_dir(machine.layout.objects("media-codecs"))
+            .unwrap()
+            .count(),
+        2,
+        "verified downloads are kept for activation"
+    );
+    assert!(!partial.exists(), "verified downloads move across mounts");
+    let record: Value = serde_json::from_slice(
+        &fs::read(
+            machine
+                .codecs()
+                .join("usr/share/tilo-extension/tilo-codecs.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        record["packages"],
+        json!(["libavcodec-freeworld", "x265-libs"])
+    );
+    assert_eq!(record["requires_base"]["gstreamer1"], "0:1.26.5-1.fc44");
+
+    // The status file keeps the form the desktop has always read.
+    assert_eq!(machine.run("status"), 0);
+    let text = fs::read_to_string(machine.layout.status("media-codecs")).unwrap();
+    let value: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        text,
+        tilo_extension::py::Dumps::INDENTED.dumps(&value) + "\n"
+    );
+    assert!(
+        text.starts_with("{\n  \"base\": {\n    \"architecture\": \"x86_64\",\n"),
+        "{text}"
+    );
+    let keys: Vec<&String> = value.as_object().unwrap().keys().collect();
+    let mut sorted = keys.clone();
+    sorted.sort();
+    assert_eq!(keys, sorted);
+    let updated = value["updated"].as_str().unwrap();
+    assert_eq!(updated.len(), "2026-10-14T00:00:00Z".len());
+    assert!(
+        updated.ends_with('Z') && updated.as_bytes()[10] == b'T',
+        "{updated}"
+    );
+
+    // A refresh that finds nothing new neither downloads nor merges again.
+    machine.host.requests.borrow_mut().clear();
+    machine.manifest(&codecs, None);
+    assert_eq!(machine.run("refresh"), 0);
+    assert!(machine.rpm_requests().is_empty());
+    assert_eq!(machine.host.merges.get(), 1);
+    assert_eq!(machine.status()["revision"], 2);
+
+    // The Mesa part arrives once it is published.
+    let mesa = vec![machine.artifact(rpm("mesa-va-drivers-freeworld", "25.2.4"))];
+    machine.manifest(&codecs, Some(&mesa));
+    assert_eq!(machine.run("refresh"), 0);
+    assert!(machine.part("tilo-codecs-mesa").is_dir());
+    assert_eq!(machine.status()["parts"]["tilo-codecs-mesa"], "enabled");
+    assert_eq!(machine.status()["message"], "");
+
+    // Activation rebuilds the parts from the verified bytes, keeping the
+    // times media processes compare.
+    let release_file = machine
+        .codecs()
+        .join("usr/lib/extension-release.d/extension-release.tilo-codecs");
+    let before = fs::metadata(&release_file).unwrap().modified().unwrap();
+    fs::write(&library, "replaced behind the helper's back").unwrap();
+    fs::write(
+        machine.codecs().join("usr/lib64/extra.so"),
+        "added behind its back",
+    )
+    .unwrap();
+    assert_eq!(machine.run("activate"), 0);
+    assert_eq!(
+        fs::read_to_string(&library).unwrap(),
+        "libavcodec-freeworld 7.1.1"
+    );
+    assert!(!machine.codecs().join("usr/lib64/extra.so").exists());
+    assert_eq!(
+        fs::metadata(&release_file).unwrap().modified().unwrap(),
+        before
+    );
+
+    // A changed verified object, or a changed kept manifest, is never
+    // activated; once the bytes are as verified again, the parts return.
+    let objects = snapshot(&machine.layout.objects("media-codecs"));
+    for (path, data) in &objects {
+        fs::write(path, replace_bytes(data, b"7.1.1", b"6.6.6")).unwrap();
+    }
+    machine.run("activate");
+    assert!(!machine.codecs().exists());
+    assert_eq!(machine.status()["parts"]["tilo-codecs"], "waiting");
+    restore(&objects);
+    let kept_dir = machine
+        .layout
+        .bases("media-codecs")
+        .join(machine.fingerprint());
+    let kept = snapshot(&kept_dir);
+    let manifest = kept_dir.join("manifest.json");
+    let data = fs::read(&manifest).unwrap();
+    fs::write(
+        &manifest,
+        replace_bytes(&data, b"\"license\": \"GPL", b"\"license\": \"MIT GPL"),
+    )
+    .unwrap();
+    machine.run("activate");
+    assert!(!machine.codecs().exists());
+    assert!(!machine.part("tilo-codecs-mesa").exists());
+    restore(&kept);
+    assert_eq!(machine.run("activate"), 0);
+    assert!(machine.codecs().is_dir() && machine.part("tilo-codecs-mesa").is_dir());
+
+    // An update that keeps the parts' base packages keeps the parts.
+    machine
+        .host
+        .packages
+        .borrow_mut()
+        .push("new-app 0:1-1.fc44.x86_64".to_owned());
+    machine.run("activate");
+    assert!(machine.codecs().is_dir());
+    assert!(machine.part("tilo-codecs-mesa").is_dir());
+
+    // A part whose base package changed waits, and returns on rollback.
+    let booted = machine.host.packages.borrow().clone();
+    *machine.host.packages.borrow_mut() = booted
+        .iter()
+        .map(|p| p.replace("mesa-dri-drivers 0:25.2.4", "mesa-dri-drivers 0:25.3.0"))
+        .collect();
+    machine.run("activate");
+    assert!(machine.codecs().is_dir(), "the software codecs still fit");
+    assert!(!machine.part("tilo-codecs-mesa").exists());
+    assert_eq!(machine.status()["parts"]["tilo-codecs-mesa"], "waiting");
+    *machine.host.packages.borrow_mut() = booted.clone();
+    machine.run("activate");
+    assert!(machine.part("tilo-codecs-mesa").is_dir());
+    assert_eq!(machine.status()["parts"]["tilo-codecs-mesa"], "enabled");
+
+    // A part whose package the base now ships waits.
+    machine
+        .host
+        .packages
+        .borrow_mut()
+        .push("x265-libs 0:4.1-1.fc44.x86_64".to_owned());
+    machine.run("activate");
+    assert!(!machine.codecs().exists());
+    *machine.host.packages.borrow_mut() = booted;
+
+    // Nothing is merged on another release, or on a base that cannot be read.
+    let os_release = machine.root.join("usr/lib/os-release");
+    let good_release = fs::read(&os_release).unwrap();
+    fs::write(&os_release, "ID=fedora\nVERSION_ID=45\n").unwrap();
+    machine.run("activate");
+    assert!(!machine.codecs().exists());
+    assert!(!machine.part("tilo-codecs-mesa").exists());
+    fs::write(&os_release, "ID=Fedora Linux\n").unwrap();
+    let unmerges = machine.host.unmerges.get();
+    assert_eq!(machine.run("activate"), 1);
+    assert!(!machine.codecs().exists());
+    assert_eq!(machine.host.unmerges.get(), unmerges + 1);
+    fs::write(&os_release, &good_release).unwrap();
+    assert_eq!(machine.run("activate"), 0);
+    assert!(machine.codecs().is_dir());
+
+    // Beside an extension nothing vouches for, activation merges nothing.
+    let foreign = machine.layout.extensions().join("evil");
+    fs::create_dir_all(foreign.join("usr/lib/extension-release.d")).unwrap();
+    let (merges, unmerges) = (machine.host.merges.get(), machine.host.unmerges.get());
+    assert_eq!(machine.run("activate"), 1);
+    assert!(!machine.codecs().exists());
+    assert_eq!(
+        machine.host.merges.get(),
+        merges,
+        "a refusal must not merge what it refused"
+    );
+    assert_eq!(
+        (
+            machine.host.unmerges.get(),
+            machine.host.merged.borrow().len()
+        ),
+        (unmerges + 1, 0)
+    );
+    let status = machine.status();
+    assert_eq!(status["state"], "failed");
+    assert!(
+        status["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("unexpected system extensions")
+    );
+    fs::remove_dir_all(&foreign).unwrap();
+    assert_eq!(machine.run("activate"), 0);
+    let status = machine.status();
+    assert_eq!(
+        (status["state"].as_str(), status["last_error"].as_str()),
+        (Some("installed"), Some(""))
+    );
+    assert!(
+        machine
+            .host
+            .merged
+            .borrow()
+            .contains(&"tilo-codecs".to_owned())
+    );
+
+    // A development image merges its own layers beside the parts.
+    let layer = machine.layout.extensions().join("tilo-vm-layer");
+    fs::create_dir_all(layer.join("usr")).unwrap();
+    machine.host.masked.set(false);
+    assert_eq!(machine.run("activate"), 0);
+    assert!(machine.codecs().is_dir());
+    fs::remove_dir_all(&layer).unwrap();
+    machine.host.masked.set(true);
+
+    // An update of a base package takes the parts out until a refresh
+    // rebuilds them for the new base; the previous base's manifest stays for a
+    // rollback, and only the last three bases (and their downloads) are kept.
+    boot_gstreamer(&machine, "1.26.6");
+    machine.run("activate");
+    assert!(!machine.codecs().exists());
+    publish_for_gstreamer(&machine, "1.26.6", &mesa);
+    assert_eq!(machine.run("refresh"), 0);
+    assert_eq!(
+        machine.release("tilo-codecs")["TILO_BASE_PACKAGES"],
+        machine.fingerprint()
+    );
+    assert_eq!(
+        machine.status()["parts"],
+        json!({"tilo-codecs": "enabled", "tilo-codecs-mesa": "enabled"})
+    );
+    assert_eq!(
+        fs::read_dir(machine.layout.bases("media-codecs"))
+            .unwrap()
+            .count(),
+        2,
+        "the previous base's manifest stays for a rollback"
+    );
+    for version in ["1.26.7", "1.26.8"] {
+        boot_gstreamer(&machine, version);
+        publish_for_gstreamer(&machine, version, &mesa);
+        assert_eq!(machine.run("refresh"), 0);
+    }
+    assert_eq!(
+        fs::read_dir(machine.layout.bases("media-codecs"))
+            .unwrap()
+            .count(),
+        3
+    );
+    assert_eq!(
+        fs::read_dir(machine.layout.objects("media-codecs"))
+            .unwrap()
+            .count(),
+        4,
+        "three libavcodec builds and the Mesa part they share"
+    );
+
+    // An older revision than the one accepted, or a manifest signed by
+    // another key, fails the refresh and keeps the working extension.
+    machine.manifest_with(
+        &codecs,
+        None,
+        &Publish {
+            revision: Some(1),
+            ..Publish::default()
+        },
+    );
+    assert_eq!(machine.run("refresh"), 1);
+    let status = machine.status();
+    assert_eq!(status["state"], "installed", "the working extension stays");
+    assert!(
+        status["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("refusing a downgrade")
+    );
+    assert!(machine.codecs().is_dir());
+    machine.manifest_with(
+        &[machine.artifact(rpm("libavcodec-freeworld", "2.0"))],
+        None,
+        &Publish {
+            key: ROGUE,
+            ..Publish::default()
+        },
+    );
+    assert_eq!(machine.run("refresh"), 1);
+    assert_eq!(machine.status()["state"], "installed");
+    assert_eq!(
+        fs::read_to_string(&library).unwrap(),
+        "libavcodec-freeworld 1.26.8"
+    );
+
+    // Removing deletes everything and merges again without the parts.
+    let merges = machine.host.merges.get();
+    assert_eq!(machine.run("remove"), 0);
+    assert!(!machine.codecs().exists());
+    assert!(!machine.part("tilo-codecs-mesa").exists());
+    assert!(!machine.layout.desired("media-codecs").exists());
+    assert!(!machine.layout.objects("media-codecs").exists());
+    assert!(!machine.layout.bases("media-codecs").exists());
+    let status = machine.status();
+    assert_eq!(status["state"], "not-installed");
+    assert_eq!(
+        status["parts"],
+        json!({"tilo-codecs": "off", "tilo-codecs-mesa": "off"})
+    );
+    assert_eq!(status["revision"], Value::Null);
+    assert_eq!(machine.host.merges.get(), merges + 1);
+
+    // A choice made in the installer is adopted once; a removal after it sticks.
+    let seed = machine.layout.seed("media-codecs");
+    fs::create_dir_all(seed.parent().unwrap()).unwrap();
+    fs::write(&seed, "owner opted in during installation\n").unwrap();
+    publish_for_gstreamer(&machine, "1.26.8", &mesa);
+    assert_eq!(machine.run_on("refresh", "all"), 0);
+    assert_eq!(machine.status()["state"], "installed");
+    machine.run("remove");
+    assert_eq!(machine.run_on("refresh", "all"), 0);
+    assert_eq!(
+        machine.status()["state"],
+        "not-installed",
+        "a removal sticks"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Refusals: every mismatch refuses the whole transaction and changes nothing.
+// ---------------------------------------------------------------------------
+
+fn assert_refused(machine: &Machine, fragment: &str) {
+    assert_eq!(machine.run("install"), 1, "{fragment}");
+    let status = machine.status();
+    assert_eq!(status["state"], "failed");
+    let error = status["last_error"].as_str().unwrap();
+    assert!(error.contains(fragment), "{error:?} lacks {fragment:?}");
+    assert!(!machine.codecs().exists());
+    assert_eq!(machine.host.merges.get(), 0);
 }
 
 fn republish_with(machine: &Machine, change: impl Fn(&mut Value)) {
@@ -900,603 +963,266 @@ fn republish_with(machine: &Machine, change: impl Fn(&mut Value)) {
     machine.publish(&serde_json::to_vec(&data).unwrap(), support::TRUSTED, None);
 }
 
-tilo_test_env::scenario! {
-    fn downloads_resume_fall_back_and_wait_for_the_network;
-
-    phase resumes_a_partial_download_by_offset;
-    {
-        let machine = Machine::new();
-        let entry = machine.artifact(rpm("libavcodec-freeworld", "1.0"));
-        machine.manifest(std::slice::from_ref(&entry), None);
-        let partial = machine.layout.cache("media-codecs").join("partial");
-        fs::create_dir_all(&partial).unwrap();
-        let url = entry["urls"][0].as_str().unwrap().to_owned();
-        let data = machine.host.web.borrow()[&url].clone();
-        fs::write(partial.join(entry["sha256"].as_str().unwrap()), &data[..10]).unwrap();
-        assert_eq!(machine.run("install"), 0);
-        assert!(machine.host.requests.borrow().contains(&(url, 10)));
-    }
-
-    phase falls_back_to_the_next_url;
-    {
-        let machine = Machine::new();
-        let mut entry = machine.artifact(rpm("libavcodec-freeworld", "1.0"));
-        entry["urls"]
-            .as_array_mut()
-            .unwrap()
-            .insert(0, json!("https://download1.rpmfusion.org/gone.rpm"));
-        machine.manifest(&[entry], None);
-        assert_eq!(machine.run("install"), 0);
-    }
-
-    phase every_failed_url_is_reported;
-    {
-        let machine = Machine::new();
-        let mut entry = machine.artifact(rpm("libavcodec-freeworld", "1.0"));
-        entry["urls"] = json!([
-            "https://download1.rpmfusion.org/gone.rpm",
-            "https://download1.rpmfusion.org/also-gone.rpm"
-        ]);
-        machine.manifest(&[entry], None);
-        assert_refused(
-            &machine,
-            "download1.rpmfusion.org: Not Found; download1.rpmfusion.org: Not Found",
-        );
-    }
-
-    phase unpublished_base_is_reported_and_retried_later;
-    {
-        let machine = Machine::new();
-        assert_eq!(machine.run("install"), 1);
-        let status = machine.status();
-        assert_eq!(status["state"], "failed");
-        assert_eq!(
-            status["desired"], true,
-            "the choice is kept for the daily retry"
-        );
-        assert!(
-            status["last_error"]
-                .as_str()
-                .unwrap()
-                .contains("Not available for this version of Tilo yet")
-        );
-    }
-
-    phase offline_opt_in_waits_without_an_error;
-    {
-        let machine = Machine::new();
-        *machine.host.online.borrow_mut() = "none".to_owned();
-        assert_eq!(machine.run("install"), 0);
-        let status = machine.status();
-        assert_eq!(status["state"], "waiting-for-network");
-        assert_eq!(status["last_error"], "");
-        assert!(machine.host.requests.borrow().is_empty());
-    }
-
-    phase a_connection_lost_mid_install_waits_instead_of_failing;
-    {
-        struct DropsOff(Fake);
-        impl tilo_extension::Host for DropsOff {
-            fn rpm_query_all(&self, layout: &Layout) -> tilo_extension::Result<Vec<String>> {
-                self.0.rpm_query_all(layout)
-            }
-            fn http_open(
-                &self,
-                url: &str,
-                offset: u64,
-            ) -> Result<Box<dyn tilo_extension::Response>, tilo_extension::HttpError> {
-                *self.0.online.borrow_mut() = "limited".to_owned();
-                Err(tilo_extension::HttpError::Unreachable(format!(
-                    "{url} {offset}: Network is unreachable"
-                )))
-            }
-            fn connectivity(&self) -> String {
-                self.0.connectivity()
-            }
-            fn machine(&self) -> String {
-                "x86_64".to_owned()
-            }
-            fn euid(&self) -> u32 {
-                0
-            }
-        }
-        let machine = Machine::new();
-        let host = DropsOff(Fake::default());
-        *host.0.packages.borrow_mut() = machine.host.packages.borrow().clone();
-        *host.0.online.borrow_mut() = "full".to_owned();
-        assert_eq!(
-            tilo_extension::main(&host, &machine.layout, &args(&["install:media-codecs"])),
-            0
-        );
-        let status = machine.status();
-        assert_eq!(
-            (status["state"].as_str(), status["last_error"].as_str()),
-            (Some("waiting-for-network"), Some(""))
-        );
-    }
-
-    phase empty_activation_reads_neither_rpm_nor_the_network;
-    {
-        let machine = Machine::new();
-        assert_eq!(machine.run("activate"), 0);
-        assert_eq!(machine.host.rpm_queries.get(), 0);
-        assert!(machine.host.requests.borrow().is_empty());
-        assert_eq!(
-            (machine.host.merges.get(), machine.host.unmerges.get()),
-            (0, 0)
-        );
-    }
-
-    phase verified_downloads_move_across_mounts;
-    {
-        let machine = Machine::new();
-        machine.host.cross_device.set(true);
-        install(&machine, true);
-        assert!(machine.codecs().is_dir());
-        assert!(
-            !machine
-                .layout
-                .cache("media-codecs")
-                .join("partial")
-                .exists()
-        );
-    }
+fn publish_at(machine: &Machine, url: &str) {
+    machine.manifest(
+        &[machine.artifact_at(rpm("libavcodec-freeworld", "1.0"), url)],
+        None,
+    );
 }
 
-// ---------------------------------------------------------------------------
-// Images with the release root take certified manifests only.
-// ---------------------------------------------------------------------------
-
-tilo_test_env::scenario! {
-    fn images_with_the_release_root_take_certified_manifests_only;
-
-    phase an_image_with_the_release_root_installs_from_a_certified_bundle;
-    {
-        let machine = Machine::new();
-        machine.certify();
-        machine.manifest(
-            &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
-            None,
-        );
-        assert_eq!(machine.run("install"), 0, "{}", machine.status());
-        let url = machine.manifest_url(None);
-        let requests: Vec<String> = machine
-            .host
-            .requests
-            .borrow()
-            .iter()
-            .map(|(u, _)| u.clone())
-            .collect();
-        assert!(requests.contains(&format!("{url}.bundle")), "{requests:?}");
-        assert!(!requests.contains(&format!("{url}.sig")), "{requests:?}");
-        let kept = machine
-            .layout
-            .bases("media-codecs")
-            .join(machine.fingerprint());
-        assert!(kept.join("manifest.json.bundle").is_file());
-        assert!(!kept.join("manifest.json.sig").exists());
-        fs::remove_dir_all(machine.codecs()).unwrap();
-        assert_eq!(machine.run("activate"), 0);
-        assert!(machine.codecs().is_dir());
-    }
-
-    phase an_image_with_the_release_root_refuses_a_bare_signature;
-    {
-        let machine = Machine::new();
-        machine.manifest(
-            &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
-            None,
-        );
-        // Published for key-pinned images only: no bundle beside the manifest.
-        machine.certify();
-        assert_eq!(machine.run("install"), 1);
-        assert!(!machine.codecs().exists());
-        assert_eq!(machine.host.merges.get(), 0);
-    }
-
-    phase a_kept_bare_signature_does_not_activate_on_an_image_with_the_root;
-    {
-        let machine = Machine::new();
-        install(&machine, false);
-        machine.certify();
-        machine.run("activate");
-        assert!(!machine.codecs().exists());
-    }
-}
-
-/// A machine that has the verified parts installed: the prologue most of the
-/// status, remove and path tests start from.
-fn installed() -> Machine {
-    let machine = Machine::new();
-    install(&machine, true);
-    machine
-}
-
-fn install(machine: &Machine, mesa: bool) {
-    let codecs = vec![machine.artifact(rpm("libavcodec-freeworld", "1.0"))];
-    let mesa = mesa.then(|| vec![machine.artifact(rpm("mesa-va-drivers-freeworld", "25.2.4"))]);
-    machine.manifest(&codecs, mesa.as_deref());
-    assert_eq!(machine.run("install"), 0);
-}
-
-tilo_test_env::scenario! {
-    fn activation_merges_only_what_it_rebuilt_from_verified_bytes_and_remove_takes_it_away;
-
-    phase remove_deletes_everything_and_unmerges;
-    {
-        let machine = installed();
-        assert_eq!(machine.run("remove"), 0);
-        assert!(!machine.codecs().exists());
-        assert!(!machine.part("tilo-codecs-mesa").exists());
-        assert!(!machine.layout.desired("media-codecs").exists());
-        assert!(!machine.layout.objects("media-codecs").exists());
-        assert!(!machine.layout.bases("media-codecs").exists());
-        let status = machine.status();
-        assert_eq!(status["state"], "not-installed");
-        assert_eq!(
-            status["parts"],
-            json!({"tilo-codecs": "off", "tilo-codecs-mesa": "off"})
-        );
-        assert_eq!(status["revision"], Value::Null);
-        assert_eq!(machine.host.merges.get(), 2);
-    }
-
-    phase activation_rebuilds_parts_from_verified_bytes;
-    {
-        let machine = installed();
-        let library = machine.codecs().join("usr/lib64/libavcodec-freeworld.so");
-        fs::write(&library, "replaced behind the helper's back").unwrap();
-        fs::write(
-            machine.codecs().join("usr/lib64/extra.so"),
-            "added behind its back",
-        )
-        .unwrap();
-        assert_eq!(machine.run("activate"), 0);
-        assert_eq!(
-            fs::read_to_string(&library).unwrap(),
-            "libavcodec-freeworld 1.0"
-        );
-        assert!(!machine.codecs().join("usr/lib64/extra.so").exists());
-    }
-
-    phase rebuilding_keeps_the_times_media_processes_compare;
-    {
-        let machine = installed();
-        let release = machine
-            .codecs()
-            .join("usr/lib/extension-release.d/extension-release.tilo-codecs");
-        let before = fs::metadata(&release).unwrap().modified().unwrap();
-        machine.run("activate");
-        assert_eq!(fs::metadata(&release).unwrap().modified().unwrap(), before);
-    }
-
-    phase activation_refuses_a_tampered_object;
-    {
-        let machine = Machine::new();
-        install(&machine, false);
-        for entry in fs::read_dir(machine.layout.objects("media-codecs")).unwrap() {
-            let path = entry.unwrap().path();
-            let data = fs::read(&path).unwrap();
-            fs::write(&path, replace_bytes(&data, b"1.0", b"6.6")).unwrap();
-        }
-        machine.run("activate");
-        assert!(!machine.codecs().exists());
-        assert_eq!(machine.status()["parts"]["tilo-codecs"], "waiting");
-    }
-
-    phase activation_refuses_a_tampered_kept_manifest;
-    {
-        let machine = installed();
-        let kept = fs::read_dir(machine.layout.bases("media-codecs"))
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path()
-            .join("manifest.json");
-        let data = fs::read(&kept).unwrap();
-        fs::write(
-            &kept,
-            replace_bytes(&data, b"\"license\": \"GPL", b"\"license\": \"MIT GPL"),
-        )
-        .unwrap();
-        machine.run("activate");
-        assert!(!machine.codecs().exists());
-        assert!(!machine.part("tilo-codecs-mesa").exists());
-    }
-
-    phase activation_merges_nothing_beside_a_foreign_extension;
-    {
-        let machine = installed();
-        let foreign = machine.layout.extensions().join("evil");
-        fs::create_dir_all(foreign.join("usr/lib/extension-release.d")).unwrap();
-        let merges = machine.host.merges.get();
-        assert_eq!(machine.run("activate"), 1);
-        assert!(!machine.codecs().exists());
-        assert_eq!(
-            machine.host.merges.get(),
-            merges,
-            "a refusal must not merge what it refused"
-        );
-        assert_eq!(
-            (
-                machine.host.unmerges.get(),
-                machine.host.merged.borrow().len()
-            ),
-            (1, 0)
-        );
-        let status = machine.status();
-        assert_eq!(status["state"], "failed");
-        assert!(
-            status["last_error"]
-                .as_str()
-                .unwrap()
-                .contains("unexpected system extensions")
-        );
-        fs::remove_dir_all(&foreign).unwrap();
-        assert_eq!(machine.run("activate"), 0);
-        let status = machine.status();
-        assert_eq!(
-            (status["state"].as_str(), status["last_error"].as_str()),
-            (Some("installed"), Some(""))
-        );
-        assert!(
+#[test]
+fn every_mismatch_refuses_the_whole_install_and_changes_nothing() {
+    type Publishes = fn(&Machine);
+    let cases: &[(&str, Publishes)] = &[
+        ("does not match the signed manifest", |machine| {
+            let entry = machine.artifact(rpm("libavcodec-freeworld", "1.0"));
+            machine.manifest(std::slice::from_ref(&entry), None);
+            let size = usize::try_from(entry["size"].as_u64().unwrap()).unwrap();
+            let evil = serde_json::to_vec(
+                &json!({"name": "libavcodec-freeworld", "nvra": entry["package"],
+                "files": {"usr/lib64/libavcodec.so": "evil"}}),
+            )
+            .unwrap();
+            let mut forged = evil[..evil.len().min(size)].to_vec();
+            forged.resize(size, b' ');
             machine
                 .host
-                .merged
-                .borrow()
-                .contains(&"tilo-codecs".to_owned())
-        );
-    }
-
-    phase development_image_merges_its_own_layers_too;
-    {
-        let machine = installed();
-        fs::create_dir_all(machine.layout.extensions().join("tilo-vm-layer/usr")).unwrap();
-        machine.host.masked.set(false);
-        assert_eq!(machine.run("activate"), 0);
-        assert!(machine.codecs().is_dir());
-    }
-}
-
-tilo_test_env::scenario! {
-    fn parts_follow_the_base_they_were_built_for_across_updates_and_rollbacks;
-
-    phase parts_stay_across_an_update_that_keeps_their_base_packages;
-    {
-        let machine = installed();
-        machine
-            .host
-            .packages
-            .borrow_mut()
-            .push("new-app 0:1-1.fc44.x86_64".to_owned());
-        machine.run("activate");
-        assert!(machine.codecs().is_dir());
-        assert!(machine.part("tilo-codecs-mesa").is_dir());
-    }
-
-    phase a_part_whose_base_package_changed_waits_and_returns_on_rollback;
-    {
-        let machine = installed();
-        let booted = machine.host.packages.borrow().clone();
-        *machine.host.packages.borrow_mut() = booted
-            .iter()
-            .map(|p| p.replace("mesa-dri-drivers 0:25.2.4", "mesa-dri-drivers 0:25.3.0"))
-            .collect();
-        machine.run("activate");
-        assert!(machine.codecs().is_dir(), "the software codecs still fit");
-        assert!(!machine.part("tilo-codecs-mesa").exists());
-        assert_eq!(machine.status()["parts"]["tilo-codecs-mesa"], "waiting");
-        *machine.host.packages.borrow_mut() = booted;
-        machine.run("activate");
-        assert!(machine.part("tilo-codecs-mesa").is_dir());
-        assert_eq!(machine.status()["parts"]["tilo-codecs-mesa"], "enabled");
-    }
-
-    phase a_part_whose_package_the_base_now_ships_waits;
-    {
-        let machine = Machine::new();
-        install(&machine, false);
-        machine
-            .host
-            .packages
-            .borrow_mut()
-            .push("libavcodec-freeworld 0:1.0-1.fc44.x86_64".to_owned());
-        machine.run("activate");
-        assert!(!machine.codecs().exists());
-    }
-
-    phase nothing_is_merged_on_another_os_release;
-    {
-        let machine = installed();
-        fs::write(
-            machine.root.join("usr/lib/os-release"),
-            "ID=fedora\nVERSION_ID=45\n",
-        )
-        .unwrap();
-        machine.run("activate");
-        assert!(!machine.codecs().exists());
-        assert!(!machine.part("tilo-codecs-mesa").exists());
-    }
-
-    phase an_unreadable_base_merges_nothing;
-    {
-        let machine = installed();
-        fs::write(machine.root.join("usr/lib/os-release"), "ID=Fedora Linux\n").unwrap();
-        let unmerges = machine.host.unmerges.get();
-        assert_eq!(machine.run("activate"), 1);
-        assert!(!machine.codecs().exists());
-        assert_eq!(machine.host.unmerges.get(), unmerges + 1);
-    }
-
-    phase parts_nothing_vouches_for_are_removed;
-    {
-        let machine = Machine::new();
-        let stray = machine.codecs();
-        fs::create_dir_all(stray.join("usr/lib/extension-release.d")).unwrap();
-        machine.run("activate");
-        assert!(!stray.exists());
-    }
-
-    phase refresh_after_an_update_rebuilds_for_the_new_base;
-    {
-        let machine = installed();
-        let updated: Vec<String> = machine
-            .host
-            .packages
-            .borrow()
-            .iter()
-            .map(|p| p.replace("gstreamer1 0:1.26.5", "gstreamer1 0:1.26.6"))
-            .collect();
-        *machine.host.packages.borrow_mut() = updated;
-        machine.run("activate");
-        assert!(!machine.codecs().exists());
-        let mut data: Value = serde_json::from_slice(&machine.manifest(
-            &[machine.artifact(rpm("libavcodec-freeworld", "1.1"))],
-            Some(&[machine.artifact(rpm("mesa-va-drivers-freeworld", "25.2.4"))]),
-        ))
-        .unwrap();
-        data["parts"][0]["requires_base"]["gstreamer1"] = json!("0:1.26.6-1.fc44");
-        machine.publish(&serde_json::to_vec(&data).unwrap(), support::TRUSTED, None);
-        assert_eq!(machine.run("refresh"), 0);
-        assert_eq!(
-            machine.release("tilo-codecs")["TILO_BASE_PACKAGES"],
-            machine.fingerprint()
-        );
-        assert_eq!(
-            machine.status()["parts"],
-            json!({"tilo-codecs": "enabled", "tilo-codecs-mesa": "enabled"})
-        );
-        assert_eq!(
-            fs::read_dir(machine.layout.bases("media-codecs"))
-                .unwrap()
-                .count(),
-            2,
-            "the previous base's manifest stays for a rollback"
-        );
-    }
-
-    phase only_the_last_three_bases_are_kept;
-    {
-        let machine = Machine::new();
-        install(&machine, false);
-        for version in ["1.26.6", "1.26.7", "1.26.8"] {
-            let updated: Vec<String> = machine
+                .web
+                .borrow_mut()
+                .insert(entry["urls"][0].as_str().unwrap().to_owned(), forged);
+        }),
+        ("larger than the signed manifest", |machine| {
+            let entry = machine.artifact(rpm("libavcodec-freeworld", "1.0"));
+            machine.manifest(std::slice::from_ref(&entry), None);
+            machine
                 .host
-                .packages
-                .borrow()
-                .iter()
-                .map(|p| {
-                    if p.starts_with("gstreamer1 ") {
-                        format!("gstreamer1 0:{version}-1.fc44.x86_64")
-                    } else {
-                        p.clone()
-                    }
-                })
-                .collect();
-            *machine.host.packages.borrow_mut() = updated;
-            let mut data: Value = serde_json::from_slice(&machine.manifest(
-                &[machine.artifact(rpm("libavcodec-freeworld", version))],
+                .web
+                .borrow_mut()
+                .get_mut(entry["urls"][0].as_str().unwrap())
+                .unwrap()
+                .extend_from_slice(b"more");
+        }),
+        ("for another base", |machine| {
+            // The manifest and signature published for another base, served
+            // at this base's address.
+            let mut other_lines: Vec<&str> = BASE_PACKAGES.to_vec();
+            other_lines.push("extra 0:1-1.x86_64");
+            let other = base_packages_sha256(&other_lines);
+            let publish = Publish {
+                fingerprint: Some(other.clone()),
+                ..Publish::default()
+            };
+            machine.manifest_with(
+                &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
                 None,
-            ))
-            .unwrap();
-            data["parts"][0]["requires_base"]["gstreamer1"] = json!(format!("0:{version}-1.fc44"));
-            machine.publish(&serde_json::to_vec(&data).unwrap(), support::TRUSTED, None);
-            assert_eq!(machine.run("refresh"), 0);
-        }
-        assert_eq!(
-            fs::read_dir(machine.layout.bases("media-codecs"))
-                .unwrap()
-                .count(),
-            3
-        );
-        assert_eq!(
-            fs::read_dir(machine.layout.objects("media-codecs"))
-                .unwrap()
-                .count(),
-            3
-        );
+                &publish,
+            );
+            let mine = machine.manifest_url(None);
+            let theirs = machine.manifest_url(Some(&other));
+            let mut web = machine.host.web.borrow_mut();
+            let (data, sig) = (web[&theirs].clone(), web[&format!("{theirs}.sig")].clone());
+            web.insert(mine.clone(), data);
+            web.insert(format!("{mine}.sig"), sig);
+        }),
+        ("for another base", |machine| {
+            let publish = Publish {
+                version_id: "45",
+                ..Publish::default()
+            };
+            machine.manifest_with(
+                &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
+                None,
+                &publish,
+            );
+        }),
+        ("not allowed for this extension", |machine| {
+            publish_at(machine, "https://code.tilo.so/mirror/libavcodec.rpm");
+        }),
+        ("not plain HTTPS", |machine| {
+            publish_at(machine, "http://download1.rpmfusion.org/x.rpm");
+        }),
+        ("not plain HTTPS", |machine| {
+            publish_at(machine, "https://u@download1.rpmfusion.org/x.rpm");
+        }),
+        ("has an unexpected form", |machine| {
+            publish_at(machine, "https://download1.rpmfusion.org/free/../x.rpm");
+        }),
+        ("has an unexpected form", |machine| {
+            publish_at(machine, "https://download1.rpmfusion.org/free/%2e%2E/x.rpm");
+        }),
+        ("has an unexpected form", |machine| {
+            publish_at(machine, "https://download1.rpmfusion.org/x.rpm?mirror=1");
+        }),
+        ("has an unexpected form", |machine| {
+            publish_at(machine, "https://download1.rpmfusion.org/x.rpm#f");
+        }),
+        (
+            "Port could not be cast to integer value as 'x'",
+            |machine| {
+                publish_at(machine, "https://download1.rpmfusion.org:x/x.rpm");
+            },
+        ),
+        (
+            "download1.rpmfusion.org: Not Found; download1.rpmfusion.org: Not Found",
+            |machine| {
+                let mut entry = machine.artifact(rpm("libavcodec-freeworld", "1.0"));
+                entry["urls"] = json!([
+                    "https://download1.rpmfusion.org/gone.rpm",
+                    "https://download1.rpmfusion.org/also-gone.rpm"
+                ]);
+                machine.manifest(&[entry], None);
+            },
+        ),
+        ("part this image does not allow", |machine| {
+            republish_with(machine, |data| {
+                data["parts"][0]["name"] = json!("tilo-anything");
+            });
+        }),
+        ("unknown fields", |machine| {
+            republish_with(machine, |data| {
+                data["parts"][0]["post_install"] = json!("rm -rf /");
+            });
+        }),
+        ("would replace a package of this system", |machine| {
+            machine.manifest(&[machine.artifact(rpm("glibc", "2.99"))], None);
+        }),
+        ("the file is x265-libs", |machine| {
+            let mut entry = machine.artifact(rpm("x265-libs", "1.0"));
+            entry["package"] = json!("libavcodec-freeworld-1.0-1.fc44.x86_64");
+            machine.manifest(&[entry], None);
+        }),
+    ];
+    for (fragment, publish) in cases {
+        let machine = Machine::new();
+        publish(&machine);
+        assert_refused(&machine, fragment);
     }
 }
 
-tilo_test_env::scenario! {
-    fn the_openh264_plugin_is_ready_only_with_the_real_codec_library;
+/// An image that carries the release root takes certified manifests only, and
+/// what an image without it accepted does not activate on one with it.
+#[test]
+fn images_with_the_release_root_take_certified_manifests_only() {
+    let machine = Machine::new();
+    machine.certify();
+    machine.manifest(
+        &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
+        None,
+    );
+    assert_eq!(machine.run("install"), 0, "{}", machine.status());
+    let url = machine.manifest_url(None);
+    let requests: Vec<String> = machine
+        .host
+        .requests
+        .borrow()
+        .iter()
+        .map(|(u, _)| u.clone())
+        .collect();
+    assert!(requests.contains(&format!("{url}.bundle")), "{requests:?}");
+    assert!(!requests.contains(&format!("{url}.sig")), "{requests:?}");
+    let kept = machine
+        .layout
+        .bases("media-codecs")
+        .join(machine.fingerprint());
+    assert!(kept.join("manifest.json.bundle").is_file());
+    assert!(!kept.join("manifest.json.sig").exists());
+    fs::remove_dir_all(machine.codecs()).unwrap();
+    assert_eq!(machine.run("activate"), 0);
+    assert!(machine.codecs().is_dir());
 
-    phase plugin_without_codec_is_refused_before_download_on_exact_base;
-    {
-        let machine = Machine::new();
-        let plugin = machine.artifact(rpm("gstreamer1-plugin-openh264", "1.0"));
-        machine.manifest(std::slice::from_ref(&plugin), None);
-        assert_eq!(machine.run("install"), 1);
-        assert!(!machine.codecs().exists());
-        assert!(
-            machine.status()["last_error"]
-                .as_str()
-                .unwrap()
-                .contains("Cisco's codec library")
-        );
-        let url = plugin["urls"][0].as_str().unwrap();
-        assert!(!machine.host.requests.borrow().iter().any(|(u, _)| u == url));
-    }
+    // Installed under a bare signature, then the image gains the root.
+    let machine = Machine::new();
+    machine.manifest(
+        &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
+        None,
+    );
+    assert_eq!(machine.run("install"), 0);
+    machine.certify();
+    machine.run("activate");
+    assert!(
+        !machine.codecs().exists(),
+        "a kept bare signature does not activate"
+    );
+    let merges = machine.host.merges.get();
+    assert_eq!(
+        machine.run("install"),
+        1,
+        "published for key-pinned images only: no bundle beside the manifest"
+    );
+    assert!(!machine.codecs().exists());
+    assert_eq!(machine.host.merges.get(), merges);
+}
 
-    phase retained_plugin_loses_readiness_when_real_codec_becomes_stub;
-    {
-        let machine = Machine::new();
-        machine
-            .host
-            .packages
-            .borrow_mut()
-            .push("openh264 0:2.6.0-3.fc44.x86_64".to_owned());
-        machine.manifest(
-            &[machine.artifact(rpm("gstreamer1-plugin-openh264", "1.0"))],
-            None,
-        );
-        assert_eq!(machine.run("install"), 0);
-        assert!(machine.codecs().exists());
-        let previous = machine.host.packages.borrow().clone();
-        let mut stub: Vec<String> = previous
-            .iter()
-            .filter(|p| !p.starts_with("openh264 "))
-            .cloned()
-            .collect();
-        stub.push("noopenh264 0:2.6.0-4.fc44.x86_64".to_owned());
-        *machine.host.packages.borrow_mut() = stub;
-        assert_eq!(machine.run("activate"), 0);
-        assert!(!machine.codecs().exists());
-        assert_eq!(machine.status()["parts"]["tilo-codecs"], "waiting");
-        *machine.host.packages.borrow_mut() = previous;
-        assert_eq!(machine.run("activate"), 0);
-        assert!(
-            machine.codecs().exists(),
-            "the authenticated part returns on rollback"
-        );
-    }
+/// The `OpenH264` plugin is installed only beside Cisco's real codec library:
+/// refused before any download without it, taken out when the base swaps the
+/// library for its stub, back on rollback, and installable with the library
+/// from the manifest.
+#[test]
+fn the_openh264_plugin_is_ready_only_with_the_real_codec_library() {
+    let machine = Machine::new();
+    let plugin = machine.artifact(rpm("gstreamer1-plugin-openh264", "1.0"));
+    machine.manifest(std::slice::from_ref(&plugin), None);
+    assert_eq!(machine.run("install"), 1);
+    assert!(!machine.codecs().exists());
+    assert!(
+        machine.status()["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("Cisco's codec library")
+    );
+    let url = plugin["urls"][0].as_str().unwrap();
+    assert!(!machine.host.requests.borrow().iter().any(|(u, _)| u == url));
 
-    phase plugin_with_signed_codec_library_can_be_installed;
-    {
-        let machine = Machine::new();
-        machine
-            .host
-            .packages
-            .borrow_mut()
-            .push("noopenh264 0:2.6.0-4.fc44.x86_64".to_owned());
-        machine.manifest(
-            &[
-                machine.artifact(rpm("gstreamer1-plugin-openh264", "1.0")),
-                machine.artifact(rpm_with(
-                    "openh264",
-                    "1.0",
-                    &[("usr/lib64/libopenh264.so.8", "codec")],
-                )),
-            ],
-            None,
-        );
-        assert_eq!(machine.run("install"), 0);
-        assert_eq!(
-            fs::read_to_string(machine.codecs().join("usr/lib64/libopenh264.so.8")).unwrap(),
-            "codec"
-        );
-    }
+    machine
+        .host
+        .packages
+        .borrow_mut()
+        .push("openh264 0:2.6.0-3.fc44.x86_64".to_owned());
+    machine.manifest(std::slice::from_ref(&plugin), None);
+    assert_eq!(machine.run("install"), 0);
+    assert!(machine.codecs().exists());
+    let previous = machine.host.packages.borrow().clone();
+    let mut stub: Vec<String> = previous
+        .iter()
+        .filter(|p| !p.starts_with("openh264 "))
+        .cloned()
+        .collect();
+    stub.push("noopenh264 0:2.6.0-4.fc44.x86_64".to_owned());
+    *machine.host.packages.borrow_mut() = stub;
+    assert_eq!(machine.run("activate"), 0);
+    assert!(!machine.codecs().exists());
+    assert_eq!(machine.status()["parts"]["tilo-codecs"], "waiting");
+    *machine.host.packages.borrow_mut() = previous.clone();
+    assert_eq!(machine.run("activate"), 0);
+    assert!(
+        machine.codecs().exists(),
+        "the authenticated part returns on rollback"
+    );
+
+    // On the stub's base, a manifest that brings the signed library too.
+    let mut stub: Vec<String> = previous
+        .iter()
+        .filter(|p| !p.starts_with("openh264 "))
+        .cloned()
+        .collect();
+    stub.push("noopenh264 0:2.6.0-4.fc44.x86_64".to_owned());
+    *machine.host.packages.borrow_mut() = stub;
+    machine.manifest(
+        &[
+            plugin,
+            machine.artifact(rpm_with(
+                "openh264",
+                "1.0",
+                &[("usr/lib64/libopenh264.so.8", "codec")],
+            )),
+        ],
+        None,
+    );
+    assert_eq!(machine.run("refresh"), 0);
+    assert_eq!(
+        fs::read_to_string(machine.codecs().join("usr/lib64/libopenh264.so.8")).unwrap(),
+        "codec"
+    );
 }
 
 const RAW_ID: &str = "windows-compat";
@@ -1570,227 +1296,217 @@ fn raw_status(machine: &Machine) -> Value {
     serde_json::from_slice(&fs::read(machine.layout.status(RAW_ID)).unwrap()).unwrap()
 }
 
-tilo_test_env::scenario! {
-    fn a_raw_sysext_image_is_linked_verified_and_removed_whole;
-
-    phase install_links_the_verified_image_and_merges_it;
-    {
-        let machine = raw_machine();
-        publish_raw(&machine, &raw_image(), None);
-        assert_eq!(machine.run_on("install", RAW_ID), 0);
-        assert_eq!(fs::read(raw_live(&machine)).unwrap(), raw_image());
-        assert_eq!(*machine.host.merged.borrow(), [format!("{RAW_PART}.raw")]);
-        let status = raw_status(&machine);
-        assert_eq!(
-            (status["state"].clone(), status["parts"].clone()),
-            (json!("installed"), json!({RAW_PART: "enabled"}))
-        );
-        let record: Value = serde_json::from_slice(&fs::read(raw_record(&machine)).unwrap()).unwrap();
-        assert_eq!(record["format"], "sysext-raw");
-        assert_eq!(record["packages"], json!([]));
-        assert_eq!(
-            machine.run("activate"),
-            0,
-            "the image is accepted again at the next boot"
-        );
-        assert_eq!(*machine.host.merged.borrow(), [format!("{RAW_PART}.raw")]);
+fn unlabelled_image() -> tilo_extension::image::Inspection {
+    let mut image = support::sound_image();
+    for entry in image.image.values_mut() {
+        entry.label = Some("system_u:object_r:unlabeled_t:s0".to_owned());
     }
+    image
+}
 
-    phase a_changed_image_is_not_merged_at_activation;
-    {
-        let machine = raw_machine();
-        let artifact = publish_raw(&machine, &raw_image(), None);
-        assert_eq!(machine.run_on("install", RAW_ID), 0);
-        let object = machine
-            .layout
-            .objects(RAW_ID)
-            .join(artifact["sha256"].as_str().unwrap());
-        fs::write(object, b"tampered").unwrap();
-        machine.run("activate");
-        assert!(!raw_live(&machine).exists());
-        assert_eq!(raw_status(&machine)["parts"], json!({RAW_PART: "waiting"}));
-    }
+/// A Windows-compatibility image: installed, kept through starts that finish
+/// and updates that keep its release, never merged once changed, removed
+/// whole, turned off by a start that never finished, and taken out at the next
+/// start when it would damage /usr.
+#[test]
+fn a_raw_sysext_image_lives_through_starts_updates_and_removal() {
+    let machine = raw_machine();
+    let artifact = publish_raw(&machine, &raw_image(), None);
+    assert_eq!(machine.run_on("install", RAW_ID), 0);
+    assert_eq!(fs::read(raw_live(&machine)).unwrap(), raw_image());
+    assert_eq!(*machine.host.merged.borrow(), [format!("{RAW_PART}.raw")]);
+    let status = raw_status(&machine);
+    assert_eq!(
+        (status["state"].clone(), status["parts"].clone()),
+        (json!("installed"), json!({RAW_PART: "enabled"}))
+    );
+    let record: Value = serde_json::from_slice(&fs::read(raw_record(&machine)).unwrap()).unwrap();
+    assert_eq!(record["format"], "sysext-raw");
+    assert_eq!(record["packages"], json!([]));
 
-    phase remove_deletes_the_image_and_its_record;
-    {
-        let machine = raw_machine();
-        publish_raw(&machine, &raw_image(), None);
-        assert_eq!(machine.run_on("install", RAW_ID), 0);
-        assert_eq!(machine.run_on("remove", RAW_ID), 0);
-        assert!(!raw_live(&machine).exists());
-        assert!(!raw_record(&machine).exists());
-        assert_eq!(raw_status(&machine)["state"], "not-installed");
-    }
+    // A start that finishes keeps it; the start that installed it proves nothing.
+    let trial = machine.layout.trial(RAW_ID);
+    assert_eq!(fs::read_to_string(&trial).unwrap(), "new\n");
+    assert_eq!(boot(&machine, "done"), 0);
+    assert!(trial.exists());
+    assert_eq!(boot(&machine, "start"), 0);
+    assert_eq!(fs::read_to_string(&trial).unwrap(), "booting\n");
+    assert_eq!(
+        machine.run("activate"),
+        0,
+        "the image is accepted again at the next boot"
+    );
+    assert_eq!(*machine.host.merged.borrow(), [format!("{RAW_PART}.raw")]);
+    assert_eq!(fs::read_to_string(&trial).unwrap(), "booting\n");
+    assert_eq!(boot(&machine, "done"), 0);
+    assert!(!trial.exists());
+    assert_eq!(boot(&machine, "start"), 0);
+    assert_eq!(fs::read(raw_live(&machine)).unwrap(), raw_image());
+    assert_eq!(raw_status(&machine)["state"], "installed");
 
-    phase an_image_with_the_wrong_digest_is_refused;
-    {
-        let machine = raw_machine();
-        let artifact = publish_raw(&machine, &raw_image(), None);
-        machine.host.web.borrow_mut().insert(
-            artifact["urls"][0].as_str().unwrap().to_owned(),
-            b"not what was signed".repeat(10),
-        );
-        assert_ne!(machine.run_on("install", RAW_ID), 0);
-        assert!(!raw_live(&machine).exists());
-    }
+    // A sound image kept from an earlier start is left alone at the next one.
+    assert_eq!(boot(&machine, "quarantine"), 0);
+    assert_eq!(fs::read(raw_live(&machine)).unwrap(), raw_image());
+    assert!(machine.layout.desired(RAW_ID).exists());
+    assert_eq!(raw_status(&machine)["state"], "installed");
 
-    phase a_sysext_image_part_is_exactly_one_artifact;
-    {
-        let machine = raw_machine();
-        let artifact = publish_raw(&machine, &raw_image(), None);
-        publish_raw(
-            &machine,
-            &raw_image(),
-            Some(json!([artifact.clone(), artifact])),
-        );
-        assert_ne!(machine.run_on("install", RAW_ID), 0);
-        assert!(!raw_live(&machine).exists());
-        assert!(
-            raw_status(&machine)["last_error"]
-                .as_str()
-                .unwrap()
-                .contains("a sysext image part is exactly one artifact")
-        );
-    }
+    // It stays across an update that keeps the release.
+    machine
+        .host
+        .packages
+        .borrow_mut()
+        .push("new-app 0:1-1.fc44.x86_64".to_owned());
+    assert_eq!(machine.run("activate"), 0);
+    assert_eq!(fs::read(raw_live(&machine)).unwrap(), raw_image());
+    assert_eq!(raw_status(&machine)["parts"], json!({RAW_PART: "enabled"}));
 
-    phase an_unmanaged_image_in_the_search_path_still_refuses_the_merge;
-    {
-        let machine = raw_machine();
-        publish_raw(&machine, &raw_image(), None);
-        fs::create_dir_all(machine.layout.extensions()).unwrap();
-        fs::write(machine.layout.extensions().join("evil.raw"), b"x").unwrap();
-        machine.run_on("install", RAW_ID);
-        assert!(!raw_live(&machine).exists());
-        assert!(machine.host.unmerges.get() >= 1);
-    }
+    // A changed image is not merged at activation.
+    let object = machine
+        .layout
+        .objects(RAW_ID)
+        .join(artifact["sha256"].as_str().unwrap());
+    fs::write(&object, b"tampered").unwrap();
+    machine.run("activate");
+    assert!(!raw_live(&machine).exists());
+    assert_eq!(raw_status(&machine)["parts"], json!({RAW_PART: "waiting"}));
 
-    phase an_image_that_would_damage_usr_is_never_merged;
-    {
-        let machine = raw_machine();
-        let mut image = support::sound_image();
-        let usr = image.image.get_mut("/usr").unwrap();
-        (usr.uid, usr.gid) = (99, 65534);
-        *machine.host.image.borrow_mut() = Some(image);
-        publish_raw(&machine, &raw_image(), None);
-        assert_ne!(machine.run_on("install", RAW_ID), 0);
-        assert!(!raw_live(&machine).exists());
-        assert!(machine.host.merged.borrow().is_empty());
-        let status = raw_status(&machine);
-        assert_eq!(status["state"], "failed");
-        assert_eq!(
-            status["last_error"],
-            format!("{RAW_PART}: not turned on, it would damage the system: /usr is owned by 99:65534, not root")
-        );
-        assert_ne!(machine.run("activate"), 0, "and not at the next start either");
-        assert!(!raw_live(&machine).exists());
-        assert!(!machine.layout.trial(RAW_ID).exists());
-    }
+    // Removing deletes the image and its record.
+    assert_eq!(machine.run_on("remove", RAW_ID), 0);
+    assert!(!raw_live(&machine).exists());
+    assert!(!raw_record(&machine).exists());
+    assert_eq!(raw_status(&machine)["state"], "not-installed");
 
-    phase an_unlabelled_image_is_never_merged_on_a_labelled_system;
-    {
-        let machine = raw_machine();
-        let mut image = support::sound_image();
-        for entry in image.image.values_mut() {
-            entry.label = Some("system_u:object_r:unlabeled_t:s0".to_owned());
-        }
-        *machine.host.image.borrow_mut() = Some(image);
-        publish_raw(&machine, &raw_image(), None);
-        assert_ne!(machine.run_on("install", RAW_ID), 0);
-        assert!(!raw_live(&machine).exists());
-        assert!(
-            raw_status(&machine)["last_error"]
-                .as_str()
-                .unwrap()
-                .ends_with(": /usr is labelled system_u:object_r:unlabeled_t:s0")
-        );
-    }
-
-    phase a_bad_image_kept_by_an_earlier_version_is_taken_out_at_the_next_start;
-    {
-        let machine = raw_machine();
-        publish_raw(&machine, &raw_image(), None);
-        assert_eq!(machine.run_on("install", RAW_ID), 0, "an earlier version accepted it");
-        assert_eq!(fs::read(raw_live(&machine)).unwrap(), raw_image());
-        let mut image = support::sound_image();
-        for entry in image.image.values_mut() {
-            entry.label = Some("system_u:object_r:unlabeled_t:s0".to_owned());
-        }
-        *machine.host.image.borrow_mut() = Some(image);
-        assert_eq!(boot(&machine, "quarantine"), 0);
-        assert!(!raw_live(&machine).exists(), "the merge would have left /usr unlabelled");
-        assert!(!machine.layout.desired(RAW_ID).exists());
-        assert!(!machine.layout.trial(RAW_ID).exists());
-        assert_eq!(machine.run("activate"), 0);
-        assert!(!raw_live(&machine).exists(), "and its downloads are gone with it");
-        let status = raw_status(&machine);
-        assert_eq!((status["state"].clone(), status["parts"].clone()), (json!("failed"), json!({RAW_PART: "off"})));
-        assert!(status["last_error"]
+    // Installed again, a start that does not finish turns it off for good.
+    publish_raw(&machine, &raw_image(), None);
+    assert_eq!(machine.run_on("install", RAW_ID), 0);
+    assert_eq!(fs::read_to_string(&trial).unwrap(), "new\n");
+    assert_eq!(boot(&machine, "start"), 0);
+    assert_eq!(machine.run("activate"), 0, "a start activates as usual");
+    assert_eq!(fs::read_to_string(&trial).unwrap(), "booting\n");
+    assert_eq!(
+        boot(&machine, "start"),
+        0,
+        "the next start finds it never finished"
+    );
+    assert!(!raw_live(&machine).exists());
+    assert!(!trial.exists());
+    assert!(!machine.layout.desired(RAW_ID).exists());
+    let status = raw_status(&machine);
+    assert_eq!(status["state"], "failed");
+    assert_eq!(status["parts"], json!({RAW_PART: "off"}));
+    assert!(
+        status["last_error"]
             .as_str()
             .unwrap()
-            .starts_with("Turned off: merging it would damage the system: "));
-    }
+            .starts_with("Turned off: this computer did not finish starting with it.")
+    );
+    assert_eq!(machine.run("activate"), 0);
+    assert!(!raw_live(&machine).exists(), "and it stays off");
 
-    phase a_sound_image_kept_from_an_earlier_start_is_left_alone;
-    {
-        let machine = raw_machine();
-        publish_raw(&machine, &raw_image(), None);
-        assert_eq!(machine.run_on("install", RAW_ID), 0);
-        assert_eq!(boot(&machine, "quarantine"), 0);
-        assert_eq!(fs::read(raw_live(&machine)).unwrap(), raw_image());
-        assert!(machine.layout.desired(RAW_ID).exists());
-        assert_eq!(raw_status(&machine)["state"], "installed");
-    }
+    // Installed again by a version that did not inspect images, an image that
+    // would leave /usr unlabelled is taken out before the next merge.
+    assert_eq!(machine.run_on("install", RAW_ID), 0);
+    assert_eq!(fs::read(raw_live(&machine)).unwrap(), raw_image());
+    *machine.host.image.borrow_mut() = Some(unlabelled_image());
+    assert_eq!(boot(&machine, "quarantine"), 0);
+    assert!(
+        !raw_live(&machine).exists(),
+        "the merge would have left /usr unlabelled"
+    );
+    assert!(!machine.layout.desired(RAW_ID).exists());
+    assert!(!trial.exists());
+    assert_eq!(machine.run("activate"), 0);
+    assert!(
+        !raw_live(&machine).exists(),
+        "and its downloads are gone with it"
+    );
+    let status = raw_status(&machine);
+    assert_eq!(
+        (status["state"].clone(), status["parts"].clone()),
+        (json!("failed"), json!({RAW_PART: "off"}))
+    );
+    assert!(
+        status["last_error"]
+            .as_str()
+            .unwrap()
+            .starts_with("Turned off: merging it would damage the system: ")
+    );
+}
 
-    phase a_start_that_does_not_finish_turns_a_new_extension_off;
-    {
-        let machine = raw_machine();
-        publish_raw(&machine, &raw_image(), None);
-        assert_eq!(machine.run_on("install", RAW_ID), 0);
-        let trial = machine.layout.trial(RAW_ID);
-        assert_eq!(fs::read_to_string(&trial).unwrap(), "new\n");
-        assert_eq!(boot(&machine, "start"), 0);
-        assert_eq!(fs::read_to_string(&trial).unwrap(), "booting\n");
-        assert_eq!(machine.run("activate"), 0, "a start activates as usual");
-        assert_eq!(fs::read_to_string(&trial).unwrap(), "booting\n");
-        assert_eq!(boot(&machine, "start"), 0, "the next start finds it never finished");
-        assert!(!raw_live(&machine).exists());
-        assert!(!trial.exists());
-        assert!(!machine.layout.desired(RAW_ID).exists());
-        let status = raw_status(&machine);
-        assert_eq!(status["state"], "failed");
-        assert_eq!(status["parts"], json!({RAW_PART: "off"}));
-        assert!(status["last_error"].as_str().unwrap().starts_with("Turned off: this computer did not finish starting with it."));
-        assert_eq!(machine.run("activate"), 0);
-        assert!(!raw_live(&machine).exists(), "and it stays off");
-    }
+#[test]
+fn a_raw_sysext_image_that_is_not_exactly_what_was_signed_and_safe_is_never_merged() {
+    // The image served is not the one signed.
+    let machine = raw_machine();
+    let artifact = publish_raw(&machine, &raw_image(), None);
+    machine.host.web.borrow_mut().insert(
+        artifact["urls"][0].as_str().unwrap().to_owned(),
+        b"not what was signed".repeat(10),
+    );
+    assert_ne!(machine.run_on("install", RAW_ID), 0);
+    assert!(!raw_live(&machine).exists());
 
-    phase a_start_that_finishes_keeps_the_extension;
-    {
-        let machine = raw_machine();
-        publish_raw(&machine, &raw_image(), None);
-        assert_eq!(machine.run_on("install", RAW_ID), 0);
-        assert_eq!(boot(&machine, "done"), 0, "the start that installed it proves nothing");
-        assert!(machine.layout.trial(RAW_ID).exists());
-        assert_eq!(boot(&machine, "start"), 0);
-        assert_eq!(boot(&machine, "done"), 0);
-        assert!(!machine.layout.trial(RAW_ID).exists());
-        assert_eq!(boot(&machine, "start"), 0);
-        assert_eq!(fs::read(raw_live(&machine)).unwrap(), raw_image());
-        assert_eq!(raw_status(&machine)["state"], "installed");
-    }
+    // A sysext image part is exactly one artifact.
+    let machine = raw_machine();
+    let artifact = publish_raw(&machine, &raw_image(), None);
+    publish_raw(
+        &machine,
+        &raw_image(),
+        Some(json!([artifact.clone(), artifact])),
+    );
+    assert_ne!(machine.run_on("install", RAW_ID), 0);
+    assert!(!raw_live(&machine).exists());
+    assert!(
+        raw_status(&machine)["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("a sysext image part is exactly one artifact")
+    );
 
-    phase an_image_stays_across_an_update_that_keeps_the_release;
-    {
-        let machine = raw_machine();
-        publish_raw(&machine, &raw_image(), None);
-        assert_eq!(machine.run_on("install", RAW_ID), 0);
-        machine
-            .host
-            .packages
-            .borrow_mut()
-            .push("new-app 0:1-1.fc44.x86_64".to_owned());
-        assert_eq!(machine.run("activate"), 0);
-        assert_eq!(fs::read(raw_live(&machine)).unwrap(), raw_image());
-        assert_eq!(raw_status(&machine)["parts"], json!({RAW_PART: "enabled"}));
-    }
+    // An unmanaged image in the search path still refuses the merge.
+    let machine = raw_machine();
+    publish_raw(&machine, &raw_image(), None);
+    fs::create_dir_all(machine.layout.extensions()).unwrap();
+    fs::write(machine.layout.extensions().join("evil.raw"), b"x").unwrap();
+    machine.run_on("install", RAW_ID);
+    assert!(!raw_live(&machine).exists());
+    assert!(machine.host.unmerges.get() >= 1);
+
+    // An image that would damage /usr is never merged, now or at the next start.
+    let machine = raw_machine();
+    let mut image = support::sound_image();
+    let usr = image.image.get_mut("/usr").unwrap();
+    (usr.uid, usr.gid) = (99, 65534);
+    *machine.host.image.borrow_mut() = Some(image);
+    publish_raw(&machine, &raw_image(), None);
+    assert_ne!(machine.run_on("install", RAW_ID), 0);
+    assert!(!raw_live(&machine).exists());
+    assert!(machine.host.merged.borrow().is_empty());
+    let status = raw_status(&machine);
+    assert_eq!(status["state"], "failed");
+    assert_eq!(
+        status["last_error"],
+        format!(
+            "{RAW_PART}: not turned on, it would damage the system: /usr is owned by 99:65534, not root"
+        )
+    );
+    assert_ne!(
+        machine.run("activate"),
+        0,
+        "and not at the next start either"
+    );
+    assert!(!raw_live(&machine).exists());
+    assert!(!machine.layout.trial(RAW_ID).exists());
+
+    // An unlabelled image is never merged on a labelled system.
+    let machine = raw_machine();
+    *machine.host.image.borrow_mut() = Some(unlabelled_image());
+    publish_raw(&machine, &raw_image(), None);
+    assert_ne!(machine.run_on("install", RAW_ID), 0);
+    assert!(!raw_live(&machine).exists());
+    assert!(
+        raw_status(&machine)["last_error"]
+            .as_str()
+            .unwrap()
+            .ends_with(": /usr is labelled system_u:object_r:unlabeled_t:s0")
+    );
 }

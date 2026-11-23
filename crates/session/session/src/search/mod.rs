@@ -262,7 +262,7 @@ struct DownloadedRows {
 pub fn why_in_words(error: &ApiError) -> String {
     match error {
         ApiError::Unavailable { code, .. } if code == "action_provider_unavailable" => {
-            tilo_desktop_surface::i18n::t("answer-why-cannot-start")
+            tilo_session_core::desktop::i18n::t("answer-why-cannot-start")
         }
         other => other.to_string(),
     }
@@ -568,6 +568,18 @@ impl SessionSearch {
     #[cfg(target_os = "linux")]
     pub(crate) fn set_kept_agents(&self, agents: &[crate::agents::Kept]) {
         *self.agents.borrow_mut() = Some(agents.to_vec());
+    }
+
+    /// The agent `workspace` keeps for the person here, by its id and name, as the pass read it:
+    /// whom a send goes to, and a new one where the workspace keeps none.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn kept_agent(&self, workspace: &str) -> Option<(String, String)> {
+        self.agents
+            .borrow()
+            .as_ref()?
+            .iter()
+            .find(|agent| agent.workspace == workspace)
+            .map(|agent| (agent.id.clone(), agent.name.clone()))
     }
 
     /// Record every agent each workspace's record lists, whoever keeps it: what a box that sends
@@ -1682,7 +1694,13 @@ pub(crate) fn found_all(
         if lead.is_some_and(|lead| at < lead) {
             continue;
         }
-        if !out.iter().any(|seen| seen.resource == found.resource) {
+        // Two rows naming one resource with the arguments that open it are one
+        // result: a page of Settings and another page are distinct resources,
+        // and two items a record holds are distinct anchors.
+        if !out
+            .iter()
+            .any(|seen| seen.resource == found.resource && seen.arguments == found.arguments)
+        {
             out.push(found);
         }
     }
@@ -1694,19 +1712,14 @@ pub(crate) fn found_all(
 /// the machine's own app).
 fn found_of(hit: &tilo_desktop_search::Hit) -> Option<Found> {
     let (resource, open, arguments) = match &hit.target {
-        // An item opened through its record's `open` is the item: it opens through its own.
-        Target::Invoke(invoke) => match invoke.arguments.get(tilo_desktop_search::OPEN_ANCHOR) {
-            Some(serde_json::Value::String(item)) if *item != invoke.address.resource => (
-                item.clone(),
-                Some(invoke.address.action.clone()),
-                serde_json::Map::new(),
-            ),
-            _ => (
-                invoke.address.resource.as_str().to_owned(),
-                Some(invoke.address.action.clone()),
-                invoke.arguments.clone(),
-            ),
-        },
+        // A row runs the action its hit names, where the hit names it: the
+        // resource's own action, or the `open` of the resource holding an item,
+        // told the item as its anchor.
+        Target::Invoke(invoke) => (
+            invoke.address.resource.as_str().to_owned(),
+            Some(invoke.address.action.clone()),
+            invoke.arguments.clone(),
+        ),
         Target::Action(action) => (
             action.resource.as_str().to_owned(),
             Some(action.spec.id.clone()),
@@ -1835,7 +1848,6 @@ mod tests {
                 candidates: Vec::new(),
                 declared: std::collections::BTreeMap::new(),
                 resource_kinds: std::collections::BTreeMap::new(),
-                earlier: tilo_action_policy::EarlierIds::default(),
                 launchable: Vec::new(),
                 tools: Vec::new(),
             }
@@ -2144,7 +2156,7 @@ mod tests {
             const FORM: &str = "uuid:6d1c1f36-0000-4000-8000-0000000000aa";
             let _settled = ui::motion::testing::settled();
             let mut minter = tilo_desktop_model::IdMinter::new(7);
-            let tree = tilo_desktop_surface::seed_tree(&mut minter, "Visa", Vec::new());
+            let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Visa", Vec::new());
             let workspace = tree
                 .active_workspace()
                 .map(|held| held.id().to_string())

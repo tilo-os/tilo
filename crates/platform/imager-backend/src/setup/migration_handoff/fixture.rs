@@ -2,9 +2,8 @@
 use super::*;
 
 pub(super) fn sample() -> Plan {
-    Plan {
+    Plan(Migration {
         schema: SCHEMA,
-        flatpak_inventory: None,
         operation_id: "migration-1".into(),
         categories: Categories {
             home: true,
@@ -12,9 +11,8 @@ pub(super) fn sample() -> Plan {
             accounts: true,
         },
         home_policy: HomePolicy::Copy,
-        home_exclusions: Vec::new(),
-        home: Home {
-            volume: SourceVolume {
+        home: Home::new(
+            SourceVolume {
                 disk_guid: "11111111-1111-4111-8111-111111111111".into(),
                 disk_bytes: 64 << 30,
                 sector_bytes: 512,
@@ -24,11 +22,14 @@ pub(super) fn sample() -> Plan {
                 filesystem_uuid: "33333333-3333-4333-8333-333333333333".into(),
                 filesystem: Filesystem::Ext4,
             },
-            relative: NativePath::encode(Path::new("home/person")),
-            inode: 1234,
-            original_uid: 1000,
-            subvolume: None,
-        },
+            NativePath::encode(Path::new("home/person")),
+            1234,
+            1000,
+            None,
+        ),
+        pending_computer_applications_scope: None,
+        flatpak_inventory: None,
+        home_exclusions: Vec::new(),
         deferred_handoff: None,
-    }
+    })
 }

@@ -312,19 +312,7 @@ impl CompletedCleanup {
         {
             return Err(denied());
         }
-        let mut hash = sha2::Sha256::new();
-        let mut offset = 0;
-        let mut buffer = [0; 65536];
-        while offset < m.len() {
-            if cancel.load(Ordering::Acquire) {
-                return Err(failure("Installed completed cleanup cancelled"));
-            }
-            let count = (m.len() - offset).min(buffer.len() as u64) as usize;
-            file.read_exact_at(&mut buffer[..count], offset)?;
-            hash.update(&buffer[..count]);
-            offset += count as u64;
-        }
-        let digest: [u8; 32] = hash.finalize().into();
+        let digest = crate::setup::file_digest::exact(file, m.len(), Some(cancel), denied)?;
         if digest != facts.ciphertext_digest {
             return Err(denied());
         }

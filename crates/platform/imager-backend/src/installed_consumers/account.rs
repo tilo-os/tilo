@@ -60,12 +60,7 @@ pub(super) fn version_ok(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
 }
 
-pub(super) fn hex_digest(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
+pub(super) use crate::record::is_hex_sha256 as hex_digest;
 
 /// A bounded, nonempty regular file, observed without following a symlink.
 pub fn regular(path: &Path, limit: u64) -> io::Result<Metadata> {

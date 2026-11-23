@@ -1,6 +1,3 @@
-//! `tilo migrate` bringing files: a folder here and a cloud drive, into a workspace's folder on
-//! this computer or by uploads, through the same engine the commands use.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -9,37 +6,9 @@ use serde_json::Value;
 
 use super::files::{self, Sink};
 use super::state::{Item, Journal, Place, Review};
-use super::workspace::{Answer, Invocation, Workspace};
+use super::tests::test_env::{Recorded, Told, land_as};
+use super::workspace::{Invocation, Workspace};
 use super::{Lander, clouds, registry};
-
-/// A workspace that keeps every action and upload it is asked for.
-#[derive(Default)]
-struct Recorded {
-    actions: Vec<(String, Value)>,
-    puts: Vec<Vec<u8>>,
-}
-
-impl Workspace for Recorded {
-    fn act(&mut self, _: &Invocation, action: &str, args: Value) -> Result<Answer> {
-        let count = self
-            .puts
-            .last()
-            .and_then(|list| serde_json::from_slice::<Vec<Value>>(list).ok())
-            .map_or(0, |list| list.len());
-        self.actions.push((action.to_owned(), args));
-        Ok(Answer::of(Some(serde_json::json!({"count": count}))))
-    }
-
-    fn ask(&mut self, action: &str, args: Value) -> Result<Answer> {
-        self.actions.push((action.to_owned(), args));
-        Ok(Answer::of(None))
-    }
-
-    fn put(&mut self, bytes: &[u8]) -> Result<String> {
-        self.puts.push(bytes.to_vec());
-        Ok(format!("tilo.content:{}", blake3::hash(bytes).to_hex()))
-    }
-}
 
 /// Call `land` as one invocation of `source`, as `start` does; the journal it leaves.
 fn bring(
@@ -49,30 +18,22 @@ fn bring(
     workspace: &mut dyn Workspace,
     land: impl FnOnce(&mut Lander<'_>) -> Result<()>,
 ) -> Journal {
-    let mut journal = place.journal(source).unwrap();
-    journal.brought.clear();
-    journal.already_there = 0;
-    let invocation = Invocation {
-        id: id.into(),
-        title: "Bring files".into(),
+    let mut told = Told {
+        yes: true,
+        ..Told::default()
     };
-    let mut progress = |_: &str| {};
-    {
-        let mut lander = Lander {
-            workspace,
-            opened: std::collections::BTreeSet::new(),
-            landing_in: None,
-            invocation: &invocation,
-            journal: &mut journal,
-            place,
-            source,
-            progress: &mut progress,
-            confirm: &mut |_: &str| Ok(true),
-        };
-        land(&mut lander).unwrap();
-    }
-    place.keep_journal(source, &journal).unwrap();
-    journal
+    land_as(
+        place,
+        source,
+        &Invocation {
+            id: id.into(),
+            title: "Bring files".into(),
+        },
+        workspace,
+        &mut told,
+        land,
+    )
+    .unwrap()
 }
 
 /// A home with a `Documents` tree of `count` files spread over folders.
@@ -237,8 +198,8 @@ fn without_a_folder_here_the_files_go_up_and_into_the_tree_in_one_step() {
     let opens: Vec<&Value> = workspace
         .actions
         .iter()
-        .filter(|(action, _)| action == "files#open")
-        .map(|(_, args)| args)
+        .filter(|(_, action, _)| action == "files#open")
+        .map(|(_, _, args)| args)
         .collect();
     assert_eq!(opens.len(), 1, "one step puts the folder in the tree");
     let list: Vec<Value> = serde_json::from_slice(workspace.puts.last().unwrap()).unwrap();

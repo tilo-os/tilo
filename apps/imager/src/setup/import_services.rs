@@ -79,7 +79,7 @@ impl Services {
             .unwrap_or_default();
         let connected = config_root
             .as_deref()
-            .map(|root| service_sources::connected(&account_store::person_accounts(root)))
+            .map(|root| service_sources::connected(&account_store::accounts_in(root)))
             .unwrap_or_default()
             .into_iter()
             .map(|(id, kind, title)| (id.0, kind, title))
@@ -231,7 +231,7 @@ impl Services {
                         record
                             .apply_confirmed(edit)
                             .map_err(|_| ServiceError::Storage)?;
-                        account_store::project(&config_root, &mut record)
+                        account_store::write_staged(&config_root, &mut record)
                             .map_err(|_| ServiceError::Storage)?;
                         Ok(id.0)
                     })();
@@ -248,7 +248,7 @@ impl Services {
                     .ok_or_else(|| t("imager-services-unknown-source"))?;
                 let (send, receive) = mpsc::channel();
                 std::thread::spawn(move || {
-                    let record = account_store::person_accounts(&config_root);
+                    let record = account_store::accounts_in(&config_root);
                     let _ = send.send(Done::Reviewed(service_sources::review(
                         &config_root,
                         &record,
@@ -322,7 +322,7 @@ impl Services {
                         &cancel,
                     );
                     drop(publish);
-                    let _ = account_store::project(&config_root, &mut record);
+                    let _ = account_store::write_staged(&config_root, &mut record);
                     let _ = send.send(Done::Ran(journal, result));
                 });
                 self.work = Some(receive);
@@ -390,7 +390,7 @@ impl Services {
         self.connected = self
             .config_root
             .as_deref()
-            .map(|root| service_sources::connected(&account_store::person_accounts(root)))
+            .map(|root| service_sources::connected(&account_store::accounts_in(root)))
             .unwrap_or_default()
             .into_iter()
             .map(|(id, kind, title)| (id.0, kind, title))

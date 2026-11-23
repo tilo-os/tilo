@@ -48,7 +48,7 @@ fn read_workspace<T>(
 /// certificate belongs to (person root plus device subkey), when the
 /// workspace has them in it. A workspace without them is a membership bug,
 /// answered as a fault here, never as something an app chooses its way out
-/// of; the person's own cluster has no roster and is theirs.
+/// of; the person's own workspace is theirs.
 fn identity_in(
     tree: &dyn WorkspaceMembership,
     workspace: &WorkspaceId,
@@ -58,7 +58,7 @@ fn identity_in(
         Ok(None) => return Err("this device has no identity to sign in with".into()),
         Err(error) => return Err(error.to_string()),
     };
-    if collab_types::personal_cluster(&profile.user_public_key).to_string() == workspace.to_string()
+    if collab_types::person_workspace(&profile.user_public_key).to_string() == workspace.to_string()
     {
         return Ok(profile);
     }
@@ -337,14 +337,9 @@ struct Bound<'a> {
 }
 
 impl Bound<'_> {
-    /// Whether `app_id` is the bound app's, or an id it had before whose records it keeps using.
+    /// Whether `app_id` is the bound app's.
     fn keeps_records_of(&self, app_id: &str) -> bool {
         app_id == self.app_id
-            || self
-                .person
-                .earlier_ids(self.app_id)
-                .iter()
-                .any(|old| old == app_id)
     }
 
     /// Whether the bound app declares that it reads `app_id`'s records: another app's, which
@@ -353,14 +348,14 @@ impl Bound<'_> {
         self.person.reads_documents_of(self.app_id, app_id)
     }
 
-    /// Whether `workspace_id` is the own cluster of the person the bound
+    /// Whether `workspace_id` is the own workspace of the person the bound
     /// workspace's identity is, and the app keeps records of theirs there.
-    fn in_personal_cluster(
+    fn in_person_workspace(
         &self,
         profile: &crate::store::IdentityProfile,
         workspace_id: &str,
     ) -> bool {
-        collab_types::personal_cluster(&profile.user_public_key).to_string() == workspace_id
+        collab_types::person_workspace(&profile.user_public_key).to_string() == workspace_id
             && !self.person.person_resource_types(self.app_id).is_empty()
     }
 
@@ -380,11 +375,11 @@ fn sign_collaboration_join(
     bound: &Bound<'_>,
     workspace_id: &str,
 ) -> Response {
-    // The launch workspace, or the person's own cluster for the records of
+    // The launch workspace, or the person's own workspace for the records of
     // theirs the app declares; the broker admits each of those records alone.
     let foreign = |profile: &crate::store::IdentityProfile| {
         workspace_id != bound.workspace.to_string()
-            && !bound.in_personal_cluster(profile, workspace_id)
+            && !bound.in_person_workspace(profile, workspace_id)
     };
     if workspace_id != bound.workspace.to_string()
         && bound.person.person_resource_types(bound.app_id).is_empty()
@@ -487,7 +482,7 @@ fn sign_collaboration_op(
     let launch_workspace = workspace_id == bound_workspace.to_string();
     // The launch route, a record every app of the launch workspace opens
     // (its grants decide the change below, as for the app's own), or a
-    // record of the person's this app keeps in their own cluster: never
+    // record of the person's this app keeps in their own workspace: never
     // another app's, and never a kind it does not declare.
     let workspace_record =
         launch_workspace && collab_types::shared_workspace_document(app_id, document_id).is_some();
@@ -502,7 +497,7 @@ fn sign_collaboration_op(
         Ok(profile) => profile,
         Err(reason) => return Response::Error(reason),
     };
-    if !launch_workspace && !bound.in_personal_cluster(&profile, workspace_id) {
+    if !launch_workspace && !bound.in_person_workspace(&profile, workspace_id) {
         return Response::Denied(
             "collaboration operation requested for a different launch route".into(),
         );
@@ -540,7 +535,7 @@ fn sign_collaboration_op(
             "collaboration operation fields do not match its certified document route".into(),
         );
     }
-    // The person's own cluster has no roster: it is theirs, and this is
+    // The person's own workspace is theirs, and this is
     // their device editing a record of theirs.
     if !launch_workspace {
         return match op.signing_bytes() {
@@ -611,7 +606,7 @@ fn group_keys(
         Ok(profile) => profile,
         Err(reason) => return Response::Error(reason),
     };
-    if !launch_workspace && !bound.in_personal_cluster(&profile, route.workspace_id) {
+    if !launch_workspace && !bound.in_person_workspace(&profile, route.workspace_id) {
         return Response::Denied("group keys requested for a different launch route".into());
     }
     // The same trust check as signing, served from memory while none of the
@@ -629,11 +624,11 @@ fn group_keys(
         Err(error) => return Response::Denied(error.to_string()),
     }
     let actor_key = hex::encode(profile.user_public_key);
-    // The person reads their own cluster, the launch workspace of an app
+    // The person reads their own workspace, the launch workspace of an app
     // opened there included; a workspace, as its policy says.
-    let own_cluster =
-        collab_types::personal_cluster(&profile.user_public_key).to_string() == route.workspace_id;
-    let reads = own_cluster
+    let own_workspace =
+        collab_types::person_workspace(&profile.user_public_key).to_string() == route.workspace_id;
+    let reads = own_workspace
         || read_workspace(tree, bound.workspace, |workspace| {
             let node = collab_types::validator::document_node(
                 &workspace.policy.workspace,
@@ -652,7 +647,7 @@ fn group_keys(
     else {
         return Response::Denied("group keys requested for an invalid workspace".into());
     };
-    let keys = if own_cluster {
+    let keys = if own_workspace {
         groups.access(workspace, known_generation)
     } else {
         groups.document_access(workspace, route.app_id, route.document_id, known_generation)
@@ -791,18 +786,6 @@ mod tests {
     }
 
     /// Every app was published as the id this names before, as an installed catalogue believes.
-    struct RenamedFrom(&'static str);
-
-    impl PersonResourceTypes for RenamedFrom {
-        fn person_resource_types(&self, _app_id: &str) -> Vec<String> {
-            Vec::new()
-        }
-
-        fn earlier_ids(&self, _app_id: &str) -> Vec<String> {
-            vec![self.0.to_owned()]
-        }
-    }
-
     /// Notes keeps the person's record of what they watched.
     struct NotesKeepsWatched;
 
@@ -1067,36 +1050,6 @@ mod tests {
                     &bound(&workspace, app_id),
                     &workspace_id,
                     "so.tilo.calendar",
-                    document_id,
-                    &unsigned,
-                ),
-                Response::Denied(_)
-            ));
-            // An app renamed from Notes, as the installed catalogue believes it, changes the record
-            // Notes kept, where it is; an app claiming nothing of Notes does not.
-            let renamed = RenamedFrom(app_id);
-            let as_renamed = Bound {
-                workspace: &workspace,
-                app_id: "so.tilo.notebook",
-                person: &renamed,
-            };
-            assert!(matches!(
-                sign_collaboration_op(
-                    &tree,
-                    &as_renamed,
-                    &workspace_id,
-                    app_id,
-                    document_id,
-                    &unsigned
-                ),
-                Response::Signature(_)
-            ));
-            assert!(matches!(
-                sign_collaboration_op(
-                    &tree,
-                    &bound(&workspace, "so.tilo.notebook"),
-                    &workspace_id,
-                    app_id,
                     document_id,
                     &unsigned,
                 ),
@@ -1634,14 +1587,15 @@ params = []
             op.signature = collab_types::Signature::from_bytes(op_signature);
             collab_types::verify_op(&op).expect("identity service signature verifies");
 
-            let own_cluster = collab_types::personal_cluster(&identity.metadata().group_public_key()).to_string();
+            let own_workspace =
+                collab_types::person_workspace(&identity.metadata().group_public_key()).to_string();
             let own_proof = identity
-                .sign_collaboration_join(&own_cluster)
+                .sign_collaboration_join(&own_workspace)
                 .expect("an app keeping a record of the person's joins their store");
             VerifyingKey::from_bytes(&identity.metadata().signing_public_key())
                 .expect("device key")
                 .verify(
-                    &tilo_identity_client::collaboration_join_digest(&own_cluster).unwrap(),
+                    &tilo_identity_client::collaboration_join_digest(&own_workspace).unwrap(),
                     &Signature::from_bytes(&own_proof),
                 )
                 .expect("a proof for the person's store");
@@ -1650,9 +1604,9 @@ params = []
                     DocumentMutation::Incremental(b"automerge changes".to_vec())
                         .encode()
                         .expect("typed mutation"),
-                    document_artifact_id("so.tilo.notes", &own_cluster, record),
+                    document_artifact_id("so.tilo.notes", &own_workspace, record),
                     Ed25519PublicKey::from_bytes(identity.metadata().signing_public_key()),
-                    document_attestation_id("so.tilo.notes", &own_cluster, record),
+                    document_attestation_id("so.tilo.notes", &own_workspace, record),
                     collab_types::OpKind::Change,
                     now,
                     1,
@@ -1663,7 +1617,7 @@ params = []
             kept.signature = collab_types::Signature::from_bytes(
                 identity
                     .sign_collaboration_op(
-                        &own_cluster,
+                        &own_workspace,
                         "so.tilo.notes",
                         &watched,
                         &postcard::to_stdvec(&kept).expect("unsigned envelope"),
@@ -1675,7 +1629,7 @@ params = []
             assert!(
                 identity
                     .sign_collaboration_op(
-                        &own_cluster,
+                        &own_workspace,
                         "so.tilo.notes",
                         &undeclared,
                         &postcard::to_stdvec(&person_op(&undeclared)).expect("envelope"),
@@ -1686,7 +1640,7 @@ params = []
             assert!(
                 identity
                     .sign_collaboration_op(
-                        &own_cluster,
+                        &own_workspace,
                         "so.tilo.notes",
                         "record-1",
                         &postcard::to_stdvec(&person_op("record-1")).expect("envelope"),
@@ -1696,13 +1650,13 @@ params = []
             );
             assert!(
                 identity
-                    .group_keys(&own_cluster, "so.tilo.notes", &watched, 0)
+                    .group_keys(&own_workspace, "so.tilo.notes", &watched, 0)
                     .is_ok(),
                 "the keys of a record of the person's the app declares are asked for"
             );
             assert!(
                 identity
-                    .group_keys(&own_cluster, "so.tilo.notes", &undeclared, 0)
+                    .group_keys(&own_workspace, "so.tilo.notes", &undeclared, 0)
                     .is_err(),
                 "not those of a kind it does not declare"
             );
@@ -1774,14 +1728,14 @@ params = []
     tilo_test_env::scenario! {
         fn group_keys_for_an_app;
 
-        phase an_app_opened_in_the_persons_own_cluster_gets_the_keys_of_their_records;
+        phase an_app_opened_for_the_persons_records_gets_the_keys_of_them;
         // An app opened in the person's own store (Settings) is answered the
         // keys of the person's records it declares there: that store is no
         // workspace with a policy, and the person reads it.
         {
             let fixture = crate::join_proof::tests::Fixture::new();
             let own_cluster = WorkspaceId::parse(
-                &collab_types::personal_cluster(&fixture.user_public_key).to_string(),
+                &collab_types::person_workspace(&fixture.user_public_key).to_string(),
             )
             .expect("the person's store");
             let own = own_cluster.to_string();
@@ -1814,7 +1768,7 @@ params = []
         {
             let fixture = crate::join_proof::tests::Fixture::new();
             let workspace = WorkspaceId::parse(
-                &collab_types::personal_cluster(&fixture.user_public_key).to_string(),
+                &collab_types::person_workspace(&fixture.user_public_key).to_string(),
             )
             .expect("the person's store");
             let launch = workspace.to_string();

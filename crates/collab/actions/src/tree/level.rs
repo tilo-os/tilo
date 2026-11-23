@@ -2,8 +2,8 @@
 //! the pages a first read is bound to or on to the resource a listing wants.
 
 use super::walk::{
-    LEVEL_PAGES, LEVEL_WAIT, Levels, PAGE_ROWS, ROOT_PEEK, Tree, Unresolved, cannot_be_read_now,
-    is_chain, restart_pause,
+    LEVEL_PAGES, LEVEL_WAIT, Levels, PAGE_ROWS, ROOT_PEEK, Tree, Unresolved, as_the_service,
+    cannot_be_read_now, is_chain, restart_pause,
 };
 use super::{Level, LevelPages, Node, PageMark, distinct_children, level_of};
 use crate::ActionDescriptor;
@@ -50,7 +50,7 @@ enum Unread {
     Unavailable(String),
 }
 
-impl<P: ActionProvider + Sync> Tree<P> {
+impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
     /// `level`, read on until it holds more than `children` resources or
     /// the directory ends: what a listing paging past the first bounded
     /// read needs, so every resource a directory holds is reachable.
@@ -310,10 +310,12 @@ impl<P: ActionProvider + Sync> Tree<P> {
 
     /// The resources an app's path starts from: its top-level resources and
     /// the resources inside its containers (a notebook's pages are the app's
-    /// own), with the containers' own actions (`notes#new-page`). A chain
-    /// among them holds the app's items: it is listed first, with the items
-    /// it holds, and its actions are the app's before any other's
-    /// (`notes#new-note`).
+    /// own), with the containers' own actions (`notes#new-page`). A root
+    /// resource's actions are the app's too, each under the root it is
+    /// published on (`notes/n1#new-note`), so a caller listing the app calls
+    /// one without naming the root first. A chain among them holds the app's
+    /// items: it is listed first, with the items it holds, and its actions
+    /// are the app's before any other's (`notes#new-note`).
     pub async fn app_children(
         &self,
         provider: &str,
@@ -364,6 +366,9 @@ impl<P: ActionProvider + Sync> Tree<P> {
         listing: Option<usize>,
     ) -> Result<Level, Unresolved> {
         let mut root = self.level(provider, "", levels).await?;
+        // The app's own resources, before a container's items are listed beside them: a root
+        // resource is one of these, and what it offers is the app's to name.
+        let roots: Vec<Node> = root.children.clone();
         let containers: Vec<Node> = root
             .children
             .iter()
@@ -429,6 +434,27 @@ impl<P: ActionProvider + Sync> Tree<P> {
         });
         own.append(&mut root.own);
         root.own = own;
+        // A host service's one resource is the service itself, before its actions are taken
+        // for an app's root's.
+        as_the_service(provider, &mut root);
+        // A root resource's actions are the app's own, each under the root it is published on:
+        // a listing of the app offers them one call away (`notes/n1#new-note`), and a call
+        // naming the app finds them before it would read what the root holds. A control the
+        // window draws, or a host's operation, is no root: it is addressed, never listed.
+        for node in roots
+            .iter()
+            .filter(|node| !crate::kind_mirrors_a_control(&node.resource_type))
+        {
+            for action in node.listed_actions() {
+                if !root
+                    .own
+                    .iter()
+                    .any(|seen| seen.address.action == action.address.action)
+                {
+                    root.own.push(action.clone());
+                }
+            }
+        }
         let all = root.children.clone();
         root.children
             .retain(|node| !all.iter().any(|owner| owner.beside(node)));

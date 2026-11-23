@@ -80,40 +80,6 @@ pub fn shared_native_store() -> Arc<FsStore> {
     shared_store(native_data_home())
 }
 
-#[cfg(test)]
-mod shared_store_tests {
-    use super::*;
-    use durable_store::WriteOp;
-
-    #[test]
-    fn one_root_answers_one_store_and_another_root_another() {
-        let root = tempfile::tempdir().unwrap();
-        let first = shared_store(root.path());
-        let second = shared_store(root.path());
-        assert!(Arc::ptr_eq(&first, &second));
-        let other = shared_store(root.path().join("elsewhere"));
-        assert!(!Arc::ptr_eq(&first, &other));
-    }
-
-    #[test]
-    fn a_document_written_through_one_handle_reads_through_the_other() {
-        let root = tempfile::tempdir().unwrap();
-        let key = StorageKey::app("so.tilo.test");
-        let writer = shared_store(root.path());
-        let lease = writer.lease(&key).unwrap();
-        writer
-            .write(&key, WriteOp::Replace(b"kept".to_vec()), None)
-            .unwrap();
-        writer.flush(Some(&key)).unwrap();
-        drop(lease);
-        let reader = shared_store(root.path());
-        assert_eq!(
-            reader.read(&key).unwrap().map(|stored| stored.bytes),
-            Some(b"kept".to_vec())
-        );
-    }
-}
-
 pub const DOCUMENT_FILE: &str = "state.automerge";
 pub const ACTOR_FILE: &str = "actor";
 /// Beside a large document: the change hashes its last full save
@@ -130,6 +96,9 @@ pub const WORKSPACES_DIR: &str = "workspaces";
 /// Marker in a workspace's directory naming the one document that adopted
 /// it under a new identity.
 const DOCUMENT_SUCCESSOR_CLAIM: &str = "successor-claim";
+/// Times a repairing load re-reads a document that a live shared writer
+/// changed under it before accepting the repaired bytes.
+const REPAIR_ATTEMPTS: usize = 4;
 
 /// Everything that can go wrong opening, reading or writing a store.
 #[derive(Debug, thiserror::Error)]
@@ -467,23 +436,11 @@ impl DocStore {
 
     /// Load the persisted document, or `Ok(None)` on a first launch. A trailing
     /// partially-written chunk (crash during append) is dropped rather than
-    /// failing the load, losing only the last unflushed edit.
+    /// failing the load, losing only the last unflushed edit. The complete
+    /// document is stored in its place before anything appends after it: a
+    /// change written after the torn bytes would not load on the next launch.
     pub fn load(&mut self) -> Result<Option<AutoCommit>, StoreError> {
         self.load_with_completeness(false)
-    }
-
-    /// The document `bytes` are, when a reader on this thread holds it: by the heads the writer
-    /// kept for exactly these bytes, else by the bytes themselves. Never a document these bytes
-    /// are not: a hint names the length and whole digest it was made for.
-    fn held_document(&self, bytes: &[u8]) -> Option<AutoCommit> {
-        let at = self
-            .owner
-            .store()
-            .read_hint(self.owner.key())
-            .as_deref()
-            .and_then(|hint| load_hint::heads_for(hint, bytes))
-            .and_then(|heads| tilo_automerge::shared::held_at(&heads));
-        at.or_else(|| tilo_automerge::shared::held(bytes))
     }
 
     fn load_with_completeness(&mut self, complete: bool) -> Result<Option<AutoCommit>, StoreError> {
@@ -491,9 +448,8 @@ impl DocStore {
             self.has_base = Some(false);
             return Ok(None);
         };
-        let bytes = stored.bytes;
-        self.has_base = Some(!bytes.is_empty());
-        if bytes.is_empty() {
+        self.has_base = Some(!stored.bytes.is_empty());
+        if stored.bytes.is_empty() {
             return if complete {
                 Err(StoreError::EmptyExistingDocument {
                     path: self.document_path().to_path_buf(),
@@ -502,41 +458,44 @@ impl DocStore {
                 Ok(None)
             };
         }
-        // The document these bytes are, when a reader on this thread holds it: the page's replica
-        // that captured a document, the window that loaded it. Its heads are those the writer kept
-        // beside exactly these bytes, so the same document saved another way is still a copy
-        // rather than a load, and bytes a window rewrote are not decoded a second time.
-        if let Some(mut doc) = self.held_document(&bytes) {
-            doc.set_actor(self.actor());
-            self.persisted = doc.get_heads();
-            return Ok(Some(doc));
-        }
-        // The hashes the last full save listed for these exact bytes, if this
-        // device kept them (`load_hint`); never anything a peer sent.
-        let known = self
-            .owner
-            .store()
-            .read_hint(self.owner.key())
-            .and_then(|hint| load_hint::hashes_for(&hint, &bytes));
-        let options = LoadOptions::new().on_partial_load(if complete {
-            OnPartialLoad::Error
-        } else {
-            OnPartialLoad::Ignore
-        });
-        let options = match known.as_deref() {
-            Some(hashes) => options.known_change_hashes(hashes),
-            None => options,
-        };
-        tilo_automerge::shared::note_decoded();
-        let mut doc = AutoCommit::load_with_options(&bytes, options).map_err(|source| {
-            StoreError::Automerge {
-                path: self.document_path().to_path_buf(),
-                source: Box::new(source),
+        // A live shared writer can change the bytes between reading and
+        // accepting the repair; each attempt but the last reads them again.
+        let mut conflict = None;
+        for remaining in (1..=REPAIR_ATTEMPTS).rev() {
+            let loaded = if complete {
+                self.owner.load_complete()?
+            } else {
+                self.owner.load()?
+            };
+            let Some(loaded) = loaded else {
+                self.has_base = Some(false);
+                return Ok(None);
+            };
+            // A torn trailing change is published whole through the owner, so
+            // the store holds a complete document before a writer appends
+            // after it. Bytes that decode whole are only read.
+            if complete || !loaded.repairs() {
+                let mut doc = loaded.into_document();
+                doc.set_actor(self.actor());
+                self.persisted = doc.get_heads();
+                return Ok(Some(doc));
             }
-        })?;
-        doc.set_actor(self.actor());
-        self.persisted = doc.get_heads();
-        Ok(Some(doc))
+            match self.owner.accept(loaded) {
+                Ok(mut doc) => {
+                    self.persisted = doc.get_heads();
+                    return Ok(Some(doc));
+                }
+                Err(error) => {
+                    if remaining == 1 || !matches!(error, StoreError::SourceChanged { .. }) {
+                        return Err(error);
+                    }
+                    conflict = Some(error);
+                }
+            }
+        }
+        // Every attempt either returned or found the stored bytes changed
+        // under it, and the last one reported that conflict.
+        conflict.map_or_else(|| Ok(None), Err)
     }
 
     /// Load a complete existing change graph for checked document admission.
@@ -674,7 +633,10 @@ impl DocStore {
     /// of edits becomes one write. Seed it with the loaded document (see
     /// [`DocWriter::seed`]).
     pub fn writer(self) -> DocWriter {
-        if !self.persisted.is_empty() {
+        // A load that repaired a torn tail accepted the whole document
+        // already, including the repair still on its way to the store; a
+        // plain read leaves what it saw to be adopted here.
+        if !self.persisted.is_empty() && !self.owner.has_accepted() {
             let base = self
                 .owner
                 .stored()
@@ -1032,224 +994,400 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
-    fn directory_sync_stops_at_the_home_directory() {
-        let tmp = TempDir::new().unwrap();
-        let home = tmp.path().join("home");
-        let nested = home.join("state").join("docs");
-        fs::create_dir_all(&nested).unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("HOME", &home);
-        let mut visited = Vec::new();
-        sync_directory_ancestors(&nested, None, |path| {
-            visited.push(path.to_path_buf());
-            Ok(())
-        })
-        .unwrap();
-        drop(env);
-        let home = fs::canonicalize(&home).unwrap();
-        assert_eq!(visited.last(), Some(&home), "{visited:?}");
-        assert_eq!(visited.len(), 3, "{visited:?}");
+    fn one_root_answers_one_store_and_another_root_another() {
+        let root = tempfile::tempdir().unwrap();
+        let first = shared_store(root.path());
+        let second = shared_store(root.path());
+        assert!(Arc::ptr_eq(&first, &second));
+        let other = shared_store(root.path().join("elsewhere"));
+        assert!(!Arc::ptr_eq(&first, &other));
     }
 
-    /// A store over a root its host provisioned, as the launcher binds the
-    /// person's records at `/run/tilo/person` beside the app's home, syncs
-    /// up to its root and never opens the host's directory above it, which
-    /// the sandbox may not let it open.
+    /// Directory syncs climb to the home directory, or to a root the host
+    /// provisioned (as the launcher binds the person's records at
+    /// `/run/tilo/person` beside the app's home), and never open the host's
+    /// directory above it, which the sandbox may not let it open.
     #[test]
     #[serial_test::serial]
-    fn directory_sync_stops_at_a_provisioned_root() {
+    fn directory_sync_stops_at_the_home_directory_or_a_provisioned_root() {
         let tmp = TempDir::new().unwrap();
         let home = tmp.path().join("run").join("app");
         let person = tmp.path().join("run").join("person");
-        let nested = person.join("records").join("chat");
-        fs::create_dir_all(&home).unwrap();
-        fs::create_dir_all(&nested).unwrap();
+        let in_home = home.join("state").join("docs");
+        let in_person = person.join("records").join("chat");
+        fs::create_dir_all(&in_home).unwrap();
+        fs::create_dir_all(&in_person).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("HOME", &home);
-        let mut visited = Vec::new();
-        sync_directory_ancestors(&nested, Some(&person), |path| {
-            visited.push(path.to_path_buf());
-            Ok(())
-        })
-        .unwrap();
-        drop(env);
-        let person = fs::canonicalize(&person).unwrap();
-        assert_eq!(visited.last(), Some(&person), "{visited:?}");
-        assert_eq!(visited.len(), 3, "{visited:?}");
+        for (nested, root, top) in [
+            (&in_home, None, &home),
+            (&in_person, Some(&person), &person),
+        ] {
+            let mut visited = Vec::new();
+            sync_directory_ancestors(nested, root.map(PathBuf::as_path), |path| {
+                visited.push(path.to_path_buf());
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(
+                visited.last(),
+                Some(&fs::canonicalize(top).unwrap()),
+                "{visited:?}"
+            );
+            assert_eq!(visited.len(), 3, "{visited:?}");
+        }
     }
 
+    /// The first claimant, sequentially, is the store's conformance suite's;
+    /// these are the races and the torn marker a crash leaves.
+    #[test]
+    fn claim_markers_grant_exactly_one_claimant_under_races_and_torn_markers() {
+        let tmp = TempDir::new().unwrap();
+        let marker = Arc::new(tmp.path().join("claim"));
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let mut threads = Vec::new();
+        for claimant in ["workspace-a", "workspace-b"] {
+            let (barrier, marker) = (Arc::clone(&barrier), Arc::clone(&marker));
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                claim_marker(&marker, claimant).unwrap()
+            }));
+        }
+        let wins = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .filter(|won| *won)
+            .count();
+        assert_eq!(wins, 1, "atomic create gives one claimant the source");
+
+        // Shape left by a create-then-write that died between those
+        // syscalls. It has no valid owner, so recovery uses a separate
+        // atomic claim rather than replacing this file in place.
+        let torn = tmp.path().join("torn");
+        fs::write(&torn, b"workspace-a").unwrap();
+        assert!(claim_marker(&torn, "workspace-a").unwrap());
+        assert!(!claim_marker(&torn, "workspace-b").unwrap());
+        assert!(claim_marker(&torn, "workspace-a").unwrap());
+    }
+
+    fn text_of(doc: &AutoCommit, key: &str) -> Option<String> {
+        str_at(doc, &ROOT, key)
+    }
+
+    fn str_at(doc: &AutoCommit, obj: &automerge::ObjId, key: &str) -> Option<String> {
+        match doc.get(obj, key) {
+            Ok(Some((automerge::Value::Scalar(s), _))) => match s.as_ref() {
+                ScalarValue::Str(v) => Some(v.to_string()),
+                other => Some(other.to_string()),
+            },
+            _ => None,
+        }
+    }
+
+    fn body_text(doc: &AutoCommit) -> String {
+        let body = doc.get(&ROOT, "body").unwrap().unwrap().1;
+        doc.text(&body).unwrap()
+    }
+
+    /// An app's own document across launches: where it lives, saved and
+    /// merged with a peer that diverged before the save, appended to, torn by
+    /// a crash mid-append or mid-save, and reopened by a second launch over
+    /// the existing directory.
     #[test]
     #[serial_test::serial]
-    fn claim_markers_grant_exactly_one_claimant() {
-        // Phase `a_marker_is_claimed_once_and_resume_is_stable`.
-        {
-            let tmp = TempDir::new().unwrap();
-            let marker = tmp.path().join("claim");
-            assert!(claim_marker(&marker, "workspace-a").unwrap());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one app document's launches, asserted step by step"
+    )]
+    fn an_apps_document_is_saved_merged_appended_torn_and_reopened_across_launches() {
+        let home = scratch_home();
+        let app = "so.tilo.notes";
+        // The containment boundary: an app that lies about its own app id
+        // must not be able to address another app's directory or escape
+        // the data root.
+        for bad in [
+            "../so.tilo.mail",
+            "../../etc",
+            "/etc/shadow",
+            "so.tilo.mail/../so.tilo.chat",
+            "a/b",
+            "..",
+            ".",
+            "",
+        ] {
+            let err = DocStore::open_for(bad)
+                .err()
+                .unwrap_or_else(|| panic!("app id {bad:?} must be rejected"));
             assert!(
-                !claim_marker(&marker, "workspace-b").unwrap(),
-                "a second claimant cannot adopt the same source"
-            );
-            assert!(
-                claim_marker(&marker, "workspace-a").unwrap(),
-                "the original claimant can resume after an interruption"
+                matches!(err, StoreError::AppId(..)),
+                "app id {bad:?} rejected for the wrong reason: {err}"
             );
         }
-        // Phase `concurrent_claims_have_one_winner`.
         {
-            let tmp = TempDir::new().unwrap();
-            let marker = std::sync::Arc::new(tmp.path().join("claim"));
-            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-            let mut threads = Vec::new();
-            for claimant in ["workspace-a", "workspace-b"] {
-                let barrier = std::sync::Arc::clone(&barrier);
-                let marker = std::sync::Arc::clone(&marker);
-                threads.push(std::thread::spawn(move || {
-                    barrier.wait();
-                    claim_marker(&marker, claimant).unwrap()
-                }));
-            }
-            let wins = threads
-                .into_iter()
-                .map(|thread| thread.join().unwrap())
-                .filter(|won| *won)
-                .count();
-            assert_eq!(wins, 1, "atomic create gives one claimant the source");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_PACKAGE_ID", "so.tilo.monitor");
+            let store = DocStore::open().unwrap();
+            assert_eq!(store.app_id(), "so.tilo.monitor");
+            assert_eq!(store.dir(), home.path().join("so.tilo.monitor"));
         }
-        // Phase `a_torn_claim_recovers_without_granting_two_claimants`.
-        {
-            let tmp = TempDir::new().unwrap();
-            let marker = tmp.path().join("claim");
-            // Shape left by a create-then-write that died between those
-            // syscalls.  It has no valid owner, so recovery uses a separate
-            // atomic claim rather than replacing this file in place.
-            fs::write(&marker, b"workspace-a").unwrap();
-            assert!(claim_marker(&marker, "workspace-a").unwrap());
-            assert!(!claim_marker(&marker, "workspace-b").unwrap());
-            assert!(claim_marker(&marker, "workspace-a").unwrap());
-        }
+
+        // The directory exists before the first launch, as it does before
+        // every later one: an open that is not idempotent over it would fall
+        // back to memory and lose every launch's state after the first.
+        let dir = cli::standalone_state_dir(app);
+        fs::create_dir_all(&dir).unwrap();
+        let mut store = DocStore::open_for(app).expect("an open over an existing directory");
+        assert_eq!(store.dir(), home.path().join(app));
+        assert_eq!(
+            store.document_path(),
+            home.path().join(app).join(DOCUMENT_FILE)
+        );
+        assert!(store.load().unwrap().is_none(), "nothing saved yet");
+
+        // The anti-`contacts` case: `apps/contacts` used to save by
+        // replaying its model into a brand-new `AutoCommit`, producing a file
+        // with no shared history with any peer, so merges duplicated records
+        // instead of converging.
+        let mut doc = store.new_document();
+        let list = doc.put_object(&ROOT, "contacts", ObjType::Map).unwrap();
+        doc.put(&list, "ada", ScalarValue::Str("Ada Lovelace".into()))
+            .unwrap();
+        let original_actor = doc.get_actor().clone();
+        let mut peer = doc.fork().with_actor(ActorId::random());
+        let peer_list = peer.get(&ROOT, "contacts").unwrap().unwrap().1;
+        peer.put(&peer_list, "grace", ScalarValue::Str("Grace Hopper".into()))
+            .unwrap();
+        doc.put(&list, "alan", ScalarValue::Str("Alan Turing".into()))
+            .unwrap();
+        store.save(&mut doc).unwrap();
+        drop((store, doc));
+
+        let mut store = DocStore::open_for(app).unwrap();
+        let mut doc = store.load().unwrap().expect("saved document");
+        assert_eq!(
+            doc.get_actor(),
+            &original_actor,
+            "a reopened store must keep the document's actor identity"
+        );
+        doc.merge_incoming(&mut peer)
+            .expect("merge with diverged peer");
+        let list = doc.get(&ROOT, "contacts").unwrap().unwrap().1;
+        assert_eq!(
+            str_at(&doc, &list, "ada").as_deref(),
+            Some("Ada Lovelace"),
+            "the shared ancestor is still there exactly once"
+        );
+        assert_eq!(
+            str_at(&doc, &list, "alan").as_deref(),
+            Some("Alan Turing"),
+            "the saved local edit survives the merge"
+        );
+        assert_eq!(
+            str_at(&doc, &list, "grace").as_deref(),
+            Some("Grace Hopper"),
+            "the peer's concurrent edit merges in"
+        );
+        // A rebuilt-from-scratch document would have made `contacts` a
+        // different object on each side, so the merge would leave two
+        // conflicting values. Exactly one is the proof it didn't.
+        assert_eq!(
+            doc.get_all(&ROOT, "contacts").unwrap().len(),
+            1,
+            "history was preserved, so both sides edited the same object"
+        );
+
+        // Appends extend the file by exactly their delta.
+        let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
+        doc.splice_text(&body, 0, 0, "hello").unwrap();
+        store.save(&mut doc).unwrap();
+        let base = fs::metadata(store.document_path()).unwrap().len();
+        doc.splice_text(&body, 5, 0, " world").unwrap();
+        let appended = store.append(&mut doc).unwrap();
+        assert!(appended > 0, "a real edit must produce a delta");
+        assert_eq!(
+            fs::metadata(store.document_path()).unwrap().len(),
+            base + appended as u64,
+            "append must extend the file, not rewrite it"
+        );
+        assert_eq!(store.append(&mut doc).unwrap(), 0);
+        drop((store, doc));
+        let mut store = DocStore::open_for(app).unwrap();
+        let mut doc = store.load().unwrap().unwrap();
+        assert_eq!(body_text(&doc), "hello world");
+
+        // A crash during an append leaves a truncated trailing chunk after
+        // the last whole save.
+        store.save(&mut doc).unwrap();
+        let body = doc.get(&ROOT, "body").unwrap().unwrap().1;
+        doc.splice_text(&body, 11, 0, " and lost").unwrap();
+        store.append(&mut doc).unwrap();
+        let bytes = fs::read(store.document_path()).unwrap();
+        let torn = &bytes[..bytes.len() - 3];
+        fs::write(store.document_path(), torn).unwrap();
+        drop((store, doc));
+        let mut store = DocStore::open_for(app).unwrap();
+        let before = store.persisted.clone();
+        assert!(
+            store.load_complete().is_err(),
+            "checked admission cannot accept a valid prefix with a truncated appended change"
+        );
+        assert_eq!(
+            store.persisted, before,
+            "refused content cannot become the admitted persisted frontier"
+        );
+        assert_eq!(fs::read(store.document_path()).unwrap(), torn);
+        let doc = store
+            .load()
+            .expect("a torn tail must not fail the load")
+            .expect("document still present");
+        assert_eq!(
+            body_text(&doc),
+            "hello world",
+            "everything committed before the torn append survives"
+        );
+        // The recovery stored the complete document in place of the torn
+        // bytes, so everything after it loads on the next launch.
+        assert!(
+            store.load_complete().is_ok(),
+            "the recovery load must store the repaired document, not leave the torn tail"
+        );
+
+        // A full save is a temp-file rename, so an interrupted one can't be
+        // observed: the previous document is intact, and the partial bytes
+        // sit in a `.tmp` sibling `load` never looks at. The second launch
+        // over the existing directory persists through its writer.
+        let tmp_path = store.document_path().with_extension("automerge.tmp");
+        fs::write(&tmp_path, b"\x85\x6f\x4a\x83truncated garbage").unwrap();
+        drop(store);
+        let mut store = DocStore::open_for(app).unwrap();
+        let mut doc = store.load_or_new();
+        assert_eq!(body_text(&doc), "hello world");
+        let mut writer = store.writer();
+        assert!(
+            writer.is_enabled(),
+            "a later launch must persist, not fall back"
+        );
+        writer.seed(&doc);
+        doc.put(&ROOT, "note", ScalarValue::Str("survives".into()))
+            .unwrap();
+        doc.commit();
+        writer.request(&doc);
+        writer.flush();
+        assert_eq!(writer.last_error(), None, "no write may have failed");
+        drop(writer);
+        let mut store = DocStore::open_for(app).unwrap();
+        assert_eq!(
+            text_of(&store.load_or_new(), "note").as_deref(),
+            Some("survives")
+        );
+    }
+
+    /// A launch that recovers a torn trailing change must store the repaired
+    /// document before its writer appends anything: an append after the torn
+    /// bytes would be unreadable on the next launch, because Automerge stops
+    /// at the truncated change.
+    #[test]
+    #[serial_test::serial]
+    fn a_recovered_document_writes_after_its_torn_tail_not_into_it() {
+        let _home = scratch_home();
+        let app = "so.tilo.torn-writer";
+        let mut store = DocStore::open_for(app).unwrap();
+        let mut doc = store.new_document();
+        let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
+        doc.splice_text(&body, 0, 0, "kept").unwrap();
+        store.save(&mut doc).unwrap();
+        doc.splice_text(&body, 4, 0, " lost").unwrap();
+        store.append(&mut doc).unwrap();
+        // A crash during that append leaves the last change half-written.
+        let bytes = fs::read(store.document_path()).unwrap();
+        fs::write(store.document_path(), &bytes[..bytes.len() - 3]).unwrap();
+        drop((store, doc));
+
+        let mut store = DocStore::open_for(app).unwrap();
+        let mut doc = store
+            .load()
+            .expect("a torn tail must not fail the load")
+            .expect("document still present");
+        assert_eq!(body_text(&doc), "kept");
+        let mut writer = store.writer();
+        assert!(writer.is_enabled(), "the recovery launch must persist");
+        let body = doc.get(&ROOT, "body").unwrap().unwrap().1;
+        doc.splice_text(&body, 4, 0, " after").unwrap();
+        doc.commit();
+        writer.request(&doc);
+        writer.flush();
+        assert_eq!(writer.last_error(), None, "no write may have failed");
+        drop(writer);
+
+        let mut store = DocStore::open_for(app).unwrap();
+        let loaded = store
+            .load()
+            .expect("the document written after recovery loads")
+            .expect("document still present");
+        assert_eq!(
+            body_text(&loaded),
+            "kept after",
+            "a change written after recovery must be readable on the next launch"
+        );
     }
 
     tilo_test_env::scenario! {
         /// `DocStore` opened at an explicit place, without the environment.
         fn a_doc_store_refuses_what_is_unsafe_and_keeps_its_load_hint;
 
-        phase canonical_and_complete_loads_refuse_truncated_documents;
+        phase complete_loads_tell_missing_from_empty_and_accept_full_history;
         {
-            // Phase `complete_load_refuses_truncated_increment_without_accepting_or_rewriting_it`.
-            {
-                let tmp = tempfile::tempdir().unwrap();
-                let mut store = DocStore::open_in("dev.tilo.complete-load", tmp.path()).unwrap();
-                let mut doc = store.new_document();
-                doc.put(ROOT, "body", "first").unwrap();
-                let mut bytes = doc.save();
-                doc.put(ROOT, "body", "later version").unwrap();
-                let increment = doc.save_incremental();
-                assert!(increment.len() > 8);
-                bytes.extend_from_slice(&increment[..increment.len() - 3]);
-                fs::write(store.document_path(), &bytes).unwrap();
-                let before = store.persisted.clone();
-                assert!(
-                    store.load_complete().is_err(),
-                    "checked admission cannot accept a valid prefix with a truncated appended change"
-                );
-                assert_eq!(
-                    store.persisted, before,
-                    "refused content cannot become the admitted persisted frontier"
-                );
-                assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
-                let legacy = store.load().unwrap().unwrap();
-                assert_eq!(
-                    legacy.get(ROOT, "body").unwrap().unwrap().0.as_str(),
-                    Some("first"),
-                    "ordinary legacy recovery retains its prior partial-load behavior"
-                );
-            }
-            // Phase `complete_load_accepts_full_history_and_distinguishes_missing_from_empty`.
-            {
-                let tmp = tempfile::tempdir().unwrap();
-                let mut store = DocStore::open_in("dev.tilo.complete-load", tmp.path()).unwrap();
-                assert!(store.load_complete().unwrap().is_none());
-                fs::write(store.document_path(), []).unwrap();
-                assert!(matches!(
-                    store.load_complete(),
-                    Err(StoreError::EmptyExistingDocument { .. })
-                ));
-                let mut doc = store.new_document();
-                doc.put(ROOT, "body", "first").unwrap();
-                let mut bytes = doc.save();
-                doc.put(ROOT, "body", "second").unwrap();
-                bytes.extend_from_slice(&doc.save_incremental());
-                let heads = doc.get_heads();
-                fs::write(store.document_path(), &bytes).unwrap();
-                let mut loaded = store.load_complete().unwrap().unwrap();
-                assert_eq!(loaded.get_heads(), heads);
-                assert_eq!(store.persisted, heads);
-                assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
-            }
+            let tmp = tempfile::tempdir().unwrap();
+            let mut store = DocStore::open_in("dev.tilo.complete-load", tmp.path()).unwrap();
+            assert!(store.load_complete().unwrap().is_none());
+            fs::write(store.document_path(), []).unwrap();
+            assert!(matches!(
+                store.load_complete(),
+                Err(StoreError::EmptyExistingDocument { .. })
+            ));
+            let mut doc = store.new_document();
+            doc.put(ROOT, "body", "first").unwrap();
+            let mut bytes = doc.save();
+            doc.put(ROOT, "body", "second").unwrap();
+            bytes.extend_from_slice(&doc.save_incremental());
+            let heads = doc.get_heads();
+            fs::write(store.document_path(), &bytes).unwrap();
+            let mut loaded = store.load_complete().unwrap().unwrap();
+            assert_eq!(loaded.get_heads(), heads);
+            assert_eq!(store.persisted, heads);
+            assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
         }
 
-        phase store_checks_locks_and_directories_fail_closed;
+        phase store_checks_and_directories_fail_closed;
         {
-            // Phase `canonical_lock_blocks_legacy_before_actor_creation`.
-            {
-                let tmp = TempDir::new().unwrap();
-                // The exclusive owner holds this check before touching actor or document.
-                let check = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
-                let result = DocStore::open_in("so.tilo.test", tmp.path());
-                assert!(
-                    result.is_err(),
-                    "a legacy opener must respect the canonical check"
-                );
-                assert!(!tmp.path().join(ACTOR_FILE).exists());
-                assert!(!tmp.path().join(DOCUMENT_FILE).exists());
-                drop(check);
-                assert!(DocStore::open_in("so.tilo.test", tmp.path()).is_ok());
-            }
-            // Phase `writer_lock_is_exclusive_and_released_with_its_handle`.
-            {
-                let tmp = TempDir::new().unwrap();
-                let path = tmp.path().join("writer.lock");
-                let first = acquire_writer_lock(&path).expect("first writer lock");
-                assert!(
-                    acquire_writer_lock(&path).is_none(),
-                    "a second live handle must not acquire the writer lock"
-                );
-                drop(first);
-                assert!(
-                    acquire_writer_lock(&path).is_some(),
-                    "dropping the owner must release the writer lock"
-                );
-            }
-            // Phase `an_uncreatable_state_dir_is_still_an_error`.
-            // A state directory that genuinely cannot be created must still surface as
-            // an error — idempotent create must not paper over a real filesystem failure.
-            {
-                // A file where a parent directory needs to be fails ENOTDIR for any
-                // uid — unlike a read-only directory, which root would sail past.
-                let tmp = TempDir::new().unwrap();
-                let blocker = tmp.path().join("blocker");
-                fs::write(&blocker, b"not a directory").unwrap();
+            let tmp = TempDir::new().unwrap();
+            // The exclusive owner holds this check before touching actor or document.
+            let check = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
+            assert!(
+                DocStore::open_in("so.tilo.test", tmp.path()).is_err(),
+                "a legacy opener must respect the canonical check"
+            );
+            assert!(!tmp.path().join(ACTOR_FILE).exists());
+            assert!(!tmp.path().join(DOCUMENT_FILE).exists());
+            drop(check);
+            assert!(DocStore::open_in("so.tilo.test", tmp.path()).is_ok());
 
-                let result = DocStore::shared(
-                    Rc::new(FsStore::new(blocker.join("sub"))),
-                    StorageKey::app("so.tilo.blocked"),
-                );
-
-                match result {
-                    Err(StoreError::Io { .. }) => {}
-                    Err(other) => {
-                        panic!(
-                            "expected an Io error from an uncreatable state directory, got {other:?}"
-                        )
-                    }
-                    Ok(_) => panic!(
-                        "an uncreatable state directory must surface as an error, not be \
-                     masked by the idempotent create"
-                    ),
-                }
-            }
+            // A state directory that genuinely cannot be created is still an
+            // error: idempotent create must not paper over a real filesystem
+            // failure. A file where a parent directory needs to be fails
+            // ENOTDIR for any uid, unlike a read-only directory, which root
+            // would sail past.
+            let blocker = tmp.path().join("blocker");
+            fs::write(&blocker, b"not a directory").unwrap();
+            let result = DocStore::shared(
+                Rc::new(FsStore::new(blocker.join("sub"))),
+                StorageKey::app("so.tilo.blocked"),
+            );
+            assert!(
+                matches!(result, Err(StoreError::Io { .. })),
+                "an uncreatable state directory must surface as an Io error, got {:?}",
+                result.err()
+            );
         }
 
         phase a_docstore_save_keeps_a_load_hint_its_next_load_takes;
@@ -1332,313 +1470,6 @@ mod tests {
                 copy.committed_document().change_hashes(),
                 "its bytes load in full past the primary's stale hint"
             );
-        }
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn store_paths_follow_the_contained_package_id() {
-        // Phase `path_is_derived_from_the_package_id`.
-        {
-            let tmp = scratch_home();
-            let store = DocStore::open_for("so.tilo.ebook").unwrap();
-            assert_eq!(store.dir(), tmp.path().join("so.tilo.ebook"));
-            assert_eq!(
-                store.document_path(),
-                tmp.path().join("so.tilo.ebook").join(DOCUMENT_FILE)
-            );
-        }
-        // Phase `open_reads_the_launcher_package_id`.
-        {
-            let tmp = scratch_home();
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_PACKAGE_ID", "so.tilo.monitor");
-            let store = DocStore::open().unwrap();
-            assert_eq!(store.app_id(), "so.tilo.monitor");
-            assert_eq!(store.dir(), tmp.path().join("so.tilo.monitor"));
-        }
-        // Phase `package_id_cannot_escape_the_data_root`.
-        // The containment boundary: an app that lies about its own app id must
-        // not be able to address another app's directory or escape the data root.
-        {
-            let _tmp = scratch_home();
-            for bad in [
-                "../so.tilo.mail",
-                "../../etc",
-                "/etc/shadow",
-                "so.tilo.mail/../so.tilo.chat",
-                "a/b",
-                "..",
-                ".",
-                "",
-            ] {
-                let err = DocStore::open_for(bad)
-                    .err()
-                    .unwrap_or_else(|| panic!("app id {bad:?} must be rejected"));
-                assert!(
-                    matches!(err, StoreError::AppId(..)),
-                    "app id {bad:?} rejected for the wrong reason: {err}"
-                );
-            }
-        }
-    }
-
-    fn text_of(doc: &AutoCommit, key: &str) -> Option<String> {
-        str_at(doc, &ROOT, key)
-    }
-
-    fn str_at(doc: &AutoCommit, obj: &automerge::ObjId, key: &str) -> Option<String> {
-        match doc.get(obj, key) {
-            Ok(Some((automerge::Value::Scalar(s), _))) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                other => Some(other.to_string()),
-            },
-            _ => None,
-        }
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn saves_and_appends_round_trip_and_survive_interruption() {
-        // Phase `round_trip_preserves_content`.
-        {
-            let _tmp = scratch_home();
-            let mut store = DocStore::open_for("so.tilo.roundtrip").unwrap();
-            assert!(store.load().unwrap().is_none(), "nothing saved yet");
-
-            let mut doc = store.new_document();
-            doc.put(&ROOT, "title", ScalarValue::Str("Moby Dick".into()))
-                .unwrap();
-            let notes = doc.put_object(&ROOT, "notes", ObjType::Text).unwrap();
-            doc.splice_text(&notes, 0, 0, "call me ishmael").unwrap();
-            store.save(&mut doc).unwrap();
-            drop((store, doc));
-
-            let mut reopened = DocStore::open_for("so.tilo.roundtrip").unwrap();
-            let loaded = reopened.load().unwrap().expect("document is on disk");
-            assert_eq!(text_of(&loaded, "title").as_deref(), Some("Moby Dick"));
-            let notes = loaded.get(&ROOT, "notes").unwrap().unwrap().1;
-            assert_eq!(loaded.text(&notes).unwrap(), "call me ishmael");
-        }
-        // Phase `round_trip_merges_with_a_replica_that_diverged_before_the_save`.
-        // The anti-`contacts` test: `apps/contacts` used to save by replaying its
-        // model into a brand-new `AutoCommit`, producing a file with no shared
-        // history with any peer, so merges duplicated records instead of
-        // converging. A document through this store must still merge cleanly with
-        // a replica that diverged before the save.
-        {
-            let _tmp = scratch_home();
-            let mut store = DocStore::open_for("so.tilo.merge").unwrap();
-
-            let mut doc = store.new_document();
-            let list = doc.put_object(&ROOT, "contacts", ObjType::Map).unwrap();
-            doc.put(&list, "ada", ScalarValue::Str("Ada Lovelace".into()))
-                .unwrap();
-            let original_actor = doc.get_actor().clone();
-
-            let mut peer = doc.fork().with_actor(ActorId::random());
-            let peer_list = peer.get(&ROOT, "contacts").unwrap().unwrap().1;
-            peer.put(&peer_list, "grace", ScalarValue::Str("Grace Hopper".into()))
-                .unwrap();
-
-            doc.put(&list, "alan", ScalarValue::Str("Alan Turing".into()))
-                .unwrap();
-            store.save(&mut doc).unwrap();
-            drop((store, doc));
-
-            let mut reopened = DocStore::open_for("so.tilo.merge").unwrap();
-            let mut restored = reopened.load().unwrap().expect("saved document");
-
-            // Actor identity survives the restart: same automerge actor, not a fresh one per launch.
-            assert_eq!(
-                restored.get_actor(),
-                &original_actor,
-                "a reopened store must keep the document's actor identity"
-            );
-
-            restored
-                .merge_incoming(&mut peer)
-                .expect("merge with diverged peer");
-            let list = restored.get(&ROOT, "contacts").unwrap().unwrap().1;
-            assert_eq!(
-                str_at(&restored, &list, "ada").as_deref(),
-                Some("Ada Lovelace"),
-                "the shared ancestor is still there exactly once"
-            );
-            assert_eq!(
-                str_at(&restored, &list, "alan").as_deref(),
-                Some("Alan Turing"),
-                "the saved local edit survives the merge"
-            );
-            assert_eq!(
-                str_at(&restored, &list, "grace").as_deref(),
-                Some("Grace Hopper"),
-                "the peer's concurrent edit merges in"
-            );
-            // A rebuilt-from-scratch document would have made `contacts` a different
-            // object on each side, so the merge would leave two conflicting values.
-            // Exactly one is the proof it didn't.
-            assert_eq!(
-                restored.get_all(&ROOT, "contacts").unwrap().len(),
-                1,
-                "history was preserved, so both sides edited the same object"
-            );
-        }
-        // Phase `append_is_incremental_and_loads_back`.
-        {
-            let _tmp = scratch_home();
-            let mut store = DocStore::open_for("so.tilo.append").unwrap();
-            let mut doc = store.new_document();
-            let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
-            doc.splice_text(&body, 0, 0, "hello").unwrap();
-            store.save(&mut doc).unwrap();
-            let base = fs::metadata(store.document_path()).unwrap().len();
-
-            doc.splice_text(&body, 5, 0, " world").unwrap();
-            let appended = store.append(&mut doc).unwrap();
-            assert!(appended > 0, "a real edit must produce a delta");
-            let grown = fs::metadata(store.document_path()).unwrap().len();
-            assert_eq!(
-                grown,
-                base + appended as u64,
-                "append must extend the file, not rewrite it"
-            );
-
-            assert_eq!(store.append(&mut doc).unwrap(), 0);
-            drop((store, doc));
-
-            let mut reopened = DocStore::open_for("so.tilo.append").unwrap();
-            let loaded = reopened.load().unwrap().unwrap();
-            let body = loaded.get(&ROOT, "body").unwrap().unwrap().1;
-            assert_eq!(loaded.text(&body).unwrap(), "hello world");
-        }
-        // Phase `a_torn_append_loses_only_the_torn_change`.
-        // A crash during an append leaves a truncated trailing chunk; everything
-        // written before it must still load.
-        {
-            let _tmp = scratch_home();
-            let mut store = DocStore::open_for("so.tilo.torn").unwrap();
-            let mut doc = store.new_document();
-            let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
-            doc.splice_text(&body, 0, 0, "committed").unwrap();
-            store.save(&mut doc).unwrap();
-
-            doc.splice_text(&body, 9, 0, " and lost").unwrap();
-            store.append(&mut doc).unwrap();
-
-            // Simulate the interrupted write: chop the tail of the last chunk.
-            let bytes = fs::read(store.document_path()).unwrap();
-            fs::write(store.document_path(), &bytes[..bytes.len() - 3]).unwrap();
-            drop((store, doc));
-
-            let mut reopened = DocStore::open_for("so.tilo.torn").unwrap();
-            let loaded = reopened
-                .load()
-                .expect("a torn tail must not fail the load")
-                .expect("document still present");
-            let body = loaded.get(&ROOT, "body").unwrap().unwrap().1;
-            assert_eq!(
-                loaded.text(&body).unwrap(),
-                "committed",
-                "everything committed before the torn append survives"
-            );
-        }
-        // Phase `an_interrupted_full_save_leaves_the_previous_document_intact`.
-        // A full save is a temp-file rename, so an interrupted one can't be
-        // observed: the previous document is intact, and the partial bytes sit in
-        // a `.tmp` sibling `load` never looks at.
-        {
-            let _tmp = scratch_home();
-            let mut store = DocStore::open_for("so.tilo.atomic").unwrap();
-            let mut doc = store.new_document();
-            doc.put(&ROOT, "v", ScalarValue::Str("first".into()))
-                .unwrap();
-            store.save(&mut doc).unwrap();
-
-            // The write half of an interrupted save: temp file exists, rename never happened.
-            let tmp_path = store.document_path().with_extension("automerge.tmp");
-            fs::write(&tmp_path, b"\x85\x6f\x4a\x83truncated garbage").unwrap();
-            drop((store, doc));
-
-            let mut reopened = DocStore::open_for("so.tilo.atomic").unwrap();
-            let loaded = reopened.load().unwrap().expect("previous document");
-            assert_eq!(text_of(&loaded, "v").as_deref(), Some("first"));
-        }
-        // Phase `a_second_instance_gets_a_distinct_actor`.
-        {
-            let _tmp = scratch_home();
-            let first = DocStore::open_for("so.tilo.twice").unwrap();
-            assert!(first.is_exclusive_writer());
-            let second = DocStore::open_for("so.tilo.twice").unwrap();
-            assert!(
-                !second.is_exclusive_writer(),
-                "the second live store must not claim the writer lock"
-            );
-            assert_ne!(
-                first.actor(),
-                second.actor(),
-                "two live writers sharing an actor id would corrupt the change sequence"
-            );
-        }
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn opening_over_existing_state_keeps_persistence() {
-        // Phase `opening_twice_against_an_existing_dir_keeps_persistence_enabled`.
-        // If the directory create were not idempotent, the second open would fail
-        // EEXIST and swallow into an in-memory fallback, silently losing state
-        // after the first launch. Pre-creates the directory before the *first*
-        // open too, since fresh-XDG CI never sees an existing one otherwise.
-        {
-            let _tmp = scratch_home();
-            let pkg = "so.tilo.persist-twice";
-
-            let dir = cli::standalone_state_dir(pkg);
-            fs::create_dir_all(&dir).unwrap();
-            assert!(
-                dir.is_dir(),
-                "the state directory pre-exists for both opens"
-            );
-
-            // `seed` runs on the freshly loaded document, exactly as
-            // an app host sequences it, so the later edit reads as a change.
-            let mut run1 =
-                DocStore::open_for(pkg).expect("first open must succeed when the dir exists");
-            let mut doc = run1.load_or_new();
-            let mut autosave1 = run1.writer();
-            assert!(autosave1.is_enabled(), "run 1 must persist, not fall back");
-            autosave1.seed(&doc);
-            doc.put(&ROOT, "note", ScalarValue::Str("survives".into()))
-                .unwrap();
-            doc.commit();
-            autosave1.request(&doc);
-            autosave1.flush();
-            assert_eq!(autosave1.last_error(), None, "no write may have failed");
-            drop(autosave1);
-
-            let run2 = DocStore::open_for(pkg);
-            assert!(
-                run2.is_ok(),
-                "second open against the existing dir must succeed, got {:?}",
-                run2.err()
-            );
-            let mut run2 = run2.unwrap();
-            let mut doc2 = run2.load_or_new();
-            assert_eq!(
-                text_of(&doc2, "note").as_deref(),
-                Some("survives"),
-                "state written in run 1 must round-trip across the re-open"
-            );
-            let autosave2 = run2.writer();
-            assert!(
-                autosave2.is_enabled(),
-                "the SECOND run must persist too — this is the bug: a non-idempotent \
-                 directory create disabled persistence for every launch after the first"
-            );
-            doc2.put(&ROOT, "note", ScalarValue::Str("again".into()))
-                .unwrap();
-            autosave2.flush();
         }
     }
 }

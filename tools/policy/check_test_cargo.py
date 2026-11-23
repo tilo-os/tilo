@@ -28,20 +28,15 @@ is skipped: it does not build this tree.
 """
 from __future__ import annotations
 
-import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rust_source  # noqa: E402
+from rust_test_sources import own_workspace, sources, test_code  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-# Test support: every source of the crate tests share is test code, as the
-# files under `tests/` are.
-SUPPORT = (Path("crates/dev/test-env/src"),)
-SCANNED = ("apps", "crates", "examples", "fuzz", "os", "tools")
 # Where a command's program is named: `Command::new(PROGRAM)`,
 # `Command::from(PROGRAM)`, a `program:` field of a command, `.program(PROGRAM)`.
 PROGRAM = re.compile(
@@ -49,46 +44,6 @@ PROGRAM = re.compile(
 )
 STARTS = re.compile(r"\.\s*(?:spawn|output|status)(?:_locked)?\s*\(")
 CARGO = re.compile(r"cargo", re.IGNORECASE)
-
-
-def test_code(relative: Path, code: str) -> str:
-    if rust_source.is_test_file(relative) or any(
-        support in relative.parents for support in SUPPORT
-    ):
-        return code
-    production = rust_source.blank_test_items(code)
-    return "".join(
-        c if c != p or c == "\n" else " " for c, p in zip(code, production)
-    )
-
-
-def own_workspace(relative: Path, root: Path) -> bool:
-    """Whether `relative` belongs to the repository's Cargo workspace rather
-    than to a tool with a workspace and lock of its own."""
-    return not any(
-        (root / parent / "Cargo.lock").is_file()
-        for parent in relative.parents
-        if parent != Path(".")
-    )
-
-
-def sources(root: Path):
-    names = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", *SCANNED],
-        stdout=subprocess.PIPE,
-        check=True,
-    ).stdout
-    for name in sorted(set(names.split(b"\0")) - {b""}):
-        relative = Path(os.fsdecode(name))
-        if relative.suffix != ".rs":
-            continue
-        if any(part in {"target", "vendor"} for part in relative.parts):
-            continue
-        if not own_workspace(relative, root):
-            continue
-        path = root / relative
-        if path.is_file():
-            yield relative, path.read_text(encoding="utf-8", errors="replace")
 
 
 def program_at(code: str, start: int) -> str:
@@ -144,7 +99,9 @@ def audit(root: Path = ROOT, files=None) -> list[tuple[str, int, str]]:
             continue
         code, literals = rust_source.lex(text)
         values = {literal.start: literal.value for literal in literals}
-        tests = test_code(relative, code)
+        # Fixtures under `tests/` are not skipped: a fixture payload started
+        # during a test run invoking Cargo would still trigger a second build.
+        tests = test_code(relative, code, skip_fixtures=False)
         for program in PROGRAM.finditer(tests):
             expression = program_at(tests, program.end())
             end = program.end() + len(expression)

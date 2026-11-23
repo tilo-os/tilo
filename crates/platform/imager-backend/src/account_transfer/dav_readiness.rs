@@ -83,9 +83,10 @@ mod tests {
                 ["/files/", "/base/remote.php/dav/files/ada%20space/"]
             );
             assert!(
-                !std::fs::read_to_string(accounts::store_path_in(&root))
-                    .unwrap()
-                    .contains(PASSWORD)
+                !String::from_utf8_lossy(
+                    &std::fs::read(accounts::person::staged_path_in(&root)).unwrap()
+                )
+                .contains(PASSWORD)
             );
             assert!(
                 !String::from_utf8_lossy(
@@ -200,7 +201,7 @@ mod tests {
                     other => panic!("unexpected non-secret job state: {other:?}"),
                 }
             }
-            assert!(!accounts::store_path_in(&home.join(".config/tilo")).exists());
+            assert!(!accounts::person::staged_path_in(&home.join(".config/tilo")).exists());
         }
     }
 }

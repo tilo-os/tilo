@@ -70,7 +70,6 @@ pub fn prepare_join(token_text: &str, options: JoinOptions<'_>) -> anyhow::Resul
         identity_dir,
         requester_lease,
         person_uid,
-        recovery_key,
         ..
     } = options;
     validate_requester(requester_lease)?;
@@ -97,7 +96,6 @@ pub fn prepare_join(token_text: &str, options: JoinOptions<'_>) -> anyhow::Resul
         label: label.chars().take(80).collect(),
         hardware: hardware_summary(),
         kind,
-        recovery_key: recovery_key.map(str::to_owned),
     };
     let (request_bytes, response_secret) =
         encrypt_request(&request, token.issuer_device_public_key)?;
@@ -473,8 +471,4 @@ pub struct JoinOptions<'a> {
     pub requester_lease: Option<tilo_server_protocol::ProcessLease>,
     pub port: u16,
     pub person_uid: Option<u32>,
-    /// The disk recovery key this machine installs with, when it installs
-    /// with nobody at its screen: it travels with the request, and the
-    /// person's devices keep it in their own store.
-    pub recovery_key: Option<&'a str>,
 }

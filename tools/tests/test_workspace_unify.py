@@ -61,16 +61,16 @@ def line(key: str, source: str, features: list[str]) -> str:
     return f'{json.dumps(key)} = {{ {source}default-features = false, features = [{listed}] }}\n'
 
 
-MEMBER = line("member", 'path = "../../../crates/collab/member", ', ["arm"])
-PATCHED = line("accesskit-unix-0_23_0", 'package = "accesskit-unix", path = "../../../vendor/accesskit_unix", ', ["tokio"])
+MEMBER = line("member", 'path = "../../crates/collab/member", ', ["arm"])
+PATCHED = line("accesskit-unix-0_23_0", 'package = "accesskit-unix", path = "../../vendor/accesskit_unix", ', ["tokio"])
 HICKORY = line("hickory-proto-0_26_1", 'package = "hickory-proto", version = "^0.26.1", ', ["access-control", "std"])
 ARM_ONLY = line("arm-only-1_4_0", 'package = "arm-only", version = "^1.4.0", ', ["std"])
 SERDE = line("serde-2_0_0", 'package = "serde", version = "^2.0.0", ', [])
 GONE = line("gone-1_0_0", 'package = "gone", version = "^1.0.0", ', [])
 
 # This machine's resolution of the same packages.
-MEMBER_HERE = line("member", 'path = "../../../crates/collab/member", ', ["here"])
-PATCHED_HERE = line("accesskit-unix-0_23_0", 'package = "accesskit-unix", path = "../../../vendor/accesskit_unix-new", ', ["x11"])
+MEMBER_HERE = line("member", 'path = "../../crates/collab/member", ', ["here"])
+PATCHED_HERE = line("accesskit-unix-0_23_0", 'package = "accesskit-unix", path = "../../vendor/accesskit_unix-new", ', ["x11"])
 HICKORY_HERE = line("hickory-proto-0_26_2", 'package = "hickory-proto", version = "^0.26.2", ', ["access-control", "std", "tokio"])
 HICKORY_MOVED = line("hickory-proto-0_26_2", 'package = "hickory-proto", version = "^0.26.2", ', ["access-control", "std"])
 ARM_ONLY_MOVED = line("arm-only-1_5_0", 'package = "arm-only", version = "^1.5.0", ', ["std"])
@@ -82,7 +82,7 @@ class WorkspaceUnifyTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.manifest = self.root / "crates" / "dev" / "workspace-unify" / "Cargo.toml"
+        self.manifest = self.root / "tools" / "workspace-unify" / "Cargo.toml"
         for patcher in (
             mock.patch.object(unify, "ROOT", self.root),
             mock.patch.object(unify, "DIR", self.manifest.parent),
@@ -120,6 +120,20 @@ class WorkspaceUnifyTests(unittest.TestCase):
                       "a crate this architecture does not build takes the version too")
         self.assertIn(SERDE, arm, "a crate the lock resolves at several versions resolves apart")
         self.assertNotIn(GONE, arm, "a package the workspace no longer has keeps cargo from loading it")
+
+    def test_a_package_named_by_path_is_reached_from_where_the_manifest_is(self) -> None:
+        root = unify.ROOT.resolve()
+        package = {
+            "name": "member",
+            "version": "0.1.0",
+            "source": None,
+            "manifest_path": str(root / "crates" / "collab" / "member" / "Cargo.toml"),
+            "targets": [{"crate_types": ["lib"]}],
+        }
+        written = unify.lines({"member 0.1.0": package}, {"member 0.1.0"}, root, lambda *_: ["arm"])
+        self.assertEqual(written, {"member": MEMBER})
+        path = MEMBER.split('path = "')[1].split('"')[0]
+        self.assertEqual((unify.DIR.resolve() / path).resolve(), root / "crates" / "collab" / "member")
 
     def test_the_plan_is_every_package_a_family_that_declares_it_tests(self) -> None:
         # The families declaring this package are resolved together, so each contributes what its

@@ -80,20 +80,15 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     }
 }
 
-fn texts(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
-    out.extend(node.props.values().filter_map(|value| match value {
-        Value::Text(text) => Some(text.clone()),
-        _ => None,
-    }));
-    for child in &node.children {
-        texts(child, out);
-    }
-}
-
 fn shown(view: &tilolang_runtime::ViewInstance) -> Vec<String> {
-    let mut out = Vec::new();
-    texts(view.tree(), &mut out);
-    out
+    crate::fixtures::nodes(view.tree())
+        .into_iter()
+        .flat_map(|node| node.props.values())
+        .filter_map(|value| match value {
+            Value::Text(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A board of three columns with `per` cards in each, added round the columns, and its

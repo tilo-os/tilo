@@ -157,27 +157,16 @@ pub fn mounted_disks(
     backing: &mut dyn FnMut(&str) -> Result<Vec<String>, String>,
 ) -> Result<Vec<String>, String> {
     let mut disks: Vec<String> = Vec::new();
-    for line in mountinfo.lines() {
-        let mut fields = line.split_whitespace();
-        let _mount_id = fields.next();
-        let _parent = fields.next();
-        let Some(dev) = fields.next() else {
-            continue;
-        };
-        let Some((major, minor)) = dev.split_once(':') else {
+    for entry in crate::linux_parse::mount_entries(mountinfo) {
+        let Some((major, minor)) = entry.device.split_once(':') else {
             continue;
         };
         // Pseudo filesystems (cgroup, proc, overlay) have no backing disk.
         if major == "0" {
             continue;
         }
-        let _root = fields.next();
-        let _point = fields.next();
-        let Some((_, right)) = line.split_once(" - ") else {
-            continue;
-        };
-        let source = right.split_whitespace().nth(1).unwrap_or_default();
-        let name = source
+        let name = entry
+            .source
             .strip_prefix("/dev/")
             .map_or_else(|| format!("{major}:{minor}"), str::to_owned);
         if name.is_empty() {

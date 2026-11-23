@@ -68,33 +68,9 @@ fn unmount(session: fuser::BackgroundSession, at: &Path) {
     let _ = crate::fuse_session::unmount_and_join(session, at);
 }
 
-/// `rm -rf` of a directory and `mkdir` of the same name straight after it: a filesystem lets a
-/// name be made again the moment it is gone.
-#[test]
-fn a_name_removed_can_be_made_again_at_once() {
-    require_fuse!();
-    let tmp = tempfile::tempdir().unwrap();
-    let at = tmp.path().join("mnt");
-    std::fs::create_dir(&at).unwrap();
-    let (fs, runtime) = mounted(tmp.path());
-    let session = mount(fs, &at);
-
-    std::fs::create_dir(at.join("docs")).unwrap();
-    std::fs::write(at.join("docs/note.txt"), b"nine").unwrap();
-    std::fs::remove_dir_all(at.join("docs")).unwrap();
-    std::fs::create_dir(at.join("docs")).unwrap();
-    assert_eq!(
-        std::fs::read_dir(at.join("docs")).unwrap().count(),
-        0,
-        "a directory made again where one was removed is empty"
-    );
-
-    unmount(session, &at);
-    drop(runtime);
-}
-
 /// A name taken by a directory, a file, a directory again, each removed before the next is
-/// made: the mount answers like any filesystem, however often a name is made and taken.
+/// made: the mount answers like any filesystem, however often a name is made and taken. A
+/// directory made where one was removed is empty.
 #[test]
 fn a_name_can_be_made_and_taken_again_and_again() {
     require_fuse!();
@@ -116,6 +92,11 @@ fn a_name_can_be_made_and_taken_again_and_again() {
         std::fs::write(at.join("x"), b"file").unwrap();
         std::fs::remove_file(at.join("x")).unwrap();
         std::fs::create_dir(at.join("x")).unwrap();
+        assert_eq!(
+            std::fs::read_dir(at.join("x")).unwrap().count(),
+            0,
+            "round {round}: a directory made again where one was removed is empty"
+        );
         std::fs::remove_dir(at.join("x")).unwrap();
     }
 

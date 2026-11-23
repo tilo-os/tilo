@@ -112,7 +112,6 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
     assert!(view.strips.is_empty());
     assert!(view.effect_receipts.is_empty());
     assert!(view.shortcuts.is_empty());
-    assert!(view.schedule_claims.is_empty());
     assert_eq!(
         (view.id(), &view.id(), &view.name),
         (workspace.id(), &workspace.id(), &workspace.name)

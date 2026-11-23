@@ -216,15 +216,19 @@ impl AppRelease {
     }
 }
 
-/// A canonical application identifier: lowercase, dotted.
+/// A canonical application identifier: lowercase ASCII, at most 128 bytes,
+/// with non-empty `.`-separated segments.
+///
+/// Differs from [`tilo_app_id::AppId::parse`] by requiring lowercase ASCII,
+/// capping length at 128 bytes, and allowing a single segment without a dot
+/// because `validate()` filters stored rows in `state/app_versions.rs`, where
+/// a dot was never required and requiring one could drop stored rows.
 fn validate_app_id(app: &str) -> Result<(), String> {
-    if app.is_empty()
-        || app.len() > 128
-        || app.split('.').any(str::is_empty)
-        || !app.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')
-        })
-    {
+    const GRAMMAR: tilo_app_id::Grammar = tilo_app_id::Grammar::CANONICAL
+        .max_bytes(128)
+        .lowercase_only()
+        .allow_single_segment();
+    if !GRAMMAR.matches(app) {
         return Err("invalid canonical application identifier".into());
     }
     Ok(())
@@ -310,11 +314,24 @@ pub enum WorkspaceMembershipCommand {
         ttl_ms: u64,
         rank: neighbour_wire::placement::Rank,
     },
-    /// Revoke the caller's delegation of their own work to the server
-    /// `server`, as the member's device that signed it: the delegation is
-    /// that device's to take back, so it travels from the member's own device
-    /// and no other ([`crate::WorkDelegation`]).
-    RevokeWorkDelegation { server: [u8; 32] },
+    /// Keep that the caller's device answered the schedule at `trigger` of the
+    /// automation `automation` through `answered_ms`, the schedule marked
+    /// `mark` ([`crate::state::schedules`]): the progress whichever device
+    /// fires the schedule next carries on from, written from a member device
+    /// as any member's change.
+    AnswerSchedule {
+        automation: String,
+        trigger: u32,
+        mark: String,
+        answered_ms: i64,
+    },
+    /// Keep that the caller's device did the work of the lease `id`, and
+    /// what it answered ([`crate::state::done`]): no device takes the work
+    /// again.
+    KeepDone {
+        id: String,
+        answer: serde_json::Value,
+    },
     /// Hold the person whose user root is `person` in the workspace at `place`,
     /// whether or not a device of theirs has joined yet: a role, one of its
     /// administrators, or its owner, whom the caller then hands it to. A member
@@ -328,6 +345,13 @@ pub enum WorkspaceMembershipCommand {
         person: [u8; 32],
         place: MemberPlace,
         name: Option<String>,
+    },
+    /// Change what the call in voice channel `channel` allows: end or restart it, deny a person
+    /// or let them back, or set what everyone in it may do. Decided against the caller's own
+    /// grants (`call`) where they made it, on every device that receives it.
+    Call {
+        channel: String,
+        change: collab_types::calls::CallChange,
     },
 }
 
@@ -437,9 +461,20 @@ pub fn valid_workspace_name(name: &str) -> Result<&str, String> {
 impl WorkspaceMembershipCommand {
     /// Validate the canonical identifier before entering the owner turn.
     pub fn validate(&self) -> Result<(), String> {
-        if let Self::Lease { id, .. } = self {
+        if let Self::Lease { id, .. } | Self::KeepDone { id, .. } = self {
             if id.is_empty() || id.len() > MAX_LEASE_ID || id.chars().any(char::is_control) {
                 return Err("invalid lease id".into());
+            }
+            return Ok(());
+        }
+        if let Self::AnswerSchedule {
+            automation, mark, ..
+        } = self
+        {
+            if [automation, mark].iter().any(|part| {
+                part.is_empty() || part.len() > MAX_LEASE_ID || part.chars().any(char::is_control)
+            }) {
+                return Err("invalid schedule answer".into());
             }
             return Ok(());
         }
@@ -461,6 +496,9 @@ impl WorkspaceMembershipCommand {
         }
         if let Self::UninstallApp { app } = self {
             return validate_app_id(app);
+        }
+        if let Self::Call { channel, .. } = self {
+            return collab_types::calls::validate_channel(channel);
         }
         // Installation ids are checked when they are read; a bot command
         // carries nothing else free-form.
@@ -559,6 +597,9 @@ fn validate_member_change(change: &tilo_action_policy::Change) -> Result<(), Str
             person
         }
         Change::RemoveAgent { agent, .. } => return valid_agent_id(agent),
+        Change::RetiredSetMemberRoles { .. } => {
+            return Err("roles are assigned one at a time".into());
+        }
         Change::Grant(grant) if grant.id.as_str().trim().is_empty() => {
             return Err("a grant needs an id".into());
         }
@@ -681,6 +722,54 @@ mod tests {
                     command
                 );
             }
+        }
+    }
+
+    #[test]
+    fn app_release_and_uninstall_ids_are_lowercase_bounded_and_non_empty_segments() {
+        let longest_dotted = format!("a.{}", "b".repeat(126));
+        let longest_single = "a".repeat(128);
+        let too_long = format!("a.{}", "b".repeat(127));
+        let too_long_single = "a".repeat(129);
+        let hex64 = |ch: &str| ch.repeat(64);
+        for (app, expected) in [
+            ("so.tilo.notes", true),
+            ("so.tilo.my_app-2", true),
+            ("test.app", true),
+            ("notes", true),
+            ("app", true),
+            ("app-1c8152bfbdd80870708389a79cf20728", true),
+            ("-notes", true),
+            ("-so.tilo.notes", true),
+            (longest_dotted.as_str(), true),
+            (longest_single.as_str(), true),
+            (too_long.as_str(), false),
+            (too_long_single.as_str(), false),
+            ("", false),
+            ("So.Tilo.Notes", false),
+            ("so.tilo.Notes", false),
+            (".so.tilo", false),
+            ("so.tilo.", false),
+            ("so..tilo", false),
+            ("..", false),
+            (".", false),
+            ("so.tilo notes", false),
+            ("../notes", false),
+        ] {
+            let install = WorkspaceMembershipCommand::InstallApp(AppRelease {
+                app: app.to_owned(),
+                version: "1.0.0".into(),
+                surface: hex64("a"),
+                package: hex64("b"),
+                publisher: hex64("c"),
+                file: None,
+                dev: false,
+            });
+            assert_eq!(install.validate().is_ok(), expected, "install {app:?}");
+            let uninstall = WorkspaceMembershipCommand::UninstallApp {
+                app: app.to_owned(),
+            };
+            assert_eq!(uninstall.validate().is_ok(), expected, "uninstall {app:?}");
         }
     }
 }

@@ -37,7 +37,7 @@ pub(crate) enum BrokerService<T> {
     /// Served for every app this session admits.
     Served(T),
     /// Served where this run has what it carries: a session on no device fabric carries no speaker
-    /// groups, and one that keeps no state keeps no shortcuts on disk.
+    /// groups, and one with no workspace engine serves no memberships.
     When(Option<T>),
     /// Not served, and why: said at session start, so a service an app found missing can be found here
     /// with its reason.
@@ -150,7 +150,6 @@ broker_services! {
     action_offload: Arc<dyn tilo_actions::offload::ActionOffload>,
     own_device: Arc<dyn OwnDeviceActions>,
     workspace_nodes: Arc<dyn WorkspaceNodeActions>,
-    personal: tilo_peer_state::PersonalSync,
     hosted_workspaces: Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>,
     resources: Arc<dyn tilo_workspace_service::apps::services::ResourceServices>,
 }

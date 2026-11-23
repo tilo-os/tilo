@@ -450,3 +450,159 @@ fn a_kind_an_app_names_as_the_language_names_a_type_is_the_apps_where_its_verb_t
         |diagnostics| panic!("a view calls the verb on the app's own kind: {diagnostics:#?}"),
     );
 }
+
+// The workspace's contact directory is a root of Contacts' package a view
+// reads as `contacts.directory`: the reading the session publishes
+// (`contacts:tilo.contacts.identities`), and its `confirm-endpoint` the verb
+// Contacts already publishes, so the account-association panel calls it as it
+// is.
+tilo_test_env::scenario! {
+    fn a_view_reads_the_workspace_directory_and_confirms_an_endpoint;
+
+    phase the_view_compiles_against_the_contacts_package;
+    {
+        let metas = tilolang_tilo::platform_apps::platform_packages().unwrap();
+        tilolang::compile_package(DIRECTORY_VIEW, &IdsLock::new(), &metas)
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    }
+
+    phase the_directory_is_a_platform_root_the_session_publishes;
+    {
+        let roots = tilolang_tilo::platform_apps::platform_roots();
+        assert!(
+            roots.iter().any(|(published, ty)| {
+                *published == "contacts:tilo.contacts.identities"
+                    && ty == "so.tilo.contacts#Identities"
+            }),
+            "{roots:?}"
+        );
+    }
+
+    phase the_view_shows_one_person_of_the_directory;
+    {
+        let (host, view, _confirm) = directory_host(DIRECTORY_VIEW);
+        set_directory(&host, "Ada");
+        let open = host.open_resource(&directory(), Some(&view)).unwrap();
+        assert_eq!(shown(&open), Value::text("Ada"), "{:?}", open.tree());
+    }
+
+    phase the_buttons_invocation_is_the_directories_own_confirm_endpoint;
+    {
+        let (host, view, confirm) = directory_host(DIRECTORY_VIEW);
+        set_directory(&host, "Ada");
+        let open = host.open_resource(&directory(), Some(&view)).unwrap();
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+        open.press(&confirm)
+            .expect("the button invokes the directory's verb");
+        let sent = sent.borrow();
+        let [
+            Invocation::Action {
+                app,
+                action,
+                args,
+                target,
+                ..
+            },
+        ] = sent.as_slice()
+        else {
+            panic!("one invocation of the directory's verb: {sent:?}");
+        };
+        assert_eq!(
+            (app.as_str(), action.as_str()),
+            ("so.tilo.contacts", "confirm-endpoint")
+        );
+        assert_eq!(target.as_ref(), Some(&directory()));
+        assert_eq!(args[0], ("identities".to_owned(), Value::resource(&directory())));
+        assert_eq!(args[1], ("person".to_owned(), Value::text("ada")));
+        assert_eq!(args[2], ("endpoint".to_owned(), Value::text("endpoint")));
+        assert_eq!(args[3], ("service".to_owned(), Value::text("signal")));
+        assert_eq!(args[4], ("recipient".to_owned(), Value::text("+12025550123")));
+    }
+}
+
+/// A view over the workspace's directory: it reads one person's label, and its
+/// button confirms an endpoint of that person.
+const DIRECTORY_VIEW: &str = r#"app test.people "People"
+
+use so.tilo.contacts as contacts
+
+view directory(d: contacts.Identities) {
+  stack {
+    text("{d.people.first()?.label ?? ""}")
+    button("Confirm", on: contacts.confirm_endpoint(d, "ada", "endpoint", "signal", "+12025550123")) as confirm
+  }
+}
+"#;
+
+/// The workspace's directory, as a view names it: its published id and its type.
+fn directory() -> ResourceRef {
+    ResourceRef::parse_id(
+        "contacts:tilo.contacts.identities",
+        "so.tilo.contacts#Identities",
+    )
+    .expect("a resource id")
+}
+
+/// What the session publishes of the directory: one person, `label`.
+fn set_directory(host: &Host, label: &str) {
+    host.runtime()
+        .set_reading(
+            &directory(),
+            &json!({
+                "people": [{
+                    "label": label,
+                    "removed": false,
+                    "phones": ["+12025550123"],
+                    "emails": ["ada@example.test"],
+                    "photo": "",
+                    "endpoints": [{
+                        "service": "signal",
+                        "recipient": "+12025550123",
+                        "scope": "",
+                        "revision": "",
+                        "removed": false,
+                    }],
+                }],
+            })
+            .to_string(),
+        )
+        .unwrap();
+}
+
+/// A host that runs `DIRECTORY_VIEW` over the Contacts package, with the
+/// view's id and its `confirm` anchor.
+fn directory_host(view: &str) -> (Host, String, String) {
+    let host = Host::new(
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
+    let metas = tilolang_tilo::platform_apps::platform_packages().unwrap();
+    let contacts = metas
+        .iter()
+        .find(|meta| meta.app == "so.tilo.contacts")
+        .expect("the Contacts package");
+    host.runtime().load_foreign(contacts.clone()).unwrap();
+    let compiled = tilolang::compile_package(view, &IdsLock::new(), &metas)
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    let package = host.load_compiled(&compiled).unwrap();
+    let view = package
+        .meta
+        .views
+        .iter()
+        .find(|view| view.name == "directory")
+        .expect("the view's declaration")
+        .id
+        .clone();
+    let confirm = package
+        .meta
+        .views
+        .iter()
+        .flat_map(|view| &view.anchors)
+        .find(|anchor| anchor.name == "confirm")
+        .expect("the button's anchor")
+        .id
+        .clone();
+    (host, view, confirm)
+}

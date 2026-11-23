@@ -339,6 +339,51 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase input_is_timed_to_the_frame_that_shows_the_draw_it_started;
+    // A key opens what a surface draws on the CPU: the turn that hands the draw to its thread has
+    // nothing new to show, and the frame that shows the finished draw is the one that answers the
+    // key, however many turns later it comes.
+    {
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let surface = DrawsOnPress::new((640, 480), released);
+        let frame = surface.frame.clone();
+        let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
+            .expect("output");
+        compositor.add_surface(Rc::new(RefCell::new(surface)));
+        compositor.draw_frame().expect("the first frame");
+        compositor.record_frames();
+        compositor.begin_tick();
+        // The key comes from another device's link, routed as the display backend routes a
+        // keyboard's own, not through `Compositor::input`.
+        compositor
+            .input_remote(InputEvent::Key {
+                keycode: 30,
+                pressed: true,
+            })
+            .expect("the key is routed");
+        compositor.render().expect("the turn that hands the draw over");
+        compositor.end_tick();
+        assert!(frame.in_flight(), "the surface draws on its own thread");
+        let handed = *compositor.recorded_frames().last().expect("the turn");
+        assert!(!handed.painted, "nothing new to show yet: {handed:?}");
+
+        release.send(()).expect("the drawing thread waits");
+        while frame.in_flight() {
+            compositor.dispatch(None).expect("dispatch");
+        }
+        compositor.begin_tick();
+        compositor.render().expect("the frame that shows the draw");
+        compositor.end_tick();
+        let shown = *compositor.recorded_frames().last().expect("the turn");
+        assert!(shown.painted, "the finished draw is shown: {shown:?}");
+        assert!(
+            shown.input_latency_us.is_some(),
+            "the frame that shows the draw answers the key: {shown:?}"
+        );
+    }
+
     phase a_look_at_the_display_shows_a_draw_that_finished_between_its_frames;
     // A draw that finishes is taken by the next frame the loop builds; a display that is not due
     // for one yet leaves it owed. A screenshot taken then shows the finished draw all the same.
@@ -468,6 +513,79 @@ impl ShellSurface for DrawnElsewhere {
 
     fn pointer_button(&mut self, _button: u32, pressed: bool) {
         self.buttons.push(pressed);
+    }
+}
+
+/// A surface that takes the keyboard and starts a draw on another thread for each key pressed, as a
+/// launcher drawing on the CPU redraws for what was typed: the thread paints the frame green once
+/// the test lets it.
+struct DrawsOnPress {
+    frame: SurfaceFrame,
+    size: (i32, i32),
+    released: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>,
+    pressed: bool,
+}
+
+impl DrawsOnPress {
+    fn new(size: (i32, i32), released: std::sync::mpsc::Receiver<()>) -> Self {
+        let frame = SurfaceFrame::new((
+            u32::try_from(size.0).unwrap(),
+            u32::try_from(size.1).unwrap(),
+        ));
+        Self {
+            frame,
+            size,
+            released: std::sync::Arc::new(std::sync::Mutex::new(released)),
+            pressed: false,
+        }
+    }
+}
+
+impl ShellSurface for DrawsOnPress {
+    fn layers(&self) -> Vec<SurfaceLayer> {
+        vec![SurfaceLayer {
+            pose: LayerPose::SETTLED,
+            location: (0, 0),
+            size: self.size,
+            frame: self.frame.clone(),
+        }]
+    }
+
+    fn prepare_frame(&mut self) -> bool {
+        if !std::mem::take(&mut self.pressed) {
+            return false;
+        }
+        let ticket = self.frame.drawing();
+        let frame = self.frame.clone();
+        let released = std::sync::Arc::clone(&self.released);
+        std::thread::spawn(move || {
+            released
+                .lock()
+                .expect("one draw at a time")
+                .recv()
+                .expect("the test lets the draw finish");
+            let (width, height) = frame.size();
+            let green = [0, 255, 0, 255].repeat((width * height) as usize);
+            frame.set_pixels(&green, &[Region::new(0, 0, width, height)]);
+            frame.finished(ticket);
+        });
+        false
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+    fn wants_keyboard(&self) -> bool {
+        true
+    }
+
+    fn key(&mut self, key: &tilo_session_core::surface::SurfaceKey) {
+        self.pressed |= key.pressed;
     }
 }
 

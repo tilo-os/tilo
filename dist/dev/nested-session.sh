@@ -166,7 +166,7 @@ runtime=$runtime_base/tilo-nested-$(printf '%s' "$state" | sha256sum | cut -c1-1
 # and the apps it launches) inherits addresses that lead nowhere, and the
 # session gets a bus of its own (session-bus.sh). The window is the one thing
 # shared with the host desktop, through its Wayland socket alone.
-# `cargo desktop --check` (crates/dev/tilo-local) proves it.
+# `cargo desktop --check` (tools/tilo-local) proves it.
 for name in DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE AT_SPI_BUS_ADDRESS \
             NOTIFY_SOCKET LISTEN_PID LISTEN_FDS LISTEN_FDNAMES MANAGERPID \
             XDG_SESSION_ID XDG_SESSION_TYPE XDG_SESSION_CLASS XDG_SESSION_DESKTOP \
@@ -406,7 +406,7 @@ export TILO_LAUNCHER_BIN=$bin/tilo-launcher
 # A development session: the session hands a running tilolang app each
 # reinstall of its package, verified as a launch is, so `tilolang dev` swaps a
 # new build in without a restart
-# (crates/session/app-launch/src/tilolang_processes.rs). A shipped session ignores it.
+# (crates/runtime/tilo-runtime/src/device/processes.rs). A shipped session ignores it.
 export TILO_LAUNCHER_LIVE_MODULES=1
 # A development session logs warnings and errors unless RUST_LOG says
 # otherwise: a shipped session logs errors only, and a watch that could not

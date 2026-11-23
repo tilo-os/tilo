@@ -163,7 +163,7 @@ pub struct NativeJournal<'a> {
     completed: BTreeMap<NativePath, cap_primitives::fs::Metadata>,
 }
 pub fn directory_identity(directory: &PinnedDirectory) -> io::Result<durability::Identity> {
-    durability::identity(&durability::readable_directory(&directory.file)?)
+    durability::directory_identity(directory)
 }
 impl<'a> NativeJournal<'a> {
     pub fn create(
@@ -681,19 +681,7 @@ fn replay(
     Ok((receipts, end))
 }
 pub fn open_file(parent: &PinnedDirectory, name: &std::ffi::OsStr) -> io::Result<std::fs::File> {
-    use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
-    use cap_primitives::fs::{FollowSymlinks, Metadata, OpenOptions};
-    let expected = metadata_nofollow(&parent.file, Path::new(name))?;
-    if !expected.is_file() || expected.is_symlink() {
-        return Err(changed("native destination is not an ordinary file"));
-    }
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No).nonblock(true);
-    let file = cap_primitives::fs::open(&parent.file, Path::new(name), &options)?;
-    if !super::migration::same_snapshot(&expected, &Metadata::from_file(&file)?) {
-        return Err(changed("native destination replaced during open"));
-    }
-    Ok(file)
+    parent.open_regular(name, false, false)
 }
 
 #[cfg(test)]

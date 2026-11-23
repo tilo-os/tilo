@@ -120,11 +120,18 @@ pub(crate) fn rows(app: &mut impl Driven) -> Vec<(String, [f64; 4], bool)> {
         .filter(|node| node.widget == "SwipeRow" || node.widget == "ListRow")
         .filter_map(|node| {
             let semantics = node.semantics.as_ref()?;
-            let name = semantics.name.clone()?;
-            let marked = semantics.value.as_deref().is_some_and(|value| {
-                ["Made by", "Changed by", "Removed by"]
-                    .iter()
-                    .any(|said| value.contains(said))
+            // A row is titled with its own line and named by all of it, so the title is what
+            // it is listed by and who changed it may be said in its name.
+            let name = semantics.shown_name()?.to_owned();
+            let marked = ["Made by", "Changed by", "Removed by"].iter().any(|said| {
+                semantics
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.contains(said))
+                    || semantics
+                        .value
+                        .as_deref()
+                        .is_some_and(|value| value.contains(said))
             });
             Some((name, node.rect, marked))
         })
@@ -135,12 +142,7 @@ pub(crate) fn rows(app: &mut impl Driven) -> Vec<(String, [f64; 4], bool)> {
 /// place it stood in is read where it went.
 pub(crate) fn choose(app: &mut impl Driven, label: &str) {
     fn place<'a>(node: &'a ui::a11y::AccessNode, label: &str) -> Option<&'a ui::a11y::AccessNode> {
-        if node.role == ui::a11y::Role::TreeItem
-            && node
-                .name
-                .as_deref()
-                .is_some_and(|name| name.starts_with(label))
-        {
+        if node.role == ui::a11y::Role::TreeItem && node.answers_to(label) {
             return Some(node);
         }
         node.children.iter().find_map(|child| place(child, label))
@@ -186,10 +188,10 @@ pub(crate) fn removed_rows(app: &mut impl Driven) -> Vec<String> {
         .filter_map(|node| {
             let semantics = node.semantics.as_ref()?;
             semantics
-                .value
+                .name
                 .as_deref()
-                .is_some_and(|value| value.contains("Removed by"))
-                .then(|| semantics.name.clone().unwrap_or_default())
+                .is_some_and(|name| name.contains("Removed by"))
+                .then(|| semantics.shown_name().unwrap_or_default().to_owned())
         })
         .collect()
 }

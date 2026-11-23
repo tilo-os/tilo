@@ -118,12 +118,14 @@ impl Caller {
         )
     }
 
-    /// A remote device that holds no certificate yet, known by the key its connection proved
-    /// alone: what a computer being added to a person's devices is while it asks to be
-    /// certified. It acts for nobody, so it holds nothing.
+    /// A visitor: a key no certificate in the workspace names, known by the key its
+    /// connection proved alone. A page at a workspace's public entry is one, and so is a
+    /// computer being added to a person's devices while it asks to be certified. It acts for
+    /// nobody, so it holds only what the workspace opens to any key
+    /// ([`tilo_action_policy::Grantee::AnyKey`]).
     #[must_use]
-    pub fn uncertified_device(device_public_key: [u8; 32]) -> Self {
-        let mut caller = Self::admitted(Acting::person(""), None);
+    pub fn visitor(device_public_key: [u8; 32]) -> Self {
+        let mut caller = Self::admitted(Acting::visitor(&device_public_key), None);
         caller.device_public_key = Some(device_public_key);
         caller
     }

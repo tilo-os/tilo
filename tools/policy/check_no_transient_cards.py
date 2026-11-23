@@ -25,7 +25,7 @@ from rust_source import code_only, line_number  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TREES = ("apps", "crates", "examples")
+TREES = ("apps", "crates", "tools", "examples")
 
 # Where the card may be painted: its own module and tests, and the desktop clock.
 ALLOWED = (

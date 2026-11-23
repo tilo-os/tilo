@@ -106,6 +106,7 @@ tilo_test_env::scenario! {
             device_public_key: device_pk,
             device_label: "test-device".to_string(),
             capabilities: DeviceCapabilities {
+                retired: RetiredFlags::default(),
                 can_own_workspaces: true,
                 can_admit_devices: false,
                 foreign: false,
@@ -408,17 +409,40 @@ tilo_test_env::scenario! {
     }
 }
 
-/// Bytes that set either of the two flags after the first two do not decode:
-/// those grants are gone, and no certificate carries them.
+/// A certificate signed while its device was granted the two retired grants, as people's
+/// devices still keep it, reads from the JSON they stored, verifies, and writes back exactly as it
+/// was signed in both encodings: dropping the reader left every such device unable to start an app.
 #[test]
-fn binary_capabilities_refuse_the_cleared_flags() {
-    let bytes = crate::canonical::canonical_bytes(&golden_cert(false)).unwrap();
-    let flags = 32 + 32 + 1 + "golden".len();
-    for at in [flags + 2, flags + 3] {
-        let mut changed = bytes.clone();
-        changed[at] = 1;
-        assert!(crate::canonical::from_canonical_bytes::<DeviceCert>(&changed).is_err());
-    }
+fn a_certificate_signed_with_the_retired_grants_still_loads_and_verifies() {
+    let cert = golden_cert_with(DeviceCapabilities {
+        retired: RetiredFlags {
+            act_as_host: true,
+            read_all_workspaces: true,
+        },
+        ..DeviceCapabilities::member()
+    });
+    let stored = serde_json::to_string(&cert).unwrap();
+    assert!(stored.contains(r#""can_act_as_host":true"#), "{stored}");
+    assert!(
+        stored.contains(r#""can_read_all_workspaces":true"#),
+        "{stored}"
+    );
+    let read: DeviceCert = serde_json::from_str(&stored).unwrap();
+    assert_eq!(read, cert);
+    verify_device_cert_at(&read, 1_500_000).expect("a certificate signed with them verifies");
+    let bytes = crate::canonical::canonical_bytes(&cert).unwrap();
+    let decoded = crate::canonical::from_canonical_bytes::<DeviceCert>(&bytes).unwrap();
+    assert_eq!(decoded, cert);
+    assert_eq!(crate::canonical::canonical_bytes(&decoded).unwrap(), bytes);
+    // Written by an older build with both spelled out even when clear.
+    let older = stored
+        .replace(r#""can_act_as_host":true"#, r#""can_act_as_host":false"#)
+        .replace(
+            r#""can_read_all_workspaces":true"#,
+            r#""can_read_all_workspaces":false"#,
+        );
+    let clear: DeviceCert = serde_json::from_str(&older).unwrap();
+    assert!(!clear.capabilities.retired.any());
 }
 
 tilo_test_env::scenario! {

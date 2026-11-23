@@ -4,13 +4,17 @@
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{Read, Write};
+#[cfg(feature = "installation")]
+use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use browser_continuity::Provider;
 use browser_continuity::sessions::{Cookie, MAX_COOKIES, MAX_SESSION_BYTES, SameSite, Service};
-use rusqlite::{Connection, OpenFlags};
+use browser_continuity::sources::CHROMIUM_EPOCH_MICROS;
+#[cfg(feature = "installation")]
+use browser_continuity::sources::MAX_DATABASE_BYTES;
+use rusqlite::Connection;
 use tilo_files::native::atomic::{Privacy, StorageDirectory};
 use zeroize::Zeroizing;
 
@@ -39,9 +43,6 @@ pub trait ChromiumDecryptor: Send + Sync {
         encrypted: &[u8],
     ) -> Result<Zeroizing<String>, SourceError>;
 }
-
-const MAX_DATABASE_BYTES: u64 = 64 * 1024 * 1024;
-const CHROMIUM_EPOCH_MICROS: i64 = 11_644_473_600_000_000;
 
 /// The caller supplies the exact owner-approved profile handle, never a path discovered by this
 /// reader or permission inferred from a running browser.
@@ -123,73 +124,36 @@ fn sqlite(_: rusqlite::Error) -> SourceError {
     SourceError::UnsupportedSchema
 }
 
-#[derive(PartialEq, Eq)]
-struct Stamp {
-    device: u64,
-    inode: u64,
-    owner: u32,
-    mode: u32,
-    length: u64,
-    modified: (i64, i64),
-    changed: (i64, i64),
-}
-impl Stamp {
-    fn of(file: &File) -> Result<Self, SourceError> {
-        let metadata = file.metadata().map_err(unavailable)?;
-        if !metadata.is_file() {
-            return Err(SourceError::Unavailable);
-        }
-        Ok(Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-            owner: metadata.uid(),
-            mode: metadata.mode(),
-            length: metadata.len(),
-            modified: (metadata.mtime(), metadata.mtime_nsec()),
-            changed: (metadata.ctime(), metadata.ctime_nsec()),
-        })
-    }
-}
+#[cfg(feature = "installation")]
+pub(crate) use browser_continuity::snapshot::Stamp;
+
+#[cfg(feature = "installation")]
 #[derive(PartialEq, Eq)]
 struct Capture {
     stamp: Stamp,
     bytes: Zeroizing<Vec<u8>>,
 }
+#[cfg(feature = "installation")]
 fn capture(directory: &StorageDirectory, owner: u32, name: &str) -> Result<Capture, SourceError> {
-    directory
-        .validate_namespace_control()
-        .map_err(unavailable)?;
-    let file = directory
-        .open_read(OsStr::new(name), Privacy::Inherit)
-        .map_err(unavailable)?;
-    let stamp = Stamp::of(&file)?;
-    if stamp.owner != owner {
-        return Err(SourceError::Unavailable);
-    }
-    if stamp.length > MAX_DATABASE_BYTES {
-        return Err(SourceError::LimitExceeded);
-    }
-    let mut bytes = Zeroizing::new(Vec::new());
-    file.take(MAX_DATABASE_BYTES.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(unavailable)?;
-    let current = directory
-        .open_read(OsStr::new(name), Privacy::Inherit)
-        .map_err(unavailable)?;
-    if bytes.len() as u64 != stamp.length || Stamp::of(&current)? != stamp {
-        return Err(SourceError::Changed);
-    }
-    Ok(Capture { stamp, bytes })
+    let captured =
+        browser_continuity::snapshot::capture_file(directory, owner, name, MAX_DATABASE_BYTES)
+            .map_err(source_error)?
+            .ok_or(SourceError::Unavailable)?;
+    Ok(Capture {
+        stamp: captured.stamp(),
+        bytes: captured.into_bytes(),
+    })
 }
-fn wal(
-    directory: &StorageDirectory,
-    owner: u32,
-    name: &str,
-) -> Result<Option<Capture>, SourceError> {
-    match directory.open_read(OsStr::new(name), Privacy::Inherit) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(unavailable(error)),
-        Ok(_) => capture(directory, owner, name).map(Some),
+fn source_error(error: std::io::Error) -> SourceError {
+    if browser_continuity::snapshot::content_changed(&error)
+        || error.kind() == std::io::ErrorKind::WouldBlock
+    {
+        return SourceError::Changed;
+    }
+    match error.kind() {
+        std::io::ErrorKind::FileTooLarge => SourceError::LimitExceeded,
+        std::io::ErrorKind::InvalidData => SourceError::UnsupportedSchema,
+        _ => SourceError::Unavailable,
     }
 }
 
@@ -230,65 +194,25 @@ fn source_directory(
 fn snapshot(
     grant: &SourceGrant,
     service: Service,
-) -> Result<(tempfile::TempDir, Connection, [u8; 32]), SourceError> {
+) -> Result<(browser_continuity::snapshot::OpenedDatabase, [u8; 32]), SourceError> {
     let (directory, name, owner) = source_directory(grant)?;
-    let wal_name = format!("{name}-wal");
-    let database = capture(&directory, owner, name)?;
-    let journal = wal(&directory, owner, &wal_name)?;
-    if database != capture(&directory, owner, name)?
-        || journal != wal(&directory, owner, &wal_name)?
-    {
-        return Err(SourceError::Changed);
-    }
-    let current = directory
-        .open_read(OsStr::new(name), Privacy::Inherit)
-        .map_err(unavailable)?;
-    if Stamp::of(&current)? != database.stamp {
-        return Err(SourceError::Changed);
-    }
-    match (
-        journal.as_ref(),
-        directory.open_read(OsStr::new(&wal_name), Privacy::Inherit),
-    ) {
-        (None, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
-        (Some(expected), Ok(file)) if Stamp::of(&file)? == expected.stamp => {}
-        _ => return Err(SourceError::Changed),
-    }
-    directory
-        .validate_namespace_control()
-        .map_err(unavailable)?;
+    let captured = browser_continuity::snapshot::capture_database(&directory, owner, name)
+        .map_err(source_error)?;
     let mut digest = blake3::Hasher::new();
     digest.update(b"tilo-selected-service-cookie-source-v1");
     digest.update(service.as_str().as_bytes());
     digest.update(name.as_bytes());
-    digest.update(&(database.bytes.len() as u64).to_le_bytes());
-    digest.update(&database.bytes);
-    digest.update(&[u8::from(journal.is_some())]);
-    if let Some(journal) = &journal {
-        digest.update(&journal.bytes);
+    digest.update(&(captured.database().len() as u64).to_le_bytes());
+    digest.update(captured.database());
+    digest.update(&[u8::from(captured.wal().is_some())]);
+    if let Some(journal) = captured.wal() {
+        digest.update(journal);
     }
-    let temporary = tempfile::tempdir().map_err(unavailable)?;
-    let path = temporary.path().join(name);
-    private_write(&path, &database.bytes)?;
-    if let Some(journal) = journal {
-        private_write(&temporary.path().join(wal_name), &journal.bytes)?;
-    }
-    let connection = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(sqlite)?;
-    connection
-        .execute_batch("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF; BEGIN;")
-        .map_err(sqlite)?;
-    let check: String = connection
-        .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
-        .map_err(sqlite)?;
-    if check != "ok" {
-        return Err(SourceError::UnsupportedSchema);
-    }
-    Ok((temporary, connection, *digest.finalize().as_bytes()))
+    let connection =
+        browser_continuity::snapshot::open_captured(name, &captured).map_err(source_error)?;
+    Ok((connection, *digest.finalize().as_bytes()))
 }
+#[cfg(feature = "installation")]
 fn private_write(path: &Path, bytes: &[u8]) -> Result<(), SourceError> {
     let mut file = tilo_files::native::private::create_new(path).map_err(unavailable)?;
     file.write_all(bytes).map_err(unavailable)
@@ -332,7 +256,7 @@ pub fn count_selected(
     grant: &SourceGrant,
     service: Service,
 ) -> Result<SelectedCounts, SourceError> {
-    let (_temporary, connection, _source_snapshot_digest) = snapshot(grant, service)?;
+    let (connection, _source_snapshot_digest) = snapshot(grant, service)?;
     let query = match grant.provider {
         Provider::Firefox => {
             let version: i64 = connection
@@ -391,7 +315,7 @@ pub fn read_selected(
     grant: &SourceGrant,
     service: Service,
 ) -> Result<CapturedCookies, SourceError> {
-    let (_temporary, connection, source_snapshot_digest) = snapshot(grant, service)?;
+    let (connection, source_snapshot_digest) = snapshot(grant, service)?;
     let cookies = match grant.provider {
         Provider::Firefox => firefox(&connection, service)?,
         Provider::Chromium => chromium(&connection, service, grant.decryptor.as_deref())?,
@@ -564,7 +488,10 @@ fn chromium(
         let expires = if boolean(row.get(8).map_err(sqlite)?)? {
             Some(
                 expiry
-                    .checked_sub(CHROMIUM_EPOCH_MICROS)
+                    .checked_sub(
+                        i64::try_from(CHROMIUM_EPOCH_MICROS)
+                            .map_err(|_| SourceError::InvalidCookies)?,
+                    )
                     .ok_or(SourceError::InvalidCookies)?
                     .div_euclid(1_000_000),
             )

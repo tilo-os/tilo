@@ -4,9 +4,9 @@
 //! on a computer that holds the person's root, that root.
 //!
 //! They are ordinary actions (`tilo.device`'s `devices#issue` and `devices#logIn`), answered by
-//! the daemon's action provider. A ticket's certify action is served on the daemon's one iroh
-//! router (`super::services::serve_personally` accepts the device actions ALPN beside the person's
-//! store), so no second endpoint is made.
+//! the daemon's action provider. A ticket's certify action is answered by the device action
+//! service the daemon's one iroh router already serves (`tilo-actions/1`), as the one call it
+//! admits from a computer with no certificate yet, so no second endpoint or service is made.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -26,14 +26,14 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
 use tilo_device_identity::login::{
-    APPROVE, Approval, Approved, Approver, Asked, CERTIFY, CertifyAnswer, CertifyInput, Declined,
-    Device, Direction, Entry, ISSUE, LOG_IN, PENDING, PROVIDER, Place, REPORTED, RESOURCE, Report,
+    APPROVE, Approval, Approved, Approver, Asked, Declined, Device, Direction, Entry, ISSUE,
+    LOG_IN, PENDING, PLANNED_TICKET_LIFETIME_NS, PROVIDER, Place, REPORTED, RESOURCE, Report,
     SCOPE, TICKET_LIFETIME_NS, Ticket,
 };
 use tilo_enrollment::root::PersonSigner;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ActionService, NoActions};
-use tilo_peer_state::new_device::ServedTicket;
+use tilo_peer_state::new_device::{ServedTicket, ServedTickets};
 use tilo_session_client::device::Device as Entered;
 use tilo_user_identity::{DeviceCert, RevocationList, StatementSigner};
 
@@ -42,10 +42,10 @@ const TELL_WAIT: Duration = Duration::from_secs(30);
 /// How long the issuer keeps serving after it told the computer how its call ended: an answer
 /// that ended with its connection is asked for again, and answered where the call is.
 const TELL_GRACE: Duration = Duration::from_secs(5);
-/// How many times the call asking the device to certify this computer is sent.
-const CERTIFY_TRIES: u32 = 3;
 /// What the device actions' catalogue page is revised by: they are fixed, so one revision.
 const REVISION: &str = "tilo.device/1";
+/// What this device is ([`device_info`]).
+pub(crate) const INFO: &str = "info";
 /// The site a computer's login names when the device that adds it has none of its own: the
 /// same one an invitation over iroh names.
 const FOUNDED_SITE: &str = "https://tilo.sh/";
@@ -63,10 +63,26 @@ pub(crate) fn provider(workspace: &str) -> CatalogueProvider {
     }
 }
 
-/// The `tilo.device` page `query` asks for: the `devices` resource and its two actions, resolved
-/// and invoked the way an app's are.
+/// The `tilo.device` page `query` asks for: the `devices` resource and its actions, resolved and
+/// invoked the way an app's are.
 #[must_use]
 pub(crate) fn catalogue(query: &CatalogueQuery) -> CataloguePage {
+    catalogue_of(query, |_| true)
+}
+
+/// [`catalogue`] with only what a device answers before its person's services run: what it is,
+/// and logging it in with a ticket.
+#[must_use]
+pub(crate) fn device_only_catalogue(query: &CatalogueQuery) -> CataloguePage {
+    catalogue_of(query, |action| matches!(action, INFO | LOG_IN))
+}
+
+/// The `devices` resource and those of its actions `keep` keeps.
+#[expect(
+    clippy::too_many_lines,
+    reason = "every device action's row, read top to bottom"
+)]
+fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> CataloguePage {
     let resource = CatalogueResource {
         id: RESOURCE.to_owned(),
         kind: "device".to_owned(),
@@ -81,101 +97,97 @@ pub(crate) fn catalogue(query: &CatalogueQuery) -> CataloguePage {
         action,
         ..CatalogueRow::default()
     };
-    CataloguePage::from_rows(
-        REVISION.to_owned(),
-        vec![
-            row(None),
-            row(Some(descriptor(
-                ISSUE,
-                "Add a device",
-                "Print a ticket another computer logs in with, approved by the person's root here.",
-                &[
-                    ActionParam::optional(
-                        "wait",
-                        ParamType::Boolean,
-                        "Wait for the computer to log in with the ticket.",
-                    ),
-                    ActionParam::optional(
-                        "plan",
-                        ParamType::Text,
-                        "The planned machine's entry in your Servers workspace, which the \
+    let rows = vec![
+        row(None),
+        row(Some(descriptor(
+            INFO,
+            "This device",
+            "What this device is: its key, how it is listed, and the people whose \
+                 certificates name it.",
+            &[],
+        ))),
+        row(Some(descriptor(
+            ISSUE,
+            "Add a device",
+            "Print a ticket another computer logs in with, approved by the person's root here.",
+            &[
+                ActionParam::optional(
+                    "wait",
+                    ParamType::Boolean,
+                    "Wait for the computer to log in with the ticket.",
+                ),
+                ActionParam::optional(
+                    "plan",
+                    ParamType::Text,
+                    "The planned machine's entry in your Servers workspace, which the \
                          computer's certification takes into its own.",
-                    ),
-                    ActionParam::optional(
-                        "server",
-                        ParamType::Boolean,
-                        "The computer is a server, which keeps your workspaces: it gets an \
+                ),
+                ActionParam::optional(
+                    "server",
+                    ParamType::Boolean,
+                    "The computer is a server, which keeps your workspaces: it gets an \
                          entry in your Servers workspace.",
-                    ),
-                ],
-            ))),
-            row(Some(descriptor(
-                PENDING,
-                "Sign a browser in",
-                "See the browser a sign-in ticket on another host waits for, and what signing it \
+                ),
+            ],
+        ))),
+        row(Some(descriptor(
+            PENDING,
+            "Sign a browser in",
+            "See the browser a sign-in ticket on another host waits for, and what signing it \
                  in makes it.",
-                &[ActionParam::required(
+            &[ActionParam::required(
+                "ticket",
+                ParamType::Text,
+                "The ticket the browser's prompt carried.",
+            )],
+        ))),
+        row(Some(descriptor(
+            APPROVE,
+            "Approve a browser's sign-in",
+            "Sign the browser's certificate, so it enters the person's workspace.",
+            &[ActionParam::required(
+                "ticket",
+                ParamType::Text,
+                "The ticket the browser's prompt carried.",
+            )],
+        ))),
+        row(Some(descriptor(
+            REPORTED,
+            "Report a login's step",
+            "Tell the browser that showed the ticket what this computer did as it logged in.",
+            &[
+                ActionParam::required(
                     "ticket",
                     ParamType::Text,
-                    "The ticket the browser's prompt carried.",
-                )],
-            ))),
-            row(Some(descriptor(
-                APPROVE,
-                "Approve a browser's sign-in",
-                "Sign the browser's certificate, so it enters the person's workspace.",
-                &[ActionParam::required(
-                    "ticket",
+                    "The ticket this computer logged in with.",
+                ),
+                ActionParam::required("step", ParamType::Text, "What it did."),
+            ],
+        ))),
+        row(Some(descriptor(
+            LOG_IN,
+            "Log in with a ticket",
+            "Become one of the person's devices with a ticket another of their computers printed.",
+            &[
+                ActionParam::required("ticket", ParamType::Text, "The ticket, as it was printed."),
+                ActionParam::required("agent", ParamType::Text, "The agent that runs here."),
+                ActionParam::optional(
+                    "label",
                     ParamType::Text,
-                    "The ticket the browser's prompt carried.",
-                )],
-            ))),
-            row(Some(descriptor(
-                REPORTED,
-                "Report a login's step",
-                "Tell the browser that showed the ticket what this computer did as it logged in.",
-                &[
-                    ActionParam::required(
-                        "ticket",
-                        ParamType::Text,
-                        "The ticket this computer logged in with.",
-                    ),
-                    ActionParam::required("step", ParamType::Text, "What it did."),
-                ],
-            ))),
-            row(Some(descriptor(
-                LOG_IN,
-                "Log in with a ticket",
-                "Become one of the person's devices with a ticket another of their computers printed.",
-                &[
-                    ActionParam::required(
-                        "ticket",
-                        ParamType::Text,
-                        "The ticket, as it was printed.",
-                    ),
-                    ActionParam::required("agent", ParamType::Text, "The agent that runs here."),
-                    ActionParam::optional(
-                        "label",
-                        ParamType::Text,
-                        "How the devices list this computer.",
-                    ),
-                ],
-            ))),
-        ],
-        query,
-    )
-}
-
-/// The action service a daemon with no server's work answers the device actions on, as `key`:
-/// a request names the device it asks by its endpoint's key, so the workspaces' shared service
-/// serves only when it signs as that key, and a service of the device's own serves otherwise.
-pub(crate) fn device_actions(key: &SigningKey, workspaces: &ServiceWorkspaces) -> ActionService {
-    let shared = workspaces.copies().action_service();
-    if shared.device() == key.verifying_key().to_bytes() {
-        return shared;
-    }
-    let _entered = tilo_rt::app().handle().enter();
-    ActionService::new(key.clone(), Arc::new(NoActions))
+                    "How the devices list this computer.",
+                ),
+            ],
+        ))),
+    ];
+    let rows = rows
+        .into_iter()
+        .filter(|row| {
+            row.action
+                .as_ref()
+                .is_none_or(|action| keep(&action.address.action))
+        })
+        .collect();
+    CataloguePage::from_rows(REVISION.to_owned(), rows, query)
 }
 
 /// `page`, the workspace's apps, with the daemon's own `tilo.device` provider beside them: listed
@@ -306,7 +318,9 @@ impl Admission {
         self.runtime.spawn(async move {
             let session = session.as_ref();
             let written = match role {
-                Role::Server => server_entry(service.copies(), session, &cert, founds).await,
+                Role::Server => {
+                    server_entry(service.copies(), (session, &cert), None, founds).await
+                }
                 Role::Plan(plan) => plan_entry(service.copies(), session, &plan, &cert).await,
             };
             if let Err(error) = written {
@@ -317,21 +331,24 @@ impl Admission {
 }
 
 /// Record the certified `cert` as a server in the person's Servers document, as a server's own
-/// start does when it is taken in: an entry under its device key, its endpoint filled by the
-/// server itself when it first starts.
+/// start does when it is taken in: an entry under its device key, dialled at `endpoint`, or by its
+/// key alone until the server fills its endpoint itself when it first starts.
 pub(super) async fn server_entry(
     workspaces: &tilo_workspace_service::workspaces::Workspaces,
-    session: Option<&Entered>,
-    cert: &DeviceCert,
+    (session, cert): (Option<&Entered>, &DeviceCert),
+    endpoint: Option<iroh::EndpointAddr>,
     founds: bool,
 ) -> Result<(), String> {
     use tilo_workspace_service::workspaces::servers;
 
-    let endpoint = iroh::EndpointAddr::from_parts(
-        iroh::EndpointId::from_bytes(&cert.device_public_key)
-            .map_err(|error| format!("the server's device key: {error}"))?,
-        Vec::new(),
-    );
+    let endpoint = match endpoint {
+        Some(endpoint) => endpoint,
+        None => iroh::EndpointAddr::from_parts(
+            iroh::EndpointId::from_bytes(&cert.device_public_key)
+                .map_err(|error| format!("the server's device key: {error}"))?,
+            Vec::new(),
+        ),
+    };
     if let Some(device) = session {
         let bytes = tilo_user_identity::canonical::canonical_bytes(cert)
             .map_err(|error| format!("the server's certificate: {error}"))?;
@@ -370,7 +387,7 @@ pub(super) async fn plan_entry(
     plan: &str,
     cert: &DeviceCert,
 ) -> Result<(), String> {
-    use tilo_workspace_service::workspaces::servers::{self, Servers};
+    use tilo_workspace_service::workspaces::servers;
 
     if let Some(device) = session {
         let shown = device
@@ -399,22 +416,7 @@ pub(super) async fn plan_entry(
             .map(drop)
             .map_err(|error| format!("{error}"));
     }
-    let nonce = servers::read(workspaces)
-        .await?
-        .waiting_plan(plan)?
-        .plan
-        .token
-        .nonce;
-    servers::apply(
-        workspaces,
-        Servers::BEGIN_INSTALL.with((
-            hex::encode(cert.device_public_key),
-            nonce,
-            "[]".to_owned(),
-            String::new(),
-        )),
-    )
-    .await
+    servers::admit_planned(workspaces, plan, &cert.device_public_key).await
 }
 
 /// What this computer's daemon answers the device actions with: its endpoint, the device it is,
@@ -436,8 +438,12 @@ struct Inner {
     workspaces: Option<Arc<ServiceWorkspaces>>,
     place: Place,
     service: ActionService,
-    /// The ticket the service answers for now, while it waits for its computer.
-    outstanding: std::sync::Mutex<Option<ServedTicket>>,
+    /// The ticket `tilo device add` printed last, while it waits for its computer, and whether
+    /// it is a planned machine's: a later one replaces it unless it is.
+    outstanding: std::sync::Mutex<Option<(ServedTicket, bool)>>,
+    /// Every ticket the service answers a computer's certify call for now: planned machines'
+    /// beside the one printed last.
+    served: ServedTickets,
     /// Each invocation of a device action, and where it is.
     calls: std::sync::Mutex<HashMap<InvocationId, InvocationState>>,
     runtime: tokio::runtime::Handle,
@@ -470,6 +476,7 @@ impl Tickets {
             place,
             service,
             outstanding: std::sync::Mutex::new(None),
+            served: ServedTickets::default(),
             calls: std::sync::Mutex::new(HashMap::new()),
             runtime: tokio::runtime::Handle::current(),
         }))
@@ -481,7 +488,7 @@ impl Tickets {
             && request.target.address.resource == RESOURCE
             && matches!(
                 request.target.address.action.as_str(),
-                ISSUE | LOG_IN | PENDING | APPROVE | REPORTED
+                INFO | ISSUE | LOG_IN | PENDING | APPROVE | REPORTED
             )
     }
 
@@ -512,7 +519,12 @@ impl Tickets {
         let waiting = matches!(action.as_str(), LOG_IN | PENDING | APPROVE | REPORTED)
             || args.get("wait").and_then(Value::as_bool) == Some(true);
         if !waiting {
-            let update = match self.issue(&args) {
+            let answer = if action == INFO {
+                Ok(device_info(&self.0.place, &self.0.key))
+            } else {
+                self.issue(&args)
+            };
+            let update = match answer {
                 Ok(value) => succeeded(invocation, value),
                 Err(error) => failed(invocation, &format!("{error:#}")),
             };
@@ -554,7 +566,11 @@ impl Tickets {
     }
 
     fn outstanding(&self) -> Option<ServedTicket> {
-        self.0.outstanding.lock_recover().clone()
+        self.0
+            .outstanding
+            .lock_recover()
+            .as_ref()
+            .map(|(served, _)| served.clone())
     }
 
     /// The certificate this daemon's workspace session proves: the service's own, which its
@@ -606,6 +622,7 @@ impl Tickets {
             );
         }
         let enter = self.entry(here)?;
+        let planned = plan.is_some();
         let role = match plan {
             Some(plan) => Some(Role::Plan(plan)),
             None if as_server => Some(Role::Server),
@@ -641,12 +658,27 @@ impl Tickets {
                 admission,
             }),
             RevocationList::new(),
+            // A planned machine's medium may sit on a shelf before the machine installs from it.
+            if planned {
+                PLANNED_TICKET_LIFETIME_NS
+            } else {
+                TICKET_LIFETIME_NS
+            },
         );
-        // The one uncertified call the router now answers is this ticket's certify.
+        // The one uncertified call the router answers is a served ticket's certify. A ticket
+        // printed now replaces the one printed before, but never a planned machine's.
+        let replaced = self
+            .0
+            .outstanding
+            .lock_recover()
+            .replace((served.clone(), planned));
+        if let Some((replaced, false)) = replaced {
+            self.0.served.withdraw(&replaced);
+        }
+        self.0.served.serve(served);
         self.0
             .service
-            .admit_uncertified(SCOPE, Arc::new(served.clone()));
-        *self.0.outstanding.lock_recover() = Some(served);
+            .admit_uncertified(SCOPE, Arc::new(self.0.served.clone()));
         Ok(json!({"ticket": ticket.encode()}))
     }
 
@@ -724,37 +756,20 @@ impl Tickets {
         }))
     }
 
-    /// Log in with `ticket` another of the person's devices issued, as `agent`, listed as
-    /// `label`: keep the login it answers and say which device this computer became.
+    /// Log in with the ticket another of the person's devices issued, as [`login_asked`] reads
+    /// it: keep the login it answers and say which device this computer became.
     async fn log_in(&self, args: &Value) -> Result<Value> {
-        let ticket = args
-            .get("ticket")
-            .and_then(Value::as_str)
-            .context("a ticket is needed")?;
-        let ticket = Ticket::parse(ticket)
-            .map_err(|_| anyhow!("This is not a Tilo ticket: ask for a new one."))?;
-        if ticket.direction != Direction::Login {
-            bail!(
-                "That ticket signs a browser in: run `tilo device add <ticket>` with it on this \
-                 computer."
-            );
-        }
-        let agent = args
-            .get("agent")
-            .and_then(Value::as_str)
-            .filter(|agent| !agent.trim().is_empty())
-            .context("the agent that runs on this computer is needed")?;
-        let label = args.get("label").and_then(Value::as_str);
-        let answer = self.certified_with(&ticket, agent, label).await?;
-        let device = tilo_api::daemon::enter::device_of(answer, agent);
-        tilo_device_identity::login::store(&self.0.place, &device)
-            .context("keeping this computer's login")?;
-        Ok(json!({
-            "label": device.label(),
-            "workspace": device.workspace,
-            "workspace_name": device.workspace_name,
-            "host_origin": device.host_origin,
-        }))
+        let (ticket, agent, label) = login_asked(args)?;
+        let device = tilo_api::daemon::enter::log_in(
+            &self.0.key,
+            &self.0.endpoint,
+            &self.0.place,
+            ticket,
+            agent,
+            label,
+        )
+        .await?;
+        Ok(logged_in(&device))
     }
 
     /// `ticket`'s text, parsed: what a device action names the host and direction by.
@@ -818,7 +833,7 @@ impl Tickets {
                 bail!("{}", error.message.trim_end_matches('.'))
             }
             Some(Ok(_)) | None => bail!(tilo_api::daemon::enter::UNREACHED),
-            Some(Err(error)) => Err(anyhow!(certify_refused(&error))),
+            Some(Err(error)) => Err(anyhow!(tilo_api::daemon::enter::certify_refused(&error))),
         }
     }
 
@@ -878,85 +893,21 @@ impl Tickets {
         .await?;
         Ok(json!({}))
     }
+}
 
-    /// Ask the device that issued `ticket` to have the person's root certify this computer's key,
-    /// for `agent`, listed as `label`: its answer, once the person approved. A call lost on its
-    /// way is asked again with the same invocation, which the issuer answers where the call is.
-    async fn certified_with(
-        &self,
-        ticket: &Ticket,
-        agent: &str,
-        label: Option<&str>,
-    ) -> Result<CertifyAnswer> {
-        use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
-        let issuer = tilo_api::daemon::enter::address_of(&ticket.issuer)?;
-        let dialed = tilo_server_client::ServerAddress::at(issuer);
-        let input = CertifyInput {
-            secret: ticket.secret_hex(),
-            device_public_key: hex::encode(self.0.key.verifying_key().to_bytes()),
-            agent: agent.to_owned(),
-            label: label.map(str::to_owned),
-        };
-        let serde_json::Value::Object(argument) = serde_json::to_value(&input)? else {
-            bail!("the certify input is an object");
-        };
-        // Asked as this computer's own key, the one the certificate is for: the daemon's shared
-        // action service may sign as its workspace service instead.
-        let device = Arc::new(
-            ActionService::new(self.0.key.clone(), Arc::new(NoActions)).remote(
-                &self.0.endpoint,
-                &dialed.addr(),
-                SCOPE,
-            ),
-        );
-        let request = InvokeRequest {
-            on_behalf_of: None,
-            invocation: InvocationId::new(),
-            target: RemoteActionTarget {
-                provider: PROVIDER.to_owned(),
-                address: tilo_actions::ActionAddress::new(RESOURCE, CERTIFY),
-            },
-            argument: InvokeArgument::Json(argument),
-            context: None,
-            confirmation: None,
-            revision: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
-        };
-        let now = std::time::Instant::now();
-        let deadline = now
-            .checked_add(Duration::from_nanos(TICKET_LIFETIME_NS))
-            .unwrap_or(now);
-        let mut sent = 1;
-        let settled = loop {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            let answer = Arc::clone(&device)
-                .invoke_until_settled(request.clone(), left)
-                .await;
-            match answer {
-                Some(Err(error))
-                    if sent < CERTIFY_TRIES
-                        && matches!(error, ActionCallError::Unavailable { .. }) =>
-                {
-                    sent = sent.saturating_add(1);
-                }
-                answer => break answer,
-            }
-        };
-        match settled {
-            Some(Ok(InvocationUpdate::Succeeded { output, .. })) => output
-                .value
-                .and_then(|value| serde_json::from_value(value).ok())
-                .ok_or_else(|| anyhow!(tilo_api::daemon::enter::TOO_OLD)),
-            Some(Ok(InvocationUpdate::Failed { error, .. })) => Err(anyhow!(
-                "Your device didn't add this computer: {}.",
-                error.message.trim_end_matches('.')
-            )),
-            Some(Ok(_)) | None => Err(anyhow!(tilo_api::daemon::enter::UNREACHED)),
-            Some(Err(error)) => Err(anyhow!(certify_refused(&error))),
-        }
-    }
+/// What this device is ([`INFO`]): its key, its host name, and the people whose certificates
+/// in `place` name it, an empty list before anyone's does.
+pub(crate) fn device_info(place: &Place, key: &SigningKey) -> Value {
+    let device = key.verifying_key().to_bytes();
+    let people: Vec<String> = tilo_device_identity::login::certified_by(place, &device)
+        .iter()
+        .map(hex::encode)
+        .collect();
+    json!({
+        "device": hex::encode(device),
+        "label": tilo_paths::session::host_name(),
+        "people": people,
+    })
 }
 
 fn refused(reason: impl Into<String>) -> ActionCallError {
@@ -965,7 +916,7 @@ fn refused(reason: impl Into<String>) -> ActionCallError {
     }
 }
 
-fn succeeded(invocation: InvocationId, value: Value) -> InvocationUpdate {
+pub(crate) fn succeeded(invocation: InvocationId, value: Value) -> InvocationUpdate {
     InvocationUpdate::Succeeded {
         invocation,
         output: ActionOutput {
@@ -975,7 +926,7 @@ fn succeeded(invocation: InvocationId, value: Value) -> InvocationUpdate {
     }
 }
 
-fn failed(invocation: InvocationId, message: &str) -> InvocationUpdate {
+pub(crate) fn failed(invocation: InvocationId, message: &str) -> InvocationUpdate {
     InvocationUpdate::Failed {
         invocation,
         error: ActionFailure {
@@ -987,23 +938,22 @@ fn failed(invocation: InvocationId, message: &str) -> InvocationUpdate {
     }
 }
 
-/// What a certify call the issuing device did not take says.
-fn certify_refused(error: &ActionCallError) -> String {
-    match error {
-        ActionCallError::Refused { reason } => {
-            format!(
-                "Your device didn't take this ticket: {}.",
-                reason.trim_end_matches('.')
-            )
-        }
-        ActionCallError::UnknownAction => tilo_api::daemon::enter::TOO_OLD.to_owned(),
-        ActionCallError::Unavailable { reason } => format!(
-            "The device that made this ticket did not take it: {}. If its `tilo device add` \
-             ended, ask for a new ticket.",
-            reason.trim_end_matches('.')
-        ),
-        _ => "The device that made this ticket can't be reached from here: it may be asleep, or \
-              its `tilo device add` ended. Ask for a new ticket."
-            .to_owned(),
-    }
+/// The ticket, the agent and the label a `devices#logIn` asks with.
+pub(crate) fn login_asked(args: &Value) -> Result<(&str, &str, Option<&str>)> {
+    let text = |name: &str| args.get(name).and_then(Value::as_str);
+    let ticket = text("ticket").context("a ticket is needed")?;
+    let agent = text("agent")
+        .filter(|agent| !agent.trim().is_empty())
+        .context("the agent that runs on this computer is needed")?;
+    Ok((ticket, agent, text("label")))
+}
+
+/// What `devices#logIn` answers: the device this computer became.
+pub(crate) fn logged_in(device: &tilo_device_identity::login::Device) -> Value {
+    json!({
+        "label": device.label(),
+        "workspace": device.workspace,
+        "workspace_name": device.workspace_name,
+        "host_origin": device.host_origin,
+    })
 }

@@ -182,6 +182,31 @@ pub enum ScreenEffect {
     PowerMenu,
 }
 
+/// The night light as a view of another language reads and changes it: whether the screen is warm,
+/// and the verb that switches it.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct NightLightReading {
+    /// Whether the screen is warm.
+    pub on: bool,
+}
+
+/// The night light as a view of another language reads it (`device.night_light`).
+#[must_use]
+pub(crate) fn night_light_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<NightLightReading, NightLightEffect>(
+        "night-light",
+        "Night light",
+    )
+}
+
 /// The screen's night light.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "so.tilo.session.night-light")]

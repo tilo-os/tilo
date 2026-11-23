@@ -1,17 +1,12 @@
 //! Bounded, private, no-replace artifact publication for native transfer actors.
 use crate::{
     destination_security,
-    migration::{OwnedTemporary, PinnedDirectory},
+    migration::{OwnedTemporary, PinnedDirectory, PublishMode},
     migration_durability as durability,
 };
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, OpenOptions};
-use std::{
-    ffi::OsStr,
-    io::{self, Write},
-    path::Path,
-    sync::Arc,
-};
+use std::{ffi::OsStr, io, path::Path, sync::Arc};
 
 const LIMIT: u64 = 1024 * 1024;
 fn failure() -> io::Error {
@@ -41,26 +36,15 @@ pub fn publish_private_artifact(
     if bytes.len() as u64 > LIMIT {
         return Err(failure());
     }
-    let mut temporary = OwnedTemporary::create(pin, OsStr::new(name))?;
-    temporary.file.write_all(bytes)?;
-    durability::sync_file(&temporary.file)?;
-    temporary.validate()?;
-    match cap_primitives::fs::hard_link(
-        &pin.file,
-        Path::new(&temporary.name),
-        &pin.file,
-        Path::new(name),
-    ) {
-        Ok(()) => durability::sync_directory(&pin.file),
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            if read_private_artifact(pin, name)? == bytes {
-                Ok(())
+    OwnedTemporary::create(pin, OsStr::new(name))?
+        .publish(bytes, PublishMode::IfAbsentOrIdentical)
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::InvalidData {
+                failure()
             } else {
-                Err(failure())
+                error
             }
-        }
-        Err(error) => Err(error),
-    }
+        })
 }
 /// Open an owner-only private workspace without following links.
 pub fn private_workspace(path: &Path) -> io::Result<Arc<PinnedDirectory>> {

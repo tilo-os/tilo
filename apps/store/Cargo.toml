@@ -47,6 +47,7 @@ package-store = { path = "../../crates/packaging/package-store" }
 # Flathub's cached AppStream metadata, shared with desktop search. The block
 # list comes through `ui::registry`.
 app-catalogue = { path = "../../crates/packaging/app-catalogue" }
+tilo-app-id.workspace = true
 blake3.workspace = true
 getrandom.workspace = true
 automerge.workspace = true
@@ -71,7 +72,7 @@ tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
 package-service = { path = "../../crates/packaging/package-service", default-features = false, features = ["test-support", "service"] }
 tempfile.workspace = true
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]

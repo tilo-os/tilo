@@ -1,0 +1,18 @@
+[package]
+name = "projector-stand-in"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "A stand-in wireless display broker on the projector's control socket: one receiver to find, connect to and stop, for a session driven by a script"
+
+[dependencies]
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-projector = { path = "../../crates/system/projector", default-features = false }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

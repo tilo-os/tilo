@@ -44,7 +44,7 @@ fn wake(stop: &AtomicU8, reason: u8, address: SocketAddr) {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RedirectResult {
+enum RedirectResult {
     Code { code: String, state: String },
     Error(String),
 }
@@ -230,10 +230,6 @@ fn respond(stream: &mut TcpStream, message: &str) {
 
 /// Parse the request line of the redirect (`GET /oauth?code=…&state=… HTTP/1.1`).
 /// `None` for a request that is not the redirect.
-pub fn parse_redirect_line(line: &str) -> Option<RedirectResult> {
-    parse_redirect_at(line, REDIRECT_PATH)
-}
-
 fn parse_redirect_at(line: &str, expected_path: &str) -> Option<RedirectResult> {
     let target = line.split_whitespace().nth(1)?;
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
@@ -279,22 +275,18 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_loopback_listener_takes_the_redirect_meant_for_it;
 
-        phase redirect_line_parsing;
+        phase a_provider_error_is_a_denial;
         {
+            let server = LoopbackServer::bind().unwrap();
+            let port = server.port();
+            let browser = std::thread::spawn(move || {
+                browser_get(port, "/oauth?error=access_denied&state=S")
+            });
             assert_eq!(
-                parse_redirect_line("GET /oauth?state=xyz&code=4%2F0Afoo&scope=mail HTTP/1.1"),
-                Some(RedirectResult::Code {
-                    code: "4/0Afoo".into(),
-                    state: "xyz".into()
-                })
+                server.wait_for_code("S", tilo_test_env::hang_bound()),
+                Err(OAuthError::Denied("access_denied".into()))
             );
-            assert_eq!(
-                parse_redirect_line("GET /oauth?error=access_denied&state=xyz HTTP/1.1"),
-                Some(RedirectResult::Error("access_denied".into()))
-            );
-            assert_eq!(parse_redirect_line("GET /favicon.ico HTTP/1.1"), None);
-            assert_eq!(parse_redirect_line("GET /?code=x HTTP/1.1"), None);
-            assert_eq!(parse_redirect_line(""), None);
+            assert!(browser.join().unwrap().contains("close this tab"));
         }
 
         phase captures_the_code_after_ignoring_a_favicon_request;

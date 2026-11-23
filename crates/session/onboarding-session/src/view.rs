@@ -2636,10 +2636,119 @@ mod tests {
     mod tour_motion;
     mod viewport;
     use tilo_onboarding::OnboardingEffect;
+    /// A setup prepared on another computer waits at this login. None of the
+    /// ordinary identity routes may be taken while it does, and the
+    /// passphrase typed for it reaches its import rather than anything a frame
+    /// publishes.
     #[test]
-    fn completed_browser_continuation_skips_future_first_use_and_rejects_tampering() {
-        let (home, directory, declaration) = crate::browser::fixtures::fixture();
+    fn a_prepared_setup_is_reviewed_and_refuses_every_other_identity_route() {
+        let (home, _identity, _declaration) = crate::portable_home::fixtures::fixture();
+        // The installer leaves an activated receipt once it completes; without
+        // it the same prepared setup is still waiting to be reviewed.
+        std::fs::remove_file(
+            home.path()
+                .join(".local/state/tilo/prepared-setup/activated.json"),
+        )
+        .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut view = OnboardingView::with_minter(Box::new(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Err("must not mint".into())
+        }));
+        view.prepared_pending = true;
+        view.prepared_review = Some(crate::prepared::Pending::open(home.path()).unwrap());
+        assert!(!published(&mut view).is_empty());
+        assert_eq!(view.prepared_setup_status(), Some("ready"));
+
+        // Every other identity control is pressed with a frame after it, and
+        // none of them makes a key or leaves the prepared page.
+        let mut document = AutoCommit::new();
+        for key in [
+            KEY_BEGIN,
+            KEY_EXISTING,
+            KEY_CHOOSE_RESTORE,
+            KEY_CREATE,
+            KEY_CONNECT_RETRY,
+        ] {
+            press(&view, &mut document, key);
+            view.sync(&document, &automerge::ROOT);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(view.prepared_pending);
+        assert_eq!(view.page().step(), tilo_onboarding::Step::Prepared);
+        assert!(!view.finished());
+
+        // The passphrase reaches the import and nowhere a frame publishes it.
+        assert!(act(
+            &mut view,
+            &OnboardingEffect::EnterSecret {
+                field: "prepared-password".into(),
+                value: "shortpass".into(),
+            }
+        ));
+        assert!(!format!("{:?}", published(&mut view)).contains("shortpass"));
+        view.pressed.press(KEY_PREPARED_IMPORT);
+        assert_eq!(
+            view.connect_passphrase.lock().unwrap().as_str(),
+            "shortpass"
+        );
+        assert!(act(&mut view, &OnboardingEffect::Continue));
+        assert_eq!(view.prepared_setup_status(), Some("busy"));
+        clear_secret(&view.connect_passphrase);
+    }
+
+    /// Browser profiles prepared on another computer: the first login resumes
+    /// the import, may defer it and resume it again; once the import has its
+    /// signed proof a later login reuses it without a password, and a
+    /// projection changed afterwards is refused.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one person's browser profiles across two logins"
+    )]
+    fn a_prepared_browser_continuation_is_resumed_reused_and_tamper_checked() {
         let mut env = tilo_test_env::ScopedEnv::new();
+        let (home, directory, declaration) = crate::browser::fixtures::fixture();
+        env.set("HOME", home.path());
+        let before = std::fs::read(directory.join("primary.json")).unwrap();
+        assert!(crate::prepared::session_pending(&directory));
+        let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
+        view.identity_dir = Some(directory.clone());
+        view.session.home = Some(home.path().into());
+        view.load_prepared_setup(&directory);
+        assert!(!view.prepared_pending);
+        assert!(view.browser.is_some());
+        assert!(view.portable_home.is_none());
+        assert!(view.portable_applications.is_none());
+        view.flow.resume_created(MintedIdentity {
+            fingerprint: "existing".into(),
+            path: directory.join("primary.json"),
+        });
+        assert!(setup_actions_pending(&view));
+        assert_eq!(view.migration_status().unwrap()["browser"], true);
+        assert!(!published(&mut view).is_empty());
+        assert!(
+            view.invoke_migration("review", Some("different-operation"))
+                .is_err()
+        );
+        assert!(act(&mut view, &OnboardingEffect::Skip));
+        assert!(!setup_actions_pending(&view));
+        assert!(view.verified_browser_projection().is_none());
+        assert!(
+            view.invoke_migration("resume", Some(&declaration.payload.operation))
+                .is_ok()
+        );
+        assert!(setup_actions_pending(&view));
+        assert_eq!(
+            std::fs::read(directory.join("primary.json")).unwrap(),
+            before
+        );
+        drop(view);
+
+        // On a later login the import has ended with its signed proof, and the
+        // verified completion is reused without asking for the password again.
+        let (home, directory, declaration) = crate::browser::fixtures::fixture();
         env.set("HOME", home.path());
         env.set("XDG_CONFIG_HOME", home.path().join(".config"));
         env.set("TILO_IDENTITY_ROOT", home.path().join("system"));
@@ -2684,6 +2793,9 @@ mod tests {
         other_view.load_prepared_setup(&other_identity);
         assert!(other_view.prepared_pending);
         assert!(other_view.verified_browser_projection().is_none());
+
+        // A profile changed after the proof was made is not the setup that was
+        // verified, and nothing is attached from it.
         let bookmarks = projection
             .join("profiles")
             .join(&declaration.plan.profiles.first().unwrap().id)
@@ -2700,136 +2812,174 @@ mod tests {
             original
         );
     }
-    #[test]
-    fn authenticated_browser_activation_restores_separate_first_use_semantic_intent() {
-        let (home, directory, declaration) = crate::browser::fixtures::fixture();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("HOME", home.path());
-        let before = std::fs::read(directory.join("primary.json")).unwrap();
-        assert!(crate::prepared::session_pending(&directory));
-        let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
-        view.identity_dir = Some(directory.clone());
-        view.session.home = Some(home.path().into());
-        view.load_prepared_setup(&directory);
-        assert!(!view.prepared_pending);
-        assert!(view.browser.is_some());
-        assert!(view.portable_home.is_none());
-        assert!(view.portable_applications.is_none());
-        view.flow.resume_created(MintedIdentity {
-            fingerprint: "existing".into(),
-            path: directory.join("primary.json"),
-        });
-        assert!(setup_actions_pending(&view));
-        assert_eq!(view.migration_status().unwrap()["browser"], true);
-        assert!(!published(&mut view).is_empty());
-        assert!(
-            view.invoke_migration("review", Some("different-operation"))
-                .is_err()
-        );
-        assert!(act(&mut view, &OnboardingEffect::Skip));
-        assert!(!setup_actions_pending(&view));
-        assert!(view.verified_browser_projection().is_none());
-        assert!(
-            view.invoke_migration("resume", Some(&declaration.payload.operation))
-                .is_ok()
-        );
-        assert!(setup_actions_pending(&view));
-        assert_eq!(
-            std::fs::read(directory.join("primary.json")).unwrap(),
-            before
-        );
-    }
-    #[test]
-    fn authenticated_portable_apps_activation_resumes_actual_first_use_semantic_intent() {
-        let (home, directory, declaration) = crate::portable_applications::fixtures::fixture();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("HOME", home.path());
-        let receipt = home
-            .path()
-            .join(".local/state/tilo/prepared-setup/activated.json");
-        assert!(
-            std::fs::metadata(&receipt).unwrap().len() > 1024,
-            "actual declaration must exercise prior too-small receipt bound"
-        );
-        let before = std::fs::read(directory.join("primary.json")).unwrap();
-        let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
-        view.identity_dir = Some(directory.clone());
-        view.session.home = Some(home.path().into());
-        view.load_prepared_setup(&directory);
-        assert!(!view.prepared_pending);
-        assert!(
-            view.portable_home.is_none(),
-            "apps-only grants no document/home migration"
-        );
-        assert!(view.portable_applications.is_some());
-        view.flow.resume_created(MintedIdentity {
-            fingerprint: "existing".into(),
-            path: directory.join("primary.json"),
-        });
-        assert!(setup_actions_pending(&view));
-        assert_eq!(view.migration_status().unwrap()["requires_password"], true);
-        assert!(!published(&mut view).is_empty());
-        assert!(
-            view.invoke_migration("review", Some("different-operation"))
-                .is_err()
-        );
-        assert!(view.portable_applications.as_ref().unwrap().pending());
-        assert!(act(&mut view, &OnboardingEffect::Skip));
-        assert!(!setup_actions_pending(&view));
-        assert_eq!(view.migration_status().unwrap()["deferred"], true);
-        assert!(
-            view.invoke_migration("resume", Some(&declaration.operation))
-                .is_ok()
-        );
-        assert!(setup_actions_pending(&view));
-        assert_eq!(
-            std::fs::read(directory.join("primary.json")).unwrap(),
-            before
-        );
-        assert_eq!(view.migration_status().unwrap()["complete"], false);
-    }
 
-    #[test]
-    fn migration_first_use_semantic_actions_are_bound_to_pending_operation_and_defer_truthfully() {
-        use std::os::unix::fs::PermissionsExt;
-        let home = tempfile::tempdir().unwrap();
-        let plans = home.path().join(".local/state/tilo/migration-handoff");
-        std::fs::create_dir_all(&plans).unwrap();
-        std::fs::set_permissions(&plans, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let plan = plans.join("setup.migration.json");
-        std::fs::write(&plan, b"{}").unwrap();
-        std::fs::set_permissions(&plan, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
-        view.migration = Some(crate::migration::Migration::open(home.path().into()));
-        view.flow.resume_created(MintedIdentity {
-            fingerprint: "existing".into(),
-            path: home.path().join("selected.json"),
-        });
-        assert!(setup_actions_pending(&view));
-        assert!(!published(&mut view).is_empty());
-        view.prepared_pending = true;
-        assert!(view.migration_status().is_none());
-        act(&mut view, &OnboardingEffect::Skip);
-        assert!(!plans.join("setup.acknowledged.json").exists());
-        view.prepared_pending = false;
-        assert!(act(&mut view, &OnboardingEffect::Skip));
-        assert!(!setup_actions_pending(&view));
-        let receipt: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(plans.join("setup.acknowledged.json")).unwrap())
-                .unwrap();
-        assert_eq!(receipt["outcome"], "deferred");
-        assert_eq!(std::fs::read(plan).unwrap(), b"{}");
-        assert!(!home.path().join(".local/state/tilo/migration").exists());
-    }
-
+    /// What another computer selected to bring along stays reachable until the
+    /// person finishes it: applications can be deferred and resumed, and a
+    /// deferred home comes back for the same identity, including from
+    /// Settings, while a changed declaration no longer opens.
     #[test]
     #[allow(
         clippy::too_many_lines,
-        reason = "one named scenario walked through in order"
+        reason = "one person's files and applications across several logins"
     )]
-    fn composite_cleanup_retry_is_visible_semantic_and_retains_rw_fence() {
+    fn portable_parts_from_another_computer_stay_deferred_and_resume() {
+        {
+            let (home, directory, declaration) = crate::portable_applications::fixtures::fixture();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("HOME", home.path());
+            let receipt = home
+                .path()
+                .join(".local/state/tilo/prepared-setup/activated.json");
+            assert!(
+                std::fs::metadata(&receipt).unwrap().len() > 1024,
+                "actual declaration must exercise prior too-small receipt bound"
+            );
+            let before = std::fs::read(directory.join("primary.json")).unwrap();
+            let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
+            view.identity_dir = Some(directory.clone());
+            view.session.home = Some(home.path().into());
+            view.load_prepared_setup(&directory);
+            assert!(!view.prepared_pending);
+            assert!(
+                view.portable_home.is_none(),
+                "apps-only grants no document/home migration"
+            );
+            assert!(view.portable_applications.is_some());
+            view.flow.resume_created(MintedIdentity {
+                fingerprint: "existing".into(),
+                path: directory.join("primary.json"),
+            });
+            assert!(setup_actions_pending(&view));
+            assert_eq!(view.migration_status().unwrap()["requires_password"], true);
+            assert!(!published(&mut view).is_empty());
+            assert!(
+                view.invoke_migration("review", Some("different-operation"))
+                    .is_err()
+            );
+            assert!(view.portable_applications.as_ref().unwrap().pending());
+            assert!(act(&mut view, &OnboardingEffect::Skip));
+            assert!(!setup_actions_pending(&view));
+            assert_eq!(view.migration_status().unwrap()["deferred"], true);
+            assert!(
+                view.invoke_migration("resume", Some(&declaration.operation))
+                    .is_ok()
+            );
+            assert!(setup_actions_pending(&view));
+            assert_eq!(
+                std::fs::read(directory.join("primary.json")).unwrap(),
+                before
+            );
+            assert_eq!(view.migration_status().unwrap()["complete"], false);
+        }
+
+        // The documents route, opened again from Settings after being left for
+        // later, for the same identity only.
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
+        let (home, directory, declaration) = crate::portable_home::fixtures::fixture();
+        env.set("HOME", home.path());
+        let before = std::fs::read(directory.join("primary.json")).unwrap();
+        assert_eq!(
+            OnboardingView::new_for_migration_resume(directory.clone())
+                .err()
+                .unwrap(),
+            t("onboarding-migration-resume-unavailable"),
+        );
+        let signer = tilo_identity::store::load_from_path(directory.join("primary.json")).unwrap();
+        let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
+        view.portable_home = Some(
+            crate::portable_home::Pending::open(home.path().into(), directory.clone(), declaration)
+                .unwrap(),
+        );
+        view.flow.resume_created(MintedIdentity {
+            fingerprint: hex::encode(signer.group_public_key()),
+            path: directory.join("primary.json"),
+        });
+        assert!(setup_actions_pending(&view));
+        view.invoke_migration("later", None).unwrap();
+        assert!(!setup_actions_pending(&view));
+        assert_eq!(view.migration_status().unwrap()["state"], "deferred");
+        assert!(
+            view.invoke_migration("resume", Some("wrong-operation"))
+                .is_err()
+        );
+        assert!(!published(&mut view).is_empty());
+        assert!(view.invoke_migration("resume", None).is_ok());
+        assert!(setup_actions_pending(&view));
+        assert_eq!(view.migration_status().unwrap()["state"], "pending");
+        assert_eq!(
+            tilo_identity::store::load_from_path(directory.join("primary.json"))
+                .unwrap()
+                .group_public_key(),
+            signer.group_public_key()
+        );
+        drop(view);
+        let mut reopened = OnboardingView::new_for_migration_resume(directory.clone()).unwrap();
+        assert!(setup_actions_pending(&reopened));
+        assert_eq!(reopened.migration_status().unwrap()["state"], "pending");
+        assert!(reopened.invoke_migration("review", None).is_err());
+        assert!(
+            setup_actions_pending(&reopened),
+            "missing archive must remain pending"
+        );
+        assert_eq!(
+            std::fs::read(directory.join("primary.json")).unwrap(),
+            before
+        );
+        let receipt = home
+            .path()
+            .join(".local/state/tilo/prepared-home/choice.json");
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
+        value["declaration"]["setup_binding"] = "other-setup".into();
+        std::fs::write(receipt, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(OnboardingView::new_for_migration_resume(directory).is_err());
+    }
+
+    /// A migration handoff from another computer: the first login can leave it
+    /// for later, saying so in its own acknowledged receipt and touching no
+    /// plan; the login that runs it copies, then offers the cleanup retry
+    /// while the read-write fence still stands.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one handoff walked through its deferral and its copy"
+    )]
+    fn a_migration_is_deferred_then_copied_with_its_cleanup_retried() {
         use launcher::retained_view::installed_copy::{CopyOwnerCommand, CopyOwnerEvent};
         use std::os::unix::fs::PermissionsExt;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let plans = home.path().join(".local/state/tilo/migration-handoff");
+            std::fs::create_dir_all(&plans).unwrap();
+            std::fs::set_permissions(&plans, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let plan = plans.join("setup.migration.json");
+            std::fs::write(&plan, b"{}").unwrap();
+            std::fs::set_permissions(&plan, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
+            view.migration = Some(crate::migration::Migration::open(home.path().into()));
+            view.flow.resume_created(MintedIdentity {
+                fingerprint: "existing".into(),
+                path: home.path().join("selected.json"),
+            });
+            assert!(setup_actions_pending(&view));
+            assert!(!published(&mut view).is_empty());
+            view.prepared_pending = true;
+            assert!(view.migration_status().is_none());
+            act(&mut view, &OnboardingEffect::Skip);
+            assert!(!plans.join("setup.acknowledged.json").exists());
+            view.prepared_pending = false;
+            assert!(act(&mut view, &OnboardingEffect::Skip));
+            assert!(!setup_actions_pending(&view));
+            let receipt: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(plans.join("setup.acknowledged.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(receipt["outcome"], "deferred");
+            assert_eq!(std::fs::read(&plan).unwrap(), b"{}");
+            assert!(!home.path().join(".local/state/tilo/migration").exists());
+        }
+
         let mut env = tilo_test_env::ScopedEnv::new();
         let home = tempfile::tempdir().unwrap();
         env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
@@ -2958,149 +3108,6 @@ mod tests {
         );
         // Events here exercise the production controller/UI, not actual source
         // authority or observed native retirement, which the driver owns.
-    }
-
-    #[test]
-    fn deferred_portable_home_remains_semantically_resumable_without_blocking_first_use() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
-        let (home, directory, declaration) = crate::portable_home::fixtures::fixture();
-        let signer = tilo_identity::store::load_from_path(directory.join("primary.json")).unwrap();
-        let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
-        view.portable_home = Some(
-            crate::portable_home::Pending::open(home.path().into(), directory.clone(), declaration)
-                .unwrap(),
-        );
-        view.flow.resume_created(MintedIdentity {
-            fingerprint: hex::encode(signer.group_public_key()),
-            path: directory.join("primary.json"),
-        });
-        assert!(setup_actions_pending(&view));
-        view.invoke_migration("later", None).unwrap();
-        assert!(!setup_actions_pending(&view));
-        assert_eq!(view.migration_status().unwrap()["state"], "deferred");
-        assert!(
-            view.invoke_migration("resume", Some("wrong-operation"))
-                .is_err()
-        );
-        assert!(!published(&mut view).is_empty());
-        assert!(view.invoke_migration("resume", None).is_ok());
-        assert!(setup_actions_pending(&view));
-        assert_eq!(view.migration_status().unwrap()["state"], "pending");
-        assert_eq!(
-            tilo_identity::store::load_from_path(directory.join("primary.json"))
-                .unwrap()
-                .group_public_key(),
-            signer.group_public_key()
-        );
-    }
-
-    #[test]
-    fn settings_reentry_resumes_attested_deferred_files_for_the_same_identity() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
-        let (home, directory, declaration) = crate::portable_home::fixtures::fixture();
-        env.set("HOME", home.path());
-        let before = std::fs::read(directory.join("primary.json")).unwrap();
-        let mut pending =
-            crate::portable_home::Pending::open(home.path().into(), directory.clone(), declaration)
-                .unwrap();
-        assert_eq!(
-            OnboardingView::new_for_migration_resume(directory.clone())
-                .err()
-                .unwrap(),
-            t("onboarding-migration-resume-unavailable"),
-        );
-        pending.invoke("later", b"").unwrap();
-        let mut reopened = OnboardingView::new_for_migration_resume(directory.clone()).unwrap();
-        assert!(setup_actions_pending(&reopened));
-        assert_eq!(reopened.migration_status().unwrap()["state"], "pending");
-        assert!(reopened.invoke_migration("review", None).is_err());
-        assert!(
-            setup_actions_pending(&reopened),
-            "missing archive must remain pending"
-        );
-        assert_eq!(
-            std::fs::read(directory.join("primary.json")).unwrap(),
-            before
-        );
-        let receipt = home
-            .path()
-            .join(".local/state/tilo/prepared-home/choice.json");
-        let mut value: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
-        value["declaration"]["setup_binding"] = "other-setup".into();
-        std::fs::write(receipt, serde_json::to_vec(&value).unwrap()).unwrap();
-        assert!(OnboardingView::new_for_migration_resume(directory).is_err());
-    }
-
-    #[test]
-    fn prepared_semantic_action_queues_same_intent_without_document_or_secret_receipts() {
-        use sha2::{Digest, Sha256};
-        use std::os::unix::fs::PermissionsExt;
-        let home = tempfile::tempdir().unwrap();
-        let root = home.path().join(".local/state/tilo/prepared-setup");
-        std::fs::create_dir_all(&root).unwrap();
-        for path in [
-            home.path().join(".local"),
-            home.path().join(".local/state"),
-            home.path().join(".local/state/tilo"),
-            root.clone(),
-        ] {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
-        let bytes = b"fixture encrypted transport bytes";
-        for (name, data) in [("prepared-setup.sealed", bytes.to_vec()), ("receipt.json", serde_json::to_vec(&serde_json::json!({"schema":1,"sealed_bytes":bytes.len(),"ciphertext_sha256":hex::encode(Sha256::digest(bytes))})).unwrap())] {
-            let path = root.join(name);
-            std::fs::write(&path, data).unwrap();
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        }
-        let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
-        view.prepared_pending = true;
-        view.prepared_review = Some(crate::prepared::Pending::open(home.path()).unwrap());
-        assert!(!published(&mut view).is_empty());
-        assert_eq!(view.prepared_setup_status(), Some("ready"));
-        assert!(act(
-            &mut view,
-            &OnboardingEffect::EnterSecret {
-                field: "prepared-password".into(),
-                value: "shortpass".into(),
-            }
-        ));
-        assert!(!format!("{:?}", published(&mut view)).contains("shortpass"));
-        view.pressed.press(KEY_PREPARED_IMPORT);
-        assert_eq!(
-            view.connect_passphrase.lock().unwrap().as_str(),
-            "shortpass"
-        );
-        assert!(act(&mut view, &OnboardingEffect::Continue));
-        assert_eq!(view.prepared_setup_status(), Some("busy"));
-        clear_secret(&view.connect_passphrase);
-    }
-    #[test]
-    fn pending_prepared_setup_refuses_all_identity_creation_intents() {
-        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let observed = calls.clone();
-        let mut view = OnboardingView::with_minter(Box::new(move || {
-            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Err("must not mint".into())
-        }));
-        view.prepared_pending = true;
-        let mut doc = AutoCommit::new();
-        for key in [
-            KEY_BEGIN,
-            KEY_EXISTING,
-            KEY_CHOOSE_RESTORE,
-            KEY_CREATE,
-            KEY_CONNECT_RETRY,
-        ] {
-            press(&view, &mut doc, key);
-            view.sync(&doc, &automerge::ROOT);
-        }
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert!(view.prepared_pending);
-        assert_eq!(view.page().step(), tilo_onboarding::Step::Prepared);
-        assert!(!view.finished());
     }
 
     use super::*;
@@ -3270,6 +3277,11 @@ mod tests {
             assert!(
                 names.iter().any(|name| name.contains("already used")),
                 "{names:?}"
+            );
+            assert!(
+                failure.message().contains("tilo device add"),
+                "the message says how to get a new code: {}",
+                failure.message()
             );
             assert!(
                 accessibility_for_id(composition, "onboarding.connect.nearby.button").is_some(),
@@ -4088,21 +4100,6 @@ mod tests {
     tilo_test_env::scenario! {
         fn identity_creation_requires_acknowledgement_and_mints_once;
 
-        phase structure_and_focus_invalidations_are_consumed_independently;
-        {
-            let mut invalidation = Invalidation::default();
-            invalidation.both();
-
-            assert!(invalidation.take_structure());
-            assert!(!invalidation.take_structure());
-            assert!(invalidation.take_focus());
-            assert!(!invalidation.take_focus());
-
-            invalidation.both();
-            assert!(invalidation.take_focus());
-            assert!(invalidation.take_structure());
-        }
-
         phase pressing_create_without_acknowledging_mints_nothing;
         // The whole point: clicking through without ticking the box must not produce a key.
         {
@@ -4173,26 +4170,6 @@ mod tests {
             press(&v, &mut doc, KEY_FINISH);
             v.sync(&doc, &automerge::ROOT);
             assert!(!v.finished(), "failure must not release the desktop");
-        }
-
-        phase finishing_releases_the_desktop;
-        {
-            let (mut v, _) = view();
-            let mut doc = AutoCommit::new();
-            assert!(!v.finished());
-            press(&v, &mut doc, KEY_BEGIN);
-            v.sync(&doc, &automerge::ROOT);
-            press(&v, &mut doc, KEY_UNDERSTOOD);
-            v.sync(&doc, &automerge::ROOT);
-            press(&v, &mut doc, KEY_CREATE);
-            v.sync(&doc, &automerge::ROOT);
-            press(&v, &mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
-            v.sync(&doc, &automerge::ROOT);
-            press(&v, &mut doc, KEY_BACKUP_CONTINUE);
-            v.sync(&doc, &automerge::ROOT);
-            press(&v, &mut doc, KEY_FINISH);
-            v.sync(&doc, &automerge::ROOT);
-            assert!(v.finished());
         }
     }
 

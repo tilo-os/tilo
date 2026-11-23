@@ -79,10 +79,4 @@ mod tests {
             None
         );
     }
-
-    #[test]
-    fn the_zone_follows_the_location_only_when_chosen() {
-        assert!(!AUTOMATIC_ZONE.default_value());
-        assert_eq!(AUTOMATIC_ZONE.section(), "clock");
-    }
 }

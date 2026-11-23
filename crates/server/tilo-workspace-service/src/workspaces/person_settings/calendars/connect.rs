@@ -43,9 +43,7 @@
 //! same account told twice adds nothing: connected already, it is refused in
 //! words; asked for and not yet answered, the one question stands.
 
-use std::net::IpAddr;
-use std::path::{Path, PathBuf};
-use std::sync::MutexGuard;
+use std::path::Path;
 
 use accounts::vault_items::{ItemId, ItemKind, Place};
 use serde::{Deserialize, Serialize};
@@ -56,13 +54,14 @@ use tilo_actions::remote::{
     ActionCallError as ActionError, CatalogueRow, InvokeRequest, RemoteActionTarget,
 };
 use tilo_dav::Url;
-use tilo_lock::MutexRecover as _;
 
 use super::{AddWithItem, CONNECT, RESOURCE, account_id, accounts_in, argument, server_of};
-use crate::connections::wire::{Destinations, Lookup, check_destination, is_public, system_lookup};
+use crate::connections::wire::{
+    Destinations, Lookup, check_destination, is_public, system_lookup, written_out,
+};
 use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::{AskedTurn, CARRIED_OUT, HostedTurn, NOTHING_WAITS};
-use crate::workspaces::person_asking::workspace_store_root;
+use crate::workspaces::hosted_use::{AskedTurn, HostedTurn};
+use crate::workspaces::person_asking::kept_asks::{KeptAskKind, hashed_ask_id};
 use crate::workspaces::workspace_stores::Store;
 
 /// Where a workspace's connections that wait for a person's password are
@@ -184,6 +183,49 @@ impl ConnectAsk {
     }
 }
 
+impl KeptAskKind for ConnectAsk {
+    type Error = ActionError;
+    const DIR: &'static str = ASKS_DIR;
+    const READ_FAILED: &'static str = "a kept ask to connect a calendar does not read";
+    const MAX_OPEN: Option<(usize, &'static str)> = Some((MAX_OPEN, TOO_MANY));
+
+    fn id(&self) -> &str {
+        &self.ask
+    }
+
+    fn workspace(&self) -> &str {
+        &self.workspace
+    }
+
+    fn person(&self) -> &str {
+        &self.person
+    }
+
+    fn started(&self) -> bool {
+        self.started
+    }
+
+    fn set_started(&mut self, started: bool) {
+        self.started = started;
+    }
+
+    fn interrupted(&self) -> bool {
+        self.interrupted
+    }
+
+    fn set_interrupted(&mut self, interrupted: bool) {
+        self.interrupted = interrupted;
+    }
+
+    fn asked_at(&self) -> u64 {
+        self.asked_at_ms
+    }
+
+    fn refused(reason: impl Into<String>) -> Self::Error {
+        refused(reason)
+    }
+}
+
 /// How a turn's asking to connect a calendar went.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TurnConnect {
@@ -213,25 +255,6 @@ fn refused(reason: impl Into<String>) -> ActionError {
     ActionError::Refused {
         reason: reason.into(),
     }
-}
-
-/// The literal address `url` names, where it names one and not a name.
-fn literal(url: &Url) -> Option<IpAddr> {
-    if url.domain().is_some() {
-        return None;
-    }
-    // What is left of an origin without its scheme: `127.0.0.1:8080`,
-    // `[::1]:8080`, or the address alone on the scheme's own port.
-    let origin = url.origin().ascii_serialization();
-    let at = origin.split_once("://").map_or("", |(_, at)| at);
-    let address = at.strip_prefix('[').map_or_else(
-        || at.rsplit_once(':').map_or(at, |(address, _)| address),
-        |inside| inside.split(']').next().unwrap_or_default(),
-    );
-    tilo_failure::ignored!(
-        "what is no literal address is a name, and a name is looked up",
-        address.parse::<IpAddr>().ok()
-    )
 }
 
 /// `said` as an address written whole. What a person says is taken as they
@@ -275,7 +298,7 @@ async fn bounded(address: &str, reach: Destinations, lookup: &Lookup) -> Result<
     if !url.username().is_empty() || url.password().is_some() {
         return Err(CARRIES_SIGN_IN);
     }
-    let literal = literal(&url);
+    let literal = written_out(&url);
     let plain_inside = url.scheme() == "http"
         && reach == Destinations::Any
         && literal.is_some_and(|address| !is_public(address));
@@ -315,72 +338,6 @@ fn told_name(name: &str) -> String {
     line.chars().take(MAX_CALENDAR_CHARS).collect()
 }
 
-/// Whether `ask` is an ask's id: what names a file here.
-fn is_ask_id(ask: &str) -> bool {
-    ask.len() == 32
-        && ask
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn ask_path(root: &Path, ask: &str) -> PathBuf {
-    root.join(ASKS_DIR).join(format!("{ask}.json"))
-}
-
-/// Keep `ask` under its workspace's `root`, readable by this server alone.
-fn keep(root: &Path, ask: &ConnectAsk) -> Result<(), String> {
-    let bytes = serde_json::to_vec(ask).map_err(|error| error.to_string())?;
-    tilo_files::native::atomic::write_creating_parent_with_mode(
-        &ask_path(root, &ask.ask),
-        &bytes,
-        0o600,
-    )
-    .map_err(|error| error.to_string())
-}
-
-/// The ask kept at `path`. One that does not read is said and left out: it
-/// connects nothing.
-fn read_kept(path: &Path) -> Option<ConnectAsk> {
-    let read = std::fs::read(path)
-        .map_err(|error| error.to_string())
-        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()));
-    match read {
-        Ok(ask) => Some(ask),
-        Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "a kept ask to connect a calendar does not read");
-            None
-        }
-    }
-}
-
-/// Every ask kept under the workspaces' stores in `stores`, oldest first.
-/// One that was started is read back interrupted.
-fn kept_under(stores: &Path) -> Vec<ConnectAsk> {
-    let mut asks: Vec<ConnectAsk> = std::fs::read_dir(stores)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .flat_map(|workspace| {
-            std::fs::read_dir(workspace.path().join(ASKS_DIR))
-                .into_iter()
-                .flatten()
-        })
-        .flatten()
-        .filter_map(|file| read_kept(&file.path()))
-        .filter(|ask: &ConnectAsk| is_ask_id(&ask.ask))
-        .map(|mut ask| {
-            ask.interrupted = ask.started;
-            ask
-        })
-        .collect();
-    asks.sort_by(|a, b| {
-        a.asked_at_ms
-            .cmp(&b.asked_at_ms)
-            .then_with(|| a.ask.cmp(&b.ask))
-    });
-    asks
-}
-
 /// The item `item` names in the workspace's vault, when it is the one the
 /// protected field of `ask`'s question made: a login that belongs to the
 /// calendar server's origin and to nothing else, which their vault did not
@@ -417,25 +374,13 @@ async fn take_out(workspaces: &Workspaces, workspace: &str, id: &ItemId) {
 }
 
 impl Workspaces {
-    /// The asks to connect a calendar this server keeps, read from its disk
-    /// the first time.
-    fn connects(&self) -> MutexGuard<'_, Option<Vec<ConnectAsk>>> {
-        let mut asks = self.inner.vault_uses.connects.lock_recover();
-        if asks.is_none() {
-            *asks = Some(kept_under(&workspace_store_root(&self.inner.dir)));
-        }
-        asks
-    }
-
     /// Forget the ask `ask` of `workspace`: nothing is connected for it any
     /// more.
     fn forget_connect(&self, workspace: &str, ask: &str) {
-        if let Some(asks) = self.connects().as_mut() {
-            asks.retain(|kept| kept.ask != ask);
-        }
-        if is_ask_id(ask) {
-            let _ = std::fs::remove_file(ask_path(&self.workspace_root(workspace), ask));
-        }
+        self.inner
+            .vault_uses
+            .connects
+            .forget(&self.inner.dir, workspace, ask);
     }
 
     /// Whose turn `turn` is, where it may ask `target`, the connecting of a
@@ -505,10 +450,6 @@ impl Workspaces {
     /// an address, a user name and a name alone; the address is not https,
     /// carries a sign-in or is not on the public internet; the account is
     /// connected already; or too many such asks wait for the person.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the ask is looked for and kept under one lock, so the same account asked twice at once is kept once"
-    )]
     pub async fn connect_calendar_for_turn(
         &self,
         turn: &HostedTurn<'_>,
@@ -533,7 +474,6 @@ impl Workspaces {
         // The one rule every calendar sign-in is under holds here too.
         let server = server_of(address.as_str()).map_err(refused)?;
         let place = Place::parse(server.as_str()).map_err(|error| refused(error.to_string()))?;
-        let root = self.workspace_root(&using.workspace);
         let id = account_id(&username, &server);
         let held = self
             .workspace_accounts(&using.workspace)
@@ -553,57 +493,48 @@ impl Workspaces {
             .map(|facts| facts.id.as_str().to_owned())
             .collect();
         let person = hex::encode(using.person);
-        let asked_at_ms = tilo_clock::unix_now_ms();
-        let ask: String = blake3::hash(
-            format!(
-                "{person}\0{}\0{:?}\0{asked_at_ms}",
-                using.agent, request.invocation
-            )
-            .as_bytes(),
-        )
-        .to_hex()
-        .chars()
-        .take(32)
-        .collect();
-        let kept = ConnectAsk {
-            ask,
-            workspace: using.workspace,
-            person,
-            agent: using.agent,
-            name: using.name,
-            server_url: server.to_string(),
-            place: place.as_str().to_owned(),
-            username,
-            account,
-            account_id: id,
-            asked_in,
-            started: false,
-            interrupted: false,
-            asked_at_ms,
-            known,
-        };
-        let mut asks = self.connects();
-        let open = asks.get_or_insert_with(Vec::new);
         // Told of the same account again while its person has not answered:
         // the one question stands.
-        if open.iter().any(|waits| {
-            waits.person == kept.person
-                && waits.workspace == kept.workspace
-                && waits.account_id == kept.account_id
-        }) {
-            return Ok(TurnConnect::Waits);
-        }
-        if open
-            .iter()
-            .filter(|waits| waits.person == kept.person)
-            .count()
-            >= MAX_OPEN
-        {
-            return Err(refused(TOO_MANY));
-        }
-        keep(&root, &kept).map_err(refused)?;
-        open.push(kept.clone());
-        Ok(TurnConnect::Asks(Box::new(kept)))
+        let kept = self.inner.vault_uses.connects.keep(
+            &self.inner.dir,
+            &person,
+            (using, id),
+            |waits, (using, id)| {
+                waits.person == person
+                    && waits.workspace == using.workspace
+                    && waits.account_id == *id
+            },
+            |(using, id)| {
+                let asked_at_ms = tilo_clock::unix_now_ms();
+                let ask = hashed_ask_id(
+                    &person,
+                    &using.agent,
+                    &format!("{:?}", request.invocation),
+                    asked_at_ms,
+                );
+                Ok(ConnectAsk {
+                    ask,
+                    workspace: using.workspace,
+                    person: person.clone(),
+                    agent: using.agent,
+                    name: using.name,
+                    server_url: server.to_string(),
+                    place: place.as_str().to_owned(),
+                    username,
+                    account,
+                    account_id: id,
+                    asked_in,
+                    started: false,
+                    interrupted: false,
+                    asked_at_ms,
+                    known,
+                })
+            },
+        )?;
+        Ok(match kept {
+            Some(kept) => TurnConnect::Asks(Box::new(kept)),
+            None => TurnConnect::Waits,
+        })
     }
 
     /// The question about `ask` could not be put to its person, or it is
@@ -618,15 +549,10 @@ impl Workspaces {
     /// none waits.
     #[must_use]
     pub fn open_connects(&self, workspace: &str) -> Vec<ConnectAsk> {
-        self.connects()
-            .as_ref()
-            .map(|asks| {
-                asks.iter()
-                    .filter(|ask| ask.workspace == workspace)
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.inner
+            .vault_uses
+            .connects
+            .open(&self.inner.dir, workspace)
     }
 
     /// Claim the ask `ask` for the one reader of its answer that carries it
@@ -636,33 +562,11 @@ impl Workspaces {
     /// it carries it out ([`Self::carry_out_connect`]).
     ///
     /// # Errors
-    /// Nothing is kept under that ask ([`NOTHING_WAITS`]), another reader
-    /// claimed it ([`CARRIED_OUT`]), or the claim could not be written down.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the claim is read and written under one lock, so two readers of one answer cannot both take it"
-    )]
+    /// Nothing is kept under that ask ([`crate::workspaces::hosted_use::NOTHING_WAITS`]), another
+    /// reader claimed it ([`crate::workspaces::hosted_use::CARRIED_OUT`]), or the claim could not
+    /// be written down.
     pub fn claim_connect(&self, ask: &str) -> Result<ConnectAsk, ActionError> {
-        let claimed = {
-            let mut asks = self.connects();
-            let Some(kept) = asks
-                .as_mut()
-                .and_then(|asks| asks.iter_mut().find(|kept| kept.ask == ask))
-            else {
-                return Err(refused(NOTHING_WAITS));
-            };
-            if kept.started {
-                return Err(refused(CARRIED_OUT));
-            }
-            kept.started = true;
-            kept.clone()
-        };
-        let said = keep(&self.workspace_root(&claimed.workspace), &claimed);
-        if let Err(error) = said {
-            self.forget_connect(&claimed.workspace, &claimed.ask);
-            return Err(refused(error));
-        }
-        Ok(claimed)
+        self.inner.vault_uses.connects.claim(&self.inner.dir, ask)
     }
 
     /// Carry out what the person answered where they were asked for the
@@ -766,6 +670,7 @@ mod tests {
     )]
 
     use std::future::Future;
+    use std::net::IpAddr;
     use std::pin::Pin;
     use std::sync::Arc;
 
@@ -862,6 +767,22 @@ mod tests {
             Err(NOT_HTTPS),
             "plain http to a name, wherever the server may call"
         );
+        for non_http in [
+            "blob:http://127.0.0.1/x",
+            "redis://127.0.0.1/",
+            "file://127.0.0.1/etc/passwd",
+        ] {
+            assert_eq!(
+                bounded(non_http, public, &never).await,
+                Err(NOT_HTTPS),
+                "{non_http} (public)"
+            );
+            assert_eq!(
+                bounded(non_http, any, &never).await,
+                Err(NOT_HTTPS),
+                "{non_http} (any)"
+            );
+        }
     }
 
     /// What a person says is taken as they say it: a server's bare name, with

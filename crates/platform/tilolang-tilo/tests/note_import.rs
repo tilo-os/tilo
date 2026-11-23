@@ -590,6 +590,183 @@ fn a_notebook_exported_and_imported_again_is_the_same_notebook() {
     );
 }
 
+/// The notebook as one Markdown document: each note a heading one level deeper than the note it
+/// stands under, the notes under it after it, in the order the tree keeps them.
+#[test]
+fn a_notebook_is_exported_as_one_markdown_document() {
+    let device = Device::default();
+    let (ada, _loaded) = notebook(&device);
+    let plan = note(&ada, None, "Q3 plan");
+    let standups = note(&ada, Some(&plan), "Standups");
+    let monday = note(&ada, Some(&standups), "Monday");
+    call(
+        &ada,
+        "add_text",
+        vec![
+            Value::resource(&monday),
+            Value::text("Ada is on the sync bug."),
+        ],
+    );
+    let _home = note(&ada, None, "Home");
+
+    let nb = ada.host.root_of(APP).unwrap();
+    let file = made_file(&ada, "export_notebook_markdown", vec![Value::resource(&nb)]);
+    assert_eq!(file.name, "Notes.md");
+    assert_eq!(file.media, "text/markdown");
+    let text = String::from_utf8(device.read(&file.hash).expect("the document's bytes"))
+        .expect("Markdown is text");
+    assert_eq!(
+        text, "# Q3 plan\n\n## Standups\n\n### Monday\n\nAda is on the sync bug.\n\n# Home\n",
+        "one document, each note a heading a level deeper than the note it stands under"
+    );
+}
+
+/// A Notion API page listing — what a page's `children` endpoint answers — comes in as notes:
+/// one page per listing, titled by its `title` property or its first heading, its blocks said as
+/// Markdown with their marks, a list item's children under it.
+#[test]
+fn a_notion_page_listing_becomes_notes() {
+    const LISTING: &str = r#"{
+        "results": [
+            {"object": "block", "type": "heading_1",
+             "heading_1": {"rich_text": [{"plain_text": "Reading list"}]}},
+            {"object": "block", "type": "paragraph",
+             "paragraph": {"rich_text": [
+                {"plain_text": "Books "},
+                {"plain_text": "worth", "annotations": {"bold": true}},
+                {"plain_text": " it."}]}},
+            {"object": "block", "type": "bulleted_list_item",
+             "bulleted_list_item": {"rich_text": [{"plain_text": "Piranesi"}]},
+             "children": [
+                {"object": "block", "type": "paragraph",
+                 "paragraph": {"rich_text": [{"plain_text": "A house of tides."}]}}]},
+            {"object": "block", "type": "to_do",
+             "to_do": {"rich_text": [{"plain_text": "Finish the trilogy"}], "checked": true}},
+            {"object": "block", "type": "code",
+             "code": {"rich_text": [{"plain_text": "print(1)"}], "language": "python"}}
+        ]
+    }"#;
+    const TITLED: &str = r#"[{
+        "properties": {"Name": {"type": "title",
+            "title": [{"plain_text": "From a database"}]}},
+        "results": [
+            {"object": "block", "type": "paragraph",
+             "paragraph": {"rich_text": [{"plain_text": "A row with a page."}]}}
+        ]
+    }]"#;
+
+    let device = Device::default();
+    let (ada, _loaded) = notebook(&device);
+    let nb = ada.host.root_of(APP).unwrap();
+    for (name, listing) in [("Listing.json", LISTING), ("Titled.json", TITLED)] {
+        let file = Value::file(device.keeping(name, "application/json", listing.as_bytes()));
+        call(&ada, "import_archive", vec![Value::resource(&nb), file]);
+        ada.commit();
+    }
+
+    let all = written(&ada, &nb);
+    let titles: Vec<String> = all.iter().map(|note| title(&ada, note)).collect();
+    assert_eq!(
+        titles,
+        ["Reading list", "From a database"],
+        "a page is titled by its first heading, or by its title property"
+    );
+
+    let said = exported(&ada, &all[0]);
+    assert!(
+        said.contains("Books **worth** it."),
+        "a mark is kept: {said}"
+    );
+    assert!(said.contains("- Piranesi"), "a list item is one: {said}");
+    assert!(
+        said.find("A house of tides.") > said.find("- Piranesi"),
+        "its child stands under it: {said}"
+    );
+    assert!(
+        said.contains("- [x] Finish the trilogy"),
+        "a checked to-do is checked: {said}"
+    );
+    assert!(
+        said.contains("```python\nprint(1)\n```"),
+        "a code block keeps its fence: {said}"
+    );
+}
+
+/// A page a caller holds as text comes in with the pictures it shows and the notes its links lead
+/// to: no file is written first, and the same page says the same note.
+#[test]
+fn a_page_given_as_text_is_imported_with_its_pictures_and_links() {
+    let device = Device::default();
+    let (ada, _loaded) = notebook(&device);
+    let ideas = note(&ada, None, "Ideas");
+    let picture = device.keeping("fox.png", "image/png", PIXELS);
+    let nb = ada.host.root_of(APP).unwrap();
+    let made = call(
+        &ada,
+        "import_text",
+        vec![
+            Value::resource(&nb),
+            Value::text("Reading list"),
+            Value::text("# Reading list\n\n![a fox](fox.png)\n\nSee [Ideas](Ideas.md).\n"),
+            Value::Opt(Some(Box::new(Value::List(vec![Value::file(
+                picture.clone(),
+            )])))),
+            Value::Opt(Some(Box::new(Value::Map(vec![(
+                Value::text("Ideas.md"),
+                Value::text(ideas.id_string()),
+            )])))),
+        ],
+    );
+    ada.commit();
+    let made = match made {
+        Value::Ref(at) => (*at.target).clone(),
+        other => panic!("a note: {other:?}"),
+    };
+
+    assert_eq!(title(&ada, &made), "Reading list");
+    let body = words(&ada, &made).join("\n");
+    assert!(
+        !body.contains("# Reading list"),
+        "the heading that says the title is not said again: {body}"
+    );
+    assert!(
+        body.contains(&format!("![a fox]({})", picture.url())),
+        "the page shows the picture it names, from where its bytes are kept: {body}"
+    );
+    assert!(
+        body.contains("See Ideas."),
+        "the words the link is written with stay: {body}"
+    );
+    assert_eq!(
+        refers_to(&ada, &made),
+        [ideas.id_string()],
+        "the link opens the note it names"
+    );
+    assert_eq!(
+        images_of(&ada, &made),
+        [(picture.url(), "fox.png".to_owned())],
+        "the note keeps the picture's name, which an export writes beside it"
+    );
+}
+
+/// The pictures a note keeps, each by the address of its bytes and the name it came in as.
+fn images_of(r: &Replica, note: &ResourceRef) -> Vec<(String, String)> {
+    match r.host.runtime().read(note, "images") {
+        // A map field reads as its entries, each the key and what it holds.
+        Ok(Value::List(entries)) => entries
+            .into_iter()
+            .map(|entry| match entry {
+                Value::Tuple(pair) => match pair.as_slice() {
+                    [Value::Text(address), Value::Text(name)] => (address.clone(), name.clone()),
+                    other => panic!("a picture reads {other:?}"),
+                },
+                other => panic!("a picture reads {other:?}"),
+            })
+            .collect(),
+        other => panic!("a note's pictures: {other:?}"),
+    }
+}
+
 tilo_test_env::scenario! {
     fn an_export_names_its_files;
 

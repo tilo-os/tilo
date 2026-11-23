@@ -104,7 +104,7 @@ fn flatpak_probe_smoke(args: &[String]) -> Result<Option<i32>, String> {
     {
         return Err("the Flatpak probe smoke test is outside its sandbox".into());
     }
-    let drives = crate::probe::probe()
+    let drives = imager_backend::probe::probe()
         .ok_or("the Flatpak could not reconcile lsblk with host UDisks2 inventory")?;
     if drives.is_empty() {
         return Err("the Flatpak returned an empty drive inventory".into());

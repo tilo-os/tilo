@@ -36,9 +36,7 @@ impl Directory {
         Self::new(output, true)
     }
     fn new(output: bool, scratch: bool) -> io::Result<Self> {
-        if rustix::process::geteuid().as_raw() != 0 {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
+        crate::native_root::require_root()?;
         let temporary = tempfile::Builder::new()
             .prefix("tilo-capture-projection-")
             .tempdir_in("/tmp")?;
@@ -97,7 +95,7 @@ impl Alias {
             || !name.starts_with("tilo-capture-projection-")
             || name.len() > 128
             || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            || rustix::process::geteuid().as_raw() != 0
+            || !crate::native_root::is_root()
         {
             return Err(failure(
                 "capture alias is not a protected native projection",
@@ -176,7 +174,7 @@ fn project_inner(
     scratch: Option<&File>,
     directory: &Directory,
 ) -> io::Result<Projection> {
-    if rustix::process::geteuid().as_raw() != 0 || !source.metadata()?.is_dir() {
+    if !crate::native_root::is_root() || !source.metadata()?.is_dir() {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let namespace = host.mount_namespace()?;
@@ -296,12 +294,9 @@ impl<'a> Slot<'a> {
         {
             return Err(failure("capture projection changed held source identity"));
         }
-        let mut flags: libc::statvfs = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstatvfs(file.as_raw_fd(), &raw mut flags) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if flags.f_flag & libc::ST_NOEXEC == 0
-            || (self.readonly && flags.f_flag & libc::ST_RDONLY == 0)
+        let flags = rustix::fs::fstatvfs(&file)?;
+        if !flags.f_flag.contains(rustix::fs::StatVfsMountFlags::NOEXEC)
+            || (self.readonly && !flags.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY))
         {
             return Err(failure("capture projection mount permissions changed"));
         }

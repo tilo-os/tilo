@@ -195,6 +195,11 @@ impl<'peer> PeerPublication<'peer> {
     /// Check `compaction` as a write of `record` of `app` from its author: signed by it, for
     /// this record, and granted to it.
     ///
+    /// A compaction is no change of its own: it carries the writes it folds,
+    /// which keep their own invokers, and it is judged by those and by its
+    /// signer. It names no invoker of its own and is exempt from that rule,
+    /// never from admission.
+    ///
     /// # Errors
     /// It is no compaction of this record, or its author may not write it.
     pub fn check_sealed_compaction(
@@ -259,7 +264,11 @@ impl<'peer> PeerPublication<'peer> {
     ) -> Result<Vec<SignedOp>, String> {
         let rebuilt = match rebuilt {
             Some(rebuilt) => rebuilt,
-            None => merge_sealed(document, open)?,
+            None => merge_sealed(document, open, &mut |write, mutation| {
+                self.peer
+                    .check_opened_write((app, document_id), write, mutation)
+                    .map_err(|refusal| refusal.to_string())
+            })?,
         };
         AutoCommit::load(&rebuilt).map_err(err)?;
         if document.sealed.is_empty() {
@@ -685,6 +694,7 @@ fn holds_after(
 pub(super) fn merge_sealed(
     document: &super::Document,
     open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+    check: &mut dyn FnMut(&SignedOp, &DocumentMutation) -> Result<(), String>,
 ) -> Result<Vec<u8>, String> {
     // One isolated merge of every write, which takes them in causal order
     // whatever order they were admitted in: a merge per write copied the
@@ -698,6 +708,9 @@ pub(super) fn merge_sealed(
         let Some(mutation) = transfers.take(*write.author.as_bytes(), &open(write)?)? else {
             continue;
         };
+        // A write this device opened is decided as admission decides the same
+        // write in the clear, before the compaction folds it in.
+        check(write, &mutation)?;
         match &mutation {
             DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => {
                 history.extend_from_slice(bytes);

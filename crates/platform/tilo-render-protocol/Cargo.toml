@@ -6,7 +6,7 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "Scene transport between Tilo apps and the workspace's render service: frame records, vello encodings by resource id, the validator every scene passes before a GPU sees it, and the sealed-memfd ring and control channel they travel on."
+description = "Scene transport between Tilo apps and the workspace's render service: frame records, vello encodings by resource id, the validator every scene passes before a GPU sees it, and the shared memory and control channel they travel on."
 
 # `serde_bytes` is named only inside `#[serde(with = "serde_bytes")]`, an
 # attribute string an unused-dependency scan does not read.
@@ -25,8 +25,11 @@ thiserror.workspace = true
 tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
 vello_encoding = { workspace = true, features = ["bump_estimate"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs", "mm", "net", "std"] }
+# Anonymous shared memory, sealed where the system can seal it: the one implementation every
+# process boundary of the workspace hands immutable bytes over.
+tilo-sandbox = { version = "0.1.0", path = "../tilo-sandbox" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = "0.1"

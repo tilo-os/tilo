@@ -17,8 +17,6 @@ use crate::migration_directory::PinnedDirectory;
 const MAX_PROFILE_DIRECTORIES: usize = 128;
 const MAX_INI: u64 = 64 * 1024;
 #[cfg(target_os = "linux")]
-const MAX_DATABASE_BYTES: u64 = 64 * 1024 * 1024;
-#[cfg(target_os = "linux")]
 const MAX_LOGINS_BYTES: u64 = 16 * 1024 * 1024;
 
 pub struct ReviewedProfile {
@@ -57,60 +55,36 @@ impl ReviewedProfile {
         match self.profile.provider {
             Provider::Chromium => {
                 if regular(&self.directory, "Bookmarks")? {
-                    if let Ok(bundle) =
-                        browser_continuity::sources::parse_chromium_bookmarks_bundle(&granted)
-                    {
-                        output.bookmarks = Measure::Exact(bookmark_count(&bundle));
-                        output.capabilities.bookmarks = Capability::Supported;
-                    } else {
-                        output.bookmarks = Measure::Unknown;
-                        output.capabilities.bookmarks =
-                            Capability::Unsupported("browser-source-unreadable");
-                    }
+                    (output.bookmarks, output.capabilities.bookmarks) = measured(
+                        browser_continuity::sources::parse_chromium_bookmarks_bundle(&granted),
+                        bookmark_count,
+                    );
                 } else {
                     output.bookmarks = Measure::Exact(0);
                 }
                 if regular(&self.directory, "History")? {
-                    if let Ok(bundle) =
-                        browser_continuity::sources::parse_chromium_history_bundle(&granted)
-                    {
-                        output.history = Measure::Exact(history_count(&bundle));
-                        output.capabilities.history = Capability::Supported;
-                    } else {
-                        output.history = Measure::Unknown;
-                        output.capabilities.history =
-                            Capability::Unsupported("browser-source-unreadable");
-                    }
+                    (output.history, output.capabilities.history) = measured(
+                        browser_continuity::sources::parse_chromium_history_bundle(&granted),
+                        history_count,
+                    );
                 } else {
                     output.history = Measure::Exact(0);
                 }
             }
             Provider::Firefox => {
                 if regular(&self.directory, "places.sqlite")? {
-                    if let Ok(bundle) =
+                    (output.bookmarks, output.capabilities.bookmarks) = measured(
                         browser_continuity::sources::parse_firefox_places_selected_bundle(
                             &granted, true, false,
-                        )
-                    {
-                        output.bookmarks = Measure::Exact(bookmark_count(&bundle));
-                        output.capabilities.bookmarks = Capability::Supported;
-                    } else {
-                        output.bookmarks = Measure::Unknown;
-                        output.capabilities.bookmarks =
-                            Capability::Unsupported("browser-source-unreadable");
-                    }
-                    if let Ok(bundle) =
+                        ),
+                        bookmark_count,
+                    );
+                    (output.history, output.capabilities.history) = measured(
                         browser_continuity::sources::parse_firefox_places_selected_bundle(
                             &granted, false, true,
-                        )
-                    {
-                        output.history = Measure::Exact(history_count(&bundle));
-                        output.capabilities.history = Capability::Supported;
-                    } else {
-                        output.history = Measure::Unknown;
-                        output.capabilities.history =
-                            Capability::Unsupported("browser-source-unreadable");
-                    }
+                        ),
+                        history_count,
+                    );
                 } else {
                     output.bookmarks = Measure::Exact(0);
                     output.history = Measure::Exact(0);
@@ -163,7 +137,7 @@ impl ReviewedProfile {
             ));
         }
         for attempt in 0..3 {
-            super::browser_selection::check_cancel(cancel)?;
+            super::migration::check_cancel(cancel)?;
             self.validate()?;
             match browser_continuity::snapshot::capture_cancellable(
                 super::migration_durability::readable_directory(&self.directory.file)?,
@@ -171,7 +145,7 @@ impl ReviewedProfile {
                 cancel,
             ) {
                 Ok(captured) => {
-                    super::browser_selection::check_cancel(cancel)?;
+                    super::migration::check_cancel(cancel)?;
                     self.validate()?;
                     return Ok(captured);
                 }
@@ -179,7 +153,7 @@ impl ReviewedProfile {
                     if attempt < 2 && browser_continuity::snapshot::content_changed(&error) =>
                 {
                     self.validate()?;
-                    super::browser_selection::check_cancel(cancel)?;
+                    super::migration::check_cancel(cancel)?;
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 Err(error) => return Err(error),
@@ -361,17 +335,13 @@ fn add(
     });
     Ok(())
 }
-fn chromium(
-    root: &Arc<PinnedDirectory>,
-    relative: &[String],
-    label: &str,
-    browser: BrowserKind,
-    installation: Installation,
-    output: &mut Vec<ReviewedProfile>,
-) -> io::Result<()> {
+/// The Chromium-family profile directory names directly under `root`, bounded, refusing a
+/// redirected `Default`/`Profile N`.
+pub(crate) fn chromium_names(root: &Arc<PinnedDirectory>) -> io::Result<Vec<String>> {
     let entries = cap_std::fs::Dir::from_std_file(super::migration_durability::readable_directory(
         &root.file,
     )?);
+    let mut names = Vec::new();
     for (index, entry) in entries.entries()?.enumerate() {
         if index >= MAX_PROFILE_DIRECTORIES {
             return Err(invalid("Browser profile discovery exceeds its bound"));
@@ -391,10 +361,24 @@ fn chromium(
         if !metadata.is_dir() {
             continue;
         }
-        let name = name
-            .to_str()
-            .ok_or_else(|| invalid("Unsupported profile name"))?
-            .to_owned();
+        names.push(
+            name.to_str()
+                .ok_or_else(|| invalid("Unsupported profile name"))?
+                .to_owned(),
+        );
+    }
+    Ok(names)
+}
+
+fn chromium(
+    root: &Arc<PinnedDirectory>,
+    relative: &[String],
+    label: &str,
+    browser: BrowserKind,
+    installation: Installation,
+    output: &mut Vec<ReviewedProfile>,
+) -> io::Result<()> {
+    for name in chromium_names(root)? {
         let directory = walk(root, std::slice::from_ref(&name))?;
         let selected = (
             regular(&directory, "Bookmarks")?,
@@ -430,16 +414,7 @@ fn firefox(
     installation: Installation,
     output: &mut Vec<ReviewedProfile>,
 ) -> io::Result<()> {
-    let mut file = storage(root)?.open_read("profiles.ini".as_ref(), Privacy::Inherit)?;
-    if file.metadata()?.len() > MAX_INI {
-        return Err(invalid("Firefox profile index exceeds its bound"));
-    }
-    let bytes = crate::record::read_bounded(&mut file, MAX_INI, || {
-        invalid("Firefox profile index exceeds its bound")
-    })?;
-    let content = std::str::from_utf8(&bytes).map_err(invalid)?;
-    let sections = firefox_sections(content)?;
-    for (name, path) in sections {
+    for (name, path) in firefox_index(root)? {
         let names = components(Path::new(&path))?;
         let directory = walk(root, &names)?;
         let exportable = regular(&directory, "places.sqlite")?;
@@ -463,6 +438,18 @@ fn firefox(
         )?;
     }
     root.validate()
+}
+
+/// The Firefox profiles a bounded `profiles.ini` lists, each inside the granted source.
+pub(crate) fn firefox_index(root: &Arc<PinnedDirectory>) -> io::Result<Vec<(String, String)>> {
+    let mut file = storage(root)?.open_read("profiles.ini".as_ref(), Privacy::Inherit)?;
+    if file.metadata()?.len() > MAX_INI {
+        return Err(invalid("Firefox profile index exceeds its bound"));
+    }
+    let bytes = crate::record::read_bounded(&mut file, MAX_INI, || {
+        invalid("Firefox profile index exceeds its bound")
+    })?;
+    firefox_sections(std::str::from_utf8(&bytes).map_err(invalid)?)
 }
 /// The profiles a Firefox `profiles.ini` lists ([`migration_sources::browsers::firefox_sections`]),
 /// each inside the granted source: one with an absolute path, or past the bound, is refused.
@@ -489,6 +476,20 @@ fn installation_for(home: &Path, profile: &Path) -> Installation {
         Installation::Flatpak
     } else {
         Installation::Native
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn measured(
+    read: io::Result<browser_continuity::imports::ImportBundle>,
+    count: impl FnOnce(&browser_continuity::imports::ImportBundle) -> u64,
+) -> (Measure, Capability) {
+    match read {
+        Ok(bundle) => (Measure::Exact(count(&bundle)), Capability::Supported),
+        Err(_) => (
+            Measure::Unknown,
+            Capability::Unsupported("browser-source-unreadable"),
+        ),
     }
 }
 
@@ -553,8 +554,7 @@ fn locate_file(
 
 #[cfg(target_os = "linux")]
 struct PrivateDatabase {
-    _temporary: tempfile::TempDir,
-    connection: rusqlite::Connection,
+    connection: browser_continuity::snapshot::OpenedDatabase,
 }
 
 #[cfg(target_os = "linux")]
@@ -577,27 +577,12 @@ fn open_database(
     let Some((parent, name)) = located else {
         return Ok(None);
     };
-    let database = read_bounded(&parent, &name, MAX_DATABASE_BYTES)?
-        .ok_or_else(|| invalid("Browser inventory database disappeared"))?;
-    let wal_name = format!("{name}-wal");
-    let wal = read_bounded(&parent, &wal_name, MAX_DATABASE_BYTES)?;
-    let temporary = tempfile::tempdir()?;
-    std::fs::write(temporary.path().join(&name), &database)?;
-    if let Some(wal) = wal {
-        std::fs::write(temporary.path().join(&wal_name), &wal)?;
-    }
-    let connection = rusqlite::Connection::open_with_flags(
-        temporary.path().join(&name),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(sqlite)?;
-    connection
-        .execute_batch("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF;")
-        .map_err(sqlite)?;
-    Ok(Some(PrivateDatabase {
-        _temporary: temporary,
-        connection,
-    }))
+    use std::os::unix::fs::MetadataExt;
+    let owner = parent.file.metadata()?.uid();
+    let captured =
+        browser_continuity::snapshot::capture_database(&storage(&parent)?, owner, &name)?;
+    let connection = browser_continuity::snapshot::open_captured(&name, &captured)?;
+    Ok(Some(PrivateDatabase { connection }))
 }
 
 #[cfg(target_os = "linux")]

@@ -20,7 +20,7 @@ tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["b
 # The in-memory Graph server behind `fake-server`.
 hex = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
-test-http = { version = "0.1.0", path = "../../dev/test-http", optional = true }
+test-http = { version = "0.1.0", path = "../../../tools/test-http", optional = true }
 
 [features]
 # `cloud_source_onedrive::fake::FakeGraph`, an in-memory Microsoft Graph

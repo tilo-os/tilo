@@ -420,7 +420,7 @@ class PrePushLintTests(unittest.TestCase):
     def test_the_lint_gets_the_features_the_workspace_builds_with(self):
         # A member's code behind a feature no default build enables is compiled
         # only with the features the workspace's whole build resolves for it.
-        self.write("crates/dev/workspace-unify/Cargo.toml",
+        self.write("tools/workspace-unify/Cargo.toml",
                    '[package]\nname = "workspace-unify"\nversion = "0.0.0"\n\n'
                    "[target.'cfg(all(target_os = \"linux\", target_arch = \"x86_64\"))'.dependencies]\n"
                    '"fixture-native" = { path = "../../../native", default-features = false, '
@@ -608,7 +608,9 @@ class PrePushLintTests(unittest.TestCase):
         retry = self.push(remote_oid=main)
         self.assertEqual(retry.returncode, 0, retry.stderr)
         self.assertEqual(self.calls(), [], retry.stderr)
-        self.assertIn(f"the lint of this change passed at {passed_at[:12]}", retry.stderr)
+        self.assertIn("pre-push: reusing the clippy pass for patch ", retry.stderr)
+        self.assertIn(f"(passed at {passed_at[:12]})", retry.stderr)
+        self.assertRegex(retry.stderr, r"reusing the clippy pass for patch \S+ from \d{4}-\d{2}-\d{2} ")
 
     def test_a_passed_lint_stands_after_a_rebase_onto_commits_that_leave_its_packages_alone(self):
         self.stands_after_a_rebase()
@@ -617,14 +619,18 @@ class PrePushLintTests(unittest.TestCase):
         self.with_t()
         self.stands_after_a_rebase()
 
-    def test_a_rebase_onto_a_change_to_the_pushed_package_lints_again(self):
+    def test_a_rebase_onto_a_change_to_the_pushed_package_reuses_the_pass(self):
+        # t's clippy families lint the push with main's changes on main, so a clean
+        # rebase onto commits that touch the pushed package reuses the pass.
         self.write("native/src/lib.rs", LIB.format(answer=51))
         self.commit("feat: answer 51")
         self.assertEqual(self.push().returncode, 0)
+        self.assertNotEqual(self.calls(), [], "the first push is linted")
         main = self.rebase({"native/src/extra.rs": "pub fn extra() {}\n"})
         retry = self.push(remote_oid=main)
         self.assertEqual(retry.returncode, 0, retry.stderr)
-        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+        self.assertEqual(self.calls(), [], retry.stderr)
+        self.assertIn("reusing the clippy pass for patch ", retry.stderr)
 
     def test_a_rebase_that_changes_the_pushed_patch_lints_again(self):
         # A conflict resolved in the rebase makes the push another change than the one linted.

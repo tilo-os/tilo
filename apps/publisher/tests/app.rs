@@ -49,6 +49,8 @@ fn the_registry_must_be_https_or_this_machine() {
         "http://127.0.0.1:8080",
         "http://127.1.2.3:8080",
         "http://localhost:8080",
+        "http://localhost.:8080",
+        "http://tilo.localhost:8080",
         "http://[::1]:8080",
     ] {
         assert!(app_registry::publisher::RegistryClient::validate_url(address).is_ok());
@@ -62,7 +64,14 @@ fn the_registry_must_be_https_or_this_machine() {
         "http://apps.example.com",
         "http://localhost.example.com",
         "http://127.0.0.1.example.com",
+        "http://0.0.0.0/",
+        "http://[::]/",
+        "http://[::ffff:127.0.0.1]/",
         "http://localhost@apps.example.com",
+        "https://placeholder:placeholder@apps.example.com",
+        "https://placeholder@apps.example.com",
+        "https://:placeholder@apps.example.com",
+        "http://placeholder:placeholder@[::1]:8080",
         "https://",
         "not a URL",
         "file:///tmp/registry",
@@ -80,6 +89,60 @@ fn the_registry_must_be_https_or_this_machine() {
             "rejected edits preserve the valid registry"
         );
     }
+}
+
+#[test]
+fn publisher_model_registry_url_agrees_with_client_check_and_loads_stored_credentials() {
+    let table = [
+        "https://apps.example.com",
+        "https://eu1.apps.example.com:8443/base",
+        "http://localhost:8080",
+        "http://localhost.:8080",
+        "http://tilo.localhost:8080",
+        "http://a.b.localhost.:8080",
+        "http://127.0.0.1:8080",
+        "http://127.1.2.3:8080",
+        "http://[::1]:8080",
+        "http://apps.example.com",
+        "http://localhost.example.com",
+        "http://127.0.0.1.example.com",
+        "http://0.0.0.0/",
+        "http://[::]/",
+        "http://[::ffff:127.0.0.1]/",
+        "http://localhost@apps.example.com",
+        "https://placeholder:placeholder@apps.example.com",
+        "https://placeholder@apps.example.com",
+        "https://:placeholder@apps.example.com",
+        "http://placeholder:placeholder@127.0.0.1:8080",
+        "http://placeholder:placeholder@[::1]:8080",
+        "file:///tmp/registry",
+        "ws://localhost:8080",
+        "https://",
+        "not a URL",
+    ];
+    for address in table {
+        assert_eq!(
+            publisher_model::registry_url(address).is_ok(),
+            app_registry::publisher::RegistryClient::validate_url(address).is_ok(),
+            "model and client disagreed on {address}"
+        );
+    }
+
+    // A stored profile carrying credentials still loads, and the client refuses to use it.
+    let stored_url = "https://placeholder:placeholder@apps.example.com".to_owned();
+    let mut stored = Replica::<Publisher>::new();
+    ui::tilo_resource::write_key(
+        stored.doc_mut(),
+        &ui::tilo_resource::__private::ROOT,
+        "registry",
+        &stored_url,
+    )
+    .expect("write stored profile");
+    let saved = stored.save();
+    let loaded = Replica::<Publisher>::load(&saved).expect("stored profile loads");
+    let registry = loaded.state().expect("stored state").registry;
+    assert_eq!(registry, stored_url);
+    assert!(app_registry::publisher::RegistryClient::new(&registry).is_err());
 }
 
 #[test]

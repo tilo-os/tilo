@@ -472,6 +472,7 @@ impl AppBrokerState {
         clear!(self.workspace_governance_peers);
         clear!(self.confirmation_grants);
         clear!(self.cancellation_requests);
+        clear!(self.host_step_stops);
         clear!(self.workers);
         // A launch waiting for an app to publish learns the broker stopped.
         self.publishers.streams_changed();
@@ -759,7 +760,7 @@ impl AppBrokerState {
                 catalogue_refresh: surface_publication::CatalogueRefresh::new(state.clone()),
                 channels: Mutex::new(HashMap::new()),
                 committed_waits: Mutex::new(HashMap::new()),
-                held_elsewhere: Mutex::new(Vec::new()),
+                shown_actions: Mutex::new(Vec::new()),
                 lifecycle: RwLock::new(()),
                 accepting: AtomicBool::new(true),
                 stopped: AtomicBool::new(false),
@@ -819,6 +820,7 @@ impl AppBrokerState {
                 membership_surface_waiters: Mutex::new(Vec::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 live_views: live_views::LiveViews::default(),
+                host_step_stops: Mutex::new(HashMap::new()),
                 untrusted_jobs: Mutex::default(),
                 confirmation_grants: Mutex::new(HashMap::new()),
                 approved_confirmations: Mutex::new(HashMap::new()),

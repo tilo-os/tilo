@@ -19,27 +19,37 @@ use ui::tilo_resource::Effect as _;
 mod capacity_tests;
 mod method_intent_tests;
 
-struct FakeBackend {
+pub(super) struct FakeBackend {
     disks: Vec<Disk>,
-    installs: Mutex<Vec<(String, String, String, InstallOptions)>>,
-    power: Mutex<Vec<PowerAction>>,
+    pub(super) installs: Mutex<Vec<(String, String, String, InstallOptions)>>,
+    pub(super) power: Mutex<Vec<PowerAction>>,
     succeed: bool,
 }
 
-const KEY: &str = "bbbbbbbb-cccccccc-dddddddd-ffffffff-gggggggg-hhhhhhhh-jjjjjjjj-kkkkkkkk";
-const SECRET: &str = "correct horse battery staple";
+pub(super) const KEY: &str =
+    "bbbbbbbb-cccccccc-dddddddd-ffffffff-gggggggg-hhhhhhhh-jjjjjjjj-kkkkkkkk";
+pub(super) const SECRET: &str = "correct horse battery staple";
 
 impl FakeBackend {
-    fn new() -> Arc<Self> {
+    pub(super) fn new() -> Arc<Self> {
         Self::finishing(true)
     }
 
-    fn finishing(succeed: bool) -> Arc<Self> {
+    pub(super) fn finishing(succeed: bool) -> Arc<Self> {
         Arc::new(Self {
             disks: Disk::samples(),
             installs: Mutex::new(Vec::new()),
             power: Mutex::new(Vec::new()),
             succeed,
+        })
+    }
+
+    pub(super) fn with_disks(disks: Vec<Disk>) -> Arc<Self> {
+        Arc::new(Self {
+            disks,
+            installs: Mutex::new(Vec::new()),
+            power: Mutex::new(Vec::new()),
+            succeed: true,
         })
     }
 }

@@ -1,13 +1,10 @@
 //! Installed copy scratch admission. No medium, receiver or completion proof.
-use super::{contains, writable_directory};
+use super::{
+    contains, directory_identity as identity, writable_capacity as capacity, writable_directory,
+};
 use crate::owned_service::ServiceAuthority;
 use runtime_portal::process_binding::ExecutingPeer;
-use std::{
-    fs::File,
-    io,
-    os::{fd::AsRawFd, unix::fs::MetadataExt},
-    sync::Arc,
-};
+use std::{fs::File, io, os::unix::fs::MetadataExt, sync::Arc};
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct InstalledCopyOutputBinding {
@@ -61,29 +58,6 @@ pub struct InstalledCopyOutputAdmission {
 fn refuse() -> io::Error {
     io::ErrorKind::PermissionDenied.into()
 }
-fn identity(file: &File) -> io::Result<(u64, u64)> {
-    let m = file.metadata()?;
-    if !m.is_dir() {
-        return Err(refuse());
-    }
-    Ok((m.dev(), m.ino()))
-}
-fn uuid(value: &str) -> bool {
-    uuid::Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value)
-}
-fn capacity(file: &File) -> io::Result<u64> {
-    let mut out = std::mem::MaybeUninit::<libc::statvfs>::zeroed();
-    // SAFETY: held directory descriptor and writable statvfs result.
-    if unsafe { libc::fstatvfs(file.as_raw_fd(), out.as_mut_ptr()) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: successful fstatvfs initialized the result.
-    let out = unsafe { out.assume_init() };
-    if out.f_flag & libc::ST_RDONLY != 0 || out.f_frsize == 0 {
-        return Err(refuse());
-    }
-    out.f_bavail.checked_mul(out.f_frsize).ok_or_else(refuse)
-}
 fn mount_id(file: &File) -> io::Result<u64> {
     crate::fd::mount_id(
         file,
@@ -104,8 +78,8 @@ impl InstalledCopyOutputAdmission {
         }
         ownership.check()?;
         let binding = ownership.binding()?;
-        if !uuid(&binding.operation)
-            || !uuid(&binding.attempt)
+        if !crate::validate::uuid(&binding.operation)
+            || !crate::validate::uuid(&binding.attempt)
             || binding.read_claim_digest == [0; 32]
             || binding.setup_digest == [0; 32]
             || binding.person == [0; 32]

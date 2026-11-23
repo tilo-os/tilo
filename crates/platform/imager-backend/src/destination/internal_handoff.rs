@@ -193,6 +193,19 @@ pub mod tests {
                     .repairs
                     .contains(&crate::destination::media_profile::MediaProfileField::Hostname)
             );
+
+            // A profile field outside the handoff's lexical check (such as an unknown locale) is
+            // flagged for repair by the media profile contract.
+            let mut value = document();
+            value["profile"]["locale"] = "not-a-locale".into();
+            let handoff = Handoff::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+            let profile = media_profile(&handoff).unwrap();
+            assert!(profile.locale.is_none());
+            assert!(
+                profile
+                    .repairs
+                    .contains(&crate::destination::media_profile::MediaProfileField::Locale)
+            );
         }
         {
             // USB and older staged handoffs carry no sidecar and parse unchanged.
