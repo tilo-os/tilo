@@ -209,7 +209,7 @@ impl ResourceApp for SketchApp {
 tilo_test_env::scenario! {
     fn a_launch_on_a_path_opens_that_paths_record;
 
-    phase a_path_argument_opens_the_record_of_that_path;
+    phase a_path_argument_opens_its_record_once_with_the_members_own_undoable_edits;
     {
         let mut app = TestApp::<SketchApp>::launched(&["/pictures/harbour.png"]).unwrap();
         app.harness().relayout();
@@ -224,43 +224,10 @@ tilo_test_env::scenario! {
             "{frame}"
         );
 
-        // A launch naming nothing opens the workspace's one record.
-        let mut plain = TestApp::<SketchApp>::new().unwrap();
-        assert_eq!(plain.record(), &DocumentId::package_primary());
-        assert_eq!(plain.state().source, "");
-        let frame = plain.harness().inspection_json().unwrap();
-        assert!(
-            frame.contains("Launched on") && !frame.contains("Launched on /"),
-            "{frame}"
-        );
-    }
-
-    phase launch_actions_are_the_members_own_undoable_edits;
-    {
-        let mut app = TestApp::<SketchApp>::launched(&["/pictures/harbour.png"]).unwrap();
-        app.harness().relayout();
-        assert_eq!(app.state().source, "/pictures/harbour.png");
-        let versions = app.versions();
-        let traced = versions
-            .last()
-            .and_then(|version| version.context.as_ref())
-            .and_then(|context| match &context.what {
-                Some(tilo_actions::Did::Verb(verb)) => Some(verb.action.action.as_str()),
-                _ => None,
-            });
-        assert_eq!(traced, Some("trace"), "{versions:?}");
-        assert!(app.undo());
-        assert_eq!(app.state().source, "");
-    }
-
-    phase launching_on_a_record_again_keeps_its_edits_and_does_not_refill_it;
-    {
-        let mut app = TestApp::<SketchApp>::launched(&["/pictures/harbour.png"]).unwrap();
-        app.harness().relayout();
+        // Launching on a record again keeps its edits and does not refill it.
         app.invoke(Sketch::NOTE.with("the lighthouse")).unwrap();
         let first = app.record().clone();
         let versions = app.versions().len();
-
         let mut again = app.relaunch(&["/pictures/harbour.png"]).unwrap();
         again.harness().relayout();
         assert_eq!(again.record(), &first);
@@ -273,6 +240,29 @@ tilo_test_env::scenario! {
         assert_ne!(other.record(), &first);
         assert_eq!(other.state().source, "/pictures/meadow.png");
         assert!(other.state().notes.is_empty());
+
+        // The launch's actions are the member's own undoable edits.
+        let versions = other.versions();
+        let traced = versions
+            .last()
+            .and_then(|version| version.context.as_ref())
+            .and_then(|context| match &context.what {
+                Some(tilo_actions::Did::Verb(verb)) => Some(verb.action.action.as_str()),
+                _ => None,
+            });
+        assert_eq!(traced, Some("trace"), "{versions:?}");
+        assert!(other.undo());
+        assert_eq!(other.state().source, "");
+
+        // A launch naming nothing opens the workspace's one record.
+        let mut plain = TestApp::<SketchApp>::new().unwrap();
+        assert_eq!(plain.record(), &DocumentId::package_primary());
+        assert_eq!(plain.state().source, "");
+        let frame = plain.harness().inspection_json().unwrap();
+        assert!(
+            frame.contains("Launched on") && !frame.contains("Launched on /"),
+            "{frame}"
+        );
     }
 
     phase a_window_opens_another_record_in_its_own_place;
