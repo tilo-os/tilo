@@ -447,7 +447,7 @@ pub(crate) struct LinkFacts<'a> {
 
 impl<'a> WorkspaceFacts<'a> {
     /// The workspace with member devices read from disk by a caller that may not
-    /// reload the runtime's set; the replacement ceiling still bounds them.
+    /// reload the runtime's set.
     #[cfg(test)]
     pub(crate) const fn with_listed(runtime: &'a WorkspaceRuntime, listed: &'a [[u8; 32]]) -> Self {
         Self::Runtime(RuntimeFacts {
@@ -504,60 +504,38 @@ impl<'a> WorkspaceFacts<'a> {
         }
     }
 
-    fn within_ceiling(&self, device: &[u8; 32]) -> bool {
-        match self {
-            Self::Runtime(facts) => facts
-                .runtime
-                .membership_ceiling
-                .as_ref()
-                .is_none_or(|ceiling| ceiling.contains(device)),
-            // A replica's roster is what its governance admits now: there is no
-            // replacement still on its way to bound it further.
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Link(_) => true,
-        }
-    }
-
-    /// Whether governance owns this workspace's admission and this server's own
-    /// workspace authority governs it.
+    /// Whether this server's own workspace authority governs the workspace.
     #[cfg(any(test, feature = "agents"))]
     fn governed_here(&self) -> bool {
         self.host_decides_membership()
     }
 
     /// Whether a subscribe enrols `peer`'s device here (step 5): this server
-    /// governs the workspace, its governance has the device's person as a
-    /// member, the device is one of theirs, and no pending replacement keeps
-    /// it out. A workspace of a person's own admits a device of theirs by
-    /// their root alone, before any of theirs has entered it: the host knows
-    /// whose it is, and names them its member as the device joins.
+    /// governs the workspace and its member list has the device's person. A
+    /// workspace of a person's own admits a device of theirs by their root
+    /// alone, before any of theirs has entered it: the host knows whose it is,
+    /// and names them its member as the device joins.
     fn enrols_member_device(&self, peer: &AuthenticatedPeer) -> bool {
         self.host_decides_membership()
             && person_device(&peer.cert)
             && self.person_member(&peer.user_public_key)
-            && self.within_ceiling(&peer.device_public_key)
     }
 
-    /// Whether governance owns the workspace's admission here.
+    /// Whether this server's own workspace authority governs the workspace here.
     fn host_decides_membership(&self) -> bool {
         match self {
-            Self::Runtime(facts) => {
-                facts.runtime.admission == AdmissionMode::Governed
-                    && facts.runtime.workspace_authority.is_some()
-            }
+            Self::Runtime(facts) => facts.runtime.workspace_authority.is_some(),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Link(facts) => facts.peer.has_governance(),
         }
     }
 
-    /// Whether `person` is a member of the workspace, or the person this host
-    /// keeps it for. A workspace whose admission is not governance's has no
-    /// members by their roots to read: whoever its list holds is its member.
+    /// Whether `person` is one of the workspace's members by their root, or the
+    /// person this host keeps it for.
     fn person_member(&self, person: &[u8; 32]) -> bool {
         match self {
             Self::Runtime(facts) => {
-                facts.runtime.admission != AdmissionMode::Governed
-                    || facts.runtime.governed_user_roots.contains(person)
+                facts.runtime.members.member_user_roots.contains(person)
                     || facts.keeps_for(person)
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -574,9 +552,9 @@ impl<'a> WorkspaceFacts<'a> {
     }
 
     fn lists(&self, device: &[u8; 32]) -> bool {
-        let listed = match self {
+        match self {
             Self::Runtime(facts) => facts.listed.map_or_else(
-                || facts.runtime.membership.contains(device),
+                || facts.runtime.members.member_devices.contains(device),
                 |listed| listed.contains(device),
             ),
             // The devices its governance lists now, or, for a workspace that
@@ -590,8 +568,7 @@ impl<'a> WorkspaceFacts<'a> {
                     .iter()
                     .any(|certificate| certificate.device_public_key == *device),
             },
-        };
-        listed && self.within_ceiling(device)
+        }
     }
 }
 
