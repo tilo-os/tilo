@@ -53,7 +53,7 @@ const FILES_APP_ID: &str = tilo_app_id::apps::FILE_EXPLORER;
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "snake_case")]
 pub enum DeviceKind {
     /// Another of the person's own devices, reached over the device fabric.
     #[default]
@@ -257,7 +257,7 @@ impl LabReceiver {
     /// The handle the reading lists it by.
     #[must_use]
     pub fn handle(&self) -> String {
-        "lab-receiver".to_owned()
+        "lab_receiver".to_owned()
     }
 }
 

@@ -1042,6 +1042,7 @@ d-gke2gvrj = Banner full
     .w-open = Open
 
 d-wh7n4fhq = Banner row
+    .w-read = Read
     .w-dismiss = Dismiss
 
 d-76zs5p4r = Reply row
@@ -1124,6 +1125,11 @@ d-uvwnwa4d = Agent chip
 d-teccuwja = Quick settings
     .w-quick-settings = Quick settings
 
+d-dd3gpi64 = Control tile
+
+d-vzdj2kff = Rotation tile
+    .w-rotation-lock = Rotation lock
+
 d-yxl6yq2r = Wifi tile
     .w-wi-fi = Wi-Fi
     .w-this-device-has-no-wi-fi = This device has no Wi-Fi
@@ -1193,6 +1199,7 @@ d-lcjohgdk = Battery line
 
 d-ycck5awo = Power row
     .w-lock = Lock
+    .w-settings = Settings
     .w-power = Power
     .w-sleep = Sleep
     .w-log-out = Log out
@@ -1209,6 +1216,19 @@ d-tkt6f7u6 = About card
     .w-all-details = All details
 
 d-vv7k7lcl = Peek card
+
+d-u2tma44r = Devices section
+    .w-devices = Devices
+    .w-nearby-send = Nearby Send
+    .w-no-devices-in-reach = No devices in reach
+
+d-niotqkfd = Bluetooth hand off
+    .w-move-it-to = Move it to…
+
+d-2abiywd2 = Controls editor
+    .w-customise-the-panel = Customise the panel
+    .w-panel-controls = Panel controls
+    .w-reset-the-panel = Reset the panel
 
 d-zzd3yipu = Strips
 

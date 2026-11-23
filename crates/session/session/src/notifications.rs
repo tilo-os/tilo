@@ -1510,9 +1510,16 @@ pub(crate) struct NotificationsView {
     /// The notices the centre keeps, newest first.
     #[serde(default)]
     pub notices: Vec<view::Notice>,
+    /// The live banners, newest first, by their ids: what a shell that draws the stack itself
+    /// shows.
+    #[serde(default)]
+    pub banners: Vec<u64>,
     /// The notice up as a banner now, by its id.
     #[serde(default)]
     pub banner: Option<u64>,
+    /// Whether a Clear all can still be undone, so the centre offers Undo.
+    #[serde(default)]
+    pub undo: bool,
     /// The banner the keyboard is on, while it stands.
     #[serde(default)]
     pub focused: Option<u64>,
@@ -1661,7 +1668,9 @@ impl Served {
                     preview: true,
                 })
                 .collect(),
+            banners: centre.banners.clone(),
             banner: centre.banner,
+            undo: centre.undo,
             focused: self.notifications.borrow().focused_banner(),
         }
     }

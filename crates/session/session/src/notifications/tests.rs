@@ -1747,6 +1747,51 @@ fn a_banner_snoozes_reads_and_focuses() {
 }
 
 /// A ringing call is answered or declined from its banner: the key the caller offered runs.
+/// A refusal — what the session posts when an action could not run — is a notice of its own kind,
+/// and the centre's published dismiss takes it away like any other.
+#[test]
+fn a_refusal_is_dismissed_through_the_centres_published_action() {
+    let rig = rig();
+    rig.bridge.borrow().post(
+        "Settings did not open",
+        "It was not installed",
+        "Session",
+        "error",
+    );
+    rig.step();
+    let mut served = Served::new(Rc::clone(&rig.bridge));
+    assert!(served.poll());
+    let reading = served.read(RESOURCE).expect("the centre is published");
+    let notice = reading
+        .get("notices")
+        .and_then(Value::as_array)
+        .and_then(|notices| notices.first())
+        .expect("the refusal is kept");
+    assert_eq!(
+        notice.get("kind").and_then(Value::as_str),
+        Some("error"),
+        "it reads as a failure: {notice}"
+    );
+    let number = notice
+        .get("number")
+        .and_then(Value::as_u64)
+        .expect("the refusal has a number");
+    invoke(
+        &mut served,
+        "dismiss",
+        serde_json::json!({ "notification": number }),
+    );
+    rig.step();
+    assert!(served.poll(), "the centre changed");
+    let kept = served.read(RESOURCE).expect("the centre is published");
+    assert!(
+        kept.get("notices")
+            .and_then(Value::as_array)
+            .map_or(true, Vec::is_empty),
+        "the dismissal took it away: {kept}"
+    );
+}
+
 #[test]
 fn a_call_is_answered_and_declined_from_its_banner() {
     for (verb, key) in [("answer-call", "answer"), ("decline-call", "decline")] {

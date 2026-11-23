@@ -46,7 +46,7 @@ impl Fake {
                 playback_streams: vec![AudioStream {
                     id: 70,
                     serial: 70,
-                    app: "Music".into(),
+                    application: "Music".into(),
                     media_name: None,
                     playback: true,
                     target_id: Some(40),
@@ -209,7 +209,7 @@ tilo_test_env::scenario! {
         assert_eq!(sound["input"], json!(50));
         assert_eq!(sound["hardware"][0]["label"], json!("Headset"));
         assert_eq!(sound["hardware"][0]["profile"], json!(1));
-        assert_eq!(sound["streams"][0]["app"], json!("Music"));
+        assert_eq!(sound["streams"][0]["application"], json!("Music"));
 
         service
             .invoke(SOUND, "set-volume", &arguments(json!({"level": 0.8})))

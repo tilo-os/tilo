@@ -457,7 +457,7 @@
               "type": "int"
             },
             {
-              "name": "app",
+              "name": "application",
               "type": "text"
             },
             {
@@ -2354,12 +2354,20 @@
           "stored": "value",
           "type": "bool",
           "readonly": true
+        },
+        {
+          "path": "focused",
+          "stored": "value",
+          "type": {
+            "option": "int"
+          },
+          "readonly": true
         }
       ],
       "types": [
         {
           "name": "Notice",
-          "doc": "A notice the centre keeps.",
+          "doc": "A notice as a view of another language reads it.",
           "fields": [
             {
               "name": "number",
@@ -2392,12 +2400,20 @@
                   "named": "NoticeAction"
                 }
               }
+            },
+            {
+              "name": "age_seconds",
+              "type": "int"
+            },
+            {
+              "name": "preview",
+              "type": "bool"
             }
           ]
         },
         {
           "name": "NoticeAction",
-          "doc": "One action a notice offers.",
+          "doc": "One action a notice offers, as a view of another language reads it.",
           "fields": [
             {
               "name": "key",
@@ -2502,6 +2518,322 @@
           "stored": "value",
           "type": "bool",
           "readonly": true
+        }
+      ]
+    },
+    {
+      "kind": "banners",
+      "label": "Notifications",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "open",
+          "label": "Open the notification",
+          "description": "Open the notification",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "banner",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "dismiss",
+          "label": "Dismiss the notification",
+          "description": "Dismiss the notification",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "banner",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "act",
+          "label": "Choose on the notification",
+          "description": "Choose on the notification",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "banner",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "choice",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "reply",
+          "label": "Reply to the notification",
+          "description": "Reply to the notification",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "banner",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "text",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "snooze",
+          "label": "Snooze the notification",
+          "description": "Snooze the notification",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "banner",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "focus-newest",
+          "label": "Focus the newest notification",
+          "description": "Focus the newest notification",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "read",
+          "label": "Read it in full",
+          "description": "Read it in full",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "banner",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "answer-call",
+          "label": "Answer the call",
+          "description": "Answer the call",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "banner",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "decline-call",
+          "label": "Decline the call",
+          "description": "Decline the call",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "banner",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "count",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "quiet",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "notices",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Notice"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "banners",
+          "stored": "value",
+          "type": {
+            "list": "int"
+          },
+          "readonly": true
+        },
+        {
+          "path": "banner",
+          "stored": "value",
+          "type": {
+            "option": "int"
+          },
+          "readonly": true
+        },
+        {
+          "path": "undo",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "focused",
+          "stored": "value",
+          "type": {
+            "option": "int"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Notice",
+          "doc": "A notice as a view of another language reads it.",
+          "fields": [
+            {
+              "name": "number",
+              "type": "int"
+            },
+            {
+              "name": "title",
+              "type": "text"
+            },
+            {
+              "name": "body",
+              "type": "text"
+            },
+            {
+              "name": "from",
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "type": "text"
+            },
+            {
+              "name": "seen",
+              "type": "bool"
+            },
+            {
+              "name": "actions",
+              "type": {
+                "list": {
+                  "named": "NoticeAction"
+                }
+              }
+            },
+            {
+              "name": "age_seconds",
+              "type": "int"
+            },
+            {
+              "name": "preview",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "NoticeAction",
+          "doc": "One action a notice offers, as a view of another language reads it.",
+          "fields": [
+            {
+              "name": "key",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            }
+          ]
         }
       ]
     },
@@ -3248,6 +3580,562 @@
               "type": "text"
             }
           ]
+        }
+      ]
+    },
+    {
+      "kind": "nearby-send",
+      "label": "Nearby Send",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "send",
+          "label": "Send files to a nearby device",
+          "description": "Send files to a nearby device Offers each file to the device; the person there chooses where it lands, so nothing arrives unasked.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "items",
+              "required": true,
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "device",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "accept",
+          "label": "Keep a file a nearby device offered",
+          "description": "Keep a file a nearby device offered The receiving person's choice of where it lands; without one, the folder the last accept remembered.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "transfer",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "destination",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "decline",
+          "label": "Turn down a file a nearby device offered",
+          "description": "Turn down a file a nearby device offered",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "transfer",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "cancel",
+          "label": "Stop a transfer, sent or received",
+          "description": "Stop a transfer, sent or received",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "transfer",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "retry",
+          "label": "Offer again a transfer that failed",
+          "description": "Offer again a transfer that failed",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "transfer",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "share",
+          "label": "Share a resource with people, opening the invitation sheet",
+          "description": "Share a resource with people, opening the invitation sheet",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "resource",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "devices",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "NearbyDevice"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "destinations",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "NearbyDestination"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "transfers",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "NearbyTransferRow"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "DeviceKind",
+          "doc": "What a nearby device is.",
+          "cases": [
+            {
+              "name": "device",
+              "label": "Device"
+            },
+            {
+              "name": "lab_receiver",
+              "label": "Lab receiver"
+            }
+          ]
+        },
+        {
+          "name": "NearbyDestination",
+          "doc": "A folder a received file can land in.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "handle",
+              "type": "text"
+            },
+            {
+              "name": "remembered",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "NearbyDevice",
+          "doc": "One device a file can be handed to.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "type": {
+                "named": "DeviceKind"
+              }
+            },
+            {
+              "name": "reachable",
+              "type": "bool"
+            },
+            {
+              "name": "address",
+              "type": "text"
+            },
+            {
+              "name": "port",
+              "type": "int"
+            },
+            {
+              "name": "handle",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "NearbyTransferRow",
+          "doc": "One transfer, live or in the history the engine keeps.",
+          "fields": [
+            {
+              "name": "state",
+              "type": {
+                "named": "TransferState"
+              }
+            },
+            {
+              "name": "progress",
+              "type": "int"
+            },
+            {
+              "name": "peer",
+              "type": "text"
+            },
+            {
+              "name": "destination",
+              "type": "text"
+            },
+            {
+              "name": "time",
+              "type": "int"
+            },
+            {
+              "name": "incoming",
+              "type": "bool"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "handle",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "TransferState",
+          "doc": "Where a transfer stands, in the words the shell shows.",
+          "cases": [
+            {
+              "name": "offered",
+              "label": "Offered"
+            },
+            {
+              "name": "sending",
+              "label": "Sending"
+            },
+            {
+              "name": "done",
+              "label": "Done"
+            },
+            {
+              "name": "declined",
+              "label": "Declined"
+            },
+            {
+              "name": "failed",
+              "label": "Failed"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "devices",
+      "label": "Devices",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "press",
+          "label": "Press one of the person's devices",
+          "description": "Press one of the person's devices",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "row",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "part",
+              "required": true,
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "const": "row",
+                    "description": "The row itself."
+                  },
+                  {
+                    "type": "string",
+                    "const": "action",
+                    "description": "The one action the row names (stop, cancel, try again)."
+                  },
+                  {
+                    "type": "string",
+                    "const": "allow",
+                    "description": "Allow, on a request."
+                  },
+                  {
+                    "type": "string",
+                    "const": "decline",
+                    "description": "Decline, on a request."
+                  },
+                  {
+                    "type": "string",
+                    "const": "control",
+                    "description": "Drive the device with this machine's pointer."
+                  }
+                ],
+                "description": "What was pressed on a row of the Devices section."
+              },
+              "type": {
+                "named": "RowPart"
+              }
+            }
+          ]
+        },
+        {
+          "id": "hand-off",
+          "label": "Hand off an accessory",
+          "description": "Move a paired Bluetooth accessory to another of the person's devices",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "address",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "device",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "devices",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "PersonalDeviceView"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "playing",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "chosen",
+          "stored": "value",
+          "type": {
+            "option": "int"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "PersonalDeviceView",
+          "doc": "One of the person's devices as a view of another language reads it.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "online",
+              "type": "bool"
+            },
+            {
+              "name": "nearby",
+              "type": "bool"
+            },
+            {
+              "name": "local",
+              "type": "bool"
+            },
+            {
+              "name": "display",
+              "type": "bool"
+            },
+            {
+              "name": "wakeable",
+              "type": "bool"
+            },
+            {
+              "name": "audio_output",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "RowPart",
+          "doc": "What was pressed on a row of the Devices section.",
+          "cases": [
+            {
+              "name": "row",
+              "label": "Row"
+            },
+            {
+              "name": "action",
+              "label": "Action"
+            },
+            {
+              "name": "allow",
+              "label": "Allow"
+            },
+            {
+              "name": "decline",
+              "label": "Decline"
+            },
+            {
+              "name": "control",
+              "label": "Control"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "quick-settings",
+      "label": "Quick settings",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "show-control",
+          "label": "Add a control",
+          "description": "Show a control on the panel",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "control",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "hide-control",
+          "label": "Remove a control",
+          "description": "Take a control off the panel. Wi-Fi stays: it is how a desktop without a network gets online",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "control",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "move-control",
+          "label": "Move a control",
+          "description": "Move a control to another place on the panel",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "control",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "before",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "reset-controls",
+          "label": "Reset the panel",
+          "description": "Put the panel's controls back as they were at first",
+          "kind": "outside",
+          "params": []
+        }
+      ],
+      "fields": [
+        {
+          "path": "controls",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
         }
       ]
     }

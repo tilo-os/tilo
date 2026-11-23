@@ -34,6 +34,9 @@ view notices() {
                 }
             }
             body: {
+                if let why = device.notifications.quiet {
+                    ui.Text(why, role: .caption, secondary: true)
+                }
                 if device.notifications.undo {
                     undo_band()
                 }
@@ -133,7 +136,13 @@ view notice_group(sender: Text, notices: List<device.Notice>) {
 /// person's colour, toned by its kind, so a failure reads as one at a glance. Pressing it opens
 /// what it names.
 view notice_row(n: device.Notice) {
-    ui.ListRow(n.title, secondary: n.body, meta: n.from, selected: not n.seen) {
+    ui.ListRow(
+        n.title,
+        secondary: n.body,
+        meta: n.from,
+        selected: not n.seen,
+        value: said_ago(n.age_seconds),
+    ) {
         trailing: {
             if n.kind == "error" {
                 ui.Badge(dot: not n.seen, tone: .danger)
@@ -225,7 +234,7 @@ view banner_full(n: device.Notice) {
     let can_reply = actions.any(a -> a.key == "inline-reply")
     ui.Banner(
         n.title,
-        message: if n.body != "" { n.body },
+        message: if n.body != "" and n.preview { n.body },
         source: if n.from != "" { n.from },
         kind: if n.kind == "error" {
             .error
@@ -254,6 +263,7 @@ view banner_row(n: device.Notice) {
             n.title,
             secondary: if n.body != "" { n.body },
             meta: if n.from != "" { n.from },
+            selected: n.number == (device.banners.focused ?? 0),
         ) {
             trailing: {
                 ui.Badge(
@@ -263,11 +273,25 @@ view banner_row(n: device.Notice) {
                     } else if n.kind == "warning" { .warning } else { .info },
                 )
             }
-            on activate: device.open_notice(device.notifications, notification: n.number)
+            on activate: device.open(device.banners, banner: "{n.number}")
         }
         row(gap: .related, wrap: true) {
+            // A call's answer and decline are their own actions, as a snooze is: each press is
+            // the banner resource's own, and the rest of the sender's choices run as a choice.
             for a in n.actions {
-                if a.key != "inline-reply" {
+                if a.key == "answer" or a.key == "accept" {
+                    ui.Button("Answer", role: .primary, size: .small) {
+                        on press: device.answer_call(device.banners, banner: "{n.number}")
+                    }
+                } else if a.key == "decline" or a.key == "reject" or a.key == "hangup" {
+                    ui.Button("Decline", size: .small, role: .plain) {
+                        on press: device.decline_call(device.banners, banner: "{n.number}")
+                    }
+                } else if a.key == "snooze" {
+                    ui.Button("Snooze", size: .small, role: .plain) {
+                        on press: device.snooze(device.banners, banner: "{n.number}")
+                    }
+                } else if a.key != "inline-reply" {
                     ui.Button(a.label, size: .small) {
                         on press: device.act(
                             device.notifications,
@@ -276,6 +300,9 @@ view banner_row(n: device.Notice) {
                         )
                     }
                 }
+            }
+            ui.Button("Read", size: .small, role: .plain) {
+                on press: device.read(device.banners, banner: "{n.number}")
             }
             ui.Button("Dismiss", icon: .x, icon_only: true, size: .small, role: .plain) {
                 on press: device.dismiss(device.notifications, notification: n.number)
@@ -308,4 +335,13 @@ view reply_row(n: device.Notice) {
 /// What a list of notices was sent by, each once, in the order the notices came.
 fn groups_of(notices: List<device.Notice>) -> List<Text> {
     return notices.map(n -> n.from).group(g -> g).map(p -> p.key)
+}
+
+/// How long ago a notice arrived, in words: a person reads a moment or a while, not a clock.
+fn said_ago(seconds: Int) -> Text {
+    if seconds < 60 {
+        "Just now"
+    } else if seconds < 3600 {
+        "{seconds / 60} min ago"
+    } else if seconds < 86400 { "{seconds / 3600} h ago" } else { "{seconds / 86400} d ago" }
 }

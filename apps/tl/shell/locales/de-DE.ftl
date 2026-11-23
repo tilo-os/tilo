@@ -555,6 +555,19 @@ d-gkca5uj2 = Eintrag verschieben~present
 
 d-i4odzov3 = Anheften~present
 
+d-u2tma44r = Gerätebereich
+    .w-devices = Geräte
+    .w-nearby-send = In der Nähe senden
+    .w-no-devices-in-reach = Keine Geräte in Reichweite
+
+d-niotqkfd = Bluetooth weitergeben
+    .w-move-it-to = Verschieben nach…
+
+d-2abiywd2 = Kachel-Editor
+    .w-customise-the-panel = Bedienfeld anpassen
+    .w-panel-controls = Kacheln des Bedienfelds
+    .w-reset-the-panel = Bedienfeld zurücksetzen
+
 d-zzd3yipu = Leisten
 
 d-tj4z2obq = Rahmen
@@ -663,6 +676,7 @@ d-gke2gvrj = Banner ganz
     .w-open = Öffnen
 
 d-wh7n4fhq = Bannerzeile
+    .w-read = Lesen
     .w-dismiss = Verwerfen
 
 d-76zs5p4r = Antwortzeile
@@ -738,6 +752,11 @@ d-uvwnwa4d = Agenten-Chip
 d-teccuwja = Schnelleinstellungen
     .w-quick-settings = Schnelleinstellungen
 
+d-dd3gpi64 = Steuerungskachel
+
+d-vzdj2kff = Dreh-Kachel
+    .w-rotation-lock = Drehsperre
+
 d-yxl6yq2r = WLAN-Kachel
     .w-wi-fi = WLAN
     .w-this-device-has-no-wi-fi = Dieses Gerät hat kein WLAN
@@ -812,6 +831,7 @@ d-lcjohgdk = Akkulinie
 
 d-ycck5awo = Ein/Aus-Zeile
     .w-lock = Sperren
+    .w-settings = Einstellungen
     .w-power = Ein/Aus
     .w-sleep = Ruhezustand
     .w-log-out = Abmelden

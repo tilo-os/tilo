@@ -144,7 +144,7 @@ pub struct Stream {
     /// Its `PipeWire` node id.
     pub node: u32,
     /// The application, as it named itself.
-    pub app: String,
+    pub application: String,
     /// What it plays, when the application says.
     pub media: Option<String>,
     /// Whether it plays (`true`) or records.
@@ -159,7 +159,7 @@ impl Stream {
     /// What a page calls the stream: the application that owns it.
     #[must_use]
     pub fn label(&self) -> String {
-        self.app.clone()
+        self.application.clone()
     }
 
     /// What it plays or records, when the application says: a page shows it
