@@ -23589,6 +23589,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "hex",
+ "host-fs",
  "hyper",
  "hyper-util",
  "install-profile-model",

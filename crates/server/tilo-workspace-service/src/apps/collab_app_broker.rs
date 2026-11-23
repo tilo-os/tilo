@@ -136,7 +136,6 @@ pub use published_invocation::{InvocationRequest, OriginalInvocation};
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::ffi::CString;
 use std::fs::OpenOptions;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;

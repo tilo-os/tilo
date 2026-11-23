@@ -168,92 +168,15 @@ pub(super) fn bind_socket_stage(
 }
 
 pub(super) fn rename_socket_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
-    let source = CString::new(source.as_os_str().as_bytes()).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "broker socket staging path contains NUL",
-        )
-    })?;
-    let destination = CString::new(destination.as_os_str().as_bytes()).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "broker socket destination path contains NUL",
-        )
-    })?;
-    #[cfg(target_os = "linux")]
-    // SAFETY: both pointers refer to live NUL-terminated path buffers.
-    // RENAME_NOREPLACE atomically refuses an occupied destination.
-    let result = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            libc::AT_FDCWD,
-            source.as_ptr(),
-            libc::AT_FDCWD,
-            destination.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    // A filesystem without RENAME_NOREPLACE (gVisor's gofer mounts answer
-    // EINVAL) claims the name with a hard link, which refuses an occupied
-    // destination the same way, then drops the staging name.
-    #[cfg(target_os = "linux")]
-    let result = if result != 0
-        && matches!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EINVAL | libc::ENOSYS)
-        ) {
-        // SAFETY: both pointers refer to live NUL-terminated path buffers.
-        let linked = unsafe {
-            libc::linkat(
-                libc::AT_FDCWD,
-                source.as_ptr(),
-                libc::AT_FDCWD,
-                destination.as_ptr(),
-                0,
-            )
-        };
-        if linked == 0 {
-            // SAFETY: `source` is a live NUL-terminated path buffer.
-            unsafe { libc::unlink(source.as_ptr()) };
-            0
-        } else {
-            -1
-        }
-    } else {
-        result
-    };
-    #[cfg(target_os = "macos")]
-    // SAFETY: both pointers refer to live NUL-terminated path buffers.
-    // RENAME_EXCL atomically refuses an occupied destination.
-    let result = unsafe {
-        libc::renameatx_np(
-            libc::AT_FDCWD,
-            source.as_ptr(),
-            libc::AT_FDCWD,
-            destination.as_ptr(),
-            libc::RENAME_EXCL,
-        )
-    };
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let result = -1;
-    if result == 0 {
-        return Ok(());
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    return Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "atomic no-replace broker socket publication is unsupported",
-    ));
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::EEXIST) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AddrInUse,
-                "broker socket destination appeared during publication",
-            ));
-        }
-        Err(error)
+    match host_fs::rename_file_noreplace(source, destination) {
+        // Once the Linux fallback hard link succeeds, the destination socket
+        // is published even if unlinking the staging name then fails.
+        Ok(host_fs::FileRename::Moved | host_fs::FileRename::SourceUnlinkFailed(_)) => Ok(()),
+        Err(error) if error.raw_os_error() == Some(libc::EEXIST) => Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "broker socket destination appeared during publication",
+        )),
+        Err(error) => Err(error),
     }
 }
 
