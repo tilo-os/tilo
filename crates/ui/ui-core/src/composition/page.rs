@@ -1089,8 +1089,10 @@ pub fn theme_css(theme: &crate::Theme) -> String {
         };
         let _ = write!(
             type_roles,
-            "--tilo-{name}-size:{}px;--tilo-{name}-leading:{};--tilo-{name}-weight:{weight};",
-            style.size, style.line_height
+            "--tilo-{name}-size:{}px;--tilo-{name}-leading:{};--tilo-{name}-weight:{weight};--tilo-{name}-tracking:{:.3}em;",
+            style.size,
+            style.line_height,
+            style.letter_spacing / style.size.max(1.0)
         );
     }
     format!(

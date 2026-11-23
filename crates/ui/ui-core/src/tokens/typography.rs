@@ -53,6 +53,9 @@ struct RoleSpec {
     px: f32,
     weight: TextWeight,
     leading: f32,
+    /// Letter spacing as a fraction of the size: large sizes close up, small ones open, as Tilo
+    /// Sans is spaced for the 14 px body.
+    tracking: f32,
     face: Face,
 }
 
@@ -72,33 +75,36 @@ impl TextRole {
     ];
 
     const fn spec(self) -> RoleSpec {
-        const fn sans(px: f32, weight: TextWeight, leading: f32) -> RoleSpec {
+        const fn sans(px: f32, weight: TextWeight, leading: f32, tracking: f32) -> RoleSpec {
             RoleSpec {
                 px,
                 weight,
                 leading,
+                tracking,
                 face: Face::Sans,
             }
         }
         match self {
-            Self::Display => sans(34.0, TextWeight::Semibold, 1.15),
-            Self::LargeTitle => sans(26.0, TextWeight::Semibold, 1.2),
-            Self::Title => sans(20.0, TextWeight::Semibold, 1.25),
-            Self::Heading => sans(16.0, TextWeight::Semibold, 1.3),
-            Self::Subheading => sans(14.0, TextWeight::Semibold, 1.35),
-            Self::Body => sans(14.0, TextWeight::Regular, 1.45),
-            Self::Label => sans(13.0, TextWeight::Medium, 1.3),
-            Self::Caption => sans(12.0, TextWeight::Regular, 1.35),
+            Self::Display => sans(34.0, TextWeight::Semibold, 1.15, -0.022),
+            Self::LargeTitle => sans(26.0, TextWeight::Semibold, 1.2, -0.018),
+            Self::Title => sans(20.0, TextWeight::Semibold, 1.25, -0.012),
+            Self::Heading => sans(16.0, TextWeight::Semibold, 1.3, -0.006),
+            Self::Subheading => sans(14.0, TextWeight::Semibold, 1.35, 0.0),
+            Self::Body => sans(14.0, TextWeight::Regular, 1.45, 0.0),
+            Self::Label => sans(13.0, TextWeight::Medium, 1.3, 0.004),
+            Self::Caption => sans(12.0, TextWeight::Regular, 1.35, 0.012),
             Self::Reading => RoleSpec {
                 px: 16.0,
                 weight: TextWeight::Regular,
                 leading: 1.6,
+                tracking: 0.0,
                 face: Face::Serif,
             },
             Self::Code => RoleSpec {
                 px: 13.0,
                 weight: TextWeight::Regular,
                 leading: 1.5,
+                tracking: 0.0,
                 face: Face::Mono,
             },
         }
@@ -427,8 +433,10 @@ impl Typography {
             TextWeight::Medium => label,
             TextWeight::Semibold | TextWeight::Bold => heading,
         };
-        let mut style = TextStyle::new(self.scale.size(role))
+        let size = self.scale.size(role);
+        let mut style = TextStyle::new(size)
             .with_line_height(spec.leading)
+            .with_letter_spacing(size * spec.tracking)
             .with_weight(weight)
             .with_family(FontChoice::Named(family.clone()))
             .with_ground(self.ground);
