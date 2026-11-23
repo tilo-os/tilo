@@ -227,8 +227,10 @@ An operator sheds load without stopping a host by writing `spectator-only` or `b
 `mode` file in the workspace's state directory; `normal` opens it again, and `TILO_WORKSPACES_MODE`
 names the mode it starts under. While paused the entry admits nobody new — a device of someone
 already in the workspace enters as it does at any other time — and answers a newcomer a `503` asking
-it to come back. `GET /mode` on the deployment's own listener says which mode is in force beside the
-host's state and revision, so a deployment can see the switch took.
+it to come back. `spectator-only` still serves the host's public directory listing; `back-soon`
+stops that too, so nothing of the host answers a stranger. `GET /mode` on the deployment's own
+listener says which mode is in force beside the host's state and revision, so a deployment can see
+the switch took.
 
 ## Where next
 

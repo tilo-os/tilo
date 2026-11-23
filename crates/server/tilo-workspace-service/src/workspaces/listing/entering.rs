@@ -12,7 +12,7 @@ use tilo_user_identity::DeviceCert;
 
 use crate::handshake::{Admit, EntryFuture};
 use crate::workspace_access::person_device;
-use crate::workspaces::mode::PAUSED_RETRY_AFTER_SECS;
+use crate::workspaces::mode::{Mode, PAUSED_RETRY_AFTER_SECS};
 use crate::workspaces::pages::Presented;
 use crate::workspaces::{Carried, Workspaces};
 
@@ -64,18 +64,25 @@ impl Admit for Workspaces {
                 Through::Invitation { .. } => None,
             };
             // The operator's kill switch: a paused host admits nobody new. A device of someone it
-            // already has in it is not new, and enters as it does at any other time.
-            if member_device.is_none() && !self.mode().allows_joins() {
-                return Entered::Refused(EnterRefusal::Entry {
-                    refused: tilo_server_protocol::directory::EntryRefused {
-                        code: tilo_server_protocol::directory::EntryRefusalCode::Full,
-                        error: format!(
-                            "the host is paused; come back in {PAUSED_RETRY_AFTER_SECS} seconds"
-                        ),
-                        ..Default::default()
-                    },
-                    retry_after_secs: Some(PAUSED_RETRY_AFTER_SECS),
-                });
+            // already has in it is not new, and enters as it does at any other time. The person is
+            // told the wait a host at its bound asks for, in the mode's own words.
+            if member_device.is_none() {
+                let mode = self.mode();
+                if !mode.allows_joins() {
+                    let said = if mode == Mode::BackSoon {
+                        "the host is paused; back soon"
+                    } else {
+                        "the host is watch-only right now; come back soon"
+                    };
+                    return Entered::Refused(EnterRefusal::Entry {
+                        refused: tilo_server_protocol::directory::EntryRefused {
+                            code: tilo_server_protocol::directory::EntryRefusalCode::Full,
+                            error: said.to_owned(),
+                            ..Default::default()
+                        },
+                        retry_after_secs: Some(PAUSED_RETRY_AFTER_SECS),
+                    });
+                }
             }
             let reply = match (member_device, entering.through) {
                 (Some(reply), _) => reply,
@@ -767,6 +774,28 @@ mod tests {
         assert_eq!(
             retry_after_secs,
             Some(crate::workspaces::mode::PAUSED_RETRY_AFTER_SECS)
+        );
+        assert!(
+            answer.error.contains("watch-only"),
+            "a watch-only host says so: {}",
+            answer.error
+        );
+
+        // Paused entirely, the host says it is paused, not merely watch-only.
+        workspaces.hold_mode(HostMode::held(
+            dir.path().to_owned(),
+            crate::workspaces::mode::Mode::BackSoon,
+        ));
+        let Entered::Refused(EnterRefusal::Entry {
+            refused: answer, ..
+        }) = through_the_entry(workspaces, &workspace, &stranger).await
+        else {
+            panic!("a back-soon host admits nobody new");
+        };
+        assert!(
+            answer.error.contains("paused"),
+            "a back-soon host says so: {}",
+            answer.error
         );
 
         // A device of a member is not new: it enters at the part its person holds.

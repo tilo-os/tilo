@@ -4,10 +4,11 @@
 //! without a restart.
 //!
 //! `normal` opens everything. `spectator-only` admits nobody new while the
-//! people already in keep working. `back-soon` pauses the host entirely, for
-//! whoever only watches it too. An entry is what the switch gates: a device of
-//! someone the workspace already has in it is not new and comes in as it does
-//! at any other time.
+//! people already in keep working and the host's public listing still answers.
+//! `back-soon` pauses the host entirely: no entries, and nothing for a stranger
+//! to read. An entry gates what the switch turns away: a device of someone the
+//! workspace already has in it is not new and comes in as it does at any other
+//! time.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,9 +28,9 @@ pub enum Mode {
     #[default]
     Normal,
     /// Nobody new becomes a member, so a flood of vandals or a moderation emergency stops at
-    /// once, while the people in the host keep working and its pages may still be watched.
+    /// once, while the people in the host keep working and its public listing still answers.
     SpectatorOnly,
-    /// The host is paused entirely: no joins and no watching.
+    /// The host is paused entirely: no entries and no public listing.
     BackSoon,
 }
 
@@ -61,7 +62,8 @@ impl Mode {
         matches!(self, Self::Normal)
     }
 
-    /// Whether someone may watch what the host serves without joining it.
+    /// Whether someone may watch what the host serves without joining it: its public listing,
+    /// which any page reads.
     #[must_use]
     pub const fn allows_spectators(self) -> bool {
         !matches!(self, Self::BackSoon)

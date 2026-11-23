@@ -1366,7 +1366,7 @@ pub(crate) async fn run(
     let state = args.state.clone();
     std::fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
     // The operator's kill switch: the mode file in the state directory wins over the environment,
-    // and the entry reads it on every admission, so pausing the host takes no restart.
+    // and the entry reads it as it turns someone new away, so pausing the host takes no restart.
     let mode = tilo_workspace_service::workspaces::mode::HostMode::from_env(state.clone());
     // The deployment's own routes answer from the start: its health check says
     // the host is starting while it opens its workspaces, which can take a

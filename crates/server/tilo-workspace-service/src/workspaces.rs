@@ -1549,7 +1549,8 @@ impl Workspaces {
     }
 
     /// The mode the host admits under now: what its operator set, or normal while it set none.
-    pub(crate) fn mode(&self) -> mode::Mode {
+    #[must_use]
+    pub fn mode(&self) -> mode::Mode {
         let held = self
             .inner
             .mode
