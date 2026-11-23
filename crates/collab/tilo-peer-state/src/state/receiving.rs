@@ -651,7 +651,7 @@ impl StatePeer {
             lacks_history,
             ..Default::default()
         });
-        self.retry_held(&mut report, now, strict_report)?;
+        self.retry_held(&mut report, now, strict_report);
         report.incomplete = self.incomplete_reason();
         Ok(report)
     }
@@ -720,7 +720,7 @@ impl StatePeer {
         if outcome.deferred || self.core.pending.is_empty() {
             return Ok(outcome);
         }
-        self.retry_held(&mut outcome, now, strict_report)?;
+        self.retry_held(&mut outcome, now, strict_report);
         Ok(outcome)
     }
 }

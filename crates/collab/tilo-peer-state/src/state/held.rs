@@ -234,7 +234,7 @@ impl StatePeer {
         into: &mut AdmissionReport,
         now: SystemTime,
         strict_report: bool,
-    ) -> Result<(), AdmissionError> {
+    ) {
         let pending = std::mem::take(&mut self.core.pending);
         self.core.pending_bytes = 0;
         for (author, message, replayed) in pending {
@@ -261,7 +261,6 @@ impl StatePeer {
             }
         }
         into.deferred = !self.core.pending.is_empty();
-        Ok(())
     }
     /// Decide the held `message` again on a copy of this peer, holding
     /// nothing else: admitted there, the copy becomes this peer, keeping what
