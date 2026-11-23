@@ -41,18 +41,18 @@ pub(super) async fn read_launcher_handoff(
     // record. Unsupported kernels keep ordinary collaboration available.
     let media_process = native_media::PeerProcess::from_socket(stream);
 
-    let mut marker = [0_u8; launcher::services::COLLAB_LAUNCH_MAGIC.len()];
+    let mut marker = [0_u8; runtime_portal::launch_handoff::MAGIC.len()];
     stream.read_exact(&mut marker).await.map_err(|error| {
         BrokerError::failed(format!(
             "could not read collaboration launch marker: {error}"
         ))
     })?;
-    if marker != launcher::services::COLLAB_LAUNCH_MAGIC {
+    if marker != runtime_portal::launch_handoff::MAGIC {
         return Err(BrokerError::failed(
             "collaboration launch marker changed while being read".into(),
         ));
     }
-    let bytes = match launcher::services::COLLAB_LAUNCH_FRAMING
+    let bytes = match runtime_portal::launch_handoff::FRAMING
         .read_async(stream)
         .await
     {

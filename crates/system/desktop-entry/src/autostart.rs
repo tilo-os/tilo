@@ -268,10 +268,15 @@ fn why_skipped(
 /// `TryExec` per the specification: an absolute path must be an executable
 /// file; a bare name is looked up on `PATH`.
 pub fn program_on_path(program: &str) -> bool {
-    use std::os::unix::fs::PermissionsExt as _;
+    // Windows has no execute bit: a file is what it can run.
     let executable = |path: &Path| {
-        std::fs::metadata(path)
-            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        std::fs::metadata(path).is_ok_and(|meta| {
+            #[cfg(unix)]
+            let runs = std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o111 != 0;
+            #[cfg(not(unix))]
+            let runs = true;
+            meta.is_file() && runs
+        })
     };
     let program_path = Path::new(program);
     if program_path.is_absolute() {

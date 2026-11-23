@@ -34,7 +34,7 @@ session-pages = ["device-keys", "dep:tilo-session-client"]
 fixture-servers = ["tilo-web-search?/fixture-servers"]
 
 # A device serves its apps: their wire, launch, actions, invocation journal and consent.
-apps = ["dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json", "dep:jiff"]
+apps = ["dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json", "dep:jiff"]
 
 [dependencies]
 # The device's one store, which apps write and read their resources in.
@@ -107,7 +107,6 @@ zeroize.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal", optional = true }
 tilo-advisory-lock = { path = "../../platform/advisory-lock", optional = true }
 wire-frame = { path = "../../platform/wire-frame", features = ["tokio"], optional = true }
-launcher = { path = "../../packaging/launcher", optional = true }
 tilo-app-package = { path = "../../packaging/tilo-app-package", optional = true }
 parking_lot = { workspace = true, optional = true }
 tilo-identity-client = { path = "../../runtime/tilo-identity-client", optional = true }
@@ -199,6 +198,8 @@ jiff = { workspace = true, optional = true }
 rustix = { workspace = true, features = ["process"], optional = true }
 
 [dev-dependencies]
+# The launcher end of the handoffs the broker tests drive.
+launcher = { path = "../../packaging/launcher" }
 # The stand-in authorization server a sign-in test walks the browser through.
 tilo-oauth = { path = "../../integrations/tilo-oauth", features = ["fake"] }
 # A fake OpenAI sign-in and model providers, for signing in on the real path.
