@@ -148,14 +148,20 @@ impl crate::Shared {
                 if let Ok(people) = engine.people(&workspace.id().to_string()) {
                     changed |= membership::project_names(workspace, &people);
                 }
-                let Ok((bots, shortcuts)) = engine.owner().with_current(workspace.id(), |view| {
-                    Ok((
-                        view.peer().governance().workspace_bots(),
-                        view.peer().workspace().workspace_shortcuts(),
-                    ))
-                }) else {
+                let Ok((bots, shortcuts, sandbox)) =
+                    engine.owner().with_current(workspace.id(), |view| {
+                        Ok((
+                            view.peer().governance().workspace_bots(),
+                            view.peer().workspace().workspace_shortcuts(),
+                            view.peer().governance().governed_sandbox().ok(),
+                        ))
+                    })
+                else {
                     continue;
                 };
+                if let Some(sandbox) = sandbox {
+                    changed |= project_sandbox(workspace, sandbox);
+                }
                 if workspace.bots != bots {
                     workspace.bots = bots;
                     changed = true;
@@ -173,6 +179,31 @@ impl crate::Shared {
             tracing::warn!(%reason, "the session's people were not projected");
         }
     }
+}
+
+/// What the workspace's governance lets its apps reach, on to the shell's `workspace`: an app one
+/// member allowed starts on every member's device. A capability that lasts only while this
+/// session does is this device's alone and stays; one the governance no longer holds was taken
+/// back, so it goes. Whether the shell's workspace changed.
+fn project_sandbox(
+    workspace: &mut Workspace,
+    mut governed: Vec<collab_types::caps::CapOverride>,
+) -> bool {
+    governed.extend(
+        workspace
+            .sandbox
+            .iter()
+            .filter(|capability| !capability.is_durable())
+            .cloned(),
+    );
+    governed.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut held = workspace.sandbox.clone();
+    held.sort_by(|a, b| a.id.cmp(&b.id));
+    if held == governed {
+        return false;
+    }
+    workspace.sandbox = governed;
+    true
 }
 
 #[cfg(test)]

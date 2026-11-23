@@ -13,7 +13,7 @@ use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_network_actor::DeviceIdentity;
 use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
-use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
+use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 use tilo_session_client::engine::Engine;
 use tilo_session_client::membership::{Membership, project};
 
@@ -187,6 +187,41 @@ struct TwoSessions {
     _states: (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir),
 }
 
+impl TwoSessions {
+    /// What the owner's device published reaches this session, as the workspace's host carries it.
+    fn deliver(&self) {
+        let written = self
+            .owner
+            .owner()
+            .with_outgoing(self.workspace_id, self.now, |_, outgoing| {
+                outgoing
+                    .entries()
+                    .map(|entry| {
+                        postcard::from_bytes(entry.bytes()).map_err(|error| error.to_string())
+                    })
+                    .collect::<Result<Vec<neighbour_wire::NeighbourMsg>, String>>()
+            })
+            .expect("the owner's device published the change");
+        assert!(
+            !written.is_empty(),
+            "the owner's device published something"
+        );
+        for message in written {
+            self.session
+                .owner()
+                .receive(
+                    self.workspace_id,
+                    tilo_peer_state::TransportOrigin::RetainedServerDelta(
+                        self.owner_cert.device_public_key,
+                    ),
+                    message,
+                    self.now,
+                )
+                .expect("this session takes the change");
+        }
+    }
+}
+
 /// The workspace's owner admits ada as their own device, and what that changed reaches both
 /// devices' copies of the workspace, as the workspace's host carries it.
 fn the_owner_admitted_ada() -> TwoSessions {
@@ -279,34 +314,7 @@ fn the_owner_raised_ada() -> (WorkspaceId, WorkspacePolicy, String, String, Stri
         })
         .block_on()
         .expect("the workspace takes the change");
-    let written = sessions
-        .owner
-        .owner()
-        .with_outgoing(sessions.workspace_id, sessions.now, |_, outgoing| {
-            outgoing
-                .entries()
-                .map(|entry| postcard::from_bytes(entry.bytes()).map_err(|error| error.to_string()))
-                .collect::<Result<Vec<neighbour_wire::NeighbourMsg>, String>>()
-        })
-        .expect("the owner's device published the change");
-    assert!(
-        !written.is_empty(),
-        "the owner's device published something"
-    );
-    for message in written {
-        sessions
-            .session
-            .owner()
-            .receive(
-                sessions.workspace_id,
-                tilo_peer_state::TransportOrigin::RetainedServerDelta(
-                    sessions.owner_cert.device_public_key,
-                ),
-                message,
-                sessions.now,
-            )
-            .expect("this session takes the change");
-    }
+    sessions.deliver();
     assert_eq!(
         role_of(&sessions.session, &sessions.person),
         Some(Role::Moderator),
@@ -323,6 +331,90 @@ fn the_owner_raised_ada() -> (WorkspaceId, WorkspacePolicy, String, String, Stri
         hex::encode(sessions.session_cert.user_public_key),
         sessions.person,
     )
+}
+
+/// What the owner lets an app reach, on their own device, is the workspace's: it reaches another
+/// member's session, so that member's device starts the app without asking its person again.
+#[test]
+fn what_one_member_lets_an_app_reach_reaches_every_members_session() {
+    use collab_types::caps::{Access, CapOverride, Scope};
+    let sessions = the_owner_admitted_ada();
+    let owner = hex::encode(sessions.owner_cert.user_public_key);
+    let mut workspace = Workspace::new(sessions.workspace_id, "Test");
+    workspace.set_owner(owner.clone());
+    let network = CapOverride::grant(
+        Grantee::person(owner.clone()),
+        Scope::NetHost("*".into()),
+        Access::Read,
+    )
+    .through("so.tilo.mail");
+    let edit = workspace
+        .grant_sandbox_as_at(&owner, network, tilo_clock::unix_now())
+        .expect("the owner may let an app reach the network");
+    // A member who may not grant in the workspace lets no app reach anything for everyone: the
+    // workspace refuses it, here and on every device.
+    let member = hex::encode(sessions.session_cert.user_public_key);
+    let theirs = CapOverride::grant(
+        Grantee::person(member.clone()),
+        Scope::NetHost("*".into()),
+        Access::Read,
+    )
+    .through("so.tilo.mail")
+    .granted_by(tilo_action_policy::MemberId::person(member));
+    assert!(
+        Membership::of(&sessions.session, sessions.workspace_id)
+            .write(&[WorkspaceMembershipCommand::Settings(
+                SettingsChange::GrantSandbox { capability: theirs },
+            )])
+            .block_on()
+            .is_err(),
+        "the workspace refuses a member's network grant for its apps"
+    );
+    let membership = Membership::of(&sessions.owner, sessions.workspace_id);
+    membership
+        .write(&membership.changes(&workspace, &edit))
+        .block_on()
+        .expect("the workspace takes it");
+    sessions.deliver();
+
+    // This member's shell takes it from the workspace: a capability that lasts only while this
+    // session does stays, one the workspace took back goes.
+    let governed = sessions
+        .session
+        .owner()
+        .with_current(sessions.workspace_id, |view| {
+            view.peer().governance().governed_sandbox()
+        })
+        .expect("this session holds the workspace");
+    let mut shown = Workspace::new(sessions.workspace_id, "Test");
+    let session_only = CapOverride::grant(
+        Grantee::person(owner.clone()),
+        Scope::NetHost("example.test".into()),
+        Access::Read,
+    )
+    .through("so.tilo.notes")
+    .lasting(tilo_action_policy::Lifetime::Session);
+    let taken_back = CapOverride::grant(
+        Grantee::person(owner),
+        Scope::NetHost("old.example.test".into()),
+        Access::Read,
+    )
+    .through("so.tilo.notes");
+    shown.sandbox = vec![session_only.clone(), taken_back];
+    assert!(super::project_sandbox(&mut shown, governed));
+    assert!(
+        shown
+            .sandbox
+            .iter()
+            .any(|cap| cap.names_app("so.tilo.mail") && matches!(cap.scope, Scope::NetHost(_))),
+        "this member's shell lets Mail reach the network"
+    );
+    assert!(shown.sandbox.contains(&session_only));
+    assert_eq!(
+        shown.sandbox.len(),
+        2,
+        "what the workspace took back is gone"
+    );
 }
 
 /// A role one member's device sets reaches another member's session: what this session has of the
@@ -390,14 +482,16 @@ fn the_workspace_takes_the_people_its_settings_change() {
     );
     assert_eq!(
         set,
-        vec![Change::SetRole {
-            person: person.clone(),
-            role: Role::Moderator
+        vec![WorkspaceMembershipCommand::Member {
+            change: Change::SetRole {
+                person: person.clone(),
+                role: Role::Moderator
+            }
         }],
         "a person the workspace has has their role set"
     );
     membership
-        .commit(&set[0])
+        .write(&set)
         .block_on()
         .expect("the workspace takes the change");
     assert_eq!(
@@ -416,13 +510,15 @@ fn the_workspace_takes_the_people_its_settings_change() {
     );
     assert_eq!(
         removed,
-        vec![Change::RemoveMember {
-            person: person.clone()
+        vec![WorkspaceMembershipCommand::Member {
+            change: Change::RemoveMember {
+                person: person.clone()
+            }
         }],
         "a person the settings drop is removed"
     );
     membership
-        .commit(&removed[0])
+        .write(&removed)
         .block_on()
         .expect("the workspace takes the removal");
     assert_eq!(
@@ -446,14 +542,16 @@ fn the_workspace_takes_the_people_its_settings_change() {
     );
     assert_eq!(
         added,
-        vec![Change::AddMember {
-            person: person.clone(),
-            role: Role::Editor
+        vec![WorkspaceMembershipCommand::Member {
+            change: Change::AddMember {
+                person: person.clone(),
+                role: Role::Editor
+            }
         }],
         "a person the workspace does not have is added"
     );
     membership
-        .commit(&added[0])
+        .write(&added)
         .block_on()
         .expect("the workspace takes her back");
     assert_eq!(

@@ -97,7 +97,8 @@ def comes_to(session: Session, deadline: float = 180.0) -> dict:
         state = session.state_dump()
         raise Failed(f"{failed}; its Mail windows: {mail_windows(session)}; its overlays: "
                      f"{state.get('chrome', {}).get('overlays')}; its notices: "
-                     f"{state.get('notifications')}") from failed
+                     f"{state.get('notifications')}; its questions: "
+                     f"{session.control({'op': 'questions'}).get('answer')}") from failed
 
 
 def one_window_each(sessions: dict[str, Session]) -> dict[str, int]:
@@ -121,6 +122,7 @@ def open_mail(session: Session, deadline: float = 180.0) -> dict:
         if window is not None:
             return window
         if any(target["name"] == "Allow" for target in targets_of(session)):
+            print(f"==> {session.tag} allows {MAIL} the network it names", file=sys.stderr)
             session.click_named("Allow")
         return None
 
