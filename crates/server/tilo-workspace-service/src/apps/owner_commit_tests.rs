@@ -525,7 +525,11 @@ mod owner_commit_tests {
             collab_types::OpKind::Change,
             SystemTime::now(),
             1000,
-        );
+        )
+        // The surface the owner signs its app's changes with, as the broker
+        // names it before signing: a process that runs the app with a
+        // surface holds a change that names another.
+        .with_surface(f.owner.peer().signed_surface(&f.route.app_id));
         sign_op(&mut envelope, &key).unwrap();
         envelope
     }
