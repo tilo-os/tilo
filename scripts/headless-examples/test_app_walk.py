@@ -240,6 +240,32 @@ class HoldingAWalkToItsBaseline(unittest.TestCase):
         self.assertEqual(walk.live_of(spec, ["tl"]), "tl")
 
 
+class ABaselineHoldsTheSlowestOfMainsRuns(unittest.TestCase):
+    """One quick run on an idle node must not make main's next ordinary run read
+    as slower: the baseline keeps each step's slowest time main has shown."""
+
+    def test_a_quick_run_does_not_lower_the_time_a_step_is_held_to(self):
+        before = found(("open-agent", True, 5100), ("open-today", True, 3700))
+        quick = found(("open-agent", True, 1200), ("open-today", True, 4000))
+        kept = walk.rebaseline(quick, before)
+        steps = kept["versions"]["rust"]["steps"]
+        self.assertEqual((steps["open-agent"]["took_ms"], steps["open-today"]["took_ms"]), (5100, 4000))
+        ordinary = found(("open-agent", True, 5000), ("open-today", True, 3900))
+        self.assertEqual(walk.compare(ordinary, kept)["regressions"], [])
+
+    def test_what_the_new_run_found_is_what_the_baseline_says(self):
+        before = found(("open", True, 900), ("alt-tab", False, 10000))
+        now = found(("open", False, 30000), ("alt-tab", True, 400))
+        steps = walk.rebaseline(now, before)["versions"]["rust"]["steps"]
+        self.assertEqual({k: (v["walked"], v["took_ms"]) for k, v in steps.items()},
+                         {"open": (False, 30000), "alt-tab": (True, 400)})
+
+    def test_a_real_slowdown_is_still_one(self):
+        kept = walk.rebaseline(found(("open", True, 1300)), found(("open", True, 1000)))
+        regressions = walk.compare(found(("open", True, 4000)), kept)["regressions"]
+        self.assertEqual([r["step"] for r in regressions], ["open"])
+
+
 class HoldingTheCapabilitiesToMain(unittest.TestCase):
     """Every action main published is still published, or the change that took
     it away names where it lives now (core.md, "The rule for every piece")."""

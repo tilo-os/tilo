@@ -2726,6 +2726,24 @@ SLOWER_FACTOR = 2.0
 SLOWER_MARGIN_MS = 1000
 
 
+def rebaseline(found: dict, before: dict | None) -> dict:
+    """The baseline main's newest run makes, beside the one it replaces: what it
+    found, except that a step's time is the slowest main has shown for it. One
+    run on a shared node can open an app in a second and the next in five, so a
+    single quick run would make the next ordinary one read as slower; the
+    slowest of main's runs is what a change is held to."""
+    if not before:
+        return found
+    merged = json.loads(json.dumps(found))
+    for variant, now in merged.get("versions", {}).items():
+        was = (before.get("versions") or {}).get(variant) or {}
+        for step_id, step in (now.get("steps") or {}).items():
+            old = (was.get("steps") or {}).get(step_id) or {}
+            if step.get("walked") and old.get("walked"):
+                step["took_ms"] = max(step.get("took_ms") or 0, old.get("took_ms") or 0)
+    return merged
+
+
 def summary(report: dict) -> dict:
     """What a walk found, as the baseline keeps it: per version, per step,
     whether it was walked, how long it took, and the controls drawn after it.
@@ -3061,7 +3079,9 @@ def main() -> int:
             report_path = write_report(report, where)
             if options.write_baseline:
                 BASELINES.mkdir(exist_ok=True)
-                (BASELINES / f"{walk_name}.json").write_text(json.dumps(found, indent=1) + "\n")
+                kept = BASELINES / f"{walk_name}.json"
+                before = json.loads(kept.read_text()) if kept.is_file() else None
+                kept.write_text(json.dumps(rebaseline(found, before), indent=1) + "\n")
             comparison_path = None
             if options.compare is not None:
                 at = Path(options.compare) if options.compare else BASELINES / f"{walk_name}.json"

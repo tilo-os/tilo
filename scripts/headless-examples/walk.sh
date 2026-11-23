@@ -60,13 +60,19 @@ now=$(find "$out/now" -path "*/$walk/walk.json" -printf '%h\n' | head -1)
 [[ -n $now ]] || now=$(find "$out/now" -name walk.json -printf '%h\n' | head -1)
 
 if ((write_baseline)); then
-    # The baseline is what main walked, with the run that keeps its shots.
-    python3 - "$now/summary.json" "$walks/baseline/$walk.json" "$run" <<'EOF'
-import json, sys
+    # The baseline is what main walked, with the run that keeps its shots; each step's time is
+    # the slowest main has shown for it (app-walk.py's rebaseline).
+    python3 - "$now/summary.json" "$walks/baseline/$walk.json" "$run" "$repo_root/scripts/headless-examples/app-walk.py" <<'EOF'
+import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("app_walk", sys.argv[4])
+walk = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(walk)
 found = json.load(open(sys.argv[1]))
 found["run"] = sys.argv[3]
-json.dump(found, open(sys.argv[2], "w"), indent=1)
-open(sys.argv[2], "a").write("\n")
+kept = Path(sys.argv[2])
+before = json.loads(kept.read_text()) if kept.is_file() else None
+kept.write_text(json.dumps(walk.rebaseline(found, before), indent=1) + "\n")
 EOF
     echo "baseline written: $walks/baseline/$walk.json (run $run)"
     exit "$status"
