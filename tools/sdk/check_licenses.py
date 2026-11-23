@@ -1,5 +1,11 @@
-"""Audit the normal/build dependency licenses of selected app configurations."""
+"""Audit the normal/build dependency licenses of selected app configurations.
+
+An app ships with every feature `tilo-app` declares except `test-support`, which
+an app enables only from its dev-dependencies; the `all` set is exactly those
+shipping features, so the audit covers what can ship and no test host.
+"""
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -7,6 +13,7 @@ import sys
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
+APP_MANIFEST = ROOT / "crates/sdk/tilo-app/Cargo.toml"
 TARGETS = (
     "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
     "x86_64-apple-darwin", "aarch64-apple-darwin",
@@ -40,14 +47,54 @@ def findings(output, allowed):
     return sorted(set(errors))
 
 
-def check(target, feature_set, allowed, offline=False):
+def audited_features(manifest):
+    """Every feature an app ships with: all of `tilo-app`'s but `test-support`."""
+    return sorted(name for name in manifest.get("features", {}) if name != "test-support")
+
+
+# The generated crate that gives every selection the workspace's whole feature
+# set, dev-dependencies included, so it names test-support by design; it builds
+# nothing and no package depends on it, so it cannot pull a test host into an
+# app.
+UNIFICATION_ONLY = frozenset(("workspace-unify",))
+
+
+def test_support_from_normal_dependencies(metadata):
+    """Packages a person runs that enable `tilo-app`'s test feature themselves.
+
+    `all` leaves `test-support` out because only dev-dependencies enable it. A
+    normal dependency doing the same would put the test hosts back in the app
+    graph, so it fails the audit instead of hiding behind the exclusion.
+    """
+    return sorted({
+        f"{package['name']}: enables tilo-app's test-support from a normal dependency"
+        for package in metadata["packages"]
+        if package["name"] not in UNIFICATION_ONLY
+        for dependency in package["dependencies"]
+        if dependency["name"] == "tilo-app"
+        and dependency["kind"] != "dev"
+        and "test-support" in dependency["features"]
+    })
+
+
+def test_support_violations(cargo, offline=False):
+    command = [cargo, "metadata", "--locked", "--no-deps", "--format-version", "1"]
+    if offline:
+        command.append("--offline")
+    metadata = json.loads(subprocess.check_output(command, cwd=ROOT, text=True))
+    return test_support_from_normal_dependencies(metadata)
+
+
+def check(target, feature_set, features, allowed, offline=False):
     command = [
         os.environ.get("CARGO", "cargo"), "tree", "--locked", "-p", "tilo-app",
         "--target", target, "--edges", "normal,build", "--prefix", "none",
         "--format", "{p}\t{l}",
     ]
     if feature_set == "all":
-        command.append("--all-features")
+        if not features:
+            raise ValueError("tilo-app declares no shipping features")
+        command += ["--features", ",".join(features)]
     elif feature_set == "minimal":
         command.append("--no-default-features")
     if offline:
@@ -64,11 +111,20 @@ def main():
     args = parser.parse_args()
     policy = tomllib.loads((ROOT / "tools/sdk/license-policy.toml").read_text())
     allowed = frozenset(policy["allowed_expressions"])
+    shipping = audited_features(tomllib.loads(APP_MANIFEST.read_text()))
     failed = False
+    try:
+        violations = test_support_violations(os.environ.get("CARGO", "cargo"), args.offline)
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+        print(f"could not audit how packages enable test-support: {error}", file=sys.stderr)
+        return 1
+    for violation in violations:
+        print(violation, file=sys.stderr)
+    failed |= bool(violations)
     for target in args.target or TARGETS:
         for features in args.feature_set or ("minimal", "default", "all"):
             try:
-                errors = check(target, features, allowed, args.offline)
+                errors = check(target, features, shipping, allowed, args.offline)
             except (OSError, ValueError, subprocess.CalledProcessError) as error:
                 print(f"{target}/{features}: could not audit: {error}", file=sys.stderr)
                 return 1

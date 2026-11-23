@@ -35,6 +35,38 @@ class AppLicenseGraph(unittest.TestCase):
             with self.subTest(output=output), self.assertRaises(ValueError):
                 sdk_licenses.findings(output, {"MIT"})
 
+    def test_the_all_set_is_every_shipping_feature_and_not_test_support(self):
+        manifest = {"features": {
+            "default": ["native"],
+            "native": ["dep:tilo-runner-native"],
+            "mpris": [],
+            "test-support": ["ui-core/test-support", "dep:tilo-broker-core"],
+        }}
+        self.assertEqual(
+            sdk_licenses.audited_features(manifest), ["default", "mpris", "native"])
+        self.assertEqual(sdk_licenses.audited_features({}), [])
+
+    def test_a_normal_dependency_cannot_enable_the_test_feature(self):
+        metadata = {"packages": [
+            {"name": "ships", "dependencies": [
+                {"name": "tilo-app", "kind": None, "features": ["test-support"]},
+            ]},
+            {"name": "tests", "dependencies": [
+                {"name": "tilo-app", "kind": "dev", "features": ["test-support"]},
+            ]},
+            {"name": "unrelated", "dependencies": [
+                {"name": "other", "kind": None, "features": ["test-support"]},
+            ]},
+            # Hakari's generated unification crate names every feature by design.
+            {"name": "workspace-unify", "dependencies": [
+                {"name": "tilo-app", "kind": None, "features": ["test-support"]},
+            ]},
+        ]}
+        self.assertEqual(
+            sdk_licenses.test_support_from_normal_dependencies(metadata),
+            ["ships: enables tilo-app's test-support from a normal dependency"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
