@@ -4,8 +4,9 @@
 Ada opens Tilo, gives her name, and makes a workspace, "Garden club". The top
 bar's Invite makes a native invitation link, which she hands to Grace, who
 opens it on a computer of her own and joins. Each sees the other in the people
-list within about two seconds. Grace opens Chat, and a line Ada writes in the
-same conversation shows on Grace's screen within about a second.
+list within about two seconds. Grace opens Chat and the conversation with Ada
+its sidebar lists her under, and a line Ada writes in the same conversation
+shows on Grace's screen within about a second.
 
 Every claim is read off the two shells: the workspaces each holds, the people
 its own presence lists, the controls each draws, and the words Chat shows.
@@ -28,13 +29,12 @@ from story import (  # noqa: E402
 
 WORKSPACE = "Garden club"
 JOIN_INVITATION = "TILO_SHELL_JOIN_INVITATION_FILE"
-# What both computers have: Chat, where the two write to each other.
-APPS = "chat"
-# The line Ada writes, the composer's name on the shell, and what a message
-# still on its way says where its time will stand.
+# What both computers have beside the shell: the tilolang Chat (its directory
+# under apps/tl), where the two write to each other.
+TL_APPS = ("chat",)
+CHAT = "so.tilo.chat"
+# The line Ada writes.
 LINE = f"Grace, the tomatoes are planted ({int(time.time()) % 10000:04d})."
-COMPOSER = "Message composer"
-SENDING = "Sending…"
 # How soon after the join the people list must show the other person.
 PEOPLE_SECONDS = 2.0
 
@@ -45,13 +45,32 @@ def people_list(one: Person, workspace: str) -> list[str]:
     return [member.get("label") or "" for member in members]
 
 
+def composer(other: str) -> str:
+    """The composer of the direct conversation with `other`, named by what it asks for."""
+    return f"Message {other}"
+
+
+def opens_conversation(one: Person, other: str) -> None:
+    """Open Chat and, in its sidebar's direct messages, the conversation with `other`: the one
+    conversation the two of them have, whichever of them opened it first."""
+    one.session.launch("chat")
+    one.session.answering("chat", deadline=120)
+    try:
+        one.press(other, f"{other} in Chat's sidebar on {one.name}'s shell", exact=False,
+                  inside=CHAT)
+        until(f"Chat's composer to {other} on {one.name}'s shell",
+              lambda: one.target(composer(other)), 30, 0.25)
+    finally:
+        one.story.note(f"chat-controls-{one.key}", one.names())
+
+
 def steps(story: Story) -> None:
     ada, grace = story.person("Ada"), story.person("Grace")
     shared: dict = {}
 
     def ada_opens():
-        ada.prepare(APPS)
-        took = ada.start(apps=APPS)
+        ada.prepare()
+        took = ada.start(tilolang=TL_APPS)
         story.timing("Ada's session start, to its first frame", took["tookMs"])
         story.timing("Ada's session start, to its first frame, with the development launcher's "
                      "installing", took["launcherMs"])
@@ -86,10 +105,10 @@ def steps(story: Story) -> None:
     story.step("Ada makes an invitation link", invites, people=[ada])
 
     def grace_opens():
-        grace.prepare(APPS)
+        grace.prepare()
         invitation = story.out / "invitation.txt"
         invitation.write_text(shared["link"])
-        took = grace.start(apps=APPS, env={JOIN_INVITATION: str(invitation)})
+        took = grace.start(tilolang=TL_APPS, env={JOIN_INVITATION: str(invitation)})
         story.timing("Grace's session start with the invitation, to its first frame",
                      took["tookMs"])
         return {"tookMs": took["tookMs"]}
@@ -130,25 +149,18 @@ def steps(story: Story) -> None:
     story.step("Ada and Grace see each other in their people lists", see_each_other,
                people=[ada, grace])
 
-    def grace_opens_chat():
-        grace.session.launch("chat")
-        grace.session.answering("chat", deadline=120)
-        until("Chat's composer on Grace's shell", lambda: grace.target(COMPOSER), 30, 0.25)
-
-    story.step("Grace opens Chat", grace_opens_chat, people=[grace])
+    story.step("Grace opens Chat", lambda: opens_conversation(grace, "Ada"), people=[grace])
 
     def ada_writes():
-        ada.session.launch("chat")
-        ada.session.answering("chat", deadline=120)
-        ada.press(COMPOSER, "Chat's composer")
+        opens_conversation(ada, "Grace")
+        ada.press(composer("Grace"), "Chat's composer")
         ada.session.type(LINE)
         # Enter sends what the composer holds, as Chat's own field and button both do.
         ada.session.key("Enter")
-        # The workspace took the line: it stands in Ada's own conversation,
-        # no longer saying it is still being sent.
+        # Chat took the line: it stands in Ada's own conversation. A send is a change of the
+        # conversation Ada holds, so there is no moment it is still being sent on her side.
         try:
-            until("Ada's line to be taken by her Chat",
-                  lambda: ada.shows(LINE) and not ada.shows(SENDING), 60, 0.1)
+            until("Ada's line to be taken by her Chat", lambda: ada.shows(LINE), 60, 0.1)
         finally:
             story.note("chat-controls-after-send", ada.names())
 

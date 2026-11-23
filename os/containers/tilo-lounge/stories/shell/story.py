@@ -90,13 +90,14 @@ class Person:
         """Install the apps into this person's state, as their computer has them before they
         first open Tilo: those named in `apps` (directories under apps/) and the tilolang apps
         named in `tilolang` (directories under apps/tl), each built as its signed package against
-        the runtime the state holds."""
-        if self.prepared:
-            return
-        prepare(self.state, apps=apps)
-        if tilolang:
+        the runtime the state holds. The native apps are installed once; the tilolang packages
+        are built the first time any are asked for, so a person prepared ahead of their start
+        still gets the tilolang apps that start names."""
+        if not self.prepared:
+            prepare(self.state, apps=apps)
+            self.prepared = True
+        if tilolang and not self.packages:
             self.packages = self.built(tilolang)
-        self.prepared = True
 
     def built(self, tilolang: tuple[str, ...]) -> list[Path]:
         """The signed package of each tilolang app in `tilolang`, built against the runtime this
