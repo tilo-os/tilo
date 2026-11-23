@@ -240,7 +240,14 @@ fn sealed(
         ChangeAuthor::answer(signer, invoker, node, kind, &cx) == Answer::Allow
     };
     let surface_for = |_: Option<&str>| Some(Arc::new(Mailbox) as Arc<dyn ReceiptSurface>);
-    check_claims_by_kind(&[claim], &document(), Some(KIND), &surface_for, &allows)
+    check_claims_by_kind(
+        &[claim],
+        &document(),
+        Some(KIND),
+        false,
+        &surface_for,
+        &allows,
+    )
 }
 
 tilo_test_env::scenario! {

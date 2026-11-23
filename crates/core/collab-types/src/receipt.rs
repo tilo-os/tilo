@@ -15,7 +15,7 @@
 //! The action is run again only before its recorded inverse is used for
 //! undo ([`tilo_actions::verify_change`]).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use tilo_action_policy::{Acting, ActionKind, Answer, Context, Level, MemberAccess, TreePath};
 use tilo_actions::{HistoryOp, PathStep};
@@ -522,18 +522,25 @@ impl Surfaces {
             return claims;
         };
         // Each claim by the resource it is decided against ([`by_kind`]), in its place.
-        let mut claims = claims;
+        // A claim over records of two kinds may write what the surface of each lets it.
+        let mut footprints: BTreeMap<[u8; 32], Vec<UnitPath>> = BTreeMap::new();
         for (group_kind, group) in by_kind(kind, claims.clone()) {
             let Some(surface) = source.surface(document, group_kind.as_deref(), named) else {
                 continue;
             };
             for member in group {
-                for claim in claims
-                    .iter_mut()
-                    .filter(|claim| claim.change == member.change)
-                {
-                    claim.units = surface.footprint(&claim.action);
+                let units = footprints.entry(member.change).or_default();
+                for unit in surface.footprint(&member.action) {
+                    if !units.contains(&unit) {
+                        units.push(unit);
+                    }
                 }
+            }
+        }
+        let mut claims = claims;
+        for claim in &mut claims {
+            if let Some(units) = footprints.remove(&claim.change) {
+                claim.units = units;
             }
         }
         claims
@@ -703,13 +710,38 @@ pub fn check_opened_mutation(
         let read = ChangeClaim::of_change(change.hash().0, change.message(), Vec::new())
             .map_err(|error| ReceiptRefusal::Unnamed(error.to_string()))?;
         let claimed = op.claims.iter().find(|claim| claim.change == read.change);
-        if claimed
-            .is_none_or(|claimed| claimed.action != read.action || claimed.invoker != read.invoker)
-        {
+        let made = crate::claim::kinds_made_in(change);
+        // A store's change names the kinds of the records it writes, read by whoever holds them;
+        // any other change names no kind at all, and is what its own message says it is.
+        let store = change
+            .message()
+            .is_some_and(|message| crate::Stamp::of_message(message).is_some());
+        if claimed.is_none_or(|claimed| {
+            !names_what_it_read(&claimed.action, &read.action, &made, store)
+                || claimed.invoker != read.invoker
+        }) {
             return Err(ReceiptRefusal::Misclaimed(label(&read.action)));
         }
     }
     check_continuations(&changes, None, false)
+}
+
+/// Whether `claimed`, a change's signed claim, says what the change it opened to says, `read`:
+/// the same action, or, for a resource store's change (`store`), which names no kind of its own,
+/// an edit of its records whole of the kinds they are. Every kind of a record the change makes,
+/// `made`, must be among them; the kinds of the records made before it are read by whoever holds
+/// them, as it receives the change ([`decide_op_pinned`]).
+fn names_what_it_read(
+    claimed: &ClaimedAction,
+    read: &ClaimedAction,
+    made: &BTreeSet<String>,
+    store: bool,
+) -> bool {
+    claimed == read
+        || (store
+            && *read == ClaimedAction::whole_resource_edit(String::new())
+            && crate::claim::whole_edit_kinds(claimed)
+                .is_some_and(|kinds| !kinds.is_empty() && made.is_subset(&kinds)))
 }
 
 /// The invoker a continuation names must be its gesture's first entry's:
@@ -859,6 +891,61 @@ pub fn decide_opened(
     allows: &Allows<'_>,
     imported: Option<&Acting>,
 ) -> Result<Receipt, ReceiptRefusal> {
+    decide_op_settled(
+        (op, opened),
+        document,
+        (kind, held, pinned),
+        holding,
+        surfaces,
+        allows,
+        (false, imported),
+    )
+}
+
+/// [`decide_op_pinned`] for a write a holder hands on from its store, admitted when it was first
+/// made: a change to a resource store's document that names no kind of the records it writes,
+/// written before changes claimed them, is decided as it was admitted, against the app's own
+/// resource. Kept history is never refused for a claim it was let through under.
+///
+/// # Errors
+/// The first [`ReceiptRefusal`].
+pub fn decide_op_replayed(
+    (op, opened): (&crate::op::SignedOp, Option<&[automerge::Change]>),
+    document: &WrittenDocument<'_>,
+    (kind, held, pinned): (
+        Option<&str>,
+        Option<automerge::AutoCommit>,
+        Option<[u8; 32]>,
+    ),
+    holding: Option<&automerge::Automerge>,
+    surfaces: &Surfaces,
+    allows: &Allows<'_>,
+    imported: Option<&Acting>,
+) -> Result<Receipt, ReceiptRefusal> {
+    decide_op_settled(
+        (op, opened),
+        document,
+        (kind, held, pinned),
+        holding,
+        surfaces,
+        allows,
+        (true, imported),
+    )
+}
+
+fn decide_op_settled(
+    (op, opened): (&crate::op::SignedOp, Option<&[automerge::Change]>),
+    document: &WrittenDocument<'_>,
+    (kind, held, pinned): (
+        Option<&str>,
+        Option<automerge::AutoCommit>,
+        Option<[u8; 32]>,
+    ),
+    holding: Option<&automerge::Automerge>,
+    surfaces: &Surfaces,
+    allows: &Allows<'_>,
+    (replay, imported): (bool, Option<&Acting>),
+) -> Result<Receipt, ReceiptRefusal> {
     use tilo_action_policy::roles;
     let changes_of =
         |op: &crate::op::SignedOp| -> Result<Option<Vec<automerge::Change>>, ReceiptRefusal> {
@@ -898,7 +985,14 @@ pub fn decide_opened(
             let Some(changes) = changes_of(op)? else {
                 // A sealed op: the server decides the claims its envelope
                 // carries; devices check the changes once they open them.
-                return check_claims_by_kind(&op.claims, document, kind, &surface_for, allows);
+                return check_claims_by_kind(
+                    &op.claims,
+                    document,
+                    kind,
+                    replay,
+                    &surface_for,
+                    allows,
+                );
             };
             // A cleartext change names its action in itself, under the op's
             // signature: the envelope carries no second copy.
@@ -912,6 +1006,14 @@ pub fn decide_opened(
             // receiver holding the document checks that its gesture's first
             // entry names the same.
             check_continuations(&changes, holding, holding.is_some())?;
+            // A resource store's change names the kinds of the records it writes as this receiver
+            // reads them, before the change and after it: never as its writer says.
+            let mut held = held;
+            let kinds = crate::claim::store_record_kinds(
+                document.document,
+                held.as_mut().map(automerge::AutoCommit::document),
+                &changes,
+            );
             let written = held.and_then(|held| crate::units::units_by_change(held, &changes));
             let claims = changes
                 .iter()
@@ -932,6 +1034,9 @@ pub fn decide_opened(
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            let mut claims = claims;
+            crate::claim::name_record_kinds(&mut claims, &kinds);
+            check_store_kinds(&claims, document, replay)?;
             let hashes: Vec<[u8; 32]> = changes.iter().map(|change| change.hash().0).collect();
             if let Some(pinned) = pinned
                 && op.surface != Some(pinned)
@@ -1026,6 +1131,7 @@ pub type SurfaceFor<'a> = dyn Fn(Option<&str>) -> Option<std::sync::Arc<dyn Rece
 /// changes does: a server deciding a sealed op, or its author checking what
 /// it is about to send. `surface_for` finds the surface of a resource kind
 /// (the app's own resource for `None`); one that is not here holds the op.
+/// `replay` for a write admitted when it was made (see [`decide_op_replayed`]).
 ///
 /// # Errors
 /// The first [`ReceiptRefusal`] of any claim.
@@ -1033,17 +1139,88 @@ pub fn check_claims_by_kind(
     claims: &[ChangeClaim],
     document: &WrittenDocument<'_>,
     kind: Option<&str>,
+    replay: bool,
     surface_for: &SurfaceFor<'_>,
     allows: &Allows<'_>,
 ) -> Result<Receipt, ReceiptRefusal> {
     check_claimed_changes(claims, None)?;
-    for (group_kind, claims) in by_kind(kind, claims.to_vec()) {
+    check_store_kinds(claims, document, replay)?;
+    // What each change may write, before it is split by kind: a change over records of two
+    // kinds writes what the surface of each of them lets it.
+    let mut allowed: BTreeMap<[u8; 32], Vec<UnitPath>> = BTreeMap::new();
+    for claim in claims {
+        allowed.insert(claim.change, claim_units(claim, surface_for));
+    }
+    let groups = by_kind(kind, claims.to_vec());
+    // Every group's surface, before any claim is decided: a change over records of two kinds is
+    // decided by each, and one whose surface is not here holds the whole op.
+    let mut resolved = Vec::with_capacity(groups.len());
+    for (group_kind, group) in groups {
         let Some(surface) = surface_for(group_kind.as_deref()) else {
             return Ok(Receipt::Hold);
         };
-        check_claims(&claims, document, None, None, Some(&*surface), allows)?;
+        resolved.push((group, surface));
+    }
+    for (group, surface) in resolved {
+        for claim in group {
+            let units = allowed.get(&claim.change).cloned().unwrap_or_default();
+            let writable = AllowedUnits {
+                of: &*surface,
+                units: &units,
+            };
+            check_claims(
+                std::slice::from_ref(&claim),
+                document,
+                None,
+                None,
+                Some(&writable),
+                allows,
+            )?;
+        }
     }
     Ok(Receipt::Admit)
+}
+
+/// `surface` as `claim` is decided against, writing what the surfaces of every kind the claim
+/// names may write: a change over records of two kinds may write what each of them lets it.
+struct AllowedUnits<'a> {
+    of: &'a dyn ReceiptSurface,
+    units: &'a [UnitPath],
+}
+
+impl ReceiptSurface for AllowedUnits<'_> {
+    fn kind(&self) -> &str {
+        self.of.kind()
+    }
+    fn verb(&self, action: &str) -> Option<(ActionKind, Option<String>)> {
+        self.of.verb(action)
+    }
+    fn editable(&self, path: &[PathStep]) -> bool {
+        self.of.editable(path)
+    }
+    fn footprint(&self, _: &ClaimedAction) -> Vec<UnitPath> {
+        self.units.to_vec()
+    }
+    fn outboxes(&self) -> Vec<UnitPath> {
+        self.of.outboxes()
+    }
+}
+
+/// What `claim` may write across the surfaces of every kind it names ([`per_kind`]): one for a
+/// claim of one kind, each of a group of them.
+fn claim_units(claim: &ChangeClaim, surface_for: &SurfaceFor<'_>) -> Vec<UnitPath> {
+    let mut units: Vec<UnitPath> = Vec::new();
+    for piece in per_kind(claim.clone()) {
+        let Some(surface) = surface_for(claimed_kind(std::slice::from_ref(&piece))) else {
+            continue;
+        };
+        for unit in surface.footprint(&piece.action) {
+            if !units.contains(&unit) {
+                units.push(unit);
+            }
+        }
+    }
+    units
 }
 
 /// Refuse claims that do not name exactly the op's changes: a change with
@@ -1078,7 +1255,7 @@ fn by_kind(
         .map(str::to_owned)
         .or_else(|| claimed_kind(&claims).map(str::to_owned));
     let mut groups: Vec<(Option<String>, Vec<ChangeClaim>)> = Vec::new();
-    for claim in claims {
+    for claim in claims.into_iter().flat_map(per_kind) {
         let own = claimed_kind(std::slice::from_ref(&claim))
             .map(str::to_owned)
             .or_else(|| fallback.clone());
@@ -1145,6 +1322,60 @@ fn unread_claims(
             ..claim
         })
         .collect()
+}
+
+/// `claim` as one claim for each resource kind its members name, each with the members of that
+/// kind and those that name none: a change over records of two kinds is decided against the
+/// surface of each.
+fn per_kind(claim: ChangeClaim) -> Vec<ChangeClaim> {
+    let kind_of = |action: &ClaimedAction| match action {
+        ClaimedAction::Verb { action, .. } if !action.kind.is_empty() => Some(action.kind.clone()),
+        ClaimedAction::Edit { kind, .. } if !kind.is_empty() => Some(kind.clone()),
+        _ => None,
+    };
+    let ClaimedAction::Group(members) = &claim.action else {
+        return vec![claim];
+    };
+    let kinds: BTreeSet<String> = members.iter().filter_map(kind_of).collect();
+    if kinds.len() < 2 {
+        return vec![claim];
+    }
+    kinds
+        .into_iter()
+        .map(|kind| ChangeClaim {
+            action: ClaimedAction::Group(
+                members
+                    .iter()
+                    .filter(|member| kind_of(member).is_none_or(|own| own == kind))
+                    .cloned()
+                    .collect(),
+            ),
+            ..claim.clone()
+        })
+        .collect()
+}
+
+/// Refuse a change to a resource store's document that claims no kind of the records it writes:
+/// the document has no kind of its own to decide it against, so a claim naming none cannot be
+/// resolved without guessing. `replay` for a write admitted before changes claimed their kinds,
+/// which is decided as it was admitted ([`decide_op_replayed`]).
+fn check_store_kinds(
+    claims: &[ChangeClaim],
+    document: &WrittenDocument<'_>,
+    replay: bool,
+) -> Result<(), ReceiptRefusal> {
+    if replay || !crate::is_store_document(document.document) {
+        return Ok(());
+    }
+    if claims
+        .iter()
+        .any(|claim| claimed_kind(std::slice::from_ref(claim)).is_none())
+    {
+        return Err(ReceiptRefusal::Misclaimed(
+            "a change to a store's document claims no kind of the records it writes".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// The resource kind the claims name, for a receiver that does not know the

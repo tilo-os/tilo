@@ -60,8 +60,8 @@ pub const DOCUMENT_LIMIT: usize = 4096;
 const READERS: &str = "w";
 /// What a resource's key at the document's root starts with: each resource is a key of the root
 /// of its own, so two devices starting one document both keep what they wrote.
-const HELD: &str = "r:";
-const KIND: &str = "k";
+const HELD: &str = collab_types::claim::STORE_RECORD;
+const KIND: &str = collab_types::claim::STORE_RECORD_KIND;
 const PARENT: &str = "p";
 const ORDER: &str = "o";
 const FIELDS: &str = "f";
@@ -301,6 +301,7 @@ impl Store {
         let received = Received {
             change: write.change.clone(),
             author,
+            claimed: None,
         };
         self.judge(
             &write.doc,
@@ -309,6 +310,21 @@ impl Store {
             None,
             &|_: &Proposal<'_>| true,
         )
+    }
+
+    /// The kinds of the records `write`, staged against this store, writes, as each holder that
+    /// receives it reads them ([`collab_types::claim::store_record_kinds`]): what the sealed op
+    /// that carries it claims.
+    #[must_use]
+    pub fn written_kinds(&mut self, write: &Written) -> BTreeSet<String> {
+        let held = self.doc(&write.doc).ok().map(|doc| &*doc);
+        collab_types::claim::store_record_kinds(
+            &write.doc,
+            held,
+            std::slice::from_ref(&write.change),
+        )
+        .remove(&write.change.hash().0)
+        .unwrap_or_default()
     }
 
     /// The index of everything the store holds, whoever may read it.
@@ -832,7 +848,11 @@ impl Store {
         else {
             return Ok(None);
         };
-        let received = Received { change, author };
+        let received = Received {
+            change,
+            author,
+            claimed: None,
+        };
         self.judge(&doc, &resource.readers, &received, schema, admit)
             .map_err(|reason| format!("the resource change was refused: {reason:?}"))?;
         Ok(Some(Written {
@@ -1938,6 +1958,8 @@ impl Store {
         schema: Option<&Schema>,
         admit: &dyn Admit,
     ) -> Result<(), Refusal> {
+        let undeclared =
+            self.schema.types.is_empty() && schema.is_none_or(|schema| schema.types.is_empty());
         let doc = self.doc(doc_id).map_err(|_| Refusal::Unplaced)?;
         let (touched, writes) =
             crate::admit::touched(doc, doc_id, &received.change).ok_or(Refusal::Unplaced)?;
@@ -1951,10 +1973,21 @@ impl Store {
         }
         // A store that declares no type has nothing to judge a change by: it admits none, so a
         // writer whose surface was never named here is refused rather than taken on trust.
-        if self.schema.types.is_empty() && schema.is_none_or(|schema| schema.types.is_empty()) {
+        if undeclared {
             return Err(Refusal::Undeclared(
                 "the store declares no type, so it admits no change".to_owned(),
             ));
+        }
+        if received.claimed.is_some() {
+            let read = collab_types::claim::store_record_kinds(
+                doc_id,
+                Some(&*doc),
+                std::slice::from_ref(&received.change),
+            )
+            .remove(&received.change.hash().0)
+            .unwrap_or_default();
+            crate::admit::as_claimed(&read, received.claimed.as_ref())
+                .map_err(Refusal::Misclaimed)?;
         }
         let index = &self.index;
         let stamp = Stamp::of(&received.change);

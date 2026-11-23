@@ -449,7 +449,7 @@ fn surface_verb(
     let surface = collab_types::surface::SurfaceFile::parse(surface)
         .map_err(|error| CollaborationError::new(format!("the package's surface: {error}")))?;
     surface
-        .resource(Some(kind))
+        .resource(kind)
         .and_then(|resource| resource.verbs.iter().find(|verb| verb.id == action))
         .cloned()
         .ok_or_else(|| CollaborationError::new("the app declares no such action"))

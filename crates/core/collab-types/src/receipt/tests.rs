@@ -358,7 +358,7 @@ tilo_test_env::scenario! {
             claims_of(&parse_changes(&doc.save()).unwrap(), |_| vec![Vec::new()]).unwrap();
         let surface_for = |kind: Option<&str>| Channels.surface(&document(), kind, None);
         assert!(matches!(
-            check_claims_by_kind(&sealed_claims, &document(), None, &surface_for, &|_, _, _| true),
+            check_claims_by_kind(&sealed_claims, &document(), None, false, &surface_for, &|_, _, _| true),
             Err(ReceiptRefusal::NotPublished(_))
         ));
     }
@@ -761,4 +761,235 @@ fn a_change_naming_another_chain_is_refused_where_that_chain_is_granted() {
         ),
         Err(ReceiptRefusal::NotGranted { .. })
     ));
+}
+
+/// A resource kind of a test surface: `editable` says whether a change may edit it whole, and
+/// `unit` the one field unit such an edit may write.
+#[derive(Clone)]
+struct TestKind(&'static str, bool, Option<&'static str>);
+
+impl ReceiptSurface for TestKind {
+    fn kind(&self) -> &str {
+        self.0
+    }
+    fn verb(&self, _: &str) -> Option<(ActionKind, Option<String>)> {
+        None
+    }
+    fn editable(&self, _: &[PathStep]) -> bool {
+        self.1
+    }
+    fn footprint(&self, action: &ClaimedAction) -> Vec<UnitPath> {
+        match action {
+            ClaimedAction::Edit { path, .. } if path.is_empty() => {
+                let mut units = vec![Vec::new()];
+                units.extend(self.2.map(|field| vec![PathStep::Field(field.into())]));
+                units
+            }
+            ClaimedAction::Group(members) => members
+                .iter()
+                .flat_map(|member| self.footprint(member))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// A surface declaring `kinds`; `None` names the app's own, the first.
+struct Kinds(Vec<TestKind>);
+
+impl Kinds {
+    fn new(kinds: impl IntoIterator<Item = TestKind>) -> Self {
+        Self(kinds.into_iter().collect())
+    }
+}
+
+impl SurfaceSource for Kinds {
+    fn surface(
+        &self,
+        _: &WrittenDocument<'_>,
+        kind: Option<&str>,
+        _: Option<&[u8; 32]>,
+    ) -> Option<std::sync::Arc<dyn ReceiptSurface>> {
+        let named = kind.unwrap_or(self.0.first()?.0);
+        self.0
+            .iter()
+            .find(|kind| kind.0 == named)
+            .map(|kind| std::sync::Arc::new(kind.clone()) as std::sync::Arc<dyn ReceiptSurface>)
+    }
+}
+
+/// A resource store's document: the app's own, which holds records of every kind.
+fn store_document() -> WrittenDocument<'static> {
+    WrittenDocument {
+        workspace: WORKSPACE,
+        app: APP,
+        document: "*/tl.notes#0",
+    }
+}
+
+/// A resource store's change that makes a record of `kind`, stamped as the store stamps it.
+fn store_change(kind: &str) -> automerge::Change {
+    let mut doc = AutoCommit::new();
+    let record = doc
+        .put_object(ROOT, "r:n1", automerge::ObjType::Map)
+        .unwrap();
+    doc.put(&record, "k", kind).unwrap();
+    let stamp = crate::stamp::Stamp {
+        verb: "new".into(),
+        invoker: "ada".into(),
+        invocation: "i1".into(),
+        ..crate::stamp::Stamp::default()
+    };
+    doc.commit_with(CommitOptions::default().with_message(stamp.message()));
+    parse_changes(&doc.save()).unwrap().remove(0)
+}
+
+/// A change over records of two kinds is decided by the surface of each: one kind whose record
+/// is not edited whole refuses the change, and the units of both are what it is checked against.
+#[test]
+fn a_change_over_records_of_two_kinds_is_decided_by_the_surface_of_each() {
+    let whole = |kind: &str| ClaimedAction::whole_resource_edit(kind.to_owned());
+    let notes = Kinds::new([
+        TestKind("tl.notes.Note", true, Some("title")),
+        TestKind("tl.notes", false, None),
+    ]);
+    let surface_for = |kind: Option<&str>| notes.surface(&store_document(), kind, None);
+    let decide = |action: ClaimedAction, units: Vec<UnitPath>| {
+        check_claims_by_kind(
+            &[claim(1, action, units)],
+            &store_document(),
+            None,
+            false,
+            &surface_for,
+            &|_, _, _| true,
+        )
+    };
+    assert_eq!(
+        decide(whole("tl.notes.Note"), vec![Vec::new()]),
+        Ok(Receipt::Admit)
+    );
+    let both = decide(
+        ClaimedAction::Group(vec![whole("tl.notes.Note"), whole("tl.notes")]),
+        vec![Vec::new()],
+    );
+    assert!(
+        both.is_err(),
+        "the package's kind publishes no edit: {both:?}"
+    );
+
+    let folders = Kinds::new([
+        TestKind("tl.notes.Note", true, Some("title")),
+        TestKind("tl.notes.Folder", true, Some("name")),
+    ]);
+    let surface_for = |kind: Option<&str>| folders.surface(&store_document(), kind, None);
+    let decide = |units: Vec<UnitPath>| {
+        check_claims_by_kind(
+            &[claim(
+                1,
+                ClaimedAction::Group(vec![whole("tl.notes.Note"), whole("tl.notes.Folder")]),
+                units,
+            )],
+            &store_document(),
+            None,
+            false,
+            &surface_for,
+            &|_, _, _| true,
+        )
+    };
+    let title = vec![PathStep::Field("title".into())];
+    let name = vec![PathStep::Field("name".into())];
+    assert_eq!(
+        decide(vec![Vec::new(), title, name]),
+        Ok(Receipt::Admit),
+        "a unit of either kind"
+    );
+    assert!(
+        matches!(
+            decide(vec![vec![PathStep::Field("elsewhere".into())]]),
+            Err(ReceiptRefusal::OutsideFootprint { .. })
+        ),
+        "a unit no kind allows is refused"
+    );
+}
+
+/// A claim naming other kinds than its change says is refused where the change is opened: a
+/// store's change names the kinds of the records it writes, and a native edit of a record names
+/// none, being the record's own.
+#[test]
+fn a_claim_naming_other_kinds_than_its_change_is_refused_when_opened() {
+    let change = store_change("tl.notes.Note");
+    let read = ChangeClaim::of_change(change.hash().0, change.message(), Vec::new()).unwrap();
+    let opened = |change: &automerge::Change, read: &ChangeClaim, kind: &str| {
+        let op = crate::op::SignedOp::new_unsigned(
+            Vec::new(),
+            crate::document_artifact_id(APP, WORKSPACE, "*/tl.notes#0"),
+            crate::Ed25519PublicKey::from_bytes([7; 32]),
+            crate::document_attestation_id(APP, WORKSPACE, "*/tl.notes#0"),
+            crate::role::OpKind::Change,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+        )
+        .with_claims(vec![ChangeClaim {
+            action: ClaimedAction::whole_resource_edit(kind.to_owned()),
+            ..read.clone()
+        }]);
+        check_opened_mutation(
+            &op,
+            &crate::op::DocumentMutation::Incremental(change.raw_bytes().to_vec()),
+        )
+    };
+    assert_eq!(opened(&change, &read, "tl.notes.Note"), Ok(()));
+    assert!(matches!(
+        opened(&change, &read, "tl.notes.Folder"),
+        Err(ReceiptRefusal::Misclaimed(_))
+    ));
+    assert_eq!(
+        crate::claim::store_record_kinds("*/tl.notes#0", None, std::slice::from_ref(&change))
+            .remove(&change.hash().0),
+        Some(std::iter::once("tl.notes.Note".to_owned()).collect())
+    );
+
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "title", "Groceries").unwrap();
+    doc.commit_with(
+        CommitOptions::default().with_message(crate::FrameworkChange::Native.change_message()),
+    );
+    let native = parse_changes(&doc.save()).unwrap().remove(0);
+    let native_read =
+        ChangeClaim::of_change(native.hash().0, native.message(), Vec::new()).unwrap();
+    assert_eq!(opened(&native, &native_read, ""), Ok(()));
+    assert!(matches!(
+        opened(&native, &native_read, "tl.notes.Note"),
+        Err(ReceiptRefusal::Misclaimed(_))
+    ));
+}
+
+/// A store change that names no kind is a new write that says nothing of what it writes, and is
+/// refused; one admitted before changes claimed their kinds, handed on from a store, keeps the
+/// verdict it got: it is decided whole against the app's own resource, as it was then.
+#[test]
+fn a_store_change_that_names_no_kind_is_refused_new_and_kept_as_it_was_in_replay() {
+    let notes = Kinds::new([TestKind("tl.notes", true, None)]);
+    let surface_for = |kind: Option<&str>| notes.surface(&store_document(), kind, None);
+    let unnamed = claim(
+        1,
+        ClaimedAction::whole_resource_edit(String::new()),
+        vec![Vec::new()],
+    );
+    let decide = |replay: bool| {
+        check_claims_by_kind(
+            std::slice::from_ref(&unnamed),
+            &store_document(),
+            None,
+            replay,
+            &surface_for,
+            &|_, _, _| true,
+        )
+    };
+    assert!(
+        matches!(decide(false), Err(ReceiptRefusal::Misclaimed(ref why)) if why.contains("no kind")),
+        "{:?}",
+        decide(false)
+    );
+    assert_eq!(decide(true), Ok(Receipt::Admit));
 }

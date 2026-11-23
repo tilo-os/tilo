@@ -30,6 +30,8 @@ pub use collab_types::stamp::{Group, Origin, Stamp};
 pub struct Touch {
     /// Its kind, as the change sets it or the document holds it.
     pub kind: Option<String>,
+    /// The kind it had before the change gave it another, as its earlier changes left it.
+    pub retyped_from: Option<String>,
     /// It is made by the change.
     pub made: bool,
     /// It is removed by the change.
@@ -85,6 +87,11 @@ impl<F: Fn(&Proposal<'_>) -> bool> Admit for F {
 pub struct Received {
     pub change: AmChange,
     pub author: [u8; 32],
+    /// The kinds of the records the change writes, as the sealed op that carried it claims: what
+    /// a member without the document's key decided it by. The store refuses the change unless
+    /// they are the kinds it reads ([`collab_types::claim::store_record_kinds`]). `None` for a
+    /// change that came in the clear, which its receiver read for itself.
+    pub claimed: Option<BTreeSet<String>>,
 }
 
 /// Why a change was refused.
@@ -98,6 +105,8 @@ pub enum Refusal {
     Undeclared(String),
     /// Its author may not make it.
     NotPermitted,
+    /// It writes records of other kinds than the op that carried it claims.
+    Misclaimed(String),
 }
 
 /// Where each object of `doc` and of the change being read lies, as the keys leading to it.
@@ -236,20 +245,67 @@ pub(crate) fn touched(
             _ => return None,
         }
     }
-    // The kind of each resource the change does not name its kind of is the one it has.
     if content_of.is_none() {
-        for (id, touch) in &mut touched.resources {
-            if touch.kind.is_none()
-                && let Ok(Some((automerge::Value::Object(_), resource))) =
-                    doc.get(automerge::ROOT, format!("r:{id}"))
-                && let Ok(Some((automerge::Value::Scalar(kind), _))) = doc.get(&resource, "k")
-                && let ScalarValue::Str(kind) = kind.as_ref()
-            {
-                touch.kind = Some(kind.to_string());
-            }
-        }
+        held_kinds(doc, change.deps(), &mut touched);
     }
     Some((touched, writes))
+}
+
+/// The kind of each resource of `touched` the change does not name its kind of is the one it has
+/// in `doc`; one it names another kind of than its earlier changes, `deps`, left it was retyped.
+fn held_kinds(doc: &Automerge, deps: &[automerge::ChangeHash], touched: &mut Touched) {
+    for (id, touch) in &mut touched.resources {
+        if !touch.made {
+            touch.retyped_from = kind_at(doc, id, deps)
+                .filter(|was| touch.kind.as_ref().is_some_and(|kind| kind != was));
+        }
+        if touch.kind.is_none()
+            && let Ok(Some((automerge::Value::Object(_), resource))) =
+                doc.get(automerge::ROOT, format!("r:{id}"))
+            && let Ok(Some((automerge::Value::Scalar(kind), _))) = doc.get(&resource, "k")
+            && let ScalarValue::Str(kind) = kind.as_ref()
+        {
+            touch.kind = Some(kind.to_string());
+        }
+    }
+}
+
+/// The kind the resource `id` has in `doc` as it stood at `heads`.
+fn kind_at(doc: &Automerge, id: &str, heads: &[automerge::ChangeHash]) -> Option<String> {
+    let (_, resource) = doc
+        .get_at(automerge::ROOT, format!("r:{id}"), heads)
+        .ok()??;
+    match doc.get_at(&resource, "k", heads).ok()?? {
+        (automerge::Value::Scalar(kind), _) => kind.as_str().map(str::to_owned),
+        _ => None,
+    }
+}
+
+/// Whether the kinds a sealed op claims its change writes, `claimed`, are those its holder reads,
+/// `read`: the same on every holder, which reads them at the change's earlier changes.
+pub(crate) fn as_claimed(
+    read: &BTreeSet<String>,
+    claimed: Option<&BTreeSet<String>>,
+) -> Result<(), String> {
+    match claimed {
+        Some(claimed) if claimed != read => Err(format!(
+            "it writes {} but claims {}",
+            listed(read),
+            listed(claimed)
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn listed(kinds: &BTreeSet<String>) -> String {
+    if kinds.is_empty() {
+        return "no kind".to_owned();
+    }
+    kinds
+        .iter()
+        .map(|kind| format!("`{kind}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The resource whose content `doc_id` holds, by kind and id; `None` for a document of resources.
@@ -298,8 +354,11 @@ pub(crate) fn declared(
         let Some(kind) = &touch.kind else {
             return Err(format!("`{id}` is of no kind"));
         };
-        if schema.get(kind).is_none() {
-            return Err(format!("no type `{kind}` is declared"));
+        if let Some(missing) = std::iter::once(kind)
+            .chain(&touch.retyped_from)
+            .find(|kind| schema.get(kind).is_none())
+        {
+            return Err(format!("no type `{missing}` is declared"));
         }
     }
     for (id, field, value) in writes {
@@ -368,8 +427,23 @@ pub(crate) fn within_verb(
             }
             return Err(format!("`{}` writes no `{kind}`", verb.name));
         };
-        if writes.sets_only && (touch.made || touch.removed || touch.placed || touch.content) {
+        if writes.sets_only
+            && (touch.made
+                || touch.removed
+                || touch.placed
+                || touch.content
+                || touch.retyped_from.is_some())
+        {
             return Err(format!("`{}` only sets fields of `{id}`", verb.name));
+        }
+        // A record given another kind leaves its old one: the verb must write that kind too.
+        if let Some(was) = &touch.retyped_from {
+            match verb.writes.get(was) {
+                Some(old) if !old.sets_only => {}
+                Some(_) => return Err(format!("`{}` only sets fields of `{was}`", verb.name)),
+                None if nested_kind(schema, &verb.nested, was) => {}
+                None => return Err(format!("`{}` writes no `{was}`", verb.name)),
+            }
         }
         if let Some(field) = touch
             .fields

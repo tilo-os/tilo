@@ -1165,6 +1165,7 @@ impl StatePeer {
                 envelope,
                 changes,
                 authorization_time,
+                retained,
             )?,
             Under::Past(judged) => judged.decide_written(
                 source,
@@ -1173,6 +1174,7 @@ impl StatePeer {
                 envelope,
                 changes,
                 authorization_time,
+                retained,
             )?,
             // The governance it names may be on its way: what this copy holds
             // refusing it, it waits for that.
@@ -1184,6 +1186,7 @@ impl StatePeer {
                     envelope,
                     changes,
                     authorization_time,
+                    retained,
                 ) {
                     Ok(decided) => decided,
                     Err(_) => {
@@ -1204,6 +1207,7 @@ impl StatePeer {
         envelope: &SignedOp,
         (changes, opened): (&SignedOp, Option<&[automerge::Change]>),
         authorization_time: SystemTime,
+        retained: bool,
     ) -> Result<Authorized, AuthorizeRefusal> {
         let written = self
             .written_as(app_id, record, envelope, authorization_time)
@@ -1288,7 +1292,14 @@ impl StatePeer {
         let imported = self
             .governance()
             .imported_invoker(source, app_id, record, envelope.seq);
-        let decided = collab_types::decide_opened(
+        // A change a holder hands on from its store was admitted when it was made: one that
+        // names no kind of the records it writes keeps the verdict it got then.
+        let decide = if retained {
+            collab_types::decide_op_replayed
+        } else {
+            collab_types::decide_opened
+        };
+        let decided = decide(
             (changes, opened),
             &collab_types::WrittenDocument {
                 workspace: &self.core.workspace,

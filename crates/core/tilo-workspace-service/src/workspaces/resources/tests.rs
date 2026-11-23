@@ -304,6 +304,66 @@ async fn assert_replica_holds_issue(workspaces: &Workspaces, workspace: &str) {
     );
 }
 
+/// The sealed writes the replica keeps of the document the store placed name the kinds of the
+/// records they write, read from the store: what a member without the document's key decides the
+/// edit after the first write by.
+async fn assert_sealed_claims_the_issue(workspaces: &Workspaces, workspace: &str) {
+    let governed = workspaces.workspace(workspace).await.unwrap();
+    let governed = governed.lock().await;
+    let doc = {
+        let store = governed.resources.store();
+        store
+            .index()
+            .documents()
+            .next()
+            .map(str::to_owned)
+            .expect("the store placed a document")
+    };
+    let claims: Vec<std::collections::BTreeSet<String>> = governed
+        .peer()
+        .publication()
+        .sealed_history(APP, &doc)
+        .iter()
+        .flat_map(|op| op.claims.iter())
+        .filter_map(|claim| collab_types::claim::whole_edit_kinds(&claim.action))
+        .collect();
+    assert!(
+        claims
+            .iter()
+            .any(|kinds| kinds == &std::collections::BTreeSet::from([KIND.to_owned()])),
+        "the sealed writes claim the issue's kind"
+    );
+}
+
+/// A write the app makes while serving an invocation the workspace service delivered to it is
+/// that invocation's invoker's: an agent acting for the person is named as the agent. Answers the
+/// agent the write names.
+async fn assert_scribed_as_agent(
+    workspaces: &Workspaces,
+    context: &ResourceRequestContext,
+    resource: Resource,
+    stamp: &Stamp,
+) -> tilo_actions::Actor {
+    let agent = tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"));
+    let delivered = tilo_actions::InvocationId(uuid::Uuid::new_v4());
+    workspaces
+        .resource_command(
+            &context.clone().serving(vec![(delivered, agent.clone())]),
+            Command::Put {
+                kind: KIND.to_owned(),
+                id: "i-1".to_owned(),
+                resource,
+                stamp: Stamp {
+                    invocation: delivered.0.to_string(),
+                    ..stamp.clone()
+                },
+            },
+        )
+        .await
+        .unwrap();
+    agent
+}
+
 /// The service writes its device's resources through its own store, as the device's signed and
 /// sealed document writes the workspace's other members follow, and reads them back at once.
 #[tokio::test]
@@ -362,25 +422,8 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
             "the write is read back at once"
         );
     }
-    // A write the app makes while serving an invocation the workspace service delivered to it is that
-    // invocation's invoker's: an agent acting for the person is named as the agent.
-    let agent = tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"));
-    let delivered = tilo_actions::InvocationId(uuid::Uuid::new_v4());
-    workspaces
-        .resource_command(
-            &context.clone().serving(vec![(delivered, agent.clone())]),
-            Command::Put {
-                kind: KIND.to_owned(),
-                id: "i-1".to_owned(),
-                resource: issue("Scribed"),
-                stamp: Stamp {
-                    invocation: delivered.0.to_string(),
-                    ..stamp.clone()
-                },
-            },
-        )
-        .await
-        .unwrap();
+    assert_sealed_claims_the_issue(&workspaces, &workspace).await;
+    let agent = assert_scribed_as_agent(&workspaces, &context, issue("Scribed"), &stamp).await;
     assert_replica_holds_issue(&workspaces, &workspace).await;
     // A reader the issue's set leaves out reads nothing of it.
     assert!(

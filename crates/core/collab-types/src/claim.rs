@@ -208,8 +208,11 @@ impl ClaimedAction {
         })
     }
 
-    /// An edit of the whole record of kind `kind`; an empty kind is the
-    /// record's own.
+    /// An edit of the whole record of kind `kind`. An empty kind is the record's own: a native
+    /// window's edit of the record, or an entry that names no resource, is decided against the
+    /// app's own resource. A resource store's change is left unnamed here and the store that
+    /// wrote it names the kinds of the records it wrote ([`name_record_kinds`]); one still
+    /// unnamed is refused ([`crate::check_claims_by_kind`]).
     #[must_use]
     pub fn whole_resource_edit(kind: String) -> Self {
         Self::Edit {
@@ -281,6 +284,9 @@ impl ChangeClaim {
         let message = message.ok_or(ClaimError::Unnamed)?;
         let mut stamp: Option<crate::Stamp> = None;
         let action = match FrameworkChange::from_change_message(message) {
+            // A window's own commit names no finer action than the record whole, and no kind:
+            // the record is the app's own, which only its own document says, so the claim
+            // names none and is decided against that resource, never a record's first.
             Some(FrameworkChange::Native) => ClaimedAction::whole_resource_edit(String::new()),
             Some(change) => ClaimedAction::Framework(change),
             None if message.starts_with(tilo_actions::context::CONTINUATION_PREFIX) => {
@@ -292,7 +298,8 @@ impl ChangeClaim {
                 } else {
                     // A resource store's change names its verb in its stamp, and the store
                     // that takes it judges that verb's write-set against it: the claim is an
-                    // edit of the resource, as a native write's is.
+                    // edit of the records it writes, whose kinds only the store that holds
+                    // them reads ([`name_record_kinds`]).
                     let parsed = crate::Stamp::of_message(message).ok_or(ClaimError::Unnamed)?;
                     stamp_invoker(&parsed)?;
                     stamp = Some(parsed);
@@ -396,6 +403,166 @@ pub fn claims_of(
             )
         })
         .collect()
+}
+
+/// What each record of a workspace's resource store is kept under at its document's root: a key
+/// that starts with this, holding the record's kind under [`STORE_RECORD_KIND`].
+pub const STORE_RECORD: &str = "r:";
+/// The key of a stored record's kind, inside its key at the document's root.
+pub const STORE_RECORD_KIND: &str = "k";
+
+/// The kinds of the records each change writes, by the change's hash: what a change of a
+/// workspace's resource store claims, an edit of its records whole of these kinds.
+pub type RecordKinds = std::collections::BTreeMap<[u8; 32], std::collections::BTreeSet<String>>;
+
+/// The kinds of the records each of `changes` writes in `record`, a document of a workspace's
+/// resource store, held as `held` before them (`None` for one held nowhere yet): read from the
+/// records themselves as they stand at the change's own earlier changes and after it, so a change
+/// of a record's kind names both, and every holder reads the same whatever else it holds. A
+/// content document holds one resource, whose kind its id names. A change whose records name no
+/// kind, or whose earlier changes are not here, is left out.
+#[must_use]
+pub fn store_record_kinds(
+    record: &str,
+    held: Option<&automerge::Automerge>,
+    changes: &[automerge::Change],
+) -> RecordKinds {
+    use automerge::ReadDoc as _;
+    let mut kinds = RecordKinds::new();
+    if !crate::is_store_document(record) {
+        return kinds;
+    }
+    if let Some(kind) = content_kind(record) {
+        for change in changes {
+            kinds.insert(change.hash().0, std::iter::once(kind.to_owned()).collect());
+        }
+        return kinds;
+    }
+    let kind_at = |doc: &automerge::Automerge, key: &str| {
+        let (_, map) = doc.get(automerge::ROOT, key).ok().flatten()?;
+        let (value, _) = doc.get(&map, STORE_RECORD_KIND).ok().flatten()?;
+        value.as_str().map(str::to_owned)
+    };
+    let mut held = held.cloned().unwrap_or_else(automerge::Automerge::new);
+    for change in changes {
+        let Ok(mut doc) = held.fork_at(change.deps()) else {
+            continue;
+        };
+        let before = doc.clone();
+        let heads = doc.get_heads();
+        if doc.apply_changes([change.clone()]).is_err() {
+            continue;
+        }
+        let records: std::collections::BTreeSet<String> = doc
+            .diff(&heads, &doc.get_heads())
+            .into_iter()
+            .filter_map(|patch| match (patch.path.first(), patch.action) {
+                (Some((_, automerge::Prop::Map(key))), _) => Some(key.clone()),
+                (
+                    None,
+                    automerge::PatchAction::PutMap { key, .. }
+                    | automerge::PatchAction::DeleteMap { key },
+                ) => Some(key),
+                _ => None,
+            })
+            .filter(|key| key.starts_with(STORE_RECORD))
+            .collect();
+        let written: std::collections::BTreeSet<String> = records
+            .iter()
+            .flat_map(|key| [kind_at(&before, key), kind_at(&doc, key)])
+            .flatten()
+            .collect();
+        if !written.is_empty() {
+            kinds.insert(change.hash().0, written);
+        }
+        // Later changes may build on this one.
+        tilo_failure::ignored!(
+            "a change that does not apply here names nothing",
+            held.apply_changes([change.clone()]).ok()
+        );
+    }
+    kinds
+}
+
+/// The kinds `action`, a change's claim, says it edits whole: one for an edit of a record whole
+/// of a kind, each of a group of them. `None` for any other claim.
+#[must_use]
+pub fn whole_edit_kinds(action: &ClaimedAction) -> Option<std::collections::BTreeSet<String>> {
+    let whole = |action: &ClaimedAction| match action {
+        ClaimedAction::Edit { kind, path } if path.is_empty() => Some(kind.clone()),
+        _ => None,
+    };
+    match action {
+        ClaimedAction::Group(members) => members.iter().map(whole).collect(),
+        single => whole(single).map(|kind| std::iter::once(kind).collect()),
+    }
+    .map(|kinds: std::collections::BTreeSet<String>| {
+        kinds.into_iter().filter(|kind| !kind.is_empty()).collect()
+    })
+}
+
+/// The kinds of the records `change` makes in a resource store's document, read from the change
+/// alone: each record it starts at the document's root, with the kind it gives it. What it writes
+/// in a record made before is read only by whoever holds the record ([`store_record_kinds`]).
+#[must_use]
+pub fn kinds_made_in(change: &automerge::Change) -> std::collections::BTreeSet<String> {
+    use automerge::legacy::{Key, ObjectId, OpId, OpType};
+    let expanded = change.decode();
+    let made: Vec<OpId> = expanded
+        .operations
+        .iter()
+        .zip(expanded.start_op.get()..)
+        .filter(|(op, _)| {
+            op.obj == ObjectId::Root
+                && matches!(op.action, OpType::Make(automerge::ObjType::Map))
+                && matches!(&op.key, Key::Map(key) if key.starts_with(STORE_RECORD))
+        })
+        .map(|(_, counter)| OpId(counter, expanded.actor_id.clone()))
+        .collect();
+    expanded
+        .operations
+        .iter()
+        .filter_map(|op| match (&op.obj, &op.key, &op.action) {
+            (
+                ObjectId::Id(record),
+                Key::Map(key),
+                OpType::Put(automerge::ScalarValue::Str(kind)),
+            ) if key == STORE_RECORD_KIND && made.contains(record) => Some(kind.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The kind of the one resource a content document of a resource store holds, as its id names it
+/// (`<readers>/<kind>/<id>~<n>`); `None` for a document of resources.
+fn content_kind(record: &str) -> Option<&str> {
+    let (rest, number) = record.rsplit_once('~')?;
+    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let (_, rest) = rest.split_once('/')?;
+    // A kind names no `/`; an id may.
+    rest.split_once('/').map(|(kind, _)| kind)
+}
+
+/// Name in each claim of `claims` that edits its record whole the kinds `kinds` holds for its
+/// change ([`store_record_kinds`]).
+pub fn name_record_kinds(claims: &mut [ChangeClaim], kinds: &RecordKinds) {
+    let whole = ClaimedAction::whole_resource_edit(String::new());
+    for claim in claims {
+        let Some(written) = kinds.get(&claim.change).filter(|_| claim.action == whole) else {
+            continue;
+        };
+        let mut edits: Vec<ClaimedAction> = written
+            .iter()
+            .map(|kind| ClaimedAction::whole_resource_edit(kind.clone()))
+            .collect();
+        claim.action = if edits.len() == 1 {
+            edits.remove(0)
+        } else {
+            ClaimedAction::Group(edits)
+        };
+    }
 }
 
 /// The units a change writes in a record that keeps no unit index: the

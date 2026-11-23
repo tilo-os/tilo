@@ -148,7 +148,8 @@ pub use receipt::{
     Allows, ChangeAuthor, Receipt, ReceiptRefusal, ReceiptSurface, SurfaceSource, Surfaces,
     WrittenDocument, check_appearances, check_claims, check_claims_by_kind, check_continuations,
     check_opened, check_opened_mutation, check_reassembled, claim_node, claimed_invokers,
-    decide_op, decide_op_imported, decide_op_pinned, decide_opened, recorded_contexts,
+    decide_op, decide_op_imported, decide_op_pinned, decide_op_replayed, decide_opened,
+    recorded_contexts,
     written_node,
 };
 pub use record_id::{

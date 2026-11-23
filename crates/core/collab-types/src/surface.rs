@@ -97,14 +97,18 @@ impl SurfaceFile {
             .any(|surface| self.reads.contains(&surface.kind))
     }
 
-    /// The resource of kind `kind`, or the app's first (its own record)
-    /// when no kind is known.
+    /// The resource `kind` names.
     #[must_use]
-    pub fn resource(&self, kind: Option<&str>) -> Option<&Surface> {
-        match kind {
-            Some(kind) => self.resources.iter().find(|surface| surface.kind == kind),
-            None => self.resources.first(),
-        }
+    pub fn resource(&self, kind: &str) -> Option<&Surface> {
+        self.resources.iter().find(|surface| surface.kind == kind)
+    }
+
+    /// The app's own resource, the first it declares: the record an app writes whole and a
+    /// change names no kind of (a native edit, an undo, a creation). A change to a resource
+    /// store's document names the kinds of the records it writes, and is never resolved here.
+    #[must_use]
+    pub fn own_resource(&self) -> Option<&Surface> {
+        self.resources.first()
     }
 }
 
@@ -249,7 +253,10 @@ impl SurfaceSource for ContentSurfaces {
         named: Option<&[u8; 32]>,
     ) -> Option<Arc<dyn ReceiptSurface>> {
         let file = self.file(document, named?)?;
-        let surface = file.resource(kind)?.clone();
+        let surface = match kind {
+            Some(kind) => file.resource(kind)?.clone(),
+            None => file.own_resource()?.clone(),
+        };
         Some(Arc::new(KindSurface(surface)))
     }
 }
@@ -436,7 +443,9 @@ writes = ["document", "comments.*"]
             ];
             assert!(footprint.iter().any(|unit| covers(unit, &c1)));
             assert!(!footprint.iter().any(|unit| covers(unit, &c2)));
-            let whole = surface.footprint(&ClaimedAction::whole_resource_edit(String::new()));
+            let whole = surface.footprint(&ClaimedAction::whole_resource_edit(
+                "notes.page".to_owned(),
+            ));
             assert!(
                 whole.iter().any(|unit| covers(unit, &c2)),
                 "a whole-document edit writes any unit"
@@ -481,7 +490,7 @@ writes = ["document", "comments.*"]
                 };
                 let (surface, kept) = SurfaceFile::kept(&bytes)
                     .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
-                assert!(surface.resource(None).is_some(), "{}", file.display());
+                assert!(surface.own_resource().is_some(), "{}", file.display());
                 assert_eq!(
                     SurfaceFile::parse(&bytes).expect("it parses"),
                     surface,

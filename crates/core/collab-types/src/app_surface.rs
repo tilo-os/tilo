@@ -291,7 +291,7 @@ fn surface_of(app_id: &str) -> Option<Arc<crate::surface::SurfaceFile>> {
 #[must_use]
 pub fn primary_kind(app_id: &str) -> Option<String> {
     surface_of(app_id)?
-        .resource(None)
+        .own_resource()
         .map(|surface| surface.kind.clone())
 }
 
@@ -301,7 +301,7 @@ pub fn primary_kind(app_id: &str) -> Option<String> {
 #[must_use]
 pub fn document_verb(app_id: &str, kind: &str, action: &str) -> bool {
     surface_of(app_id).is_some_and(|file| {
-        file.resource(Some(kind)).is_some_and(|surface| {
+        file.resource(kind).is_some_and(|surface| {
             surface.verbs.iter().any(|verb| {
                 verb.id == action && verb.kind == tilo_action_policy::ActionKind::Undoable
             })
@@ -383,7 +383,12 @@ pub fn with_footprints(
                 crate::ClaimedAction::Edit { kind, .. } if !kind.is_empty() => Some(kind.clone()),
                 _ => None,
             });
-        if let Some(resource) = file.resource(kind.as_deref()) {
+        let resource = match &kind {
+            Some(kind) => file.resource(kind),
+            // A change that names no kind is an edit of the record whole: the app's own.
+            None => file.own_resource(),
+        };
+        if let Some(resource) = resource {
             let surface = crate::surface::KindSurface(resource.clone());
             claim.units = surface.footprint(&claim.action);
         }
@@ -406,38 +411,6 @@ pub fn claims_of(
     };
     let claims = crate::claim::claims_of(&changes, crate::record_unit)?;
     Ok(with_footprints(app_id, claims))
-}
-
-/// Why a workspace refuses `mutation`, a change this process made to `record` of
-/// `app_id`, by what the app's surface publishes, if it does: the check every
-/// receiver runs on its claims ([`crate::check_claims_by_kind`]), the
-/// grants aside, which the broker decides. `None` when this process holds no
-/// surface for the app: its receivers then hold the change until one arrives.
-#[must_use]
-pub fn refusal(
-    document: &crate::WrittenDocument<'_>,
-    mutation: &crate::DocumentMutation,
-) -> Option<String> {
-    let claims = match claims_of(document.app, mutation) {
-        Ok(claims) => claims,
-        Err(error) => return Some(error.to_string()),
-    };
-    let file = surface_of(document.app)?;
-    let surface_for = |kind: Option<&str>| {
-        file.resource(kind).map(|resource| {
-            std::sync::Arc::new(crate::surface::KindSurface(resource.clone()))
-                as std::sync::Arc<dyn crate::ReceiptSurface>
-        })
-    };
-    match crate::check_claims_by_kind(&claims, document, None, &surface_for, &|_, _, _| true) {
-        Ok(crate::Receipt::Admit) => None,
-        // The surface is here: what holds is a resource kind it does not publish, which no
-        // receiver holding it admits.
-        Ok(crate::Receipt::Hold) => {
-            Some("the document's app publishes no resource the change names".to_owned())
-        }
-        Err(refusal) => Some(refusal.to_string()),
-    }
 }
 
 /// Parse a lowercase hex hash, as [`SURFACE_HASH_ENV`] carries it.
@@ -490,7 +463,7 @@ mod tests {
                 invoker: None,
             }];
             let file = crate::surface::SurfaceFile::parse(FILE).unwrap();
-            let receiver = crate::surface::KindSurface(file.resource(None).unwrap().clone());
+            let receiver = crate::surface::KindSurface(file.own_resource().unwrap().clone());
             let document = crate::WrittenDocument {
                 workspace: "workspace-1",
                 app: "test.footprints",

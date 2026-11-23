@@ -942,6 +942,26 @@ mod store {
         }
     }
 
+    /// A type `name` whose records hold what [`fields`] writes.
+    fn record_type(name: &str) -> tilo_resource_store::Type {
+        use tilo_resource_store::{Expected, Field, FieldKind};
+        let field = |name: &str, kind| Field {
+            name: name.to_owned(),
+            kind,
+            value: Expected::Text,
+            optional: true,
+        };
+        tilo_resource_store::Type {
+            name: name.to_owned(),
+            fields: vec![
+                field("title", FieldKind::Scalar),
+                field("state", FieldKind::Scalar),
+                field("labels", FieldKind::Set),
+            ],
+            nested: Vec::new(),
+        }
+    }
+
     fn put(store: &mut Store, id: &str, resource: Resource) -> Vec<Written> {
         store.put(ISSUE, id, resource, &Stamp::default()).unwrap()
     }
@@ -956,6 +976,7 @@ mod store {
                     vec![Received {
                         change: write.change.clone(),
                         author: [0; 32],
+                        claimed: None,
                     }],
                     &|_: &Proposal<'_>| true,
                 )
@@ -1424,6 +1445,7 @@ mod store {
                     vec![Received {
                         change: write.change.clone(),
                         author: [7; 32],
+                        claimed: None,
                     }],
                     admit,
                 )
@@ -2243,6 +2265,176 @@ mod store {
             [Refusal::Undeclared(why)] if why.contains("secret")
         ));
         assert_eq!(there.count(ISSUE, &[], &|_| true), 1);
+    }
+
+    /// A sealed write is decided, by members without its key, by the kinds of the records it
+    /// claims to write. Every holder that opens it reads those kinds itself, at the change's own
+    /// earlier changes, so all of them read the same: two holders refuse the same lying edit
+    /// alike and keep the record exactly as it was, and a third takes it claimed truly. The kind
+    /// of an edit after the record's first write comes from the record, never from the change.
+    #[test]
+    fn a_change_claiming_other_kinds_than_it_writes_is_refused_alike_by_every_holder() {
+        use tilo_resource_store::Refusal;
+        let ty = |name: &str| record_type(name);
+        let schema = Schema {
+            types: vec![ty(ISSUE), ty("Comment")],
+            ..Schema::default()
+        };
+        let mut here = Store::new();
+        let mut holders = [Store::new(), Store::new(), Store::new()];
+        let made = put(&mut here, "a", resource("board", "a0", "Draft", "open"));
+        for holder in &mut holders {
+            holder.declare(schema.clone());
+            send(&made, holder);
+        }
+        let edited = put(&mut here, "a", resource("board", "a0", "Final", "done"));
+        let [edit] = edited.as_slice() else {
+            panic!("one change of one document: {edited:?}");
+        };
+        let truly = here.written_kinds(edit);
+        assert_eq!(truly, BTreeSet::from([ISSUE.to_owned()]));
+        let claiming = |kinds: &BTreeSet<String>| {
+            vec![Received {
+                change: edit.change.clone(),
+                author: [7; 32],
+                claimed: Some(kinds.clone()),
+            }]
+        };
+        let lie = BTreeSet::from(["Comment".to_owned()]);
+        let all = |_: &str| true;
+        let [first, second, third] = &mut holders;
+        for holder in [first, second] {
+            let before = (
+                holder.document(&edit.doc).expect("held").save(),
+                holder.get(ISSUE, "a", &all).cloned(),
+            );
+            let refused = holder
+                .receive(
+                    &edit.doc,
+                    &edit.readers,
+                    claiming(&lie),
+                    &|_: &Proposal<'_>| true,
+                )
+                .unwrap();
+            assert!(
+                matches!(refused.as_slice(), [(_, Refusal::Misclaimed(why))] if why.contains(ISSUE) && why.contains("Comment")),
+                "{refused:?}"
+            );
+            let after = (
+                holder.document(&edit.doc).expect("held").save(),
+                holder.get(ISSUE, "a", &all).cloned(),
+            );
+            assert_eq!(
+                after, before,
+                "a refused change leaves the record as it was"
+            );
+        }
+        let refused = third
+            .receive(
+                &edit.doc,
+                &edit.readers,
+                claiming(&truly),
+                &|_: &Proposal<'_>| true,
+            )
+            .unwrap();
+        assert_eq!(refused, []);
+        assert_eq!(
+            third
+                .get(ISSUE, "a", &all)
+                .map(|held| held.fields.get("title").cloned()),
+            Some(Some(Cell::One("Final".into())))
+        );
+    }
+
+    /// A change of a record's kind takes it out of its old kind and into the new one: it claims
+    /// both, and the verb it names must write both. One that writes only the new kind is refused,
+    /// and so is a claim of only the new kind; one that writes both is taken.
+    #[test]
+    fn a_change_of_a_records_kind_is_refused_where_its_old_kind_does_not_allow_it() {
+        use tilo_resource_store::{Refusal, Verb, Writes};
+        let ty = |name: &str| record_type(name);
+        let verb = |name: &str, kinds: &[&str]| Verb {
+            name: name.to_owned(),
+            writes: kinds
+                .iter()
+                .map(|kind| ((*kind).to_owned(), Writes::default()))
+                .collect(),
+            nested: BTreeSet::new(),
+        };
+        let schema = Schema {
+            types: vec![ty(ISSUE), ty("Comment")],
+            verbs: vec![
+                verb("reply", &["Comment"]),
+                verb("convert", &[ISSUE, "Comment"]),
+            ],
+            readers: BTreeMap::new(),
+        };
+        let mut here = Store::new();
+        let mut holders = [Store::new(), Store::new(), Store::new()];
+        let made = put(&mut here, "a", resource("board", "a0", "Draft", "open"));
+        for holder in &mut holders {
+            // The record's first write names no verb: it is taken by the types alone, and the
+            // verbs judge what comes after it.
+            holder.declare(Schema {
+                types: schema.types.clone(),
+                ..Schema::default()
+            });
+            send(&made, holder);
+            holder.declare(schema.clone());
+        }
+        let retyped = |verb: &str| {
+            let mut doc = here.document(&made[0].doc).expect("held").clone();
+            doc.set_actor(automerge::ActorId::from([9_u8; 16].as_slice()));
+            let mut tx = doc.transaction();
+            let (_, record) = automerge::ReadDoc::get(&tx, automerge::ROOT, "r:a")
+                .unwrap()
+                .expect("the record");
+            automerge::transaction::Transactable::put(&mut tx, &record, "k", "Comment").unwrap();
+            tx.commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(stamp(verb, verb).message()),
+            );
+            Written {
+                doc: made[0].doc.clone(),
+                readers: made[0].readers.clone(),
+                change: doc.get_last_local_change().expect("the change"),
+            }
+        };
+        let deliver_claiming = |holder: &mut Store, write: &Written, kinds: &BTreeSet<String>| {
+            holder
+                .receive(
+                    &write.doc,
+                    &write.readers,
+                    vec![Received {
+                        change: write.change.clone(),
+                        author: [7; 32],
+                        claimed: Some(kinds.clone()),
+                    }],
+                    &|_: &Proposal<'_>| true,
+                )
+                .unwrap()
+        };
+        let both = BTreeSet::from(["Comment".to_owned(), ISSUE.to_owned()]);
+        let (reply, convert) = (retyped("reply"), retyped("convert"));
+        assert_eq!(here.written_kinds(&reply), both);
+        let [first, second, third] = &mut holders;
+        let only_new = BTreeSet::from(["Comment".to_owned()]);
+        let refused = deliver_claiming(first, &convert, &only_new);
+        assert!(
+            matches!(refused.as_slice(), [(_, Refusal::Misclaimed(_))]),
+            "{refused:?}"
+        );
+        let refused = deliver_claiming(second, &reply, &both);
+        assert!(
+            matches!(refused.as_slice(), [(_, Refusal::Undeclared(why))] if why.contains("writes no `Issue`")),
+            "{refused:?}"
+        );
+        let all = |_: &str| true;
+        for holder in [&*first, &*second] {
+            assert!(holder.get(ISSUE, "a", &all).is_some(), "still an issue");
+        }
+        assert_eq!(deliver_claiming(third, &convert, &both), []);
+        assert!(third.get("Comment", "a", &all).is_some(), "now a comment");
     }
 
     #[test]

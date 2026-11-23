@@ -122,6 +122,7 @@ fn store(size: usize) {
                 vec![Received {
                     change: write.change,
                     author: [0; 32],
+                    claimed: None,
                 }],
                 &|_: &Proposal<'_>| true,
             )

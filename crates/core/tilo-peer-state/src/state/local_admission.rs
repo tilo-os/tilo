@@ -139,6 +139,49 @@ impl StatePeer {
         Ok((envelope, true))
     }
 
+    /// `envelope`, a sealed write to a resource store's document drafted by
+    /// [`Self::draft_write`] and not signed yet, with each claim of a change that edits its
+    /// records whole naming the kinds `kinds` holds for it: what the store that wrote it reads
+    /// from the records, which this peer, holding only the sealed write, cannot. Each claim
+    /// may then write what the surface of each of its kinds lets it.
+    pub fn name_record_kinds(
+        &self,
+        (app, record): (&str, &str),
+        envelope: &mut SignedOp,
+        kinds: &collab_types::claim::RecordKinds,
+    ) {
+        let mut claims = std::mem::take(&mut envelope.claims);
+        collab_types::claim::name_record_kinds(&mut claims, kinds);
+        envelope.claims = self.footprints((app, record), claims);
+    }
+
+    /// `claims` of a write to `record` of `app`, each with the units its action may write by the
+    /// surface it is decided against.
+    fn footprints(
+        &self,
+        (app, record): (&str, &str),
+        claims: Vec<collab_types::ChangeClaim>,
+    ) -> Vec<collab_types::ChangeClaim> {
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        self.surfaces.with_footprints(
+            &collab_types::WrittenDocument {
+                workspace: &self.core.workspace,
+                app,
+                document: record,
+            },
+            self.core
+                .documents
+                .get(&route)
+                .and_then(|held| super::resource_type(&*held.doc))
+                .as_deref(),
+            self.signed_surface(app).as_ref(),
+            claims,
+        )
+    }
+
     /// `frame`, an encoded [`collab_types::DocumentFrame`] of `record` of `app`, drafted as
     /// `author`'s next write of it after the `drafted` writes of it drafted before in the same
     /// owner turn, unsigned: sealed for the record's channel by `seal`, the
@@ -302,24 +345,7 @@ impl StatePeer {
         ) else {
             return Vec::new();
         };
-        let route = Route {
-            app: app.into(),
-            record: record.into(),
-        };
-        self.surfaces.with_footprints(
-            &collab_types::WrittenDocument {
-                workspace: &self.core.workspace,
-                app,
-                document: record,
-            },
-            self.core
-                .documents
-                .get(&route)
-                .and_then(|held| super::resource_type(&*held.doc))
-                .as_deref(),
-            self.signed_surface(app).as_ref(),
-            claims,
-        )
+        self.footprints((app, record), claims)
     }
 
     /// Admit `envelope`, a local app's signed write to `record`, as a new

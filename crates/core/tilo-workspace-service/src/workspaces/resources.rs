@@ -192,6 +192,14 @@ impl Resources {
             .map(str::to_owned)
     }
 
+    /// The kinds of the records `write`, staged against the store, writes: what the sealed op
+    /// that carries it claims.
+    #[cfg(any(feature = "apps", feature = "agents"))]
+    pub(super) fn written_kinds(&self, write: &tilo_resource_store::Written) -> BTreeSet<String> {
+        use tilo_lock::MutexRecover as _;
+        self.store.lock_recover().written_kinds(write)
+    }
+
     /// Takes a member's `changes` to `doc`, read by `readers`, into the store: each is applied
     /// when `admit` lets its author make it, and kept beside the document without effect when
     /// not. What was applied is kept before this returns. Answers the changes refused, with why.
@@ -651,9 +659,25 @@ impl GovernedWorkspace {
             .may_start(author, (app, doc), tilo_clock::wall())
             .is_ok();
         let admit = move |_: &tilo_resource_store::Proposal<'_>| permitted;
+        // A sealed write was decided, by members without its key, by the kinds its claims name;
+        // the store refuses each change unless they are the kinds it reads. A claim that names no
+        // kind was decided against the record's own surface, and is left to that.
+        let claimed = |change: &AmChange| {
+            envelope.encryption.as_ref()?;
+            envelope
+                .claims
+                .iter()
+                .find(|claim| claim.change == change.hash().0)
+                .and_then(|claim| collab_types::claim::whole_edit_kinds(&claim.action))
+                .filter(|kinds| !kinds.is_empty())
+        };
         let received: Vec<Received> = changes
             .into_iter()
-            .map(|change| Received { change, author })
+            .map(|change| Received {
+                claimed: claimed(&change),
+                change,
+                author,
+            })
             .collect();
         let taken = received.len();
         let refused = self.resources.receive(doc, &readers, received, &admit)?;
@@ -722,6 +746,13 @@ impl GovernedWorkspace {
             },
         )
         .map_err(|error| error.to_string())?;
+        if envelope.encryption.is_some() && !founding {
+            let kinds =
+                std::iter::once((write.change.hash().0, self.resources.written_kinds(write)))
+                    .filter(|(_, kinds)| !kinds.is_empty())
+                    .collect();
+            peer.name_record_kinds((app, &write.doc), &mut envelope, &kinds);
+        }
         collab_types::sign_op(&mut envelope, &*device.signer).map_err(|error| error.to_string())?;
         Ok(envelope)
     }
