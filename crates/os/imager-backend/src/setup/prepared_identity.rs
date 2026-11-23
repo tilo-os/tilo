@@ -12,7 +12,7 @@ pub use restart_storage::RestartStorage;
 mod native;
 #[cfg(unix)]
 pub use native::PreparedIdentity;
-pub use tilo_identity::device_declaration::{CurrentDeviceDeclaration, TransportReceipt};
+pub use tilo_identity::enrolled_transport::{CurrentDeviceDeclaration, TransportReceipt};
 #[cfg(unix)]
 pub use tilo_identity::enrolled_transport::{CurrentDeviceReference, EnrolledDevice};
 #[cfg(not(unix))]
