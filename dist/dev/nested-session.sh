@@ -424,6 +424,20 @@ mkdir -p -m 700 "$state/secrets"
 export HOME=$state/home
 export XDG_CONFIG_HOME=$state/config XDG_DATA_HOME=$state/data
 export XDG_STATE_HOME=$state/state XDG_CACHE_HOME=$state/cache
+# A Tilo login names its own desktop (`/usr/libexec/tilo-session` exports
+# `XDG_CURRENT_DESKTOP=tilo`), and the image installs the portal's own
+# implementation description and preference beside the frontend's. A session
+# started from a build provides both the way the image does, so
+# xdg-desktop-portal asks this session for the file chooser, the account sheet
+# and the rest, instead of falling back to a host desktop's gtk one (which an
+# image without a display cannot run).
+export XDG_CURRENT_DESKTOP=tilo
+portal=$state/data/xdg-desktop-portal
+mkdir -p "$portal/portals" "$state/config/xdg-desktop-portal"
+cp "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" "$portal/"
+cp "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" "$state/config/xdg-desktop-portal/"
+cp "$repo_root/os/usr/share/xdg-desktop-portal/portals/tilo.portal" "$portal/portals/"
+export XDG_DATA_DIRS=$state/data:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}
 export TILO_IDENTITY_ROOT=$state/identity
 export TILO_APPS_DATA_DIR=$state/apps
 # The session's system store (below), as /usr/share/tilo-apps is a device's.
