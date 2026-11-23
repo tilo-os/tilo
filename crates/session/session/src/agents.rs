@@ -298,7 +298,7 @@ impl Agents {
 
 impl crate::Shared {
     /// Feed the agents every pass what their work is decided against: every workspace with the
-    /// grants its people gave, and its conversations opened here. Who keeps each workspace's agents
+    /// grants its people gave. Who keeps each workspace's agents
     /// is read from the workspace's own record of them, as the broker admits an agent's session on,
     /// and its actions are admitted as the grants of the person it acts for say.
     pub(crate) fn feed_agents(&self) {
@@ -315,51 +315,8 @@ impl crate::Shared {
         let (kept, listed) = self.agents.feed(&self.person, &workspaces);
         self.search.set_kept_agents(&kept);
         self.search.set_listed_agents(&listed);
-        let facts: Vec<_> = workspaces
-            .into_iter()
-            .map(|(workspace, policy)| crate::conversations::WorkspaceFacts {
-                members: self.member_names(&workspace, &listed),
-                workspace,
-                policy,
-            })
-            .collect();
-        self.conversations.feed(&self.person, &facts);
-        // A turn the person asked on the canvas stands where they asked once Chat said which
-        // message it posted for the ask and its record holds it (canvas.md §3).
-        let mut layout = self.layout.borrow_mut();
-        if layout.awaits_turns() {
-            // What Chat answered the asks' sends, once they settled.
-            self.search.poll_answers();
-            layout.stand_asked(
-                &|sent| {
-                    let message = self.sends.posted(sent)?;
-                    self.conversations.asked_turn(&message)
-                },
-                tilo_session_core::layout::Busy::default(),
-            );
-        }
-    }
-
-    /// What `workspace`'s member list calls its people and agents, as apps are told it: its people
-    /// as its governance names them, its agents as its record of them does (`listed`).
-    fn member_names(&self, workspace: &str, listed: &[Listed]) -> chat::projection::PeopleNames {
-        let people = self
-            .view
-            .as_ref()
-            .and_then(|view| view.people(workspace).ok())
-            .unwrap_or_default()
-            .into_iter()
-            .map(|member| (member.id, member.name));
-        let agents = listed
-            .iter()
-            .filter(|agent| agent.workspace == workspace)
-            .map(|agent| {
-                (
-                    ui::permissions::MemberId::agent(&agent.id),
-                    agent.name.clone(),
-                )
-            });
-        people.chain(agents).collect()
+        // Asks are the agent package's resources now: the session feeds no turns from
+        // conversations, and its agents answer none of their own here.
     }
 
     /// The person's agent member for the MCP client `client` in `workspace`, by id and by the name
