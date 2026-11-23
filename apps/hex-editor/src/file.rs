@@ -11,9 +11,12 @@ pub(crate) fn read(path: &std::path::Path) -> Result<Vec<u8>, String> {
     if tilo_files::blocking::metadata(&dir, &name).is_ok_and(|meta| meta.len > limit) {
         return Err(too_large());
     }
-    tilo_files::blocking::read_bounded(&dir, &name, MAX_OPEN_FILE_BYTES)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(too_large)
+    tilo_files::blocking::read_bounded(&dir, &name, MAX_OPEN_FILE_BYTES).map_err(
+        |error| match error {
+            tilo_files::FsError::FileTooLarge => too_large(),
+            other => other.to_string(),
+        },
+    )
 }
 
 pub(crate) fn write(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {

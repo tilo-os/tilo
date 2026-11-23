@@ -11,7 +11,7 @@ fn at(path: &Path) -> io::Result<(tilo_files::Dir, tilo_files::VPath)> {
 
 pub(crate) fn read_bounded(path: &Path, limit: usize) -> Option<Vec<u8>> {
     let (dir, name) = at(path).ok()?;
-    blocking::read_bounded(&dir, &name, limit).ok()?
+    blocking::read_bounded(&dir, &name, limit).ok()
 }
 
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {

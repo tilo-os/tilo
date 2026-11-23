@@ -423,11 +423,14 @@ pub fn open_epub_path(path: &Path) -> Option<Book> {
 /// Read one EPUB, refusing one over [`MAX_EPUB_BYTES`] without loading it.
 fn read_epub_bytes(path: &Path) -> Option<Vec<u8>> {
     let (dir, name) = tilo_files::file_at(path).ok()?;
-    let bytes = tilo_files::blocking::read_bounded(&dir, &name, MAX_EPUB_BYTES).ok()?;
-    if bytes.is_none() {
-        tracing::warn!(path = %path.display(), "ebook: file exceeds size limit");
+    match tilo_files::blocking::read_bounded(&dir, &name, MAX_EPUB_BYTES) {
+        Ok(bytes) => Some(bytes),
+        Err(tilo_files::FsError::FileTooLarge) => {
+            tracing::warn!(path = %path.display(), "ebook: file exceeds size limit");
+            None
+        }
+        Err(_) => None,
     }
-    bytes
 }
 
 /// The `.epub` files under the reader's watched folders (and any

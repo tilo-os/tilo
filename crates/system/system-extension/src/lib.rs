@@ -453,8 +453,7 @@ impl ExtensionStateStore {
             &self.path,
             MAX_STATE_BYTES,
             ExtensionStoreError::StateTooLarge,
-        )?
-        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+        )?;
         let state: ExtensionState = serde_json::from_slice(&bytes)?;
         state.validate()?;
         Ok(state)

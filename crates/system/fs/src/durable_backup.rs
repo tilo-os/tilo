@@ -307,8 +307,7 @@ fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
         io::ErrorKind::InvalidData,
         format!("{} exceeds the durable state byte bound", path.display()),
     );
-    tilo_files::native::bounded::read_or(path, MAX_DURABLE_STATE_BYTES, too_large)?
-        .ok_or_else(|| io::ErrorKind::NotFound.into())
+    tilo_files::native::bounded::read_or(path, MAX_DURABLE_STATE_BYTES, too_large)
 }
 
 fn hash_from_backup_name(path: &Path) -> Option<String> {

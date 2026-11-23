@@ -195,7 +195,7 @@ fn read_system_config(path: &str) -> Option<String> {
         std::path::Path::new(path),
         usize::try_from(SYSTEM_CONFIG_LIMIT).ok()?,
     )
-    .ok()??;
+    .ok()?;
     String::from_utf8(bytes).ok()
 }
 

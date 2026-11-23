@@ -401,12 +401,16 @@ async fn prefixes_read_only_the_start(dir: &Dir) {
         Err(FsError::NotFound)
     );
     assert_eq!(
-        blocking::read_bounded(dir, &p("media/clip.bin"), 11).unwrap(),
-        Some(b"header+body".to_vec())
+        blocking::read_bounded(dir, &p("media/clip.bin"), 11),
+        Ok(b"header+body".to_vec())
     );
     assert_eq!(
-        blocking::read_bounded(dir, &p("media/clip.bin"), 10).unwrap(),
-        None
+        blocking::read_bounded(dir, &p("media/clip.bin"), 10),
+        Err(FsError::FileTooLarge)
+    );
+    assert_eq!(
+        blocking::read_bounded(dir, &p("media/none"), 10),
+        Err(FsError::NotFound)
     );
 }
 

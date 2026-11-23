@@ -18,12 +18,15 @@ pub fn read_prefix(dir: &Dir, path: &VPath, max: usize) -> Result<Vec<u8>, FsErr
     dir.local()?.read_prefix(path, max)
 }
 
-/// The whole file when it holds at most `max` bytes, `None` when more: a user's file opened under a
-/// size limit. At most `max + 1` bytes are read, so a file that grows while it is read is still refused
-/// without loading it.
-pub fn read_bounded(dir: &Dir, path: &VPath, max: usize) -> Result<Option<Vec<u8>>, FsError> {
+/// The whole file when it holds at most `max` bytes, [`FsError::FileTooLarge`] when more, and
+/// [`FsError::NotFound`] when missing: a user's file opened under a size limit. At most `max + 1`
+/// bytes are read, so a file that grows while it is read is still refused without loading it.
+pub fn read_bounded(dir: &Dir, path: &VPath, max: usize) -> Result<Vec<u8>, FsError> {
     let bytes = read_prefix(dir, path, max.saturating_add(1))?;
-    Ok((bytes.len() <= max).then_some(bytes))
+    if bytes.len() > max {
+        return Err(FsError::FileTooLarge);
+    }
+    Ok(bytes)
 }
 
 /// Adds `bytes` to the end, creating the file and its folders when missing: a progressive download a

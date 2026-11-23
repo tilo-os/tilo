@@ -40,15 +40,16 @@ fn extension(path: &Path) -> String {
 fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
     let (dir, name) = tilo_files::file_at(path)
         .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-    tilo_files::blocking::read_bounded(&dir, &name, convert::MAX_DOCUMENT_BYTES)
-        .map_err(|error| format!("cannot read {}: {error}", path.display()))?
-        .ok_or_else(|| {
-            format!(
+    tilo_files::blocking::read_bounded(&dir, &name, convert::MAX_DOCUMENT_BYTES).map_err(|error| {
+        match error {
+            tilo_files::FsError::FileTooLarge => format!(
                 "{} is larger than {}",
                 path.display(),
                 ui::format::memory(convert::MAX_DOCUMENT_BYTES as u64)
-            )
-        })
+            ),
+            other => format!("cannot read {}: {other}", path.display()),
+        }
+    })
 }
 
 fn not_a_pdf(path: &Path) -> Result<(), String> {

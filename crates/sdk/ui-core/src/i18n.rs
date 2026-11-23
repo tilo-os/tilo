@@ -1325,8 +1325,7 @@ impl LanguagePack {
     #[must_use]
     pub fn read(&self, locale: &str) -> Option<String> {
         self.candidates(locale).find_map(|path| {
-            let bytes =
-                tilo_files::native::bounded::read(&path, MAX_LANGUAGE_PACK_BYTES).ok()??;
+            let bytes = tilo_files::native::bounded::read(&path, MAX_LANGUAGE_PACK_BYTES).ok()?;
             String::from_utf8(bytes).ok()
         })
     }

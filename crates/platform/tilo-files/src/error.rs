@@ -16,6 +16,7 @@ pub enum FsError {
     IsADirectory,
     DirectoryNotEmpty,
     PermissionDenied,
+    FileTooLarge,
     InvalidPath(&'static str),
     Unsupported {
         feature: Feature,
@@ -33,6 +34,7 @@ impl fmt::Display for FsError {
             Self::IsADirectory => f.write_str("the path is a directory"),
             Self::DirectoryNotEmpty => f.write_str("the directory is not empty"),
             Self::PermissionDenied => f.write_str("permission denied"),
+            Self::FileTooLarge => f.write_str("file exceeds its byte bound"),
             Self::InvalidPath(reason) => write!(f, "invalid path: {reason}"),
             Self::Unsupported { reason, .. } => f.write_str(reason),
             Self::Io(message) => f.write_str(message),
@@ -60,6 +62,7 @@ impl From<io::Error> for FsError {
             io::ErrorKind::IsADirectory => Self::IsADirectory,
             io::ErrorKind::DirectoryNotEmpty => Self::DirectoryNotEmpty,
             io::ErrorKind::PermissionDenied => Self::PermissionDenied,
+            io::ErrorKind::FileTooLarge => Self::FileTooLarge,
             _ => Self::Io(error.to_string()),
         }
     }

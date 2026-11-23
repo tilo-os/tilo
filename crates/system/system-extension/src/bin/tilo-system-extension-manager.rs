@@ -506,8 +506,10 @@ fn safe_read(path: &Path) -> Result<Vec<u8>, String> {
         return Err(format!("unsafe image-owned input {}", path.display()));
     }
     match tilo_files::native::bounded::read(path, MAX_CATALOG_BYTES) {
-        Ok(Some(bytes)) => Ok(bytes),
-        Ok(None) => Err(format!("cannot read {}: vanished", path.display())),
+        Ok(bytes) => Ok(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(format!("cannot read {}: vanished", path.display()))
+        }
         Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
             Err(format!("unsafe image-owned input {}", path.display()))
         }

@@ -38,7 +38,7 @@ pub(crate) fn import(context: &ProcessContext) -> Result<(), String> {
         let Ok(name) = tilo_files::VPath::new(&entry.name) else {
             continue;
         };
-        let Ok(Some(bytes)) =
+        let Ok(bytes) =
             tilo_files::blocking::read_bounded(&data, &inbox.join(&name), MAX_FILE_BYTES)
         else {
             continue;

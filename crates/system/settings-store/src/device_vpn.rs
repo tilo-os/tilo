@@ -254,7 +254,7 @@ impl DeviceVpnStatus {
     #[must_use]
     pub fn load_at(path: &std::path::Path) -> Option<Self> {
         crate::published::note_file_read();
-        let bytes = tilo_files::native::bounded::read(path, MAX_STATUS_BYTES).ok()??;
+        let bytes = tilo_files::native::bounded::read(path, MAX_STATUS_BYTES).ok()?;
         let status: Self = serde_json::from_slice(&bytes).ok()?;
         publisher_live_in(
             path.parent()?,

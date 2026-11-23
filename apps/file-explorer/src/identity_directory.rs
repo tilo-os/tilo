@@ -49,8 +49,10 @@ pub struct TrustedHumanDirectory {
 impl TrustedHumanDirectory {
     pub fn load(path: &Path) -> Result<Self, String> {
         let bytes = match tilo_files::native::bounded::read(path, MAX_TRUSTED_IDENTITIES_BYTES) {
-            Ok(Some(bytes)) => bytes,
-            Ok(None) => return Ok(Self::default()),
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default());
+            }
             Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
                 return Err("Identity directory exceeds its size bound".into());
             }

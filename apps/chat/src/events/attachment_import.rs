@@ -22,8 +22,8 @@ pub(super) fn prepare_attachment_import(
     };
     let limit = usize::try_from(crate::chat::MAX_ATTACHMENT_BYTES).unwrap_or(usize::MAX);
     let bytes = match tilo_files::blocking::read_bounded(&dir, &name, limit) {
-        Ok(Some(bytes)) => bytes,
-        Ok(None) => return fail(TOO_BIG_TO_SHARE),
+        Ok(bytes) => bytes,
+        Err(tilo_files::FsError::FileTooLarge) => return fail(TOO_BIG_TO_SHARE),
         Err(_) => return fail("the file could not be read; check it still exists"),
     };
     let name = path

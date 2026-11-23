@@ -53,8 +53,7 @@ pub fn load_shipped_catalogue(
         &paths.builtins,
         MAX_BUILTIN_BYTES,
         CatalogueLoadError::OversizedBuiltins,
-    )?
-    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+    )?;
     let builtins = String::from_utf8(builtins)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     let builtins = Catalogue::from_json(&builtins)?;

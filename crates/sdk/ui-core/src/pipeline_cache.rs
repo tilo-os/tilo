@@ -82,11 +82,6 @@ pub(crate) fn persist_unsaved() {
     }
 }
 
-fn read_bounded(file: &Path) -> Option<Vec<u8>> {
-    let (dir, name) = tilo_files::file_at(file).ok()?;
-    tilo_files::blocking::read_bounded(&dir, &name, LIMIT).ok()?
-}
-
 /// The pipeline cache a window's renderer builds with, and where to keep it.
 pub(crate) struct AppPipelineCache {
     cache: wgpu::PipelineCache,
@@ -122,8 +117,9 @@ impl AppPipelineCache {
         let info = device.adapter.get_info();
         let file = dir.join(format!("{}.bin", wgpu::util::pipeline_cache_key(&info)?));
         let identity = identity(&info, vello::SHADER_FINGERPRINT);
-        let own =
-            read_bounded(&file).and_then(|bytes| decode(&bytes, &identity).map(<[u8]>::to_vec));
+        let own = tilo_files::native::bounded::read(&file, LIMIT)
+            .ok()
+            .and_then(|bytes| decode(&bytes, &identity).map(<[u8]>::to_vec));
         let loaded_len = own.as_ref().map(Vec::len);
         let (data, origin) = match own {
             Some(own) => (Some(own), Origin::Own),

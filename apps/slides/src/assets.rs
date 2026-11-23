@@ -86,7 +86,11 @@ pub fn import_asset_file(content: &ContentStore, path: &Path) -> Option<String> 
 /// The file a chooser named, or `None` when it is larger than `limit`.
 pub(crate) fn read_bounded(path: &Path, limit: usize) -> std::io::Result<Option<Vec<u8>>> {
     let (dir, name) = tilo_files::file_at(path).map_err(std::io::Error::other)?;
-    tilo_files::blocking::read_bounded(&dir, &name, limit).map_err(std::io::Error::other)
+    match tilo_files::blocking::read_bounded(&dir, &name, limit) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(tilo_files::FsError::FileTooLarge) => Ok(None),
+        Err(error) => Err(std::io::Error::other(error)),
+    }
 }
 
 #[derive(Clone)]
