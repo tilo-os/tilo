@@ -3100,6 +3100,45 @@
               "type": "text"
             }
           ]
+        },
+        {
+          "id": "other-device-agents",
+          "label": "Whether agents from my other devices work here",
+          "description": "Whether this computer accepts the person's agents from their other devices, and whether their steps go unasked here: the grant this device keeps in its workspaces.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "set-accept-other-device-agents",
+          "label": "Accept agents from my other devices",
+          "description": "Accept agents from the person's other devices on this computer, or stop accepting them: the grant this device keeps in its workspaces.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "set-other-device-agents-unasked",
+          "label": "Let them act without asking",
+          "description": "Let the steps of agents from the person's other devices go unasked on this computer, or put them to the person again.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
         }
       ],
       "fields": [
