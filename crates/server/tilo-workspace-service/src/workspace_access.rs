@@ -623,7 +623,14 @@ pub(crate) fn decide_in(
     now_ns: u64,
 ) -> Decision {
     if let Err(reason) = trust.actor(peer, workspace.workspace_id(), now_ns) {
-        return Decision::Deny(reason);
+        // The operator's handshake policy gates who connects to this host. A workspace's own
+        // signed membership admits its members, as its entry does: a device of a person it holds
+        // reaches the workspace on that rule, even where the operator's policy would not admit
+        // it. Every other refusal — an expired or revoked certificate, an agent outside its
+        // delegation, a stopped environment — still denies.
+        if reason != DenyReason::NotTrusted || !person_device(&peer.cert) {
+            return Decision::Deny(reason);
+        }
     }
     match crate::environment::environment_of(trust.environments, &peer.device_public_key) {
         Some(crate::environment::Environment::Placed(scope)) => {
