@@ -16,6 +16,10 @@ mod share_ends;
 #[path = "reply_writing.rs"]
 mod writing;
 
+/// Coding agents: sub-agents whose work a coding harness does on a repository.
+#[path = "hosted_coding_agents.rs"]
+mod coding;
+
 /// A model whose answer to each call is `play`'s. Every call is kept, in the order asked.
 struct Plays {
     play: Arc<dyn Fn(&ModelRequest) -> ModelResponse + Send + Sync>,

@@ -74,6 +74,8 @@ use turn_provider::TurnProvider;
 
 pub mod agent_keys;
 pub mod assistant;
+#[cfg(unix)]
+pub mod coding;
 pub mod events;
 pub mod initiative;
 pub mod kept;
@@ -666,10 +668,12 @@ pub async fn run_on_device(workspaces: Workspaces, actions: Arc<dyn ActionProvid
         "this device runs its workspaces' agents, each on the model its workspace linked"
     );
     // The agents speak the language their person reads this computer in.
-    ServerAgents::on_device(workspaces, actions, keys)
-        .speaking(settings_store::appearance::preferred_language)
-        .run()
-        .await;
+    let agents = ServerAgents::on_device(workspaces, actions, keys)
+        .speaking(settings_store::appearance::preferred_language);
+    // The person's own computer: their coding agents' harnesses start here, as them.
+    #[cfg(unix)]
+    let agents = agents.with_coding(coding::Coders::here());
+    agents.run().await;
 }
 
 /// The language a host's agents speak, asked anew for each turn ([`ServerAgents::speaking`]).
@@ -900,6 +904,10 @@ pub struct ServerAgents {
     /// machine, per engine. `None` outside tests, where the tools reach the web.
     #[cfg(any(test, feature = "fixture-servers"))]
     web_routes: Option<Vec<(tilo_web_search::Engine, String)>>,
+    /// The coding harnesses this engine starts on its own computer, where it starts any: only
+    /// then does it take a coding agent's turn ([`coding`]).
+    #[cfg(unix)]
+    coding: Option<coding::Coders>,
 }
 
 impl ServerAgents {
@@ -958,6 +966,8 @@ impl ServerAgents {
             placed: None,
             #[cfg(any(test, feature = "fixture-servers"))]
             web_routes: None,
+            #[cfg(unix)]
+            coding: None,
         };
         // What a person answers about a connection of theirs is carried out from the start.
         agents.carries(
@@ -1310,6 +1320,10 @@ impl ServerAgents {
     /// the device that has it, and a claim stays until it goes unwritten for a minute, so the
     /// device that answered in a conversation answers what is written there next.
     async fn claim(&self, workspace: &str, turn: &Turn) -> Option<Arc<crate::work::Claim>> {
+        #[cfg(unix)]
+        if !self.works(&turn.agent) {
+            return None;
+        }
         let keeper = match tilo_action_policy::PersonId::parse(&turn.agent.acts_for) {
             Ok(keeper) => keeper.root(),
             Err(error) => {
@@ -1864,6 +1878,11 @@ impl ServerAgents {
             .await;
             self.sub_ended(&scope, &turn, &left, false).await;
             return (turn.ask, ended, None);
+        }
+        #[cfg(unix)]
+        if coding::codes(&turn.agent) {
+            return Box::pin(self.answer_by_harness(workspace, (scope, turn, reply, began), going))
+                .await;
         }
         Box::pin(self.answer_by_model(workspace, (scope, turn, reply, began), going)).await
     }
