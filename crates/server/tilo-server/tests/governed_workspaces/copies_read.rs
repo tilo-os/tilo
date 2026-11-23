@@ -34,8 +34,11 @@ fn keeps(workspace: &str) -> RemoteActionMessage {
 async fn a_member_reads_the_devices_keeping_the_workspace() {
     let fixture = governed_workspace(Role::Editor).await;
     let client = connected(&fixture.server, &fixture.phone).await;
+    let RemoteActionMessage::Invoke(read) = keeps(&fixture.workspace.workspace) else {
+        panic!("the read is one invocation");
+    };
     assert_eq!(
-        keeps(&fixture.workspace.workspace).target,
+        read.target,
         RemoteActionTarget {
             provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(
