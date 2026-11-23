@@ -307,12 +307,19 @@ async fn native_whatsapp_and_sms_submit_through_private_client_without_false_del
             Err(SendError::AlreadyReserved)
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let mut app = messages_sends_once_confirmed_and_keeps_text_private(&owner, &broker, &calls);
+        let choice = route_choice(&owner, &route(service));
         revoked.store(true, Ordering::SeqCst);
+        assert!(
+            app.effect(&messages::MessagesEffect::ReadHistory { choice })
+                .is_err()
+        );
         assert!(!client.supports(&route(service)));
         assert_eq!(
             client.history().read(route(service), None).await,
             Err(HistoryError::Revoked)
         );
+        drop(app);
         drop(client);
         drop(broker);
         let history = History::open(root.path(), &owner, key()).unwrap();
@@ -331,12 +338,86 @@ async fn native_whatsapp_and_sms_submit_through_private_client_without_false_del
             Some(Delivery::Submitted)
         );
         let ciphertext = std::fs::read(root.path().join("history.enc")).unwrap();
-        assert!(
-            !ciphertext
-                .windows(b"private fixture message".len())
-                .any(|w| w == b"private fixture message")
-        );
+        for text in ["private fixture message", "private app message"] {
+            assert!(!ciphertext.windows(text.len()).any(|w| w == text.as_bytes()));
+        }
     }
+}
+
+/// Messages sends through `broker` only once the person confirms, shows the
+/// text, and keeps it out of its shared record; a repeat is refused.
+fn messages_sends_once_confirmed_and_keeps_text_private(
+    owner: &Owner,
+    broker: &ExternalBroker,
+    calls: &AtomicUsize,
+) -> ui::framework::testing::TestApp<messages::MessagesShell> {
+    let mut app = messages_over(owner, broker.client());
+    let send = messages::MessagesEffect::Send {
+        choice: route_choice(owner, &route(owner.service)),
+        operation: "app-operation".into(),
+        text: "private app message".into(),
+    };
+    let before = calls.load(Ordering::SeqCst);
+    let after = before.checked_add(1).unwrap();
+    assert!(app.effect(&send).is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), before);
+    app.effect_confirmed(&send).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), after);
+    assert!(app.harness().a11y_nodes().iter().any(|(_, node)| {
+        node.label().is_some_and(|label| {
+            label == "private app message"
+                || label.split(", ").any(|part| part == "private app message")
+        })
+    }));
+    assert!(!app.harness().dump_json().contains("private app message"));
+    assert!(app.effect_confirmed(&send).is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), after);
+    app
+}
+/// Messages as `owner` opens it in a host that lends it `client`, with the
+/// route's account and its confirmed contact projected and the person open.
+fn messages_over(
+    owner: &Owner,
+    client: tilo_messaging::MessagingClient,
+) -> ui::framework::testing::TestApp<messages::MessagesShell> {
+    use tilo_contact_directory::ContactDirectory;
+    let route = route(owner.service);
+    let mut app = ui::framework::testing::TestApp::<messages::MessagesShell>::for_person_with_lent(
+        &owner.actor,
+        client,
+    )
+    .unwrap();
+    project_account_metadata(owner, &route, &mut app);
+    let directory = app
+        .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
+        .unwrap();
+    directory
+        .invoke(&ContactDirectory::PROJECT_CONTACT.with((route.person.clone(), "Alex".into())))
+        .unwrap();
+    directory
+        .invoke(&ContactDirectory::CONFIRM_ACCOUNT.with((
+            route.person.clone(),
+            route.association.clone(),
+            route.service.clone(),
+            route.scope.clone(),
+            route.recipient.clone(),
+            route.revision.clone(),
+        )))
+        .unwrap();
+    app.settle();
+    app.effect(&messages::MessagesEffect::OpenPerson {
+        person: route.person.as_str().into(),
+    })
+    .unwrap();
+    app.effect(&messages::MessagesEffect::SelectRoute {
+        choice: route_choice(owner, &route),
+    })
+    .unwrap();
+    app
+}
+
+fn route_choice(owner: &Owner, route: &Route) -> String {
+    serde_json::json!({"service":route.service,"account":owner.account,"recipient":route.recipient,"association":route.association.as_str(),"scope":route.scope,"revision":route.revision}).to_string()
 }
 
 struct AccountOwnerFixture;
