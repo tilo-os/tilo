@@ -917,7 +917,12 @@ everything else is visibly optional:
 - `crates/core/`: the foundation (wire types, crypto, identity, keys,
   documents, the one store) and the device daemon. Nothing per app, no
   importers, no product features.
-- `crates/ui/`: the UI library, which knows nothing about Tilo.
+- `crates/platform/`: one API per operating-system capability (files,
+  paths, clock, network, processes, secrets, notifications, clipboard,
+  dialogs, appearance, locale) on Linux, macOS and the web. It knows nothing
+  about Tilo either; the UI library and the core both build on it.
+- `crates/ui/`: the UI library, which knows nothing about Tilo and depends on
+  no Tilo crate outside `platform/`.
 - `crates/sdk/`: the app SDK over the core and the UI library, for tilolang
   and Rust.
 - `crates/lang/`: tilolang's compiler, runtime and process.
