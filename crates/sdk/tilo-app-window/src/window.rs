@@ -692,7 +692,10 @@ impl AppWindow {
                 // The window's page does what the app asked, and its answer goes back as the
                 // engine gave it. An operation the page answers at once is done here; one the
                 // page thinks about waits with the window's next frames.
-                ToUi::Page { request_id, request } => match String::from_utf8(request) {
+                ToUi::Page {
+                    request_id,
+                    request,
+                } => match String::from_utf8(request) {
                     Ok(request) => match crate::page_runner::ask(&self.page, &request) {
                         Ok(crate::page_runner::Asked::Answered(answer)) => {
                             self.out.push(ToApp::PageAnswer {
@@ -713,7 +716,7 @@ impl AppWindow {
                         answer: tilo_page_engine::codec::refused("a page request is no text")
                             .into_bytes(),
                     }),
-                }),
+                },
                 // Its page goes back to what the window shows ([`Self::compose`]).
                 ToUi::History(shown) => content |= self.shows_history(shown),
                 // What the window shows of people never stops it showing the app.
