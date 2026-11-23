@@ -25,7 +25,6 @@ pub use history_access::HistoryUnavailable;
 pub mod sync;
 pub use sync::{DocumentSync, Outbound};
 mod actions;
-pub mod bootstrap;
 pub mod index;
 #[cfg(test)]
 mod transfer_tests;
@@ -38,8 +37,8 @@ use super::{
 };
 use super::{
     DocumentCheckout, DocumentId, DocumentRef, INDEX, ResourceOpenError, ResourceType,
-    add_reference, adopt_former, commit_genesis, genesis, genesis_actor, home, identity,
-    init_scoped, references, str_at, transfer, validate_identity, workspace_scope,
+    add_reference, adopt_former, commit_genesis, genesis, home, identity, init_scoped, references,
+    str_at, transfer, validate_identity, workspace_scope,
 };
 pub use crate::document::ResourceSaveStatus;
 use crate::document::fields::{META, ObjectAt, StringAt, object_at, string_at};

@@ -342,3 +342,43 @@ tilo_test_env::scenario! {
         assert_eq!(check_opened(&unclaimed, &plaintext), Err(ReceiptRefusal::Unclaimed));
     }
 }
+
+/// A framework change names no one: it is decided as whoever signed it, here an agent signing
+/// with its own key, and its grants are the agent's, never the person's it works for.
+#[test]
+fn a_framework_change_signed_by_an_agent_is_decided_as_the_agent() {
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "notes.md", "hello").unwrap();
+    doc.commit_with(
+        CommitOptions::default().with_message(FrameworkChange::Native.change_message()),
+    );
+    let payload = crate::op::DocumentMutation::Incremental(doc.save_after(&[]))
+        .encode()
+        .unwrap();
+    let op = crate::op::SignedOp::new_unsigned(
+        payload,
+        crate::document_artifact_id(FILES, WORKSPACE, "tree"),
+        crate::Ed25519PublicKey::from_bytes([7; 32]),
+        crate::document_attestation_id(FILES, WORKSPACE, "tree"),
+        crate::role::OpKind::Change,
+        std::time::SystemTime::UNIX_EPOCH,
+        1,
+    );
+    let agent = Acting::agent(AGENT);
+    let asked = std::cell::RefCell::new(Vec::new());
+    let allows = |invoker: Option<&Acting>, _: &TreePath, _: ActionKind| {
+        asked.borrow_mut().push(invoker.cloned());
+        true
+    };
+    let decided = decide_opened(
+        (&op, None),
+        &tree(),
+        (None, None, None),
+        None,
+        &Surfaces(None),
+        &allows,
+        (None, Some(&agent)),
+    );
+    assert_eq!(decided, Ok(Receipt::Admit));
+    assert_eq!(asked.into_inner(), vec![Some(agent)]);
+}

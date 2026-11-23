@@ -408,6 +408,52 @@ tilo_test_env::scenario! {
     }
 }
 
+/// A change that keeps no history entry, no stamp and no framework name says nothing of who made
+/// it, and is refused as every change that names no one; one named a framework change is its
+/// signer's, the device's person.
+#[test]
+fn a_change_naming_nothing_is_refused_and_a_framework_change_is_its_signers() {
+    let (mut receiver, _a, _ac, b, _bc, now) = seeded_with(RevocationList::new());
+    let plain = committed_unclaimed(&receiver, &b, "an edit", "plain", now);
+    let refused = take(&mut receiver, plain, now).unwrap_err();
+    assert!(refused.reason.contains("names no invoker"), "{}", refused.reason);
+    assert_eq!(value(&receiver), "\"seed\"", "never applied");
+
+    let native = committed_unclaimed(
+        &receiver,
+        &b,
+        &tilo_actions::FrameworkChange::Native.change_message(),
+        "native",
+        now,
+    );
+    take(&mut receiver, native, now).expect("a framework change is decided as its signer's");
+    assert_eq!(value(&receiver), "\"native\"");
+}
+
+/// A change named the record's genesis that is not the founding every holder derives names no
+/// one, so it is decided as its signer's person: taken from an editor, refused from a member the
+/// workspace lets only read.
+#[test]
+fn a_genesis_that_is_not_the_derived_founding_is_decided_as_its_signers_person() {
+    let (mut receiver, a, _ac, b, _bc, now) = seeded_with(RevocationList::new());
+    let genesis = tilo_actions::FrameworkChange::Genesis.change_message();
+    let edited = committed_unclaimed(&receiver, &b, &genesis, "by an editor", now);
+    take(&mut receiver, edited, now).expect("an editor's own genesis-named edit is theirs");
+    assert_eq!(value(&receiver), "\"by an editor\"");
+
+    let (key, _cert, person) = add_member_with(&mut receiver, &a, now, 41, 42);
+    assert!(
+        receiver
+            .governance_mut()
+            .set_member_role(person, crate::join::Role::Viewer, &a, now)
+            .unwrap()
+    );
+    let dressed = committed_unclaimed(&receiver, &key, &genesis, "by a viewer", now);
+    let refused = take(&mut receiver, dressed, now).unwrap_err();
+    assert!(refused.reason.contains("not granted"), "{}", refused.reason);
+    assert_eq!(value(&receiver), "\"by an editor\"", "never applied");
+}
+
 /// A write of `signer`'s device at `seq` whose change names no one: a resource store's stamp with
 /// no invoker, as a history kept before every change named who made it holds.
 fn nameless_at(

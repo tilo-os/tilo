@@ -492,6 +492,7 @@ fn normalise(path: &Path) -> PathBuf {
     out
 }
 
+pub mod derived;
 pub mod fields;
 mod file_identity;
 pub mod identity;

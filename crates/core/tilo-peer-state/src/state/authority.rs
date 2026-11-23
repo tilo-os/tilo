@@ -1310,7 +1310,9 @@ impl StatePeer {
             document.map(|document| document.doc.committed_document()),
             &self.surfaces,
             &allows,
-            imported.as_ref(),
+            // A framework change that names no one is its signer's: the device's person, or the
+            // agent its key is certified for.
+            (imported.as_ref(), Some(&member.acting)),
         )
         .and_then(|receipt| match receipt {
             collab_types::Receipt::Admit => self
@@ -1405,6 +1407,17 @@ impl StatePeer {
                 .message()
                 .and_then(tilo_actions::ActionContext::from_change_message)
             else {
+                // A change with no history entry names its maker in its own message, or is one
+                // every holder derives alike; one that names no one is refused, unless an
+                // import step holds the write as the person's.
+                if collab_types::claim::maker_of(change) == collab_types::claim::Maker::Nobody
+                    && self
+                        .governance()
+                        .imported_invoker(source, app_id, record, envelope.seq)
+                        .is_none()
+                {
+                    return Err(refused_no_invoker(&route, source, envelope));
+                }
                 continue;
             };
             // Every invocation a change keeps is checked, whether or not it

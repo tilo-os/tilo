@@ -366,6 +366,52 @@ fn invoker_of_message(message: &str) -> Option<tilo_action_policy::Acting> {
     crate::Stamp::of_message(message).and_then(|stamp| stamp_invoker(&stamp).ok())
 }
 
+/// Who a change is decided as having been made by, as far as its own message says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Maker {
+    /// Its history entry, its stamp or the gesture it continues names who made it.
+    Named,
+    /// It is a change every holder derives alike, byte for byte, and names no one
+    /// ([`crate::document::derived::is_derived`]).
+    Derived,
+    /// A framework change that names no one: whoever signed it made it, the signing device's
+    /// person or the agent its key is certified for, and it is decided and recorded as theirs.
+    Signer,
+    /// It names no one and is no framework change: refused, as every change that says nothing of
+    /// who made it.
+    Nobody,
+}
+
+/// Who `change` is decided as having been made by ([`Maker`]).
+#[must_use]
+pub fn maker_of(change: &automerge::Change) -> Maker {
+    let Some(message) = change.message() else {
+        return Maker::Nobody;
+    };
+    if message.starts_with(tilo_actions::context::CONTINUATION_PREFIX)
+        || ActionContext::from_change_message(message).is_some()
+    {
+        return Maker::Named;
+    }
+    if let Some(named) = FrameworkChange::from_change_message(message) {
+        return match named {
+            FrameworkChange::Genesis | FrameworkChange::Structure
+                if crate::document::derived::is_derived(change, named) =>
+            {
+                Maker::Derived
+            }
+            // A structure every holder derives is the one kind made apart that must not differ:
+            // one that is not the derived change is no structure at all.
+            FrameworkChange::Structure => Maker::Nobody,
+            _ => Maker::Signer,
+        };
+    }
+    match crate::Stamp::of_message(message) {
+        Some(stamp) if stamp_invoker(&stamp).is_ok() => Maker::Named,
+        _ => Maker::Nobody,
+    }
+}
+
 /// Who made `change` ([`invoker_of_message`]).
 #[must_use]
 pub fn invoker_of(change: &automerge::Change) -> Option<tilo_action_policy::Acting> {

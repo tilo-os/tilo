@@ -238,19 +238,11 @@ pub fn tree_nodes(doc: &mut Doc) -> Result<ObjId, automerge::AutomergeError> {
 /// # Errors
 /// The document refused the change, or holds something else under the key.
 pub fn root_map(doc: &mut Doc, key: &str) -> Result<ObjId, automerge::AutomergeError> {
-    use automerge::transaction::Transactable as _;
     use tilo_automerge::ApplyIncoming as _;
     if let Some(map) = doc.obj_at(&ROOT, key, ObjType::Map) {
         return Ok(map);
     }
-    let writer = format!("tilo.files.tree.v1/{key}");
-    let mut made = Doc::new().with_actor(automerge::ActorId::from(writer.as_bytes()));
-    made.put_object(&ROOT, key, ObjType::Map)?;
-    made.commit_with(
-        automerge::transaction::CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Structure.change_message())
-            .with_time(0),
-    );
+    let mut made = collab_types::document::derived::root_map(key);
     doc.merge_incoming(&mut made)?;
     doc.obj_at(&ROOT, key, ObjType::Map)
         .ok_or_else(|| automerge::AutomergeError::InvalidObjId(key.to_owned()))

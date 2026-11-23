@@ -866,7 +866,7 @@ pub fn decide_op_imported(
         holding,
         surfaces,
         allows,
-        imported,
+        (imported, None),
     )
 }
 
@@ -874,7 +874,9 @@ pub fn decide_op_imported(
 /// changes it opened to, rather than by what `op` carries: a write larger than
 /// one op is written as segments, so no op carries its changes whole, and its
 /// grants are decided on the changes it was assembled into. `None` decides
-/// `op` as [`decide_op_imported`] does.
+/// `op` as [`decide_op_imported`] does. `signer` is who signed `op` (the signing device's
+/// person, or the agent its key is certified for): a framework change that names no one is
+/// decided and recorded as theirs ([`crate::claim::Maker::Signer`]).
 ///
 /// # Errors
 /// The first [`ReceiptRefusal`].
@@ -889,7 +891,7 @@ pub fn decide_opened(
     holding: Option<&automerge::Automerge>,
     surfaces: &Surfaces,
     allows: &Allows<'_>,
-    imported: Option<&Acting>,
+    (imported, signer): (Option<&Acting>, Option<&Acting>),
 ) -> Result<Receipt, ReceiptRefusal> {
     decide_op_settled(
         (op, opened),
@@ -898,7 +900,7 @@ pub fn decide_opened(
         holding,
         surfaces,
         allows,
-        (false, imported),
+        (false, imported, signer),
     )
 }
 
@@ -920,7 +922,7 @@ pub fn decide_op_replayed(
     holding: Option<&automerge::Automerge>,
     surfaces: &Surfaces,
     allows: &Allows<'_>,
-    imported: Option<&Acting>,
+    (imported, signer): (Option<&Acting>, Option<&Acting>),
 ) -> Result<Receipt, ReceiptRefusal> {
     decide_op_settled(
         (op, opened),
@@ -929,8 +931,41 @@ pub fn decide_op_replayed(
         holding,
         surfaces,
         allows,
-        (true, imported),
+        (true, imported, signer),
     )
+}
+
+/// The claim each of `changes` makes as a cleartext change names it, with the units `written`
+/// reads it to write: decided as the invoker its own message names, the import step's person
+/// when it names none, or its signer's when it is a framework change that names no one
+/// ([`crate::claim::maker_of`]). A change that names no one otherwise is refused.
+fn cleartext_claims(
+    changes: &[automerge::Change],
+    written: Option<&crate::units::ByChange>,
+    (imported, signer): (Option<&Acting>, Option<&Acting>),
+) -> Result<Vec<ChangeClaim>, ReceiptRefusal> {
+    changes
+        .iter()
+        .map(|change| {
+            let units = written
+                .and_then(|written| written.written.get(&change.hash().0))
+                .map_or_else(|| vec![Vec::new()], |written| written.units.clone());
+            let mut claim =
+                ChangeClaim::of_imported_change(change.hash().0, change.message(), units, imported)
+                    .map_err(|error| match error {
+                        crate::claim::ClaimError::NoInvoker => ReceiptRefusal::NoInvoker,
+                        other => ReceiptRefusal::Unnamed(other.to_string()),
+                    })?;
+            match crate::claim::maker_of(change) {
+                crate::claim::Maker::Signer => claim.invoker = signer.cloned(),
+                crate::claim::Maker::Nobody if claim.invoker.is_none() => {
+                    return Err(ReceiptRefusal::NoInvoker);
+                }
+                _ => {}
+            }
+            Ok(claim)
+        })
+        .collect()
 }
 
 fn decide_op_settled(
@@ -944,7 +979,7 @@ fn decide_op_settled(
     holding: Option<&automerge::Automerge>,
     surfaces: &Surfaces,
     allows: &Allows<'_>,
-    (replay, imported): (bool, Option<&Acting>),
+    (replay, imported, signer): (bool, Option<&Acting>, Option<&Acting>),
 ) -> Result<Receipt, ReceiptRefusal> {
     use tilo_action_policy::roles;
     let changes_of =
@@ -978,7 +1013,12 @@ fn decide_op_settled(
                 .filter(|_| op.surface.is_some() || pinned.is_some())
             else {
                 let changes = changes_of(op)?;
-                return decide_as_document_edit(changes.as_deref(), document, allows, imported);
+                return decide_as_document_edit(
+                    changes.as_deref(),
+                    document,
+                    allows,
+                    (imported, signer),
+                );
             };
             let surface_for =
                 |kind: Option<&str>| source.surface(document, kind, op.surface.as_ref());
@@ -1015,26 +1055,7 @@ fn decide_op_settled(
                 &changes,
             );
             let written = held.and_then(|held| crate::units::units_by_change(held, &changes));
-            let claims = changes
-                .iter()
-                .map(|change| {
-                    let units = written
-                        .as_ref()
-                        .and_then(|written| written.written.get(&change.hash().0))
-                        .map_or_else(|| vec![Vec::new()], |written| written.units.clone());
-                    ChangeClaim::of_imported_change(
-                        change.hash().0,
-                        change.message(),
-                        units,
-                        imported,
-                    )
-                    .map_err(|error| match error {
-                        crate::claim::ClaimError::NoInvoker => ReceiptRefusal::NoInvoker,
-                        other => ReceiptRefusal::Unnamed(other.to_string()),
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut claims = claims;
+            let mut claims = cleartext_claims(&changes, written.as_ref(), (imported, signer))?;
             crate::claim::name_record_kinds(&mut claims, &kinds);
             check_store_kinds(&claims, document, replay)?;
             let hashes: Vec<[u8; 32]> = changes.iter().map(|change| change.hash().0).collect();
@@ -1086,24 +1107,21 @@ fn decide_as_document_edit(
     changes: Option<&[automerge::Change]>,
     document: &WrittenDocument<'_>,
     allows: &Allows<'_>,
-    imported: Option<&Acting>,
+    (imported, signer): (Option<&Acting>, Option<&Acting>),
 ) -> Result<Receipt, ReceiptRefusal> {
     let node = written_node(document);
     // A change that carries a resource store's stamp names its invoker there;
     // one whose stamp names none is refused, as any change that names nobody,
-    // unless an import step said whose it is. A framework change names itself,
-    // and a checkpoint carries its writes' own, so neither reaches the stamp's
-    // rule.
+    // unless an import step said whose it is. A framework change that names no one is its
+    // signer's, and a checkpoint carries its writes' own.
     let mut invokers: Vec<Option<Acting>> = Vec::new();
     for change in changes.into_iter().flatten() {
-        let nameless = matches!(
-            ChangeClaim::of_change(change.hash().0, change.message(), Vec::new()),
-            Err(crate::claim::ClaimError::NoInvoker)
-        );
-        invokers.push(match (nameless, imported) {
-            (false, _) => crate::claim::invoker_of(change),
-            (true, Some(person)) => Some(person.clone()),
-            (true, None) => return Err(ReceiptRefusal::NoInvoker),
+        invokers.push(match (crate::claim::maker_of(change), imported) {
+            (crate::claim::Maker::Named, _) => crate::claim::invoker_of(change),
+            (crate::claim::Maker::Derived, _) => None,
+            (crate::claim::Maker::Signer, _) => signer.cloned(),
+            (crate::claim::Maker::Nobody, Some(person)) => Some(person.clone()),
+            (crate::claim::Maker::Nobody, None) => return Err(ReceiptRefusal::NoInvoker),
         });
     }
     if invokers.is_empty() {

@@ -178,6 +178,24 @@ pub fn founding(
     home: &str,
     workspace: &str,
 ) -> Option<AutoCommit> {
+    let surface = kind_surface(kind);
+    founding_naming(id, kind, home, workspace, surface.as_deref())
+}
+
+/// The surface hash of the app that publishes `kind` here, as a founding names it.
+fn kind_surface(kind: &ResourceType) -> Option<String> {
+    crate::app_surface::hash_of_kind(kind.as_str()).map(hex::encode)
+}
+
+/// [`founding`], naming `surface` as its app's surface: the one a founder named, which a
+/// receiver checking the founding reads from the change rather than from what it runs.
+fn founding_naming(
+    id: &DocumentId,
+    kind: &ResourceType,
+    home: &str,
+    workspace: &str,
+    surface: Option<&str>,
+) -> Option<AutoCommit> {
     if DocumentId::parse(id.as_str()).is_none() || !kind.is_valid() {
         return None;
     }
@@ -185,13 +203,40 @@ pub fn founding(
     if !stamp_founding(&mut doc, id, kind, home, workspace) {
         return None;
     }
-    let _ = stamp_surface(&mut doc);
+    if let Some(surface) = surface {
+        let m = meta_ro(&doc)?;
+        doc.put(&m, SURFACE, surface).ok()?;
+    }
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
             .with_message(tilo_actions::FrameworkChange::Genesis.change_message())
             .with_time(0),
     );
     Some(doc)
+}
+
+/// Whether `change` is exactly the [`founding`] of the resource it names: the identity, home,
+/// workspace and surface it writes, founded as every founder founds them. A change that writes
+/// anything else, or is made by another writer, is not.
+#[must_use]
+pub fn is_derived_founding(change: &automerge::Change) -> bool {
+    let Ok(doc) = tilo_automerge_isolate::load(change.raw_bytes()) else {
+        return false;
+    };
+    let Some(m) = meta_ro(&doc) else {
+        return false;
+    };
+    let (Some(id), Some(kind), Some(home), Some(workspace)) = (
+        str_at(&doc, &m, "id").and_then(|id| DocumentId::parse(&id)),
+        str_at(&doc, &m, "kind").map(ResourceType::new),
+        str_at(&doc, &m, "home"),
+        workspace_scope(&doc),
+    ) else {
+        return false;
+    };
+    let surface = str_at(&doc, &m, SURFACE);
+    founding_naming(&id, &kind, &home, &workspace, surface.as_deref())
+        .is_some_and(|mut founded| founded.get_heads() == [change.hash()])
 }
 
 /// The [`founding`] of `id` of `kind` in `workspace` that `doc` lacks, when `doc` holds that
