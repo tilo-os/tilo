@@ -52,7 +52,7 @@ fn paths(env: &dyn Fn(&str) -> Option<OsString>) -> Result<Paths> {
         identity_socket: runtime_dir.join("tilo/services/identity.sock"),
         tree_socket: runtime_dir.join(format!(
             "tilo/services/{}.sock",
-            tilo_fs::tree_sync::remote::SOCKET
+            tilo_fs::files_sync::SOCKET
         )),
         storage: runtime_dir.join("tilo/files-storage"),
     };

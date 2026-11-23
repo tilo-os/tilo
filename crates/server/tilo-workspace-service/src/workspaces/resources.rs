@@ -503,6 +503,12 @@ impl GovernedWorkspace {
                 }
             }
         }
+        // The system's own tree type, which no app declares: every store that judges a
+        // workspace's files declares it, so a device, an agent and a tilolang app write it.
+        #[cfg(feature = "files")]
+        self.resources
+            .store_mut()
+            .declare(crate::files::store::schema());
         self.resources.store_mut()
     }
 

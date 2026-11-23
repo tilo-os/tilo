@@ -37,8 +37,7 @@ impl Namespace {
     }
 
     /// [`Self::from_records`], with the heads each document stood at as read: opening may
-    /// change the documents (naming what it wrote), and what keeps them on disk keeps those
-    /// changes too ([`crate::kept_documents`]).
+    /// change the documents, naming what it wrote.
     ///
     /// # Errors
     /// One of them does not load.

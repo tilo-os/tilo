@@ -32,7 +32,5 @@ mod performance_timing;
 mod session_media;
 #[path = "store_threads.rs"]
 mod store_threads;
-#[path = "workspace_ladder.rs"]
-mod workspace_ladder;
 #[path = "workspace_startup.rs"]
 mod workspace_startup;

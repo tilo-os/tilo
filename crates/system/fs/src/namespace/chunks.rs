@@ -272,6 +272,23 @@ impl Chunks {
         Ok(Obj { chunk, id: made })
     }
 
+    /// Remove the node `id` from the tree this namespace holds, with nothing of it left: what a
+    /// node the workspace's store no longer holds is. Whether it was here.
+    pub(super) fn delete_node(&mut self, id: &str) -> bool {
+        let Some(chunk) = self.located.get(id).copied() else {
+            return false;
+        };
+        let Some(held) = self.held.get_mut(&chunk) else {
+            return false;
+        };
+        if held.doc.delete(&held.nodes, id).is_err() {
+            return false;
+        }
+        self.forget_node_count();
+        self.located.remove(id);
+        true
+    }
+
     /// Write the file action `action` done by `invoker` into the document of the chunk its
     /// node lives in: for a node it makes, the chunk its document id names, made and listed
     /// when this namespace holds none of it yet.

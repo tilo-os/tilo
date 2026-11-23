@@ -396,7 +396,7 @@ fn serve_files_tree(
         return Ok(None);
     };
     let launches = std::sync::Arc::clone(&options.launches);
-    let socket = wire.with_file_name(format!("{}.sock", fs::tree_sync::remote::SOCKET));
+    let socket = wire.with_file_name(format!("{}.sock", fs::files_sync::SOCKET));
     // The keys of a tree's group, as this person's identity service hands them to this device:
     // only ever for the workspace the connection was admitted for.
     let identity = tilo_paths::xdg::service_socket("identity");

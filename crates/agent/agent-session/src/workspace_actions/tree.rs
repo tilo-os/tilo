@@ -436,9 +436,9 @@ impl Worker {
         let mtime = tilo_clock::unix_now_ns() / 1_000_000;
         // Every file goes in as one change of the tree: one write per record
         // it touched, however many files went into it.
-        let to_put: Vec<tilo_fs::tree_sync::FileToPut<'_>> = files
+        let to_put: Vec<tilo_fs::namespace::FileToPut<'_>> = files
             .iter()
-            .map(|(putting, manifest, size)| tilo_fs::tree_sync::FileToPut {
+            .map(|(putting, manifest, size)| tilo_fs::namespace::FileToPut {
                 to: &putting.dir,
                 name: &putting.name,
                 hash: manifest,

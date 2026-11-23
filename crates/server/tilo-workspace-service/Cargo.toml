@@ -26,7 +26,7 @@ device-keys = ["dep:tilo-workspace-keys"]
 # for its workspaces' records, with or without apps on top.
 content = ["dep:tilo-broker-core"]
 # A workspace's file tree held in the device's own service, its bytes on the records' route.
-files = ["content", "dep:tilo-fs", "dep:fs-protocol", "dep:iroh-blobs", "dep:bytes", "dep:wire-frame", "dep:rustix"]
+files = ["apps", "content", "dep:tilo-fs", "dep:fs-protocol", "dep:iroh-blobs", "dep:bytes", "dep:wire-frame", "dep:rustix"]
 # A session client's pages, read through the document core over the replica its engine admits
 # into: what a session's tests read their workspace through.
 session-pages = ["device-keys", "dep:tilo-session-client"]

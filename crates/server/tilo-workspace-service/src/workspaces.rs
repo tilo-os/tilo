@@ -1293,12 +1293,11 @@ impl Workspaces {
     #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
     #[must_use]
     pub fn puts(&self) -> Arc<crate::files::Puts> {
-        Arc::clone(self.inner.puts.get_or_init(|| {
-            Arc::new(crate::files::Puts::new(
-                self.clone(),
-                self.inner.host.access.state_root().join("files-puts"),
-            ))
-        }))
+        Arc::clone(
+            self.inner
+                .puts
+                .get_or_init(|| Arc::new(crate::files::Puts::new(self.clone()))),
+        )
     }
 
     /// The channel keys of the device this host runs on, when its embedder

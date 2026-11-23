@@ -2,9 +2,9 @@
 //! that runs it until the session ends.
 
 use super::{
-    AclHandle, Arc, BackendArgs, Config, Heuristics, Hydrator, IdentityKey, KeptTree, MountOption,
-    Mutex, Namespace, PathBuf, QuickFS, Result, ServedSocket, SessionACL, StopSignals,
-    mount_point_owner, native_config, parse_owner, run_native, session_supervisor,
+    AclHandle, Arc, BackendArgs, Config, Heuristics, Hydrator, IdentityKey, MountOption, Mutex,
+    Namespace, PathBuf, QuickFS, Result, ServedSocket, SessionACL, StopSignals, mount_point_owner,
+    native_config, parse_owner, run_native, session_supervisor,
 };
 
 /// FUSE worker threads: `TILO_FS_FUSE_THREADS` when set, else one per CPU between 2 and 16.
@@ -26,9 +26,11 @@ fn fuse_worker_threads() -> usize {
 pub(super) struct MountConfig {
     pub(super) workspace_id: uuid::Uuid,
     pub(super) mount_point: PathBuf,
-    /// The tree's documents kept on disk, if anywhere: every change is journaled there before
-    /// the request that made it is answered.
-    pub(super) kept: Option<Arc<KeptTree>>,
+    /// What each change is handed to before the request that made it is answered: the store's
+    /// verbs, written where the tree is.
+    pub(super) journal: Option<tilo_fs::fs::ChangeJournal>,
+    /// What makes the changes durable on the mount's barrier, after their content is synced.
+    pub(super) durability: Option<tilo_fs::fs::DurabilityHook>,
     /// Makes what the mount has already done durable before it stops, so nothing it answered is
     /// lost by the stop itself.
     pub(super) shutdown: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -59,7 +61,8 @@ pub(super) async fn run_mount(
     let MountConfig {
         workspace_id,
         mount_point,
-        kept,
+        journal,
+        durability,
         shutdown,
         predictive_cache_root,
         thumb_dir,
@@ -242,28 +245,17 @@ pub(super) async fn run_mount(
             }
         });
 
-    // Both backends: every change the mount makes is journaled on disk under the namespace's
-    // lock, before the request that made it is answered, so a process killed at any instant
-    // starts again holding every change it answered for.
-    let journal: Option<tilo_fs::fs::ChangeJournal> = kept.clone().map(|kept| {
-        Arc::new(move |namespace: &mut Namespace| kept.journal(namespace))
-            as tilo_fs::fs::ChangeJournal
-    });
+    // Both backends: every change the mount makes is handed to the store under the namespace's
+    // lock, before the request that made it is answered, so a change a person saw made reached
+    // the workspace.
     let fs = match journal.clone() {
         Some(journal) => fs.with_change_journal(journal),
         None => fs,
     };
-    // Content and journal reach the disk on one barrier: content first, then the journals that
-    // name it, so a crash never leaves a journaled tree entry whose bytes are missing. A copy of
-    // thousands of small files pays one sync per window instead of one per file; `fsync`,
-    // `fsyncdir` and unmount still sync at once. `TILO_FS_CONTENT_WINDOW=0` keeps the per-write
-    // sync, for isolating a problem.
+    // Content and the store reach the workspace on one barrier: content first, then the verbs
+    // that name it, so a crash never leaves a journaled tree entry whose bytes are missing.
     if std::env::var("TILO_FS_CONTENT_WINDOW").as_deref() != Ok("0") {
-        fs.sync_on_window(
-            Arc::clone(&content),
-            kept.clone()
-                .map(|kept| Arc::new(move || kept.sync()) as tilo_fs::fs::DurabilityHook),
-        );
+        fs.sync_on_window(Arc::clone(&content), durability.clone());
     }
     #[cfg(target_os = "linux")]
     if let Some((args, device)) = backend.as_ref()

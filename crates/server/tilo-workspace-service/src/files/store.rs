@@ -15,10 +15,12 @@
 //! the fs side reads those bytes when they are there; a rename that makes the name valid again
 //! removes the field. Nothing is ever escaped into `name`.
 //!
-//! A node's readers are empty: it reads as its parent does, and a move under a folder with other
-//! readers moves its document with it.
+//! A node's readers are every member of the workspace: the tree is the workspace's files, and
+//! the store's reader rule (a nested resource taking its parent's) is not here yet, so writing
+//! no set would place the node in a document no one may read. Once that rule lands, a node keeps
+//! no set of its own and takes its folder's.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use collab_types::stamp::Stamp;
 use fs_protocol::file_action::FileAction;
@@ -26,7 +28,9 @@ use fs_protocol::files::{FileNameV1, FileNodeKind};
 use fs_protocol::tree::{ROOT_ID, TRASH_ID, TreeEntry};
 use serde_json::{Value as Json, json};
 use tilo_resource_store::wire::{Command, Edit};
-use tilo_resource_store::{Cell, Resource, Value};
+use tilo_resource_store::{
+    Cell, Expected, Field, FieldKind, Resource, Schema, Type, Value, Verb, Writes,
+};
 
 /// The kind of a node of a workspace's tree: the system-published `files.node`, which a tilolang
 /// app reads as any published type and whose verbs are the ones `fs_protocol` declares.
@@ -119,8 +123,9 @@ impl Node {
             Cell::One(self.trashed_from.clone().map_or(Value::Null, Value::Text)),
         );
         Resource {
-            // A nested node reads as its parent does; the store takes its parent's readers.
-            readers: String::new(),
+            // The workspace's tree is every member's to read; a move stays in a document every
+            // member reads. A folder's own readers come with the store's reader rule.
+            readers: collab_types::EVERY_MEMBER.to_owned(),
             parent: Some(parent_resource(&self.parent)),
             order: Some(self.name.display_lossy()),
             fields,
@@ -147,6 +152,214 @@ pub fn write(action: &FileAction, now: &Node, stamp: &Stamp) -> Option<Command> 
     match raw_name_edit(action, now, stamp) {
         Some(edit) => Some(Command::Batch(vec![put, edit])),
         None => Some(put),
+    }
+}
+
+/// The node's place as the tree names it: a folder's key, [`ROOT_ID`] or [`TRASH_ID`], from the
+/// store resource's parent.
+#[must_use]
+pub fn tree_parent(parent: Option<&str>) -> String {
+    match parent {
+        Some(TREE_ROOT) | None => ROOT_ID.to_owned(),
+        Some(TRASH_ROOT) => TRASH_ID.to_owned(),
+        Some(folder) => folder.to_owned(),
+    }
+}
+
+/// The node row a page's indexed resource is, as the fs side reads it.
+#[must_use]
+pub fn row(
+    key: &str,
+    held: &tilo_resource_store::Indexed,
+    raw_name: Option<Vec<u8>>,
+) -> tilo_fs::files_sync::NodeRow {
+    let name = held
+        .order
+        .clone()
+        .or_else(|| as_text(held.scalar("name")))
+        .unwrap_or_default();
+    tilo_fs::files_sync::NodeRow {
+        key: key.to_owned(),
+        parent: tree_parent(held.parent.as_deref()),
+        name,
+        raw_name,
+        folder: matches!(held.scalar("folder"), Value::Bool(true)),
+        hash: as_text(held.scalar("hash")),
+        size: as_u64(held.scalar("size")),
+        mtime: as_u64(held.scalar("mtime")),
+        author: as_text(held.scalar("author")),
+        trashed_from: as_text(held.scalar("trashed_from")),
+    }
+}
+
+fn as_text(value: Value) -> Option<String> {
+    value.as_text().map(str::to_owned)
+}
+
+fn as_u64(value: Value) -> u64 {
+    match value {
+        Value::Int(number) => u64::try_from(number).unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// The node a verb leaves the store holding, from the action and the node as the store has it
+/// now: `None` for a verb that names no node the store translates, or whose node is gone.
+#[must_use]
+pub fn node_after(
+    action: &FileAction,
+    before: Option<&tilo_resource_store::Indexed>,
+) -> Option<Node> {
+    let prior = || before;
+    let name = || {
+        prior()
+            .and_then(|held| held.order.clone())
+            .map(|order| FileNameV1(order.into_bytes()))
+    };
+    match action {
+        FileAction::Create {
+            node,
+            parent,
+            name,
+            kind,
+            hash,
+            size,
+            mtime,
+            author,
+            ..
+        } => Some(Node {
+            key: node.clone(),
+            parent: parent.clone(),
+            name: name.clone(),
+            folder: matches!(kind, FileNodeKind::Directory),
+            hash: hash.clone(),
+            size: *size,
+            mtime: *mtime,
+            author: (!author.is_empty()).then(|| author.clone()),
+            trashed_from: None,
+        }),
+        FileAction::Write {
+            node,
+            hash,
+            size,
+            mtime,
+            author,
+        } => {
+            let held = prior()?;
+            Some(Node {
+                key: node.clone(),
+                parent: tree_parent(held.parent.as_deref()),
+                name: name()?,
+                folder: matches!(held.scalar("folder"), Value::Bool(true)),
+                hash: hash.clone(),
+                size: *size,
+                mtime: *mtime,
+                author: (!author.is_empty()).then(|| author.clone()),
+                trashed_from: as_text(held.scalar("trashed_from")),
+            })
+        }
+        FileAction::Move {
+            node,
+            parent,
+            name,
+            mtime,
+        } => {
+            let held = prior()?;
+            Some(Node {
+                key: node.clone(),
+                parent: parent.clone(),
+                name: name.clone(),
+                folder: matches!(held.scalar("folder"), Value::Bool(true)),
+                hash: as_text(held.scalar("hash")),
+                size: as_u64(held.scalar("size")),
+                mtime: *mtime,
+                author: as_text(held.scalar("author")),
+                trashed_from: as_text(held.scalar("trashed_from")),
+            })
+        }
+        FileAction::Trash { node } => {
+            let held = prior()?;
+            let parent = tree_parent(held.parent.as_deref());
+            Some(Node {
+                key: node.clone(),
+                parent: TRASH_ID.to_owned(),
+                name: name()?,
+                folder: matches!(held.scalar("folder"), Value::Bool(true)),
+                hash: as_text(held.scalar("hash")),
+                size: as_u64(held.scalar("size")),
+                mtime: as_u64(held.scalar("mtime")),
+                author: as_text(held.scalar("author")),
+                trashed_from: (parent != TRASH_ID).then_some(parent),
+            })
+        }
+        FileAction::Restore { node, parent } => {
+            let held = prior()?;
+            let restored = parent
+                .clone()
+                .or_else(|| as_text(held.scalar("trashed_from")))
+                .unwrap_or_else(|| ROOT_ID.to_owned());
+            Some(Node {
+                key: node.clone(),
+                parent: restored,
+                name: name()?,
+                folder: matches!(held.scalar("folder"), Value::Bool(true)),
+                hash: as_text(held.scalar("hash")),
+                size: as_u64(held.scalar("size")),
+                mtime: as_u64(held.scalar("mtime")),
+                author: as_text(held.scalar("author")),
+                trashed_from: None,
+            })
+        }
+        FileAction::ListChunk { .. } => None,
+    }
+}
+
+/// The schema the system publishes for a workspace's tree: a node is a `files.node` nested in a
+/// `files.node`, and each verb of [`fs_protocol`](fs_protocol::file_action::verbs) writes its
+/// fields. Every store that judges a tree's writes declares it, so a device, an agent and a
+/// tilolang app all write the same type without an app declaring it.
+#[must_use]
+pub fn schema() -> Schema {
+    let fields: Vec<Field> = [
+        ("name", Expected::Text, false),
+        ("folder", Expected::Bool, false),
+        ("size", Expected::Int, false),
+        ("hash", Expected::Text, true),
+        ("mtime", Expected::Int, false),
+        ("author", Expected::Text, true),
+        ("trashed_from", Expected::Text, true),
+    ]
+    .into_iter()
+    .map(|(name, value, optional)| Field {
+        name: name.to_owned(),
+        kind: FieldKind::Scalar,
+        value,
+        optional,
+    })
+    .collect();
+    let all: BTreeSet<String> = fields.iter().map(|field| field.name.clone()).collect();
+    let writes = BTreeMap::from([(
+        NODE_KIND.to_owned(),
+        Writes {
+            fields: all,
+            sets_only: false,
+        },
+    )]);
+    Schema {
+        types: vec![Type {
+            name: NODE_KIND.to_owned(),
+            fields,
+            nested: vec![("children".to_owned(), NODE_KIND.to_owned())],
+        }],
+        verbs: fs_protocol::file_action::verbs::ALL
+            .iter()
+            .filter(|verb| **verb != fs_protocol::file_action::verbs::LIST_CHUNK)
+            .map(|verb| Verb {
+                name: (*verb).to_owned(),
+                writes: writes.clone(),
+                nested: BTreeSet::from([NODE_KIND.to_owned()]),
+            })
+            .collect(),
     }
 }
 
@@ -247,7 +460,7 @@ mod tests {
         assert_eq!(kind, NODE_KIND);
         assert_eq!(resource.parent.as_deref(), Some(TREE_ROOT));
         assert_eq!(resource.order.as_deref(), Some("Books"));
-        assert!(resource.readers.is_empty(), "it reads as its parent does");
+        assert_eq!(resource.readers, collab_types::EVERY_MEMBER);
         assert_eq!(
             resource.fields.get("folder").and_then(Cell::one),
             Some(&Value::Bool(true))

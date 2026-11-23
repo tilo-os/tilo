@@ -46,6 +46,7 @@ mod journey_tests;
 mod kernel_changes;
 mod leases;
 mod posix;
+mod store;
 mod trash;
 mod verbs;
 pub use changesets::ChangesetMark;
@@ -432,6 +433,12 @@ pub struct Namespace {
     /// A document read as saved may carry a cycle no resolution has run on yet, so the
     /// next resolution scans it whole, once.
     cycle_scan_pending: bool,
+    /// Whether the verbs this namespace applies are collected for the workspace's store: on for
+    /// the changes people and programs make, off while the store's own rows are applied.
+    collecting: bool,
+    /// The verbs applied since the store was last told, in the order they were made: what the
+    /// store is handed as one burst.
+    pending: Vec<fs_protocol::FileAction>,
     /// While set (to the heads the batch began at, and the changes not yet taken then),
     /// [`Self::save_incremental`] returns nothing, so a batch of changes becomes one
     /// delta. Encoding a delta regenerates its changes from the op set, so one per changed
@@ -618,6 +625,8 @@ impl Namespace {
             tree: TreeIndex::default(),
             placed_since_resolve: HashSet::new(),
             cycle_scan_pending: true,
+            collecting: true,
+            pending: Vec::new(),
             #[cfg(test)]
             document_index_rebuilds: 0,
             opened_ms: tilo_clock::unix_now_ns() / 1_000_000,
@@ -676,6 +685,9 @@ impl Namespace {
         let written = self.doc.write_action(action, ambient.as_ref());
         if let Err(error) = &written {
             tracing::warn!(?error, ?action, "a file action did not apply to the tree");
+        }
+        if written.is_ok() && self.collecting {
+            self.pending.push(action.clone());
         }
         written.is_ok()
     }

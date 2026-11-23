@@ -43,7 +43,7 @@ struct Held {
     /// What the workspace takes from this device's writes ([`tilo_fs::admission`]).
     admission: Arc<tilo_fs::admission::FileAdmission>,
     showing: mount::Showing,
-    replica: tilo_fs::tree_sync::TreeSync,
+    replica: tilo_fs::files_sync::StoreSync,
 }
 
 /// What `tilo status` and `tilo folders` say of one workspace's folder.
@@ -60,7 +60,7 @@ pub(crate) struct Mounted {
     /// sent holds only while it is, and a folder with none is not in sync, whatever it last sent.
     pub(crate) connected: bool,
     #[serde(flatten)]
-    pub(crate) status: tilo_fs::tree_sync::Status,
+    pub(crate) status: tilo_fs::files_sync::Status,
 }
 
 /// A workspace of the person's, as their list names it.
@@ -438,7 +438,6 @@ impl Peer {
             .ok_or_else(|| anyhow::anyhow!("this device's person has no valid key"))?,
         );
         let key = device.cert().device_public_key;
-        let person = device.cert().user_public_key;
         let workspaces = own.copies();
         let routed = self.routed.get_or_init(|| {
             tilo_workspace_service::content::routes_content(
@@ -448,15 +447,7 @@ impl Peer {
             )
         });
         let state = self.state.join(workspace.to_string());
-        let replica = files::start(
-            workspaces,
-            workspace,
-            &state.join("tree"),
-            (key, person),
-            Some(Arc::clone(&self.store)),
-            Some(Arc::clone(&routed.content)),
-        )
-        .await?;
+        let replica = files::open(workspaces, workspace, Some(Arc::clone(&routed.content)))?;
         let actor = fs_protocol::FileActor {
             person: collab_types::Ed25519PublicKey(device.cert().user_public_key),
             device: collab_types::Ed25519PublicKey(key),

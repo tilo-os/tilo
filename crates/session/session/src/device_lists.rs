@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use fs::tree_sync::{Refusal, Waiting};
+use fs::files_sync::{Refusal, Waiting};
 use serde_json::{Map, Value};
 use tilo_actions::remote::session_actions::INVITE_RESOURCE;
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};

@@ -22,7 +22,7 @@ tilo_test_env::scenario! {
             .output_locked()
             .expect("run production Files CLI");
         assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("no saved Files tree"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("no workspace to sync"));
         assert!(!cache.exists());
         assert!(!mount.exists());
         assert!(!identity.exists());
@@ -134,7 +134,7 @@ tilo_test_env::scenario! {
         let profile = Profile::new(0);
         let output = profile.launch(&[]);
         assert_not_ready(&output);
-        assert!(String::from_utf8_lossy(&output.stderr).contains("no saved Files tree"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("no workspace to sync"));
         assert!(
             profile.admin_argv().is_none(),
             "no identity check without saved state"

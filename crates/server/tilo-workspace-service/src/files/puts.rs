@@ -3,18 +3,15 @@
 //! A command or an agent that has a file's content and no folder of its own puts it into the
 //! workspace through an action, and the action is answered by whichever device holds the tree.
 //! Where this service holds it, the put is a change of the tree like a file copied into a
-//! mounted folder: it is made on the tree this service syncs ([`TreeSync`]), kept on disk, and
-//! handed to the workspace in the order the tree may go out, by the one writer every change of
-//! the tree goes through.
+//! mounted folder: it is made on this device's copy, whose verbs go to the workspace's store.
 //!
-//! The tree of each workspace is opened when the first file is put into it, and kept while this
+//! The copy of each workspace is opened when the first file is put into it, and kept while this
 //! service runs.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use tilo_fs::tree_sync::TreeSync;
+use tilo_fs::files_sync::StoreSync;
 use tilo_server_protocol::WorkspaceId;
 
 use crate::workspaces::Workspaces;
@@ -22,14 +19,12 @@ use crate::workspaces::Workspaces;
 /// The trees this service puts files into, by workspace.
 pub struct Puts {
     workspaces: Workspaces,
-    /// Where each workspace's tree is kept between runs.
-    root: PathBuf,
-    held: Arc<tokio::sync::Mutex<HashMap<WorkspaceId, Arc<TreeSync>>>>,
+    held: Arc<tokio::sync::Mutex<HashMap<WorkspaceId, Arc<StoreSync>>>>,
 }
 
 impl Puts {
-    pub(crate) fn new(workspaces: Workspaces, root: PathBuf) -> Self {
-        let held: Arc<tokio::sync::Mutex<HashMap<WorkspaceId, Arc<TreeSync>>>> = Arc::default();
+    pub(crate) fn new(workspaces: Workspaces) -> Self {
+        let held: Arc<tokio::sync::Mutex<HashMap<WorkspaceId, Arc<StoreSync>>>> = Arc::default();
         // A workspace this host deleted is let go of: its tree is no one's to sync.
         let mut deletions = workspaces.deletions();
         let stopping = Arc::clone(&held);
@@ -40,18 +35,14 @@ impl Puts {
                 }
             });
         }
-        Self {
-            workspaces,
-            root,
-            held,
-        }
+        Self { workspaces, held }
     }
 
     /// Change `workspace`'s tree with `change`, as `acting`, and answer what it answered once the
-    /// workspace's records carry the change.
+    /// store carries the change.
     ///
     /// # Errors
-    /// This device does not hold the workspace, the change is refused, or the workspace did not
+    /// This device does not hold the workspace, the change is refused, or the store did not
     /// take it in time.
     #[allow(
         clippy::future_not_send,
@@ -69,7 +60,7 @@ impl Puts {
         tree.change(acting, change).await
     }
 
-    /// What `read` answers of `workspace`'s tree, as the workspace has it now.
+    /// What `read` answers of `workspace`'s tree, as the store has it now.
     ///
     /// # Errors
     /// This device does not hold the workspace, or its tree does not open.
@@ -88,9 +79,9 @@ impl Puts {
         tree.read(read).await
     }
 
-    /// The tree `workspace`'s files are changed and read through, holding the workspace here,
+    /// The copy `workspace`'s files are changed and read through, holding the workspace here,
     /// opened when it is not open yet.
-    async fn held_tree(&self, workspace: WorkspaceId) -> Result<Arc<TreeSync>, String> {
+    async fn held_tree(&self, workspace: WorkspaceId) -> Result<Arc<StoreSync>, String> {
         if self
             .workspaces
             .read_now(&workspace.to_string(), |_| ())
@@ -98,22 +89,11 @@ impl Puts {
         {
             return Err(format!("this device does not hold {workspace}"));
         }
-        self.hold(workspace).await
-    }
-
-    /// The tree of `workspace`, opened when it is not open yet: the one this service syncs,
-    /// kept under this service's state.
-    async fn hold(&self, workspace: WorkspaceId) -> Result<Arc<TreeSync>, String> {
         if let Some(tree) = self.held.lock().await.get(&workspace) {
             return Ok(Arc::clone(tree));
         }
-        let certificate = self.workspaces.serving_certificate();
-        let keys = (certificate.device_public_key, certificate.user_public_key);
-        let kept_at = self.root.join(workspace.to_string());
-        let tree = crate::files::start(&self.workspaces, workspace, &kept_at, keys, None, None)
-            .await
+        let tree = crate::files::open(&self.workspaces, workspace, None)
             .map_err(|error| format!("the workspace's tree does not open: {error}"))?;
-        // A put that opened one meanwhile keeps the first: both sync the same records.
         Ok(Arc::clone(
             self.held
                 .lock()

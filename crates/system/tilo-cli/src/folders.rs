@@ -16,7 +16,7 @@ use clap::Subcommand;
 use serde_json::{Value, json};
 
 use tilo_api::daemon::folders::{self, Folders};
-use tilo_fs::tree_sync::{Refusal, Waiting};
+use tilo_fs::files_sync::{Refusal, Waiting};
 
 /// How long a command waits for the peer to apply what it changed.
 const APPLYING: Duration = Duration::from_secs(20);
@@ -657,35 +657,25 @@ pub(crate) fn describe(status: &serde_json::Value) -> String {
 /// Why a folder's changes wait, in a person's words.
 fn waiting(why: &Waiting) -> String {
     match why {
-        Waiting::Unopened => {
+        Waiting::Unopened
+        | Waiting::RetiredUnanswered
+        | Waiting::RetiredUnarrived
+        | Waiting::RetiredOrdered
+        | Waiting::RetiredUnsent
+        | Waiting::RetiredLacking => {
             "the workspace hasn't said which files it holds yet, so nothing changed here goes out"
                 .to_owned()
         }
-        Waiting::Unanswered => "the workspace hasn't answered for some of its files yet".to_owned(),
-        Waiting::Unarrived => "some of the workspace's file list hasn't arrived on this computer \
-                               yet and is asked for again every few minutes"
-            .to_owned(),
-        Waiting::Ordered => "some changes wait for others to reach the workspace first".to_owned(),
-        Waiting::Refused(Refusal::HistoryFull) => "the server has no room for more changes to \
-                                                    this folder yet; they're kept on this \
-                                                    computer until it has"
-            .to_owned(),
-        Waiting::Refused(Refusal::NotPermitted) => "the workspace's rules don't let you make some \
-                                                     of these changes; ask an owner of the \
-                                                     workspace"
-            .to_owned(),
+        Waiting::Refused(Refusal::NotPermitted) => {
+            "the workspace's rules don't let you make these \
+                                                     changes; ask an owner of the workspace"
+                .to_owned()
+        }
         Waiting::Refused(Refusal::Unanswered) => {
-            "the server isn't answering; changes are sent again shortly".to_owned()
+            "the workspace isn't answering; the change is sent again shortly".to_owned()
         }
         Waiting::Refused(Refusal::Other(why)) => {
-            format!("the server didn't take some changes ({why}); they're sent again shortly")
-        }
-        Waiting::Unsent => {
-            "some changes haven't reached the workspace yet and are sent again".to_owned()
-        }
-        Waiting::Lacking => {
-            "the folder names files whose details neither this computer nor the workspace holds"
-                .to_owned()
+            format!("the workspace didn't take the change ({why}); it is sent again shortly")
         }
     }
 }
@@ -757,7 +747,7 @@ mod tests {
 
     /// What `tilo folders` says of a folder whose sync stands as `status`, on a computer that
     /// reaches the workspace or not.
-    fn said(mut status: tilo_fs::tree_sync::Status, connected: bool) -> String {
+    fn said(mut status: tilo_fs::files_sync::Status, connected: bool) -> String {
         status.files = 1;
         status.bytes = 1;
         status.state = status.folder_state();
@@ -769,13 +759,13 @@ mod tests {
     }
 
     /// A folder whose every change went out and whose content a holder keeps whole.
-    fn whole() -> tilo_fs::tree_sync::Status {
-        tilo_fs::tree_sync::Status {
+    fn whole() -> tilo_fs::files_sync::Status {
+        tilo_fs::files_sync::Status {
             opened: true,
             sent: true,
             durable: true,
             host_lacks: Some(0),
-            ..tilo_fs::tree_sync::Status::default()
+            ..tilo_fs::files_sync::Status::default()
         }
     }
 
@@ -794,7 +784,7 @@ mod tests {
     #[test]
     fn a_folder_the_server_lacks_files_of_is_not_in_sync() {
         let lacking = said(
-            tilo_fs::tree_sync::Status {
+            tilo_fs::files_sync::Status {
                 host_lacks: Some(3),
                 ..whole()
             },
@@ -811,7 +801,7 @@ mod tests {
     #[test]
     fn a_folder_waiting_for_its_workspace_says_so() {
         let waiting = said(
-            tilo_fs::tree_sync::Status {
+            tilo_fs::files_sync::Status {
                 opened: false,
                 waiting_for_workspace: true,
                 ..whole()
@@ -829,23 +819,22 @@ mod tests {
     /// says so and why, rather than that it is sending changes for as long as that lasts.
     #[test]
     fn a_folder_whose_changes_wait_says_why() {
-        let sending = tilo_fs::tree_sync::Status {
+        let sending = tilo_fs::files_sync::Status {
             sent: false,
             ..whole()
         };
         assert!(said(sending.clone(), true).contains("(sending changes;"));
         let waiting = said(
-            tilo_fs::tree_sync::Status {
-                stuck: vec![tilo_fs::tree_sync::Waiting::Unarrived],
+            tilo_fs::files_sync::Status {
+                stuck: vec![tilo_fs::files_sync::Waiting::Refused(
+                    tilo_fs::files_sync::Refusal::Unanswered,
+                )],
                 ..sending
             },
             true,
         );
         assert!(
-            waiting.contains(
-                "(changes made here wait: some of the workspace's file list hasn't arrived on \
-                 this computer yet"
-            ),
+            waiting.contains("(changes made here wait: the workspace isn't answering;"),
             "{waiting}"
         );
     }

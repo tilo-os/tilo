@@ -564,7 +564,7 @@ fn content_the_server_let_go_of_comes_back_from_the_writer_that_was_away() {
     loop {
         let status = member.joined_files_status(&workspace);
         if status.as_ref().is_some_and(|status| {
-            status.state == tilo_fs::tree_sync::FolderState::InSync && status.host_lacks == Some(0)
+            status.state == tilo_fs::files_sync::FolderState::InSync && status.host_lacks == Some(0)
         }) {
             break;
         }
@@ -1042,7 +1042,7 @@ fn kept_tree(daemon: &Daemon) -> Option<fs_protocol::tree::Tree> {
     let read = |record: &str| {
         daemon
             .serving()
-            .test_kept_document(workspace, tilo_fs::tree_sync::FILES_APP, record)
+            .test_kept_document(workspace, tilo_fs::files_sync::FILES_APP, record)
             .ok()
     };
     let index = read(&fs_protocol::tree::document_id())?;

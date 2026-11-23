@@ -38,11 +38,11 @@ use std::{
 
 use iroh_blobs::Hash;
 use tilo_fs::{
+    files_sync::{FILES_APP, StoreSync},
     hydration::Hydrator,
     identity::PeerCredentials,
     namespace::Namespace,
     sync_folder::Watch,
-    tree_sync::{FILES_APP, TreeSync},
 };
 use tilo_lock::MutexRecover as _;
 use tilo_workspace_service::apps::route::CrdtRoute;
@@ -73,8 +73,6 @@ pub(crate) struct ReplicaParts<'a> {
     /// The profile's content store, the one its record content is kept in.
     pub(crate) store: Arc<tilo_fs::ContentStore>,
     pub(crate) author: &'a Author,
-    /// This device's key and its person's, as the workspace knows them.
-    pub(crate) keys: ([u8; 32], [u8; 32]),
     pub(crate) admission: Arc<tilo_fs::admission::FileAdmission>,
     /// The service whose member copy holds the workspace's tree.
     pub(crate) workspaces: Workspaces,
@@ -90,7 +88,7 @@ pub(crate) struct ReplicaFiles {
     _watch: Watch,
     /// Held until this replica drops: its drop stops the tree and waits for its last keep, so no
     /// write lands in the tree's state after the replica has gone.
-    tree: Option<TreeSync>,
+    tree: Option<StoreSync>,
     keeper: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -138,21 +136,11 @@ impl ReplicaFiles {
             io::Error::new(io::ErrorKind::InvalidInput, "invalid Files workspace")
         })?;
         crate::host::private_directory(parts.state)?;
-        let tree = crate::device::workspaces::block_on_owned({
-            let (copies, kept_at) = (parts.workspaces, parts.state.join(super::NAMESPACE));
-            let (store, content) = (Arc::clone(&parts.store), Arc::clone(&parts.content));
-            async move {
-                tilo_workspace_service::files::start(
-                    &copies,
-                    workspace,
-                    &kept_at,
-                    parts.keys,
-                    Some(store),
-                    Some(content),
-                )
-                .await
-            }
-        })?;
+        let tree = tilo_workspace_service::files::open(
+            &parts.workspaces,
+            workspace,
+            Some(Arc::clone(&parts.content)),
+        )?;
         let keys = tilo_fs::hydration::FileKeys::new(workspace, parts.identity);
         let files = Files::open(
             parts.state,
@@ -185,10 +173,10 @@ impl ReplicaFiles {
     }
 
     /// Where the folder's sync stands.
-    pub(in crate::device) fn status(&self) -> tilo_fs::tree_sync::Status {
+    pub(in crate::device) fn status(&self) -> tilo_fs::files_sync::Status {
         self.tree
             .as_ref()
-            .map_or_else(tilo_fs::tree_sync::Status::default, TreeSync::status)
+            .map_or_else(tilo_fs::files_sync::Status::default, StoreSync::status)
     }
 }
 
@@ -291,10 +279,6 @@ impl Replicas {
             folder: &folder,
             store: Arc::clone(&self.host.store),
             author: &self.host.author,
-            keys: (
-                credentials.device_public_key(),
-                credentials.user_public_key(),
-            ),
             admission: Arc::new(admission),
             workspaces: service.copies().clone(),
             identity: self.host.identity.clone(),
@@ -321,7 +305,7 @@ impl Replicas {
     }
 
     /// Where the sync of `workspace`'s folder stands, while its files are held.
-    pub(in crate::device) fn status(&self, workspace: &str) -> Option<tilo_fs::tree_sync::Status> {
+    pub(in crate::device) fn status(&self, workspace: &str) -> Option<tilo_fs::files_sync::Status> {
         self.held
             .lock_recover()
             .get(workspace)

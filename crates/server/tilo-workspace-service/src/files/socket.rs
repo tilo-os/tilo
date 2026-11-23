@@ -1,32 +1,30 @@
-//! This device's service's side of a workspace tree's sync, served on a socket to the files
-//! daemon that mounts it ([`tilo_fs::tree_sync::remote`]).
+//! This device's service's side of a workspace tree, served on a socket to the files daemon
+//! that mounts it ([`tilo_fs::files_sync::remote`]).
 //!
 //! The daemon is a process of its own, and this device runs one workspace service: the
 //! session's. A connection is taken only from a process of this user that the session recorded
-//! as the Files endpoint (`attest`), and it reaches only the Files resources of the one workspace
-//! it names first. What it writes, it writes as this device, as the daemon's own mount did when
-//! it signed the tree's changes itself.
+//! as the Files endpoint (`attest`), and it reaches only the Files nodes of the one workspace it
+//! names first. What it writes, it writes as this device, as the daemon's own mount did.
 //!
 //! The connection carries the rest of what the mount needs of the workspace too: the bytes its
 //! files are made of, asked of the workspace on the tree's route ([`super::WorkspaceSource`]);
-//! the keys of the tree's group; who may read and write the tree's folders, told again the moment
-//! the workspace's member list changes; and this device's one store of file bytes, which the
-//! service's record content reads and keeps through the connected daemon ([`Daemons`]).
+//! the keys of the tree's group; who may read and write the tree's folders; and this device's
+//! one store of file bytes, which the service's content reads and keeps through the connected
+//! daemon ([`Daemons`]).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use fs_protocol::TreeChunk;
-use tilo_fs::tree_sync::TreePeer as _;
-use tilo_fs::tree_sync::remote::{Ask, FRAMING, Told};
+use tilo_fs::files_sync::Peer as _;
+use tilo_fs::files_sync::remote::{Ask, FRAMING, Told};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 use tokio::sync::{mpsc, watch};
 
-use super::{Backend, Copy, FILES_APP};
+use super::{StorePeer, WorkspaceSource};
 use crate::content::RouteContent;
 use crate::service::ServiceSlot;
 
@@ -57,10 +55,7 @@ const WANT_WITHIN: Duration = Duration::from_secs(60);
 /// How long the service waits for a daemon to lend what it keeps.
 const LEND_WITHIN: Duration = Duration::from_secs(10);
 
-/// How often what the copy holds is told again when nothing else told it.
-const PEER_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
-
-/// The tree's sync served on a socket, until dropped.
+/// The tree served on a socket, until dropped.
 pub struct Serving {
     task: tokio::task::JoinHandle<()>,
 }
@@ -149,36 +144,35 @@ async fn serve_one(
             return Err(why);
         }
     };
-    let governed = workspaces.governed_copy(workspace).await.is_some();
-    let source =
-        super::WorkspaceSource::new(Arc::clone(&content), &workspace.to_string(), WANT_WITHIN);
-    let Backend {
-        copy,
-        reads,
-        writer,
-        wakes,
-    } = Backend::of(&workspaces, workspace, Some(content), governed);
+    let source = Arc::new(WorkspaceSource::new(
+        Arc::clone(&content),
+        &workspace.to_string(),
+        WANT_WITHIN,
+    ));
+    let peer = Arc::new(StorePeer::new(
+        workspaces.clone(),
+        workspace,
+        Some(Arc::clone(&content)),
+    ));
     let lender = Arc::new(Lender {
         tell: tell.clone(),
         lent: Mutex::new(BTreeMap::new()),
         next: AtomicU64::new(0),
     });
     offers.daemons.connected(&workspace.to_string(), &lender);
-    let name = copy.name.clone();
-    let served = Connection {
-        copy,
-        reads: Arc::new(reads),
-        writer: Arc::new(tokio::sync::Mutex::new(writer)),
-        named: Arc::new(Mutex::new(BTreeSet::new())),
-        told: Arc::new(Mutex::new(None)),
-        tell,
+    let name = workspace.to_string();
+    let served = Arc::new(Connection {
+        peer,
+        name: name.clone(),
         workspace,
-        source: Arc::new(source),
+        source,
         keys: offers.keys,
         lender,
         folders: folders.clone(),
-    }
-    .run(reader, wakes, offers.access)
+        tell,
+        writes: workspaces.document_writes(),
+    })
+    .run(reader, offers.access)
     .await;
     // The daemon that held the folder is gone: nothing says where it stands any more.
     folders.gone(&name);
@@ -225,39 +219,31 @@ async fn send(
     }
 }
 
-/// The parts of the tree the service has anything of, how many writes it still keeps, whether
-/// this device holds the workspace, and how much of its content the workspace's holders lack.
-type Holding = (Vec<TreeChunk>, u64, bool, Option<u32>);
-
-/// One admitted connection's copy, and what it was told.
+/// One admitted connection's store, and what it was told.
 struct Connection {
-    copy: Arc<Copy>,
-    reads: Arc<super::Records>,
-    writer: Arc<tokio::sync::Mutex<super::Writer>>,
-    /// The parts of the tree the connection named: those it is told the service has.
-    named: Arc<Mutex<BTreeSet<TreeChunk>>>,
-    /// What it was last told the copy holds.
-    told: Arc<Mutex<Option<Holding>>>,
-    tell: mpsc::UnboundedSender<Told>,
+    peer: Arc<StorePeer>,
+    name: String,
     workspace: WorkspaceId,
     /// The workspace as the source of the bytes the daemon lacks.
-    source: Arc<super::WorkspaceSource>,
+    source: Arc<WorkspaceSource>,
     keys: Keys,
-    /// The daemon's store, as the service's record content reaches it.
+    /// The daemon's store, as the service's content reaches it.
     lender: Arc<Lender>,
     folders: super::Folders,
+    tell: mpsc::UnboundedSender<Told>,
+    /// Each write a workspace held here took in: a store write is told to the daemon as a
+    /// change of its tree.
+    writes: tokio::sync::broadcast::Receiver<crate::workspaces::ResourceWrite>,
 }
 
 impl Connection {
-    /// Answer what the daemon asks on `reader`, and tell it what `wakes` brings, until either
-    /// ends.
+    /// Answer what the daemon asks on `reader`, tell it what changed, until either ends.
     async fn run(
-        self,
+        self: Arc<Self>,
         mut reader: tokio::net::unix::OwnedReadHalf,
-        mut wakes: mpsc::UnboundedReceiver<tilo_fs::tree_sync::Wake>,
         mut access: watch::Receiver<Option<String>>,
     ) -> Result<(), String> {
-        let mut look = tokio::time::interval(PEER_EVERY);
+        let mut writes = self.writes.resubscribe();
         // What the mount enforces goes first, before anything of the tree.
         access.mark_changed();
         let mut deciding = true;
@@ -265,7 +251,6 @@ impl Connection {
             tokio::select! {
                 changed = access.changed(), if deciding => {
                     if changed.is_err() {
-                        // Nothing decides any more: the mount keeps what it was told last.
                         deciding = false;
                         continue;
                     }
@@ -282,26 +267,23 @@ impl Connection {
                         None => return Ok(()),
                     }
                 }
-                wake = wakes.recv() => {
-                    let Some(wake) = wake else { return Ok(()) };
-                    // What the copy holds goes first: the sync decides on the wake with it.
-                    self.peer(true);
-                    if self.tell.send(Told::Wake(wake)).is_err() {
-                        return Ok(());
+                written = writes.recv() => match written {
+                    Ok(written) if written.workspace == self.name && written.app == tilo_fs::files_sync::FILES_APP => {
+                        if self.tell.send(Told::Changed).is_err() {
+                            return Ok(());
+                        }
                     }
+                    // A follower that fell behind reads the tree again: any node may have changed.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        if self.tell.send(Told::Changed).is_err() {
+                            return Ok(());
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+                    Ok(_) => {}
                 }
-                _ = look.tick() => self.peer(false),
             }
         }
-    }
-
-    fn name(&self, chunk: TreeChunk) {
-        self.named.lock_recover().insert(chunk);
-    }
-
-    /// Tell what the copy holds, when it changed or `always`.
-    fn peer(&self, always: bool) {
-        tell_peer(&self.copy, &self.named, &self.told, &self.tell, always);
     }
 
     /// Answer ask `id` with the keys of this connection's workspace, once they are handed over.
@@ -315,84 +297,49 @@ impl Connection {
         });
     }
 
-    /// Show where the daemon's folder stands, under the names a person knows its workspace and
-    /// server by.
-    fn show(&self, status: tilo_fs::tree_sync::Status) {
-        let (copy, folders) = (Arc::clone(&self.copy), self.folders.clone());
-        tokio::spawn(async move {
-            let (name, server) = names(&copy).await;
-            folders.show(super::Folder {
-                workspace: copy.name.clone(),
-                name,
-                server,
-                status,
-            });
-        });
+    /// Show where the daemon's folder stands, under the names a person knows its workspace by.
+    fn show(&self, status: tilo_fs::files_sync::Status) {
+        let folder = super::Folder {
+            workspace: self.name.clone(),
+            name: self.name.clone(),
+            server: String::new(),
+            status,
+        };
+        self.folders.show(folder);
     }
 
-    fn take(&self, ask: Ask) -> Result<(), String> {
+    fn take(self: &Arc<Self>, ask: Ask) -> Result<(), String> {
         match ask {
             Ask::Hello { .. } => return Err("a connection names its workspace once".to_owned()),
-            Ask::Open(chunk) => {
-                self.name(chunk);
-                self.copy.open(chunk);
-            }
-            Ask::ReaskContent => self.copy.reask_content(),
-            Ask::Status(status) => self.show(status),
-            Ask::Read {
+            Ask::RetiredRead | Ask::RetiredOpen | Ask::RetiredWrite | Ask::RetiredServed => {}
+            Ask::List {
                 id,
-                resource,
-                since,
+                parent,
+                after,
+                limit,
             } => {
-                let Some(chunk) = fs_protocol::tree::chunk_of_record(&resource) else {
-                    return Err(format!("{resource} is no part of the tree"));
-                };
-                self.name(chunk);
-                let (reads, tell) = (Arc::clone(&self.reads), self.tell.clone());
-                let name = self.copy.name.clone();
+                let (peer, tell) = (Arc::clone(&self.peer), self.tell.clone());
                 tokio::task::spawn_blocking(move || {
-                    let reading = tilo_fs::tree_sync::Records::read(
-                        &*reads,
-                        &name,
-                        FILES_APP,
-                        &resource,
-                        since.as_deref(),
-                    );
-                    let _ = tell.send(Told::Read { id, reading });
+                    let page = peer.list(&parent, after, limit);
+                    let _ = tell.send(Told::List { id, page });
                 });
             }
-            Ask::Write {
-                id,
-                chunk,
-                changes,
-                founding,
-                snapshot,
-            } => {
-                self.name(chunk);
-                let writer = Arc::clone(&self.writer);
-                let (copy, named, told, tell) = (
-                    Arc::clone(&self.copy),
-                    Arc::clone(&self.named),
-                    Arc::clone(&self.told),
-                    self.tell.clone(),
-                );
-                tokio::spawn(async move {
-                    let written = {
-                        let mut writer = writer.lock().await;
-                        tilo_fs::tree_sync::TreeWriter::write(
-                            &mut *writer,
-                            chunk,
-                            &changes,
-                            founding,
-                            snapshot,
-                        )
-                        .await
-                    };
-                    // The copy holds what it took before the write is answered.
-                    tell_peer(&copy, &named, &told, &tell, true);
-                    let _ = tell.send(Told::Written { id, written });
+            Ask::Count { id, parent } => {
+                let (peer, tell) = (Arc::clone(&self.peer), self.tell.clone());
+                tokio::task::spawn_blocking(move || {
+                    let count = peer.count(&parent);
+                    let _ = tell.send(Told::Count { id, count });
                 });
             }
+            Ask::Apply { id, burst, actions } => {
+                let (peer, tell) = (Arc::clone(&self.peer), self.tell.clone());
+                tokio::task::spawn_blocking(move || {
+                    let applied = peer.apply(&burst, &actions);
+                    let _ = tell.send(Told::Applied { id, applied });
+                });
+            }
+            Ask::ReaskContent => self.source.reask(),
+            Ask::Status(status) => self.show(status),
             Ask::Want { id, hash } => {
                 let (source, tell) = (Arc::clone(&self.source), self.tell.clone());
                 tokio::spawn(async move {
@@ -415,21 +362,6 @@ impl Connection {
                 self.send_keys(id);
             }
             Ask::Lent { id, bytes } => self.lender.lent(id, bytes),
-            Ask::Served { id, chunks } => {
-                for chunk in &chunks {
-                    self.name(*chunk);
-                }
-                let waiting = super::served(&self.copy, &chunks);
-                let tell = self.tell.clone();
-                tokio::spawn(async move {
-                    let served = match waiting {
-                        Some(waiting) => waiting.await,
-                        // The copy's own store kept them: nothing to wait for.
-                        None => Ok(()),
-                    };
-                    let _ = tell.send(Told::Served { id, served });
-                });
-            }
         }
         Ok(())
     }
@@ -475,7 +407,7 @@ impl Lender {
 }
 
 /// The Files daemons connected to this service, by the workspace each mounts: the one store of
-/// this device's file bytes, which the service's record content reads and keeps through them.
+/// this device's file bytes, which the service's content reads and keeps through them.
 #[derive(Default)]
 pub struct Daemons {
     connected: Mutex<HashMap<String, Vec<Weak<Lender>>>>,
@@ -487,8 +419,7 @@ pub struct Daemons {
 pub type OnConnect = Arc<dyn Fn(&str, &dyn Fn(&[u8]) -> bool) + Send + Sync>;
 
 impl Daemons {
-    /// Call `on_connect` each time a daemon connects for a workspace, with what keeps bytes in
-    /// that daemon's store: content an earlier store of this device held moves there once.
+    /// Call `on_connect` each time a daemon connects for a workspace.
     pub fn on_connect(&self, on_connect: OnConnect) {
         *self.on_connect.lock_recover() = Some(on_connect);
     }
@@ -524,8 +455,7 @@ impl Daemons {
         !self.lenders(workspace).is_empty()
     }
 
-    /// The bytes named `hash` a connected daemon of `workspace` keeps, waited for on this thread:
-    /// never a fetch of what none keeps.
+    /// The bytes named `hash` a connected daemon of `workspace` keeps, waited for on this thread.
     #[must_use]
     pub fn read(&self, workspace: &str, hash: &str) -> Option<Vec<u8>> {
         let hash: [u8; 32] = hex::decode(hash).ok()?.try_into().ok()?;
@@ -554,54 +484,6 @@ impl Daemons {
             ))
         }
     }
-}
-
-/// The names a person knows `copy`'s workspace by, and the device that keeps its content (the
-/// first its governance names), each empty while none is said.
-async fn names(copy: &Copy) -> (String, String) {
-    let Some(state) = copy.workspaces.state(&copy.name).await else {
-        return (String::new(), String::new());
-    };
-    let governance = state.governance();
-    let name = governance.workspace_name().unwrap_or_default();
-    let server = governance
-        .keeping_devices()
-        .into_iter()
-        .next()
-        .map(|kept| kept.host.device_label)
-        .unwrap_or_default();
-    (name, server)
-}
-
-/// Tell `tell` which of the `named` parts `copy` has and how many writes it still keeps,
-/// when that changed since `told` or `always`.
-fn tell_peer(
-    copy: &Copy,
-    named: &Mutex<BTreeSet<TreeChunk>>,
-    told: &Mutex<Option<Holding>>,
-    tell: &mpsc::UnboundedSender<Told>,
-    always: bool,
-) {
-    let named = named.lock_recover().clone();
-    let holds: Vec<TreeChunk> = named
-        .into_iter()
-        .filter(|chunk| copy.holds(*chunk))
-        .collect();
-    let pending = u64::try_from(copy.pending()).unwrap_or(u64::MAX);
-    let workspace = copy.workspaces.member_caught_up(copy.workspace).is_some();
-    let lacks = tilo_fs::tree_sync::TreePeer::host_lacks(copy);
-    let now = (holds, pending, workspace, lacks);
-    let mut told = told.lock_recover();
-    if !always && told.as_ref() == Some(&now) {
-        return;
-    }
-    let _ = tell.send(Told::Peer {
-        holds: now.0.clone(),
-        pending: now.1,
-        workspace: now.2,
-        lacks: now.3,
-    });
-    *told = Some(now);
 }
 
 #[cfg(test)]

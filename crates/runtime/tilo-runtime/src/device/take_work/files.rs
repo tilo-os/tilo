@@ -23,7 +23,6 @@ use tilo_fs::{
 
 /// The profile directory holding the workspace files' state.
 const FILES: &str = "files";
-const NAMESPACE: &str = "namespace";
 /// Workspace changes reach the folder, and are persisted, within this.
 const INTERVAL: Duration = Duration::from_secs(2);
 
@@ -110,7 +109,7 @@ struct NamespaceFile {
 }
 
 impl NamespaceFile {
-    fn of_tree(tree: &tilo_fs::tree_sync::TreeSync) -> Self {
+    fn of_tree(tree: &tilo_fs::files_sync::StoreSync) -> Self {
         Self {
             namespace: Arc::clone(&tree.namespace),
             journal: tree.journal(),

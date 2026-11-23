@@ -223,7 +223,7 @@ enum ScopedKeyService {
     Identity(PathBuf),
     /// The session serving this device's trees, over the tree's own connection.
     Tree {
-        service: crate::tree_sync::remote::Service,
+        service: crate::files_sync::remote::Service,
         runtime: tokio::runtime::Handle,
     },
 }
@@ -344,7 +344,7 @@ impl Hydrator {
     #[must_use]
     pub fn with_tree_file_keys(
         self,
-        service: crate::tree_sync::remote::Service,
+        service: crate::files_sync::remote::Service,
         policy: AclHandle,
         reader: IdentityKey,
     ) -> Self {

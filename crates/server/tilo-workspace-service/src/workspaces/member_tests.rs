@@ -880,15 +880,12 @@ async fn a_folder_waits_for_a_workspace_this_device_does_not_hold_yet() {
             .await
             .expect("a content store for the folder"),
     );
-    let folder = crate::files::start(
+    let _ = store;
+    let folder = crate::files::open(
         &copies,
         workspace_id,
-        &kept.path().join("tree"),
-        (member_cert.device_public_key, member_cert.user_public_key),
-        Some(store),
         Some(crate::content::tests::hosts(false, false).a),
     )
-    .await
     .expect("the folder opens");
     tilo_test_env::within(
         "the folder says it waits for a workspace this device does not hold",

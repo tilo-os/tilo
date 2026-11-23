@@ -2,20 +2,21 @@
 
 use std::sync::{Arc, Mutex};
 
-use fs::namespace::Namespace;
+use fs::namespace::{Namespace, ROOT_ID};
 
 use fs_protocol::files::FileNodeKind;
-use fs_protocol::tree::{ROOT_ID, Tree, TreeChunks, chunk_document_id};
 use tilo_lock::MutexRecover as _;
 
-/// A tree document this device mounts, as the daemon serving the mount holds it.
+/// A tree this device mounts, as the daemon serving the mount holds it.
 pub type Mounted = Arc<Mutex<Namespace>>;
 
-/// Every path `namespace`'s tree holds as the records read it — the projection
-/// the Files app renders — sorted, each folder's contents by its folder's path.
+/// Every path `namespace`'s tree holds, out of the trash, sorted.
 pub fn contents(namespace: &Mounted) -> Vec<String> {
-    fn walk(tree: &Tree, parent: &str, prefix: &str, found: &mut Vec<String>) {
-        for (id, entry) in tree.children(parent) {
+    fn walk(namespace: &Namespace, parent: &str, prefix: &str, found: &mut Vec<String>) {
+        for id in namespace.child_node_ids(parent) {
+            let Some(entry) = namespace.entry_for_node(&id) else {
+                continue;
+            };
             let name = String::from_utf8_lossy(entry.name.as_bytes()).into_owned();
             let path = if prefix.is_empty() {
                 name
@@ -24,34 +25,21 @@ pub fn contents(namespace: &Mounted) -> Vec<String> {
             };
             found.push(path.clone());
             if entry.kind == FileNodeKind::Directory {
-                walk(tree, id, &path, found);
+                walk(namespace, &id, &path, found);
             }
         }
     }
-    // The tree is the records that hold it: its own record, then each chunk.
-    let mut chunks = TreeChunks::default();
-    {
-        let mut namespace = namespace.lock_recover();
-        for chunk in namespace.records() {
-            let Some(bytes) = namespace.save_document(chunk) else {
-                continue;
-            };
-            chunks
-                .read_resource(&chunk_document_id(chunk), &bytes)
-                .expect("a record of the tree reads");
-        }
-    }
-    let tree = chunks.tree();
+    let namespace = namespace.lock_recover();
     let mut found = Vec::new();
-    walk(&tree, ROOT_ID, "", &mut found);
+    walk(&namespace, ROOT_ID, "", &mut found);
     found.sort();
     found
 }
 
 /// A workspace's tree as `device`'s files daemon mounts it, synced while this value lives.
 pub struct Mount {
-    tree: fs::tree_sync::TreeSync,
-    service: fs::tree_sync::remote::Service,
+    tree: fs::files_sync::StoreSync,
+    service: fs::files_sync::remote::Service,
     store: Arc<fs::ContentStore>,
     _kept: tempfile::TempDir,
 }
@@ -67,7 +55,7 @@ impl Mount {
         dead_code,
         reason = "not every test of the tree reads its files' bytes"
     )]
-    pub fn service(&self) -> &fs::tree_sync::remote::Service {
+    pub fn service(&self) -> &fs::files_sync::remote::Service {
         &self.service
     }
 
@@ -100,21 +88,24 @@ pub fn mount_on(device: &crate::common::people::Device, workspace: &str) -> Moun
         .directory()
         .join("runtime")
         .join("tilo/services")
-        .join(format!("{}.sock", fs::tree_sync::remote::SOCKET));
+        .join(format!("{}.sock", fs::files_sync::SOCKET));
+    let mount = fs::namespace::MountAuthor::person(
+        hex::encode(credentials.device_public_key()),
+        tilo_actions::MemberId::person(tilo_actions::PersonId::from_root(
+            credentials.user_public_key(),
+        )),
+    )
+    .in_workspace(workspace.to_owned());
     let (tree, service, store) = tokio::runtime::Handle::current().block_on(async {
         let content = Arc::new(
             fs::ContentStore::open(kept.path().join("content"))
                 .await
                 .expect("a content store for the mount"),
         );
-        let (tree, service) = fs::tree_sync::remote::start(
+        let (tree, service) = fs::files_sync::remote::start(
             socket,
             workspace.to_owned(),
-            (
-                credentials.device_public_key(),
-                credentials.user_public_key(),
-            ),
-            kept.path().join("namespace"),
+            mount,
             Arc::clone(&content),
         )
         .await

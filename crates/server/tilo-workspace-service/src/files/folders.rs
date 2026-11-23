@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tilo_fs::tree_sync::Status;
+use tilo_fs::files_sync::Status;
 use tilo_lock::MutexRecover as _;
 
 /// One folder as it is shown: where its sync stands, and the names a person knows its workspace

@@ -35,6 +35,9 @@ pub mod durable_backup;
 pub mod eviction;
 #[cfg(feature = "filesystem")]
 pub mod file_watch;
+/// Keeping this device's copy of a workspace's tree in step with the workspace's store.
+#[cfg(feature = "tree-sync")]
+pub mod files_sync;
 #[cfg(feature = "filesystem")]
 pub mod fs;
 #[cfg(feature = "filesystem")]
@@ -44,13 +47,7 @@ pub mod hydration;
 #[cfg(feature = "filesystem")]
 pub mod identity;
 #[cfg(feature = "filesystem")]
-#[cfg(feature = "filesystem")]
-pub mod kept_documents;
-#[cfg(feature = "filesystem")]
-#[cfg(feature = "filesystem")]
 pub mod namespace;
-#[cfg(feature = "filesystem")]
-pub mod namespace_persist;
 #[cfg(all(feature = "filesystem", target_os = "linux"))]
 pub mod native;
 #[cfg(feature = "document-media")]
@@ -68,9 +65,6 @@ pub mod store;
 pub mod sync_folder;
 #[cfg(feature = "filesystem")]
 pub mod thumbs;
-/// Keeping a namespace of that tree converged with a peer's records of it.
-#[cfg(feature = "tree-sync")]
-pub mod tree_sync;
 #[cfg(feature = "filesystem")]
 pub mod unsaved;
 #[cfg(feature = "filesystem")]
