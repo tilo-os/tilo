@@ -3549,13 +3549,14 @@ mod surface_tests {
 
     fn schema_of(ty: ParamType) -> Value {
         match ty {
-            ParamType::Text | ParamType::Secret | ParamType::DateTime => json!({"type": "string"}),
+            ParamType::Text | ParamType::Secret | ParamType::DateTime | ParamType::Resource => {
+                json!({"type": "string"})
+            }
             ParamType::Integer => json!({"type": "integer"}),
             ParamType::Number => json!({"type": "number"}),
             ParamType::Boolean => json!({"type": "boolean"}),
             ParamType::Array => json!({"type": "array"}),
             ParamType::Object => json!({"type": "object"}),
-            ParamType::Resource => json!({"type": "string"}),
         }
     }
 
