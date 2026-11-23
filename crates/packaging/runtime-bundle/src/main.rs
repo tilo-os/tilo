@@ -298,21 +298,13 @@ fn cmd_key(cmd: KeyCmd) -> ExitCode {
 
 fn key_generate(out: &Path) -> ExitCode {
     let identity = Identity::generate();
-    if let Some(parent) = out.parent()
-        && let Err(e) = std::fs::create_dir_all(parent)
-    {
+    if let Err(e) = tilo_files::native::atomic::write_creating_parent_with_mode(
+        out,
+        &identity.to_json_bytes(),
+        0o600,
+    ) {
         eprintln!("tilo-runtime-bundle key generate: {e}");
         return ExitCode::from(1);
-    }
-    if let Err(e) = std::fs::write(out, identity.to_json_bytes()) {
-        eprintln!("tilo-runtime-bundle key generate: {e}");
-        return ExitCode::from(1);
-    }
-    // Best-effort restrict permissions on the secret file.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(out, std::fs::Permissions::from_mode(0o600));
     }
     println!("wrote identity to {}", out.display());
     println!("public-key: ed25519:{}", identity.public_key_hex());
@@ -329,5 +321,87 @@ fn key_pubkey(identity: &Path) -> ExitCode {
             eprintln!("tilo-runtime-bundle key pubkey: {e}");
             ExitCode::from(1)
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure, with_observer};
+    use tilo_test_env::file_mode::{on_a_thread_without_chmod, with_zero_umask};
+
+    #[test]
+    fn key_generate_is_private_under_zero_umask_and_keeps_old_key_on_failed_replace() {
+        tilo_test_env::in_own_process(
+            module_path!(),
+            "key_generate_is_private_under_zero_umask_and_keeps_old_key_on_failed_replace",
+            || {
+                with_zero_umask(|| {
+                    let dir = tempfile::tempdir().unwrap();
+                    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
+                        .unwrap();
+                    let path = dir.path().join("publisher.json");
+
+                    // With umask 0 and chmod/fchmod neutralized, neither the writer nor the
+                    // atomic backend's post-open fchmod can narrow the inode: the stage can
+                    // only be 0600 if openat created it with 0600.
+                    let observed = Arc::new(Mutex::new(None));
+                    let seen = Arc::clone(&observed);
+                    let existed_at_stage = Arc::new(AtomicBool::new(false));
+                    let flag = Arc::clone(&existed_at_stage);
+                    let target = path.clone();
+                    let code = on_a_thread_without_chmod(|| {
+                        with_observer(
+                            move |event| {
+                                if event.checkpoint == Checkpoint::StageCreated {
+                                    let mode =
+                                        event.stage.as_ref().unwrap().metadata.permissions().mode()
+                                            & 0o777;
+                                    *seen.lock().unwrap() = Some(mode);
+                                    flag.store(target.exists(), Ordering::SeqCst);
+                                }
+                            },
+                            || key_generate(&path),
+                        )
+                    });
+                    assert_eq!(code, ExitCode::SUCCESS);
+                    assert_eq!(*observed.lock().unwrap(), Some(0o600));
+                    assert!(!existed_at_stage.load(Ordering::SeqCst));
+                    assert_eq!(
+                        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                        0o600
+                    );
+                    assert_eq!(
+                        std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+                        0o755
+                    );
+                    Identity::load(&path).unwrap();
+                    let before = std::fs::read(&path).unwrap();
+
+                    let failed = with_failure(Checkpoint::BeforePublish, || key_generate(&path));
+                    assert_ne!(failed, ExitCode::SUCCESS);
+                    assert_eq!(std::fs::read(&path).unwrap(), before);
+                    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+
+                    // Missing parent directories are created without tightening the shared parent.
+                    let nested = dir.path().join("nested/publisher.json");
+                    assert_eq!(
+                        on_a_thread_without_chmod(|| key_generate(&nested)),
+                        ExitCode::SUCCESS
+                    );
+                    assert_eq!(
+                        std::fs::metadata(&nested).unwrap().permissions().mode() & 0o777,
+                        0o600
+                    );
+                    assert_eq!(
+                        std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+                        0o755
+                    );
+                });
+            },
+        );
     }
 }
