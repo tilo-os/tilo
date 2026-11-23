@@ -22,7 +22,7 @@ pub mod steps;
 
 pub use actor::{BrokerActor, person_id_for_root};
 pub use published::{
-    PublishedAction, PublishedInput, PublishedSurface, validate_published_surface,
+    PublishedAction, PublishedInput, PublishedSurface, ValidSurface, validate_published_surface,
 };
 pub use route::CrdtRoute;
 pub use steps::{

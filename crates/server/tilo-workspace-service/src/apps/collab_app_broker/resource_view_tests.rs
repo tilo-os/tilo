@@ -88,3 +88,40 @@ fn published_resource_views_validate_bindings_and_resource_cardinality() {
     let reader = test_published_view("read", "reader", true);
     assert!(validate_resource_view_descriptors(&[editor, reader]).is_err());
 }
+
+/// One row of a surface published without a label is left out alone: the app's other actions are
+/// offered, and the refusal names the row it left out.
+#[test]
+fn an_unnamed_resource_leaves_out_only_its_own_actions() {
+    let named = test_published_view("open", "editor", true);
+    let mut unnamed = test_published_view("open", "editor", true);
+    unnamed.resource = "conversation:ada".into();
+    unnamed.resource_label = String::new();
+    let valid = validate_published_surface(vec![named.clone(), unnamed])
+        .expect("a surface with one unnamed row is taken");
+    assert_eq!(
+        valid.actions,
+        vec![named],
+        "the named resource's action is offered"
+    );
+    assert_eq!(
+        valid.refused.len(),
+        1,
+        "one row is left out: {:?}",
+        valid.refused
+    );
+    assert!(
+        valid.refused[0].starts_with("`conversation:ada#open`")
+            && valid.refused[0].contains("non-empty kind and labels"),
+        "the refusal names the row and why: {:?}",
+        valid.refused
+    );
+    // An address that breaks the rules still refuses the whole surface.
+    let mut twice = test_published_view("open", "editor", true);
+    twice.resource_label = "Again".into();
+    assert!(
+        validate_published_surface(vec![test_published_view("open", "editor", true), twice])
+            .is_err(),
+        "the same address twice refuses the surface"
+    );
+}

@@ -1311,7 +1311,12 @@ impl JoinedChannel {
         table.apply(delta).map_err(|reason| {
             BrokerError::failed(format!("action surface delta refused: {reason}"))
         })?;
-        let actions = validate_published_surface(table.actions()).map_err(BrokerError::failed)?;
+        let valid = validate_published_surface(table.actions()).map_err(BrokerError::failed)?;
+        // A row left out is the app's own to fix; the rest of what it offers is offered.
+        for refused in &valid.refused {
+            tracing::warn!(app = %route.app_id, refused, "a published action is not offered");
+        }
+        let actions = valid.actions;
         let surface = PublishedSurface {
             peer_id,
             app_id: route.app_id.clone(),
