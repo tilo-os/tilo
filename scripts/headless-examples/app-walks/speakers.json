@@ -1,0 +1,112 @@
+{
+ "app": "speakers",
+ "said": "Play on the laptop's and the phone's speakers at once",
+ "family": "devices",
+ "devices": [
+  "laptop",
+  "phone"
+ ],
+ "live": "rust",
+ "apps": "file-explorer tasks settings",
+ "rust": {},
+ "tl": {
+  "session_args": [
+   "--shell",
+   "screen"
+  ]
+ },
+ "steps": [
+  {
+   "id": "speakers-page",
+   "said": "Open Settings on the laptop; it offers to make a speaker set",
+   "ops": [
+    {
+     "open": "settings"
+    },
+    {
+     "published": {
+      "app": "so.tilo.settings",
+      "action": "create-speaker-set",
+      "within": 30
+     }
+    }
+   ]
+  },
+  {
+   "id": "begin-setup",
+   "said": "Open Speakers and start a set: the phone's speaker is offered beside the laptop's",
+   "ops": [
+    {
+     "use": {
+      "kind": "settings.section",
+      "label": "Speakers",
+      "action": "open-pane"
+     }
+    },
+    {
+     "use": {
+      "app": "so.tilo.settings",
+      "action": "begin-speaker-setup"
+     }
+    },
+    {
+     "must": {
+      "see": [
+       "Use phone (Session output)"
+      ],
+      "within": 20
+     }
+    }
+   ]
+  },
+  {
+   "id": "choose-speakers",
+   "said": "Use both and go on",
+   "ops": [
+    {
+     "press_any": [
+      {
+       "prefix": "Use "
+      }
+     ]
+    },
+    {
+     "press": "Use phone (Session output)"
+    },
+    {
+     "use": {
+      "app": "so.tilo.settings",
+      "action": "continue-speaker-setup"
+     }
+    },
+    {
+     "targets": true
+    }
+   ]
+  },
+  {
+   "id": "phone-asked-to-join",
+   "said": "The phone is asked to join the set",
+   "on": "phone",
+   "ops": [
+    {
+     "catalogue": {
+      "apps": [
+       "so.tilo.session"
+      ]
+     }
+    },
+    {
+     "must": {
+      "see": [
+       {
+        "prefix": "Join "
+       }
+      ],
+      "within": 30
+     }
+    }
+   ]
+  }
+ ]
+}

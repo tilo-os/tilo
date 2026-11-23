@@ -1,0 +1,113 @@
+{
+ "app": "displays-across-devices",
+ "said": "The laptop's and the phone's screens as one layout",
+ "devices": [
+  {
+   "name": "laptop",
+   "session_args": [
+    "--output",
+    "A=1920x1080",
+    "--output",
+    "B=1280x720"
+   ]
+  },
+  "phone"
+ ],
+ "live": "rust",
+ "apps": "settings",
+ "rust": {},
+ "tl": {
+  "session_args": [
+   "--shell",
+   "screen"
+  ]
+ },
+ "steps": [
+  {
+   "id": "settings-on-laptop",
+   "said": "Open Settings on the laptop",
+   "ops": [
+    {
+     "open": "settings"
+    }
+   ]
+  },
+  {
+   "id": "both-devices-listed",
+   "said": "Settings lists the laptop's two screens and the phone's",
+   "ops": [
+    {
+     "use": {
+      "app": "so.tilo.settings",
+      "action": "inspect-shared-displays",
+      "expect": {
+       "devices#len": 2
+      },
+      "keep": {
+       "revision": "layout.revision"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "place-phone",
+   "said": "Place the phone's screen right of the laptop's",
+   "ops": [
+    {
+     "use": {
+      "kind": "settings.device-display",
+      "action": "move-device-display",
+      "about": "phone",
+      "args": {
+       "revision": "{revision}",
+       "x": 3200,
+       "y": 0
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "phone-sees-placement",
+   "said": "The phone's Settings shows the same placement",
+   "on": "phone",
+   "ops": [
+    {
+     "open": "settings"
+    },
+    {
+     "use": {
+      "app": "so.tilo.settings",
+      "action": "inspect-shared-displays",
+      "expect": {
+       "devices#len": 2
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "pointer-crosses",
+   "said": "The pointer pushed past the laptop's edge goes on on the phone",
+   "ops": [
+    {
+     "push_edge": {
+      "within": 20
+     }
+    },
+    {
+     "on": "phone",
+     "state": {
+      "shared_input.pointer_shown": true
+     }
+    },
+    {
+     "state": {
+      "shared_input.pointer_shown": false
+     }
+    }
+   ]
+  }
+ ]
+}
