@@ -134,7 +134,7 @@ pub trait Store: std::any::Any + collab_types::signer::MaybeSendSync {
     fn shows(&self, workspace: WorkspaceId) -> bool;
     /// Make `next` durable, then call `install` before anyone can observe
     /// the new record. Nothing is installed when this fails.
-    pub(crate) fn publish(
+    fn publish(
         &self,
         next: &NativeAuthorityStorage,
         change: Change,
@@ -251,7 +251,7 @@ pub struct NativeCommittedView {
 /// asked for.
 type KeyHolders = (u64, std::collections::BTreeSet<[u8; 32]>);
 impl NativeCommittedView {
-    fn new(peer: StatePeer, record: stored::StoredWorkspace) -> Self {
+    pub(crate) fn new(peer: StatePeer, record: stored::StoredWorkspace) -> Self {
         Self {
             replica: Replica::new(peer.clone()),
             peer,
@@ -315,10 +315,10 @@ impl NativeCommittedView {
     /// Make one of this device's own changes: `change` sees a copy of the live
     /// replica and of the record, and only what it answers is installed, so a
     /// refusal changes nothing and no admission of a link interleaves.
-    fn change<T>(
+    fn change<T, E: From<String>>(
         &self,
-        change: impl FnOnce(&mut StatePeer, &mut stored::StoredWorkspace) -> Result<T, String>,
-    ) -> Result<(T, stored::StoredWorkspace), String> {
+        change: impl FnOnce(&mut StatePeer, &mut stored::StoredWorkspace) -> Result<T, E>,
+    ) -> Result<(T, stored::StoredWorkspace), E> {
         let mut live = self.live();
         let mut next = live.clone();
         let mut record = self.record.clone();
