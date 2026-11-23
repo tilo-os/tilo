@@ -956,7 +956,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_actions_declare_valid_unattended_reads() {
+    fn the_actions_declare_valid_grants() {
         let descriptors = descriptors();
         assert_eq!(descriptors.len(), 2);
         for descriptor in &descriptors {

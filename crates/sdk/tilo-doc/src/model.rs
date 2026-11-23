@@ -4474,7 +4474,7 @@ mod preserved_part_flows {
             assert!(preserved_atoms(reference.doc, reference.c, "odt/part/styles.xml").len() >= 2);
         }
 
-        let mut replica_b = document.fork();
+        let mut second_device = document.fork();
         let atoms = preserved_atoms(
             document.as_ref().doc,
             document.as_ref().c,
@@ -4482,7 +4482,7 @@ mod preserved_part_flows {
         );
         let (id_alpha, current_alpha) = find_atom(&atoms, b"alpha");
         let (id_bravo, current_bravo) = find_atom(&atoms, b"bravo");
-        let other = replica_b.as_ref();
+        let other = second_device.as_ref();
         let atoms_b = preserved_atoms(other.doc, other.c, "odt/part/styles.xml");
         assert!(
             atoms_b.iter().any(|(id, _)| id == &id_alpha)
@@ -4494,13 +4494,15 @@ mod preserved_part_flows {
         document
             .as_mut()
             .set_preserved_atom_bytes("odt/part/styles.xml", &id_alpha, &new_alpha);
-        replica_b
-            .as_mut()
-            .set_preserved_atom_bytes("odt/part/styles.xml", &id_bravo, &new_bravo);
+        second_device.as_mut().set_preserved_atom_bytes(
+            "odt/part/styles.xml",
+            &id_bravo,
+            &new_bravo,
+        );
 
-        document.merge(&mut replica_b);
-        replica_b.merge(&mut document);
-        for (replica, who) in [(&document, "A"), (&replica_b, "B")] {
+        document.merge(&mut second_device);
+        second_device.merge(&mut document);
+        for (replica, who) in [(&document, "A"), (&second_device, "B")] {
             let merged = preserved_part(
                 replica.as_ref().doc,
                 replica.as_ref().c,
@@ -4533,8 +4535,8 @@ mod preserved_part_flows {
                 &tilo_content::NoContent
             ),
             preserved_part(
-                replica_b.as_ref().doc,
-                replica_b.as_ref().c,
+                second_device.as_ref().doc,
+                second_device.as_ref().c,
                 "odt/part/styles.xml",
                 &tilo_content::NoContent
             ),

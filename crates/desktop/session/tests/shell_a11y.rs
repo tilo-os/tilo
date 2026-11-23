@@ -320,23 +320,24 @@ fn a_notice_that_arrives_is_announced_politely() {
     );
 }
 
-/// The roster names each person here and says what they are doing: a reader who cannot see the
-/// rows is told the same line the row draws under the name.
+/// The people list names each person here and says what they are doing: a reader who cannot see
+/// the rows is told the same line the row draws under the name.
 #[test]
-fn the_roster_reads_each_person_and_what_they_are_doing() {
+fn the_people_list_names_each_person_and_what_they_are_doing() {
     let _settled = ui::motion::testing::settled();
     let mut session = collaborating(&[(0, 0)]);
     until(&mut session, "the people button", |session| {
         session.shell_control("People").is_some()
     });
     let activity = "Editing the release plan";
-    let here: Vec<tilo_session_core::desktop::here::LiveMember> = vec![tilo_session_core::desktop::here::LiveMember {
-        publisher: "01".repeat(32),
-        kind: "person".to_owned(),
-        label: "Mia Clayton".to_owned(),
-        activity: Some(activity.to_owned()),
-        ..tilo_session_core::desktop::here::LiveMember::default()
-    }];
+    let here: Vec<tilo_session_core::desktop::here::LiveMember> =
+        vec![tilo_session_core::desktop::here::LiveMember {
+            publisher: "01".repeat(32),
+            kind: "person".to_owned(),
+            label: "Mia Clayton".to_owned(),
+            activity: Some(activity.to_owned()),
+            ..tilo_session_core::desktop::here::LiveMember::default()
+        }];
     session
         .sync()
         .expect("the session takes part in the app wire")
