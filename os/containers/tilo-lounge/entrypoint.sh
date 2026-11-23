@@ -27,6 +27,12 @@
 #   TILO_WORKSPACES_OPERATOR_SOCKET  that socket (default: the workspace's state
 #                               directory, operator.sock)
 #
+# An operator sheds load without stopping the host by writing `spectator-only`
+# or `back-soon` to the workspace's `mode` file in its state directory (`normal`
+# opens it again), which takes effect without a restart; `GET /mode` on this
+# host's listener says which one is in force. The mode a start begins under:
+#   TILO_WORKSPACES_MODE       normal, spectator-only or back-soon
+#
 # The pages reach the host's live session through the host's own iroh packet
 # relay, over websockets, which the deployment publishes beside the HTTP
 # routes: it binds TILO_WORKSPACES_LIVE, and pages dial TILO_WORKSPACES_LIVE_ORIGIN
@@ -81,7 +87,7 @@ TILO_WORKSPACES_MAIL_FROM TILO_WORKSPACES_RESEND_KEY_FILE TILO_WORKSPACES_RESEND
 TILO_WORKSPACES_PUBLIC_API TILO_WORKSPACES_LIVE_ORIGIN
 TILO_WORKSPACES_DEFAULT_ROLE TILO_WORKSPACES_CHAT_CHANNELS TILO_WORKSPACES_FEEDBACK_CHANNEL
 TILO_WORKSPACES_SEED_APPS TILO_WORKSPACES_REFOUND TILO_WORKSPACES_BOTS TILO_WORKSPACES_LAYOUT
-TILO_WORKSPACES_ROOT_FILE TILO_WORKSPACES_OPERATOR_SOCKET
+TILO_WORKSPACES_ROOT_FILE TILO_WORKSPACES_OPERATOR_SOCKET TILO_WORKSPACES_MODE
 TILO_WORKSPACES_PERSON_STORAGE_GB TILO_WORKSPACES_IROH_LISTEN TILO_WORKSPACES_HOLD_FOR TILO_WORKSPACES_CALL_OWN_NETWORK TILO_WORKSPACES_OWNERS
 TILO_WORKSPACES_OPENAI_SIGN_IN TILO_WORKSPACES_CHATGPT_BACKEND TILO_WORKSPACES_OPENAI_API
 TILO_WORKSPACES_STATE
