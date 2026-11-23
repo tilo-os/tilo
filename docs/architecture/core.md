@@ -791,6 +791,9 @@ workspace vault, despite their names.
   group of exactly those readers. Every device may keep and forward its
   sealed changes, and only the readers' devices can open them. A private
   record is never a row inside a document that has more readers.
+  A resource type declares its readers, in Rust and tilolang alike: the
+  record's author (a draft until it is sent), a field naming members, or
+  the workspace.
 - **What is a person's alone** (their keys, devices, appearance, the list of
   their workspaces, their servers) lives in the person's own workspace,
   where no other person is a member (their agents may be, acting for
