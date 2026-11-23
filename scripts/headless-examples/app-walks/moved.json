@@ -73,11 +73,11 @@
   },
   "so.tilo.notes notes.notebook#delete-tag": {
     "to": "so.tilo.notes tl.so.tilo.notes.Notebook#delete_tag",
-    "test": "crates/platform/tilolang-tilo/tests/notes.rs:600"
+    "test": "crates/lang/tilolang-tilo/tests/notes.rs:672"
   },
   "so.tilo.notes notes.notebook#new-tag": {
     "to": "so.tilo.notes tl.so.tilo.notes.Notebook#new_tag",
-    "test": "crates/platform/tilolang-tilo/tests/notes.rs:600"
+    "test": "crates/lang/tilolang-tilo/tests/notes.rs:672"
   },
   "so.tilo.notes notes.notebook#open-resource": {
     "to": "so.tilo.notes tl.so.tilo.notes.Note#open",

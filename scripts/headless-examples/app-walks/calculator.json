@@ -1,6 +1,8 @@
 {
   "app": "calculator",
   "said": "Calculator",
+  "family": "apps",
+  "live": "tl",
   "tl": {
     "id": "so.tilo.calculator",
     "package": "calculator"
