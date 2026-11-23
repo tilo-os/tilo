@@ -977,6 +977,56 @@ any of them is added.
 | tilo-control row dialect, `legacy_rows`, `param_row` | a second wire for actions | the one call |
 | REST clients in our code (`tilo-api` `client.rs`, SDK HTTP runtimes) | our code calling our REST edge | calls over iroh |
 
+## Before and after
+
+The restructure removes duplicate concepts. Each of these exists once, the
+same in the browser, the CLI, Tilo OS, a phone and a server:
+
+- one workspace: members, resources, files and permissions, with no
+  per-person store, per-app accounts or second membership model;
+- one identity: the same person and the same device certificates whether
+  they sign in on the web, in the CLI or on Tilo OS, and the same login at
+  tilo.sh;
+- one resource, action and view model, used by Rust apps, tilolang apps, the
+  shell, agents and automations, with one way to call an action;
+- one store and one sync engine on every device;
+- one daemon per device, with one endpoint, one broker and one admission;
+  a server is that daemon keeping more;
+- one UI path: one component library, one app framework, one settings, one
+  history and one command palette, with the shell a tilolang app.
+
+Lines removed measure this; they are not the goal. A cut that narrows a
+platform or a feature, or makes the UX worse, is not progress.
+
+Production lines per layer at `d81cc1750ff`, and the size each layer has
+once its duplicates are gone:
+
+| Layer | Today | After | Where the difference goes |
+|---|---|---|---|
+| Foundation | ~230k | ~150k | settings, accounts and app state become resources (−25k); one identity store (−6k); the per-person store (−5k) |
+| Device daemon | ~520k | ~250k | `tilo-server` becomes the daemon (−16k); one broker and admission (−30k); app features out of the host (−20k); generic actions instead of typed vocabularies (−15k); the agent session's own Rust app host (−20k) |
+| Programs | ~300k | ~200k | one copy of each program feature |
+| Views and UI toolkit | ~580k | ~350k | shell widgets out (−50k); the `tilo-app` framework (−42k); the second action path and `HtmlCx` (−22k); headless as a backend, not a copy (−10k) |
+| Desktop | ~385k | ~200k | the Rust shell (−95k); the session as a daemon client (−50k); one settings, history and palette (−10k) |
+| OS and product subsystems | ~400k | ~300k | filed under their products, not the core |
+| Importers | ~180k | ~20k | behind `tilo migrate`, reading into the one store |
+| Dev tools | ~100k | ~60k | tools reuse production paths |
+| Apps | ~680k | ~300k | one framework, so each app keeps only what is its own |
+
+That is about 2.97M production lines today and about 1.9M after, with the
+core near 400k. Tests go from about 1.97M to about 0.7M: tests of deleted
+copies go with them, and the rest test through production interfaces.
+
+Where the difference comes from:
+
+- two of everything (stores, hosts, action paths, app frameworks, shells,
+  settings): about 400k;
+- product subsystems filed as core: about 300k;
+- importers: about 180k;
+- app features inside the host, and dead code: about 100k.
+
+The Plan below tracks each piece against this table.
+
 ## Code layout
 
 The crates are grouped by what they are, so the core stays small and
