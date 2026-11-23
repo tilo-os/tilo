@@ -304,7 +304,7 @@ impl State {
         });
         let index = self.layers.surfaces.len().saturating_sub(1);
         self.place_layer(index, true);
-        self.mark_redraw_all();
+        self.mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
     }
 
     /// Put the layer surface at `index` on its output and, with `send` , give its client the size
@@ -396,7 +396,7 @@ impl State {
         });
         if let Some(namespace) = settled {
             self.layers.settling.remove(&namespace);
-            self.mark_redraw_all();
+            self.mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
         }
         // Frames of a surface the session hid change nothing on the shell and take no keyboard: it
         // stands there for the opening that shows it.
@@ -409,7 +409,7 @@ impl State {
             return;
         }
         self.layer_keyboard_focus(index);
-        self.mark_redraw_all();
+        self.mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
     }
 
     /// How many frames the client of the layer surface `namespace` has committed.
@@ -460,7 +460,7 @@ impl State {
             self.layers.settling.remove(namespace);
             self.return_layer_keyboard(namespace);
         }
-        self.mark_redraw_all();
+        self.mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
     }
 
     /// Whether the app of the layer surface `namespace` has committed a frame after its `after`th,
@@ -561,7 +561,7 @@ impl State {
             }
             self.layers.poses.insert(namespace.to_owned(), pose);
         }
-        self.mark_redraw_all();
+        self.mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
     }
 
     /// Stand the session's layer surface `namespace` in `room` (logical layout coordinates), as big
@@ -585,7 +585,7 @@ impl State {
                 self.place_layer(index, true);
             }
         }
-        self.mark_redraw_all();
+        self.mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
     }
 
     /// Where the session's layer surface `namespace` stands now, in logical layout coordinates:
@@ -618,7 +618,7 @@ impl State {
     /// they have.
     pub(crate) fn expire_layer_settling(&mut self, now: Instant) {
         if self.layers.expire_settling(now) {
-            self.mark_redraw_all();
+            self.mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
         }
     }
 
@@ -641,7 +641,7 @@ impl State {
         };
         self.place_layer(index, true);
         self.layer_keyboard_focus(index);
-        self.mark_redraw_all();
+        self.mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
     }
 
     /// A layer surface went away: it takes no more input.
@@ -675,7 +675,7 @@ impl State {
         if root.is_some() && self.keyboard_focus() == root {
             self.set_keyboard_focus(None, SERIAL_COUNTER.next_serial());
         }
-        self.mark_redraw_all();
+        self.mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
     }
 
     /// Give the keyboard to the layer surface at `index` when it asks for it exclusively, as a lock

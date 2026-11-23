@@ -373,7 +373,7 @@ fn handle_event(inner: &Rc<RefCell<Inner>>, state: &mut State, event: WinitEvent
             inner.next_frame = Instant::now();
             let output = inner.output.clone();
             drop(inner);
-            state.mark_redraw(&output);
+            state.mark_redraw(&output, tilo_frame_metrics::paint_reason::PRESENTATION);
             state.rearrange();
         }
         WinitEvent::Redraw => {
@@ -381,7 +381,7 @@ fn handle_event(inner: &Rc<RefCell<Inner>>, state: &mut State, event: WinitEvent
             inner.next_frame = Instant::now();
             let output = inner.output.clone();
             drop(inner);
-            state.mark_redraw(&output);
+            state.mark_redraw(&output, tilo_frame_metrics::paint_reason::PRESENTATION);
         }
         WinitEvent::CloseRequested => inner.borrow_mut().closed = true,
         WinitEvent::Focus(_) => {}
@@ -596,7 +596,10 @@ impl Backend for NestedBackend {
         if on {
             inner.next_frame = Instant::now();
             inner.damage = window_damage(&inner.output);
-            state.mark_redraw(&inner.output);
+            state.mark_redraw(
+                &inner.output,
+                tilo_frame_metrics::paint_reason::PRESENTATION,
+            );
         }
         Ok(())
     }

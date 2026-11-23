@@ -318,7 +318,7 @@ pub(crate) fn finish_flash(state: &mut State, now: Instant) {
     for output in &ended {
         change(output, |visual| visual.flash = None);
     }
-    state.mark_redraw_all();
+    state.mark_redraw_all(tilo_frame_metrics::paint_reason::PRESENTATION);
 }
 
 /// Prepare every output's visual alert for the frame about to be drawn at `now` : an alert asked
@@ -562,7 +562,10 @@ mod tests {
             .checked_sub(Duration::from_secs(2))
             .expect("two seconds before now");
         flash_all(&compositor.data.state, asked_at);
-        compositor.data.state.mark_redraw_all();
+        compositor
+            .data
+            .state
+            .mark_redraw_all(tilo_frame_metrics::paint_reason::PRESENTATION);
         compositor.draw_frame().expect("a frame");
         let shot = compositor.screenshot("HEADLESS-1").expect("the frame");
         let edge = shot.pixel(320, 1).expect("a pixel on the display's edge");

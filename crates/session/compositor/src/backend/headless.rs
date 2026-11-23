@@ -266,7 +266,10 @@ impl HeadlessBackend {
                 output
                     .output
                     .change_current_state(None, None, None, Some(position.into()));
-                state.mark_redraw(&output.output);
+                state.mark_redraw(
+                    &output.output,
+                    tilo_frame_metrics::paint_reason::PRESENTATION,
+                );
                 moved = true;
             }
             state.space.map_output(&output.output, position);
