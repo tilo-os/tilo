@@ -660,6 +660,46 @@ action import_page(
     made
 }
 
+/// Imports a note given as words rather than a file: its title, its body as Markdown, the
+/// pictures it shows and the notes its links lead to. A caller holding a page as text — a
+/// script, an agent, a migration — makes the note without writing a file first: `pictures` are
+/// the files the body names as `![alt](name)`, each by the name it came in as, which the note
+/// keeps so an export writes it beside the note again; `links` names, by the path a link leads
+/// to, the note it opens. The note stands at the top of the tree.
+action import_text(
+    nb: Notebook,
+    title: Text,
+    markdown: Text,
+    pictures: Option<List<File>> = .none,
+    links: Option<Map<Text>> = .none,
+) -> Note (icon: .file_plus, label: "Import a note as text", did: "imported a note") {
+    // A heading that says the title is the title, not a line of the body said twice.
+    let shown = without_heading(markdown, title)
+    if let files = pictures {
+        for picture in files {
+            let named = base_name(picture.name)
+            if shown.contains("]({named})") {
+                shown = shown.replace("]({named})", "]({picture.url})")
+            }
+        }
+    }
+    let leads_to = match links {
+        .some(pages) => pages,
+        .none => Map<Text>(),
+    }
+    let made = nb.notes.insert(
+        Note(title: title, body: RichText.from_markdown(shown, links: leads_to, from: "")),
+    )
+    if let files = pictures {
+        for picture in files {
+            if shown.contains(picture.url) {
+                made.images.put(picture.url, base_name(picture.name))
+            }
+        }
+    }
+    made
+}
+
 /// Imports a notebook another tool wrote: a zip of pages, or the JSON a Notion API page listing
 /// answers. A zip comes in under the notebook, a page under the page that held it, in one change:
 /// undo takes the whole import back. That is this app's own notebook written out, a Notion export,

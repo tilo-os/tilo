@@ -230,6 +230,18 @@ d-l23y3cjf-created = Created
 
 d-l23y3cjf-updated = Updated
 
+d-fxhtpbwf = Import a note as text
+    .doc = Imports a note given as words rather than a file: its title, its body as Markdown, the pictures it shows and the notes its links lead to.
+    .did = imported a note
+
+d-fxhtpbwf-title = Title
+
+d-fxhtpbwf-markdown = Markdown
+
+d-fxhtpbwf-pictures = Pictures
+
+d-fxhtpbwf-links = Links
+
 d-h3zczsen = Import archive
     .doc = Imports a notebook another tool wrote: a zip of pages, or the JSON a Notion API page listing answers.
     .did = imported a notebook

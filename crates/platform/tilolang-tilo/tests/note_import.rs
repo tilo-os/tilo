@@ -692,6 +692,81 @@ fn a_notion_page_listing_becomes_notes() {
     );
 }
 
+/// A page a caller holds as text comes in with the pictures it shows and the notes its links lead
+/// to: no file is written first, and the same page says the same note.
+#[test]
+fn a_page_given_as_text_is_imported_with_its_pictures_and_links() {
+    let device = Device::default();
+    let (ada, _loaded) = notebook(&device);
+    let ideas = note(&ada, None, "Ideas");
+    let picture = device.keeping("fox.png", "image/png", PIXELS);
+    let nb = ada.host.root_of(APP).unwrap();
+    let made = call(
+        &ada,
+        "import_text",
+        vec![
+            Value::resource(&nb),
+            Value::text("Reading list"),
+            Value::text("# Reading list\n\n![a fox](fox.png)\n\nSee [Ideas](Ideas.md).\n"),
+            Value::Opt(Some(Box::new(Value::List(vec![Value::file(
+                picture.clone(),
+            )])))),
+            Value::Opt(Some(Box::new(Value::Map(vec![(
+                Value::text("Ideas.md"),
+                Value::text(ideas.id_string()),
+            )])))),
+        ],
+    );
+    ada.commit();
+    let made = match made {
+        Value::Ref(at) => (*at.target).clone(),
+        other => panic!("a note: {other:?}"),
+    };
+
+    assert_eq!(title(&ada, &made), "Reading list");
+    let body = words(&ada, &made).join("\n");
+    assert!(
+        !body.contains("# Reading list"),
+        "the heading that says the title is not said again: {body}"
+    );
+    assert!(
+        body.contains(&format!("![a fox]({})", picture.url())),
+        "the page shows the picture it names, from where its bytes are kept: {body}"
+    );
+    assert!(
+        body.contains("See Ideas."),
+        "the words the link is written with stay: {body}"
+    );
+    assert_eq!(
+        refers_to(&ada, &made),
+        [ideas.id_string()],
+        "the link opens the note it names"
+    );
+    assert_eq!(
+        images_of(&ada, &made),
+        [(picture.url(), "fox.png".to_owned())],
+        "the note keeps the picture's name, which an export writes beside it"
+    );
+}
+
+/// The pictures a note keeps, each by the address of its bytes and the name it came in as.
+fn images_of(r: &Replica, note: &ResourceRef) -> Vec<(String, String)> {
+    match r.host.runtime().read(note, "images") {
+        // A map field reads as its entries, each the key and what it holds.
+        Ok(Value::List(entries)) => entries
+            .into_iter()
+            .map(|entry| match entry {
+                Value::Tuple(pair) => match pair.as_slice() {
+                    [Value::Text(address), Value::Text(name)] => (address.clone(), name.clone()),
+                    other => panic!("a picture reads {other:?}"),
+                },
+                other => panic!("a picture reads {other:?}"),
+            })
+            .collect(),
+        other => panic!("a note's pictures: {other:?}"),
+    }
+}
+
 tilo_test_env::scenario! {
     fn an_export_names_its_files;
 
