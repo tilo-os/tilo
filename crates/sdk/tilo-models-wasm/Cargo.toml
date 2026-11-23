@@ -28,7 +28,6 @@ camera-model-wasm = { path = "../../../apps/camera-model-wasm" }
 chat-model-wasm = { path = "../../../apps/chat-model-wasm" }
 clocks-model-wasm = { path = "../../../apps/clocks-model-wasm" }
 console-model-wasm = { path = "../../../apps/console-model-wasm" }
-contacts-model-wasm = { path = "../../../apps/contacts-model-wasm" }
 containers-model-wasm = { path = "../../../apps/containers-model-wasm" }
 db-client-model-wasm = { path = "../../../apps/db-client-model-wasm" }
 diffmerge-model-wasm = { path = "../../../apps/diffmerge-model-wasm" }

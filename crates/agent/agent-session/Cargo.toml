@@ -53,7 +53,6 @@ chat = { path = "../../../apps/chat", default-features = false, features = [] }
 chip-design = { path = "../../../apps/chip-design" }
 clocks = { path = "../../../apps/clocks" }
 tilo-console = { path = "../../../apps/console" }
-contacts = { path = "../../../apps/contacts" }
 diffmerge = { path = "../../../apps/diffmerge" }
 ebook = { path = "../../../apps/ebook" }
 feeds = { path = "../../../apps/feeds" }

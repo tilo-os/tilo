@@ -218,7 +218,6 @@ engines() (
                "calendar libtilo_timezone_engine.so --probe-timezone-engine" \
                "calendar libtilo_accounts_engine.so" \
                "clocks libtilo_timezone_engine.so --probe-timezone-engine" \
-               "contacts libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                "pdf-viewer libtilo_pdf_engine.so" \
                "sheets libtilo_spreadsheet_engine.so --probe-spreadsheet-engine" \

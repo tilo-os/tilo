@@ -3023,53 +3023,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
-name = "contacts"
-version = "0.1.0"
-dependencies = [
- "contacts-model",
- "image",
- "pim-lines",
- "runtime-dylib",
- "serde",
- "serde_json",
- "serial_test",
- "taffy",
- "tilo-app",
- "tilo-app-package",
- "tilo-automerge-fork",
- "tilo-contact-directory",
- "tilo-contact-directory-engine",
- "tilo-files",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tracing",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "contacts-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tilo-resource",
- "unicode-normalization",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "contacts-model-wasm"
-version = "0.1.0"
-dependencies = [
- "contacts-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "containers"
 version = "0.1.0"
 dependencies = [
@@ -17323,7 +17276,6 @@ dependencies = [
  "chip-design",
  "clocks",
  "collab-types",
- "contacts",
  "diffmerge",
  "discord",
  "ebook",
@@ -20241,7 +20193,6 @@ dependencies = [
  "chat-model-wasm",
  "clocks-model-wasm",
  "console-model-wasm",
- "contacts-model-wasm",
  "containers-model-wasm",
  "db-client-model-wasm",
  "diffmerge-model-wasm",
@@ -28062,9 +28013,6 @@ dependencies = [
  "const-oid 0.10.2",
  "const-oid 0.9.6",
  "constant_time_eq",
- "contacts",
- "contacts-model",
- "contacts-model-wasm",
  "containers",
  "containers-model",
  "containers-model-wasm",

@@ -523,7 +523,7 @@ features = [
   "video-editor/gst", "typst-editor/runtime-engine", "canvas/runtime-engine",
   "settings/runtime-engine",
   "model-providers/runtime-engine", "calendar/runtime-engine",
-  "clocks/runtime-engine", "contacts/runtime-engine", "messages/runtime-engine",
+  "clocks/runtime-engine", "messages/runtime-engine",
   "pdf-viewer/runtime-engine", "file-explorer/runtime-engine",
   "print-centre/runtime-engine", "sheets/runtime-engine",
   "browser/runtime-engine",

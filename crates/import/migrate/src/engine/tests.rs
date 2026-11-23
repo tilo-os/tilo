@@ -300,14 +300,24 @@ fn an_address_book_and_calendar_chosen_later_come_over_alone() {
     place.keep_review(&review).unwrap();
     let mut more = Recorded::default();
     let journal = run_once(&home, &place, &mut more).unwrap();
-    let contacts = more
-        .of("contacts/contacts.contacts#add-contacts")
-        .into_iter()
-        .flat_map(|args| args["contacts"].as_array().unwrap())
-        .count();
-    assert_eq!(contacts, 2);
+    // The book goes over as one vCard file, which Contacts imports whole.
+    let imported = more.of("contacts#import_vcard");
+    assert_eq!(imported.len(), 1, "{:?}", more.actions);
+    let file = &imported[0]["file"];
+    assert!(
+        file["name"].as_str().unwrap().ends_with(".vcf"),
+        "the file is offered as a vCard: {file}"
+    );
+    assert!(
+        file["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("tilo.content:"),
+        "its cards are in the workspace's content: {file}"
+    );
+    assert_eq!(file["media"], "text/vcard", "{file}");
     assert_eq!(more.of("calendar/calendar.calendar#new-event").len(), 2);
-    assert_eq!(journal.brought.get("contacts"), Some(&2));
+    assert_eq!(journal.brought.get("contacts"), Some(&1));
 }
 
 #[test]
@@ -344,14 +354,14 @@ fn a_stopped_run_resumes_where_it_stopped() {
     // Asked again, the run brings what it was stopped before bringing; a third run adds nothing.
     let mut workspace = Recorded::default();
     let journal = run_once(&home, &place, &mut workspace).unwrap();
-    assert_eq!(journal.brought.get("contacts"), Some(&2), "{journal:?}");
+    assert_eq!(journal.brought.get("contacts"), Some(&1), "{journal:?}");
     let mut again = Recorded::default();
     let journal = run_once(&home, &place, &mut again).unwrap();
     assert!(again.actions.is_empty(), "{:?}", again.actions);
     assert!(journal.brought.is_empty(), "{journal:?}");
     assert_eq!(
-        journal.already_there, 2,
-        "its two contacts are there already"
+        journal.already_there, 1,
+        "its address book is there already"
     );
 }
 

@@ -29,8 +29,6 @@ description = "Keep an eye on time zones, timers, and alarms."
 description = "A native editor for writing, reading, and changing code."
 [apps.console]
 description = "Follow what your agents do in your workspaces, open each step they took, and stop or undo their work."
-[apps.contacts]
-description = "Keep the people you work with close and organized."
 [apps.containers]
 description = "See and manage local containers, images, volumes, and distroboxes."
 [apps.db-client]

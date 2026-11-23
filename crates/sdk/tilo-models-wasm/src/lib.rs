@@ -23,7 +23,6 @@ extern crate camera_model_wasm;
 extern crate chat_model_wasm;
 extern crate clocks_model_wasm;
 extern crate console_model_wasm;
-extern crate contacts_model_wasm;
 extern crate containers_model_wasm;
 extern crate db_client_model_wasm;
 extern crate diffmerge_model_wasm;
