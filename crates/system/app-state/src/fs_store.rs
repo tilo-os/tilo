@@ -2079,38 +2079,51 @@ mod tests {
             assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"abcdef");
         }
 
-        phase a_write_outlives_its_lease_and_keeps_the_document_until_it_lands;
+        phase a_write_outlives_its_lease_and_keeps_the_record_until_it_lands;
         // A caller that may not wait lets go of its lease while its last write
         // is still queued: the write lands anyway, and nobody else, in this
-        // process or another, can lease the document until it has.
+        // process or another, can lease the record until it has. A document
+        // and a view's record are leased alike.
         {
-            let tmp = TempDir::new().unwrap();
-            let fs = FsStore::with_debounce(tmp.path(), Duration::from_secs(3600));
-            let key = record("closing");
-            let lease = fs.lease(&key).unwrap();
-            let revision = fs
-                .write(&key, WriteOp::Replace(b"last words".to_vec()), Some(b"me"))
-                .unwrap();
-            drop(lease);
-            let other = FsStore::new(tmp.path());
-            assert!(
-                matches!(other.lease(&key), Err(DurableError::Busy(_))),
-                "another process waits for the queued write"
-            );
-            assert!(
-                matches!(fs.lease(&key), Err(DurableError::Busy(_))),
-                "so does a new owner in this one"
-            );
-            fs.flush(Some(&key)).unwrap();
-            assert_eq!(fs.durability(&key, revision), Durability::Durable);
-            drop(other.lease(&key).unwrap());
-            let Target::Document(directory) = fs.target(&key).unwrap() else {
-                panic!("a record is a document");
-            };
-            assert_eq!(
-                fs::read(directory.join(DOCUMENT_FILE)).unwrap(),
-                b"last words"
-            );
+            for (key, bytes, document) in [
+                (record("closing"), b"last words".to_vec(), true),
+                (
+                    StorageKey::view("private-action-history", "owner", 0),
+                    b"evidence".to_vec(),
+                    false,
+                ),
+            ] {
+                let tmp = TempDir::new().unwrap();
+                let fs = FsStore::with_debounce(tmp.path(), Duration::from_secs(3600));
+                let lease = fs.lease(&key).unwrap();
+                let writer = document.then_some(&b"me"[..]);
+                let revision = fs
+                    .write(&key, WriteOp::Replace(bytes.clone()), writer)
+                    .unwrap();
+                drop(lease);
+                let other = FsStore::new(tmp.path());
+                assert!(
+                    matches!(other.lease(&key), Err(DurableError::Busy(_))),
+                    "another process waits for the queued write"
+                );
+                assert!(
+                    matches!(fs.lease(&key), Err(DurableError::Busy(_))),
+                    "so does a new owner in this one"
+                );
+                fs.flush(Some(&key)).unwrap();
+                assert_eq!(fs.durability(&key, revision), Durability::Durable);
+                // The worker must release the check before flush wakes its caller.
+                let next = other.lease(&key).unwrap();
+                if document {
+                    let Target::Document(directory) = fs.target(&key).unwrap() else {
+                        panic!("a record is a document");
+                    };
+                    assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), bytes);
+                } else {
+                    assert_eq!(other.read(&key).unwrap().unwrap().bytes, bytes);
+                }
+                drop(next);
+            }
         }
 
         phase records_lists_one_workspaces_committed_documents_sorted;
@@ -2195,25 +2208,6 @@ mod tests {
                     b"kept"
                 );
             }
-        }
-
-        phase a_dropped_view_lease_keeps_queued_commits_exclusive_until_settled;
-        {
-            let tmp = TempDir::new().unwrap();
-            let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
-            let peer = FsStore::new(tmp.path());
-            let key = StorageKey::view("private-action-history", "owner", 0);
-            let lease = store.lease(&key).unwrap();
-            let revision = store
-                .write(&key, WriteOp::Replace(b"evidence".to_vec()), None)
-                .unwrap();
-            drop(lease);
-            assert!(matches!(peer.lease(&key), Err(DurableError::Busy(_))));
-            store.flush(Some(&key)).unwrap();
-            assert_eq!(store.durability(&key, revision), Durability::Durable);
-            // The worker must release the check before flush wakes its caller.
-            let _next = peer.lease(&key).unwrap();
-            assert_eq!(peer.read(&key).unwrap().unwrap().bytes, b"evidence");
         }
 
         phase view_creation_syncs_new_ancestors_once_and_retries_failed_durability;

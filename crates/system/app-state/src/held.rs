@@ -237,15 +237,11 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn the_socket_answers_a_request_and_closes_when_dropped() {
+    fn the_socket_answers_a_request_and_closes_when_dropped_at_any_depth() {
         let root = tempfile::tempdir().unwrap();
         socket_answers_and_closes(&root.path().join("held.sock"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_profile_deeper_than_a_socket_path_still_has_a_socket() {
-        let root = tempfile::tempdir().unwrap();
+        // A profile deep enough that the path is past what a Unix socket
+        // address can hold still gets one.
         let deep = root.path().join("a".repeat(60)).join("b".repeat(60));
         std::fs::create_dir_all(&deep).unwrap();
         let socket = deep.join("held.sock");
