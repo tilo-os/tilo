@@ -23057,6 +23057,7 @@ dependencies = [
  "tilo-media",
  "tilo-net",
  "tilo-paths",
+ "tilo-pdf-reader",
  "tilo-recurrence",
  "tilo-render-protocol",
  "tilo-resource",

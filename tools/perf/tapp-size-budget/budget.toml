@@ -90,10 +90,6 @@ aarch64 = 2031616
 x86_64 = 1703936
 aarch64 = 1769472
 
-[apps."so.tilo.canvas"]
-x86_64 = 4653056
-aarch64 = 4128768
-
 [apps."so.tilo.chat"]
 x86_64 = 5177344
 aarch64 = 3145728

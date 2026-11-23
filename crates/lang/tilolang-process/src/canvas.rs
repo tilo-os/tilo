@@ -21,7 +21,9 @@ impl Engine {
 }
 
 fn artwork(json: &str) -> Result<canvas_engine::model::Artwork, String> {
-    canvas_engine::host::artwork(json)
+    // A package keeps the artwork as its own records; the engine reads that shape, never a
+    // second copy of its fields.
+    canvas_engine::host::artwork_of_records(json)
 }
 
 impl CanvasHost for Engine {

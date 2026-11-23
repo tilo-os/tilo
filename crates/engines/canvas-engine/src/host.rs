@@ -12,7 +12,7 @@ use tilo_content::ContentStore;
 use tilo_ui::text_render::TextRenderer;
 
 use crate::document::{ArtworkFile, pack, unpack};
-use crate::model::Artwork;
+use crate::model::{Artwork, Ground, Layer, Mark, Selection, Shape, Style};
 use crate::render::Renderer;
 use crate::resource::{Export, ExportSvg, Look};
 use crate::svg::ImportSvg;
@@ -37,6 +37,210 @@ fn reference(address: &str) -> Option<&str> {
     }
     tilo_resource::content::reference_hash(address)
         .or_else(|| tilo_content::valid_reference(address).then_some(address))
+}
+
+/// The artwork a package keeps as its own records, read into the engine's: the shape
+/// `apps/tl/canvas` encodes, never a second copy of the engine's fields.
+///
+/// # Errors
+///
+/// Why the records are not an artwork.
+pub fn artwork_of_records(json: &str) -> Result<Artwork, String> {
+    #[derive(serde::Deserialize)]
+    struct Records {
+        #[serde(default)]
+        title: String,
+        #[serde(default = "wide")]
+        width: f64,
+        #[serde(default = "tall")]
+        height: f64,
+        #[serde(default)]
+        ground_texture: String,
+        #[serde(default)]
+        ground_colour: String,
+        #[serde(default)]
+        layers: Vec<RecordLayer>,
+        #[serde(default)]
+        marks: Vec<RecordMark>,
+        #[serde(default)]
+        selection: Option<RecordArea>,
+    }
+    #[derive(serde::Deserialize)]
+    struct RecordLayer {
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        medium: String,
+        #[serde(default = "one")]
+        opacity: f64,
+        #[serde(default = "yes")]
+        visible: bool,
+        #[serde(default)]
+        locked: bool,
+        #[serde(default)]
+        texture: f64,
+    }
+    #[derive(serde::Deserialize)]
+    struct RecordMark {
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        layer: RecordLayer,
+        #[serde(default)]
+        kind: String,
+        /// `x, y, pressure` in turn, as a package keeps a stroke.
+        #[serde(default)]
+        points: Vec<f64>,
+        #[serde(default)]
+        d: String,
+        #[serde(default = "width_default")]
+        size: f64,
+        #[serde(default)]
+        colour: String,
+        #[serde(default)]
+        brush: String,
+        #[serde(default = "one")]
+        opacity: f64,
+    }
+    #[derive(serde::Deserialize)]
+    struct RecordArea {
+        #[serde(default)]
+        d: String,
+        #[serde(default)]
+        feather: f64,
+    }
+    fn wide() -> f64 {
+        1024.0
+    }
+    fn tall() -> f64 {
+        768.0
+    }
+    fn one() -> f64 {
+        1.0
+    }
+    fn yes() -> bool {
+        true
+    }
+    fn width_default() -> f64 {
+        6.0
+    }
+    fn slug(name: &str) -> String {
+        let mut out = String::new();
+        for ch in name.trim().to_lowercase().chars() {
+            if ch.is_ascii_alphanumeric() {
+                out.push(ch);
+            } else if !out.ends_with('-') && !out.is_empty() {
+                out.push('-');
+            }
+        }
+        let out = out.trim_matches('-').to_owned();
+        if out.is_empty() { "layer".to_owned() } else { out }
+    }
+    fn order_key(index: usize) -> String {
+        format!("{index:08}")
+    }
+    let records: Records = serde_json::from_str(json)
+        .map_err(|error| format!("this is not a Canvas artwork: {error}"))?;
+    let mut art = Artwork::default();
+    art.title = records.title;
+    if records.width >= 16.0 && records.width <= 8192.0 {
+        art.width = records.width;
+    }
+    if records.height >= 16.0 && records.height <= 8192.0 {
+        art.height = records.height;
+    }
+    art.ground = Ground {
+        texture: if records.ground_texture.is_empty() {
+            "paper".to_owned()
+        } else {
+            records.ground_texture
+        },
+        colour: if records.ground_colour.is_empty() {
+            "#f4efe3".to_owned()
+        } else {
+            records.ground_colour
+        },
+    };
+    for (index, layer) in records.layers.iter().enumerate() {
+        art.put_layer(Layer {
+            id: slug(&layer.name),
+            name: layer.name.clone(),
+            group: String::new(),
+            order: order_key(index),
+            medium: layer.medium.clone(),
+            opacity: layer.opacity.clamp(0.0, 1.0),
+            visible: layer.visible,
+            texture: layer.texture.clamp(0.0, 1.0),
+            locked: layer.locked,
+            adjust: None,
+            mask_of: String::new(),
+            base: 1.0,
+            invert: false,
+            clip: false,
+            unlinked: false,
+        });
+    }
+    if records.layers.is_empty() {
+        art.put_layer(Layer {
+            id: "layer-1".to_owned(),
+            name: "Layer 1".to_owned(),
+            order: order_key(0),
+            ..Layer::default()
+        });
+    }
+    for (index, mark) in records.marks.iter().enumerate() {
+        let mut style = Style {
+            opacity: mark.opacity.clamp(0.0, 1.0),
+            brush: crate::brushes::stored(&mark.brush),
+            ..Style::default()
+        };
+        let shape = if mark.kind == "stroke" {
+            Shape::Stroke {
+                points: mark
+                    .points
+                    .chunks_exact(3)
+                    .map(<[f64]>::to_vec)
+                    .collect(),
+                size: mark.size,
+                forks: None,
+                spread: None,
+                dabs: None,
+                scatter: None,
+                dab_length: None,
+                hatch: None,
+            }
+        } else {
+            style.fill = Some(if mark.colour.is_empty() {
+                "#1d1b19".to_owned()
+            } else {
+                mark.colour.clone()
+            });
+            Shape::Path {
+                d: mark.d.clone(),
+            }
+        };
+        art.put_mark(Mark {
+            id: format!("mark-{index}"),
+            layer: slug(&mark.layer.name),
+            order: order_key(index),
+            name: mark.name.clone(),
+            shape,
+            style,
+            transform: None,
+            group: String::new(),
+            clip: String::new(),
+            area: String::new(),
+        });
+    }
+    if let Some(area) = records.selection {
+        art.selection = Some(Selection {
+            d: area.d,
+            feather: area.feather.clamp(0.0, 500.0),
+            matte: None,
+        });
+    }
+    art.settle();
+    Ok(art)
 }
 
 /// The artwork `file` holds, as a fresh document.
