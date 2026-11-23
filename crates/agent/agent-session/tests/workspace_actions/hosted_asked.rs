@@ -408,6 +408,11 @@ async fn a_reply_grows_while_its_model_writes_it() {
     )
     .await;
     assert_eq!(whole.state, AskState::Done);
+    assert_eq!(
+        (whole.provider.as_str(), whole.model.as_str(), whole.cost),
+        ("Google", "gemini-main", 100),
+        "the finished reply names the provider and model that answered it, and what the turn cost"
+    );
     assert!(
         agents.turns(&workspace).await.unwrap().is_empty(),
         "answered once"

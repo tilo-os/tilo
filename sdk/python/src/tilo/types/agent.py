@@ -85,6 +85,9 @@ ShowArgs = TypedDict("ShowArgs", {
 
 FinishArgs = TypedDict("FinishArgs", {
     "state": "AskState",
+    "provider": NotRequired["str | None"],
+    "model": NotRequired["str | None"],
+    "cost": NotRequired["int | None"],
 })
 """The arguments of `finish`."""
 
@@ -94,7 +97,7 @@ SupersedeArgs = TypedDict("SupersedeArgs", {
 
 class Ask(Resource):
     """Ask — `tl.so.tilo.agent.Ask`."""
-    __surface__ = "so.tilo.agent@2098097e16618ed1"
+    __surface__ = "so.tilo.agent@04d78458d811ac51"
     mcsi6vp5: str  # agent
     @property
     def _7j5pok54(self) -> str | None:
@@ -142,7 +145,7 @@ class Ask(Resource):
 
 class Step(Resource):
     """Step — `tl.so.tilo.agent.Step`."""
-    __surface__ = "so.tilo.agent@2098097e16618ed1"
+    __surface__ = "so.tilo.agent@04d78458d811ac51"
     ippal7k2: str  # called
     cyu3le2j: str  # answered
     cma7vgpx: bool  # failed
@@ -150,20 +153,20 @@ class Step(Resource):
 
 class SentView(Resource):
     """SentView — `tl.so.tilo.agent.SentView`."""
-    __surface__ = "so.tilo.agent@2098097e16618ed1"
+    __surface__ = "so.tilo.agent@04d78458d811ac51"
     gdhl4pzx: str  # title
     ytw765gn: str  # definition
 
 
 class Shown(Resource):
     """Shown — `tl.so.tilo.agent.Shown`."""
-    __surface__ = "so.tilo.agent@2098097e16618ed1"
+    __surface__ = "so.tilo.agent@04d78458d811ac51"
     mx5wcfl2: str  # card
 
 
 class Reply(Resource):
     """Reply — `tl.so.tilo.agent.Reply`."""
-    __surface__ = "so.tilo.agent@2098097e16618ed1"
+    __surface__ = "so.tilo.agent@04d78458d811ac51"
     gjd462ep: Ask  # ask
     oka345cb: str  # body
     czzg7mhh: str  # thinking
@@ -172,6 +175,23 @@ class Reply(Resource):
     e36wbuu7: list[Entry[Step]]  # steps
     bnlsdtf6: list[Entry[SentView]]  # views
     mwwrjl52: list[Entry[Shown]]  # shown
+    vbzsd5lu: str  # provider
+    @property
+    def _5xeeayip(self) -> str:
+        """model (`5xeeayip` on the wire)."""
+        return self.fields["5xeeayip"]
+
+    @_5xeeayip.setter
+    def _5xeeayip(self, value: str) -> None:
+        self.edit("5xeeayip", value=value)
+    @property
+    def _4xymfj5v(self) -> int:
+        """cost (`4xymfj5v` on the wire)."""
+        return self.fields["4xymfj5v"]
+
+    @_4xymfj5v.setter
+    def _4xymfj5v(self, value: int) -> None:
+        self.edit("4xymfj5v", value=value)
     eyh6zmbf: bool  # superseded
 
     def say(self, *, more: str) -> None:
@@ -228,9 +248,23 @@ class Reply(Resource):
         """Runs `show` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("show", items)
 
-    def finish(self, *, state: AskState) -> None:
-        """The agent's turn ended as `state`: done, failed, or stopped when a person stopped it."""
-        return self.action("finish", state=state)
+    def finish(self,
+        *,
+        state: AskState,
+        provider: str | None = None,
+        model: str | None = None,
+        cost: int | None = None,
+    ) -> None:
+        """The agent's turn ended as `state`: done, failed, or stopped when a person stopped it. `model` of `provider` answered it, where a model did, its calls costing `cost` millionths of the workspace's currency; a turn that ended before its model answered says nothing of one."""
+        args: dict[str, Any] = {}
+        args["state"] = state
+        if provider is not None:
+            args["provider"] = provider
+        if model is not None:
+            args["model"] = model
+        if cost is not None:
+            args["cost"] = cost
+        return self.action("finish", **args)
 
     def finish_many(self, items: list[FinishArgs]) -> list[dict[str, Any]]:
         """Runs `finish` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
@@ -251,7 +285,7 @@ class Reply(Resource):
 
 class Agents(Resource):
     """Agents — `tl.so.tilo.agent.Agents`."""
-    __surface__ = "so.tilo.agent@2098097e16618ed1"
+    __surface__ = "so.tilo.agent@04d78458d811ac51"
     mzzoxssv: list[Entry[Ask]]  # asks
     @property
     def _353i7jsi(self) -> list[Entry[Reply]]:
@@ -283,5 +317,5 @@ class Agents(Resource):
 
 class Agent(Resource):
     """Agents — `tl.so.tilo.agent`."""
-    __surface__ = "so.tilo.agent@2098097e16618ed1"
+    __surface__ = "so.tilo.agent@04d78458d811ac51"
 

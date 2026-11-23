@@ -1535,7 +1535,7 @@ impl ServerAgents {
     async fn end(&self, workspace: &str, turn: &Turn, outcome: &Outcome) -> Result<(), String> {
         let acting = self.scope(workspace, turn).await?;
         let reply = acting.reply(turn);
-        let ended = reply.finished(outcome).await;
+        let ended = reply.finished(outcome, None, 0).await;
         self.sub_ended(&acting, turn, outcome, false).await;
         ended
     }
@@ -1607,7 +1607,7 @@ impl ServerAgents {
             // Its steps may have changed things already, and nothing says which: starting over
             // would do them twice. It ends here, and asking again is the person's to do.
             let left = Outcome::Failed(LEFT_BEGUN.to_owned());
-            let ended = reply.finished(&left).await;
+            let ended = reply.finished(&left, None, 0).await;
             crate::agents::telling::turn_ended(
                 &self.workspaces,
                 self.events.as_ref(),
@@ -1633,7 +1633,7 @@ impl ServerAgents {
             && !self.is_member(workspace, &turn.agent.id.0).await
         {
             let refused = Outcome::Failed(NOT_A_MEMBER_YET.to_owned());
-            return (turn.ask, reply.finished(&refused).await);
+            return (turn.ask, reply.finished(&refused, None, 0).await);
         }
         Box::pin(self.answer_by_model(workspace, (scope, turn, reply, began), going)).await
     }
@@ -1652,7 +1652,7 @@ impl ServerAgents {
         let task = match self.issue_session(workspace, &mut turn, &reply).await {
             Ok(task) => task,
             Err(words) => {
-                let ended = reply.finished(&Outcome::Stopped(words)).await;
+                let ended = reply.finished(&Outcome::Stopped(words), None, 0).await;
                 return (turn.ask, ended);
             }
         };
@@ -1672,15 +1672,16 @@ impl ServerAgents {
             )
             .await;
         let keeping = learned::Keeping::of(&self.workspaces, workspace, &turn);
-        let (outcome, cost) = match (asked, limit) {
+        let (outcome, cost, answered) = match (asked, limit) {
             (_, Some(limit)) if spent_before >= limit => (
                 Outcome::Stopped(format!(
                     "I stopped before starting: today's limit of {} is reached.",
                     money(limit)
                 )),
                 0,
+                None,
             ),
-            (Err(why), _) => (Outcome::Failed(why), 0),
+            (Err(why), _) => (Outcome::Failed(why), 0, None),
             (Ok(model), _) => {
                 // The day's limit and the issue's own budget both bound the turn: the smaller.
                 let day_left = limit.map(|limit| limit.saturating_sub(spent_before));
@@ -1718,7 +1719,7 @@ impl ServerAgents {
             self.charge(workspace, sub_agents::payer(&turn), &day, cost)
                 .await;
         }
-        let ended = reply.finished(&outcome).await;
+        let ended = reply.finished(&outcome, answered.as_ref(), cost).await;
         crate::agents::telling::turn_ended(
             &self.workspaces,
             self.events.as_ref(),
@@ -2077,20 +2078,31 @@ impl Reply {
     async fn went_on(&self) -> Result<(), String> {
         if let Some(replying) = &self.replying {
             return replying
-                .finish(&self.written.below(WENT_ON), crate::asks::AskState::Done)
+                .finish(
+                    &self.written.below(WENT_ON),
+                    crate::asks::AskState::Done,
+                    None,
+                    0,
+                )
                 .await;
         }
         Err("the ask's reply is not open here".to_owned())
     }
 
-    /// Give the person the turn's answer.
+    /// Give the person the turn's answer. `answered` is what answered its model calls, where a
+    /// model did, and `cost` what they cost in millionths of the currency.
     ///
     /// # Errors
     /// The reply did not keep how it ended, and whoever works the turn reads why.
-    async fn finished(&self, outcome: &Outcome) -> Result<(), String> {
+    async fn finished(
+        &self,
+        outcome: &Outcome,
+        answered: Option<&ModelAnswered>,
+        cost: u64,
+    ) -> Result<(), String> {
         if let Some(replying) = &self.replying {
             let (words, state) = self.written.ending(outcome);
-            return replying.finish(&words, state).await;
+            return replying.finish(&words, state, answered, cost).await;
         }
         match &self.ask {
             Ask::Asked { .. } => Err("the ask's reply is not open here".to_owned()),
@@ -2351,8 +2363,9 @@ async fn invoke_at(
 }
 
 /// Work on `turn` with its model through the agent's tools until the model answers, the
-/// budget is spent or its person stops it: how it ended, and what it cost. It asks its model for
-/// as long as the model calls tools; nothing counts those asks to end the turn.
+/// budget is spent or its person stops it: how it ended, what it cost, and what answered its
+/// calls where a model did. It asks its model for as long as the model calls tools; nothing
+/// counts those asks to end the turn.
 /// What its person wrote since reaches it at each step ([`going::Going::take`]): `turn` and
 /// `reply` are then the newest of it, where the answer goes.
 async fn work(
@@ -2363,7 +2376,7 @@ async fn work(
     reply: &mut Reply,
     going: &going::Going,
     keeping: Option<&learned::Keeping>,
-) -> (Outcome, u64) {
+) -> (Outcome, u64, Option<ModelAnswered>) {
     let Some(turns) = tokio::task::spawn_blocking(move || model())
         .await
         .ok()
@@ -2375,13 +2388,14 @@ async fn work(
                     .to_owned(),
             ),
             0,
+            None,
         );
     };
     let server = match McpServer::for_turn(reply.provider.clone(), reply.caller.clone())
         .map(|server| server.with_observation(steps::observed()))
     {
         Ok(server) => server,
-        Err(error) => return (Outcome::Failed(error.to_string()), 0),
+        Err(error) => return (Outcome::Failed(error.to_string()), 0, None),
     };
     // What the turn keeps about its keeper, and in an answer to an ask the view or the document
     // it may answer with, are its own tools beside the agent tools.
@@ -2403,6 +2417,8 @@ async fn work(
     let model = Arc::new(Mutex::new(Asking {
         turns: asking::again(turns, going.stop_flag()),
     }));
+    // The same model, kept to ask what answered the turn once it ended.
+    let asked_by = Arc::clone(&model);
     let answering = Answering {
         scope,
         going,
@@ -2421,7 +2437,8 @@ async fn work(
     if let Outcome::Answered(words) = &outcome {
         tracing::info!(%agent, cost, said = words.len(), "an agent on the workspace's server answered");
     }
-    (outcome, cost)
+    let answered = asked_by.lock_recover().turns.answered_by();
+    (outcome, cost, answered)
 }
 
 /// A turn's model as the turn asks it: each call asked again where it fails for a moment

@@ -761,7 +761,8 @@ impl Agents {
                         .at;
                     let reply = tl_asks::answer(opened, &member, &ask)?;
                     tl_asks::say(opened, &member, &reply, &said)?;
-                    tl_asks::finish(opened, &member, &reply, AskState::Done)
+                    // What the person answered ends the turn; no model answered it.
+                    tl_asks::finish(opened, &member, &reply, AskState::Done, ("", "", 0))
                 },
             )
             .await

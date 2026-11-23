@@ -93,6 +93,15 @@ d-bnlsdtf6 = Views
 d-mwwrjl52 = Shown
     .doc = The things it showed, in order.
 
+d-vbzsd5lu = Provider
+    .doc = The provider that answered the reply, as the workspace's settings name it (`Google`): empty where no model answered.
+
+d-5xeeayip = Model
+    .doc = The model that answered it, as a person reads it (`Gemini 2.5 Pro`), or its id where its provider labels it none: empty where no model answered.
+
+d-4xymfj5v = Cost
+    .doc = What the turn's model calls cost, in millionths of the workspace's currency.
+
 d-eyh6zmbf = Superseded
     .doc = Whether another device's answer to the same ask stands instead: two devices offline at once may both have answered.
 
@@ -101,6 +110,8 @@ d-uwopf5u7-filter-ask = Ask
 d-uwopf5u7-filter-state = State
 
 d-uwopf5u7-filter-attempt = Attempt
+
+d-uwopf5u7-filter-cost = Cost
 
 d-uwopf5u7-filter-superseded = Superseded
 
@@ -217,6 +228,12 @@ d-6koj42w5 = Finish
     .w-a-turn-ends-done-failed-or = A turn ends done, failed or stopped
 
 d-6koj42w5-state = State
+
+d-6koj42w5-provider = Provider
+
+d-6koj42w5-model = Model
+
+d-6koj42w5-cost = Cost
 
 d-5n4bbzji = Supersede
     .doc = Another device's answer to the same ask stands instead of `r`.

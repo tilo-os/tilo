@@ -2243,6 +2243,8 @@ mod text;
 pub use text::{Text, TextProps};
 mod relative_time;
 pub use relative_time::{RelativeTime, TimeProps, clock_text, next_change, relative_text};
+mod money;
+pub use money::{Money, MoneyProps};
 mod spacer;
 pub use spacer::Spacer;
 mod when;
