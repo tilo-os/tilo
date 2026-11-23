@@ -323,8 +323,12 @@ fn session_task(
     let vault = store.channel_vault().unwrap_or_else(rand::random);
     let replicas = crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store));
     let key_state = crate::membership_check::StoredKeys::load(store.as_ref());
-    // The transport this session settles its own keys over; none when the device's service does.
-    let governance = keys.is_none().then(HostGovernance::default);
+    // The transport this session hands the groups' governance it hears over: a session that
+    // settles its own keys judges them itself, and one lent the device's key service hands
+    // them to that service, which judges them as it judges the frames its links bring. A
+    // session lent no keys holds none and asks for none.
+    let holds_no_keys = lent && keys.is_none();
+    let governance = (!holds_no_keys).then(HostGovernance::default);
     let workspace_keys = keys.unwrap_or_else(|| {
         let checks = Arc::new(tilo_workspace_keys::SealChecks::default());
         tilo_workspace_keys::SharedKeys::new(if lent {
@@ -552,8 +556,10 @@ struct Task {
     /// This device's side of the workspaces' encrypted channels: the engine every member runs,
     /// here as a reader that asks for access and follows the members' commits.
     workspace_keys: tilo_workspace_keys::SharedKeys,
-    /// What the channels say to and hear from the host: `None` when the device's own key service
-    /// settles [`Self::workspace_keys`] ([`start_session_lent`]).
+    /// What the channels say to and hear from the host: the frames a link to this device would
+    /// bring, taken into [`Self::workspace_keys`] exactly as a link frame is, so a session that
+    /// reaches its workspace with no link still joins each record's group. `None` for a session
+    /// lent no keys, which holds none and asks for none ([`start_session_lent`]).
     governance: Option<HostGovernance>,
     /// The channels' state and the writes held for their keys, in the store.
     key_state: crate::membership_check::StoredKeys,
