@@ -289,7 +289,10 @@ writing for a minute loses the work to the next. It runs under the caller's gran
 writes with its own device key and carries the caller's signed call with it, so
 every receiver checks that the call was the caller's and that the change stays
 within it and the caller's grants. No caller key leaves the caller's device, and
-there is no second signing scheme. It streams its progress and output
+there is no second signing scheme. An action's code that calls another action,
+another app's or a native provider's, makes a child call bounded by its own
+caller's grants, and a refusal comes back to that code as a result, never
+only to a log. It streams its progress and output
 back to the caller as it goes, and ends in a result or a legible error the
 caller sees, and the caller can cancel it. What it writes goes into resources,
 so every view shows it, and work that outlives its device is carried on by
