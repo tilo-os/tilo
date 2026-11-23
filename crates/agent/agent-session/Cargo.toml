@@ -70,7 +70,6 @@ themes = { path = "../../../apps/themes" }
 totp = { path = "../../../apps/totp" }
 typst-editor = { path = "../../../apps/typst-editor" }
 video-editor = { path = "../../../apps/video-editor", default-features = false, features = [] }
-video-player = { path = "../../../apps/video-player", default-features = false, features = [] }
 weather = { path = "../../../apps/weather" }
 word-processor = { path = "../../../apps/word-processor" }
 # The member's client: the certified relay session (iroh for a host-side agent) with its live

@@ -39,7 +39,7 @@ fn named(name: &str) -> Option<Icon> {
         "pdf-viewer" | "ebook" | "publisher" => Icon::File,
         "typst-editor" | "code-editor" | "snippets" => Icon::Code,
         "music" => Icon::Music,
-        "tube" | "video-player" | "video-editor" => Icon::Film,
+        "tube" | "video" | "video-editor" => Icon::Film,
         "photos" => Icon::Image,
         "camera" => Icon::Camera,
         "canvas" => Icon::PenTool,

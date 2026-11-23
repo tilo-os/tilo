@@ -37,7 +37,6 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
         totp::definition(),
         typst_editor::definition(),
         video_editor::definition(),
-        video_player::definition(),
         weather::definition(),
         word_processor::definition(),
     ]

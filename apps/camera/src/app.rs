@@ -5,7 +5,7 @@
 //! hit-testing its controls.
 //!
 //! A shutter press writes verified media bytes and keeps one recent-capture
-//! handoff; Photos and Video Player own collection browsing, favorites, deletion
+//! handoff; Photos and Video own collection browsing, favorites, deletion
 //! and metadata. The document ([`crate::resource`]) has the handoff, scan
 //! history and capture preferences. A live viewfinder needs a camera, and with
 //! none the camera and scanner screens say so. The `--shots` and test path uses
@@ -544,7 +544,7 @@ impl CameraApp {
             clock: None,
             photos_handoff: Self::media_handoff(PHOTOS_APP).file_emitter("open"),
             photos_browse: Self::photos_browse_emitter(),
-            video_handoff: Self::media_handoff(VIDEO_PLAYER_APP).file_emitter("open"),
+            video_handoff: Self::media_handoff(VIDEO_APP).file_emitter("open"),
         }
     }
 
@@ -3265,7 +3265,7 @@ impl ui::widget::controls::ActionControls for CameraApp {
 /// The app a photo capture is handed to, and its name's catalogue key.
 const PHOTOS_APP: (&str, &str) = ("so.tilo.photos", "camera-app-photos");
 /// The app a video capture is handed to, and its name's catalogue key.
-const VIDEO_PLAYER_APP: (&str, &str) = ("so.tilo.video-player", "camera-app-video-player");
+const VIDEO_APP: (&str, &str) = ("so.tilo.video", "camera-app-video");
 
 /// The apps the recent tile hands a capture to are the rows its launches name: answered when
 /// asked for, so a launch dispatched from the window resolves to the app it opens, and never
@@ -3277,7 +3277,7 @@ impl ui::resources::PublishesResources for CameraApp {
         id: &str,
     ) -> Option<ui::tilo_actions::ResourceSpec> {
         let app = id.strip_suffix(".app")?;
-        [PHOTOS_APP, VIDEO_PLAYER_APP]
+        [PHOTOS_APP, VIDEO_APP]
             .into_iter()
             .find(|(handed, _)| *handed == app)
             .map(|handed| Self::media_handoff(handed).destination("open"))
@@ -3398,7 +3398,7 @@ mod tests {
     #[test]
     fn a_capture_is_handed_to_the_app_row_the_window_answers_for() {
         let (app, doc, _) = sample_app();
-        for ((handed, _), name) in [(PHOTOS_APP, "c1.jpg"), (VIDEO_PLAYER_APP, "c2.webm")] {
+        for ((handed, _), name) in [(PHOTOS_APP, "c1.jpg"), (VIDEO_APP, "c2.webm")] {
             let handoff = CameraApp::media_handoff((handed, "camera-app-photos"));
             let hash = "ab".repeat(32);
             let invocation = handoff

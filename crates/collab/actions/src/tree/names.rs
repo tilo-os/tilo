@@ -235,7 +235,7 @@ mod tests {
         ("so.tilo.notes", "Notes"),
         ("so.tilo.tasks", "Tasks"),
         ("so.tilo.file-explorer", "Files"),
-        ("so.tilo.video-player", "Video Player"),
+        ("so.tilo.video", "Video"),
         ("so.tilo.video-editor", "Video Editor"),
         ("so.tilo.word-processor", "Word Processor"),
     ];
@@ -282,7 +282,7 @@ mod tests {
         let several = app_meant("video", APPS).expect_err("two apps begin so");
         assert!(
             several.contains("names several")
-                && several.contains("so.tilo.video-player")
+                && several.contains("so.tilo.video")
                 && several.contains("so.tilo.video-editor"),
             "{several}"
         );

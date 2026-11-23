@@ -10,9 +10,7 @@ if (-not $IsWindows) { throw 'Run this check from PowerShell on Windows.' }
 . (Join-Path $PSScriptRoot 'install-path.ps1')
 $InstalledDirectory = (Resolve-Path -LiteralPath $InstalledDirectory).Path
 Assert-TiloPublicInstallDirectory $InstalledDirectory
-$Repository = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$fixture = (Resolve-Path -LiteralPath (Join-Path $Repository 'apps/video-player/tests/fixtures/h264-aac.mp4')).Path
-foreach ($app in @('music', 'video-player')) {
+foreach ($app in @('music')) {
     if (-not (Test-Path -LiteralPath (Join-Path $InstalledDirectory "$app.exe") -PathType Leaf)) {
         throw "Missing installed $app executable."
     }
@@ -25,7 +23,6 @@ function Invoke-MediaProof([string]$App, [string[]]$TestArguments) {
     foreach ($subdirectory in @('', 'config', 'config/tilo', 'data', 'cache', 'media-cache')) {
         New-Item -ItemType Directory -Path (Join-Path $scope $subdirectory) -Force | Out-Null
     }
-    '{"video_player":{"autoplay":false,"loop_enabled":false}}' | Set-Content -LiteralPath (Join-Path $scope 'config/tilo/settings.json')
     $launch = [Diagnostics.ProcessStartInfo]::new((Join-Path $InstalledDirectory ($App + '.exe')))
     $launch.UseShellExecute = $false
     $launch.CreateNoWindow = $true
@@ -65,14 +62,5 @@ function Invoke-MediaProof([string]$App, [string[]]$TestArguments) {
 # Music proves the installed loader and CPU widget path, not audio playback.
 $music = Invoke-MediaProof 'music' @('--bench','3','--viewport','640x360')
 if ($music.Output -notmatch '(?s)bench.*frames=3') { throw 'Music did not report the requested benchmark frames' }
-$pngPath = Join-Path $proofRoot 'video.png'
-# Autoplay is disabled in the isolated settings before opening the fixture;
-# --scenario paused alone would be applied after the initial open.
-$video = Invoke-MediaProof 'video-player' @('--shots',$pngPath,'--open',$fixture,'--scenario','paused','--viewport','640x360')
-$png = [IO.File]::ReadAllBytes($pngPath)
-if ($png.Length -lt 24 -or [BitConverter]::ToString($png[0..7]) -ne '89-50-4E-47-0D-0A-1A-0A') { throw 'Video proof is not a PNG' }
-$width = [Net.IPAddress]::NetworkToHostOrder([BitConverter]::ToInt32($png,16))
-$height = [Net.IPAddress]::NetworkToHostOrder([BitConverter]::ToInt32($png,20))
-if ($width -ne 640 -or $height -ne 360) { throw "Unexpected PNG dimensions ${width}x${height}" }
-@($music,$video) | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $proofRoot 'results.json')
-@($music,$video) | ConvertTo-Json -Depth 4
+$music | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $proofRoot 'results.json')
+$music | ConvertTo-Json -Depth 4

@@ -200,7 +200,6 @@ members = [
     "apps/totp",
     "apps/typst-editor",
     "apps/video-editor",
-    "apps/video-player",
     "apps/weather",
     "apps/windows",
     "apps/word-processor",

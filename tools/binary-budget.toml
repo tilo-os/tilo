@@ -68,7 +68,6 @@
 "tinker" = 2   # 1.1 MB
 "totp" = 25   # 21.6 MB
 "typst-editor" = 63   # 54.4 MB
-"video-player" = 25   # 21.5 MB
 "video-editor" = 25   # 21.1 MB
 "weather" = 26   # 22.6 MB
 "word-processor" = 28   # 24.0 MB

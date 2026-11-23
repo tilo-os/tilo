@@ -390,7 +390,7 @@ impl CameraApp {
     }
 
     /// The latest capture, bottom-leading: its preview opens it in the app
-    /// that owns it (Photos or Video Player).
+    /// that owns it (Photos or Video).
     fn draw_recent_capture(
         &mut self,
         scene: &mut Scene,

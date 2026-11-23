@@ -848,12 +848,12 @@ mod tests {
             secondary: true,
             ..app("so.tilo.video-editor", "Video Editor", "mp4")
         };
-        let apps = [editor, app("so.tilo.video-player", "Video Player", "mp4")];
+        let apps = [editor, app("so.tilo.video", "Video Player", "mp4")];
         let resolver = DefaultAppResolver::new(&apps);
         let personal = PersonalDefaults::default();
         assert_eq!(
             opens(&resolver, std::slice::from_ref(&mp4), &personal, None).0,
-            "so.tilo.video-player",
+            "so.tilo.video",
             "the player opens video ahead of the editor whose name sorts first"
         );
         assert_eq!(

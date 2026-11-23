@@ -109,10 +109,6 @@ x86_64 = 131072
 [apps."so.tilo.typst-editor"]
 x86_64 = 65536
 
-# no model; 1,145,344 bytes in all, 1,114,112 budgeted.
-[apps."so.tilo.video-player"]
-x86_64 = 65536
-
 # no model; 1,494,016 bytes in all, 1,376,256 budgeted.
 [apps."so.tilo.windows"]
 x86_64 = 131072
