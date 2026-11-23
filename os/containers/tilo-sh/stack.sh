@@ -1120,6 +1120,12 @@ declare_owner() {
 # The person is kept as a Tilo session keeps one (its identity under .config,
 # this device's key under .local/share/tilo): a session given this home is them.
 as_owner() {
+  owner_run "$(find_tilo)" "$@"
+}
+
+# owner_run COMMAND…: COMMAND as the stack's own person (as_owner), with their home and
+# runtime directory.
+owner_run() {
   local home=$state/owner/home run
   mkdir -p "$home"
   # Their own runtime directory, where the holder of their device listens: one this account
@@ -1133,7 +1139,27 @@ as_owner() {
     XDG_DATA_HOME=$home/.local/share XDG_CACHE_HOME=$home/.cache \
     TILO_IDENTITY_ROOT=$home/.local/share/tilo \
     TILO_DEVICE_PORT=$person_port \
-    TILO_API_URL=$api_origin TILO_SITE=$site_origin "$(find_tilo)" "$@" 9>&-
+    TILO_API_URL=$api_origin TILO_SITE=$site_origin "$@" 9>&-
+}
+
+# The daemon of the stack's person's device, once they logged in, run as their service would
+# run it. tilo starts it only through this account's systemd user unit or launchd agent, which
+# serve this account's own login: their unit would take its place, and with the person's
+# private runtime directory there is no user bus to reach. So the stack runs it, and
+# stop_people_holders stops it with the rest of the stack.
+owner_daemon() {
+  local runtime log=$state/logs/person.log
+  [[ -f $state/owner/home/.local/state/tilo/device/login.json ]] || return 0
+  [[ -z $(people_holders) ]] || return 0
+  runtime=$(dirname "$(find_tilo)")/tilo-runtime
+  [[ -x $runtime ]] || die "no tilo-runtime beside $(find_tilo)"
+  mkdir -p "$state/logs"
+  (owner_run setsid "$runtime" >> "$log" 2>&1 < /dev/null &)
+  for _ in $(seq 1 60); do
+    [[ -z $(people_holders) ]] || return 0
+    sleep 0.5
+  done
+  die "the person's device did not start (stack.sh logs person, or $log)"
 }
 
 # The user public key of the stack's own person, made the first time: the
@@ -1198,7 +1224,9 @@ owner_tilo() {
 # their mail accounts.
 owner_person() {
   stack_person >/dev/null
+  owner_daemon
   (unset TILO_API_KEY && as_owner "$@")
+  owner_daemon
 }
 
 # owner --here [NAME]: the stack's own person, the Lounge's first owner,
@@ -2508,12 +2536,8 @@ down() {
 # that read its person's root hides its environment, so it is known by the lock it holds on
 # its device's holder.lock (/proc/locks names the process).
 stop_people_holders() {
-  local lock inode pid mount pids=()
-  while IFS= read -r lock; do
-    inode=$(stat -c %i "$lock" 2>/dev/null) || continue
-    while read -r pid; do pids+=("$pid"); done \
-      < <(awk -v inode="$inode" '{ split($6, at, ":"); if (at[3] == inode) print $5 }' /proc/locks)
-  done < <(find "$state" -xdev -name holder.lock 2>/dev/null)
+  local pid mount pids=()
+  while read -r pid; do pids+=("$pid"); done < <(people_holders)
   ((${#pids[@]})) && kill "${pids[@]}" 2>/dev/null
   for pid in "${pids[@]}"; do
     for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
@@ -2524,6 +2548,15 @@ stop_people_holders() {
     [[ $mount == "$state"/* ]] || continue
     fusermount3 -u "$mount" 2>/dev/null || fusermount -u "$mount" 2>/dev/null || true
   done < /proc/self/mounts
+}
+
+# The processes holding a device's holder.lock under the stack's state, one per line.
+people_holders() {
+  local lock inode
+  while IFS= read -r lock; do
+    inode=$(stat -c %i "$lock" 2>/dev/null) || continue
+    awk -v inode="$inode" '{ split($6, at, ":"); if (at[3] == inode) print $5 }' /proc/locks
+  done < <(find "$state" -xdev -name holder.lock 2>/dev/null)
 }
 
 # host_keeps_no_vault: whether the server of the stack that is up keeps no
