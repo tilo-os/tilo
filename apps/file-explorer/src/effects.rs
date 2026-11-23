@@ -265,6 +265,62 @@ pub enum FilesEffect {
         #[param("The application to open it with")]
         app: String,
     },
+    /// Browse a provider folder without mounting it.
+    #[effect(view)]
+    #[effect(icon = "cloud")]
+    #[effect(audience = "agents")]
+    #[effect(on = crate::row_types::CloudEntry)]
+    BrowseCloud {
+        account: String,
+        folder: Option<String>,
+    },
+    /// Load the next page of cloud entries.
+    #[effect(view)]
+    #[effect(icon = "more-horizontal")]
+    MoreCloud,
+    /// Toggle a cloud entry in the selection.
+    #[effect(view)]
+    #[effect(icon = "check")]
+    #[effect(audience = "agents")]
+    #[effect(on = crate::row_types::CloudEntry)]
+    SelectCloud { entry: String },
+    /// Import selected files and folders to an explicit folder, or choose one.
+    #[effect(view)]
+    #[effect(icon = "cloud-download")]
+    ImportCloud { folder: Option<String> },
+    /// Observe enumeration, export and copy progress.
+    #[effect(kind = "read", returns)]
+    #[effect(icon = "hourglass")]
+    #[effect(audience = "agents")]
+    CloudProgress,
+    #[effect(label = "files-cloud-cancel", view)]
+    #[effect(icon = "x")]
+    CancelCloud,
+    #[effect(label = "files-cloud-retry", view)]
+    #[effect(icon = "refresh")]
+    RetryCloud,
+    /// Show the destination folder.
+    #[effect(view)]
+    #[effect(icon = "folder-open")]
+    RevealCloud,
+    /// Create an independent editable copy of a converted native document.
+    #[effect(kind = "outside")]
+    #[effect(row)]
+    #[effect(on = crate::row_types::Entry, on = crate::row_types::Document)]
+    ImportConverted {
+        #[param("The converted entry's published row id")]
+        entry: String,
+    },
+    #[effect(kind = "outside")]
+    #[effect(row, job)]
+    #[effect(label = "files-import-once")]
+    #[effect(on = crate::row_types::Entry, on = crate::row_types::Document)]
+    ImportOnce {
+        #[param("The cloud entry's published row id")]
+        entry: String,
+        #[param("Absolute path of an existing local destination folder")]
+        folder: AbsolutePath,
+    },
     #[effect(kind = "outside")]
     #[effect(row, job)]
     #[effect(icon = "copy")]

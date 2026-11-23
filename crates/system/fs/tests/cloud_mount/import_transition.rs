@@ -65,15 +65,23 @@ fn prepare(service: &mut CloudService) -> String {
     }
 }
 
-fn mode(root: &Path, mode: FilesMode) {
-    let mut store = accounts::AccountStore::load_in(root);
-    let mut account = store
-        .get(&accounts::AccountId::from("files-1"))
-        .unwrap()
-        .clone();
+/// The account `serve` keeps for `server`, as the session tells it.
+fn files_account(server: &FakeDav) -> accounts::Account {
+    let mut account = accounts::Account::new("files-1", "webdav");
+    account.display_name = "Work files".into();
+    account.config = server.account_config();
+    account
+}
+
+/// Keep `account` as the session tells the service's accounts.
+fn keep(root: &Path, account: accounts::Account) {
+    session(root).keep_account(account);
+}
+
+fn mode(root: &Path, server: &FakeDav, mode: FilesMode) {
+    let mut account = files_account(server);
     set_files_mode(&mut account.config, mode);
-    store.upsert(account);
-    store.save_in(root).unwrap();
+    keep(root, account);
 }
 
 tilo_test_env::scenario! {
@@ -84,15 +92,10 @@ tilo_test_env::scenario! {
         let server = FakeDav::generic();
         server.put("a.txt", b"original");
         let mut account = serve(&server);
-        let mut store = accounts::AccountStore::load_in(account.config_root.path());
-        let original = store
-            .get(&accounts::AccountId::from("files-1"))
-            .unwrap()
-            .clone();
+        let original = files_account(&server);
         let mut changed = original.clone();
         changed.config["server_url"] = "https://changed.example/".into();
-        store.upsert(changed);
-        store.save_in(account.config_root.path()).unwrap();
+        keep(account.config_root.path(), changed);
         assert!(matches!(
             account.service.request(
                 CloudRequest::PrepareImport {
@@ -108,8 +111,7 @@ tilo_test_env::scenario! {
         account.volume.release(writer).unwrap();
         account.volume.upload_pending().unwrap();
         assert_eq!(server.get("a.txt").unwrap(), b"retained");
-        store.upsert(original);
-        store.save_in(account.config_root.path()).unwrap();
+        keep(account.config_root.path(), original);
         account.service.shutdown();
     }
 
@@ -201,7 +203,7 @@ tilo_test_env::scenario! {
             account.service.mounted().is_empty(),
             "reconcile remounted a held account"
         );
-        mode(account.config_root.path(), FilesMode::Import);
+        mode(account.config_root.path(), &server, FilesMode::Import);
         account.service.reconcile();
         assert!(account.service.mounted().is_empty());
         assert!(account.home.path().join("state").exists());
@@ -215,7 +217,7 @@ tilo_test_env::scenario! {
             ),
             CloudResponse::Done
         );
-        mode(account.config_root.path(), FilesMode::Sync);
+        mode(account.config_root.path(), &server, FilesMode::Sync);
         account.service.reconcile();
         assert_eq!(account.service.mounted().len(), 1);
         account.service.shutdown();
@@ -257,7 +259,7 @@ tilo_test_env::scenario! {
                 CloudResponse::Error(_)
             ));
             if saved {
-                mode(account.config_root.path(), FilesMode::Import);
+                mode(account.config_root.path(), &server, FilesMode::Import);
             }
             drop(writer);
             assert_eq!(
@@ -295,14 +297,9 @@ tilo_test_env::scenario! {
             ),
             CloudResponse::Error(_)
         ));
-        let mut store = accounts::AccountStore::load_in(account.config_root.path());
-        let mut config = store
-            .get(&accounts::AccountId::from("files-1"))
-            .unwrap()
-            .clone();
-        config.display_name = "Changed".into();
-        store.upsert(config);
-        store.save_in(account.config_root.path()).unwrap();
+        let mut changed = files_account(&server);
+        changed.display_name = "Changed".into();
+        keep(account.config_root.path(), changed);
         assert!(matches!(
             account.service.request(
                 CloudRequest::BeginCommitImport {
@@ -357,23 +354,6 @@ fn failed_metadata_save_abort_restores_prior_pause_and_sync_state() {
             ),
             CloudResponse::Done
         );
-        let root = account.config_root.path();
-        let mut store = accounts::AccountStore::load_in(root);
-        let mut changed = store
-            .get(&accounts::AccountId::from("files-1"))
-            .unwrap()
-            .clone();
-        set_files_mode(&mut changed.config, FilesMode::Import);
-        store.upsert(changed);
-        // Force the production atomic account-store writer to fail at rename.
-        // Restore the original metadata before asking the service to roll back.
-        let metadata = accounts::store_path_in(root);
-        let backup = metadata.with_extension("backup");
-        std::fs::rename(&metadata, &backup).unwrap();
-        std::fs::create_dir(&metadata).unwrap();
-        assert!(store.save_in(root).is_err());
-        std::fs::remove_dir(&metadata).unwrap();
-        std::fs::rename(backup, metadata).unwrap();
         assert_eq!(
             account.service.request(
                 CloudRequest::AbortImport {

@@ -30,6 +30,10 @@ pub mod bindings;
 #[cfg(feature = "desktop")]
 pub mod breadcrumbs;
 #[cfg(feature = "desktop")]
+mod cloud_jobs;
+#[cfg(feature = "desktop")]
+mod cloud_transfer;
+#[cfg(feature = "desktop")]
 pub mod command;
 #[cfg(feature = "desktop")]
 pub mod config;

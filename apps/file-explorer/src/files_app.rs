@@ -30,16 +30,20 @@ use ui::time::{Duration, Instant};
 use ui::widget::DrawChild;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{AppModel, ModelPath};
-use ui::widget::{Column, EmptyState, NavShell, ScrollAxis, Scrollable, Stack, TextInput, Widget};
+use ui::widget::{
+    Button, Column, EmptyState, NavShell, ScrollAxis, Scrollable, Stack, TextInput, Widget,
+};
 use vello::kurbo::Point;
 use vello::peniko::ImageData as PenikoImage;
 
 mod applications;
 mod clipboard_client;
+mod cloud_browse;
 mod cloud_status;
 mod drives;
 mod entry_rows;
 mod live_row_status;
+mod mounted_cloud;
 mod window;
 mod window_bar;
 pub use clipboard_client::Receipt as ClipboardReceipt;
@@ -240,6 +244,9 @@ fn remote_folder_availability(account: &crate::remote_accounts::RemoteAccount) -
             code: "account_disabled".into(),
             reason: account.health.unavailable_reason().into(),
         };
+    }
+    if account.is_import() {
+        return Availability::Available;
     }
     if !account.mount.as_deref().is_some_and(Path::is_dir) {
         return Availability::Unavailable {
@@ -553,6 +560,10 @@ pub struct FilesState {
     /// The cloud service's last report, applied to the accounts the record holds.
     cloud_mounts: Vec<tilo_cloud_files::cloud::CloudMount>,
     accounts_cache: Vec<crate::remote_accounts::RemoteAccount>,
+    cloud: cloud_browse::CloudView,
+    #[cfg(test)]
+    cloud_fixture_consent: bool,
+    mounted_cloud: mounted_cloud::MountedCloud,
     drives: drives::Drives,
     applications: applications::Applications,
     process_intent: Option<ui::widget::AppProcessIntent>,
@@ -892,6 +903,10 @@ impl FileExplorerWidget {
             cloud_status: None,
             cloud_mounts: Vec::new(),
             accounts_cache: Vec::new(),
+            cloud: cloud_browse::CloudView::default(),
+            #[cfg(test)]
+            cloud_fixture_consent: false,
+            mounted_cloud: mounted_cloud::MountedCloud::default(),
             drives: drives::Drives::default(),
             applications: applications::Applications::default(),
             process_intent: None,
@@ -951,6 +966,10 @@ impl FilesState {
         follow: OpFollowUp,
     ) -> Option<crate::file_ops::Outcome> {
         self.retire_stale_undo_notice();
+        if let crate::file_ops::FileOp::CloudImport { job_id, .. } = &op {
+            crate::cloud_jobs::register(job_id);
+            self.cloud.job_id = Some(job_id.clone());
+        }
         if let (Some(dispatcher), Some(device)) = (&self.dispatcher, &self.device)
             && let Some(queueing) = crate::resource::FileExplorer::queueing(device, op.clone())
         {
@@ -959,6 +978,32 @@ impl FilesState {
             return None;
         }
         let id = uuid::Uuid::new_v4().to_string();
+        if matches!(op, crate::file_ops::FileOp::CloudImport { .. }) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            // Issue and consume on the checked host thread, not in the worker.
+            // An unhosted widget alone supplies no authority to read cloud bytes.
+            let device = self.device.as_deref().unwrap_or("unhosted");
+            let consent = crate::cloud_jobs::approve(device, &op, &id)
+                .and_then(|()| crate::cloud_jobs::consume(device, &op, &id));
+            #[cfg(test)]
+            let consent = if self.cloud_fixture_consent {
+                Ok(crate::cloud_jobs::fixture_consent(&op))
+            } else {
+                consent
+            };
+            self.cloud.transfer = Some((id, rx));
+            std::thread::spawn(move || {
+                let outcome = match consent {
+                    Ok(consent) => crate::cloud_jobs::run(&op, consent),
+                    Err(reason) => ui::tilo_resource::Settled::Failed {
+                        reason,
+                        partial: vec![],
+                    },
+                };
+                let _ = tx.send(outcome);
+            });
+            return None;
+        }
         let reverting = match &op {
             crate::file_ops::FileOp::Revert { op } => self
                 .local_outcomes
@@ -993,6 +1038,9 @@ impl FilesState {
                 .position(|(op, _)| *op == entry.value.op)
             {
                 let (op, follow) = self.awaiting_ops.remove(at);
+                if matches!(op, crate::file_ops::FileOp::CloudImport { .. }) {
+                    self.cloud_finished(outcome);
+                }
                 self.settle_op(follow, outcome);
                 self.answer_op(&op, outcome);
             } else {
@@ -1500,6 +1548,7 @@ impl FilesState {
         account: &crate::remote_accounts::RemoteAccount,
         reauthenticate: bool,
     ) {
+        self.leave_cloud_browse();
         let service = account.kind.label().to_string();
         let (title, lines, action) = if reauthenticate {
             (
@@ -1549,6 +1598,12 @@ impl FilesState {
         };
         let reauthenticate =
             account.health == crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication;
+        if account.is_import() {
+            if let Err(error) = self.browse_cloud(id.to_owned(), None, 0) {
+                self.set_external_status(error);
+            }
+            return true;
+        }
         match (&account.mount, remote_folder_availability(&account)) {
             (Some(mount), Availability::Available) => {
                 self.close_collab_panel();
@@ -1974,6 +2029,22 @@ impl FilesState {
                 self.invoke_open_with(&entry, &app)?;
                 None
             }
+            effect @ (FilesEffect::BrowseCloud { .. }
+            | FilesEffect::MoreCloud
+            | FilesEffect::SelectCloud { .. }
+            | FilesEffect::ImportCloud { .. }
+            | FilesEffect::CloudProgress
+            | FilesEffect::CancelCloud
+            | FilesEffect::RetryCloud
+            | FilesEffect::RevealCloud) => self.cloud_effect(effect)?,
+            FilesEffect::ImportConverted { entry } => {
+                self.choose_mounted_import(entry)?;
+                None
+            }
+            FilesEffect::ImportOnce { entry, folder } => {
+                let queued = self.import_once(&entry, &folder)?;
+                return Ok(self.answer_when_settled(queued));
+            }
             FilesEffect::CopyTo { entry, folder } => {
                 let queued = self.copy_into_folder(&entry, &folder)?;
                 return Ok(self.answer_when_settled(queued));
@@ -2153,6 +2224,10 @@ impl FilesState {
             }
             FilesEffect::OpenAccount { account } => {
                 let account = self.account_named(&account)?;
+                if account.is_import() {
+                    self.browse_cloud(account.id.to_string(), None, 0)?;
+                    return Ok(Ran::Done(None));
+                }
                 match (&account.mount, remote_folder_availability(&account)) {
                     (Some(mount), Availability::Available) => self.open_path(mount.clone()),
                     _ => self.show_remote_account_panel(&account, false),
@@ -2222,6 +2297,7 @@ impl FilesState {
         match self.answering_op.take() {
             Some(op) => {
                 if let crate::file_ops::FileOp::Copy { paths, folder }
+                | crate::file_ops::FileOp::ImportMounted { paths, folder }
                 | crate::file_ops::FileOp::Move { paths, folder, .. } = &op
                 {
                     let shown = Path::new(folder).file_name().map_or_else(
@@ -2305,6 +2381,62 @@ impl FilesState {
     fn account_named(&self, id: &str) -> Result<crate::remote_accounts::RemoteAccount, String> {
         self.remote_account(id)
             .ok_or_else(|| "remote account is no longer available".to_string())
+    }
+
+    fn importable_cloud_entry(&self, path: &Path) -> bool {
+        entry_rows::importable_under(path, &self.import_mounts())
+    }
+
+    fn import_mounts(&self) -> Vec<PathBuf> {
+        self.remote_account_snapshot()
+            .into_iter()
+            .filter(|account| {
+                matches!(
+                    account.kind,
+                    crate::remote_accounts::RemoteAccountKind::GoogleDrive
+                        | crate::remote_accounts::RemoteAccountKind::Dropbox
+                ) && !account.is_import()
+                    && account.health != crate::remote_accounts::RemoteAccountHealth::Disabled
+            })
+            .filter_map(|account| account.mount)
+            .collect()
+    }
+
+    fn import_once(
+        &mut self,
+        entry: &str,
+        folder: &Path,
+    ) -> Result<Option<crate::file_ops::FileOp>, String> {
+        let source = self
+            .visible_entry_path(entry)
+            .ok_or_else(|| "file entry is no longer visible".to_string())?;
+        if !self.importable_cloud_entry(&source) {
+            return Err(t("files-import-source-unavailable"));
+        }
+        if !folder.is_dir() {
+            return Err(crate::i18n::CATALOG.t_args(
+                "files-folder-missing",
+                &[(
+                    "path",
+                    ui::i18n::ArgValue::Text(folder.display().to_string()),
+                )],
+            ));
+        }
+        let destination = std::fs::canonicalize(folder).map_err(|e| e.to_string())?;
+        if self
+            .remote_account_snapshot()
+            .iter()
+            .filter_map(|account| account.mount.as_ref())
+            .any(|mount| {
+                std::fs::canonicalize(mount).is_ok_and(|mount| destination.starts_with(mount))
+            })
+        {
+            return Err(t("files-import-local-destination"));
+        }
+        self.queue_copy(crate::file_ops::FileOp::ImportMounted {
+            paths: vec![source.display().to_string()],
+            folder: destination.display().to_string(),
+        })
     }
 
     fn copy_into_folder(
@@ -2466,6 +2598,7 @@ impl FilesState {
 
     fn current_places(&self) -> Places {
         Places::new(&self.favs, self.current_path.clone())
+            .with_active_account(self.cloud.active.then(|| self.cloud.account.clone()))
             .with_workspaces(self.workspace_roots.clone())
             .with_remote_accounts(
                 self.remote_account_snapshot()
@@ -2518,6 +2651,9 @@ impl FilesState {
     }
 
     fn build_content_pane(&self, theme: &ui::Theme) -> Box<dyn Widget> {
+        if self.cloud.active {
+            return self.build_cloud_pane(theme);
+        }
         let sp = &theme.tokens.spacing;
         if let Some((title, detail, can_retry)) = self.state_surface_copy() {
             return Box::new(if can_retry {
@@ -2573,8 +2709,26 @@ impl FilesState {
     }
 
     fn footer_label(&self) -> String {
+        if self.cloud.active {
+            return t_args(
+                "files-item-count",
+                &[arg("count", i64_of_usize(self.cloud.entries.len()))],
+            );
+        }
         if self.error.is_some() || self.is_loading {
             return String::new();
+        }
+        if let Some(description) = self
+            .selection
+            .primary()
+            .and_then(|index| {
+                self.displayed_entries()
+                    .get(index)
+                    .map(|entry| entry.path.clone())
+            })
+            .and_then(|path| self.converted_description(&path))
+        {
+            return description;
         }
         let count = self.entries.len();
         let left = self
@@ -2620,6 +2774,9 @@ impl FilesState {
     }
 
     fn state_surface_copy(&self) -> Option<(String, String, bool)> {
+        if self.cloud.active {
+            return None;
+        }
         let location = Self::bounded_state_text(
             &crate::model::format_path(&self.current_path, self.home_path.as_deref()),
             STATE_SURFACE_LOCATION_CHARS,
@@ -2790,6 +2947,9 @@ impl FilesState {
     }
 
     fn accessibility_status(&self) -> String {
+        if self.cloud.active {
+            return self.footer_label();
+        }
         if let Some(panel) = &self.collab_panel {
             let details = panel.lines.join(". ");
             return t_args(
@@ -2934,7 +3094,9 @@ impl FilesState {
     }
 
     pub fn refresh(&mut self) {
-        self.load(self.current_path.clone());
+        if !self.cloud.active {
+            self.load(self.current_path.clone());
+        }
     }
 
     fn refresh_metadata_if_due(&mut self, now: Instant) -> bool {
@@ -3761,6 +3923,10 @@ impl FilesState {
             }
             FileCommand::RestoreFromTrash => self.request_restore_from_trash(),
             FileCommand::EmptyTrash => self.request_empty_trash_confirmation(),
+            FileCommand::Cloud(effect) => {
+                self.perform(effect);
+                true
+            }
             FileCommand::Copy => self.apply_copy(),
             FileCommand::Cut => self.apply_cut(),
             FileCommand::Paste => {
@@ -4146,7 +4312,9 @@ impl FilesState {
         match templates::create_from_template(template, &self.current_path) {
             Ok(path) => {
                 self.note_recent(&path, crate::recent::RecentUse::Changed);
-                self.load_then(self.current_path.clone(), Then::Rename(path));
+                if !self.cloud.active {
+                    self.load_then(self.current_path.clone(), Then::Rename(path));
+                }
                 self.status = Some(t("files-created-file"));
                 Ok(())
             }
@@ -4588,10 +4756,12 @@ impl FilesState {
                     label: "Personal cloud".into(),
                     host: "cloud.example".into(),
                     health: crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
+                    files_mode: accounts::cloud_types::FilesMode::Sync,
                     mount: None,
                 };
                 self.show_remote_account_panel(&account, true);
             }
+            Some("cloud-folder") => self.debug_show_cloud_folder(),
             Some("drives") => self.debug_show_sample_drives(),
             Some(name @ ("applications" | "applications-menu")) => {
                 self.debug_show_sample_applications();
@@ -4765,6 +4935,7 @@ impl FilesState {
                 "This folder has no parent",
             ));
         }
+        statuses.extend(self.cloud_statuses());
         if !self.is_trash_view() {
             statuses.push(ui::framework::EffectStatus::unavailable(
                 FilesEffect::EMPTY_TRASH,
@@ -7006,6 +7177,9 @@ impl FilesState {
     fn live_other_resources(&self) -> Vec<LiveRow> {
         let mut extras = self.live_remote_account_resources();
         extras.extend(self.live_drive_resources());
+        if ui::bound_dispatch::local_person_invocation_permitted() {
+            extras.extend(self.cloud_resources());
+        }
         extras.extend(self.nearby_receiver_rows());
         if let Some((failure, _)) = self.folder_failure() {
             extras.push(retry_row(failure.may_pass()));
@@ -7343,6 +7517,8 @@ impl FilesState {
             | listed
             | self.adopt_person_accounts()
             | self.adopt_cloud_status()
+            | self.poll_cloud()
+            | self.poll_mounted_cloud()
             | self.poll_drives()
             | self.poll_applications(ui::time::now())
     }
@@ -7355,6 +7531,8 @@ impl FilesState {
         if self.sync_window_toolbar(chrome) {
             self.structure_dirty = true;
         }
+        self.poll_cloud();
+        self.poll_mounted_cloud();
         self.take_incoming_drop();
         self.refresh_framework_history_target();
         self.refresh_metadata_if_due(ui::time::now());

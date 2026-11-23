@@ -1663,7 +1663,113 @@ mod command_path_tests {
     }
 
     tilo_test_env::scenario! {
-        fn nearby_sharing_and_history_commands_stay_governed;
+        fn cloud_nearby_sharing_and_history_commands_take_their_actions;
+
+        phase one_time_cloud_import_is_an_independent_copy_through_the_action_api;
+        {
+            for kind in [
+                crate::remote_accounts::RemoteAccountKind::Dropbox,
+                crate::remote_accounts::RemoteAccountKind::GoogleDrive,
+            ] {
+                one_time_cloud_import_for_kind(kind);
+            }
+        }
+
+        phase cloud_import_retains_local_destination_after_alias_changes;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let mount = home.path().join("Cloud");
+            let destination = home.path().join("Downloads");
+            let alias = home.path().join("destination-alias");
+            std::fs::create_dir(&mount).unwrap();
+            std::fs::create_dir(&destination).unwrap();
+            std::fs::write(mount.join("document.txt"), b"remote bytes").unwrap();
+            std::os::unix::fs::symlink(&destination, &alias).unwrap();
+            let mut account = remote_account(
+                crate::remote_accounts::RemoteAccountHealth::Healthy,
+                Some(mount.clone()),
+            );
+            account.kind = crate::remote_accounts::RemoteAccountKind::Dropbox;
+            let mut app =
+                ui::prelude::TestApp::<crate::FileExplorerShell>::launched(&[mount.to_str().unwrap()])
+                    .unwrap();
+            let row = app
+                .with_surface(|files: &mut FileExplorerWidget| {
+                    files.state().home_path = Some(home.path().to_path_buf());
+                    files.state().startup_accounts = Some(vec![account]);
+                    files.state().navigate(mount.clone());
+                    files.state().dispatcher = Some(ui::framework::testing::dispatcher::<
+                        crate::resource::FileExplorer,
+                    >("files"));
+                    files
+                        .state()
+                        .published_rows()
+                        .into_iter()
+                        .find(|row| row.label == "document.txt")
+                        .unwrap()
+                })
+                .unwrap();
+            app.call_on(
+                row.id.as_str(),
+                "import-once",
+                serde_json::json!({"folder": alias}),
+            )
+            .unwrap();
+            assert!(!destination.join("document.txt").exists());
+            let op = app
+                .with_surface(|files: &mut FileExplorerWidget| {
+                    assert_eq!(files.state().awaiting_ops.len(), 1);
+                    files.state().awaiting_ops[0].0.clone()
+                })
+                .unwrap();
+            std::fs::remove_file(&alias).unwrap();
+            std::os::unix::fs::symlink(&mount, &alias).unwrap();
+            app.invoke(crate::resource::FileExplorer::queueing("test-device", op).unwrap())
+                .unwrap();
+            tilo_test_env::wait_until("the queued operation to settle", || {
+                app.settle();
+                app.state().ops.pending().next().is_none()
+            });
+            let state = app.state();
+            let outcome = state
+                .ops
+                .entries()
+                .next()
+                .unwrap()
+                .1
+                .settled
+                .as_ref()
+                .unwrap();
+            assert!(
+                matches!(outcome, ui::tilo_resource::Settled::Done(_)),
+                "{outcome:?}"
+            );
+            assert_eq!(
+                std::fs::read(destination.join("document.txt")).unwrap(),
+                b"remote bytes"
+            );
+            assert!(!mount.join("document 2.txt").exists());
+            std::fs::write(mount.join("document.txt"), b"remote edit").unwrap();
+            assert_eq!(
+                std::fs::read(destination.join("document.txt")).unwrap(),
+                b"remote bytes"
+            );
+            std::fs::write(destination.join("document.txt"), b"local edit").unwrap();
+            assert_eq!(
+                std::fs::read(mount.join("document.txt")).unwrap(),
+                b"remote edit"
+            );
+
+            assert!(
+                app.call_on(
+                    row.id.as_str(),
+                    "import-once",
+                    serde_json::json!({"folder": "."})
+                )
+                .is_err()
+            );
+            assert_eq!(app.state().ops.entries().count(), 1);
+        }
 
         phase a_cloud_account_needing_sign_in_is_visible_and_says_what_to_do;
         {
@@ -1880,6 +1986,104 @@ mod command_path_tests {
         }
     }
 
+    fn one_time_cloud_import_for_kind(kind: crate::remote_accounts::RemoteAccountKind) {
+        let home = tempfile::tempdir().unwrap();
+        let mount = home.path().join("Remote/Cloud");
+        let destination = home.path().join("Downloads");
+        std::fs::create_dir_all(&mount).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::create_dir(mount.join("Folder")).unwrap();
+        std::fs::write(mount.join("Folder/document.txt"), b"original bytes").unwrap();
+        std::fs::write(
+            mount.join("Folder/document.gdoc"),
+            b"{\"url\":\"https://docs.google.com/document/d/test\"}",
+        )
+        .unwrap();
+        let mut account = remote_account(
+            crate::remote_accounts::RemoteAccountHealth::Healthy,
+            Some(mount.clone()),
+        );
+        account.kind = kind;
+        let mut app =
+            ui::prelude::TestApp::<crate::FileExplorerShell>::launched(&[mount.to_str().unwrap()])
+                .unwrap();
+        let row = app
+            .with_surface(|files: &mut FileExplorerWidget| {
+                files.state().home_path = Some(home.path().to_path_buf());
+                files.state().user_dirs = favorites::UserDirs {
+                    downloads: Some(destination.clone()),
+                    ..Default::default()
+                };
+                files.state().startup_accounts = Some(vec![account]);
+                files.state().navigate(mount.clone());
+                files
+                    .state()
+                    .published_rows()
+                    .into_iter()
+                    .find(|row| row.label == "Folder")
+                    .unwrap()
+            })
+            .unwrap();
+        assert!(row.actions.iter().any(|action| action.id == "import-once"));
+        app.call_on_finished(
+            row.id.as_str(),
+            "import-once",
+            serde_json::json!({"folder": destination}),
+        )
+        .unwrap();
+        assert!(app.state().ops.pending().next().is_none());
+        assert_eq!(
+            std::fs::read(destination.join("Folder/document.txt")).unwrap(),
+            b"original bytes"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("Folder/document.gdoc")).unwrap(),
+            std::fs::read(mount.join("Folder/document.gdoc")).unwrap()
+        );
+        std::fs::write(mount.join("Folder/document.txt"), b"later remote edit").unwrap();
+        assert_eq!(
+            std::fs::read(destination.join("Folder/document.txt")).unwrap(),
+            b"original bytes"
+        );
+        std::fs::write(
+            destination.join("Folder/document.txt"),
+            b"local import edit",
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(mount.join("Folder/document.txt")).unwrap(),
+            b"later remote edit"
+        );
+        app.with_surface(|files: &mut FileExplorerWidget| {
+            let index = files
+                .state()
+                .displayed_entries()
+                .iter()
+                .position(|entry| entry.name == "Folder")
+                .unwrap();
+            files.state().select(Some(index));
+            assert!(
+                files
+                    .state()
+                    .context_menu_spec(&[])
+                    .iter()
+                    .all(|(label, _)| !label.contains("Downloads")),
+                "cloud import never chooses a destination on the person's behalf"
+            );
+        })
+        .unwrap();
+        let link = home.path().join("cloud-link");
+        std::os::unix::fs::symlink(&mount, &link).unwrap();
+        assert!(
+            app.call_on(
+                row.id.as_str(),
+                "import-once",
+                serde_json::json!({"folder": link})
+            )
+            .is_err()
+        );
+    }
+
     fn remote_account(
         health: crate::remote_accounts::RemoteAccountHealth,
         mount: Option<PathBuf>,
@@ -1890,6 +2094,7 @@ mod command_path_tests {
             label: "Cloud".into(),
             host: "cloud.example".into(),
             health,
+            files_mode: accounts::cloud_types::FilesMode::Sync,
             mount,
         }
     }
@@ -4607,6 +4812,7 @@ mod injected_startup_tests {
                 label: "Cloud".into(),
                 host: "cloud.example".into(),
                 health: crate::remote_accounts::RemoteAccountHealth::Offline,
+                files_mode: accounts::cloud_types::FilesMode::Sync,
                 mount: Some(mount.clone()),
             });
         let mut widget =
@@ -4655,6 +4861,7 @@ mod injected_startup_tests {
             label: "Host fixture".to_string(),
             host: "fixture.invalid".to_string(),
             health: crate::remote_accounts::RemoteAccountHealth::Disabled,
+            files_mode: accounts::cloud_types::FilesMode::Sync,
             mount: None,
         };
         let mut inputs = startup(&child);
@@ -5370,6 +5577,9 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+#[path = "oauth_cloud_location_tests.rs"]
+mod oauth_cloud_location_tests;
 
 #[path = "person_accounts_places_tests.rs"]
 mod person_accounts_places_tests;

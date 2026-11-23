@@ -22,6 +22,7 @@ tilo_test_env::scenario! {
             "trash",
             "move",
             "copy-into",
+            "cloud-import",
             "revert",
         ] {
             assert!(ids.contains(&expected), "missing `{expected}`: {ids:?}");
@@ -105,6 +106,7 @@ tilo_test_env::scenario! {
             ("new-folder", "New folder"),
             ("rename", "Rename"),
             ("copy-into", "Copy entries to folder"),
+            ("cloud-import", "Import from account"),
             ("revert", "Take back change"),
         ] {
             assert_eq!(title(id), Some(short), "`{id}` has a short title");
@@ -804,6 +806,802 @@ fn act(app: &mut TestApp<FileExplorerShell>, id: &str, args: &serde_json::Value)
         )
         .unwrap();
     settle_ops(app);
+}
+
+fn import_destination(path: &std::path::Path) -> ImportDestination {
+    ImportDestination {
+        identity: crate::cloud_transfer::pin_destination(
+            &path.display().to_string(),
+            std::iter::empty(),
+        )
+        .unwrap(),
+        path: AbsolutePath::new(path).unwrap(),
+    }
+}
+
+fn nonexistent_import_destination(path: &std::path::Path) -> ImportDestination {
+    ImportDestination {
+        path: AbsolutePath::new(path).unwrap(),
+        identity: serde_json::from_value(serde_json::json!({"device": 0, "inode": 0})).unwrap(),
+    }
+}
+
+fn import_entry() -> tilo_cloud_files::cloud::ImportEntry {
+    tilo_cloud_files::cloud::ImportEntry {
+        id: "remote-document".into(),
+        name: "document.txt".into(),
+        kind: tilo_cloud_files::cloud::ImportKind::File,
+        revision: Some("revision-1".into()),
+        size: Some(12),
+        content_writable: true,
+    }
+}
+
+// Cloud import stages through descriptor-relative paths only Linux provides.
+#[cfg(target_os = "linux")]
+#[test]
+fn cloud_import_queues_on_its_device_and_undo_reverts_its_resource() {
+    // The service socket is this test's alone: other tests run at the same time.
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let mut app = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let socket = tilo_cloud_files::cloud::default_files_socket().unwrap();
+    std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let server = std::thread::spawn(move || {
+        use tilo_cloud_files::cloud::{
+            CLOUD_FRAMING, CloudRequest, CloudResponse, ImportReadState, ImportReply, ImportRequest,
+        };
+        let (mut stream, _) = listener.accept().unwrap();
+        while let Some(CloudRequest::Import { request, .. }) = CLOUD_FRAMING
+            .read_value::<_, CloudRequest>(&mut stream)
+            .unwrap()
+        {
+            let reply = match request {
+                ImportRequest::StartRead { .. } => ImportReply::Preparing {
+                    session: "session".into(),
+                },
+                ImportRequest::ReadStatus { .. } => {
+                    ImportReply::ReadState(ImportReadState::Ready { size: 6 })
+                }
+                ImportRequest::ReadChunk { .. } => ImportReply::Chunk {
+                    bytes: b"import".to_vec(),
+                    eof: true,
+                },
+                ImportRequest::CloseRead { .. } => ImportReply::Closed,
+                ImportRequest::Browse { .. } => panic!("unexpected request"),
+            };
+            CLOUD_FRAMING
+                .write_value(&mut stream, &CloudResponse::Import(reply))
+                .unwrap();
+        }
+        listener
+    });
+    let folder = root.path().display().to_string();
+    let op = FileOp::CloudImport {
+        job_id: uuid::Uuid::new_v4().to_string(),
+        account: "connected-account".into(),
+        entries: vec![import_entry()],
+        destination: crate::cloud_transfer::pin_destination(&folder, std::iter::empty()).unwrap(),
+        folder,
+    };
+    app.invoke(FileExplorer::queueing("laptop", op.clone()).unwrap())
+        .unwrap();
+    app.settle();
+    let listener = server.join().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    tilo_test_env::wait_until("the import to settle", || {
+        app.settle();
+        app.state().ops.pending().next().is_none()
+    });
+    let state = app.state();
+    let (id, entry) = state.ops.entries().next().unwrap();
+    assert_eq!(entry.value.device, "laptop");
+    assert_eq!(entry.value.op, op);
+    let outcome = entry.settled.as_ref().unwrap();
+    assert!(outcome.is_done(), "{outcome:?}");
+    assert!(matches!(
+        outcome.result().as_slice(),
+        [Change::CloudImported { .. }]
+    ));
+    assert_eq!(
+        std::fs::read(root.path().join(import_entry().name)).unwrap(),
+        b"import"
+    );
+    let id = id.as_str().to_owned();
+
+    assert!(app.undo());
+    app.settle();
+    assert!(app.state().ops.entries().any(|(_, entry)| {
+        entry.value.device == "laptop"
+            && entry.value.op == FileOp::Revert { op: id.clone() }
+            && entry.settled.as_ref().is_some_and(Settled::is_done)
+    }));
+    assert!(!root.path().join(import_entry().name).exists());
+
+    assert_cloud_import_history_is_structural(&app, &id, &op, root.path());
+    assert_forged_cloud_jobs_denied(&mut app, op, root.path(), &listener);
+    std::fs::remove_file(socket).unwrap();
+}
+
+fn assert_cloud_import_history_is_structural(
+    app: &TestApp<FileExplorerShell>,
+    entry: &str,
+    op: &FileOp,
+    folder: &std::path::Path,
+) {
+    use ui::tilo_actions::{ActionEnvelope, ActionId, ActionRegistry, ExecutionLocus};
+    use ui::tilo_resource::Resource as _;
+
+    assert!(ui::bound_dispatch::executing_scope().is_none());
+    let mut document = app.peer_document();
+    let recorded = app
+        .versions()
+        .into_iter()
+        .find(|version| {
+            version.context.as_ref().is_some_and(|context| {
+                context.action.as_ref().is_some_and(|action| {
+                    String::from_utf8_lossy(&action.payload).contains("cloud-import")
+                })
+            })
+        })
+        .expect("the admitted import records its production action");
+    let metadata = document
+        .get_change_meta_by_hash(&recorded.hash)
+        .unwrap()
+        .into_owned();
+    let context = recorded.context.unwrap();
+    let encoded = context.action.clone().expect("recorded replay payload");
+    let registry = ActionRegistry::with(ui::tilo_resource::group::register::<FileExplorer>);
+    let envelope = ActionEnvelope {
+        id: ActionId::new(),
+        action: encoded.clone(),
+        base_heads: metadata.deps.iter().map(|head| head.0).collect(),
+        timestamp: metadata.timestamp,
+        locus: ExecutionLocus::ClientLocal,
+        actor: Some(metadata.actor.to_bytes().to_vec()),
+        context: Some(context),
+    };
+    let displaced = folder.with_extension("historical-destination");
+    std::fs::rename(folder, &displaced).unwrap();
+    assert!(
+        !folder.exists(),
+        "history must not need the old destination"
+    );
+
+    let mut base = document.fork_at(&metadata.deps).unwrap();
+    base.set_actor(ui::automerge::ActorId::from(
+        b"other-device-reader".to_vec(),
+    ));
+    let action = registry.decode(&encoded).unwrap();
+    assert!(
+        ui::tilo_actions::executor::inverse_as(
+            &mut base,
+            action.as_ref(),
+            metadata.actor.clone().into_owned(),
+        )
+        .is_some(),
+        "undo preview must evaluate the import without host authority or filesystem IO"
+    );
+    assert!(FileExplorer::read(&base).unwrap().ops.is_empty());
+    let mut peer = Replica::<FileExplorer>::from_doc(base);
+    peer.replay(&envelope).unwrap();
+    assert_eq!(peer.doc_mut().get_heads(), vec![recorded.hash]);
+    let state = peer.state().unwrap();
+    let (replayed_id, task) = state.ops.entries().next().unwrap();
+    assert_eq!(replayed_id.as_str(), entry);
+    assert_eq!(task.value.device, "laptop");
+    assert_eq!(
+        &task.value.op, op,
+        "replay preserves the exact queued task data"
+    );
+    assert_eq!(
+        ui::tilo_actions::executor::verify_change(&mut document, recorded.hash, &registry).unwrap(),
+        ui::tilo_actions::executor::Verified::Reproduced,
+    );
+    let preview = app.past_version(&[recorded.hash]).unwrap();
+    let shown = preview.state();
+    let (_, historical) = shown.ops.entries().next().unwrap();
+    assert_eq!(historical.value, task.value);
+    assert!(historical.settled.is_none());
+    assert!(ui::bound_dispatch::executing_scope().is_none());
+    std::fs::rename(displaced, folder).unwrap();
+}
+
+fn assert_forged_cloud_jobs_denied(
+    app: &mut TestApp<FileExplorerShell>,
+    op: FileOp,
+    root: &std::path::Path,
+    listener: &std::os::unix::net::UnixListener,
+) {
+    let mut changed_account = op.clone();
+    let FileOp::CloudImport { account, .. } = &mut changed_account else {
+        panic!("the admitted job must be a cloud import")
+    };
+    *account = "another-private-account".into();
+    let mut changed_entries = op.clone();
+    let FileOp::CloudImport { entries, .. } = &mut changed_entries else {
+        panic!("the admitted job must be a cloud import")
+    };
+    entries[0].id = "another-private-document".into();
+    let mut changed_job = op.clone();
+    let FileOp::CloudImport { job_id, .. } = &mut changed_job else {
+        panic!("the admitted job must be a cloud import")
+    };
+    *job_id = uuid::Uuid::new_v4().to_string();
+    let admitted_id = app
+        .state()
+        .ops
+        .entries()
+        .find(|(_, entry)| entry.value.op == op)
+        .map(|(id, _)| id.clone())
+        .expect("the original admitted import remains recorded");
+    for (attempt, forged) in [
+        op.clone(),
+        op,
+        changed_account,
+        changed_entries,
+        changed_job,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let forged_id: ui::tilo_resource::Id = if attempt == 0 {
+            admitted_id.clone()
+        } else {
+            uuid::Uuid::new_v4().to_string().into()
+        };
+        let mut ops = app.state().ops;
+        ops.push(
+            forged_id.clone(),
+            FileTask {
+                device: "laptop".into(),
+                op: forged,
+            },
+        );
+        app.merge_peer_edit(|doc| {
+            ui::tilo_resource::model::write_key(doc, &ui::automerge::ROOT, "ops", &ops).unwrap();
+        });
+        app.settle();
+        let state = app.state();
+        let outcome = state.ops.outcome(&forged_id).expect("forged job settled");
+        assert!(
+            matches!(outcome, Settled::Failed { reason, partial }
+                if reason == "cloud import has no unused local approval" && partial.is_empty()),
+            "unapproved outbox entry must fail without local changes: {outcome:?}"
+        );
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "a forged entry must not even connect to the cloud source"
+        );
+        assert_eq!(std::fs::read_dir(root).unwrap().count(), 0);
+        assert!(!root.join(import_entry().name).exists());
+    }
+}
+
+tilo_test_env::scenario! {
+    fn imports_require_host_admission_and_refuse_guests_and_bad_requests;
+
+    phase mounted_import_requires_private_admission_and_copies_editable_outputs;
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("Google.docx");
+        let folder = root.path().join("Copies");
+        std::fs::write(&source, b"native Google view").unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::create_dir(&folder).unwrap();
+        let op = FileOp::ImportMounted {
+            paths: vec![source.display().to_string()],
+            folder: folder.display().to_string(),
+        };
+        let mut app = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
+        let forged_id: Id = "forged-mounted".into();
+        let mut ops = app.state().ops;
+        ops.push(
+            forged_id.clone(),
+            FileTask {
+                device: "laptop".into(),
+                op: op.clone(),
+            },
+        );
+        app.merge_peer_edit(|doc| {
+            ui::tilo_resource::model::write_key(doc, &ui::automerge::ROOT, "ops", &ops).unwrap();
+        });
+        app.settle();
+        assert!(
+            matches!(app.state().ops.outcome(&forged_id), Some(Settled::Failed { partial, .. }) if partial.is_empty())
+        );
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0);
+        assert!(
+            matches!(crate::file_ops::execute(&op, None), Settled::Failed { partial, .. } if partial.is_empty())
+        );
+        app.invoke(FileExplorer::queueing("laptop", op).unwrap())
+            .unwrap();
+        tilo_test_env::wait_until("the Google import to land", || {
+            app.settle();
+            folder.join("Google.docx").exists() && app.state().ops.pending().next().is_none()
+        });
+        assert_eq!(
+            std::fs::read(folder.join("Google.docx")).unwrap(),
+            b"native Google view"
+        );
+        assert_ne!(
+            std::fs::metadata(folder.join("Google.docx"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o200,
+            0
+        );
+        assert_eq!(
+            std::fs::metadata(source).unwrap().permissions().mode() & 0o222,
+            0
+        );
+        assert!(app.undo());
+        app.settle();
+        assert!(!folder.join("Google.docx").exists());
+    }
+
+    phase mounted_import_resource_verifies_offline_without_host_or_source;
+    {
+        use ui::tilo_actions::ActionRegistry;
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.docx");
+        let destination = root.path().join("Copies");
+        std::fs::write(&source, b"private mounted representation").unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        let mut app = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
+        let op = FileOp::ImportMounted {
+            paths: vec![source.display().to_string()],
+            folder: destination.display().to_string(),
+        };
+        app.invoke(FileExplorer::queueing("laptop", op).unwrap())
+            .unwrap();
+        tilo_test_env::wait_until("the queued operation to settle", || {
+            app.settle();
+            app.state().ops.pending().next().is_none()
+        });
+        assert!(
+            app.state()
+                .ops
+                .entries()
+                .next()
+                .unwrap()
+                .1
+                .settled
+                .as_ref()
+                .unwrap()
+                .is_done()
+        );
+        let recorded = app
+            .versions()
+            .into_iter()
+            .find(|version| {
+                version
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.action.as_ref())
+                    .is_some_and(|action| {
+                        String::from_utf8_lossy(&action.payload).contains("import-mounted")
+                    })
+            })
+            .unwrap();
+        root.close().unwrap();
+        assert!(ui::bound_dispatch::executing_scope().is_none());
+        let mut document = app.peer_document();
+        document.set_actor(ui::automerge::ActorId::from(b"other-device".to_vec()));
+        let registry = ActionRegistry::with(ui::tilo_resource::group::register::<FileExplorer>);
+        assert_eq!(
+            ui::tilo_actions::executor::verify_change(&mut document, recorded.hash, &registry).unwrap(),
+            ui::tilo_actions::executor::Verified::Reproduced,
+        );
+        let preview = app.past_version(&[recorded.hash]).unwrap();
+        let state = preview.state();
+        assert_eq!(state.ops.entries().count(), 1);
+        assert!(state.ops.entries().next().unwrap().1.settled.is_none());
+    }
+
+    phase mounted_import_refuses_guest_public_actions;
+    {
+        use ui::permissions::Role;
+        use ui::tilo_actions::ActionInvoker;
+        for role in [Role::Editor, Role::Viewer] {
+            let mut app = TestApp::<FileExplorerShell>::for_person("local-person").unwrap();
+            let result = invoke_confirmed_by(
+                &mut app,
+                role,
+                ActionInvoker::person("guest"),
+                &FileExplorer::IMPORT_MOUNTED.with(file_explorer::ImportMounted {
+                    device: "test-device".into(),
+                    paths: vec!["/private/Google.docx".into()],
+                    folder: "/private/Copies".parse().unwrap(),
+                }),
+            );
+            assert!(result.is_err());
+            app.settle();
+            assert_eq!(app.state().ops.entries().count(), 0);
+        }
+    }
+
+    phase cloud_import_refuses_another_device_before_pinning_the_destination;
+    {
+        let mut app = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("receiving-device-folder");
+        let error = app
+            .invoke(FileExplorer::CLOUD_IMPORT.with(file_explorer::CloudImport {
+                job_id: "remote-import-attempt".into(),
+                device: "phone".into(),
+                account: "connected-account".into(),
+                entries: vec![serde_json::json!(import_entry())],
+                destination: nonexistent_import_destination(&folder),
+            }))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Invoke Files on the receiving device and choose the destination there")
+        );
+        app.settle();
+        assert_eq!(app.state().ops.entries().count(), 0);
+        assert!(!folder.exists());
+    }
+
+    phase cloud_import_without_a_checked_host_binding_fails_closed;
+    {
+        let mut replica = Replica::<FileExplorer>::new();
+        let error = replica
+            .apply(FileExplorer::CLOUD_IMPORT.with(file_explorer::CloudImport {
+                device: "laptop".into(),
+                job_id: "unbound-import".into(),
+                account: "private-account".into(),
+                entries: vec![serde_json::json!(import_entry())],
+                destination: nonexistent_import_destination(std::path::Path::new(
+                    "/not-a-pinned-destination",
+                )),
+            }))
+            .unwrap_err();
+        assert!(error.to_string().contains("host's person"), "{error}");
+        assert_eq!(replica.state().unwrap().ops.entries().count(), 0);
+    }
+
+    phase cloud_guests_cannot_queue_imports_even_with_workspace_ownership;
+    {
+        use ui::permissions::Role;
+        use ui::tilo_actions::ActionInvoker;
+
+        for (actor, role) in [
+            ("guest-owner", Role::Owner),
+            ("guest-editor", Role::Editor),
+            ("guest-viewer", Role::Viewer),
+        ] {
+            let mut app = TestApp::<FileExplorerShell>::for_person("local-person").unwrap();
+            let root = tempfile::tempdir().unwrap();
+            let folder = root.path().join("must-not-be-pinned");
+            let error = invoke_confirmed_by(
+                &mut app,
+                role,
+                ActionInvoker::person(actor),
+                &FileExplorer::CLOUD_IMPORT.with(file_explorer::CloudImport {
+                    device: "test-device".into(),
+                    job_id: format!("{actor}-attempt"),
+                    account: "private-account".into(),
+                    entries: vec![serde_json::json!(import_entry())],
+                    destination: nonexistent_import_destination(&folder),
+                }),
+            )
+            .unwrap_err();
+            if role != Role::Viewer {
+                assert!(
+                    error.to_string().contains("host's person"),
+                    "{actor}: {error}"
+                );
+            }
+            app.settle();
+            assert_eq!(app.state().ops.entries().count(), 0, "{actor}");
+            assert!(!folder.exists(), "{actor}");
+        }
+    }
+
+    phase a_valid_destination_observation_does_not_authorize_a_fresh_guest_import;
+    {
+        let root = tempfile::tempdir().unwrap();
+        let destination = import_destination(root.path());
+        let mut app = TestApp::<FileExplorerShell>::for_person("local-person").unwrap();
+        app.set_role(ui::permissions::Role::Owner);
+        let error = app
+            .call_by(
+                ui::tilo_actions::ActionInvoker::person("guest-owner"),
+                <FileExplorer as ui::tilo_resource::Resource>::KIND,
+                "cloud-import",
+                serde_json::json!({
+                    "device": "test-device",
+                    "job_id": uuid::Uuid::new_v4().to_string(),
+                    "account": "private-account",
+                    "entries": [import_entry()],
+                    "destination": destination,
+                }),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("host's person"), "{error}");
+        app.settle();
+        assert!(app.state().ops.is_empty());
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    phase cloud_effects_refuse_guest_invocations_before_accessing_accounts;
+    {
+        use ui::permissions::Role;
+        use ui::tilo_actions::ActionInvoker;
+
+        for (actor, role) in [
+            ("guest-owner", Role::Owner),
+            ("guest-editor", Role::Editor),
+            ("guest-viewer", Role::Viewer),
+        ] {
+            let mut app = TestApp::<FileExplorerShell>::for_person("local-person").unwrap();
+            app.set_role(role);
+            for effect in [
+                FilesEffect::BrowseCloud {
+                    account: "private-account".into(),
+                    folder: None,
+                },
+                FilesEffect::MoreCloud,
+                FilesEffect::SelectCloud {
+                    entry: "private-entry".into(),
+                },
+                FilesEffect::ImportCloud { folder: None },
+                FilesEffect::CloudProgress,
+                FilesEffect::CancelCloud,
+                FilesEffect::RetryCloud,
+                FilesEffect::RevealCloud,
+            ] {
+                use ui::tilo_resource::Effect as _;
+                let error = app
+                    .call_by(
+                        ActionInvoker::person(actor),
+                        <FileExplorer as ui::tilo_resource::Resource>::KIND,
+                        effect.id(),
+                        serde_json::Value::Object(effect.arguments()),
+                    )
+                    .unwrap_err();
+                if matches!(effect, FilesEffect::CloudProgress) {
+                    assert!(
+                        error.to_string().contains("host's person"),
+                        "{actor}: {effect:?}: {error}"
+                    );
+                } else {
+                    assert!(
+                        matches!(&error, ui::tilo_actions::ApiError::Unavailable { code, .. }
+                            if code == "private_view"),
+                        "{actor}: {effect:?}: {error}"
+                    );
+                }
+                assert_eq!(app.state().ops.entries().count(), 0, "{actor}");
+            }
+        }
+    }
+
+    phase cloud_attribution_and_mutable_authority_do_not_grant_personal_account_access;
+    {
+        use ui::tilo_actions::ActionInvoker;
+        use ui::tilo_resource::Effect as _;
+
+        for invoker in [
+            ActionInvoker::person("guest-owner").acting_for("local-person"),
+            ActionInvoker::agent("guest-agent")
+                .acting_for("local-person"),
+        ] {
+            let mut app = TestApp::<FileExplorerShell>::for_person("local-person").unwrap();
+            app.set_permissions(ui::permissions::PermissionContext::member(
+                invoker.acting.by.member_id().expect("a member acts"),
+                ui::permissions::Role::Owner,
+            ));
+            let root = tempfile::tempdir().unwrap();
+            let folder = root.path().join("must-not-be-pinned");
+            let error = app
+                .call_by(
+                    invoker.clone(),
+                    <FileExplorer as ui::tilo_resource::Resource>::KIND,
+                    "cloud-import",
+                    serde_json::json!({
+                        "device": "test-device",
+                        "job_id": uuid::Uuid::new_v4().to_string(),
+                        "account": "private-account",
+                        "entries": [import_entry()],
+                        "destination": nonexistent_import_destination(&folder),
+                    }),
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("host's person"), "{error}");
+            let effect = FilesEffect::CloudProgress;
+            let error = app
+                .call_by(
+                    invoker,
+                    <FileExplorer as ui::tilo_resource::Resource>::KIND,
+                    effect.id(),
+                    serde_json::Value::Object(effect.arguments()),
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("host's person"), "{error}");
+            app.settle();
+            assert_eq!(app.state().ops.entries().count(), 0);
+            assert!(!folder.exists());
+        }
+    }
+
+    phase workspace_file_actions_remain_available_to_guests;
+    {
+        let mut app = TestApp::<FileExplorerShell>::for_person("local-person").unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        invoke_confirmed_by(
+            &mut app,
+            ui::permissions::Role::Editor,
+            ui::tilo_actions::ActionInvoker::person("guest-editor"),
+            &FileExplorer::NEW_FOLDER.with(file_explorer::NewFolder {
+                device: "test-device".into(),
+                parent: AbsolutePath::new(folder.path()).unwrap(),
+                name: "Shared folder".parse().unwrap(),
+            }),
+        )
+        .unwrap();
+        app.settle();
+        assert!(folder.path().join("Shared folder").is_dir());
+        assert_eq!(app.state().ops.entries().count(), 1);
+    }
+
+    phase cloud_import_destination_rejects_sync_mounts_and_aliases;
+    {
+        let root = tempfile::tempdir().unwrap();
+        let mount = root.path().join("synced");
+        std::fs::create_dir(&mount).unwrap();
+        let child = mount.join("child");
+        std::fs::create_dir(&child).unwrap();
+        for destination in [&mount, &child] {
+            assert!(
+                independent_destination(
+                    destination.to_str().unwrap(),
+                    std::iter::once(mount.as_path()),
+                )
+                .is_err()
+            );
+        }
+        #[cfg(unix)]
+        {
+            let alias = root.path().join("alias");
+            std::os::unix::fs::symlink(&child, &alias).unwrap();
+            assert!(
+                independent_destination(alias.to_str().unwrap(), std::iter::once(mount.as_path()),)
+                    .is_err()
+            );
+        }
+        assert!(
+            independent_destination(
+                root.path().to_str().unwrap(),
+                std::iter::once(mount.as_path()),
+            )
+            .is_ok()
+        );
+    }
+
+    phase cloud_import_refuses_invalid_requests_before_queueing;
+    {
+        let mut app = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let valid = file_explorer::CloudImport {
+            job_id: "import-attempt".into(),
+            device: "laptop".into(),
+            account: "connected-account".into(),
+            entries: vec![serde_json::json!(import_entry())],
+            destination: import_destination(root.path()),
+        };
+        let mut invalid = vec![
+            file_explorer::CloudImport {
+                job_id: String::new(),
+                ..valid.clone()
+            },
+            file_explorer::CloudImport {
+                entries: vec![serde_json::json!({"not": "entries"})],
+                ..valid.clone()
+            },
+            file_explorer::CloudImport {
+                device: String::new(),
+                ..valid.clone()
+            },
+            file_explorer::CloudImport {
+                account: String::new(),
+                ..valid.clone()
+            },
+            file_explorer::CloudImport {
+                entries: vec![],
+                ..valid.clone()
+            },
+            file_explorer::CloudImport {
+                destination: nonexistent_import_destination(root.path()),
+                ..valid.clone()
+            },
+            file_explorer::CloudImport {
+                entries: vec![serde_json::json!(import_entry()); MAX_MOVE_ENTRIES + 1],
+                ..valid.clone()
+            },
+            file_explorer::CloudImport {
+                entries: vec![
+                    serde_json::json!(import_entry()),
+                    serde_json::json!(import_entry()),
+                ],
+                ..valid.clone()
+            },
+        ];
+        for (id, name, kind) in [
+            ("", "file.txt", tilo_cloud_files::cloud::ImportKind::File),
+            (
+                "remote",
+                "../escape",
+                tilo_cloud_files::cloud::ImportKind::File,
+            ),
+            ("remote", "..", tilo_cloud_files::cloud::ImportKind::File),
+            (
+                "remote",
+                "bad\0name",
+                tilo_cloud_files::cloud::ImportKind::File,
+            ),
+            (
+                "remote",
+                "file",
+                tilo_cloud_files::cloud::ImportKind::Unsupported,
+            ),
+        ] {
+            let mut request = valid.clone();
+            let mut entry = import_entry();
+            entry.id = id.into();
+            entry.name = name.into();
+            entry.kind = kind;
+            request.entries = vec![serde_json::json!(entry)];
+            invalid.push(request);
+        }
+        for request in invalid {
+            assert!(
+                app.invoke(FileExplorer::CLOUD_IMPORT.with(request))
+                    .is_err()
+            );
+            assert_eq!(app.state().ops.entries().count(), 0);
+        }
+    }
+}
+
+fn invoke_confirmed_by(
+    app: &mut TestApp<FileExplorerShell>,
+    role: ui::permissions::Role,
+    invoker: ui::tilo_actions::ActionInvoker,
+    invoke: &ui::tilo_resource::Invoke<FileExplorer>,
+) -> Result<(), ui::tilo_actions::ApiError> {
+    if let Some(refusal) = invoke.refusal() {
+        return Err(ui::tilo_actions::ApiError::InvalidArguments(
+            refusal.to_owned(),
+        ));
+    }
+    let address = app
+        .actions()?
+        .into_iter()
+        .find(|action| action.address.action == invoke.id)
+        .ok_or_else(|| {
+            ui::tilo_actions::ApiError::Failed(format!("action {} is not published", invoke.id))
+        })?
+        .address;
+    app.set_role(role);
+    let instance_id = app.harness().component_instance_id().unwrap();
+    app.harness().start_bound_job_for(
+        Some(invoker),
+        &ui::bound_dispatch::BoundActionAddress {
+            instance_id,
+            address,
+        },
+        &invoke.arguments,
+        true,
+    )?;
+    Ok(())
 }
 
 tilo_test_env::scenario! {

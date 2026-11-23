@@ -126,6 +126,34 @@ files-share-opening = Opening the invite sheet…
 files-share-failed = The invite sheet did not open: { $reason }
 files-share-needs-workspace = Only something in a workspace can be shared
 files-select-collaborative-file = Select one collaborative file first
+files-import-once = Import once to local folder…
+files-cloud-title = Cloud files
+files-account-import-only = Import only
+files-cloud-enumerating = Reading folders
+files-cloud-exporting = Exporting document
+files-cloud-copying = Copying
+files-cloud-done = Completed
+files-cloud-cancelled = Cancelled
+files-cloud-failed = Failed
+files-cloud-preparing = Preparing
+files-cloud-independent = Select files or folders, then choose a local destination. Copies are editable and independent; cloud originals stay unchanged.
+files-cloud-root = All files
+files-cloud-converted = Google document. Imports as .docx; conversion can change formatting.
+files-cloud-converted-sheet = Google spreadsheet. Imports as .xlsx; conversion can change formatting.
+files-cloud-converted-slides = Google presentation. Imports as .pptx; conversion can change formatting.
+files-cloud-loading = Reading cloud folder…
+files-cloud-busy = A cloud request is already running.
+files-cloud-invalid-reply = The cloud service returned an unexpected reply.
+files-cloud-select = Select
+files-cloud-more = Load more
+files-cloud-import = Import once…
+files-cloud-destination = Choose a local destination folder
+files-cloud-progress = { $phase }: { $count } files, { $bytes } bytes
+files-cloud-cancel = Cancel import
+files-cloud-retry = Retry failed
+files-cloud-reveal = Show destination
+files-import-source-unavailable = Choose an entry in a mounted Dropbox or Google Drive account.
+files-import-local-destination = One-time import needs a local destination, not a synced cloud folder.
 
 ## History and conflict resolution
 files-version-history = Version history…
@@ -426,6 +454,12 @@ file-explorer-compress = Compressed files into an archive
 files-native-trash-delete-unavailable = These items can be restored. Permanent deletion is unavailable here.
 files-user-trash-unavailable = Your Trash isn’t available in this workspace.
 
+files-mounted-converted = Read-only converted cloud document
+files-mounted-source = { $source }, a read-only converted view
+files-mounted-readonly = Read-only conversion
+files-mounted-open = Open read-only conversion
+files-mounted-copy = Create independent editable copy…
+files-mounted-independent = Edits to an independent local copy do not change the cloud original.
 file-explorer-import-mounted = Created independent editable copies in { $folder }
 
 ## Notices

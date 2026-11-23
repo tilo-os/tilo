@@ -116,6 +116,34 @@ files-share-opening = Einladungsfenster wird geöffnet…
 files-share-failed = Das Einladungsfenster wurde nicht geöffnet: { $reason }
 files-share-needs-workspace = Nur Inhalte in einem Arbeitsbereich lassen sich teilen
 files-select-collaborative-file = Zuerst eine kollaborative Datei auswählen
+files-import-once = Einmalig in lokalen Ordner importieren…
+files-cloud-title = Cloud-Dateien
+files-account-import-only = Nur Import
+files-cloud-enumerating = Ordner werden gelesen
+files-cloud-exporting = Dokument wird exportiert
+files-cloud-copying = Kopieren
+files-cloud-done = Abgeschlossen
+files-cloud-cancelled = Abgebrochen
+files-cloud-failed = Fehlgeschlagen
+files-cloud-preparing = Vorbereitung
+files-cloud-independent = Dateien oder Ordner auswählen, dann einen lokalen Zielordner wählen. Importierte Kopien sind bearbeitbar und unabhängig; Cloud-Originale bleiben unverändert.
+files-cloud-root = Alle Dateien
+files-cloud-converted = Google-Dokument. Wird als .docx importiert; die Konvertierung kann die Formatierung verändern.
+files-cloud-converted-sheet = Google-Tabelle. Wird als .xlsx importiert; die Konvertierung kann die Formatierung verändern.
+files-cloud-converted-slides = Google-Präsentation. Wird als .pptx importiert; die Konvertierung kann die Formatierung verändern.
+files-cloud-loading = Cloud-Ordner wird gelesen…
+files-cloud-busy = Eine Cloud-Anfrage läuft bereits.
+files-cloud-invalid-reply = Der Cloud-Dienst hat eine unerwartete Antwort gesendet.
+files-cloud-select = Auswählen
+files-cloud-more = Weitere laden
+files-cloud-import = Einmal importieren…
+files-cloud-destination = Lokalen Zielordner auswählen
+files-cloud-progress = { $phase }: { $count } Dateien, { $bytes } Bytes
+files-cloud-cancel = Import abbrechen
+files-cloud-retry = Fehlgeschlagene wiederholen
+files-cloud-reveal = Zielordner anzeigen
+files-import-source-unavailable = Wähle einen Eintrag in einem eingehängten Dropbox- oder Google-Drive-Konto.
+files-import-local-destination = Ein einmaliger Import benötigt einen lokalen Zielordner, keinen synchronisierten Cloud-Ordner.
 
 ## Verlauf und Konfliktlösung
 files-version-history = Versionsverlauf…
@@ -425,6 +453,12 @@ file-explorer-compress = Dateien in ein Archiv gepackt
 files-native-trash-delete-unavailable = Diese Objekte können wiederhergestellt werden. Dauerhaftes Löschen ist hier nicht verfügbar.
 files-user-trash-unavailable = Dein Papierkorb ist in diesem Arbeitsbereich nicht verfügbar.
 
+files-mounted-converted = Schreibgeschütztes konvertiertes Cloud-Dokument
+files-mounted-source = { $source }, eine schreibgeschützte konvertierte Ansicht
+files-mounted-readonly = Schreibgeschützt konvertiert
+files-mounted-open = Schreibgeschützte Konvertierung öffnen
+files-mounted-copy = Unabhängige bearbeitbare Kopie erstellen…
+files-mounted-independent = Änderungen an einer unabhängigen lokalen Kopie ändern das Cloud-Original nicht.
 file-explorer-import-mounted = Unabhängige bearbeitbare Kopien in { $folder } erstellt
 
 ## Hinweise

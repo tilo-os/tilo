@@ -250,12 +250,19 @@ impl super::FilesState {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn read_directory(&self, path: &Path) -> Result<Vec<Entry>, String> {
+        let job = self.folder_job(path.to_path_buf(), true);
+        read_entries(&job.path, &job.source)
+    }
+
     pub(super) fn load(&mut self, path: PathBuf) {
         self.load_then(path, Then::Nothing);
     }
 
     pub(super) fn load_then(&mut self, path: PathBuf, then: Then) {
         let path = self.place_of(path);
+        self.leave_cloud_browse();
         self.typing.reset();
         self.selection.clear();
         self.retain_shown_selection();

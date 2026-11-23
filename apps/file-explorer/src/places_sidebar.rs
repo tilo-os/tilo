@@ -93,6 +93,7 @@ pub struct Places {
     locations: Vec<Location>,
     drives: Vec<DrivePlace>,
     active: PathBuf,
+    active_account: Option<String>,
 }
 
 impl Places {
@@ -134,6 +135,7 @@ impl Places {
             locations,
             drives: Vec::new(),
             active,
+            active_account: None,
         }
     }
 
@@ -183,7 +185,20 @@ impl Places {
         self
     }
 
+    #[must_use]
+    pub fn with_active_account(mut self, account: Option<String>) -> Self {
+        self.active_account = account;
+        self
+    }
+
     pub fn selected_id(&self) -> Option<String> {
+        if let Some(account) = &self.active_account {
+            return self
+                .locations
+                .iter()
+                .find(|place| place.account.as_ref() == Some(account))
+                .map(|_| account_id(account));
+        }
         self.favorites
             .iter()
             .find(|favorite| favorite.path == self.active)
@@ -241,6 +256,7 @@ impl Places {
                     None => item,
                     Some(status) => {
                         let dot = match status {
+                            status if status == t("files-account-import-only") => RowStatus::Idle,
                             "Offline" => RowStatus::Idle,
                             "Syncing" => RowStatus::Active,
                             _ => RowStatus::Warning,
@@ -401,13 +417,13 @@ mod tests {
             assert_eq!(sections[0].id, LOCATIONS_SECTION);
         }
 
-        phase unmounted_account_has_a_navigation_row;
+        phase unmounted_import_account_has_an_account_navigation_row;
         {
             let places =
                 Places::new(&new_store(Vec::new()), PathBuf::from("/")).with_remote_accounts(vec![
                     AccountPlace {
-                        id: "unmounted-cloud".into(),
-                        label: "Cloud files".into(),
+                        id: "import-cloud".into(),
+                        label: "Import cloud".into(),
                         mount: None,
                         status: None,
                     },
@@ -416,10 +432,30 @@ mod tests {
             let row = sections
                 .iter()
                 .flat_map(|section| &section.items)
-                .find(|item| item.id == "account:unmounted-cloud")
-                .expect("an account without a mount stays navigable");
+                .find(|item| item.id == "account:import-cloud")
+                .expect("imports remain navigable without a mount");
             assert!(row.status.is_none());
             assert!(path_of_id(&row.id).is_none());
+        }
+
+        phase import_browser_selects_account_instead_of_home;
+        {
+            let store = new_store(vec![favorite("Home", "/home/u", FavKind::Home)]);
+            let places = Places::new(&store, PathBuf::from("/home/u")).with_remote_accounts(vec![
+                AccountPlace {
+                    id: "drive".into(),
+                    label: "Google Drive".into(),
+                    mount: None,
+                    status: None,
+                },
+            ]);
+            assert_eq!(places.selected_id().as_deref(), Some("fav:/home/u"));
+            let places = places.with_active_account(Some("drive".into()));
+            assert_eq!(places.selected_id().as_deref(), Some("account:drive"));
+            assert_eq!(
+                places.with_active_account(None).selected_id().as_deref(),
+                Some("fav:/home/u")
+            );
         }
 
         phase synced_account_keeps_its_folder_selection;
@@ -427,7 +463,7 @@ mod tests {
             let places = Places::new(&new_store(Vec::new()), PathBuf::from("/home/u/Drive"))
                 .with_remote_accounts(vec![AccountPlace {
                     id: "drive".into(),
-                    label: "Cloud files".into(),
+                    label: "Google Drive".into(),
                     mount: Some(PathBuf::from("/home/u/Drive")),
                     status: None,
                 }]);

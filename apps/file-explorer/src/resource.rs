@@ -81,6 +81,33 @@ impl Bookmark {
 
 tilo_resource::json_model!(FileOp);
 
+/// Durable destination evidence for history, not permission to read a source.
+/// Fresh admission checks it against the receiving host's actual directory.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImportDestination {
+    pub path: AbsolutePath,
+    pub identity: tilo_cloud_files::DestinationIdentity,
+}
+
+impl tilo_resource::JsonSchema for ImportDestination {
+    fn json_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object", "required": ["path", "identity"],
+            "properties": {
+                "path": <AbsolutePath as tilo_resource::JsonSchema>::json_schema(),
+                "identity": {
+                    "type": "object", "required": ["device", "inode"],
+                    "properties": {
+                        "device": {"type": "integer", "minimum": 0},
+                        "inode": {"type": "integer", "minimum": 0},
+                        "modified": <Option<(i64, i64, u64)> as tilo_resource::JsonSchema>::json_schema()
+                    }
+                }
+            }
+        })
+    }
+}
+
 /// A filesystem change queued for the device whose disk it changes.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 pub struct FileTask {
@@ -137,6 +164,18 @@ fn entry_paths(folder: &str, entries: &[String]) -> Result<Vec<String>, Refusal>
         .iter()
         .map(|entry| entry_path(folder, entry))
         .collect()
+}
+
+/// Reject sync mounts even when this action bypasses the Files view. The
+/// receiving device must repeat this check when it executes the queued task.
+#[cfg(test)]
+fn independent_destination<'a>(
+    folder: &str,
+    mounts: impl Iterator<Item = &'a std::path::Path>,
+) -> Result<(), Refusal> {
+    crate::cloud_transfer::pin_destination(folder, mounts)
+        .map(|_| ())
+        .map_err(Refusal::new)
 }
 
 fn file_name(name: NonBlank) -> Result<String, Refusal> {
@@ -366,6 +405,116 @@ impl FileExplorer {
             folder: to.to_string_lossy(),
         };
         queue(cx, ops, device, op)
+    }
+
+    /// Copy mounted representations into independent editable files.
+    #[action(undo = Self::revert_queued, icon = "file-plus", audience = "agents")]
+    pub fn import_mounted(
+        &mut self,
+        cx: &mut ActionCx,
+        ops: &mut Outbox<FileTask, Vec<Change>>,
+        #[param("The device whose files change")] device: String,
+        #[param("The source files' absolute paths")] paths: Vec<String>,
+        #[param("Absolute path of the destination folder")] folder: AbsolutePath,
+    ) -> Result<(), Refusal> {
+        if !cx.is_preview() && !private_source_invocation_permitted() {
+            return Err(Refusal::new(
+                "Only the receiving host's person may import their private mounted files",
+            ));
+        }
+        if !cx.is_preview()
+            && ui::bound_dispatch::executing_device().as_deref() != Some(device.as_str())
+        {
+            return Err(Refusal::new(
+                "Invoke Files on the receiving device to import mounted files",
+            ));
+        }
+        let op = FileOp::ImportMounted {
+            paths: entry_paths("", &paths)?,
+            folder: folder.to_string_lossy(),
+        };
+        let entry = cx.id();
+        if !cx.is_preview() {
+            crate::cloud_jobs::approve_mounted(&device, &op, entry.as_str())
+                .map_err(Refusal::new)?;
+        }
+        ops.push(entry, FileTask { device, op });
+        ops.prune(KEPT_OPS);
+        Ok(())
+    }
+
+    /// Import independent local copies from a cloud account; undo removes
+    #[action(undo = Self::revert_queued, icon = "cloud-download", audience = "agents")]
+    pub fn cloud_import(
+        &mut self,
+        cx: &mut ActionCx,
+        ops: &mut Outbox<FileTask, Vec<Change>>,
+        #[param("The device receiving the local copies")] device: String,
+        #[param("A unique ID for this transfer attempt")] job_id: String,
+        #[param("The connected cloud account")] account: String,
+        #[param("Remote entries to import as independent local copies")] entries: Vec<
+            serde_json::Value,
+        >,
+        #[param("Pinned destination evidence; not source authority")]
+        destination: ImportDestination,
+    ) -> Result<(), Refusal> {
+        if !cx.is_preview() && !private_source_invocation_permitted() {
+            return Err(Refusal::new(
+                "Only the receiving host's person may import from their private cloud accounts",
+            ));
+        }
+        // Destination paths and their pinned identity belong to the executing
+        // host. A caller naming another device cannot choose that host's folder.
+        if !cx.is_preview()
+            && ui::bound_dispatch::executing_device().as_deref() != Some(device.as_str())
+        {
+            return Err(Refusal::new(
+                "Invoke Files on the receiving device and choose the destination there; cloud import cannot target another device from this host",
+            ));
+        }
+        if job_id.trim().is_empty() {
+            return Err(Refusal::new("a cloud transfer job ID is named"));
+        }
+        if account.trim().is_empty() {
+            return Err(Refusal::new("a cloud account is named"));
+        }
+        let entries: Vec<tilo_cloud_files::cloud::ImportEntry> =
+            serde_json::from_value(serde_json::Value::Array(entries))
+                .map_err(|error| Refusal::new(format!("invalid remote entries: {error}")))?;
+        if entries.is_empty() || entries.len() > MAX_MOVE_ENTRIES {
+            return Err(Refusal::new(format!(
+                "name 1 to {MAX_MOVE_ENTRIES} entries"
+            )));
+        }
+        let folder = destination.path.to_string_lossy();
+        if !cx.is_preview() {
+            validate_import_destination(&destination)?;
+        }
+        let destination = destination.identity;
+        let mut ids = std::collections::HashSet::new();
+        for entry in &entries {
+            if entry.id.trim().is_empty() || !ids.insert(&entry.id) {
+                return Err(Refusal::new("remote entries have distinct, nonempty IDs"));
+            }
+            crate::cloud_transfer::valid_name(&entry.name).map_err(Refusal::new)?;
+            if entry.kind == tilo_cloud_files::cloud::ImportKind::Unsupported {
+                return Err(Refusal::new("the remote entry cannot be imported"));
+            }
+        }
+        let op = FileOp::CloudImport {
+            job_id,
+            account,
+            entries,
+            folder,
+            destination,
+        };
+        let entry = cx.id();
+        if !cx.is_preview() {
+            crate::cloud_jobs::approve(&device, &op, entry.as_str()).map_err(Refusal::new)?;
+        }
+        ops.push(entry, FileTask { device, op });
+        ops.prune(KEPT_OPS);
+        Ok(())
     }
 
     /// Write a file
@@ -607,11 +756,37 @@ impl FileExplorer {
                 to: AbsolutePath::new(folder).ok()?,
                 create: Some(create),
             }),
+            FileOp::ImportMounted { paths, folder } => {
+                Self::IMPORT_MOUNTED.with(file_explorer::ImportMounted {
+                    device,
+                    paths,
+                    folder: AbsolutePath::new(folder).ok()?,
+                })
+            }
             FileOp::Copy { paths, folder } => Self::COPY_INTO.with(file_explorer::CopyInto {
                 device,
                 from: String::new(),
                 entries: paths,
                 to: AbsolutePath::new(folder).ok()?,
+            }),
+            FileOp::CloudImport {
+                job_id,
+                account,
+                entries,
+                folder,
+                destination,
+            } => Self::CLOUD_IMPORT.with(file_explorer::CloudImport {
+                device,
+                job_id,
+                account,
+                entries: entries
+                    .iter()
+                    .map(|entry| serde_json::json!(entry))
+                    .collect(),
+                destination: ImportDestination {
+                    path: AbsolutePath::new(folder).ok()?,
+                    identity: destination,
+                },
             }),
             FileOp::Write {
                 folder,
@@ -835,6 +1010,27 @@ fn reverting_changes(state: &FileExplorer, task: &FileTask) -> Result<Option<Vec
     })
 }
 
+/// Only fresh admission consults the immutable host identity. Historical
+/// structural replay never performs private-source admission or mints consent.
+fn private_source_invocation_permitted() -> bool {
+    ui::bound_dispatch::local_person_invocation_permitted()
+}
+
+fn validate_import_destination(destination: &ImportDestination) -> Result<(), Refusal> {
+    let mounts = crate::remote_accounts::followed();
+    let actual = crate::cloud_transfer::pin_destination(
+        &destination.path.to_string_lossy(),
+        mounts.iter().filter_map(|account| account.mount.as_deref()),
+    )
+    .map_err(Refusal::new)?;
+    if actual != destination.identity {
+        return Err(Refusal::new(
+            "the import destination changed since it was chosen",
+        ));
+    }
+    Ok(())
+}
+
 fn runs_tracked(op: &FileOp) -> bool {
     matches!(
         op,
@@ -875,6 +1071,72 @@ fn carry_out_tracked(
 fn carry_out(task: &FileTask, reverting: Option<&[Change]>) -> Effected {
     let outcome = crate::file_ops::execute(&task.op, reverting);
     Effected::settled(&outcome)
+}
+
+enum SourceConsent {
+    Cloud(tilo_cloud_files::ImportConsent),
+    Mounted(crate::cloud_jobs::MountedConsent),
+}
+
+fn consume_source(task: &FileTask, entry: &Id) -> Result<SourceConsent, String> {
+    match task.op {
+        FileOp::ImportMounted { .. } => {
+            crate::cloud_jobs::consume_mounted(&task.device, &task.op, entry.as_str())
+                .map(SourceConsent::Mounted)
+        }
+        _ => crate::cloud_jobs::consume(&task.device, &task.op, entry.as_str())
+            .map(SourceConsent::Cloud),
+    }
+}
+
+fn carry_out_source(
+    task: &FileTask,
+    consent: SourceConsent,
+    progress: ui::framework::Progress,
+) -> Effected {
+    match consent {
+        SourceConsent::Cloud(consent) => carry_out_cloud(task, consent, progress),
+        SourceConsent::Mounted(consent) => Effected::settled(&consent.execute()),
+    }
+}
+
+/// The cloud runner blocks until its worker finishes. Keep both that wait
+/// and progress/cancellation forwarding off the UI thread.
+fn carry_out_cloud(
+    task: &FileTask,
+    consent: tilo_cloud_files::ImportConsent,
+    progress: ui::framework::Progress,
+) -> Effected {
+    let FileOp::CloudImport { job_id, .. } = &task.op else {
+        return carry_out(task, None);
+    };
+    crate::cloud_jobs::register(job_id);
+    if progress.is_cancelled() {
+        crate::cloud_jobs::cancel(job_id);
+    }
+    std::thread::scope(|scope| {
+        let (done, finished) = std::sync::mpsc::channel::<()>();
+        scope.spawn(move || {
+            let mut previous = None;
+            loop {
+                if progress.is_cancelled() {
+                    crate::cloud_jobs::cancel(job_id);
+                }
+                let snapshot = crate::cloud_jobs::snapshot(job_id);
+                if previous.as_ref() != Some(&snapshot) {
+                    progress.report(snapshot.phase.clone(), Some(snapshot.bytes), None);
+                    previous = Some(snapshot);
+                }
+                match finished.recv_timeout(std::time::Duration::from_millis(80)) {
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    _ => break,
+                }
+            }
+        });
+        let answer = Effected::settled(&crate::cloud_jobs::run(&task.op, consent));
+        drop(done);
+        answer
+    })
 }
 
 fn files_view(cx: &ViewCx<FileExplorer>, mut window: FileExplorerWidget) -> Element {
@@ -974,11 +1236,31 @@ fn carry_out_queued(
         cx.outbox_awaited(
             FileExplorer::paths().ops,
             move |_, task: &FileTask| task.device == me,
-            move |_entry, task, cx| {
+            move |entry, task, cx| {
                 let Some((operation, redo)) =
                     cx.live().with(|state| native_compensation(state, &task))
                 else {
                     let reverting = cx.live().with(|state| reverting_changes(state, &task))?;
+                    if matches!(
+                        task.op,
+                        FileOp::CloudImport { .. } | FileOp::ImportMounted { .. }
+                    ) {
+                        let consent = match consume_source(&task, entry) {
+                            Ok(consent) => consent,
+                            Err(reason) => {
+                                return Ok(Effected::settled(&ui::tilo_resource::Settled::<
+                                    Vec<Change>,
+                                >::Failed {
+                                    reason,
+                                    partial: vec![],
+                                }));
+                            }
+                        };
+                        return Ok(cx.thread(
+                            move |progress| carry_out_source(&task, consent, progress),
+                            |(), answer, _| Ok(answer),
+                        ));
+                    }
                     if let (Some(folder), Some(invoker)) = (&folder, cx.invoker())
                         && !invoker.acting.is_person()
                         && reverting.is_none()
@@ -1173,7 +1455,17 @@ impl FilesState {
 fn local_person_only(effect: &FilesEffect) -> bool {
     matches!(
         effect,
-        FilesEffect::OpenAccount { .. }
+        FilesEffect::BrowseCloud { .. }
+            | FilesEffect::MoreCloud
+            | FilesEffect::SelectCloud { .. }
+            | FilesEffect::ImportCloud { .. }
+            | FilesEffect::CloudProgress
+            | FilesEffect::CancelCloud
+            | FilesEffect::RetryCloud
+            | FilesEffect::RevealCloud
+            | FilesEffect::ImportConverted { .. }
+            | FilesEffect::ImportOnce { .. }
+            | FilesEffect::OpenAccount { .. }
             | FilesEffect::Details { .. }
             | FilesEffect::Reauthenticate { .. }
             | FilesEffect::OpenDrive { .. }

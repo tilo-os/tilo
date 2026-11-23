@@ -18453,8 +18453,14 @@ dependencies = [
 name = "tilo-cloud-files"
 version = "0.1.0"
 dependencies = [
+ "cap-fs-ext",
+ "cap-std",
+ "host-fs",
+ "jiff",
  "serde",
+ "serde_json",
  "tilo-fs-client",
+ "uuid",
  "workspace-hack",
 ]
 

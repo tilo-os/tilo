@@ -102,8 +102,7 @@ ed25519-dalek = { workspace = true, optional = true }
 # Which apps open a kind of file, as the session answers: the workspace tree asks it too, on
 # every target.
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
-# Credential-free cloud access: the service's protocol, and owner-writable copies staged into
-# the workspace.
+# Credential-free cloud browsing and independent streamed imports.
 tilo-cloud-files = { path = "../../crates/integrations/tilo-cloud-files", optional = true }
 tokio = { workspace = true, features = ["rt", "net", "io-util"], optional = true }
 sha2 = { workspace = true, optional = true }

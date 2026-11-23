@@ -52,6 +52,14 @@ pub(crate) struct NearbyTransfer;
 pub(crate) struct RemoteAccount;
 
 #[derive(ui::tilo_resource::Row)]
+#[row(
+    kind = "files.cloud-entry",
+    label = "Cloud entry",
+    effects = crate::effects::FilesEffect
+)]
+pub(crate) struct CloudEntry;
+
+#[derive(ui::tilo_resource::Row)]
 #[row(kind = "files.drive", label = "Drive", effects = crate::effects::FilesEffect)]
 pub(crate) struct Drive;
 

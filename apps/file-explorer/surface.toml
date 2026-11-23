@@ -6,7 +6,7 @@ format = 2
 kind = "files.folder"
 label = "Folder"
 version = 1
-shows = ["availability", "back", "clear-selection", "details", "forget-recent", "forward", "go-to", "grid", "history", "keyboard-shortcuts", "list", "move-favorite", "open", "open-account", "open-drive", "open-folder", "open-trash", "properties", "read", "reauthenticate", "recent", "remove-favorite", "reveal", "reveal-recent", "select-all", "select-entries", "selected-entries", "send-nearby", "sort-ascending", "sort-descending", "sort-modified", "sort-name", "sort-size", "sort-type", "toggle-hidden", "up", "zoom-in", "zoom-out"]
+shows = ["availability", "back", "browse-cloud", "cancel-cloud", "clear-selection", "details", "forget-recent", "forward", "go-to", "grid", "history", "import-cloud", "keyboard-shortcuts", "list", "more-cloud", "move-favorite", "open", "open-account", "open-drive", "open-folder", "open-trash", "properties", "read", "reauthenticate", "recent", "remove-favorite", "retry-cloud", "reveal", "reveal-cloud", "reveal-recent", "select-all", "select-cloud", "select-entries", "selected-entries", "send-nearby", "sort-ascending", "sort-descending", "sort-modified", "sort-name", "sort-size", "sort-type", "toggle-hidden", "up", "zoom-in", "zoom-out"]
 fields = [
   { path = "places", type = { collection = { named = "Bookmark" } }, stored = "collection" },
   { path = "places.*.place", type = "text", readonly = true },
@@ -80,6 +80,28 @@ params = [
   { name = "from", type = "text", required = true, schema = { type = "string" } },
   { name = "entries", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
   { name = "to", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "import-mounted"
+kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
+params = [
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "paths", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "folder", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "cloud-import"
+kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
+params = [
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "job_id", type = "text", required = true, schema = { type = "string" } },
+  { name = "account", type = "text", required = true, schema = { type = "string" } },
+  { name = "entries", type = { list = "any" }, required = true, schema = { type = "array", items = {} } },
+  { name = "destination", required = true, schema = { type = "object", properties = { path = { type = "string" }, identity = { type = "object", properties = { device = { type = "integer", minimum = 0 }, inode = { type = "integer", minimum = 0 }, modified = { type = ["array", "null"], maxItems = 3, minItems = 3 } }, required = ["device", "inode"] } }, required = ["path", "identity"] } },
 ]
 
 [[resources.verbs]]
@@ -172,6 +194,10 @@ kind = "read"
 
 [[resources.verbs]]
 id = "open-terminal"
+kind = "read"
+
+[[resources.verbs]]
+id = "cloud-progress"
 kind = "read"
 
 [[resources.types]]
