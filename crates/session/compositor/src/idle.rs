@@ -656,42 +656,8 @@ mod tests {
             );
         }
 
-        phase idle_blanking_fires_past_threshold_and_input_wakes;
+        phase idle_blanking_only_fires_what_its_timeouts_ask;
         {
-            // Idle past threshold blanks then input wakes.
-            {
-                let t0 = Instant::now();
-                let mut s = SessionManager::new(cfg(Some(300), None), t0);
-                assert!(!s.is_blanked());
-
-                // Before the dim window: no transition.
-                assert!(s.tick(t0 + Duration::from_secs(284)).is_empty());
-                // Just under the threshold: dimmed, not blanked.
-                assert_eq!(
-                    s.tick(t0 + Duration::from_secs(299)),
-                    vec![SessionTransition::Dimmed]
-                );
-                assert!(!s.is_blanked());
-
-                // At/after the threshold: blanks once.
-                let trans = s.tick(t0 + Duration::from_secs(300));
-                assert_eq!(trans, vec![SessionTransition::Blanked]);
-                assert!(s.is_blanked());
-
-                // Subsequent ticks while blanked emit nothing (idempotent).
-                assert!(s.tick(t0 + Duration::from_secs(600)).is_empty());
-                assert!(s.is_blanked());
-
-                // Any input restores brightness, wakes the display and resets the timer.
-                let trans = s.note_activity(t0 + Duration::from_secs(601));
-                assert_eq!(
-                    trans,
-                    vec![SessionTransition::Undimmed, SessionTransition::Woke]
-                );
-                assert!(!s.is_dimmed());
-                assert!(!s.is_blanked());
-                assert_eq!(s.idle_for(t0 + Duration::from_secs(601)), Duration::ZERO);
-            }
             // Blank disabled never blanks.
             {
                 let t0 = Instant::now();
@@ -890,6 +856,10 @@ mod tests {
             assert_eq!(
                 s.tick(t0 + Duration::from_secs(300)),
                 vec![SessionTransition::Blanked]
+            );
+            assert!(
+                s.tick(t0 + Duration::from_secs(600)).is_empty(),
+                "a blanked display stays blank until input"
             );
         }
 
