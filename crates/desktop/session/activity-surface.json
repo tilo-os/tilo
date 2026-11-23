@@ -128,7 +128,7 @@
           ]
         },
         {
-          "id": "merge",
+          "id": "merge-groups",
           "label": "Merge the named work groups a range spans",
           "description": "Merge the named work groups a range spans.",
           "kind": "undoable",
@@ -707,7 +707,7 @@
               "type": "text"
             },
             {
-              "name": "app",
+              "name": "made_in",
               "type": {
                 "option": "text"
               }
@@ -1377,7 +1377,7 @@
           "doc": "One action a view may offer for a range of changes.",
           "fields": [
             {
-              "name": "action",
+              "name": "verb",
               "type": "text"
             },
             {
@@ -1413,6 +1413,274 @@
             {
               "name": "label",
               "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "RangeDetail",
+          "doc": "What a range of changes did.",
+          "fields": [
+            {
+              "name": "detail",
+              "type": {
+                "option": {
+                  "named": "Detail"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "activity-feed",
+      "label": "Activity feed",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "feed",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Feed"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Author",
+          "doc": "Who made a change.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "rgb",
+              "type": {
+                "list": "int"
+              }
+            },
+            {
+              "name": "identity",
+              "type": "text"
+            },
+            {
+              "name": "relation",
+              "type": "text"
+            },
+            {
+              "name": "on_behalf_of",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "for_reader",
+              "type": "bool"
+            },
+            {
+              "name": "task",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Entry",
+          "doc": "One change.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "author",
+              "type": {
+                "named": "Author"
+              }
+            },
+            {
+              "name": "kind",
+              "type": "text"
+            },
+            {
+              "name": "at_ms",
+              "type": "int"
+            },
+            {
+              "name": "summary",
+              "type": "text"
+            },
+            {
+              "name": "made_in",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "resource",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "group",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "redacted",
+              "type": "bool"
+            },
+            {
+              "name": "refused",
+              "type": {
+                "list": {
+                  "named": "Refusal"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Feed",
+          "doc": "A workspace's history, newest first.",
+          "fields": [
+            {
+              "name": "workspace",
+              "type": "text"
+            },
+            {
+              "name": "scope",
+              "type": "text"
+            },
+            {
+              "name": "total",
+              "type": "int"
+            },
+            {
+              "name": "entries",
+              "type": {
+                "list": {
+                  "named": "Entry"
+                }
+              }
+            },
+            {
+              "name": "groups",
+              "type": {
+                "list": {
+                  "named": "Group"
+                }
+              }
+            },
+            {
+              "name": "people",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "lenses",
+              "type": {
+                "list": {
+                  "named": "Lens"
+                }
+              }
+            },
+            {
+              "name": "pending",
+              "type": "bool"
+            },
+            {
+              "name": "mutations",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "Group",
+          "doc": "A named range of changes.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "start",
+              "type": "text"
+            },
+            {
+              "name": "end",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "named_by",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Lens",
+          "doc": "A way to narrow the feed.",
+          "fields": [
+            {
+              "name": "key",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "Refusal",
+          "doc": "A device that refused one of a change's writes.",
+          "fields": [
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "reason",
+              "type": "text"
+            },
+            {
+              "name": "permanent",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "FeedReading",
+          "doc": "A page of the feed, narrowed by what the person chose.",
+          "fields": [
+            {
+              "name": "feed",
+              "type": {
+                "option": {
+                  "named": "Feed"
+                }
+              }
             }
           ]
         }

@@ -30,6 +30,11 @@ pub(crate) const RESOURCE: &str = wire::RESOURCE;
 /// share a detail.
 pub(crate) const RANGE_PREFIX: &str = "workspace.activity/range/";
 
+/// What a feed narrowed by the person's filters is published under: this workspace's changes or
+/// every workspace's, how far back, and the lens (a dash for none), after this. A window reads
+/// the page it shows, so two windows showing two periods each read their own.
+pub(crate) const FEED_PREFIX: &str = "workspace.activity/feed/";
+
 /// The kind a reader with no words of its own knows the resource by.
 #[derive(tilo_resource::Row)]
 #[row(kind = "activity", label = "Activity")]
@@ -79,7 +84,7 @@ pub(crate) struct Entry {
     pub at_ms: i64,
     pub summary: String,
     /// The app it was made in.
-    pub app: Option<String>,
+    pub made_in: Option<String>,
     /// The resource it changed.
     pub resource: Option<String>,
     /// The named work group it sits in.
@@ -273,7 +278,7 @@ pub(crate) struct Replay {
 #[serde(default)]
 pub(crate) struct Offer {
     /// What it does, as the model names it.
-    pub action: String,
+    pub verb: String,
     /// How it reads.
     pub label: String,
 }
@@ -409,17 +414,34 @@ pub(crate) struct Sessions {
 #[serde(default)]
 pub(crate) struct Activity {
     /// This workspace's changes.
-    pub feed: Feed,
+    pub feed: Option<Feed>,
     /// Every workspace's changes on this device.
-    pub everywhere: Feed,
+    pub everywhere: Option<Feed>,
     /// What changed since this device last looked.
-    pub summary: Summary,
+    pub summary: Option<Summary>,
     /// The layout at each recent change.
-    pub replay: Replay,
+    pub replay: Option<Replay>,
     /// Every agent session.
-    pub sessions: Sessions,
+    pub sessions: Option<Sessions>,
     /// What the person was asked to open from outside, until the app shows it.
     pub focus: Option<Focus>,
+}
+
+/// A page of the feed as its own reading: one optional section, as a range's detail is.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[serde(default)]
+pub(crate) struct FeedReading {
+    pub feed: Option<Feed>,
+}
+
+/// A range's detail as its own reading: one optional section, so a range the model has not read
+/// yet reads as having nothing, rather than as a record missing its fields.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub(crate) struct RangeDetail {
+    pub detail: Option<Detail>,
 }
 
 /// The reads the model serves, in the order the service follows them: the action, and the
@@ -498,21 +520,78 @@ pub(crate) struct Served {
     /// What the reads last built, and the reading an app gets of it.
     reading: Activity,
     json: Value,
-    /// The ranges views asked for, each followed while one shows it.
-    details: std::cell::RefCell<Details>,
+    /// The readings views asked for by a key, each followed while one shows it.
+    keyed: std::cell::RefCell<Keyed>,
     /// The resources whose readings moved since the last [`Served::moved`].
     moved: Vec<String>,
 }
 
-/// The detail readings views asked for, by the resource each is published as.
+/// The readings a view asked for by a key — a range of changes, a filtered feed — each
+/// followed while a view of that window names it, and dropped with the window.
 #[derive(Default)]
-struct Details {
-    /// The range reads followed, by resource id.
+struct Keyed {
+    /// The reads followed, by resource id.
     followed: BTreeMap<String, Followed>,
     /// The resources views asked for that are not followed yet.
     asked: Vec<String>,
-    /// What each range's detail reads as, by resource id.
+    /// What each reads as, by resource id.
     json: BTreeMap<String, Value>,
+}
+
+/// What a keyed reading is of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Key {
+    Range,
+    Feed,
+}
+
+impl Key {
+    /// The keyed reading `resource` names.
+    fn of(resource: &str) -> Option<Self> {
+        if resource.starts_with(RANGE_PREFIX) {
+            Some(Self::Range)
+        } else if resource.starts_with(FEED_PREFIX) {
+            Some(Self::Feed)
+        } else {
+            None
+        }
+    }
+
+    /// The model's read that answers it, and with what.
+    fn read(self, resource: &str) -> Option<(&'static str, Map<String, Value>)> {
+        match self {
+            Self::Range => {
+                let range = range_of(resource)?;
+                Some((
+                    wire::DETAIL,
+                    read_arguments(&wire::DetailQuery {
+                        range,
+                        compare: false,
+                    }),
+                ))
+            }
+            Self::Feed => {
+                let query = feed_query_of(resource)?;
+                Some((wire::FEED, read_arguments(&query)))
+            }
+        }
+    }
+
+    /// The reading an app gets of the model's last read of it.
+    fn reading(self, value: &Value) -> Value {
+        match self {
+            Self::Range => detail_json(value),
+            Self::Feed => feed_json(value),
+        }
+    }
+
+    /// What it reads as before the model has answered.
+    fn empty(self) -> Value {
+        match self {
+            Self::Range => empty_detail(),
+            Self::Feed => empty_feed(),
+        }
+    }
 }
 
 impl Served {
@@ -523,7 +602,7 @@ impl Served {
             followed: None,
             reading: Activity::default(),
             json: empty(),
-            details: std::cell::RefCell::new(Details::default()),
+            keyed: std::cell::RefCell::new(Keyed::default()),
             moved: Vec::new(),
         }
     }
@@ -573,37 +652,36 @@ impl Served {
             }
         }
         if !changed {
-            // Nothing of the whole moved; a range a view asked for since still may.
-            return self.take_ranges();
+            // Nothing of the whole moved; a keyed reading a view asked for since still may.
+            return self.take_keyed();
         }
         self.build();
         self.moved.push(RESOURCE.to_owned());
-        let _ = self.take_ranges();
+        let _ = self.take_keyed();
         true
     }
 
-    /// Follow the ranges views asked for since the last call, and take in what the model read
-    /// of them: each range's detail, as the view that names it reads it. Whether one changed.
-    fn take_ranges(&mut self) -> bool {
-        let mut details = self.details.borrow_mut();
+    /// Follow the keyed readings views asked for since the last call, and take in what the model
+    /// read of them. Whether one changed.
+    fn take_keyed(&mut self) -> bool {
+        let mut keyed = self.keyed.borrow_mut();
         let caller = tilo_actions::remote::Caller::local_app(wire::APP_ID);
-        for id in std::mem::take(&mut details.asked) {
-            let Some(range) = range_of(&id) else {
+        for id in std::mem::take(&mut keyed.asked) {
+            let Some(key) = Key::of(&id) else {
+                continue;
+            };
+            let Some((action, arguments)) = key.read(&id) else {
                 continue;
             };
             let invocation = tilo_actions::InvocationId::new();
-            let arguments = read_arguments(&wire::DetailQuery {
-                range,
-                compare: false,
-            });
             if self
                 .requests
-                .follow(&caller, invocation, wire::DETAIL, arguments)
+                .follow(&caller, invocation, action, arguments)
                 .is_err()
             {
                 continue;
             }
-            details.followed.insert(
+            keyed.followed.insert(
                 id,
                 Followed {
                     invocation,
@@ -612,7 +690,7 @@ impl Served {
             );
         }
         let mut changed: Vec<(String, Value)> = Vec::new();
-        for (id, entry) in &mut details.followed {
+        for (id, entry) in &mut keyed.followed {
             let Some(Ok(value)) = self.requests.served(&entry.invocation) else {
                 continue;
             };
@@ -620,13 +698,14 @@ impl Served {
                 continue;
             }
             entry.last = Some(value.clone());
-            changed.push((id.clone(), detail_json(&value)));
+            let reading = Key::of(id).map_or_else(|| Value::Null, |key| key.reading(&value));
+            changed.push((id.clone(), reading));
         }
         for (id, json) in &changed {
-            details.json.insert(id.clone(), json.clone());
+            keyed.json.insert(id.clone(), json.clone());
         }
         let changed: Vec<String> = changed.into_iter().map(|(id, _)| id).collect();
-        drop(details);
+        drop(keyed);
         self.moved.extend(changed.iter().cloned());
         !changed.is_empty()
     }
@@ -655,11 +734,11 @@ impl Served {
             .unwrap_or_default();
         let focus: Option<Focus> = self.last(Read::Focus);
         self.reading = Activity {
-            feed,
-            everywhere,
-            summary,
-            replay,
-            sessions,
+            feed: Some(feed),
+            everywhere: Some(everywhere),
+            summary: Some(summary),
+            replay: Some(replay),
+            sessions: Some(sessions),
             focus,
         };
         self.json = serde_json::to_value(&self.reading).unwrap_or(Value::Null);
@@ -677,21 +756,19 @@ impl Service for Served {
         if resource == RESOURCE {
             return Some(self.json.clone());
         }
-        if range_of(resource).is_none() {
+        let Some(key) = Key::of(resource) else {
             return None;
-        }
-        let mut details = self.details.borrow_mut();
-        if let Some(json) = details.json.get(resource) {
+        };
+        let mut keyed = self.keyed.borrow_mut();
+        if let Some(json) = keyed.json.get(resource) {
             return Some(json.clone());
         }
-        // The model has not read this range yet: ask for it now, and start from what a range
-        // with nothing in it reads as, so the view that named it draws before the model answers.
-        if !details.followed.contains_key(resource)
-            && !details.asked.iter().any(|id| id == resource)
-        {
-            details.asked.push(resource.to_owned());
+        // The model has not read this one yet: ask for it now, and start from what it reads as
+        // with nothing in it, so the view that named it draws before the model answers.
+        if !keyed.followed.contains_key(resource) && !keyed.asked.iter().any(|id| id == resource) {
+            keyed.asked.push(resource.to_owned());
         }
-        Some(empty_detail())
+        Some(key.empty())
     }
 
     fn invoke(
@@ -746,6 +823,7 @@ fn wire_action(action: &str) -> &str {
     match action {
         "open-change" => wire::OPEN,
         "undo-change" => wire::UNDO,
+        "merge-groups" => wire::MERGE,
         other => other,
     }
 }
@@ -764,15 +842,60 @@ pub(crate) fn surface() -> tilo_actions::surface::Surface {
     tilo_resource::surface::reading_surface::<Activity, ActivityAction>("activity", "Activity")
 }
 
+/// The reading as a view of another language names it: a keyed resource's fields are its root
+/// record's, and `reading_surface` folds that record into the resource. A view names the type in
+/// `resource(…, of: history.RangeDetail)`, so the record is declared beside the fields too.
+#[cfg(test)]
+fn named_root(
+    mut surface: tilo_actions::surface::Surface,
+    name: &str,
+    doc: &str,
+) -> tilo_actions::surface::Surface {
+    let fields = surface
+        .fields
+        .iter()
+        .map(|field| tilo_actions::surface::TypeField {
+            name: field.path.clone(),
+            ty: field.ty.clone(),
+            title: field.title.clone(),
+        })
+        .collect();
+    surface.types.push(tilo_actions::surface::NamedType {
+        name: name.to_owned(),
+        doc: doc.to_owned(),
+        fields,
+        cases: Vec::new(),
+    });
+    surface
+}
+
+/// A page of the feed as a view of another language reads it.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn feed_surface() -> tilo_actions::surface::Surface {
+    named_root(
+        tilo_resource::surface::reading_surface::<FeedReading, tilo_resource::NoEffect>(
+            "activity-feed",
+            "Activity feed",
+        ),
+        "FeedReading",
+        "A page of the feed, narrowed by what the person chose.",
+    )
+}
+
 /// A range's detail as a view of another language reads it: the reading a view names by the
 /// range it shows. It offers no verbs of its own: what can be done with a range is one of the
 /// activity's, worded for this range.
 #[cfg(test)]
 #[must_use]
 pub(crate) fn range_surface() -> tilo_actions::surface::Surface {
-    tilo_resource::surface::reading_surface::<Detail, tilo_resource::NoEffect>(
-        "activity-range",
-        "Activity change",
+    named_root(
+        tilo_resource::surface::reading_surface::<RangeDetail, tilo_resource::NoEffect>(
+            "activity-range",
+            "Activity change",
+        ),
+        "RangeDetail",
+        "What a range of changes did.",
     )
 }
 
@@ -821,7 +944,7 @@ pub enum ActivityAction {
     },
     /// Merge the named work groups a range spans.
     #[effect(kind = "undoable")]
-    Merge {
+    MergeGroups {
         /// The first change.
         #[param("The first change")]
         from: String,
@@ -1086,9 +1209,70 @@ pub(crate) fn empty() -> Value {
     serde_json::to_value(Activity::default()).unwrap_or(Value::Null)
 }
 
+/// What a page of the feed with nothing read yet shows.
+fn empty_feed() -> Value {
+    serde_json::to_value(FeedReading::default()).unwrap_or(Value::Null)
+}
+
+/// The query a feed reading names: this workspace's changes or every workspace's, how far back,
+/// and the lens (a dash for none).
+pub(crate) fn feed_query_of(resource: &str) -> Option<wire::FeedQuery> {
+    let rest = resource.strip_prefix(FEED_PREFIX)?;
+    let mut parts = rest.splitn(3, '/');
+    let scope = match parts.next()? {
+        "all" => wire::Scope::AllWorkspaces,
+        "this" => wire::Scope::ThisWorkspace,
+        _ => return None,
+    };
+    let period = match parts.next()? {
+        "today" => wire::Period::Today,
+        "week" => wire::Period::Week,
+        "month" => wire::Period::Month,
+        "all-time" => wire::Period::AllTime,
+        _ => return None,
+    };
+    let lens = parts.next()?;
+    Some(wire::FeedQuery {
+        scope,
+        period,
+        lens: (lens != "-").then(|| lens.to_owned()),
+        ..wire::FeedQuery::default()
+    })
+}
+
+/// The resource a page of the feed is published as.
+#[cfg(test)]
+pub(crate) fn feed_resource(scope: &str, period: &str, lens: &str) -> String {
+    let lens = if lens.is_empty() { "-" } else { lens };
+    format!("{FEED_PREFIX}{scope}/{period}/{lens}")
+}
+
+/// A page of the feed as an app reads it, from what the model read.
+fn feed_json(value: &Value) -> Value {
+    let mut value = value.clone();
+    if let Some(entries) = value.get_mut("entries").and_then(Value::as_array_mut) {
+        for entry in entries {
+            if let Some(map) = entry.as_object_mut()
+                && let Some(app) = map.remove("app")
+            {
+                map.insert("made_in".to_owned(), app);
+            }
+        }
+    }
+    match serde_json::from_value::<Feed>(value) {
+        Ok(feed) => {
+            serde_json::to_value(FeedReading { feed: Some(feed) }).unwrap_or_else(|_| empty_feed())
+        }
+        Err(error) => {
+            tracing::warn!(%error, "a page of the feed is not the shape an app reads");
+            empty_feed()
+        }
+    }
+}
+
 /// What a range with nothing read yet shows.
 fn empty_detail() -> Value {
-    serde_json::to_value(Detail::default()).unwrap_or(Value::Null)
+    serde_json::to_value(RangeDetail::default()).unwrap_or(Value::Null)
 }
 
 /// The range a keyed reading names: the first and last change, after [`RANGE_PREFIX`].
@@ -1136,7 +1320,7 @@ fn detail_json(value: &Value) -> Value {
                     .offers
                     .iter()
                     .map(|offer| Offer {
-                        action: offer.action.action().to_owned(),
+                        verb: offer.action.action().to_owned(),
                         label: offer.label.clone(),
                     })
                     .collect(),
@@ -1152,7 +1336,8 @@ fn detail_json(value: &Value) -> Value {
                 comparison,
                 gone: detail.gone,
             };
-            serde_json::to_value(read).unwrap_or_else(|_| empty_detail())
+            serde_json::to_value(RangeDetail { detail: Some(read) })
+                .unwrap_or_else(|_| empty_detail())
         }
         Err(error) => {
             tracing::warn!(%error, "a range's detail is not the shape an app reads");
@@ -1312,19 +1497,29 @@ mod tests {
 
         let json = served.read(RESOURCE).expect("the activity is published");
         let reading: Activity = serde_json::from_value(json).expect("the reading reads");
-        assert_eq!(reading.feed.workspace, "Home");
-        assert_eq!(reading.feed.entries[0].summary, "Renamed a note");
-        assert_eq!(reading.feed.entries[0].author.name, "Ada");
+        let feed = reading.feed.expect("this workspace's feed");
+        assert_eq!(feed.workspace, "Home");
+        assert_eq!(feed.entries[0].summary, "Renamed a note");
+        assert_eq!(feed.entries[0].author.name, "Ada");
         assert_eq!(
-            reading.everywhere.workspace, "Elsewhere",
+            reading
+                .everywhere
+                .expect("every workspace's feed")
+                .workspace,
+            "Elsewhere",
             "every workspace of this device is read beside the one the person is in"
         );
-        assert_eq!(reading.summary.briefs[0].title, "A morning of notes");
-        assert!(reading.summary.away);
-        assert_eq!(reading.replay.frames[0].workspaces[0].name, "Home");
-        assert_eq!(reading.sessions.sessions[0].instruction, "Tidy the notes");
-        assert_eq!(reading.sessions.sessions[0].actions[0].place, "note-1");
-        assert_eq!(reading.sessions.sessions[0].actions[0].view, "record");
+        let summary = reading.summary.expect("what is new");
+        assert_eq!(summary.briefs[0].title, "A morning of notes");
+        assert!(summary.away);
+        assert_eq!(
+            reading.replay.expect("the replay").frames[0].workspaces[0].name,
+            "Home"
+        );
+        let sessions = reading.sessions.expect("agent sessions");
+        assert_eq!(sessions.sessions[0].instruction, "Tidy the notes");
+        assert_eq!(sessions.sessions[0].actions[0].place, "note-1");
+        assert_eq!(sessions.sessions[0].actions[0].view, "record");
 
         // The model reads differently: the reading moves, and only then.
         assert!(
@@ -1340,7 +1535,10 @@ mod tests {
         );
         let json = served.read(RESOURCE).unwrap();
         let reading: Activity = serde_json::from_value(json).unwrap();
-        assert_eq!(reading.feed.entries[0].summary, "Added a page");
+        assert_eq!(
+            reading.feed.expect("this workspace's feed").entries[0].summary,
+            "Added a page"
+        );
 
         // A write is the model's action, with the arguments the caller gave.
         let answered = served
@@ -1381,8 +1579,8 @@ mod tests {
         };
         let resource = range_resource(&range);
         let first = served.read(&resource).expect("a range reads");
-        assert_eq!(
-            first["title"], "",
+        assert!(
+            first["detail"].is_null(),
             "a range the model has not read yet reads as one with nothing in it"
         );
         // The pass that follows the range the view named; the model answers it on its next.
@@ -1390,8 +1588,8 @@ mod tests {
         serve(&requests, &mut model);
         assert!(served.poll(), "the range's read arrives");
         let detail = served.read(&resource).expect("the range reads");
-        assert_eq!(detail["title"], "Renamed a note");
-        assert_eq!(detail["changes"][0]["field"], "Title");
+        assert_eq!(detail["detail"]["title"], "Renamed a note");
+        assert_eq!(detail["detail"]["changes"][0]["field"], "Title");
         assert!(
             served
                 .moved()
@@ -1399,13 +1597,31 @@ mod tests {
             "the range's reading is named as the one that moved"
         );
         assert_eq!(served.moved(), None, "and it moved once");
+
+        // A page of the feed is a reading too, keyed by the person's filters: a window asking
+        // for a week of one workspace reads that page and no other.
+        let page = feed_resource("this", "week", "app:so.tilo.notes");
+        let first = served.read(&page).expect("a page reads");
+        assert!(
+            first["feed"].is_null(),
+            "a page the model has not read yet reads as one with nothing in it"
+        );
+        let _ = served.poll();
+        serve(&requests, &mut model);
+        assert!(served.poll(), "the page's read arrives");
+        let page_read = served.read(&page).expect("the page reads");
+        assert_eq!(page_read["feed"]["workspace"], "Home");
+        assert!(
+            served.moved().is_some_and(|moved| moved.contains(&page)),
+            "the page's reading is named as the one that moved"
+        );
     }
 
     /// The surface an app compiles against is the one the session publishes, written beside the
     /// session as `activity-surface.json`.
     #[test]
     fn the_activity_surface_file_is_what_the_session_publishes() {
-        let published = vec![surface(), range_surface()];
+        let published = vec![surface(), range_surface(), feed_surface()];
         let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": published }))
             .expect("a surface writes as JSON");
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("activity-surface.json");
