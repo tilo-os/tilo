@@ -2,11 +2,11 @@
 //! shortcut uses, and the one action they invoke, the agent's `answer`.
 //!
 //! A new agent comes with the triggers a member would expect ([`triggers`]): a message that
-//! mentions it, a message in its direct conversation and a task assigned to it. They are one
-//! shortcut, saved by the person who made the agent, named after the agent, and its person
-//! changes or removes them like any shortcut's. None of them fires on the agent's own work or a
-//! copy of it carried back from elsewhere: each leaves out a change the agent made (`by`) and
-//! one that copies the agent's change (`origin`).
+//! mentions it, a message in its direct conversation, a task assigned to it, and a message that
+//! arrived in the workspace's mailbox. They are one shortcut, saved by the person who made the
+//! agent, named after the agent, and its person changes or removes them like any shortcut's.
+//! None of them fires on the agent's own work or a copy of it carried back from elsewhere: each
+//! leaves out a change the agent made (`by`) and one that copies the agent's change (`origin`).
 //!
 //! The shortcut's one step invokes `agents.agent:<id>#answer` with the change that fired it
 //! ([`ANSWER`], [`Answers`]). The agent engine takes the turn from that change alone: who asked
@@ -47,6 +47,10 @@ pub const MESSAGE: &str = "tl.so.tilo.lang.chat.Message";
 pub const TASKS: &str = "so.tilo.lang.tasks";
 /// The kind of a task of [`TASKS`].
 pub const TASK: &str = "tl.so.tilo.lang.tasks.Task";
+/// tilolang Mail, whose received messages an agent answers.
+pub const MAIL: &str = "so.tilo.mail";
+/// The kind of a message of [`MAIL`].
+pub const MAIL_MESSAGE: &str = "tl.so.tilo.mail.Message";
 
 /// The resource `agent` is published as: `agents.agent:<id>`.
 #[must_use]
@@ -94,21 +98,25 @@ fn named(agent: &str) -> String {
 
 /// The triggers a new agent comes with, as one shortcut named after it whose one step starts
 /// the agent's turn on the change that fired it: a message that mentions it, a message in its
-/// direct conversation, and a task assigned to it. Each leaves out the agent's own changes and
-/// a copy of one carried back from elsewhere, so its answer never starts it again.
+/// direct conversation, a task assigned to it, and a message that arrived in the workspace's
+/// mailbox. Each leaves out the agent's own changes and a copy of one carried back from
+/// elsewhere, so its answer never starts it again.
 #[must_use]
 pub fn triggers(agent: &str, name: &str) -> Shortcut {
     let member = format!("agent:{agent}");
-    let watch = |kind: &str, field: &str, test: Test| TriggerSpec::ResourceChanged {
+    let watch = |kind: &str, narrowing: Vec<(&str, Test)>| TriggerSpec::ResourceChanged {
         kind: kind.to_owned(),
         actions: Vec::new(),
         fields: Vec::new(),
         by: ActorFilter::Anyone,
-        filter: ChangeFilter::of([
-            ("by", Test::IsNot(json!(member))),
-            ("origin", Test::IsNot(json!(member))),
-            (field, test),
-        ]),
+        filter: ChangeFilter::of(
+            [
+                ("by", Test::IsNot(json!(member.clone()))),
+                ("origin", Test::IsNot(json!(member.clone()))),
+            ]
+            .into_iter()
+            .chain(narrowing),
+        ),
     };
     let mut step_args = std::collections::BTreeMap::new();
     step_args.insert(
@@ -137,11 +145,27 @@ pub fn triggers(agent: &str, name: &str) -> Shortcut {
         grant: Vec::new(),
         triggers: vec![
             // A message whose text mentions it, in any conversation.
-            watch(MESSAGE, "item.body", Test::Has(json!(named(agent)))),
+            watch(MESSAGE, vec![("item.body", Test::Has(json!(named(agent))))]),
             // A message in its direct conversation: the conversation it is in is with it.
-            watch(MESSAGE, "item.$in.person", Test::Has(json!(named(agent)))),
+            watch(
+                MESSAGE,
+                vec![("item.$in.person", Test::Has(json!(named(agent))))],
+            ),
             // A task given to it.
-            watch(TASK, "item.assignee", Test::Has(json!(named(agent)))),
+            watch(
+                TASK,
+                vec![("item.assignee", Test::Has(json!(named(agent))))],
+            ),
+            // A message that arrived in the workspace's mailbox: written by mail's outside
+            // origin, not by anyone here, and not the account's own copy of what it sent, which
+            // an answer of the agent's comes back as once the server keeps it.
+            watch(
+                MAIL_MESSAGE,
+                vec![
+                    ("incoming_message", Test::Is(json!(true))),
+                    ("item.mailbox", Test::IsNot(json!("sent"))),
+                ],
+            ),
         ],
         saved_by: None,
         saved_proof: None,
@@ -158,13 +182,14 @@ pub struct Where {
 }
 
 impl Where {
-    /// Where `event` asks to be answered: a message of Chat, or a task of Tasks. `None` for a
-    /// change of anything else, which no agent's trigger answers.
+    /// Where `event` asks to be answered: a message of Chat, a task of Tasks or a message of
+    /// Mail. `None` for a change of anything else, which no agent's trigger answers.
     #[must_use]
     pub fn of(event: &DocumentEvent) -> Option<Self> {
         let app = match event.kind.as_str() {
             MESSAGE => CHAT,
             TASK => TASKS,
+            MAIL_MESSAGE => MAIL,
             _ => return None,
         };
         let item = event.item.as_ref()?.id.clone();
@@ -230,7 +255,7 @@ fn published(app: &str, id: &str) -> String {
 }
 
 /// Write `words`, a turn's answer, where `place` asked for it, as `caller`: a reply to the
-/// message in its conversation, or a comment on the task.
+/// message in its conversation, an answer to the conversation in Mail, or a comment on the task.
 ///
 /// # Errors
 /// The app refused the write.
@@ -251,6 +276,10 @@ pub(super) async fn write_answer(
         arguments.insert("body".into(), json!(words));
         arguments.insert("reply_to".into(), json!(published(CHAT, &place.item)));
         (CHAT, published(CHAT, &place.record), "send")
+    } else if place.app == MAIL {
+        // Mail answers a conversation, to whoever wrote its newest message, as a reply.
+        arguments.insert("body".into(), json!(words));
+        (MAIL, published(MAIL, &place.record), "answer")
     } else {
         arguments.insert("text".into(), json!(words));
         arguments.insert(

@@ -298,7 +298,8 @@ pub struct StoreEvent {
 
 /// The events of the changes to the resources the store document `record` of `app` keeps,
 /// committed since `since`: one for each resource a stamped change touched, named by its id and
-/// kind, by whoever invoked the verb. The store keeps no time in its changes, so a document's
+/// kind, by whoever invoked the verb, and with `incoming_message` set for a resource an outside
+/// origin made or wrote a body into. The store keeps no time in its changes, so a document's
 /// first look (no `since`) reports only the changes at its heads: the write that woke the runner,
 /// never what the document held before. What the resource holds after the change is the
 /// runner's to read from the store ([`Workspaces::store_wrote`]).
@@ -332,6 +333,12 @@ pub fn store_events(
             let Some(kind) = touch.kind else {
                 continue;
             };
+            // A store keeps no facets beside its changes. A resource an outside origin wrote a
+            // body into or made is what the workspace received from outside, so a trigger on a
+            // kind of messages reads the change as an incoming message; an origin's write of a
+            // flag on a message it already held is not one.
+            let incoming_message =
+                stamp.verb == collab_types::Stamp::ORIGIN_VERB && (touch.made || touch.content);
             events.push(StoreEvent {
                 change: change.hash(),
                 write: (stamp.invocation.clone(), stamp.moment),
@@ -351,7 +358,7 @@ pub fn store_events(
                     after: None,
                     origin: None,
                     caused_by: None,
-                    incoming_message: false,
+                    incoming_message,
                     housekeeping: false,
                     shortcut: None,
                     invocation: None,

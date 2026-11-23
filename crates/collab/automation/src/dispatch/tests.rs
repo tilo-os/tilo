@@ -666,9 +666,10 @@ tilo_test_env::scenario! {
 }
 
 /// What an agent's own triggers watch, as its person saves them: a message that mentions it, a
-/// message in its direct conversation and a task assigned to it, each a change of the record's
-/// kind narrowed by the change's own fields. Neither its own answers nor a copy another writer
-/// mirrors back of one wakes it, and a message carried in for someone who is no member does.
+/// message in its direct conversation, a task assigned to it and a message that arrived in the
+/// workspace's mailbox, each a change of the record's kind narrowed by the change's own fields.
+/// Neither its own answers nor a copy another writer mirrors back of one wakes it, and a message
+/// carried in for someone who is no member does.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -700,7 +701,12 @@ fn a_filter_narrows_a_change_by_what_it_holds_and_where_it_came_from() {
         "item.assignee",
         Test::Is(json!("agent:scout")),
     );
-    let shortcut = program(vec![mention, direct, assigned]);
+    let arrived = watch(
+        "tl.so.tilo.mail.Message",
+        "incoming_message",
+        Test::Is(json!(true)),
+    );
+    let shortcut = program(vec![mention, direct, assigned, arrived]);
     let fired = |event: &DocumentEvent| {
         dispatch(&as_shortcut(&shortcut), Event::Record(event))
             .firings
@@ -752,6 +758,27 @@ fn a_filter_narrows_a_change_by_what_it_holds_and_where_it_came_from() {
         json!({"assignee": "agent:scout", "title": "Tidy"}),
     );
     assert_eq!(fired(&given), [2], "a task assigned to it");
+    let received = said(
+        person("bob"),
+        "tl.so.tilo.mail.Message",
+        Value::Null,
+        json!({"subject": "Hello"}),
+    );
+    assert_eq!(fired(&received), [3], "a message the workspace received");
+    let written = said(
+        person("bob"),
+        "tl.so.tilo.mail.Message",
+        Value::Null,
+        json!({"subject": "Hello"}),
+    );
+    assert!(
+        fired(&DocumentEvent {
+            incoming_message: false,
+            ..written
+        })
+        .is_empty(),
+        "a message written here, that nobody received"
+    );
 
     // Its own answer in its direct conversation, and a copy of it mirrored back by whatever
     // carries the conversation elsewhere, fire nothing.
@@ -797,6 +824,7 @@ fn a_change_filter_reads_back_from_its_text() {
             ("item.person", Test::Is(json!("agent:scout"))),
             ("arguments.body", Test::Has(json!("scout"))),
             ("origin", Test::Lacks(json!("agent:"))),
+            ("incoming_message", Test::Is(json!(true))),
         ]),
     };
     let text = crate::text::trigger_line(&trigger);

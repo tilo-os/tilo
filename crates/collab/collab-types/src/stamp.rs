@@ -70,6 +70,11 @@ pub struct Group {
 }
 
 impl Stamp {
+    /// The verb of a change an app's outside origin wrote (`$origin`): what its service said,
+    /// taken into the resources of the types it keeps. A store keeps no facets, so a change
+    /// stamped with it is how a received message reaches a trigger.
+    pub const ORIGIN_VERB: &str = "$origin";
+
     /// The text a stamp names `actor` by as its invoker.
     #[must_use]
     pub fn by(actor: &tilo_action_policy::Actor) -> String {

@@ -703,7 +703,9 @@ pub enum TriggerSpec {
 /// ([`ChangeFilter::subject`]): `by`, the member who made it (`agent:<id>`, a person's id,
 /// `app:<id>`); `origin`, the member whose change this one copies, when a writer copied one
 /// ([`tilo_actions::ORIGIN_FACET`]); `arguments.<name>`, what the verb was given; `item.<name>`,
-/// the changed item's fields after the change; `kind`, the record's kind.
+/// the changed item's fields after the change; `kind`, the record's kind;
+/// `incoming_message`, whether the change brings a message the workspace received, as a store's
+/// own outside-origin write says it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ChangeFilter(pub Vec<FieldTest>);
@@ -753,7 +755,7 @@ impl ChangeFilter {
     }
 
     /// What the tests read of a change: who made it, whose change it copies, the verb's
-    /// arguments, the changed item and the record's kind.
+    /// arguments, the changed item, the record's kind and whether it brings a received message.
     #[must_use]
     pub fn subject(event: &crate::dispatch::DocumentEvent) -> serde_json::Value {
         serde_json::json!({
@@ -762,6 +764,7 @@ impl ChangeFilter {
             "kind": event.kind,
             "arguments": event.arguments,
             "item": event.after,
+            "incoming_message": event.incoming_message,
         })
     }
 

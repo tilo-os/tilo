@@ -587,3 +587,202 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     );
     host.shutdown().await;
 }
+
+/// An agent's new-mail trigger fires once on a message the workspace received — written by
+/// Mail's outside origin — and starts one turn of the agent, placed once workspace-wide. The
+/// same kind of record written here, by a member, is no message anyone received, and an
+/// account's own copy of what it sent is no new mail: neither fires anything.
+#[cfg(feature = "agents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, end to end, reads as one test"
+)]
+async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
+    use crate::agents::triggered::{self, Where};
+    use tilo_action_policy::Actor as Who;
+    use tilo_app_id::AppId;
+    use tilo_resource_store::wire::Command;
+    use tilo_resource_store::{Cell, Resource, Stamp, Value};
+
+    const MAIL: &str = "so.tilo.mail";
+    const THREAD: &str = "tl.so.tilo.mail.Thread";
+    const MESSAGE: &str = "tl.so.tilo.mail.Message";
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(crate::workspaces::fixtures::TestGroupKeys::default());
+    let (key, cert) = governor();
+    let host = crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, keys).await;
+    let workspaces = host.workspaces();
+    workspaces.set_member_device(Arc::new(crate::workspaces::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    workspaces.run_agents(Arc::new(ActsAsScout));
+    let workspace = workspaces.create("Mail").await.unwrap().workspace;
+    assert!(
+        workspaces.join_keys(&workspace).await,
+        "the workspace's keys open what its records are kept in"
+    );
+    save_signed(
+        workspaces,
+        &workspace,
+        triggered::triggers("scout", "Scout"),
+        (&key, &cert),
+    )
+    .await;
+    let started = Arc::new(Started::default());
+    let mut runner = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    );
+    runner.arm().await;
+    let mut writes = workspaces.document_writes();
+
+    let person = tilo_actions::Acting::person(hex::encode(cert.user_public_key)).by;
+    // Mail's outside origin, as the store stamps what its servers give it.
+    let mail = Who::App(AppId::new(MAIL));
+    // `by` writes the resource `id` of `kind` in `parent` with `fields`, stamped with `verb`
+    // and by `by`.
+    let put = async |kind: &str,
+                     id: &str,
+                     parent: Option<&str>,
+                     verb: &str,
+                     by: &Who,
+                     fields: Vec<(&str, &str)>| {
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
+        let stamp = Stamp {
+            verb: verb.to_owned(),
+            invoker: Stamp::by(by),
+            invocation: invocation.0.to_string(),
+            at: jiff::Timestamp::now().to_string(),
+            ..Stamp::default()
+        };
+        let command = Command::Put {
+            kind: kind.into(),
+            id: id.into(),
+            resource: Resource {
+                readers: "*".into(),
+                parent: parent.map(str::to_owned),
+                order: None,
+                fields: fields
+                    .into_iter()
+                    .map(|(name, value)| (name.to_owned(), Cell::One(Value::Text(value.into()))))
+                    .collect(),
+            },
+            stamp,
+        };
+        let caller = tilo_actions::remote::Caller::authenticated(
+            cert.user_public_key,
+            cert.device_public_key,
+        )
+        .in_workspace(&workspace);
+        let context =
+            crate::apps::services::ResourceRequestContext::authenticated(MAIL, &workspace, caller)
+                .serving(vec![(invocation, by.clone())]);
+        workspaces
+            .resource_command(&context, command)
+            .await
+            .unwrap();
+    };
+    // What the runner fires on the records written since it last looked.
+    let mut fired = async |runner: &mut Runner| {
+        let mut since = Vec::new();
+        while let Ok(write) = writes.try_recv() {
+            since.push(write);
+        }
+        let before = started.0.lock().unwrap().len();
+        runner.pass(since).await;
+        started.0.lock().unwrap()[before..].to_vec()
+    };
+
+    put(THREAD, "thread-1", None, "sync", &mail, Vec::new()).await;
+    let now = fired(&mut runner).await;
+    assert!(
+        now.is_empty(),
+        "a conversation arriving asks nothing: {now:?}"
+    );
+
+    // A message the workspace's mailbox received: one firing, and one turn to take.
+    put(
+        MESSAGE,
+        "message-1",
+        Some("thread-1"),
+        Stamp::ORIGIN_VERB,
+        &mail,
+        vec![("mailbox", "inbox"), ("subject", "Hello")],
+    )
+    .await;
+    let firings = fired(&mut runner).await;
+    assert_eq!(firings.len(), 1, "{firings:?}");
+    assert_eq!(firings[0].shortcut, triggered::shortcut_id("scout"));
+    let event: DocumentEvent =
+        serde_json::from_value(firings[0].inputs[tilo_automation::EVENT_INPUT].clone()).unwrap();
+    assert!(event.incoming_message, "{event:?}");
+    let place = Where::of(&event).unwrap();
+    assert_eq!(
+        (
+            place.app.as_str(),
+            place.record.as_str(),
+            place.item.as_str()
+        ),
+        (MAIL, "thread-1", "message-1"),
+        "the answer goes to the conversation the message arrived in"
+    );
+    assert_eq!(triggered::asker(&event), None, "no member sent it");
+    let turn = triggered::started_here(workspaces, "scout", &place);
+    assert!(
+        crate::work::takes_turn(workspaces, &workspace, &turn)
+            .await
+            .is_ok(),
+        "this device takes the agent's turn"
+    );
+    crate::work::keep_done(workspaces, &workspace, &turn, json!({"answered": true}))
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            crate::work::takes_turn(
+                workspaces,
+                &workspace,
+                &triggered::started_here(workspaces, "scout", &place)
+            )
+            .await,
+            Err(crate::work::NotTaken::Done(_))
+        ),
+        "a turn answered is taken by no device again"
+    );
+
+    // The same kind written here, by a member delivering a message, is no mail that arrived.
+    put(
+        MESSAGE,
+        "message-2",
+        Some("thread-1"),
+        "deliver_message",
+        &person,
+        vec![("mailbox", "inbox")],
+    )
+    .await;
+    let now = fired(&mut runner).await;
+    assert!(
+        now.is_empty(),
+        "a message written here fires nothing: {now:?}"
+    );
+
+    // The account's own copy of what it sent, synced back from its server, is no new mail.
+    put(
+        MESSAGE,
+        "message-3",
+        Some("thread-1"),
+        Stamp::ORIGIN_VERB,
+        &mail,
+        vec![("mailbox", "sent")],
+    )
+    .await;
+    let now = fired(&mut runner).await;
+    assert!(
+        now.is_empty(),
+        "a copy of what the account sent fires nothing: {now:?}"
+    );
+    host.shutdown().await;
+}
