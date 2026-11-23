@@ -4,7 +4,7 @@
 
 use serde_json::json;
 
-use crate::agent_fixture::{act, claude_code, events, ls, watch};
+use crate::agent_fixture::{act, events, ls, mcp_agent, watch};
 use crate::host;
 
 /// Two agent runs of the person's logged-in computer each list the workspace and run what they
@@ -81,7 +81,8 @@ fn a_restarted_computers_first_calls_go_through() {
 }
 
 /// A computer's agent is one of the workspace's agents from its first call there: the workspace's
-/// own list of its agents names it, once, as its person's, for the client it connects as.
+/// own list of its agents names it, once, as its person's, under the one id its runs share, and
+/// the session it is here in is labelled as the client connects.
 #[test]
 fn a_computers_agent_is_listed_once_where_it_acts() {
     host::run(|host| async move {
@@ -89,9 +90,11 @@ fn a_computers_agent_is_listed_once_where_it_acts() {
         let (_, failed) = act(&agent, "device#info", json!({})).await;
         assert!(!failed, "the computer's agent acts in the workspace");
 
-        let id = claude_code(host.person());
-        let key = host.page_key("Visa backend");
-        let (status, listed) = key
+        // One agent, whatever client connects to it: a client names its session, never the
+        // identity it acts as.
+        let id = mcp_agent(host.person());
+        let page = host.page_key("Visa backend");
+        let (status, listed) = page
             .get(&format!("/v1/workspaces/{}/resources", host.workspace()))
             .await;
         assert_eq!(status, 200, "{listed}");
@@ -101,9 +104,23 @@ fn a_computers_agent_is_listed_once_where_it_acts() {
             1,
             "the workspace's agents list the computer's agent once, by {id}: {listed}"
         );
+
+        // Its session is the client's: who is here calls it what the client named itself.
+        let result = page
+            .tool(
+                "tilo_watch",
+                &json!({"workspace": host.workspace(), "wait_ms": 500}),
+            )
+            .await;
+        let (watched, failed) = crate::agent_fixture::said(&result);
+        assert!(!failed, "the page watches who is here: {watched}");
         assert!(
-            listed.contains("Claude Code"),
-            "the workspace lists the agent as the client it connects as: {listed}"
+            events(&watched)
+                .into_iter()
+                .filter(|event| event["kind"] == "presence")
+                .flat_map(|event| event["here"].as_array().cloned().unwrap_or_default())
+                .any(|member| member["name"] == "Claude Code" && member["kind"] == "agent"),
+            "who is here labels the session as its client: {watched}"
         );
     });
 }

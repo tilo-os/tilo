@@ -50,9 +50,9 @@ pub fn events(answered: &str) -> Vec<Value> {
     parsed["events"].as_array().cloned().unwrap_or_default()
 }
 
-/// The id the person's agent `Claude Code` goes by, acting for the person whose root is `person`
-/// (hex): one agent on every computer of theirs.
-pub fn claude_code(person: &str) -> String {
+/// The id the computer's agent goes by, acting for the person whose root is `person` (hex): one
+/// agent of theirs in every workspace, whichever client connects to it.
+pub fn mcp_agent(person: &str) -> String {
     let root: [u8; 32] = hex::decode(person).unwrap().try_into().unwrap();
-    tilo_actions::remote::device_agent_id(&root, "Claude Code")
+    tilo_actions::remote::device_agent_id(&root, "mcp")
 }
