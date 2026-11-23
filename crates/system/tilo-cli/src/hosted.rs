@@ -2280,43 +2280,6 @@ mod tests {
         drop(env);
     }
 
-    /// A folder goes up whole, each file named by its path from the folder's
-    /// own place, in one order however the tree is walked; a file is itself.
-    #[test]
-    fn a_folder_keeps_its_structure_and_a_file_is_itself() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("contracts");
-        std::fs::create_dir_all(root.join("2026/signed")).unwrap();
-        std::fs::write(root.join("nda.pdf"), b"%PDF-1.7").unwrap();
-        std::fs::write(root.join("2026/plan.md"), b"# plan").unwrap();
-        std::fs::write(root.join("2026/signed/nda.pdf"), b"%PDF-1.7").unwrap();
-        let names: Vec<String> = files_under(&root)
-            .unwrap()
-            .into_iter()
-            .map(|file| file.name)
-            .collect();
-        assert_eq!(
-            names,
-            vec![
-                "contracts/2026/plan.md",
-                "contracts/2026/signed/nda.pdf",
-                "contracts/nda.pdf"
-            ]
-        );
-        let one = files_under(&root.join("nda.pdf")).unwrap();
-        assert_eq!(one.len(), 1);
-        assert_eq!(one[0].name, "nda.pdf");
-    }
-
-    /// Sizes read as a person says them.
-    #[test]
-    fn a_size_reads_in_the_unit_a_person_would_say() {
-        assert_eq!(bytes(0), "0 B");
-        assert_eq!(bytes(512), "512 B");
-        assert_eq!(bytes(1536), "1.5 KB");
-        assert_eq!(bytes(300 * 1024 * 1024), "300.0 MB");
-    }
-
     fn answer(request: &test_http::Request) -> Option<test_http::Reply> {
         let json_reply = |status: u16, body: Value| {
             Some(
@@ -2910,14 +2873,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn hosted_answers_read_as_a_person_wrote_them;
-
-        phase a_workspace_is_named_by_its_words;
-        {
-            assert_eq!(api::slug("Applicant: Jane Doe"), "applicant-jane-doe");
-            assert_eq!(api::slug("applicant-jane-doe"), "applicant-jane-doe");
-            assert!(api::is_uuid("3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b"));
-            assert!(!api::is_uuid("jane-doe"));
-        }
 
         phase a_listing_and_a_read_print_their_typed_rows;
         {

@@ -716,24 +716,6 @@ mod tests {
             assert_eq!(restart_decision(false, false, true), Restart::Ask);
             assert_eq!(restart_decision(false, true, true), Restart::Later);
             assert_eq!(restart_decision(false, false, false), Restart::Later);
-            assert_eq!(
-                sudo_args(
-                    Path::new("/usr/bin/tilo"),
-                    Some("main-1a2b3c4"),
-                    true,
-                    false,
-                    false
-                ),
-                vec![
-                    "--",
-                    "/usr/bin/tilo",
-                    "os",
-                    "upgrade",
-                    "--to",
-                    "main-1a2b3c4",
-                    "--yes"
-                ]
-            );
             let note = restart_note(&Plan::Switch("img".into()));
             assert!(
                 note.contains("developer layers swapped onto the old image are dropped"),

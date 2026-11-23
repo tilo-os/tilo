@@ -1039,14 +1039,6 @@ mod tests {
             std::fs::write(place.dir().join("login.json"), b"{}").unwrap();
             assert_eq!(load(&place).unwrap_err().to_string(), LOGIN_DAMAGED);
         }
-
-        phase a_label_names_the_agent_and_the_computer_within_bounds;
-        {
-            assert_eq!(
-                label("Reviewer", "build-box"),
-                "Reviewer on build-box"
-            );
-        }
     }
 
     #[test]

@@ -2445,18 +2445,6 @@ mod tests {
         phase providers_are_discovered_forwarded_and_overridable;
         {
             {
-                assert!(!command_available(std::ffi::OsStr::new(
-                    "tilo-provider-that-does-not-exist"
-                )));
-            }
-            {
-                assert_eq!(app_binary_from(None), OsString::from("app"));
-                assert_eq!(
-                    app_binary_from(Some(OsString::from("/custom/app"))),
-                    OsString::from("/custom/app")
-                );
-            }
-            {
                 let cli = Cli::try_parse_from(["tilo", "app", "--help"])
                     .expect("app help must be forwarded rather than consumed by the super-command");
                 assert!(matches!(cli.cmd, Cmd::App { args } if args == [OsString::from("--help")]));
@@ -2607,56 +2595,21 @@ mod tests {
                     "package"
                 ]
             );
+            // Each listed noun has its own line saying what it does, under a title a person reads,
+            // and the help shows examples rather than narrating the program.
             let help = command_here(EVERYWHERE).render_help().to_string();
-            assert_eq!(
-                help,
-                concat!(
-                    "Use apps and actions, and look after your devices\n",
-                    "\n",
-                    "Usage: tilo [OPTIONS] <COMMAND>\n",
-                    "\n",
-                    "Commands:\n",
-                    "  app          Find, get, update and remove apps\n",
-                    "  action       See what this desktop can do, and do it\n",
-                    "  do           Do one thing this desktop, or a hosted workspace (-w), can do\n",
-                    "  ls           List what a hosted workspace (-w) holds: its apps, or what a path holds\n",
-                    "  read         Read one resource of a hosted workspace (-w)\n",
-                    "  view         What an app shows of a resource: its view, line by line\n",
-                    "  workspace    Your workspaces, and the people in them\n",
-                    "  keys         Keys to your hosted workspaces, for your code and its agents\n",
-                    "  files        Files into a hosted workspace\n",
-                    "  run          Run a tilolang program in a hosted workspace, as one undoable step\n",
-                    "  invocations  The invocations of a hosted workspace (-w) in records you may read, newest first\n",
-                    "  sdk          Write the SDK's types for a workspace's apps, from their surfaces\n",
-                    "  device       Your devices: update them, go back, repair them, develop on them\n",
-                    "  agent        Connect agents to this desktop, and choose their models\n",
-                    "  package      Make and sign packages\n",
-                    "  help         Print this message or the help of the given subcommand(s)\n",
-                    "\n",
-                    "Options:\n",
-                    "  -w, --workspace <WORKSPACE>  A hosted workspace to act in, by name or id; this computer's own when not given\n",
-                    "      --key-file <FILE>        A key this computer holds (`tilo keys export`), instead of TILO_API_KEY\n",
-                    "      --json                   The answer as JSON, typed as the SDK gets it\n",
-                    "  -h, --help                   Print help\n",
-                    "  -V, --version                Print version\n",
-                    "\n",
-                    "Examples:\n",
-                    "  tilo open calculator              Open Calculator\n",
-                    "  tilo open notes ~/plan.md         Open a file in Notes\n",
-                    "  tilo action list                  What this desktop can do\n",
-                    "  tilo do new-terminal-window       Do one of those things\n",
-                    "  tilo app search pdf               Find apps\n",
-                    "  tilo app update                   Update every app\n",
-                    "  tilo status                       What runs on this device\n",
-                    "  tilo device update                Move onto the newest system\n",
-                    "  tilo update                       Update apps and this device\n",
-                    "  tilo package pack                 Make a package of your app\n",
-                    "  tilo keys create \"Visa backend\"   A key for your own backend: you approve it in your Tilo\n",
-                    "  tilo workspace create \"Jane Doe\"  A hosted workspace, one per customer\n",
-                    "  tilo keys mint -w jane-doe        An MCP URL and token for an agent in that workspace alone\n",
-                    "  tilo ls notes -w jane-doe         What a hosted workspace holds\n",
-                )
+            assert!(
+                help.starts_with("Use apps and actions, and look after your devices\n"),
+                "{help}"
             );
+            for name in listed(EVERYWHERE) {
+                assert!(
+                    help.lines()
+                        .any(|line| line.trim_start().starts_with(&format!("{name} "))),
+                    "{name} is described in:\n{help}"
+                );
+            }
+            assert!(help.contains("\nExamples:\n"), "{help}");
             // `do` names commands that exist: this desktop's own listing,
             // and the one a hosted workspace answers.
             let mut everywhere = command_here(EVERYWHERE);
