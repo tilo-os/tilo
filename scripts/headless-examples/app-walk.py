@@ -819,16 +819,14 @@ class Walk:
         except Failed:
             return {"invoked": invoked}
 
-    def op_read(self, value) -> dict:
-        """What the app says it keeps now, read back through its own reads: a
-        step that names words (`{"has": ["Hello team"]}`) fails unless one of
-        the reads the app publishes holds every one of them, so what the person
-        made is proved from the app's own state and not only from what its
-        window draws. An app reads its parts apart — a tracker's issues beside
-        its record — so every read it offers is tried, and the one that held
-        the words is kept."""
-        asked = pick(value, self.variant) if isinstance(value, dict) else {}
-        wanted = list(asked.get("has") or [])
+    def op_holds(self, value) -> dict:
+        """What the app says it keeps now, read back through its own reads: the
+        words named (`["Hello team"]`) must be in one of the reads the app
+        publishes, so what the person made is proved from the app's own state
+        and not only from what its window draws. An app reads its parts apart —
+        a tracker's issues beside its record — so every read it offers is
+        tried, and the one that held them is kept."""
+        wanted = [pick(word, self.variant) for word in value]
         reads = [row for row in self.session.actions("")
                  if row.get("app_id") == self.v["id"]
                  and address(row) is not None and address(row)[1] == "read"]
@@ -844,7 +842,7 @@ class Walk:
                 continue
             missing = held_in(read, wanted)
             if not missing:
-                return {"read_holds": wanted, "read_at": resource}
+                return {"holds": wanted, "read_at": resource}
             tried[resource] = f"does not hold {missing}"
         raise Failed(f"no read of {self.v['id']} holds {wanted}: {tried}")
 
