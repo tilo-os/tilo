@@ -34,6 +34,7 @@ tilo_resource::declared_names!();
 
 pub mod model;
 pub mod printers;
+pub mod scanners;
 pub mod update;
 pub mod users;
 
@@ -57,8 +58,8 @@ use update::Update;
 
 /// The resources' ids.
 pub use tilo_system_resources::{
-    DISK_UNLOCK, DRIVES, HOST_INFO, KEYBOARD_BACKLIGHT, POWER, PRINTERS, STORAGE, SYSTEM_UPDATE,
-    TIME_ZONE, USERS,
+    DISK_UNLOCK, DRIVES, HOST_INFO, KEYBOARD_BACKLIGHT, POWER, PRINTERS, SCANNERS, STORAGE,
+    SYSTEM_UPDATE, TIME_ZONE, USERS,
 };
 
 /// How often a device whose zone follows it looks where it is again: often
@@ -78,6 +79,7 @@ enum Part {
     Storage,
     DiskUnlock,
     HostInfo,
+    Scanners,
 }
 
 /// What the machine reads now.
@@ -93,6 +95,7 @@ pub struct Readings {
     pub storage: tilo_system_resources::storage::Storage,
     pub disk_unlock: tilo_system_resources::disk_unlock::DiskUnlock,
     pub host_info: tilo_system_resources::host_info::HostInfo,
+    pub scanners: tilo_system_resources::scanners::Scanners,
 }
 
 fn read(system: &dyn System, live_profiles: bool) -> Readings {
@@ -115,6 +118,7 @@ fn read(system: &dyn System, live_profiles: bool) -> Readings {
         storage: system.storage(),
         disk_unlock: system.disk_unlock(),
         host_info: system.host_info(),
+        scanners: system.scanners(),
     }
 }
 
@@ -365,6 +369,10 @@ impl SystemService {
                 &mut readings.disk_unlock.problem,
             ),
             Part::HostInfo => (&mut readings.host_info.pending, &mut readings.host_info.problem),
+            Part::Scanners => (
+                &mut readings.scanners.pending,
+                &mut readings.scanners.problem,
+            ),
         }
     }
 
@@ -622,6 +630,24 @@ impl SystemService {
 
     /// Look for printers on the network, landing them beside a fresh reading of the queues
     /// and jobs.
+    /// Look for the machine's scanners again, and land what SANE answers.
+    fn start_scanners(&mut self, action: &str) -> Started {
+        self.readings.scanners.pending.push(action.to_owned());
+        let action = action.to_owned();
+        let live_active = self.live_active_flag();
+        self.worker.run(move |system| {
+            let readings = read(system, is_live(live_active.as_ref()));
+            Landed::Changed {
+                part: Part::Scanners,
+                action,
+                result: Ok(()),
+                readings: Box::new(readings),
+                live_power_mode: None,
+            }
+        });
+        Started::Accepted
+    }
+
     fn start_find(&mut self, action: &str) -> Started {
         self.readings.printers.pending.push(action.to_owned());
         let action = action.to_owned();
@@ -822,6 +848,12 @@ pub fn storage_surface() -> tilo_resource::surface::Surface {
     >(STORAGE, "Storage")
 }
 
+/// The `scanners` resource's surface, as a shell reads it over `so.tilo.device`.
+#[must_use]
+pub fn scanners_surface() -> tilo_resource::surface::Surface {
+    scanners::surface()
+}
+
 /// The `drives` resource's surface, as a shell reads it over `so.tilo.device`.
 #[must_use]
 pub fn drives_surface() -> tilo_resource::surface::Surface {
@@ -998,6 +1030,7 @@ impl Service for SystemService {
             storage::resource(&self.readings.storage),
             disk_unlock::resource(&self.readings.disk_unlock),
             host_info::resource(&self.readings.host_info),
+            scanners::resource(&self.readings.scanners),
         ]
     }
 
@@ -1013,6 +1046,7 @@ impl Service for SystemService {
             STORAGE => Some(reading(&self.readings.storage)),
             DISK_UNLOCK => Some(reading(&self.readings.disk_unlock)),
             HOST_INFO => Some(reading(&self.readings.host_info)),
+            SCANNERS => Some(reading(&self.readings.scanners)),
             _ => None,
         }
     }
@@ -1143,6 +1177,23 @@ impl Service for SystemService {
                     }
                     tilo_system_resources::printers::PrintAction::RetryJob { job } => {
                         Ok(self.start_print(id, PrintChange::RetryJob(job)))
+                    }
+                }
+            }
+            SCANNERS => {
+                if !self.readings.scanners.available {
+                    return Err(ApiError::Unavailable {
+                        code: "no_scanner".into(),
+                        reason: "This computer has no scanner service".into(),
+                    });
+                }
+                let action = decode::<tilo_system_resources::scanners::ScanAction>(
+                    &published, resource, action, arguments,
+                )?;
+                let id = action.id();
+                match action {
+                    tilo_system_resources::scanners::ScanAction::FindScanners => {
+                        Ok(self.start_scanners(id))
                     }
                 }
             }

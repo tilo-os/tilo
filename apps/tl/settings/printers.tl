@@ -128,6 +128,29 @@ view printers_pane() {
     if let problem = printers.problem {
         ui.StatusLine(problem, status: .error)
     }
+    let scanner_service = device.scanners
+    ui.Section("Scanners") {
+        if not scanner_service.available {
+            ui.Text("This computer has no scanner service", role: .caption, secondary: true)
+        } else {
+            if scanner_service.found.is_empty() {
+                ui.EmptyState("No scanner found", icon: .scan_line, inline: true)
+            }
+            for scanner in scanner_service.found {
+                ui.ListRow(
+                    scanner.description,
+                    secondary: scanner.device,
+                    icon: .scan_line,
+                )
+            }
+            ui.Button("Look for scanners", icon: .search) {
+                on press: device.find_scanners(device.scanners)
+            }
+            if let problem = scanner_service.problem {
+                ui.StatusLine(problem, status: .error)
+            }
+        }
+    }
 }
 
 /// How a queue stands, in a word.

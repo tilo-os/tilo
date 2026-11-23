@@ -100,6 +100,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("printers", "Printers", "printers"),
     ("users", "Users", "users"),
     ("drives", "Drives", "drives"),
+    ("scanners", "Scanners", "scanners"),
     ("storage", "Storage", "storage"),
     ("disk_unlock", "DiskUnlock", "disk-unlock"),
     ("host_info", "HostInfo", "host-info"),

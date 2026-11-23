@@ -167,6 +167,11 @@ pub trait System: Send + Sync {
         Printers::default()
     }
 
+    /// The document scanners this machine reaches, and whether a scanner service answers.
+    fn scanners(&self) -> tilo_system_resources::scanners::Scanners {
+        tilo_system_resources::scanners::Scanners::default()
+    }
+
     /// The printers found on the network now.
     ///
     /// # Errors
@@ -389,6 +394,10 @@ impl System for OsSystem {
             jobs: jobs.map(jobs_reading).unwrap_or_default(),
             ..Printers::default()
         }
+    }
+
+    fn scanners(&self) -> tilo_system_resources::scanners::Scanners {
+        crate::scanners::reading()
     }
 
     fn find_printers(&self) -> Result<Vec<DiscoveredPrinter>, String> {

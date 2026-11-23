@@ -25,8 +25,8 @@ use crate::device::{
 use crate::model::{KeyboardLight, Power, PowerMode, Time};
 use crate::update::Update;
 use crate::{
-    DISK_UNLOCK, DRIVES, HOST_INFO, KEYBOARD_BACKLIGHT, POWER, PRINTERS, STORAGE, SYSTEM_UPDATE,
-    SystemService, TIME_ZONE, USERS,
+    DISK_UNLOCK, DRIVES, HOST_INFO, KEYBOARD_BACKLIGHT, POWER, PRINTERS, SCANNERS, STORAGE,
+    SYSTEM_UPDATE, SystemService, TIME_ZONE, USERS,
 };
 
 /// A machine in memory, in Amsterdam unless told it is elsewhere.
@@ -243,6 +243,17 @@ impl System for Fake {
 
     fn printers(&self) -> Printers {
         self.printers.lock().unwrap().clone()
+    }
+
+    fn scanners(&self) -> tilo_system_resources::scanners::Scanners {
+        tilo_system_resources::scanners::Scanners {
+            available: true,
+            found: vec![tilo_system_resources::scanners::ScannerShown {
+                device: "epson2:libusb:001:004".into(),
+                description: "Epson Perfection V39".into(),
+            }],
+            ..tilo_system_resources::scanners::Scanners::default()
+        }
     }
 
     fn find_printers(&self) -> Result<Vec<DiscoveredPrinter>, String> {
@@ -1250,6 +1261,46 @@ fn the_printers_resource_reads_the_queues_and_jobs_and_takes_their_actions() {
     let printers = service.read(PRINTERS).unwrap();
     assert_eq!(printers["problem"], json!("The queue is gone"));
     assert_eq!(printers["pending"], json!([]));
+}
+
+#[test]
+fn the_scanners_resource_lists_what_sane_finds_and_looks_again() {
+    let fake = Fake::new();
+    let mut service = service(&fake);
+    let scanners = service.read(SCANNERS).unwrap();
+    assert_eq!(scanners["available"], json!(true));
+    assert_eq!(
+        scanners["found"][0]["device"],
+        json!("epson2:libusb:001:004")
+    );
+    assert_eq!(
+        scanners["found"][0]["description"],
+        json!("Epson Perfection V39")
+    );
+
+    let published = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == SCANNERS)
+        .expect("the scanners resource is published");
+    assert!(
+        published
+            .actions
+            .iter()
+            .any(|action| action.id.as_str() == "find-scanners"),
+        "the look-again action is published"
+    );
+
+    assert_eq!(
+        service.invoke(SCANNERS, "find-scanners", &Map::new()),
+        Ok(Started::Accepted)
+    );
+    assert_eq!(
+        service.read(SCANNERS).unwrap()["pending"],
+        json!(["find-scanners"])
+    );
+    service.settle();
+    assert_eq!(service.read(SCANNERS).unwrap()["pending"], json!([]));
 }
 
 #[test]

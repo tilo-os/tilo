@@ -12,7 +12,10 @@ use serde::{Deserialize, Serialize};
 pub const PRINTERS: &str = "printers";
 
 /// How a queue stands.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+    tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum QueueState {
     /// Ready for work.
@@ -27,7 +30,9 @@ pub enum QueueState {
 }
 
 /// What a queue's device says its consumables hold: a toner or ink cartridge, the paper.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 pub struct PrinterSupply {
     /// What the supply is, as the device names it: "Black cartridge", "Paper".
     pub name: String,
@@ -38,7 +43,9 @@ pub struct PrinterSupply {
 }
 
 /// A queue: one printer this computer sends jobs to.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 pub struct PrinterQueue {
     pub name: String,
     pub state: QueueState,
@@ -60,7 +67,10 @@ pub struct PrinterQueue {
 }
 
 /// How a job stands.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+    tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum JobState {
     /// Waiting for its turn.
@@ -79,7 +89,9 @@ pub enum JobState {
 }
 
 /// A job: one document in a queue.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 pub struct PrintJob {
     /// The job's number, as CUPS names it.
     pub id: String,
@@ -97,7 +109,9 @@ pub struct PrintJob {
 }
 
 /// A printer found on the network that this computer does not print to yet.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 pub struct DiscoveredPrinter {
     /// Its address, which adding it takes.
     pub uri: String,
@@ -107,7 +121,9 @@ pub struct DiscoveredPrinter {
 }
 
 /// What the computer's printers read as now.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 pub struct Printers {
     /// Whether this computer can print at all: a printer service answers here.
     #[serde(default)]
