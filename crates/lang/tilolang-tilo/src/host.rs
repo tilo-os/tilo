@@ -771,11 +771,13 @@ impl HostInner {
         ) {
             return edit;
         }
+        // A scenario is a fixture: only a seed runs it, straight on the runtime. Through the
+        // API, as a person, an agent or another app calls, it is no action.
         let action = package
             .meta
             .actions
             .iter()
-            .find(|action| action.id == request.action_id)
+            .find(|action| action.id == request.action_id && !action.scenario)
             .ok_or_else(|| format!("no action {}", request.action_id))?;
         // A requirement is the app's, and the app is what can read it: an action published
         // while its rule held, or one an agent addresses by name, is refused here, before it

@@ -235,3 +235,51 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
         .collect();
     assert_eq!(counts, ["6", "2", "3"]);
 }
+
+/// A scenario is a fixture: a seed runs it straight on the runtime, and nothing else may. Through
+/// the API, as the person at the window, the app's own code or an agent calls an action, it is
+/// no action, so none of them stages a workspace's data.
+#[test]
+fn only_a_seed_runs_a_scenario() {
+    let packages = vec![app!("discussion"), app!("notes")];
+    let (replica, loaded) = Replica::new("ada", Workspace::new(), &packages);
+    let notebook = replica.host.root_of("so.tilo.notes").unwrap();
+    replica.commit();
+    let meta = &loaded.last().unwrap().meta;
+    let scenario = meta.scenarios.first().expect("Notes stages a week of notes");
+    let kind = tilolang_tilo::meta::MetaExt::kind_of(meta, "Notebook");
+    let args = serde_json::Map::new();
+    let agent = tilolang_tilo::publish::Caller {
+        actor: tilolang_tilo::runtime::ids::MemberId::agent("task-1").into(),
+        agent: true,
+        on_behalf_of: Some("ada".to_owned()),
+    };
+    for caller in [None, Some(&agent)] {
+        let refused = replica
+            .host
+            .plan(&tilolang_tilo::publish::PlanRequest {
+                app: "so.tilo.notes",
+                kind: &kind,
+                action_id: &scenario.action,
+                resource: Some(&notebook.doc),
+                args: &args,
+                caller,
+                from: None,
+            })
+            .unwrap_err();
+        assert!(refused.contains("no action"), "{refused}");
+    }
+    assert!(
+        meta.callable_actions().all(|action| action.id != scenario.action),
+        "another app's code cannot name it"
+    );
+    // The seed itself still runs it.
+    replica
+        .host
+        .runtime()
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (scenario.action.as_str(), vec![]),
+        )
+        .unwrap();
+}
