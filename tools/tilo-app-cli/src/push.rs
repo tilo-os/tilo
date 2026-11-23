@@ -84,7 +84,8 @@ pub fn run_push(args: PushArgs) -> Result<Value> {
             }
         }
         let title = format!("push {}", describe(&push));
-        let answer = Box::pin(calls.act(&workspace, APPS, push.action, &argument, &title)).await?;
+        let answer =
+            Box::pin(calls.act(Some(&workspace), APPS, push.action, &argument, &title)).await?;
         Ok::<_, anyhow::Error>((workspace, answer))
     });
     let (workspace, answer) = answer.map_err(|error| {
@@ -116,7 +117,7 @@ async fn upload_app_file(calls: &Calls, workspace: &str, bytes: &[u8]) -> Result
             "data": hex::encode(piece),
         });
         Box::pin(calls.act(
-            workspace,
+            Some(workspace),
             APPS,
             "upload",
             &argument,
