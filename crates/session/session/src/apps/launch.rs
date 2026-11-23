@@ -227,7 +227,7 @@ impl Apps {
                 let held = launch.as_ref().and_then(|launch| launch.instance);
                 // The card says why in the person's words; what the app said is its Details.
                 let said = sentence_not_opened(&event);
-                let details = event.said.stderr.join("\n");
+                let details = details_said(&event);
                 if let Some(tab) = held.filter(|_| could_not_open) {
                     self.could_not_open_saying(
                         Some(tab),
@@ -380,6 +380,18 @@ fn log_what_it_said(event: &Event) {
             tilo_app_launch::output::line(&event.app, "stderr", said)
         );
     }
+}
+
+/// The Details of a launch `event` that ended before its window came: what the app and the
+/// launcher said, line for line, without the launcher's own name on its lines.
+fn details_said(event: &Event) -> String {
+    event
+        .said
+        .stderr
+        .iter()
+        .map(|said| said.strip_prefix(launcher::SAYS).unwrap_or(said))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// What the person reads of why the launch `event` ended before its window came: the cause the

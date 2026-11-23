@@ -49,17 +49,23 @@ pub enum Refusal {
     Policy,
 }
 
+/// Said one fact to a line, the cause first. A line to type or paste is indented four spaces, so
+/// whoever shows it can set it apart and offer to copy it.
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Setting { name, on } => write!(
                 f,
-                "{name} turns them off. Turn them on with: sudo sysctl {name}={on}. Keep it on \
-                 across restarts with the line \"{name} = {on}\" in a file under /etc/sysctl.d/"
+                "{name} turns off user namespaces, which every app's sandbox is made in.\n\
+                 Turn them on:\n    \
+                 sudo sysctl {name}={on}\n\
+                 Keep them on after a restart with this line in a file under /etc/sysctl.d/:\n    \
+                 {name} = {on}"
             ),
             Self::Policy => f.write_str(
-                "a container or security policy refuses them, and no kernel setting here turns \
-                 them off: allow user namespaces where this computer runs",
+                "A container or security policy refuses user namespaces, which every app's \
+                 sandbox is made in. No kernel setting here turns them off.\n\
+                 Allow user namespaces where this computer runs.",
             ),
         }
     }
@@ -151,11 +157,19 @@ mod tests {
             ("kernel.apparmor_restrict_unprivileged_userns", "1"),
         ]);
         let refusal = setting_off(ubuntu).expect("the restriction is named");
+        let said = refusal.to_string();
+        let lines: Vec<_> = said.lines().collect();
         assert!(
-            refusal
-                .to_string()
-                .contains("sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0."),
-            "{refusal}"
+            lines[0].starts_with("kernel.apparmor_restrict_unprivileged_userns turns off"),
+            "the cause comes first: {said}"
+        );
+        assert!(
+            lines.contains(&"    sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0"),
+            "the command is a line of its own, to copy: {said}"
+        );
+        assert!(
+            lines.contains(&"    kernel.apparmor_restrict_unprivileged_userns = 0"),
+            "so is the line for /etc/sysctl.d/: {said}"
         );
         let none_left = computer(&[("user.max_user_namespaces", "0")]);
         assert_eq!(

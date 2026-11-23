@@ -1218,3 +1218,94 @@ fn a_screen_reader_hears_what_the_screen_says_before_the_workspace_synced() {
     );
     crate::workspace_sync::set(None);
 }
+
+/// Open Details read in the order they were said, one line each, from one left edge; a command to
+/// run stands on a line of its own, and its Copy action, pressed or called, copies exactly it.
+#[test]
+fn details_keep_their_lines_and_copy_the_command_they_name() {
+    use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
+    let clipboard = std::sync::Arc::new(InProcessClipboard::default());
+    let services = crate::process::ProcessServices::null().with_clipboard(clipboard.clone());
+    crate::process::scoped(&services, || {
+        let mut es = EmptyState::new("Settings could not open")
+            .with_action("Try again")
+            .on_view(|| {})
+            .with_details(
+                "kernel.x turns off user namespaces, which every app's sandbox is made in.\n\
+                 Turn them on:\n    sudo sysctl kernel.x=1\n\
+                 Keep them on after a restart with this line in a file under /etc/sysctl.d/:\n    \
+                 kernel.x = 1\n\
+                 so.tilo.settings ended: exit status: 1",
+            );
+        lay_out(&mut es, 600.0, 520.0);
+        es.toggle_details();
+        lay_out(&mut es, 600.0, 520.0);
+        let lines = es.details_lines.clone();
+        let said: Vec<_> = lines.iter().map(|line| line.text.as_str()).collect();
+        assert_eq!(
+            said,
+            [
+                "kernel.x turns off user namespaces, which every app's sandbox is made in.",
+                "Turn them on:",
+                "sudo sysctl kernel.x=1",
+                "Keep them on after a restart with this line in a file under /etc/sysctl.d/:",
+                "kernel.x = 1",
+                "so.tilo.settings ended: exit status: 1",
+            ]
+        );
+        assert!(
+            lines
+                .windows(2)
+                .all(|pair| pair[0].rect.y1 <= pair[1].rect.y0
+                    && (pair[0].rect.x0 - pair[1].rect.x0).abs() < f64::EPSILON),
+            "one line under the other, from one left edge: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|line| es.get_rect().contains(line.rect.center())),
+            "inside the state: {lines:?}"
+        );
+        let command = lines
+            .iter()
+            .position(|line| line.text == "sudo sysctl kernel.x=1")
+            .unwrap();
+        assert_eq!(lines[command].kind, details::Kind::Verbatim);
+        assert!(lines.iter().filter(|line| line.copy.is_some()).count() == 2);
+
+        let copy = lines[command].copy.unwrap();
+        dispatch(&mut es, &cursor(copy.center()));
+        assert!(dispatch(&mut es, &mouse_press()), "the press copies");
+        assert_eq!(
+            clipboard.text(ClipboardTarget::Clipboard).as_deref(),
+            Some("sudo sysctl kernel.x=1")
+        );
+        assert!(es.details_open(), "copying leaves the Details open");
+
+        let node = Widget::accessibility(&es).unwrap();
+        let file_line = node
+            .children
+            .iter()
+            .find(|child| child.value.as_deref() == Some("kernel.x = 1"))
+            .expect("the line for the file is read exactly");
+        assert!(file_line.state.read_only);
+        let target = file_line.children[0].action_target.clone().unwrap();
+        assert!(
+            crate::widget::controls::control_action_bindings(&es)
+                .iter()
+                .any(|binding| binding.control_id == target),
+            "copying it is a control agents find"
+        );
+        assert!(Widget::perform_semantic_action(
+            &mut es,
+            &target,
+            &crate::a11y::Action::Activate,
+            &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            clipboard.text(ClipboardTarget::Clipboard).as_deref(),
+            Some("kernel.x = 1")
+        );
+    });
+}

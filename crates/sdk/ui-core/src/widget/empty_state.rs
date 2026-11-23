@@ -166,6 +166,7 @@ struct StackStyle {
     min_button: f64,
     glyph: f64,
     details: TextStyle,
+    details_lines: details::Style,
     details_toggle: f64,
     details_gap: f64,
 }
@@ -190,6 +191,7 @@ impl StackStyle {
             min_button: f64::from(theme.tokens.metrics.min_pointer_target),
             glyph: if inline { glyph } else { glyph * 2.0 },
             details: wrapped(TextRole::Caption),
+            details_lines: details::Style::new(theme),
             details_toggle: crate::widget::ButtonFace::height(
                 crate::widget::ControlSize::Small,
                 theme,
@@ -210,12 +212,15 @@ impl StackStyle {
         };
         let mut height = self.gap + self.details_toggle;
         if open {
-            let (_, text_h) = text_renderer.measure_style(
+            let (_, lines_h) = details::lay_out(
+                text_renderer,
+                &self.details_lines,
                 details,
-                Some(details_width(width, self.gap)),
-                &self.details,
+                0.0,
+                0.0,
+                f64::from(details_width(width, self.gap)),
             );
-            height += self.details_gap + f64::from(text_h);
+            height += self.details_gap + lines_h;
         }
         height
     }
@@ -228,7 +233,6 @@ impl StackStyle {
             message: centered(layout.message),
             action: centered(layout.action),
             hint: centered(layout.hint),
-            details: centered(layout.details),
             ..layout
         }
     }
@@ -957,6 +961,10 @@ pub struct EmptyState {
     details_open: bool,
     details_rect: Rect,
     details_focused: bool,
+    /// The open Details' lines, where the layout put them.
+    details_lines: Vec<details::Line>,
+    /// The verbatim line whose Copy action the pointer is over.
+    copy_hovered: Option<usize>,
     id: Option<String>,
     drawn: Option<Painted>,
 }
@@ -970,6 +978,7 @@ struct Painted {
     details_hovered: bool,
     details_open: bool,
     details_focused: bool,
+    copy_hovered: Option<usize>,
 }
 
 impl EmptyState {
@@ -1012,6 +1021,8 @@ impl EmptyState {
             details_open: false,
             details_rect: Rect::ZERO,
             details_focused: false,
+            details_lines: Vec::new(),
+            copy_hovered: None,
             id: None,
             drawn: None,
         };
@@ -1029,6 +1040,7 @@ impl EmptyState {
             details_hovered: self.details.is_some() && self.details_rect.contains(self.last_cursor),
             details_open: self.details_open,
             details_focused: self.details_focused,
+            copy_hovered: self.copy_hovered,
         }
     }
 
@@ -1089,8 +1101,8 @@ impl EmptyState {
         let details = self.details.clone();
         let open = self.details_open;
         let content = self.content();
-        let (action, disclosure) = if rect.width() <= 0.0 || rect.height() <= 0.0 {
-            (Rect::ZERO, Rect::ZERO)
+        let (action, disclosure, lines) = if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            (Rect::ZERO, Rect::ZERO, Vec::new())
         } else {
             let waiting = crate::workspace_sync::waiting();
             let content = shown_content(&content, waiting.as_ref());
@@ -1111,20 +1123,40 @@ impl EmptyState {
                 let disclosure = details.as_deref().map_or(Rect::ZERO, |_| {
                     details_toggle(text, &theme, rect, placed.bottom, inline, open)
                 });
-                (placed.action.unwrap_or(Rect::ZERO), disclosure)
+                let lines = match details.as_deref() {
+                    Some(details) if open => {
+                        let style = StackStyle::layout(&theme, inline);
+                        let width = f64::from(details_width(rect.width(), style.gap));
+                        details::lay_out(
+                            text,
+                            &style.details_lines,
+                            details,
+                            rect.center().x - width / 2.0,
+                            disclosure.y1 + style.details_gap,
+                            width,
+                        )
+                        .0
+                    }
+                    _ => Vec::new(),
+                };
+                (placed.action.unwrap_or(Rect::ZERO), disclosure, lines)
             })
         };
         self.action_rect = action;
         self.details_rect = disclosure;
+        if self.copy_hovered.is_some_and(|line| line >= lines.len()) {
+            self.copy_hovered = None;
+        }
+        self.details_lines = lines;
         if let Some(engine) = &mut self.engine {
             engine.apply_layout_external(self.action_rect);
         }
     }
 
     fn paint_details(&self, ctx: &mut PaintCtx<'_>) {
-        let Some(details) = self.details.as_deref() else {
+        if self.details.is_none() {
             return;
-        };
+        }
         let theme = ctx.theme;
         let style = StackStyle::resolved(theme, self.inline);
         let toggle = self.details_rect;
@@ -1142,16 +1174,72 @@ impl EmptyState {
             );
         }
         if self.details_open {
-            let width = details_width(self.rect.width(), style.gap);
-            let x = self.rect.center().x - f64::from(width) / 2.0;
-            ctx.text(
-                details,
-                &style.details,
-                theme.text_dim,
-                Point::new(x, toggle.y1 + style.details_gap),
-                Some(width),
+            let lines = &style.details_lines;
+            let well = crate::tokens::colors::over(
+                theme.tokens.colors.surfaces.content,
+                theme.text_primary,
+                0.06,
             );
+            for (index, line) in self.details_lines.iter().enumerate() {
+                let wrap = Some(crate::num::f32_of_f64(line.wrap));
+                match line.kind {
+                    details::Kind::Words => {
+                        ctx.text(&line.text, &lines.words, theme.text_dim, line.origin, wrap);
+                    }
+                    details::Kind::Verbatim => {
+                        ctx.fill_round(line.rect, lines.radius, well);
+                        ctx.text(
+                            &line.text,
+                            &lines.verbatim,
+                            theme.text_primary,
+                            line.origin,
+                            wrap,
+                        );
+                    }
+                }
+                if let Some(copy) = line.copy {
+                    let hovered = self.copy_hovered == Some(index);
+                    if hovered {
+                        ctx.fill_round(
+                            copy,
+                            lines.radius,
+                            theme.tokens.colors.intent.selection_hover,
+                        );
+                    }
+                    let glyph = Rect::from_center_size(copy.center(), (lines.icon, lines.icon));
+                    let ink = if hovered {
+                        theme.text_primary
+                    } else {
+                        theme.text_dim
+                    };
+                    Icon::Copy.draw(ctx.scene, ctx.transform, glyph, ink);
+                }
+            }
         }
+    }
+
+    /// The verbatim line whose Copy action stands at `point`.
+    fn copy_at(&self, point: Point) -> Option<usize> {
+        self.details_lines
+            .iter()
+            .position(|line| line.copy.is_some_and(|copy| copy.contains(point)))
+    }
+
+    fn copy_control_id(&self, line: usize) -> String {
+        format!("{}:copy:{line}", self.details_control_id())
+    }
+
+    /// Copy the verbatim line `line` of the open Details.
+    fn copy_line(&self, line: usize) -> bool {
+        let Some(line) = self
+            .details_lines
+            .get(line)
+            .filter(|line| line.kind == details::Kind::Verbatim)
+        else {
+            return false;
+        };
+        crate::text_selection::clipboard_copy(&line.text);
+        true
     }
 
     /// Something failed to load or open: `title` says what, `detail` says
@@ -1564,7 +1652,7 @@ impl Widget for EmptyState {
                 crate::a11y::AccessNode::new(crate::a11y::Role::Button).with_name(label.clone()),
             );
         }
-        if let Some(details) = &self.details {
+        if self.details.is_some() {
             let label = crate::i18n::widget_text("empty-state-details");
             let rect = self.details_rect;
             let part = cx.words(
@@ -1578,13 +1666,18 @@ impl Widget for EmptyState {
                     .with_name(label)
                     .with_state(crate::a11y::AccessState::new().expanded(self.details_open)),
             );
-            if self.details_open {
-                let height = f64::from(m.details.line_height_px());
+            for (index, line) in self.details_lines.iter().enumerate() {
+                let (tag, style, ink) = match line.kind {
+                    details::Kind::Words => ("p", &m.details_lines.words, theme.text_dim),
+                    details::Kind::Verbatim => {
+                        ("code", &m.details_lines.verbatim, theme.text_primary)
+                    }
+                };
                 cx.words(
-                    "details",
-                    "p",
-                    Rect::new(x0, rect.y1, x1, rect.y1 + height),
-                    TextLook::new(details.clone(), &m.details, Some(theme.text_dim)),
+                    &format!("details-{index}"),
+                    tag,
+                    line.rect,
+                    TextLook::new(line.text.clone(), style, Some(ink)),
                 );
             }
         }
@@ -1774,6 +1867,17 @@ impl Widget for EmptyState {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = ctx.logical(position);
+                self.copy_hovered = self.copy_at(self.last_cursor);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.copy_at(self.last_cursor).is_some() => {
+                if let Some(line) = self.copy_at(self.last_cursor) {
+                    self.copy_line(line);
+                }
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1801,6 +1905,7 @@ impl Widget for EmptyState {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if (self.action_label.is_some() && self.action_target().contains(point))
             || (self.details.is_some() && self.details_rect.contains(point))
+            || self.copy_at(point).is_some()
         {
             Some(winit::window::CursorIcon::Pointer)
         } else {
@@ -1874,6 +1979,12 @@ impl Widget for EmptyState {
         {
             self.toggle_details();
             return true;
+        }
+        if matches!(action, crate::a11y::Action::Activate)
+            && let Some(line) =
+                (0..self.details_lines.len()).find(|&line| self.copy_control_id(line) == target)
+        {
+            return self.copy_line(line);
         }
         self.action_label.is_some()
             && self.action_control_id() == target
@@ -1976,6 +2087,24 @@ impl Widget for EmptyState {
                     )
                     .with_action_target(self.details_control_id()),
             );
+            // Each line to type or paste, as a value to read exactly and copy.
+            for (index, line) in self.details_lines.iter().enumerate() {
+                if line.kind != details::Kind::Verbatim {
+                    continue;
+                }
+                let copy = AccessNode::new(Role::Button)
+                    .with_name(widget_text("widget-copy"))
+                    .with_bounds(line.copy.unwrap_or(line.rect))
+                    .with_state(AccessState::new().focusable(true))
+                    .with_action_target(self.copy_control_id(index));
+                children.push(
+                    AccessNode::new(Role::TextInput)
+                        .with_value(line.text.clone())
+                        .with_bounds(line.rect)
+                        .with_state(AccessState::new().read_only(true))
+                        .with_children(vec![copy]),
+                );
+            }
         }
         if !children.is_empty() {
             node = node.with_children(children);
@@ -2067,6 +2196,14 @@ impl crate::widget::controls::ActionControls for EmptyState {
                 self.details_control_id(),
             ));
         }
+        // So is copying a line of them.
+        for (index, line) in self.details_lines.iter().enumerate() {
+            if line.kind == details::Kind::Verbatim {
+                bindings.push(crate::widget::ControlBindingMetadata::semantic(
+                    self.copy_control_id(index),
+                ));
+            }
+        }
         bindings
     }
     fn refresh_control_action_availability(
@@ -2085,4 +2222,5 @@ impl crate::widget::controls::ActionControls for EmptyState {
 mod tests;
 
 mod component;
+mod details;
 pub use component::EmptyStateProps;

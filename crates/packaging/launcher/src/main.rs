@@ -1029,18 +1029,21 @@ fn report_launch_result(
             // How the app ended, said where its output goes: a signal leaves no exit code of its own,
             // and is folded into 1 below.
             if !status.success() {
+                // A sandbox this computer cannot make ends every app the same way: said by its
+                // own exit code, so whoever started the app names the cause. The cause and how to
+                // fix it come first, how the app ended last.
+                let refusal = launcher::user_namespaces::refusal().ok().flatten();
+                if let Some(refusal) = &refusal {
+                    for line in refusal.to_string().lines() {
+                        eprintln!("{}{line}", launcher::SAYS);
+                    }
+                }
                 eprintln!(
-                    "tilo-launcher: {} ended: {status}",
+                    "{}{} ended: {status}",
+                    launcher::SAYS,
                     app_id.unwrap_or("the app")
                 );
-                // A sandbox this computer cannot make ends every app the same way: said by its
-                // own exit code, so whoever started the app names the cause.
-                if let Ok(Some(refusal)) = launcher::user_namespaces::refusal() {
-                    eprintln!(
-                        "tilo-launcher: this computer allows no user namespaces, which every app's \
-                         sandbox is made in"
-                    );
-                    eprintln!("tilo-launcher: {refusal}");
+                if refusal.is_some() {
                     return exit_code(launcher::user_namespaces::EXIT_NO_USER_NAMESPACES);
                 }
             }
