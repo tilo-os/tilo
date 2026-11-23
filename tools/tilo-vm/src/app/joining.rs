@@ -46,18 +46,19 @@ impl Drop for Joining {
 }
 
 impl App {
-    /// The person this machine adds VMs as: its own login, else tilo-vm's throwaway one, made
-    /// now when there is none.
-    fn adding_machine(&self) -> Result<Machine, CliError> {
+    /// The person this machine adds VMs as: its own login, else tilo-vm's throwaway one under
+    /// `Err(dir)`, made now when there is none. That one's workspace is founded by the daemon the
+    /// first `tilo device add` starts, so it is read once that printed its ticket.
+    fn adding_machine(&self) -> Result<Result<Machine, std::path::PathBuf>, CliError> {
         if let Some(machine) = &self.machine {
-            return Ok(machine.clone());
+            return Ok(Ok(machine.clone()));
         }
         if let Some(machine) = Machine::here()? {
-            return Ok(machine);
+            return Ok(Ok(machine));
         }
         let dir = config::own_identity_dir(&self.registry_path);
         if let Some(machine) = Machine::own(&dir)? {
-            return Ok(machine);
+            return Ok(Ok(machine));
         }
         let output = Command::new(tilo_program())
             .args(["login", "--new-identity", "--json"])
@@ -77,12 +78,7 @@ impl App {
                 dir.display()
             );
         }
-        Machine::own(&dir)?.ok_or_else(|| CliError::NotLoggedIn {
-            detail: format!(
-                "tilo login --new-identity left no identity in {}",
-                dir.display()
-            ),
-        })
+        Ok(Err(dir))
     }
 
     /// Give `vm` a ticket for its next boot, when it is no device yet and its hypervisor has a
@@ -92,10 +88,14 @@ impl App {
         if vm.entry.device.is_some() || adapter.capabilities().credentials.is_none() {
             return Ok(None);
         }
-        let machine = self.adding_machine()?;
+        let adding = self.adding_machine()?;
         let mut child = Command::new(tilo_program())
             .args(["device", "add", "--json"])
-            .envs(machine.env())
+            .envs(
+                adding
+                    .as_ref()
+                    .map_or_else(|dir| own_env(dir), Machine::env),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -112,14 +112,27 @@ impl App {
                 }
             }
         });
-        let joining = Joining {
+        let mut joining = Joining {
             child,
             said,
-            workspace: machine.workspace,
+            workspace: String::new(),
         };
         let ticket = joining
             .next("ticket", Duration::from_secs(60))?
             .ok_or_else(|| join_failed(vm, "tilo device add printed no ticket"))?;
+        joining.workspace = match adding {
+            Ok(machine) => machine.workspace,
+            Err(dir) => {
+                Machine::own(&dir)?
+                    .ok_or_else(|| CliError::NotLoggedIn {
+                        detail: format!(
+                            "tilo device add founded no workspace in {}",
+                            dir.display()
+                        ),
+                    })?
+                    .workspace
+            }
+        };
         self.update_entry(&vm.name, |entry| entry.ticket = Some(ticket))?;
         self.redefine_for_ticket(vm)?;
         Ok(Some(joining))

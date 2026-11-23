@@ -54,9 +54,9 @@ impl std::fmt::Debug for Machine {
     }
 }
 
-/// The file the daemon of a computer with no login keeps the workspace it founded in, beside its
-/// login.
-const FOUNDED: &str = "workspace";
+/// The file the daemon of a computer with no login keeps the workspace it founded for a person in,
+/// beside its login: this, then the person's key in hex.
+const FOUNDED: &str = "workspace-of-";
 
 impl Machine {
     /// The person's own login on this machine (`tilo login`), or the person whose root it holds;
@@ -97,12 +97,15 @@ impl Machine {
                 scope,
             }));
         }
-        let Ok(founded) = std::fs::read_to_string(place.dir().join(FOUNDED)) else {
+        let Ok(user) = tilo_device_identity::persist::read_public_key(&place.keys().user_pubkey)
+        else {
+            return Ok(None);
+        };
+        let founded = place.dir().join(format!("{FOUNDED}{}", hex::encode(user)));
+        let Ok(founded) = std::fs::read_to_string(founded) else {
             return Ok(None);
         };
         let key = tilo_device_identity::persist::load_device_key(place.keys())
-            .map_err(|error| login_error(&anyhow::anyhow!("{error}")))?;
-        let user = tilo_device_identity::persist::read_public_key(&place.keys().user_pubkey)
             .map_err(|error| login_error(&anyhow::anyhow!("{error}")))?;
         Ok(Some(Self {
             key,
