@@ -1334,6 +1334,8 @@ mod tests {
     use crate::FormatProvider;
     use crate::package::ZipPackage;
     use std::collections::BTreeMap;
+    use tilo_doc::document::MarkValue;
+    use tilo_doc::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_COMMENT, MARK_NOTE_REF};
     use tilo_doc::{AttrVal, DocSnapshot, Document};
 
     fn import_odt(bytes: &[u8], doc: &mut Document) {
@@ -1350,6 +1352,10 @@ mod tests {
         OdtCodec
             .export(doc.as_ref(), &tilo_content::NoContent)
             .unwrap()
+    }
+
+    fn part(bytes: &[u8], name: &str) -> String {
+        String::from_utf8(ZipPackage::read(bytes).unwrap().get(name).unwrap().to_vec()).unwrap()
     }
 
     type Norm = Vec<(
@@ -1394,452 +1400,21 @@ mod tests {
             .collect()
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn text_and_paragraph_formatting_roundtrips_through_odt() {
-        {
-            let styles = r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>"#;
-            let body = concat!(
-                r#"<text:h text:outline-level="1">Title</text:h>"#,
-                r#"<text:p>a <text:span text:style-name="T1">bold</text:span> b</text:p>"#,
-                r#"<text:list><text:list-item><text:p>one</text:p></text:list-item>"#,
-                r#"<text:list-item><text:p>two</text:p></text:list-item></text:list>"#,
-            );
-            let odt = minimal_odt_styled(styles, body);
-
-            let mut d = Document::new();
-            import_odt(&odt, &mut d);
-            let m1 = norm(&d.materialize());
-
-            let exported = export_odt(&d);
-            let c = ZipPackage::read(&exported).unwrap();
-            assert_eq!(c.parts[0].0, "mimetype", "exported .odt has mimetype first");
-            assert!(c.get("content.xml").is_some());
-
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let m2 = norm(&d2.materialize());
-            assert_eq!(m1, m2, "model round-trips through .odt export then import");
-        }
-        {
-            use tilo_doc::document::MarkValue;
-            let mut d = Document::new();
-            let id = d.insert_block(None, "paragraph");
-            d.splice_text(&id, 0, 0, "styled");
-            {
-                let mut dm = d.as_mut();
-                dm.set_attr(&id, "align", "center");
-                dm.add_mark(&id, 0, 6, "fontSize", 22_i64);
-                dm.add_mark(&id, 0, 6, "fontFamily", "serif");
-            }
-
-            let exported = export_odt(&d);
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let snap = d2.materialize();
-            let b = &snap.blocks[0];
-            assert_eq!(b.text, "styled");
-            assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("center".into())));
+    /// Assert every `(name, start, end, value)` mark is on the block whose text is `text`.
+    fn assert_marks(snap: &DocSnapshot, text: &str, want: &[(usize, usize, &str, MarkValue)]) {
+        let b = snap
+            .blocks
+            .iter()
+            .find(|b| b.text == text)
+            .unwrap_or_else(|| panic!("no block {text:?} in {snap:?}"));
+        for (start, end, name, value) in want {
             assert!(
+                b.marks.iter().any(|m| m.name == *name
+                    && m.start == *start
+                    && m.end == *end
+                    && m.value == *value),
+                "{text:?} lacks {name} {start}..{end} = {value:?}: {:?}",
                 b.marks
-                    .iter()
-                    .any(|m| m.name == "fontSize" && m.value == MarkValue::Int(22)),
-                "{:?}",
-                b.marks
-            );
-            assert!(
-                b.marks
-                    .iter()
-                    .any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())),
-                "{:?}",
-                b.marks
-            );
-        }
-        {
-            use tilo_doc::document::MarkValue;
-            // A run with `highlight` + a `super` run + a paragraph-level `line_spacing` attr must all survive the .odt export → import cycle.
-            let mut d = Document::new();
-            let id = d.insert_block(None, "paragraph");
-            d.splice_text(&id, 0, 0, "E=mc2");
-            {
-                let mut dm = d.as_mut();
-                dm.add_mark(&id, 0, 5, "highlight", "#ffff00"); // whole run highlighted
-                dm.add_mark(&id, 4, 5, "super", true); // the exponent
-                dm.set_attr(&id, "line_spacing", 1.5_f64);
-            }
-
-            let exported = export_odt(&d);
-            let c = ZipPackage::read(&exported).unwrap();
-            let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
-            assert!(
-                content.contains(r##"fo:background-color="#ffff00""##),
-                "highlight bg: {content}"
-            );
-            assert!(
-                content.contains(r#"style:text-position="super"#),
-                "super position: {content}"
-            );
-            assert!(
-                content.contains(r#"fo:line-height="150%""#),
-                "line-height: {content}"
-            );
-
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let snap = d2.materialize();
-            let b = &snap.blocks[0];
-            assert_eq!(b.text, "E=mc2");
-            assert!(
-                b.marks.iter().any(|m| m.name == "highlight"
-                    && m.value == MarkValue::Str("#ffff00".into())
-                    && m.start == 0
-                    && m.end == 5),
-                "highlight mark: {:?}",
-                b.marks
-            );
-            assert!(
-                b.marks.iter().any(|m| m.name == "super"
-                    && m.value == MarkValue::Bool(true)
-                    && m.start == 4
-                    && m.end == 5),
-                "super mark: {:?}",
-                b.marks
-            );
-            assert_eq!(
-                b.attrs.get("line_spacing"),
-                Some(&AttrVal::Float(1.5)),
-                "line_spacing attr: {:?}",
-                b.attrs
-            );
-        }
-        {
-            use tilo_doc::document::MarkValue;
-            let mut d = Document::new();
-            let id = d.insert_block(None, "paragraph");
-            d.splice_text(&id, 0, 0, "H2O");
-            d.as_mut().add_mark(&id, 1, 2, "sub", true);
-
-            let exported = export_odt(&d);
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let snap = d2.materialize();
-            let b = &snap.blocks[0];
-            assert!(
-                b.marks.iter().any(|m| m.name == "sub"
-                    && m.value == MarkValue::Bool(true)
-                    && m.start == 1
-                    && m.end == 2),
-                "sub mark: {:?}",
-                b.marks
-            );
-        }
-        {
-            use tilo_doc::document::MarkValue;
-            let mut d = Document::new();
-            let id = d.insert_block(None, "paragraph");
-            d.splice_text(&id, 0, 0, "red text");
-            d.as_mut().add_mark(&id, 0, 3, "color", "#ff0000");
-
-            let exported = export_odt(&d);
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let b = &d2.materialize().blocks[0];
-            assert_eq!(b.text, "red text");
-            assert!(
-                b.marks.iter().any(|m| m.name == "color"
-                    && m.start == 0
-                    && m.end == 3
-                    && m.value == MarkValue::Str("#ff0000".into())),
-                "color survives round-trip: {:?}",
-                b.marks
-            );
-        }
-        {
-            use tilo_doc::document::MarkValue;
-            let mut d = Document::new();
-            let p = d.insert_block(None, "paragraph");
-            d.splice_text(&p, 0, 0, "styled");
-            {
-                let mut dm = d.as_mut();
-                dm.set_attr(&p, "align", "justify");
-                dm.add_mark(&p, 0, 6, "color", "#3366cc");
-                dm.add_mark(&p, 0, 6, "fontFamily", "serif");
-                dm.add_mark(&p, 0, 6, "fontSize", 20_i64);
-            }
-            let exported = export_odt(&d);
-            let cont = ZipPackage::read(&exported).unwrap();
-            let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-            assert!(
-                content.contains(r#"fo:text-align="justify""#),
-                "justify → fo:text-align justify: {content}"
-            );
-
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let b = &d2.materialize().blocks[0];
-            assert_eq!(b.text, "styled");
-            assert_eq!(
-                b.attrs.get("align"),
-                Some(&AttrVal::Str("justify".into())),
-                "justify survives: {:?}",
-                b.attrs
-            );
-            assert!(
-                b.marks
-                    .iter()
-                    .any(|m| m.name == "color" && m.value == MarkValue::Str("#3366cc".into())),
-                "colour: {:?}",
-                b.marks
-            );
-            assert!(
-                b.marks
-                    .iter()
-                    .any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())),
-                "serif: {:?}",
-                b.marks
-            );
-            assert!(
-                b.marks
-                    .iter()
-                    .any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)),
-                "20pt: {:?}",
-                b.marks
-            );
-        }
-        {
-            // A paragraph referencing a custom CRDT-native named style must export as a real ODF
-            // `style:style` (family paragraph) + `text:style-name`, and re-import with it still applied.
-            let mut d = Document::new();
-            let p = d.insert_block(None, "paragraph");
-            d.splice_text(&p, 0, 0, "fancy");
-            {
-                let mut dm = d.as_mut();
-                let mut props = BTreeMap::new();
-                props.insert("name".to_string(), AttrVal::Str("Fancy".into()));
-                props.insert("font".to_string(), AttrVal::Str("serif".into()));
-                props.insert("size".to_string(), AttrVal::Float(20.0));
-                props.insert("bold".to_string(), AttrVal::Bool(true));
-                props.insert("italic".to_string(), AttrVal::Bool(true));
-                props.insert("color".to_string(), AttrVal::Str("#ff0000".into()));
-                props.insert("align".to_string(), AttrVal::Str("center".into()));
-                props.insert("space_after".to_string(), AttrVal::Float(12.0));
-                dm.set_style("Fancy", &props);
-                dm.set_attr(&p, "style", "Fancy");
-            }
-
-            let exported = export_odt(&d);
-            let cont = ZipPackage::read(&exported).unwrap();
-            let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-            assert!(
-                content.contains(r#"text:style-name="Fancy""#),
-                "paragraph references the named style: {content}"
-            );
-            assert!(
-                content.contains(r#"<style:style style:name="Fancy" style:family="paragraph""#),
-                "named style defined as ODF style:style: {content}"
-            );
-            assert!(
-                content.contains(r#"fo:font-weight="bold""#)
-                    && content.contains(r#"fo:font-size="20pt""#),
-                "props emitted: {content}"
-            );
-
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let snap = d2.materialize();
-            let b = &snap.blocks[0];
-            assert_eq!(b.text, "fancy");
-            assert_eq!(
-                b.attrs.get("style"),
-                Some(&AttrVal::Str("Fancy".into())),
-                "block keeps its style ref: {:?}",
-                b.attrs
-            );
-
-            let st = snap
-                .styles
-                .get("Fancy")
-                .expect("style present in container after round-trip");
-            assert_eq!(st.get("name"), Some(&AttrVal::Str("Fancy".into())));
-            assert_eq!(st.get("font"), Some(&AttrVal::Str("serif".into())));
-            assert_eq!(st.get("size"), Some(&AttrVal::Float(20.0)));
-            assert_eq!(st.get("bold"), Some(&AttrVal::Bool(true)));
-            assert_eq!(st.get("italic"), Some(&AttrVal::Bool(true)));
-            assert_eq!(st.get("color"), Some(&AttrVal::Str("#ff0000".into())));
-            assert_eq!(st.get("align"), Some(&AttrVal::Str("center".into())));
-            assert_eq!(st.get("space_after"), Some(&AttrVal::Float(12.0)));
-
-            let exported2 = export_odt(&d2);
-            let mut d3 = Document::new();
-            import_odt(&exported2, &mut d3);
-            assert_eq!(
-                norm(&d2.materialize()),
-                norm(&d3.materialize()),
-                "named-style model is stable across a second round-trip"
-            );
-        }
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn hyperlinks_and_cross_references_roundtrip_through_odt() {
-        {
-            use tilo_doc::document::MarkValue;
-            let mut d = Document::new();
-            let id = d.insert_block(None, "paragraph");
-            d.splice_text(&id, 0, 0, "go home now");
-            d.as_mut().add_mark(&id, 3, 7, "link", "https://tilo.so/");
-
-            let exported = export_odt(&d);
-            let c = ZipPackage::read(&exported).unwrap();
-            let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
-            assert!(
-                content.contains(r#"<text:a xlink:href="https://tilo.so/">home</text:a>"#),
-                "exported a text:a element: {content}"
-            );
-
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let b = &d2.materialize().blocks[0];
-            assert_eq!(b.text, "go home now");
-            let link = b
-                .marks
-                .iter()
-                .find(|m| m.name == "link")
-                .expect("link survives round-trip");
-            assert_eq!((link.start, link.end), (3, 7), "{:?}", b.marks);
-            assert_eq!(link.value, MarkValue::Str("https://tilo.so/".into()));
-        }
-        {
-            use tilo_doc::document::MarkValue;
-            // A bookmark "intro" over a word + a cross-reference pointing at it must survive an `.odt` export+import with both names and ranges intact.
-            let mut d = Document::new();
-            let target = d.insert_block(None, "paragraph");
-            d.splice_text(&target, 0, 0, "the intro section");
-            d.add_bookmark(&target, 4, 9, "intro"); // over "intro"
-            let src = d.insert_block(Some(&target), "paragraph");
-            d.splice_text(&src, 0, 0, "see above");
-            d.add_cross_ref(&src, 4, 9, "intro"); // "above" → #intro
-
-            let exported = export_odt(&d);
-            let c = ZipPackage::read(&exported).unwrap();
-            let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
-            assert!(
-                content.contains(r#"<text:bookmark-start text:name="intro"/>"#),
-                "bookmark-start emitted: {content}"
-            );
-            assert!(
-                content.contains(r#"<text:bookmark-end text:name="intro"/>"#),
-                "bookmark-end emitted: {content}"
-            );
-            assert!(
-                content.contains(r##"<text:a xlink:href="#intro">above</text:a>"##),
-                "cross-ref text:a emitted: {content}"
-            );
-
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let snap = d2.materialize();
-            assert_eq!(
-                snap.bookmarks.len(),
-                1,
-                "one bookmark survives: {:?}",
-                snap.bookmarks
-            );
-            let bm = &snap.bookmarks[0];
-            assert_eq!(bm.name, "intro");
-            assert_eq!(
-                (bm.range.1, bm.range.2),
-                (4, 9),
-                "bookmark range over 'intro': {bm:?}"
-            );
-            let tb = snap
-                .blocks
-                .iter()
-                .find(|b| b.text == "the intro section")
-                .unwrap();
-            let mark = tb
-                .marks
-                .iter()
-                .find(|m| m.name == tilo_doc::schema::MARK_BOOKMARK)
-                .expect("bookmark mark present");
-            assert_eq!((mark.start, mark.end), (4, 9));
-            assert_eq!(mark.value, MarkValue::Str("intro".into()));
-            let sb = snap.blocks.iter().find(|b| b.text == "see above").unwrap();
-            let link = sb
-                .marks
-                .iter()
-                .find(|m| m.name == "link")
-                .expect("cross-ref link mark present");
-            assert_eq!(
-                (link.start, link.end),
-                (4, 9),
-                "cross-ref over 'above': {:?}",
-                sb.marks
-            );
-            assert_eq!(link.value, MarkValue::Str("#intro".into()));
-        }
-        {
-            // An href with `&` must be attribute-escaped on export and unescaped on import.
-            let mut d = Document::new();
-            let id = d.insert_block(None, "paragraph");
-            d.splice_text(&id, 0, 0, "link");
-            d.as_mut().add_mark(&id, 0, 4, "link", "https://x/?a=1&b=2");
-
-            let exported = export_odt(&d);
-            let c = ZipPackage::read(&exported).unwrap();
-            let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
-            assert!(
-                content.contains("a=1&amp;b=2"),
-                "ampersand escaped: {content}"
-            );
-
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let link = d2.materialize().blocks[0]
-                .marks
-                .iter()
-                .find(|m| m.name == "link")
-                .unwrap()
-                .value
-                .clone();
-            assert_eq!(
-                link,
-                tilo_doc::document::MarkValue::Str("https://x/?a=1&b=2".into())
-            );
-        }
-        {
-            use tilo_doc::document::MarkValue;
-            let mut d = Document::new();
-            let id = d.insert_block(None, "paragraph");
-            d.splice_text(&id, 0, 0, "click");
-            {
-                let mut dm = d.as_mut();
-                dm.add_mark(&id, 0, 5, "link", "http://q/");
-                dm.add_mark(&id, 0, 5, "strong", true);
-                dm.add_mark(&id, 0, 5, "color", "#0000ff");
-            }
-            let exported = export_odt(&d);
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let b = &d2.materialize().blocks[0];
-            assert_eq!(b.text, "click");
-            for name in ["link", "strong", "color"] {
-                assert!(
-                    b.marks
-                        .iter()
-                        .any(|m| m.name == name && m.start == 0 && m.end == 5),
-                    "{name} survives: {:?}",
-                    b.marks
-                );
-            }
-            assert_eq!(
-                b.marks.iter().find(|m| m.name == "link").unwrap().value,
-                MarkValue::Str("http://q/".into())
             );
         }
     }
@@ -1852,1154 +1427,11 @@ mod tests {
         0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn images_roundtrip_through_odt() {
-        {
-            let mut d = Document::new();
-            let p1 = d.insert_block(None, "paragraph");
-            d.splice_text(&p1, 0, 0, "before");
-            let img = d.insert_block(Some(&p1), "image");
-            let p3 = d.insert_block(Some(&img), "paragraph");
-            d.splice_text(&p3, 0, 0, "after");
-            let mut inputs = tilo_content::ContentInputs::new();
-            let hash = d.attach(&TINY_PNG, &mut inputs);
-            {
-                let mut dm = d.as_mut();
-                dm.set_attr(&img, "blob", hash.as_str());
-                dm.set_attr(&img, "alt", "a tiny red dot");
-                dm.set_attr(&img, "width", 64_i64);
-                dm.set_attr(&img, "height", 48_i64);
-            }
-
-            let exported = OdtCodec.export(d.as_ref(), &inputs).unwrap();
-
-            let cont = ZipPackage::read(&exported).unwrap();
-            let pic = cont
-                .parts
-                .iter()
-                .find(|(n, _)| {
-                    n.starts_with("Pictures/") && n.to_ascii_lowercase().ends_with(".png")
-                })
-                .expect("Pictures/<hash>.png written");
-            assert_eq!(pic.1, &TINY_PNG[..], "picture bytes written verbatim");
-            let manifest = std::str::from_utf8(cont.get("META-INF/manifest.xml").unwrap()).unwrap();
-            assert!(
-                manifest.contains(&pic.0) && manifest.contains("image/png"),
-                "picture registered in manifest: {manifest}"
-            );
-            let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-            assert!(
-                content.contains("<draw:frame"),
-                "draw:frame emitted: {content}"
-            );
-            assert!(
-                content.contains(&format!(r#"xlink:href="{}""#, pic.0)),
-                "image href matches part: {content}"
-            );
-
-            let mut d2 = Document::new();
-            let mut reimported = tilo_content::ContentInputs::new();
-            OdtCodec
-                .import(&exported, &mut d2.as_mut(), &mut reimported)
-                .unwrap();
-            let snap = d2.materialize();
-            assert_eq!(snap.blocks.len(), 3, "block count preserved: {snap:?}");
-            assert_eq!(snap.blocks[0].kind, "paragraph");
-            assert_eq!(snap.blocks[0].text, "before");
-            assert_eq!(snap.blocks[1].kind, "image", "middle block is the image");
-            assert_eq!(snap.blocks[2].kind, "paragraph");
-            assert_eq!(snap.blocks[2].text, "after");
-
-            let im = &snap.blocks[1];
-            let blob_hash = match im.attrs.get("blob") {
-                Some(AttrVal::Str(h)) => h.clone(),
-                other => panic!("image block missing blob attr: {other:?}"),
-            };
-            assert_eq!(blob_hash, hash, "blake3 hash stable across round-trip");
-            assert_eq!(
-                im.attrs.get("alt"),
-                Some(&AttrVal::Str("a tiny red dot".into()))
-            );
-            assert_eq!(
-                im.attrs.get("width"),
-                Some(&AttrVal::Int(64)),
-                "{:?}",
-                im.attrs
-            );
-            assert_eq!(
-                im.attrs.get("height"),
-                Some(&AttrVal::Int(48)),
-                "{:?}",
-                im.attrs
-            );
-
-            assert_eq!(
-                reimported.get(&blob_hash),
-                Some(&TINY_PNG[..]),
-                "image bytes survive the round-trip"
-            );
-        }
-        {
-            let mut d = Document::new();
-            let p1 = d.insert_block(None, "paragraph");
-            d.splice_text(&p1, 0, 0, "text");
-            let img = d.insert_block(Some(&p1), "image");
-            let mut inputs = tilo_content::ContentInputs::new();
-            let hash = d.attach(&TINY_PNG, &mut inputs);
-            {
-                let mut dm = d.as_mut();
-                dm.set_attr(&img, "blob", hash.as_str());
-                dm.set_attr(&img, "anchor", "paragraph");
-                dm.set_attr(&img, "wrap", "right");
-                dm.set_attr(&img, "width", 120_i64);
-                dm.set_attr(&img, "height", 80_i64);
-            }
-
-            let exported = OdtCodec.export(d.as_ref(), &inputs).unwrap();
-            let cont = ZipPackage::read(&exported).unwrap();
-            let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-            assert!(
-                content.contains(r#"text:anchor-type="paragraph""#),
-                "anchor-type emitted: {content}"
-            );
-            assert!(
-                content.contains(r#"style:family="graphic""#)
-                    && content.contains(r#"style:wrap="right""#),
-                "graphic style with wrap emitted: {content}"
-            );
-
-            let mut d2 = Document::new();
-            let mut reimported = tilo_content::ContentInputs::new();
-            OdtCodec
-                .import(&exported, &mut d2.as_mut(), &mut reimported)
-                .unwrap();
-            let snap = d2.materialize();
-            let im = snap
-                .blocks
-                .iter()
-                .find(|b| b.kind == "image")
-                .expect("image block present");
-            assert_eq!(
-                im.attrs.get("anchor"),
-                Some(&AttrVal::Str("paragraph".into())),
-                "{:?}",
-                im.attrs
-            );
-            assert_eq!(
-                im.attrs.get("wrap"),
-                Some(&AttrVal::Str("right".into())),
-                "{:?}",
-                im.attrs
-            );
-            assert_eq!(
-                im.attrs.get("width"),
-                Some(&AttrVal::Int(120)),
-                "{:?}",
-                im.attrs
-            );
-            assert_eq!(
-                im.attrs.get("height"),
-                Some(&AttrVal::Int(80)),
-                "{:?}",
-                im.attrs
-            );
-        }
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn lists_roundtrip_through_odt() {
-        {
-            let mut d = Document::new();
-            let item_a = d.insert_block(None, "list_item");
-            d.splice_text(&item_a, 0, 0, "a");
-            let item_b = d.insert_block(Some(&item_a), "list_item");
-            d.splice_text(&item_b, 0, 0, "b");
-            let nested = d.insert_block(Some(&item_b), "list_item");
-            d.splice_text(&nested, 0, 0, "nested");
-            d.as_mut().set_attr(&nested, "level", 1_i64);
-            let item_c = d.insert_block(Some(&nested), "list_item");
-            d.splice_text(&item_c, 0, 0, "c");
-
-            let exported = export_odt(&d);
-            let cont = ZipPackage::read(&exported).unwrap();
-            let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-            assert!(
-            content.contains(r"<text:list-item><text:p>b</text:p><text:list><text:list-item><text:p>nested</text:p></text:list-item></text:list></text:list-item>"),
-            "nested list emitted inside its parent item: {content}"
-        );
-
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let snap = d2.materialize();
-            let level = |b: &tilo_doc::snapshot::BlockView| match b.attrs.get("level") {
-                Some(AttrVal::Int(n)) => *n,
-                _ => 0i64,
-            };
-            let items: Vec<_> = snap
-                .blocks
-                .iter()
-                .filter(|b| b.kind == "list_item")
-                .map(|b| (b.text.clone(), level(b)))
-                .collect();
-            assert_eq!(
-                items,
-                vec![
-                    ("a".into(), 0i64),
-                    ("b".into(), 0),
-                    ("nested".into(), 1),
-                    ("c".into(), 0)
-                ],
-                "levels round-trip through nested ODF lists"
-            );
-        }
-        {
-            // An upper-roman ordered list starting at 3 must survive export then re-import — fidelity
-            // preservation: the editor renders decimal, but the numbering metadata must not be lost.
-            let mut d = Document::new();
-            let a = d.insert_block(None, "list_item");
-            d.splice_text(&a, 0, 0, "three");
-            let b = d.insert_block(Some(&a), "list_item");
-            d.splice_text(&b, 0, 0, "four");
-            {
-                let mut dm = d.as_mut();
-                for id in [&a, &b] {
-                    dm.set_attr(id, "ordered", true);
-                    dm.set_attr(id, "num_format", "upper-roman");
-                    dm.set_attr(id, "num_start", 3_i64);
-                    dm.set_attr(id, "num_restart", true);
-                }
-            }
-
-            let exported = export_odt(&d);
-            let cont = ZipPackage::read(&exported).unwrap();
-            let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-            assert!(
-                content.contains(r#"style:num-format="I""#),
-                "upper-roman list-style emitted: {content}"
-            );
-            assert!(
-                content.contains(r#"text:start-value="3""#),
-                "start value emitted: {content}"
-            );
-
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let snap = d2.materialize();
-            let items: Vec<_> = snap
-                .blocks
-                .iter()
-                .filter(|b| b.kind == "list_item")
-                .collect();
-            assert_eq!(items.len(), 2, "{snap:?}");
-            for it in &items {
-                assert_eq!(
-                    it.attrs.get("ordered"),
-                    Some(&AttrVal::Bool(true)),
-                    "still ordered: {:?}",
-                    it.attrs
-                );
-                assert_eq!(
-                    it.attrs.get("num_format"),
-                    Some(&AttrVal::Str("upper-roman".into())),
-                    "format survives: {:?}",
-                    it.attrs
-                );
-                assert_eq!(
-                    it.attrs.get("num_start"),
-                    Some(&AttrVal::Int(3)),
-                    "start survives: {:?}",
-                    it.attrs
-                );
-            }
-
-            let exported2 = export_odt(&d2);
-            let mut d3 = Document::new();
-            import_odt(&exported2, &mut d3);
-            assert_eq!(
-                norm(&d2.materialize()),
-                norm(&d3.materialize()),
-                "list-numbering model stable across a second round-trip"
-            );
-        }
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn document_properties_and_preserved_parts_roundtrip_through_odt() {
-        {
-            let mut d = Document::new();
-            let p = d.insert_block(None, "paragraph");
-            d.splice_text(&p, 0, 0, "body");
-            d.set_doc_prop("title", "My Title");
-            d.set_doc_prop("author", "Ada Lovelace");
-            d.set_doc_prop("subject", "Analytical Engine");
-            d.set_doc_prop("keywords", "computing, history");
-            d.set_doc_prop("created", "2020-01-02T03:04:05");
-            d.set_doc_prop("modified", "2021-06-07T08:09:10");
-            d.set_doc_prop("generator", "qdoc/1.0");
-
-            let exported = export_odt(&d);
-            let cont = ZipPackage::read(&exported).unwrap();
-            let meta =
-                std::str::from_utf8(cont.get("meta.xml").expect("meta.xml written")).unwrap();
-            assert!(
-                meta.contains("<dc:title>My Title</dc:title>"),
-                "title in meta.xml: {meta}"
-            );
-            assert!(
-                meta.contains("<dc:creator>Ada Lovelace</dc:creator>"),
-                "creator: {meta}"
-            );
-            assert!(
-                meta.contains("<dc:subject>Analytical Engine</dc:subject>"),
-                "subject: {meta}"
-            );
-            assert!(
-                meta.contains("<meta:keyword>computing, history</meta:keyword>"),
-                "keyword: {meta}"
-            );
-            assert!(
-                meta.contains("<meta:creation-date>2020-01-02T03:04:05</meta:creation-date>"),
-                "created: {meta}"
-            );
-            assert!(
-                meta.contains("<dc:date>2021-06-07T08:09:10</dc:date>"),
-                "modified: {meta}"
-            );
-            assert!(
-                meta.contains("<meta:generator>qdoc/1.0</meta:generator>"),
-                "generator: {meta}"
-            );
-            let manifest = std::str::from_utf8(cont.get("META-INF/manifest.xml").unwrap()).unwrap();
-            assert!(
-                manifest.contains("meta.xml"),
-                "meta.xml registered in manifest: {manifest}"
-            );
-
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let props = d2.doc_props();
-            assert_eq!(props.get("title").map(String::as_str), Some("My Title"));
-            assert_eq!(
-                props.get("author").map(String::as_str),
-                Some("Ada Lovelace")
-            );
-            assert_eq!(
-                props.get("subject").map(String::as_str),
-                Some("Analytical Engine")
-            );
-            assert_eq!(
-                props.get("keywords").map(String::as_str),
-                Some("computing, history")
-            );
-            assert_eq!(
-                props.get("created").map(String::as_str),
-                Some("2020-01-02T03:04:05")
-            );
-            assert_eq!(
-                props.get("modified").map(String::as_str),
-                Some("2021-06-07T08:09:10")
-            );
-            assert_eq!(props.get("generator").map(String::as_str), Some("qdoc/1.0"));
-            assert_eq!(d2.materialize().blocks[0].text, "body");
-
-            let exported2 = export_odt(&d2);
-            let mut d3 = Document::new();
-            import_odt(&exported2, &mut d3);
-            assert_eq!(
-                d2.doc_props(),
-                d3.doc_props(),
-                "properties stable across a second round-trip"
-            );
-        }
-        {
-            let meta = r#"<?xml version="1.0" encoding="UTF-8"?>
-<office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><office:meta><dc:title>Old</dc:title><meta:editing-cycles>7</meta:editing-cycles></office:meta></office:document-meta>"#;
-            let base = minimal_odt_styled("", "<text:p>hi</text:p>");
-            let mut c = ZipPackage::read(&base).unwrap();
-            c.set("meta.xml", meta.as_bytes().to_vec());
-            let odt = c.write_odf().unwrap();
-
-            let mut d = Document::new();
-            import_odt(&odt, &mut d);
-            assert_eq!(
-                d.doc_prop("title").as_deref(),
-                Some("Old"),
-                "title imported"
-            );
-            d.set_doc_prop("title", "New");
-            d.set_doc_prop("keywords", "k");
-
-            let exported = export_odt(&d);
-            let out = ZipPackage::read(&exported).unwrap();
-            let meta_out = std::str::from_utf8(out.get("meta.xml").unwrap()).unwrap();
-            assert!(
-                meta_out.contains("<dc:title>New</dc:title>"),
-                "title updated: {meta_out}"
-            );
-            assert!(
-                !meta_out.contains("<dc:title>Old</dc:title>"),
-                "old title gone: {meta_out}"
-            );
-            assert!(
-                meta_out.contains("editing-cycles>7</"),
-                "unmodeled field preserved: {meta_out}"
-            );
-            assert!(
-                meta_out.contains("<meta:keyword>k</meta:keyword>"),
-                "new keyword emitted: {meta_out}"
-            );
-        }
-        {
-            let mut d = Document::new();
-            let p = d.insert_block(None, "paragraph");
-            d.splice_text(&p, 0, 0, "plain");
-            let exported = export_odt(&d);
-            let cont = ZipPackage::read(&exported).unwrap();
-            assert!(
-                cont.get("meta.xml").is_none(),
-                "no metadata part synthesised for a doc with no properties"
-            );
-        }
-        {
-            let base = minimal_odt_styled("", "<text:p>hi</text:p>");
-            let mut c = ZipPackage::read(&base).unwrap();
-            c.set(
-                "settings.xml",
-                b"<office:settings>custom</office:settings>".to_vec(),
-            );
-            let odt = c.write_odf().unwrap();
-
-            let mut d = Document::new();
-            import_odt(&odt, &mut d);
-            let exported = export_odt(&d);
-
-            let out = ZipPackage::read(&exported).unwrap();
-            assert_eq!(
-                out.get("settings.xml"),
-                Some(&b"<office:settings>custom</office:settings>"[..]),
-                "unmodeled part must round-trip byte-identically"
-            );
-            assert_eq!(out.parts[0].0, "mimetype", "mimetype still first");
-            assert!(out.get("content.xml").is_some(), "content regenerated");
-        }
-        {
-            let odt = odt_with_two_style_atoms();
-            let original_styles = ZipPackage::read(&odt)
-                .unwrap()
-                .get("styles.xml")
-                .unwrap()
-                .to_vec();
-
-            let mut d = Document::new();
-            import_odt(&odt, &mut d);
-            let exported = export_odt(&d);
-            let out = ZipPackage::read(&exported).unwrap();
-            assert_eq!(
-                out.get("styles.xml").unwrap(),
-                original_styles.as_slice(),
-                "segmented styles.xml re-emits byte-for-byte"
-            );
-            let r = d.as_ref();
-            assert!(
-                tilo_doc::model::preserved_atoms(r.doc, r.c, "odt/part/styles.xml").len() >= 2,
-                "styles.xml stored as multiple per-atom segments"
-            );
-        }
-        {
-            let odt = odt_with_two_style_atoms();
-
-            let mut a = Document::new();
-            import_odt(&odt, &mut a);
-            let mut b = a.fork();
-
-            let (id_quote, quote_bytes) = atom_containing(&a, "QuoteFont");
-            let (id_caption, caption_bytes) = atom_containing(&a, "CaptionFont");
-            assert_eq!(
-                id_quote,
-                atom_containing(&b, "QuoteFont").0,
-                "fork shares atom ids"
-            );
-            assert_eq!(
-                id_caption,
-                atom_containing(&b, "CaptionFont").0,
-                "fork shares atom ids"
-            );
-            assert_ne!(id_quote, id_caption, "distinct atoms have distinct ids");
-
-            // A rewrites ONLY the Quote atom; B rewrites ONLY the Caption atom — each a read-modify-write
-            // that keeps the atom's framing (prologue/root-open tags on the first atom, close tags on the last).
-            let edited_quote = String::from_utf8(quote_bytes)
-                .unwrap()
-                .replace("QuoteFont", "QuoteFont-EDITED");
-            let edited_caption = String::from_utf8(caption_bytes)
-                .unwrap()
-                .replace("CaptionFont", "CaptionFont-EDITED");
-            a.as_mut().set_preserved_atom_bytes(
-                "odt/part/styles.xml",
-                &id_quote,
-                edited_quote.as_bytes(),
-            );
-            b.as_mut().set_preserved_atom_bytes(
-                "odt/part/styles.xml",
-                &id_caption,
-                edited_caption.as_bytes(),
-            );
-
-            a.merge(&mut b);
-            b.merge(&mut a);
-
-            for (d, who) in [(&a, "A"), (&b, "B")] {
-                let exported = export_odt(d);
-                let out = ZipPackage::read(&exported).unwrap();
-                let styles = String::from_utf8(out.get("styles.xml").unwrap().to_vec()).unwrap();
-                assert!(
-                    styles.contains("QuoteFont-EDITED"),
-                    "replica {who} kept A's Quote edit: {styles}"
-                );
-                assert!(
-                    styles.contains("CaptionFont-EDITED"),
-                    "replica {who} kept B's Caption edit: {styles}"
-                );
-                // Order + structure intact (Quote before Caption, root tags present).
-                assert!(
-                    styles.find("QuoteFont-EDITED").unwrap()
-                        < styles.find("CaptionFont-EDITED").unwrap(),
-                    "replica {who} kept atom order: {styles}"
-                );
-                assert!(
-                    styles.contains("<office:styles>")
-                        && styles.contains("</office:document-styles>")
-                );
-            }
-            let sa = ZipPackage::read(&export_odt(&a))
-                .unwrap()
-                .get("styles.xml")
-                .unwrap()
-                .to_vec();
-            let sb = ZipPackage::read(&export_odt(&b))
-                .unwrap()
-                .get("styles.xml")
-                .unwrap()
-                .to_vec();
-            assert_eq!(sa, sb, "replicas converge on identical styles.xml");
-        }
-    }
-
-    fn headers_and_footers_roundtrip_through_odt() {
-        {
-            use tilo_doc::document::MarkValue;
-            use tilo_doc::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
-            let mut d = Document::new();
-            let p = d.insert_block(None, "paragraph");
-            d.splice_text(&p, 0, 0, "body");
-            let h = d.insert_header_block(None, "paragraph");
-            d.splice_header_text(&h, 0, 0, "Title");
-            let f = d.insert_footer_block(None, "paragraph");
-            d.splice_footer_text(&f, 0, 0, "Page ");
-            d.insert_footer_page_number(&f, 5);
-
-            let exported = export_odt(&d);
-            let cont = ZipPackage::read(&exported).unwrap();
-            let styles =
-                std::str::from_utf8(cont.get("styles.xml").expect("styles.xml written")).unwrap();
-            assert!(
-                styles.contains("<style:header>") && styles.contains("Title"),
-                "header in master-page: {styles}"
-            );
-            assert!(
-                styles.contains("<style:footer>"),
-                "footer in master-page: {styles}"
-            );
-            assert!(
-                styles.contains("<text:page-number/>"),
-                "page-number field emitted: {styles}"
-            );
-            let manifest = std::str::from_utf8(cont.get("META-INF/manifest.xml").unwrap()).unwrap();
-            assert!(
-                manifest.contains("styles.xml"),
-                "styles.xml registered in manifest: {manifest}"
-            );
-
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            assert_eq!(d2.materialize().blocks[0].text, "body");
-            let header = d2.header();
-            assert_eq!(header.len(), 1, "header block present: {header:?}");
-            assert_eq!(header[0].text, "Title");
-            let footer = d2.footer();
-            assert_eq!(footer.len(), 1, "footer block present: {footer:?}");
-            assert_eq!(
-                footer[0].text,
-                format!("Page {FIELD_PLACEHOLDER}"),
-                "placeholder kept: {:?}",
-                footer[0].text
-            );
-            let field = footer[0]
-                .marks
-                .iter()
-                .find(|m| m.name == MARK_FIELD)
-                .expect("page-number field survives");
-            assert_eq!(
-                (field.start, field.end),
-                (5, 6),
-                "field spans the placeholder: {:?}",
-                footer[0].marks
-            );
-            assert_eq!(field.value, MarkValue::Str(FIELD_PAGE_NUMBER.into()));
-
-            let exported2 = export_odt(&d2);
-            let mut d3 = Document::new();
-            import_odt(&exported2, &mut d3);
-            assert_eq!(
-                norm_region(&d2.header()),
-                norm_region(&d3.header()),
-                "header stable across a second round-trip"
-            );
-            assert_eq!(
-                norm_region(&d2.footer()),
-                norm_region(&d3.footer()),
-                "footer stable across a second round-trip"
-            );
-        }
-        {
-            // An imported styles.xml whose master-page references a page-layout must keep that
-            // reference (+ any other master-page content) when the header/footer are re-emitted.
-            let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:master-styles><style:master-page style:name="Standard" style:page-layout-name="pm1"><style:header><text:p>Old Header</text:p></style:header></style:master-page></office:master-styles></office:document-styles>"#;
-            let base = minimal_odt_styled("", "<text:p>hi</text:p>");
-            let mut c = ZipPackage::read(&base).unwrap();
-            c.set("styles.xml", styles_xml.as_bytes().to_vec());
-            let odt = c.write_odf().unwrap();
-
-            let mut d = Document::new();
-            import_odt(&odt, &mut d);
-            assert_eq!(d.header()[0].text, "Old Header", "existing header imported");
-            let hid = d.header_blocks_in_order()[0].clone();
-            d.splice_header_text(&hid, 0, 9, "New Header"); // replace "Old Header"
-
-            let exported = export_odt(&d);
-            let out = ZipPackage::read(&exported).unwrap();
-            let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
-            assert!(
-                styles_out.contains(r#"style:page-layout-name="pm1""#),
-                "page-layout reference preserved: {styles_out}"
-            );
-            assert!(
-                styles_out.contains("New Header") && !styles_out.contains("Old Header"),
-                "header updated: {styles_out}"
-            );
-        }
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn notes_comments_and_tracked_changes_roundtrip_through_odt() {
-        {
-            use tilo_doc::document::MarkValue;
-            use tilo_doc::schema::{FIELD_PLACEHOLDER, MARK_NOTE_REF};
-            let body = concat!(
-                r#"<text:p>see <text:note text:id="ftn1" text:note-class="footnote">"#,
-                r#"<text:note-citation>1</text:note-citation>"#,
-                r#"<text:note-body><text:p>the footnote text</text:p></text:note-body>"#,
-                r#"</text:note>ref</text:p>"#,
-            );
-            let odt = minimal_odt(body);
-            let mut d = Document::new();
-            import_odt(&odt, &mut d);
-            let snap = d.materialize();
-
-            let p = &snap.blocks[0];
-            assert_eq!(
-                p.text,
-                format!("see {FIELD_PLACEHOLDER}ref"),
-                "placeholder spliced inline: {:?}",
-                p.text
-            );
-            let nref = p
-                .marks
-                .iter()
-                .find(|m| m.name == MARK_NOTE_REF)
-                .expect("note-ref mark present");
-            assert_eq!(
-                (nref.start, nref.end),
-                (4, 5),
-                "marker covers exactly the placeholder: {:?}",
-                p.marks
-            );
-            let nid = match &nref.value {
-                MarkValue::Str(s) => s.clone(),
-                other => panic!("note-ref value is the note id, got {other:?}"),
-            };
-
-            assert_eq!(snap.notes.len(), 1, "one note: {:?}", snap.notes);
-            let note = &snap.notes[0];
-            assert_eq!(note.id, nid, "marker references the note by id");
-            assert_eq!(note.kind, "footnote");
-            assert_eq!(note.blocks.len(), 1);
-            assert_eq!(note.blocks[0].text, "the footnote text");
-        }
-        {
-            use tilo_doc::document::MarkValue;
-            use tilo_doc::schema::MARK_NOTE_REF;
-            // Build from scratch: a paragraph "see ref" with a footnote after "see ", and a second
-            // paragraph with an endnote — both must export as inline `text:note` and re-import intact.
-            let mut d = Document::new();
-            let p = d.insert_block(None, "paragraph");
-            d.splice_text(&p, 0, 0, "see ref");
-            let fnote_id = d.insert_footnote(&p, 4); // after "see "
-            let fnote_block = d.insert_note_block(&fnote_id, None, "paragraph").unwrap();
-            d.splice_note_text(&fnote_id, &fnote_block, 0, 0, "a footnote");
-
-            let p2 = d.insert_block(Some(&p), "paragraph");
-            d.splice_text(&p2, 0, 0, "tail");
-            let enote_id = d.insert_endnote(&p2, 4); // at the end
-            let enote_block = d.insert_note_block(&enote_id, None, "paragraph").unwrap();
-            d.splice_note_text(&enote_id, &enote_block, 0, 0, "an endnote");
-
-            let exported = export_odt(&d);
-            let cont = ZipPackage::read(&exported).unwrap();
-            let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-            assert!(
-                content.contains(r#"text:note-class="footnote""#),
-                "footnote emitted inline: {content}"
-            );
-            assert!(
-                content.contains(r#"text:note-class="endnote""#),
-                "endnote emitted inline: {content}"
-            );
-            assert!(
-                content.contains("a footnote") && content.contains("an endnote"),
-                "note bodies emitted: {content}"
-            );
-
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let snap = d2.materialize();
-            assert_eq!(
-                snap.blocks[0]
-                    .text
-                    .chars()
-                    .filter(|c| *c != '\u{FFFC}')
-                    .collect::<String>(),
-                "see ref"
-            );
-            let nref = snap.blocks[0]
-                .marks
-                .iter()
-                .find(|m| m.name == MARK_NOTE_REF)
-                .expect("footnote marker survives");
-            let f_id = match &nref.value {
-                MarkValue::Str(s) => s.clone(),
-                _ => panic!("note-ref value"),
-            };
-            assert_eq!(snap.notes.len(), 2, "both notes survive: {:?}", snap.notes);
-            let foot = snap
-                .notes
-                .iter()
-                .find(|n| n.id == f_id)
-                .expect("footnote note present by id");
-            assert_eq!(foot.kind, "footnote");
-            assert_eq!(foot.blocks[0].text, "a footnote");
-            let end = snap
-                .notes
-                .iter()
-                .find(|n| n.kind == "endnote")
-                .expect("endnote present");
-            assert_eq!(end.blocks[0].text, "an endnote");
-
-            let exported2 = export_odt(&d2);
-            let mut d3 = Document::new();
-            import_odt(&exported2, &mut d3);
-            let kinds_texts = |snap: &DocSnapshot| {
-                let mut v: Vec<(String, String)> = snap
-                    .notes
-                    .iter()
-                    .map(|n| {
-                        (
-                            n.kind.clone(),
-                            n.blocks.iter().map(|b| b.text.clone()).collect(),
-                        )
-                    })
-                    .collect();
-                v.sort();
-                v
-            };
-            assert_eq!(
-                kinds_texts(&d2.materialize()),
-                kinds_texts(&d3.materialize()),
-                "notes stable across a second round-trip"
-            );
-        }
-        {
-            use tilo_doc::document::MarkValue;
-            use tilo_doc::schema::MARK_COMMENT;
-            let body = concat!(
-                r#"<text:p>fix "#,
-                r#"<office:annotation office:name="c1"><dc:creator>Ada</dc:creator><dc:date>2021-01-02T03:04:05</dc:date><text:p>note: fix</text:p></office:annotation>"#,
-                r#"this word"#,
-                r#"<office:annotation-end office:name="c1"/>"#,
-                r#"</text:p>"#,
-            );
-            let odt = minimal_odt(body);
-            let mut d = Document::new();
-            import_odt(&odt, &mut d);
-            let snap = d.materialize();
-
-            let p = &snap.blocks[0];
-            assert_eq!(
-                p.text, "fix this word",
-                "annotation markup not in text: {:?}",
-                p.text
-            );
-            let cm = p
-                .marks
-                .iter()
-                .find(|m| m.name == MARK_COMMENT)
-                .expect("comment mark present");
-            assert_eq!(
-                (cm.start, cm.end),
-                (4, 13),
-                "marker spans 'this word': {:?}",
-                p.marks
-            );
-            let cid = match &cm.value {
-                MarkValue::Str(s) => s.clone(),
-                other => panic!("comment value is the comment id, got {other:?}"),
-            };
-            assert_eq!(snap.comments.len(), 1, "one comment: {:?}", snap.comments);
-            let comment = &snap.comments[0];
-            assert_eq!(comment.id, cid, "marker references the comment by id");
-            assert_eq!(comment.author, "Ada");
-            assert_eq!(comment.date, "2021-01-02T03:04:05");
-            assert_eq!(comment.blocks[0].text, "note: fix");
-        }
-        {
-            use tilo_doc::document::MarkValue;
-            use tilo_doc::schema::MARK_COMMENT;
-            type CommentSummary = (String, String, Option<(usize, usize)>);
-            let mut d = Document::new();
-            let p = d.insert_block(None, "paragraph");
-            d.splice_text(&p, 0, 0, "please fix this word now");
-            let cid = d.add_comment(&p, 11, 20, "Ada Lovelace", "note: fix"); // over "this word"
-            let _ = cid;
-
-            let exported = export_odt(&d);
-            let cont = ZipPackage::read(&exported).unwrap();
-            let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-            assert!(
-                content.contains("<office:annotation"),
-                "annotation emitted: {content}"
-            );
-            assert!(
-                content.contains("<office:annotation-end"),
-                "annotation-end emitted (ranged): {content}"
-            );
-            assert!(
-                content.contains("<dc:creator>Ada Lovelace</dc:creator>"),
-                "author emitted: {content}"
-            );
-            assert!(
-                content.contains("note: fix"),
-                "comment body emitted: {content}"
-            );
-
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let snap = d2.materialize();
-            assert_eq!(snap.blocks[0].text, "please fix this word now");
-            let cm = snap.blocks[0]
-                .marks
-                .iter()
-                .find(|m| m.name == MARK_COMMENT)
-                .expect("comment marker survives");
-            assert_eq!(
-                (cm.start, cm.end),
-                (11, 20),
-                "anchored range survives: {:?}",
-                snap.blocks[0].marks
-            );
-            let new_id = match &cm.value {
-                MarkValue::Str(s) => s.clone(),
-                _ => panic!("comment value"),
-            };
-            assert_eq!(
-                snap.comments.len(),
-                1,
-                "comment survives: {:?}",
-                snap.comments
-            );
-            let cmt = snap
-                .comments
-                .iter()
-                .find(|c| c.id == new_id)
-                .expect("comment present by id");
-            assert_eq!(cmt.author, "Ada Lovelace");
-            assert_eq!(cmt.blocks[0].text, "note: fix");
-            assert_eq!(cmt.range, Some((snap.blocks[0].id.clone(), 11, 20)));
-
-            let exported2 = export_odt(&d2);
-            let mut d3 = Document::new();
-            import_odt(&exported2, &mut d3);
-            let authors_texts = |snap: &DocSnapshot| {
-                let mut v: Vec<CommentSummary> = snap
-                    .comments
-                    .iter()
-                    .map(|c| {
-                        (
-                            c.author.clone(),
-                            c.blocks.iter().map(|b| b.text.clone()).collect(),
-                            c.range.as_ref().map(|(_, s, e)| (*s, *e)),
-                        )
-                    })
-                    .collect();
-                v.sort();
-                v
-            };
-            assert_eq!(
-                authors_texts(&d2.materialize()),
-                authors_texts(&d3.materialize()),
-                "comments stable across a second round-trip"
-            );
-        }
-        {
-            use tilo_doc::document::MarkValue;
-            use tilo_doc::schema::{MARK_DEL, MARK_INS};
-            // A tracked insertion + a tracked deletion (with author) must export as a text:tracked-changes
-            // block + inline change-start/change-end markers, and re-import with kind/author + ranges intact.
-            let d = build_tracked_changes_doc();
-
-            let exported = export_odt(&d);
-            let cont = ZipPackage::read(&exported).unwrap();
-            let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-            assert_tracked_changes_xml(content);
-
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let snap = d2.materialize();
-            assert_eq!(
-                snap.blocks[0].text, "hello there world",
-                "ins kept, del retained: {:?}",
-                snap.blocks[0].text
-            );
-            let im = snap.blocks[0]
-                .marks
-                .iter()
-                .find(|m| m.name == MARK_INS)
-                .expect("ins mark survives");
-            assert_eq!(
-                (im.start, im.end),
-                (5, 11),
-                "ins range survives: {:?}",
-                snap.blocks[0].marks
-            );
-            let dm = snap.blocks[0]
-                .marks
-                .iter()
-                .find(|m| m.name == MARK_DEL)
-                .expect("del mark survives");
-            assert_eq!(
-                (dm.start, dm.end),
-                (12, 17),
-                "del range survives: {:?}",
-                snap.blocks[0].marks
-            );
-            let ins_id = match &im.value {
-                MarkValue::Str(s) => s.clone(),
-                _ => panic!("ins value"),
-            };
-            let del_id = match &dm.value {
-                MarkValue::Str(s) => s.clone(),
-                _ => panic!("del value"),
-            };
-            assert_eq!(
-                snap.changes.len(),
-                2,
-                "both changes survive: {:?}",
-                snap.changes
-            );
-            let ic = snap
-                .changes
-                .iter()
-                .find(|c| c.id == ins_id)
-                .expect("ins change present");
-            assert_eq!(ic.kind, tilo_doc::snapshot::ChangeKind::Ins);
-            assert_eq!(ic.author, "Ada");
-            assert_eq!(ic.range, Some((snap.blocks[0].id.clone(), 5, 11)));
-            let dc = snap
-                .changes
-                .iter()
-                .find(|c| c.id == del_id)
-                .expect("del change present");
-            assert_eq!(dc.kind, tilo_doc::snapshot::ChangeKind::Del);
-            assert_eq!(dc.author, "Bob");
-            assert_eq!(dc.range, Some((snap.blocks[0].id.clone(), 12, 17)));
-
-            d2.accept_change(&ins_id);
-            d2.accept_change(&del_id);
-            let after = d2.materialize();
-            assert_eq!(
-                after.blocks[0].text, "hello there ",
-                "accept-ins keeps text; accept-del removes 'world'"
-            );
-            assert!(after.changes.is_empty(), "both changes resolved");
-        }
-    }
-
-    fn build_tracked_changes_doc() -> Document {
-        let mut d = Document::new();
-        let p = d.insert_block(None, "paragraph");
-        d.splice_text(&p, 0, 0, "hello world");
-        let ins = d.track_insert(&p, 5, " there", "Ada", "2021-01-02T00:00:00");
-        let del = d.track_delete(&p, 12, 17, "Bob", "2021-03-04T00:00:00");
-        let _ = (ins, del);
-        d
-    }
-
-    fn assert_tracked_changes_xml(content: &str) {
-        assert!(
-            content.contains("<text:tracked-changes>"),
-            "tracked-changes block emitted: {content}"
-        );
-        assert!(
-            content.contains("<text:insertion>"),
-            "insertion region emitted: {content}"
-        );
-        assert!(
-            content.contains("<text:deletion>"),
-            "deletion region emitted: {content}"
-        );
-        assert!(
-            content.contains("<text:change-start"),
-            "change-start marker emitted: {content}"
-        );
-        assert!(
-            content.contains("<text:change-end"),
-            "change-end marker emitted: {content}"
-        );
-        assert!(
-            content.contains("<dc:creator>Ada</dc:creator>"),
-            "ins author emitted: {content}"
-        );
-        assert!(
-            content.contains("<dc:creator>Bob</dc:creator>"),
-            "del author emitted: {content}"
-        );
-    }
-
-    fn section_columns_roundtrip_through_odt() {
-        {
-            // A freshly-authored 2-column document (no styles.xml) must synthesise one carrying the page-layout `style:columns`, and re-import the count + gap.
-            let mut d = Document::new();
-            let p = d.insert_block(None, "paragraph");
-            d.splice_text(&p, 0, 0, "flows across columns");
-            d.set_columns(2, Some(48.0)); // 48 px ≈ 1.27 cm
-
-            let exported = export_odt(&d);
-            let out = ZipPackage::read(&exported).unwrap();
-            let styles =
-                std::str::from_utf8(out.get("styles.xml").expect("styles.xml synthesised"))
-                    .unwrap();
-            assert!(
-                styles.contains(r#"style:column-count="2""#),
-                "column-count in page-layout: {styles}"
-            );
-            assert!(
-                styles.contains("style:column-gap="),
-                "column-gap emitted: {styles}"
-            );
-
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            let (count, gap) = d2.columns();
-            assert_eq!(count, 2, "column count survives .odt round-trip");
-            // The gap round-trips through px → cm → px; allow a small unit-conversion epsilon.
-            let gap = gap.expect("gap present");
-            assert!(
-                (gap - 48.0).abs() < 0.5,
-                "column gap ≈ 48 px after round-trip, got {gap}"
-            );
-            assert_eq!(
-                d2.materialize().columns,
-                2,
-                "snapshot surfaces the column count"
-            );
-        }
-        {
-            // An imported styles.xml whose page-layout carries page-size/margins must keep them when `style:columns` is injected — only the columns change.
-            let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties fo:page-width="21cm" fo:margin-left="2cm"/></style:page-layout></office:automatic-styles></office:document-styles>"#;
-            let base = minimal_odt_styled("", "<text:p>hi</text:p>");
-            let mut c = ZipPackage::read(&base).unwrap();
-            c.set("styles.xml", styles_xml.as_bytes().to_vec());
-            let odt = c.write_odf().unwrap();
-
-            let mut d = Document::new();
-            import_odt(&odt, &mut d);
-            assert_eq!(d.columns(), (1, None), "no columns initially");
-            d.set_columns(3, None);
-
-            let exported = export_odt(&d);
-            let out = ZipPackage::read(&exported).unwrap();
-            let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
-            assert!(
-                styles_out.contains(r#"fo:page-width="21cm""#),
-                "page size preserved: {styles_out}"
-            );
-            assert!(
-                styles_out.contains(r#"fo:margin-left="2cm""#),
-                "margin preserved: {styles_out}"
-            );
-            assert!(
-                styles_out.contains(r#"style:column-count="3""#),
-                "columns injected: {styles_out}"
-            );
-
-            let mut d2 = Document::new();
-            import_odt(&exported, &mut d2);
-            assert_eq!(
-                d2.columns().0,
-                3,
-                "column count survives alongside the page-layout"
-            );
-        }
-        {
-            // A page-layout that already declares `style:columns` must have it replaced (not duplicated) by the document's setting.
-            let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties><style:columns style:column-count="4"/></style:page-layout-properties></style:page-layout></office:automatic-styles></office:document-styles>"#;
-            let base = minimal_odt_styled("", "<text:p>hi</text:p>");
-            let mut c = ZipPackage::read(&base).unwrap();
-            c.set("styles.xml", styles_xml.as_bytes().to_vec());
-            let odt = c.write_odf().unwrap();
-
-            let mut d = Document::new();
-            import_odt(&odt, &mut d);
-            assert_eq!(d.columns().0, 4, "imported 4 columns");
-            d.set_columns(2, None);
-
-            let exported = export_odt(&d);
-            let out = ZipPackage::read(&exported).unwrap();
-            let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
-            assert_eq!(
-                styles_out.matches("<style:columns").count(),
-                1,
-                "exactly one style:columns: {styles_out}"
-            );
-            assert!(
-                styles_out.contains(r#"style:column-count="2""#),
-                "count updated to 2: {styles_out}"
-            );
-        }
+    fn block<'a>(snap: &'a DocSnapshot, text: &str) -> &'a tilo_doc::snapshot::BlockView {
+        snap.blocks
+            .iter()
+            .find(|b| b.text == text)
+            .unwrap_or_else(|| panic!("no block {text:?} in {snap:?}"))
     }
 
     fn odt_with_two_style_atoms() -> Vec<u8> {
@@ -3025,55 +1457,802 @@ mod tests {
             .unwrap_or_else(|| panic!("no preserved styles.xml atom contains {needle:?}"))
     }
 
-    fn unedited_page_regions_keep_their_original_elements() {
-        let styles = concat!(
-            r#"<?xml version="1.0" encoding="UTF-8"?><office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">"#,
-            r#"<office:master-styles><style:master-page style:name="Standard">"#,
-            r#"<style:header><text:p>Head</text:p></style:header>"#,
-            r#"<style:header-first><text:p>Cover</text:p></style:header-first>"#,
-            r#"<style:footer><text:p>Page <text:page-number>1</text:page-number> of <text:page-count>2</text:page-count></text:p></style:footer>"#,
-            r#"</style:master-page></office:master-styles></office:document-styles>"#,
-        );
-        let mut c = ZipPackage::read(&minimal_odt("<text:p>body</text:p>")).unwrap();
-        c.set("styles.xml", styles.as_bytes().to_vec());
-        let odt = c.write_odf().unwrap();
-        let styles_of = |bytes: &[u8]| {
-            let c = ZipPackage::read(bytes).unwrap();
-            String::from_utf8(c.get("styles.xml").unwrap().to_vec()).unwrap()
-        };
-
+    /// A document a person wrote in Tilo — styled text, a named style, links, a bookmark and its
+    /// cross-reference, two images, nested and numbered lists, a footnote, an endnote, a comment,
+    /// tracked changes, a header and a footer with the page number, two columns and document
+    /// properties — is saved as `.odt`, reads back as the same model, and carries the ODF that
+    /// `LibreOffice` and Word read for each of them.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one save and reopen of a single document is one flow"
+    )]
+    fn a_document_of_everything_saves_and_reopens_as_odt() {
         let mut d = Document::new();
+
+        // Text and paragraph formatting.
+        let sup = d.insert_block(None, "paragraph");
+        d.splice_text(&sup, 0, 0, "E=mc2");
+        {
+            let mut dm = d.as_mut();
+            dm.add_mark(&sup, 0, 5, "highlight", "#ffff00");
+            dm.add_mark(&sup, 4, 5, "super", true);
+            dm.set_attr(&sup, "line_spacing", 1.5_f64);
+        }
+        let sub = d.insert_block(Some(&sup), "paragraph");
+        d.splice_text(&sub, 0, 0, "H2O");
+        d.as_mut().add_mark(&sub, 1, 2, "sub", true);
+        let red = d.insert_block(Some(&sub), "paragraph");
+        d.splice_text(&red, 0, 0, "red text");
+        d.as_mut().add_mark(&red, 0, 3, "color", "#ff0000");
+        let styled = d.insert_block(Some(&red), "paragraph");
+        d.splice_text(&styled, 0, 0, "styled");
+        {
+            let mut dm = d.as_mut();
+            dm.set_attr(&styled, "align", "center");
+            dm.add_mark(&styled, 0, 6, "fontSize", 22_i64);
+            dm.add_mark(&styled, 0, 6, "fontFamily", "serif");
+        }
+        let justified = d.insert_block(Some(&styled), "paragraph");
+        d.splice_text(&justified, 0, 0, "justified");
+        {
+            let mut dm = d.as_mut();
+            dm.set_attr(&justified, "align", "justify");
+            dm.add_mark(&justified, 0, 9, "color", "#3366cc");
+            dm.add_mark(&justified, 0, 9, "fontFamily", "serif");
+            dm.add_mark(&justified, 0, 9, "fontSize", 20_i64);
+        }
+        let fancy = d.insert_block(Some(&justified), "paragraph");
+        d.splice_text(&fancy, 0, 0, "fancy");
+        {
+            let mut dm = d.as_mut();
+            let mut props = BTreeMap::new();
+            props.insert("name".to_string(), AttrVal::Str("Fancy".into()));
+            props.insert("font".to_string(), AttrVal::Str("serif".into()));
+            props.insert("size".to_string(), AttrVal::Float(20.0));
+            props.insert("bold".to_string(), AttrVal::Bool(true));
+            props.insert("italic".to_string(), AttrVal::Bool(true));
+            props.insert("color".to_string(), AttrVal::Str("#ff0000".into()));
+            props.insert("align".to_string(), AttrVal::Str("center".into()));
+            props.insert("space_after".to_string(), AttrVal::Float(12.0));
+            dm.set_style("Fancy", &props);
+            dm.set_attr(&fancy, "style", "Fancy");
+        }
+
+        // Links, a bookmark and a cross-reference to it.
+        let home = d.insert_block(Some(&fancy), "paragraph");
+        d.splice_text(&home, 0, 0, "go home now");
+        d.as_mut().add_mark(&home, 3, 7, "link", "https://tilo.so/");
+        let amp = d.insert_block(Some(&home), "paragraph");
+        d.splice_text(&amp, 0, 0, "link");
+        d.as_mut()
+            .add_mark(&amp, 0, 4, "link", "https://x/?a=1&b=2");
+        let click = d.insert_block(Some(&amp), "paragraph");
+        d.splice_text(&click, 0, 0, "click");
+        {
+            let mut dm = d.as_mut();
+            dm.add_mark(&click, 0, 5, "link", "http://q/");
+            dm.add_mark(&click, 0, 5, "strong", true);
+            dm.add_mark(&click, 0, 5, "color", "#0000ff");
+        }
+        let target = d.insert_block(Some(&click), "paragraph");
+        d.splice_text(&target, 0, 0, "the intro section");
+        d.add_bookmark(&target, 4, 9, "intro");
+        let referrer = d.insert_block(Some(&target), "paragraph");
+        d.splice_text(&referrer, 0, 0, "see above");
+        d.add_cross_ref(&referrer, 4, 9, "intro");
+
+        // Two images: one plain with alt text, one anchored and wrapped.
+        let mut inputs = tilo_content::ContentInputs::new();
+        let before = d.insert_block(Some(&referrer), "paragraph");
+        d.splice_text(&before, 0, 0, "before");
+        let image = d.insert_block(Some(&before), "image");
+        let hash = d.attach(&TINY_PNG, &mut inputs);
+        {
+            let mut dm = d.as_mut();
+            dm.set_attr(&image, "blob", hash.as_str());
+            dm.set_attr(&image, "alt", "a tiny red dot");
+            dm.set_attr(&image, "width", 64_i64);
+            dm.set_attr(&image, "height", 48_i64);
+        }
+        let after = d.insert_block(Some(&image), "paragraph");
+        d.splice_text(&after, 0, 0, "after");
+        let wrapped = d.insert_block(Some(&after), "image");
+        {
+            let mut dm = d.as_mut();
+            dm.set_attr(&wrapped, "blob", hash.as_str());
+            dm.set_attr(&wrapped, "anchor", "paragraph");
+            dm.set_attr(&wrapped, "wrap", "right");
+            dm.set_attr(&wrapped, "width", 120_i64);
+            dm.set_attr(&wrapped, "height", 80_i64);
+        }
+
+        // Nested lists, an upper-roman list starting at 3, and a bulleted list after a numbered one.
+        let item_a = d.insert_block(Some(&wrapped), "list_item");
+        d.splice_text(&item_a, 0, 0, "a");
+        let item_b = d.insert_block(Some(&item_a), "list_item");
+        d.splice_text(&item_b, 0, 0, "b");
+        let nested = d.insert_block(Some(&item_b), "list_item");
+        d.splice_text(&nested, 0, 0, "nested");
+        d.as_mut().set_attr(&nested, "level", 1_i64);
+        let item_c = d.insert_block(Some(&nested), "list_item");
+        d.splice_text(&item_c, 0, 0, "c");
+        let roman = d.insert_block(Some(&item_c), "list_item");
+        d.splice_text(&roman, 0, 0, "three");
+        let roman2 = d.insert_block(Some(&roman), "list_item");
+        d.splice_text(&roman2, 0, 0, "four");
+        {
+            let mut dm = d.as_mut();
+            for id in [&roman, &roman2] {
+                dm.set_attr(id, "ordered", true);
+                dm.set_attr(id, "num_format", "upper-roman");
+                dm.set_attr(id, "num_start", 3_i64);
+                dm.set_attr(id, "num_restart", true);
+            }
+        }
+        let numbered = d.insert_block(Some(&roman2), "list_item");
+        d.splice_text(&numbered, 0, 0, "one");
+        d.as_mut().set_attr(&numbered, "ordered", true);
+        let bullet = d.insert_block(Some(&numbered), "list_item");
+        d.splice_text(&bullet, 0, 0, "dot");
+        d.as_mut().set_attr(&bullet, "ordered", false);
+
+        // A footnote and an endnote.
+        let noted = d.insert_block(Some(&bullet), "paragraph");
+        d.splice_text(&noted, 0, 0, "see ref");
+        let foot = d.insert_footnote(&noted, 4);
+        let foot_block = d.insert_note_block(&foot, None, "paragraph").unwrap();
+        d.splice_note_text(&foot, &foot_block, 0, 0, "a footnote");
+        let tail = d.insert_block(Some(&noted), "paragraph");
+        d.splice_text(&tail, 0, 0, "tail");
+        let end = d.insert_endnote(&tail, 4);
+        let end_block = d.insert_note_block(&end, None, "paragraph").unwrap();
+        d.splice_note_text(&end, &end_block, 0, 0, "an endnote");
+
+        // A comment and tracked insert and delete.
+        let commented = d.insert_block(Some(&tail), "paragraph");
+        d.splice_text(&commented, 0, 0, "please fix this word now");
+        let _ = d.add_comment(&commented, 11, 20, "Ada Lovelace", "note: fix");
+        let tracked = d.insert_block(Some(&commented), "paragraph");
+        d.splice_text(&tracked, 0, 0, "hello world");
+        d.track_insert(&tracked, 5, " there", "Ada", "2021-01-02T00:00:00");
+        d.track_delete(&tracked, 12, 17, "Bob", "2021-03-04T00:00:00");
+
+        // A header, a footer with the page number, two columns and document properties.
+        let header = d.insert_header_block(None, "paragraph");
+        d.splice_header_text(&header, 0, 0, "Title");
+        let footer = d.insert_footer_block(None, "paragraph");
+        d.splice_footer_text(&footer, 0, 0, "Page ");
+        d.insert_footer_page_number(&footer, 5);
+        d.set_columns(2, Some(48.0));
+        d.set_doc_prop("title", "My Title");
+        d.set_doc_prop("author", "Ada Lovelace");
+        d.set_doc_prop("subject", "Analytical Engine");
+        d.set_doc_prop("keywords", "computing, history");
+        d.set_doc_prop("created", "2020-01-02T03:04:05");
+        d.set_doc_prop("modified", "2021-06-07T08:09:10");
+        d.set_doc_prop("generator", "qdoc/1.0");
+
+        let exported = OdtCodec.export(d.as_ref(), &inputs).unwrap();
+        let package = ZipPackage::read(&exported).unwrap();
+        assert_eq!(
+            package.parts[0].0, "mimetype",
+            "exported .odt has mimetype first"
+        );
+        assert!(package.get("content.xml").is_some());
+
+        // What other editors read for each construct.
+        let content = part(&exported, "content.xml");
+        for expected in [
+            r##"fo:background-color="#ffff00""##,
+            r#"style:text-position="super"#,
+            r#"fo:line-height="150%""#,
+            r#"fo:text-align="justify""#,
+            r#"text:style-name="Fancy""#,
+            r#"<style:style style:name="Fancy" style:family="paragraph""#,
+            r#"fo:font-weight="bold""#,
+            r#"fo:font-size="20pt""#,
+            r#"<text:a xlink:href="https://tilo.so/">home</text:a>"#,
+            "a=1&amp;b=2",
+            r#"<text:bookmark-start text:name="intro"/>"#,
+            r#"<text:bookmark-end text:name="intro"/>"#,
+            r##"<text:a xlink:href="#intro">above</text:a>"##,
+            "<draw:frame",
+            r#"text:anchor-type="paragraph""#,
+            r#"style:family="graphic""#,
+            r#"style:wrap="right""#,
+            r"<text:list-item><text:p>b</text:p><text:list><text:list-item><text:p>nested</text:p></text:list-item></text:list></text:list-item>",
+            r#"style:num-format="I""#,
+            r#"text:start-value="3""#,
+            r#"text:note-class="footnote""#,
+            r#"text:note-class="endnote""#,
+            "a footnote",
+            "an endnote",
+            "<office:annotation",
+            "<office:annotation-end",
+            "<dc:creator>Ada Lovelace</dc:creator>",
+            "note: fix",
+            "<text:tracked-changes>",
+            "<text:insertion>",
+            "<text:deletion>",
+            "<text:change-start",
+            "<text:change-end",
+            "<dc:creator>Ada</dc:creator>",
+            "<dc:creator>Bob</dc:creator>",
+        ] {
+            assert!(content.contains(expected), "{expected} in {content}");
+        }
+        let picture = package
+            .parts
+            .iter()
+            .find(|(n, _)| n.starts_with("Pictures/") && n.to_ascii_lowercase().ends_with(".png"))
+            .expect("Pictures/<hash>.png written");
+        assert_eq!(picture.1, &TINY_PNG[..], "picture bytes written verbatim");
+        assert!(
+            content.contains(&format!(r#"xlink:href="{}""#, picture.0)),
+            "image href matches part: {content}"
+        );
+        assert_eq!(
+            content.matches("<text:list ").count(),
+            4,
+            "each list is written as its own list, so a bullet after a numbered item stays a bullet: {content}"
+        );
+        let manifest = part(&exported, "META-INF/manifest.xml");
+        for expected in ["image/png", "meta.xml", "styles.xml"] {
+            assert!(manifest.contains(expected), "{expected} in {manifest}");
+        }
+        assert!(manifest.contains(&picture.0), "picture in manifest");
+        let styles_part = part(&exported, "styles.xml");
+        for expected in [
+            "<style:header>",
+            "Title",
+            "<style:footer>",
+            "<text:page-number/>",
+            r#"style:column-count="2""#,
+            "style:column-gap=",
+        ] {
+            assert!(
+                styles_part.contains(expected),
+                "{expected} in {styles_part}"
+            );
+        }
+        let meta = part(&exported, "meta.xml");
+        for expected in [
+            "<dc:title>My Title</dc:title>",
+            "<dc:creator>Ada Lovelace</dc:creator>",
+            "<dc:subject>Analytical Engine</dc:subject>",
+            "<meta:keyword>computing, history</meta:keyword>",
+            "<meta:creation-date>2020-01-02T03:04:05</meta:creation-date>",
+            "<dc:date>2021-06-07T08:09:10</dc:date>",
+            "<meta:generator>qdoc/1.0</meta:generator>",
+        ] {
+            assert!(meta.contains(expected), "{expected} in {meta}");
+        }
+
+        // Reading the saved file back gives the model the person wrote.
+        let mut reopened = Document::new();
+        let mut reimported = tilo_content::ContentInputs::new();
         OdtCodec
-            .import(
-                &odt,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
+            .import(&exported, &mut reopened.as_mut(), &mut reimported)
+            .unwrap();
+        let snap = reopened.materialize();
+
+        assert_marks(
+            &snap,
+            "E=mc2",
+            &[
+                (0, 5, "highlight", MarkValue::Str("#ffff00".into())),
+                (4, 5, "super", MarkValue::Bool(true)),
+            ],
+        );
+        assert_eq!(
+            block(&snap, "E=mc2").attrs.get("line_spacing"),
+            Some(&AttrVal::Float(1.5))
+        );
+        assert_marks(&snap, "H2O", &[(1, 2, "sub", MarkValue::Bool(true))]);
+        assert_marks(
+            &snap,
+            "red text",
+            &[(0, 3, "color", MarkValue::Str("#ff0000".into()))],
+        );
+        let styled_block = block(&snap, "styled");
+        assert_eq!(
+            styled_block.attrs.get("align"),
+            Some(&AttrVal::Str("center".into()))
+        );
+        assert_marks(
+            &snap,
+            "styled",
+            &[
+                (0, 6, "fontSize", MarkValue::Int(22)),
+                (0, 6, "fontFamily", MarkValue::Str("serif".into())),
+            ],
+        );
+        assert_eq!(
+            block(&snap, "justified").attrs.get("align"),
+            Some(&AttrVal::Str("justify".into()))
+        );
+        assert_marks(
+            &snap,
+            "justified",
+            &[
+                (0, 9, "color", MarkValue::Str("#3366cc".into())),
+                (0, 9, "fontFamily", MarkValue::Str("serif".into())),
+                (0, 9, "fontSize", MarkValue::Int(20)),
+            ],
+        );
+        let fancy_style = &block(&snap, "fancy").attrs;
+        assert_eq!(
+            fancy_style.get("style"),
+            Some(&AttrVal::Str("Fancy".into())),
+            "block keeps its style ref: {fancy_style:?}"
+        );
+        let st = snap
+            .styles
+            .get("Fancy")
+            .expect("style present in container after round-trip");
+        assert_eq!(st.get("name"), Some(&AttrVal::Str("Fancy".into())));
+        assert_eq!(st.get("font"), Some(&AttrVal::Str("serif".into())));
+        assert_eq!(st.get("size"), Some(&AttrVal::Float(20.0)));
+        assert_eq!(st.get("bold"), Some(&AttrVal::Bool(true)));
+        assert_eq!(st.get("italic"), Some(&AttrVal::Bool(true)));
+        assert_eq!(st.get("color"), Some(&AttrVal::Str("#ff0000".into())));
+        assert_eq!(st.get("align"), Some(&AttrVal::Str("center".into())));
+        assert_eq!(st.get("space_after"), Some(&AttrVal::Float(12.0)));
+
+        assert_marks(
+            &snap,
+            "go home now",
+            &[(3, 7, "link", MarkValue::Str("https://tilo.so/".into()))],
+        );
+        assert_marks(
+            &snap,
+            "link",
+            &[(0, 4, "link", MarkValue::Str("https://x/?a=1&b=2".into()))],
+        );
+        assert_marks(
+            &snap,
+            "click",
+            &[
+                (0, 5, "link", MarkValue::Str("http://q/".into())),
+                (0, 5, "strong", MarkValue::Bool(true)),
+                (0, 5, "color", MarkValue::Str("#0000ff".into())),
+            ],
+        );
+
+        assert_eq!(snap.bookmarks.len(), 1, "{:?}", snap.bookmarks);
+        let bookmark = &snap.bookmarks[0];
+        assert_eq!(bookmark.name, "intro");
+        assert_eq!((bookmark.range.1, bookmark.range.2), (4, 9), "{bookmark:?}");
+        assert_marks(
+            &snap,
+            "the intro section",
+            &[(
+                4,
+                9,
+                tilo_doc::schema::MARK_BOOKMARK,
+                MarkValue::Str("intro".into()),
+            )],
+        );
+        assert_marks(
+            &snap,
+            "see above",
+            &[(4, 9, "link", MarkValue::Str("#intro".into()))],
+        );
+
+        let image_block = &snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "image")
+            .expect("image block present")
+            .attrs;
+        let blob_hash = match image_block.get("blob") {
+            Some(AttrVal::Str(h)) => h.clone(),
+            other => panic!("image block missing blob attr: {other:?}"),
+        };
+        assert_eq!(blob_hash, hash, "blake3 hash stable across round-trip");
+        assert_eq!(
+            image_block.get("alt"),
+            Some(&AttrVal::Str("a tiny red dot".into()))
+        );
+        assert_eq!(image_block.get("width"), Some(&AttrVal::Int(64)));
+        assert_eq!(image_block.get("height"), Some(&AttrVal::Int(48)));
+        assert_eq!(
+            reimported.get(&blob_hash),
+            Some(&TINY_PNG[..]),
+            "image bytes survive the round-trip"
+        );
+        let wrapped_block = &snap
+            .blocks
+            .iter()
+            .filter(|b| b.kind == "image")
+            .nth(1)
+            .expect("second image block present")
+            .attrs;
+        assert_eq!(
+            wrapped_block.get("anchor"),
+            Some(&AttrVal::Str("paragraph".into()))
+        );
+        assert_eq!(
+            wrapped_block.get("wrap"),
+            Some(&AttrVal::Str("right".into()))
+        );
+        assert_eq!(wrapped_block.get("width"), Some(&AttrVal::Int(120)));
+        assert_eq!(wrapped_block.get("height"), Some(&AttrVal::Int(80)));
+
+        let level = |b: &tilo_doc::snapshot::BlockView| match b.attrs.get("level") {
+            Some(AttrVal::Int(n)) => *n,
+            _ => 0i64,
+        };
+        let items: Vec<_> = snap
+            .blocks
+            .iter()
+            .filter(|b| ["a", "b", "nested", "c"].contains(&b.text.as_str()))
+            .map(|b| (b.text.clone(), level(b)))
+            .collect();
+        assert_eq!(
+            items,
+            vec![
+                ("a".to_string(), 0),
+                ("b".to_string(), 0),
+                ("nested".to_string(), 1),
+                ("c".to_string(), 0)
+            ],
+            "levels round-trip through nested lists"
+        );
+        let roman_items: Vec<_> = snap
+            .blocks
+            .iter()
+            .filter(|b| b.text == "three" || b.text == "four")
+            .collect();
+        for item in &roman_items {
+            assert_eq!(
+                item.attrs.get("ordered"),
+                Some(&AttrVal::Bool(true)),
+                "still ordered: {:?}",
+                item.attrs
+            );
+            assert_eq!(
+                item.attrs.get("num_format"),
+                Some(&AttrVal::Str("upper-roman".into())),
+                "format survives: {:?}",
+                item.attrs
+            );
+            assert_eq!(
+                item.attrs.get("num_start"),
+                Some(&AttrVal::Int(3)),
+                "start survives: {:?}",
+                item.attrs
+            );
+        }
+        assert_eq!(
+            block(&snap, "one").attrs.get("ordered"),
+            Some(&AttrVal::Bool(true))
+        );
+        assert_eq!(
+            block(&snap, "dot").attrs.get("ordered"),
+            Some(&AttrVal::Bool(false)),
+            "a bullet after a numbered item stays a bullet"
+        );
+
+        let noted = block(&snap, &format!("see {FIELD_PLACEHOLDER}ref"));
+        let note_ref = noted
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_NOTE_REF)
+            .expect("footnote marker survives");
+        assert_eq!(
+            (note_ref.start, note_ref.end),
+            (4, 5),
+            "the marker covers the placeholder: {:?}",
+            noted.marks
+        );
+        let note_id = match &note_ref.value {
+            MarkValue::Str(s) => s.clone(),
+            other => panic!("note-ref value is the note id, got {other:?}"),
+        };
+        assert_eq!(snap.notes.len(), 2, "both notes survive: {:?}", snap.notes);
+        let footnote = snap
+            .notes
+            .iter()
+            .find(|n| n.id == note_id)
+            .expect("the marker names the footnote");
+        assert_eq!(footnote.kind, "footnote");
+        assert_eq!(footnote.blocks[0].text, "a footnote");
+        let endnote = snap
+            .notes
+            .iter()
+            .find(|n| n.kind == "endnote")
+            .expect("endnote present");
+        assert_eq!(endnote.blocks[0].text, "an endnote");
+
+        assert_eq!(snap.comments.len(), 1, "{:?}", snap.comments);
+        let comment = &snap.comments[0];
+        assert_eq!(comment.author, "Ada Lovelace");
+        assert_eq!(comment.blocks[0].text, "note: fix");
+        assert_eq!(
+            comment.range,
+            Some((block(&snap, "please fix this word now").id.clone(), 11, 20))
+        );
+        assert_marks(
+            &snap,
+            "please fix this word now",
+            &[(11, 20, MARK_COMMENT, MarkValue::Str(comment.id.clone()))],
+        );
+
+        assert_eq!(
+            snap.changes.len(),
+            2,
+            "both changes survive: {:?}",
+            snap.changes
+        );
+        let tracked_block = block(&snap, "hello there world");
+        let ins_id = match &tracked_block
+            .marks
+            .iter()
+            .find(|m| m.name == "ins")
+            .expect("ins mark survives")
+            .value
+        {
+            MarkValue::Str(s) => s.clone(),
+            other => panic!("ins value {other:?}"),
+        };
+        let del_id = match &tracked_block
+            .marks
+            .iter()
+            .find(|m| m.name == "del")
+            .expect("del mark survives")
+            .value
+        {
+            MarkValue::Str(s) => s.clone(),
+            other => panic!("del value {other:?}"),
+        };
+        let insertion = snap
+            .changes
+            .iter()
+            .find(|c| c.id == ins_id)
+            .expect("ins change present");
+        assert_eq!(insertion.kind, tilo_doc::snapshot::ChangeKind::Ins);
+        assert_eq!(insertion.author, "Ada");
+        assert_eq!(insertion.range, Some((tracked_block.id.clone(), 5, 11)));
+        let deletion = snap
+            .changes
+            .iter()
+            .find(|c| c.id == del_id)
+            .expect("del change present");
+        assert_eq!(deletion.kind, tilo_doc::snapshot::ChangeKind::Del);
+        assert_eq!(deletion.author, "Bob");
+        assert_eq!(deletion.range, Some((tracked_block.id.clone(), 12, 17)));
+
+        let header = reopened.header();
+        assert_eq!(header.len(), 1, "header block present: {header:?}");
+        assert_eq!(header[0].text, "Title");
+        let footer = reopened.footer();
+        assert_eq!(footer.len(), 1, "footer block present: {footer:?}");
+        assert_eq!(footer[0].text, format!("Page {FIELD_PLACEHOLDER}"));
+        let field = footer[0]
+            .marks
+            .iter()
+            .find(|m| m.name == tilo_doc::schema::MARK_FIELD)
+            .expect("page-number field survives");
+        assert_eq!(
+            (field.start, field.end),
+            (5, 6),
+            "field spans the placeholder: {:?}",
+            footer[0].marks
+        );
+        assert_eq!(field.value, MarkValue::Str(FIELD_PAGE_NUMBER.into()));
+        let (columns, gap) = reopened.columns();
+        assert_eq!(columns, 2, "column count survives the save");
+        assert!(
+            (gap.expect("gap present") - 48.0).abs() < 0.5,
+            "column gap ≈ 48 px after the save, got {gap:?}"
+        );
+        assert_eq!(snap.columns, 2, "snapshot surfaces the column count");
+
+        let props = reopened.doc_props();
+        for (key, value) in [
+            ("title", "My Title"),
+            ("author", "Ada Lovelace"),
+            ("subject", "Analytical Engine"),
+            ("keywords", "computing, history"),
+            ("created", "2020-01-02T03:04:05"),
+            ("modified", "2021-06-07T08:09:10"),
+            ("generator", "qdoc/1.0"),
+        ] {
+            assert_eq!(props.get(key).map(String::as_str), Some(value), "{key}");
+        }
+
+        // Saving what was reopened writes the same model again.
+        let again = OdtCodec.export(reopened.as_ref(), &reimported).unwrap();
+        let mut third = Document::new();
+        let mut third_inputs = tilo_content::ContentInputs::new();
+        OdtCodec
+            .import(&again, &mut third.as_mut(), &mut third_inputs)
             .unwrap();
         assert_eq!(
-            styles_of(
-                &OdtCodec
-                    .export(d.as_ref(), &tilo_content::NoContent)
-                    .unwrap()
-            ),
-            styles
+            norm(&third.materialize()),
+            norm(&snap),
+            "the model is stable across a second save"
         );
-
-        let head = d.header_blocks_in_order()[0].clone();
-        d.splice_header_text(&head, 4, 0, "er");
-        let out = styles_of(
-            &OdtCodec
-                .export(d.as_ref(), &tilo_content::NoContent)
-                .unwrap(),
+        assert_eq!(
+            reopened.doc_props(),
+            third.doc_props(),
+            "properties stable across a second save"
         );
-        assert!(out.contains("<text:p>Header</text:p>"), "{out}");
-        assert!(
-            out.contains("<text:page-count>2</text:page-count>"),
-            "{out}"
+        assert_eq!(
+            norm_region(&third.header()),
+            norm_region(&reopened.header()),
+            "header stable across a second save"
+        );
+        assert_eq!(
+            norm_region(&third.footer()),
+            norm_region(&reopened.footer()),
+            "footer stable across a second save"
         );
     }
 
-    fn keeps_paragraph_span_and_table_styles_while_they_agree() {
+    /// `.odt` files other editors wrote — including markup the model has no shape for — read into
+    /// the model, and their unmodeled markup and page regions come back out unchanged.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one save and reopen of a single document is one flow"
+    )]
+    fn an_odt_from_another_editor_reads_into_the_model() {
+        // A heading, a styled run and a list.
+        let styles = r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>"#;
+        let body = concat!(
+            r#"<text:h text:outline-level="1">Title</text:h>"#,
+            r#"<text:p>a <text:span text:style-name="T1">bold</text:span> b</text:p>"#,
+            r#"<text:list><text:list-item><text:p>one</text:p></text:list-item>"#,
+            r#"<text:list-item><text:p>two</text:p></text:list-item></text:list>"#,
+        );
+        let mut d = Document::new();
+        import_odt(&minimal_odt_styled(styles, body), &mut d);
+        let snap = d.materialize();
+        assert_eq!(snap.blocks[0].kind, "heading");
+        assert_eq!(snap.blocks[0].text, "Title");
+        assert!(
+            snap.blocks[1]
+                .marks
+                .iter()
+                .any(|m| m.name == "strong" && m.start == 2 && m.end == 6),
+            "{:?}",
+            snap.blocks[1].marks
+        );
+        let exported = export_odt(&d);
+        let mut d2 = Document::new();
+        import_odt(&exported, &mut d2);
+        assert_eq!(norm(&d2.materialize()), norm(&snap));
+
+        // A footnote written inline.
+        let note_body = concat!(
+            r#"<text:p>see <text:note text:id="ftn1" text:note-class="footnote">"#,
+            r#"<text:note-citation>1</text:note-citation>"#,
+            r#"<text:note-body><text:p>the footnote text</text:p></text:note-body>"#,
+            r#"</text:note>ref</text:p>"#,
+        );
+        let mut d = Document::new();
+        import_odt(&minimal_odt(note_body), &mut d);
+        let snap = d.materialize();
+        assert_eq!(
+            snap.blocks[0].text,
+            format!("see {FIELD_PLACEHOLDER}ref"),
+            "placeholder spliced inline: {:?}",
+            snap.blocks[0].text
+        );
+        let nref = snap.blocks[0]
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_NOTE_REF)
+            .expect("note-ref mark present");
+        assert_eq!((nref.start, nref.end), (4, 5), "{:?}", snap.blocks[0].marks);
+        let nid = match &nref.value {
+            MarkValue::Str(s) => s.clone(),
+            other => panic!("note-ref value is the note id, got {other:?}"),
+        };
+        assert_eq!(snap.notes.len(), 1, "{:?}", snap.notes);
+        assert_eq!(snap.notes[0].id, nid, "marker references the note by id");
+        assert_eq!(snap.notes[0].kind, "footnote");
+        assert_eq!(snap.notes[0].blocks[0].text, "the footnote text");
+
+        // A comment over a run, with its author and date.
+        let comment_body = concat!(
+            r#"<text:p>fix "#,
+            r#"<office:annotation office:name="c1"><dc:creator>Ada</dc:creator><dc:date>2021-01-02T03:04:05</dc:date><text:p>note: fix</text:p></office:annotation>"#,
+            r#"this word"#,
+            r#"<office:annotation-end office:name="c1"/>"#,
+            r#"</text:p>"#,
+        );
+        let mut d = Document::new();
+        import_odt(&minimal_odt(comment_body), &mut d);
+        let snap = d.materialize();
+        assert_eq!(
+            snap.blocks[0].text, "fix this word",
+            "annotation markup not in text: {:?}",
+            snap.blocks[0].text
+        );
+        let comment = snap.blocks[0]
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_COMMENT)
+            .expect("comment mark present");
+        assert_eq!(
+            (comment.start, comment.end),
+            (4, 13),
+            "{:?}",
+            snap.blocks[0].marks
+        );
+        assert_eq!(snap.comments.len(), 1, "{:?}", snap.comments);
+        assert_eq!(snap.comments[0].author, "Ada");
+        assert_eq!(snap.comments[0].date, "2021-01-02T03:04:05");
+        assert_eq!(snap.comments[0].blocks[0].text, "note: fix");
+
+        // Text a writer deleted, which the changed region carries: it sits in the body as a
+        // deletion, and goes back to the changed region on export.
+        let deleted_body = concat!(
+            r#"<text:tracked-changes><text:changed-region xml:id="ct2" text:id="ct2"><text:deletion>"#,
+            r#"<office:change-info><dc:creator>Bob</dc:creator></office:change-info><text:p>removed words</text:p>"#,
+            r#"</text:deletion></text:changed-region></text:tracked-changes>"#,
+            r#"<text:p>Tracked: <text:change text:change-id="ct2"/>gone.</text:p>"#,
+        );
+        let mut d = Document::new();
+        import_odt(&minimal_odt(deleted_body), &mut d);
+        let snap = d.materialize();
+        assert_eq!(snap.blocks[0].text, "Tracked: removed wordsgone.");
+        assert!(
+            snap.blocks[0]
+                .marks
+                .iter()
+                .any(|m| m.name == "del" && m.start == 9 && m.end == 22),
+            "{:?}",
+            snap.blocks[0].marks
+        );
+        let exported = export_odt(&d);
+        let content = part(&exported, "content.xml");
+        assert!(
+            content.contains("<text:p>removed words</text:p></text:deletion>"),
+            "{content}"
+        );
+        assert!(
+            content.contains(r#"Tracked: <text:change text:change-id=""#),
+            "{content}"
+        );
+        assert!(!content.contains("removed wordsgone"), "{content}");
+        let mut d2 = Document::new();
+        import_odt(&exported, &mut d2);
+        assert_eq!(norm(&d2.materialize()), norm(&snap));
+
+        // A table with merged cells.
+        let table_body = concat!(
+            r#"<table:table table:name="T"><table:table-column table:number-columns-repeated="3"/>"#,
+            r#"<table:table-row><table:table-cell table:number-columns-spanned="2" table:number-rows-spanned="2"><text:p>big</text:p></table:table-cell>"#,
+            r#"<table:covered-table-cell/><table:table-cell><text:p>c</text:p></table:table-cell></table:table-row>"#,
+            r#"<table:table-row><table:covered-table-cell table:number-columns-repeated="2"/><table:table-cell><text:p>f</text:p></table:table-cell></table:table-row>"#,
+            r#"</table:table>"#,
+        );
+        let mut d = Document::new();
+        import_odt(&minimal_odt(table_body), &mut d);
+        let snap = d.materialize();
+        let big = snap.blocks.iter().find(|b| b.text == "big").unwrap();
+        assert_eq!(big.attrs.get("colspan"), Some(&AttrVal::Int(2)));
+        assert_eq!(big.attrs.get("rowspan"), Some(&AttrVal::Int(2)));
+        let f = snap.blocks.iter().find(|b| b.text == "f").unwrap();
+        assert_eq!(f.attrs.get("col"), Some(&AttrVal::Int(2)), "{:?}", f.attrs);
+        let exported = export_odt(&d);
+        let content = part(&exported, "content.xml");
+        assert!(
+            content.contains(r#"<table:table-cell table:number-columns-spanned="2" table:number-rows-spanned="2"><text:p>big</text:p></table:table-cell><table:covered-table-cell/>"#),
+            "{content}"
+        );
+        assert_eq!(content.matches("<table:covered-table-cell/>").count(), 3);
+        let mut d2 = Document::new();
+        import_odt(&exported, &mut d2);
+        assert_eq!(norm(&d2.materialize()), norm(&snap));
+
+        // Paragraph, span and table styles the model now agrees with come back out; one the
+        // writer realigned is written from the model instead.
         let styles = concat!(
             r#"<style:style style:name="P1" style:family="paragraph"><style:paragraph-properties fo:break-before="page" fo:text-align="center"/></style:style>"#,
             r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:letter-spacing="0.1cm" fo:font-weight="bold"/></style:style>"#,
@@ -3081,7 +2260,7 @@ mod tests {
             r#"<style:style style:name="Col" style:family="table-column"><style:table-column-properties style:column-width="5cm"/></style:style>"#,
             r#"<style:style style:name="Cell" style:family="table-cell"><style:table-cell-properties fo:border="0.5pt solid #000000"/></style:style>"#,
         );
-        let body = concat!(
+        let table_with_styles = concat!(
             r#"<text:p text:style-name="P1">A <text:span text:style-name="T1">spaced</text:span> word</text:p>"#,
             r#"<text:p text:style-name="P1">second</text:p>"#,
             r#"<table:table table:name="T" table:style-name="Tbl"><table:table-column table:style-name="Col" table:number-columns-repeated="2"/>"#,
@@ -3089,13 +2268,7 @@ mod tests {
             r#"<table:table-cell table:style-name="Cell"><text:p>b</text:p></table:table-cell></table:table-row></table:table>"#,
         );
         let mut d = Document::new();
-        OdtCodec
-            .import(
-                &minimal_odt_styled(styles, body),
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
+        import_odt(&minimal_odt_styled(styles, table_with_styles), &mut d);
         let snap = d.materialize();
         assert!(
             snap.blocks[0]
@@ -3103,15 +2276,10 @@ mod tests {
                 .iter()
                 .any(|m| m.name == "strong" && m.start == 2 && m.end == 8)
         );
-        // The second paragraph is realigned in the model: its style no longer agrees.
         let second = snap.blocks[1].id.clone();
         d.as_mut().set_attr(&second, "align", "right");
-
-        let exported = OdtCodec
-            .export(d.as_ref(), &tilo_content::NoContent)
-            .unwrap();
-        let cont = ZipPackage::read(&exported).unwrap();
-        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        let exported = export_odt(&d);
+        let content = part(&exported, "content.xml");
         for kept in [
             r#"<text:p text:style-name="P1">A <text:span text:style-name="T1"><text:span text:style-name="qdoc-strong">spaced</text:span></text:span>"#,
             r#"<table:table table:name="T" table:style-name="Tbl"><table:table-column table:style-name="Col" table:number-columns-repeated="2"/>"#,
@@ -3125,13 +2293,7 @@ mod tests {
             "{content}"
         );
         let mut d2 = Document::new();
-        OdtCodec
-            .import(
-                &exported,
-                &mut d2.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
+        import_odt(&exported, &mut d2);
         let again = d2.materialize();
         assert_eq!(norm(&again)[0], norm(&snap)[0]);
         assert_eq!(
@@ -3140,189 +2302,237 @@ mod tests {
         );
     }
 
-    fn deleted_text_moves_between_body_and_changed_region() {
-        let body = concat!(
-            r#"<text:tracked-changes><text:changed-region xml:id="ct2" text:id="ct2"><text:deletion>"#,
-            r#"<office:change-info><dc:creator>Bob</dc:creator></office:change-info><text:p>removed words</text:p>"#,
-            r#"</text:deletion></text:changed-region></text:tracked-changes>"#,
-            r#"<text:p>Tracked: <text:change text:change-id="ct2"/>gone.</text:p>"#,
-        );
-        let mut d = Document::new();
-        OdtCodec
-            .import(
-                &minimal_odt(body),
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d.materialize();
-        let p = &snap.blocks[0];
-        assert_eq!(p.text, "Tracked: removed wordsgone.");
-        assert!(
-            p.marks
-                .iter()
-                .any(|m| m.name == "del" && m.start == 9 && m.end == 22),
-            "{:?}",
-            p.marks
-        );
-
-        let exported = OdtCodec
-            .export(d.as_ref(), &tilo_content::NoContent)
-            .unwrap();
-        let cont = ZipPackage::read(&exported).unwrap();
-        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-        assert!(
-            content.contains("<text:p>removed words</text:p></text:deletion>"),
-            "{content}"
-        );
-        assert!(
-            content.contains(r#"Tracked: <text:change text:change-id=""#),
-            "{content}"
-        );
-        assert!(!content.contains("removed wordsgone"), "{content}");
-        let mut d2 = Document::new();
-        OdtCodec
-            .import(
-                &exported,
-                &mut d2.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        assert_eq!(norm(&d2.materialize()), norm(&snap));
-    }
-
-    fn merged_cells_roundtrip_through_odt() {
-        let body = concat!(
-            r#"<table:table table:name="T"><table:table-column table:number-columns-repeated="3"/>"#,
-            r#"<table:table-row><table:table-cell table:number-columns-spanned="2" table:number-rows-spanned="2"><text:p>big</text:p></table:table-cell>"#,
-            r#"<table:covered-table-cell/><table:table-cell><text:p>c</text:p></table:table-cell></table:table-row>"#,
-            r#"<table:table-row><table:covered-table-cell table:number-columns-repeated="2"/><table:table-cell><text:p>f</text:p></table:table-cell></table:table-row>"#,
-            r#"</table:table>"#,
-        );
-        let mut d = Document::new();
-        OdtCodec
-            .import(
-                &minimal_odt(body),
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d.materialize();
-        let big = snap.blocks.iter().find(|b| b.text == "big").unwrap();
-        assert_eq!(big.attrs.get("colspan"), Some(&AttrVal::Int(2)));
-        assert_eq!(big.attrs.get("rowspan"), Some(&AttrVal::Int(2)));
-        let f = snap.blocks.iter().find(|b| b.text == "f").unwrap();
-        assert_eq!(f.attrs.get("col"), Some(&AttrVal::Int(2)), "{:?}", f.attrs);
-
-        let exported = OdtCodec
-            .export(d.as_ref(), &tilo_content::NoContent)
-            .unwrap();
-        let cont = ZipPackage::read(&exported).unwrap();
-        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-        assert!(
-            content.contains(r#"<table:table-cell table:number-columns-spanned="2" table:number-rows-spanned="2"><text:p>big</text:p></table:table-cell><table:covered-table-cell/>"#),
-            "{content}"
-        );
-        assert_eq!(content.matches("<table:covered-table-cell/>").count(), 3);
-        let mut d2 = Document::new();
-        OdtCodec
-            .import(
-                &exported,
-                &mut d2.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        assert_eq!(norm(&d2.materialize()), norm(&snap));
-    }
-
-    fn numbered_then_bulleted_lists_stay_apart_and_numbered() {
-        let mut d = Document::new();
-        let one = d.insert_block(None, "list_item");
-        d.splice_text(&one, 0, 0, "one");
-        d.as_mut().set_attr(&one, "ordered", true);
-        let bullet = d.insert_block(Some(&one), "list_item");
-        d.splice_text(&bullet, 0, 0, "dot");
-        d.as_mut().set_attr(&bullet, "ordered", false);
-
-        let exported = OdtCodec
-            .export(d.as_ref(), &tilo_content::NoContent)
-            .unwrap();
-        let cont = ZipPackage::read(&exported).unwrap();
-        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-        assert_eq!(content.matches("<text:list ").count(), 2, "{content}");
-
-        let mut d2 = Document::new();
-        OdtCodec
-            .import(
-                &exported,
-                &mut d2.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d2.materialize();
-        assert_eq!(
-            snap.blocks[0].attrs.get("ordered"),
-            Some(&AttrVal::Bool(true))
-        );
-        assert_eq!(
-            snap.blocks[1].attrs.get("ordered"),
-            Some(&AttrVal::Bool(false))
-        );
-    }
-
+    /// The parts a `.odt` carries besides the body — settings, the styles an editor wrote, page
+    /// regions, and metadata the model has no field for — survive a save, an edit, and a merge of
+    /// two copies.
     #[test]
-    fn documents_roundtrip_through_odt() {
-        let cases: [(&str, fn()); 13] = [
-            (
-                "text and paragraph formatting roundtrips through odt",
-                text_and_paragraph_formatting_roundtrips_through_odt,
-            ),
-            (
-                "hyperlinks and cross references roundtrip through odt",
-                hyperlinks_and_cross_references_roundtrip_through_odt,
-            ),
-            ("images roundtrip through odt", images_roundtrip_through_odt),
-            ("lists roundtrip through odt", lists_roundtrip_through_odt),
-            (
-                "document properties and preserved parts roundtrip through odt",
-                document_properties_and_preserved_parts_roundtrip_through_odt,
-            ),
-            (
-                "headers and footers roundtrip through odt",
-                headers_and_footers_roundtrip_through_odt,
-            ),
-            (
-                "notes comments and tracked changes roundtrip through odt",
-                notes_comments_and_tracked_changes_roundtrip_through_odt,
-            ),
-            (
-                "section columns roundtrip through odt",
-                section_columns_roundtrip_through_odt,
-            ),
-            (
-                "unedited page regions keep their original elements",
-                unedited_page_regions_keep_their_original_elements,
-            ),
-            (
-                "keeps paragraph span and table styles while they agree",
-                keeps_paragraph_span_and_table_styles_while_they_agree,
-            ),
-            (
-                "deleted text moves between body and changed region",
-                deleted_text_moves_between_body_and_changed_region,
-            ),
-            (
-                "merged cells roundtrip through odt",
-                merged_cells_roundtrip_through_odt,
-            ),
-            (
-                "numbered then bulleted lists stay apart and numbered",
-                numbered_then_bulleted_lists_stay_apart_and_numbered,
-            ),
-        ];
-        for (case, run) in cases {
-            eprintln!("case: {case}");
-            run();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one save and reopen of a single document is one flow"
+    )]
+    fn preserved_parts_round_trip_and_converge() {
+        // An unmodeled part is carried byte for byte.
+        let base = minimal_odt_styled("", "<text:p>hi</text:p>");
+        let mut package = ZipPackage::read(&base).unwrap();
+        package.set(
+            "settings.xml",
+            b"<office:settings>custom</office:settings>".to_vec(),
+        );
+        let odt = package.write_odf().unwrap();
+        let mut doc = Document::new();
+        import_odt(&odt, &mut doc);
+        let exported = export_odt(&doc);
+        let out = ZipPackage::read(&exported).unwrap();
+        assert_eq!(
+            out.get("settings.xml"),
+            Some(&b"<office:settings>custom</office:settings>"[..]),
+            "unmodeled part must round-trip byte-identically"
+        );
+        assert_eq!(out.parts[0].0, "mimetype", "mimetype still first");
+        assert!(out.get("content.xml").is_some(), "content regenerated");
+
+        // Metadata the model has no field for is kept while the fields it has are updated, and a
+        // document with no properties has no metadata part.
+        let meta = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><office:meta><dc:title>Old</dc:title><meta:editing-cycles>7</meta:editing-cycles></office:meta></office:document-meta>"#;
+        let mut package = ZipPackage::read(&minimal_odt_styled("", "<text:p>hi</text:p>")).unwrap();
+        package.set("meta.xml", meta.as_bytes().to_vec());
+        let odt = package.write_odf().unwrap();
+        let mut doc = Document::new();
+        import_odt(&odt, &mut doc);
+        assert_eq!(
+            doc.doc_prop("title").as_deref(),
+            Some("Old"),
+            "title imported"
+        );
+        doc.set_doc_prop("title", "New");
+        doc.set_doc_prop("keywords", "k");
+        let meta_out = part(&export_odt(&doc), "meta.xml");
+        assert!(meta_out.contains("<dc:title>New</dc:title>"), "{meta_out}");
+        assert!(!meta_out.contains("<dc:title>Old</dc:title>"), "{meta_out}");
+        assert!(meta_out.contains("editing-cycles>7</"), "{meta_out}");
+        assert!(
+            meta_out.contains("<meta:keyword>k</meta:keyword>"),
+            "{meta_out}"
+        );
+        let mut plain = Document::new();
+        let paragraph = plain.insert_block(None, "paragraph");
+        plain.splice_text(&paragraph, 0, 0, "plain");
+        assert!(
+            ZipPackage::read(&export_odt(&plain))
+                .unwrap()
+                .get("meta.xml")
+                .is_none(),
+            "no metadata part synthesised for a doc with no properties"
+        );
+
+        // A styles part with two style atoms each edited on its own replica converges.
+        let odt = odt_with_two_style_atoms();
+        let original_styles = ZipPackage::read(&odt)
+            .unwrap()
+            .get("styles.xml")
+            .unwrap()
+            .to_vec();
+        let mut doc = Document::new();
+        import_odt(&odt, &mut doc);
+        assert_eq!(
+            ZipPackage::read(&export_odt(&doc))
+                .unwrap()
+                .get("styles.xml")
+                .unwrap(),
+            original_styles.as_slice(),
+            "segmented styles.xml re-emits byte-for-byte"
+        );
+        let root = doc.as_ref();
+        assert!(
+            tilo_doc::model::preserved_atoms(root.doc, root.c, "odt/part/styles.xml").len() >= 2,
+            "styles.xml stored as multiple per-atom segments"
+        );
+
+        let mut a = Document::new();
+        import_odt(&odt, &mut a);
+        let mut b = a.fork();
+        let (id_quote, quote_bytes) = atom_containing(&a, "QuoteFont");
+        let (id_caption, caption_bytes) = atom_containing(&a, "CaptionFont");
+        assert_eq!(
+            id_quote,
+            atom_containing(&b, "QuoteFont").0,
+            "fork shares atom ids"
+        );
+        assert_eq!(
+            id_caption,
+            atom_containing(&b, "CaptionFont").0,
+            "fork shares atom ids"
+        );
+        assert_ne!(id_quote, id_caption, "distinct atoms have distinct ids");
+        let edited_quote = String::from_utf8(quote_bytes)
+            .unwrap()
+            .replace("QuoteFont", "QuoteFont-EDITED");
+        let edited_caption = String::from_utf8(caption_bytes)
+            .unwrap()
+            .replace("CaptionFont", "CaptionFont-EDITED");
+        a.as_mut().set_preserved_atom_bytes(
+            "odt/part/styles.xml",
+            &id_quote,
+            edited_quote.as_bytes(),
+        );
+        b.as_mut().set_preserved_atom_bytes(
+            "odt/part/styles.xml",
+            &id_caption,
+            edited_caption.as_bytes(),
+        );
+        a.merge(&mut b);
+        b.merge(&mut a);
+        for (replica, who) in [(&a, "A"), (&b, "B")] {
+            let styles = part(&export_odt(replica), "styles.xml");
+            assert!(
+                styles.contains("QuoteFont-EDITED"),
+                "replica {who} kept A's Quote edit: {styles}"
+            );
+            assert!(
+                styles.contains("CaptionFont-EDITED"),
+                "replica {who} kept B's Caption edit: {styles}"
+            );
+            assert!(
+                styles.find("QuoteFont-EDITED").unwrap()
+                    < styles.find("CaptionFont-EDITED").unwrap(),
+                "replica {who} kept atom order: {styles}"
+            );
+            assert!(
+                styles.contains("<office:styles>") && styles.contains("</office:document-styles>")
+            );
         }
+        assert_eq!(
+            part(&export_odt(&a), "styles.xml"),
+            part(&export_odt(&b), "styles.xml"),
+            "replicas converge on identical styles.xml"
+        );
+
+        // Page regions the writer did not edit keep their own elements; an edited one keeps the
+        // rest of the master page.
+        let styles = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">"#,
+            r#"<office:master-styles><style:master-page style:name="Standard">"#,
+            r#"<style:header><text:p>Head</text:p></style:header>"#,
+            r#"<style:header-first><text:p>Cover</text:p></style:header-first>"#,
+            r#"<style:footer><text:p>Page <text:page-number>1</text:page-number> of <text:page-count>2</text:page-count></text:p></style:footer>"#,
+            r#"</style:master-page></office:master-styles></office:document-styles>"#,
+        );
+        let mut package = ZipPackage::read(&minimal_odt("<text:p>body</text:p>")).unwrap();
+        package.set("styles.xml", styles.as_bytes().to_vec());
+        let odt = package.write_odf().unwrap();
+        let mut doc = Document::new();
+        import_odt(&odt, &mut doc);
+        assert_eq!(
+            part(&export_odt(&doc), "styles.xml"),
+            styles,
+            "unedited page regions keep their original elements"
+        );
+        let head = doc.header_blocks_in_order()[0].clone();
+        doc.splice_header_text(&head, 4, 0, "er");
+        let out = part(&export_odt(&doc), "styles.xml");
+        assert!(out.contains("<text:p>Header</text:p>"), "{out}");
+        assert!(
+            out.contains("<text:page-count>2</text:page-count>"),
+            "{out}"
+        );
+
+        // A master page that names a page layout keeps that name when its header is edited.
+        let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:master-styles><style:master-page style:name="Standard" style:page-layout-name="pm1"><style:header><text:p>Old Header</text:p></style:header></style:master-page></office:master-styles></office:document-styles>"#;
+        let mut package = ZipPackage::read(&minimal_odt_styled("", "<text:p>hi</text:p>")).unwrap();
+        package.set("styles.xml", styles_xml.as_bytes().to_vec());
+        let odt = package.write_odf().unwrap();
+        let mut doc = Document::new();
+        import_odt(&odt, &mut doc);
+        assert_eq!(
+            doc.header()[0].text,
+            "Old Header",
+            "existing header imported"
+        );
+        let hid = doc.header_blocks_in_order()[0].clone();
+        doc.splice_header_text(&hid, 0, 9, "New Header");
+        let styles_out = part(&export_odt(&doc), "styles.xml");
+        assert!(
+            styles_out.contains(r#"style:page-layout-name="pm1""#),
+            "page-layout reference preserved: {styles_out}"
+        );
+        assert!(
+            styles_out.contains("New Header") && !styles_out.contains("Old Header"),
+            "header updated: {styles_out}"
+        );
+
+        // Columns the model sets go into a page layout that keeps the writer's page size and
+        // margins, and replace the ones already there rather than doubling them.
+        let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties fo:page-width="21cm" fo:margin-left="2cm"><style:columns style:column-count="4"/></style:page-layout-properties></style:page-layout></office:automatic-styles></office:document-styles>"#;
+        let mut package = ZipPackage::read(&minimal_odt_styled("", "<text:p>hi</text:p>")).unwrap();
+        package.set("styles.xml", styles_xml.as_bytes().to_vec());
+        let odt = package.write_odf().unwrap();
+        let mut doc = Document::new();
+        import_odt(&odt, &mut doc);
+        assert_eq!(doc.columns().0, 4, "imported 4 columns");
+        doc.set_columns(3, None);
+        let styles_out = part(&export_odt(&doc), "styles.xml");
+        assert!(
+            styles_out.contains(r#"fo:page-width="21cm""#),
+            "page size preserved: {styles_out}"
+        );
+        assert!(
+            styles_out.contains(r#"fo:margin-left="2cm""#),
+            "margin preserved: {styles_out}"
+        );
+        assert_eq!(
+            styles_out.matches("<style:columns").count(),
+            1,
+            "exactly one style:columns: {styles_out}"
+        );
+        assert!(
+            styles_out.contains(r#"style:column-count="3""#),
+            "columns set from the model: {styles_out}"
+        );
+        let mut d2 = Document::new();
+        import_odt(&export_odt(&doc), &mut d2);
+        assert_eq!(d2.columns(), (3, None), "column count reads back");
     }
 }
