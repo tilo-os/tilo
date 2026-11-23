@@ -71,11 +71,12 @@ mod unix {
     use sha2::{Digest, Sha256};
     use std::{
         fs::{self, File},
-        io::{Read, Seek, SeekFrom, Write},
+        io::{Read, Seek, SeekFrom},
         os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt as StdOpenOptionsExt},
         sync::atomic::AtomicU64,
         time::Duration,
     };
+    use tilo_net::http::fetch;
 
     fn io_error(error: std::io::Error) -> String {
         format!("Desktop package cache: {error}")
@@ -192,146 +193,38 @@ mod unix {
         }
     }
 
-    fn same_origin(actual: &reqwest::Url, trusted: &reqwest::Url) -> bool {
-        actual.scheme() == trusted.scheme()
-            && actual.host_str() == trusted.host_str()
-            && actual.port_or_known_default() == trusted.port_or_known_default()
-            && actual.username().is_empty()
-            && actual.password().is_none()
-            && actual.fragment().is_none()
+    /// The downloader for this package's own origin. The caller validated the
+    /// package URL's scheme and host; every redirect is checked against it.
+    fn downloader(url: &reqwest::Url) -> Result<fetch::Downloader, String> {
+        let mut origin = url.clone();
+        origin.set_path("/");
+        origin.set_query(None);
+        origin.set_fragment(None);
+        fetch::Downloader::new(
+            origin,
+            Duration::from_secs(60),
+            Some("Tilo-Desktop-Setup/1"),
+        )
+        .map_err(|error| format!("Could not initialize Desktop downloader: {error}"))
     }
 
-    fn client(origin: reqwest::Url) -> Result<reqwest::blocking::Client, String> {
-        tilo_net::http::blocking_client()
-            .user_agent("Tilo-Desktop-Setup/1")
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(60))
-            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
-                if attempt.previous().len() >= 5 || !same_origin(attempt.url(), &origin) {
-                    attempt.error(
-                        "Desktop package redirect left its trusted origin or exceeded its limit",
-                    )
-                } else {
-                    attempt.follow()
-                }
-            }))
-            .build()
-            .map_err(|error| format!("Could not initialize Desktop downloader: {error}"))
-    }
-
-    fn range_size(response: &reqwest::blocking::Response, offset: u64, total: u64) -> Option<u64> {
-        let value = response
-            .headers()
-            .get(reqwest::header::CONTENT_RANGE)?
-            .to_str()
-            .ok()?
-            .strip_prefix("bytes ")?;
-        let (range, declared_total) = value.split_once('/')?;
-        let (start, end) = range.split_once('-')?;
-        let (start, end, declared_total) = (
-            start.parse::<u64>().ok()?,
-            end.parse::<u64>().ok()?,
-            declared_total.parse::<u64>().ok()?,
-        );
-        if start != offset || end < start || end >= total || declared_total != total {
-            return None;
-        }
-        let count = end - start + 1;
-        response
-            .content_length()
-            .is_none_or(|length| length == count)
-            .then_some(count)
-    }
-
-    fn reset(file: &mut File) -> Result<(), String> {
-        file.set_len(0).map_err(io_error)?;
-        file.seek(SeekFrom::Start(0)).map_err(io_error)?;
-        Ok(())
-    }
-
-    fn transfer(
-        release: &DesktopRelease,
-        file: &mut File,
-        cancel: &AtomicBool,
-        origin: reqwest::Url,
-    ) -> Result<(), String> {
-        let client = client(origin.clone())?;
-        for _ in 0..3 {
-            cancelled(cancel)?;
-            let offset = file.metadata().map_err(io_error)?.len();
-            let mut request = client
-                .get(&release.url)
-                .header(reqwest::header::ACCEPT_ENCODING, "identity");
-            if offset > 0 {
-                request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
+    fn fetch_error(error: fetch::Error) -> String {
+        match error {
+            fetch::Error::Cancelled => "Desktop package download cancelled.".into(),
+            fetch::Error::Digest => "The Desktop package failed SHA-256 verification.".into(),
+            fetch::Error::Size { .. } => "Desktop package response has an unexpected size.".into(),
+            fetch::Error::Incomplete(_) | fetch::Error::Paused => {
+                "Desktop package transfer remained incomplete after bounded retries.".into()
             }
-            let mut response = request
-                .send()
-                .map_err(|error| format!("Desktop package request failed: {error}"))?;
-            cancelled(cancel)?;
-            if !same_origin(response.url(), &origin) {
-                return Err("Untrusted Desktop package response origin.".into());
+            fetch::Error::Trusted(_) => "Untrusted Desktop package response origin.".into(),
+            fetch::Error::Io(error) => io_error(error),
+            fetch::Error::Protocol(detail) | fetch::Error::Hook(detail) => {
+                format!("Desktop package response was not a valid download: {detail}")
             }
-            if response
-                .headers()
-                .get(reqwest::header::CONTENT_ENCODING)
-                .is_some_and(|value| value != "identity")
-            {
-                return Err("Encoded Desktop package responses are unsupported.".into());
-            }
-            let expected = if offset > 0
-                && response.status() == reqwest::StatusCode::PARTIAL_CONTENT
-            {
-                let Some(size) = range_size(&response, offset, release.byte_size) else {
-                    reset(file)?;
-                    continue;
-                };
-                size
-            } else if offset > 0 && response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE
-            {
-                reset(file)?;
-                continue;
-            } else if response.status() == reqwest::StatusCode::OK {
-                if response
-                    .content_length()
-                    .is_some_and(|size| size != release.byte_size)
-                {
-                    return Err("Desktop package response has an unexpected size.".into());
-                }
-                reset(file)?;
-                release.byte_size
-            } else {
-                return Err(format!(
-                    "Desktop package server returned {}.",
-                    response.status()
-                ));
-            };
-            let mut received = 0_u64;
-            let mut buffer = [0_u8; 64 * 1024];
-            loop {
-                cancelled(cancel)?;
-                let limit = usize::try_from((expected - received + 1).min(buffer.len() as u64))
-                    .map_err(|e| e.to_string())?;
-                let count = match response.read(&mut buffer[..limit]) {
-                    Ok(count) => count,
-                    Err(_) => break, // retry the safely bounded prefix below
-                };
-                cancelled(cancel)?;
-                if count == 0 {
-                    break;
-                }
-                if count as u64 > expected - received {
-                    return Err("Desktop package response exceeded its size boundary.".into());
-                }
-                file.write_all(&buffer[..count]).map_err(io_error)?;
-                received += count as u64;
-            }
-            if received == expected && file.metadata().map_err(io_error)?.len() == release.byte_size
-            {
-                return cancelled(cancel);
+            fetch::Error::Client(detail) => {
+                format!("Could not initialize Desktop downloader: {detail}")
             }
         }
-        Err("Desktop package transfer remained incomplete after bounded retries.".into())
     }
 
     fn checked_path(dir: &Dir, cache: &Path, name: &str) -> Result<PathBuf, String> {
@@ -351,7 +244,7 @@ mod unix {
         release: &DesktopRelease,
         cache: &Path,
         cancel: &AtomicBool,
-        origin: reqwest::Url,
+        url: reqwest::Url,
     ) -> Result<PathBuf, String> {
         cancelled(cancel)?;
         let dir = open_cache(cache)?;
@@ -361,7 +254,20 @@ mod unix {
             return checked_path(&dir, cache, &name);
         }
         let mut staging = Staging::create(&dir)?;
-        transfer(release, &mut staging.file, cancel, origin)?;
+        downloader(&url)?
+            .fetch(
+                fetch::Request {
+                    url,
+                    size: release.byte_size,
+                    sha256: Some(&release.sha256),
+                    cancel,
+                    pause: None,
+                },
+                &mut staging.file,
+                &mut (),
+                &mut |_| {},
+            )
+            .map_err(fetch_error)?;
         verify(&mut staging.file, release, cancel)?;
         staging.file.sync_all().map_err(io_error)?;
         cancelled(cancel)?;
@@ -485,65 +391,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_desktop_download_keeps_only_verified_private_bytes;
 
-        phase desktop_download_resumes_or_restarts_ranges_without_duplicate_bytes;
-        {
-            {
-                let split = 8;
-                let (_root, result, requests) = run(vec![
-                    response(
-                        "200 OK",
-                        &format!("Content-Length: {}\r\n", BYTES.len()),
-                        &BYTES[..split],
-                    ),
-                    response(
-                        "206 Partial Content",
-                        &format!(
-                            "Content-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\n",
-                            BYTES.len() - split,
-                            split,
-                            BYTES.len() - 1,
-                            BYTES.len()
-                        ),
-                        &BYTES[split..],
-                    ),
-                ]);
-                assert_eq!(std::fs::read(result.unwrap()).unwrap(), BYTES);
-                assert!(requests[1].contains("range: bytes=8-"));
-            }
-
-            {
-                let (_root, result, requests) = run(vec![
-                    response(
-                        "200 OK",
-                        &format!("Content-Length: {}\r\n", BYTES.len()),
-                        &BYTES[..8],
-                    ),
-                    full(BYTES),
-                ]);
-                assert_eq!(std::fs::read(result.unwrap()).unwrap(), BYTES);
-                assert!(requests[1].contains("range: bytes=8-"));
-            }
-
-            {
-                let (_root, result, requests) = run(vec![
-                    response(
-                        "200 OK",
-                        &format!("Content-Length: {}\r\n", BYTES.len()),
-                        &BYTES[..8],
-                    ),
-                    response(
-                        "206 Partial Content",
-                        "Content-Range: bytes 7-23/24\r\nContent-Length: 17\r\n",
-                        &BYTES[7..],
-                    ),
-                    full(BYTES),
-                ]);
-                assert_eq!(std::fs::read(result.unwrap()).unwrap(), BYTES);
-                assert!(!requests[2].contains("range:"));
-            }
-        }
-
-        phase desktop_download_rejects_bad_objects_redirects_and_transports;
+        phase desktop_download_rejects_bad_objects_and_transports;
         {
             {
                 for reply in [
@@ -580,25 +428,6 @@ mod tests {
                 std::fs::write(&path, b"tampered").unwrap();
                 assert!(download_for_test(&metadata, &cache, &AtomicBool::new(false)).is_err());
                 assert_eq!(std::fs::read(&path).unwrap(), b"tampered");
-            }
-
-            {
-                let (_root, result, requests) = run(vec![
-                    response(
-                        "302 Found",
-                        "Location: /renamed\r\nContent-Length: 0\r\n",
-                        b"",
-                    ),
-                    full(BYTES),
-                ]);
-                assert!(result.is_ok());
-                assert!(requests[1].starts_with("get /renamed"));
-                let (_root, result, _) = run(vec![response(
-                    "302 Found",
-                    "Location: http://localhost:1/escape\r\nContent-Length: 0\r\n",
-                    b"",
-                )]);
-                assert!(result.is_err());
             }
 
             {

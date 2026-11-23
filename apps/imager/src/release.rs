@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use tilo_net::http::fetch;
 
 use crate::model::{Source, TiloRelease};
 
@@ -641,225 +642,81 @@ fn sha256_controlled(path: &Path, control: &DownloadControl) -> Result<String, S
     Ok(hex::encode(hash.finalize()))
 }
 
-fn same_origin(actual: &reqwest::Url, trusted: &reqwest::Url) -> bool {
-    actual.scheme() == trusted.scheme()
-        && actual.host_str() == trusted.host_str()
-        && actual.port_or_known_default() == trusted.port_or_known_default()
-}
-
-fn content_range(value: &str) -> Option<(u64, u64, u64)> {
-    let value = value.strip_prefix("bytes ")?;
-    let (range, total) = value.split_once('/')?;
-    let (start, end) = range.split_once('-')?;
-    Some((start.parse().ok()?, end.parse().ok()?, total.parse().ok()?))
-}
-
-fn copy_download_observed(
-    response: reqwest::blocking::Response,
-    archive: &mut File,
-    limit: u64,
-    already_received: u64,
-    control: &DownloadControl,
-    notify: &mut impl FnMut(DownloadEvent),
-) -> Result<u64, String> {
-    let mut input = response.take(limit.saturating_add(1));
-    let mut buffer = vec![0_u8; 1024 * 1024].into_boxed_slice();
-    let mut downloaded = 0_u64;
-    let result = loop {
-        if control.is_cancelled() {
-            break Err("Tilo installer download cancelled.".to_string());
-        }
-        let read = input
-            .read(&mut buffer)
-            .map_err(|error| format!("The Tilo installer download was interrupted: {error}"))?;
-        if read == 0 {
-            break Ok(downloaded);
-        }
-        let chunk = buffer
-            .get(..read)
-            .ok_or_else(|| "Could not bound the Tilo installer response.".to_string())?;
-        archive
-            .write_all(chunk)
-            .map_err(|error| format!("Could not save the Tilo installer: {error}"))?;
-        downloaded = downloaded.saturating_add(read as u64);
-        notify(DownloadEvent::Downloading {
-            received: already_received.saturating_add(downloaded),
-            total: already_received.saturating_add(limit),
-        });
-    };
-    // Make successfully received chunks durable even when the connection ends
-    // early, so the next attempt can ask only for the missing suffix.
-    archive
-        .flush()
-        .map_err(|error| format!("Could not save the Tilo installer: {error}"))?;
-    result
-}
-
-fn append_range_observed(
-    response: reqwest::blocking::Response,
-    archive_part: &Path,
-    partial_size: u64,
-    expected_size: u64,
-    control: &DownloadControl,
-    notify: &mut impl FnMut(DownloadEvent),
-) -> Result<bool, String> {
-    let parsed_range = response
-        .headers()
-        .get(reqwest::header::CONTENT_RANGE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(content_range);
-    let correct_range = parsed_range.is_some_and(|(start, end, total)| {
-        start == partial_size && end >= start && end < expected_size && total == expected_size
-    });
-    let response_size = parsed_range.map_or(0, |(start, end, _)| {
-        end.saturating_sub(start).saturating_add(1)
-    });
-    let correct_length = response
-        .content_length()
-        .is_none_or(|length| length == response_size);
-    if !correct_range || !correct_length {
-        fs::remove_file(archive_part)
-            .map_err(|error| format!("Could not restart a mismatched partial download: {error}"))?;
-        return Ok(false);
-    }
-
-    let mut archive = OpenOptions::new()
-        .append(true)
-        .open(archive_part)
-        .map_err(|error| format!("Could not resume the download cache: {error}"))?;
-    let downloaded = copy_download_observed(
-        response,
-        &mut archive,
-        response_size,
-        partial_size,
-        control,
-        notify,
-    )?;
-    let total = archive
-        .metadata()
-        .map_or(u64::MAX, |metadata| metadata.len());
-    if downloaded == response_size && total == expected_size {
-        return Ok(true);
-    }
-    if downloaded > response_size || total > expected_size {
-        let _ = fs::remove_file(archive_part);
-        return Err("The Tilo installer range response exceeded its declared boundary.".into());
-    }
-    Err("The Tilo installer download was interrupted before it completed.".into())
-}
-
-#[cfg(test)]
 fn download_archive(
-    client: &reqwest::blocking::Client,
-    url: &str,
-    trusted_origin: &reqwest::Url,
+    downloader: &tilo_net::http::fetch::Downloader,
+    url: reqwest::Url,
     archive_part: &Path,
     expected_size: u64,
-) -> Result<(), String> {
-    download_archive_observed(
-        client,
-        url,
-        trusted_origin,
-        archive_part,
-        expected_size,
-        &DownloadControl::default(),
-        &mut |_| {},
-    )
-}
-
-fn download_archive_observed(
-    client: &reqwest::blocking::Client,
-    url: &str,
-    trusted_origin: &reqwest::Url,
-    archive_part: &Path,
-    expected_size: u64,
+    expected_sha256: &str,
     control: &DownloadControl,
     notify: &mut impl FnMut(DownloadEvent),
 ) -> Result<(), String> {
-    let mut partial_size = archive_part.metadata().map_or(0, |metadata| metadata.len());
-    if partial_size > expected_size {
+    let held = archive_part.metadata().map_or(0, |metadata| metadata.len());
+    if held > expected_size {
         fs::remove_file(archive_part)
             .map_err(|error| format!("Could not replace an oversized partial download: {error}"))?;
-        partial_size = 0;
     }
-    if partial_size == expected_size {
-        return Ok(());
-    }
-
-    for _ in 0..2 {
-        let resume = partial_size > 0;
-        let mut request = client.get(url);
-        if resume {
-            request = request.header(reqwest::header::RANGE, format!("bytes={partial_size}-"));
-        }
-        let response = request
-            .send()
-            .map_err(|error| format!("Could not download the Tilo installer: {error}"))?;
-        if !same_origin(response.url(), trusted_origin) {
-            return Err("The release download redirected to an untrusted origin.".into());
-        }
-
-        if resume && response.status() == reqwest::StatusCode::PARTIAL_CONTENT {
-            if append_range_observed(
-                response,
-                archive_part,
-                partial_size,
-                expected_size,
-                control,
-                notify,
-            )? {
-                return Ok(());
+    let mut archive = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(archive_part)
+        .map_err(|error| format!("Could not create the download cache: {error}"))?;
+    notify(DownloadEvent::Downloading {
+        received: archive.metadata().map_or(0, |metadata| metadata.len()),
+        total: expected_size,
+    });
+    let result = downloader.fetch(
+        fetch::Request {
+            url,
+            size: expected_size,
+            sha256: Some(expected_sha256),
+            cancel: &control.0,
+            pause: None,
+        },
+        &mut archive,
+        &mut (),
+        |update| match update.phase {
+            fetch::Phase::Verifying => notify(DownloadEvent::Verifying),
+            fetch::Phase::Requesting | fetch::Phase::Receiving | fetch::Phase::Resetting => {
+                notify(DownloadEvent::Downloading {
+                    received: update.received,
+                    total: update.total,
+                });
             }
-            partial_size = 0;
-            continue;
-        }
-
-        if resume && response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
-            fs::remove_file(archive_part)
-                .map_err(|error| format!("Could not restart the partial download: {error}"))?;
-            partial_size = 0;
-            continue;
-        }
-
-        if resume && response.status() != reqwest::StatusCode::OK {
-            return response
-                .error_for_status()
-                .map(|_| ())
-                .map_err(|error| format!("Could not download the Tilo installer: {error}"));
-        }
-
-        let response = response
-            .error_for_status()
-            .map_err(|error| format!("Could not download the Tilo installer: {error}"))?;
-        if response.status() != reqwest::StatusCode::OK {
-            return Err("The Tilo installer server returned an invalid full response.".into());
-        }
-        if response
-            .content_length()
-            .is_some_and(|length| length != expected_size)
-        {
-            if resume {
-                let _ = fs::remove_file(archive_part);
-            }
-            return Err("The Tilo installer download has an unexpected size.".into());
-        }
-        let mut archive = File::create(archive_part)
-            .map_err(|error| format!("Could not create the download cache: {error}"))?;
-        let downloaded =
-            copy_download_observed(response, &mut archive, expected_size, 0, control, notify)?;
-        let total = archive
-            .metadata()
-            .map_or(u64::MAX, |metadata| metadata.len());
-        if downloaded == expected_size && total == expected_size {
-            return Ok(());
-        }
-        if total > expected_size {
-            let _ = fs::remove_file(archive_part);
-        }
-        return Err("The Tilo installer download was interrupted before it completed.".into());
+            fetch::Phase::Retrying | fetch::Phase::Complete => {}
+        },
+    );
+    // A partial download that is the wrong size or digest must not be resumed
+    // from the next time this installer runs.
+    if matches!(
+        &result,
+        Err(fetch::Error::Digest | fetch::Error::Size { .. })
+    ) {
+        let _ = fs::remove_file(archive_part);
     }
+    result.map_err(archive_error)
+}
 
-    Err("The Tilo installer server did not honor a safe download restart.".into())
+/// What the person sees when a download did not produce the signed installer.
+fn archive_error(error: fetch::Error) -> String {
+    match error {
+        fetch::Error::Cancelled => "Tilo installer download cancelled.".into(),
+        fetch::Error::Digest => {
+            "The downloaded Tilo installer did not match its signed catalog.".into()
+        }
+        fetch::Error::Size { .. } => "The Tilo installer download has an unexpected size.".into(),
+        fetch::Error::Incomplete(_) | fetch::Error::Paused => {
+            "The Tilo installer download was interrupted before it completed.".into()
+        }
+        fetch::Error::Io(error) => format!("Could not save the Tilo installer: {error}"),
+        fetch::Error::Client(detail) => format!("Could not initialize the downloader: {detail}"),
+        fetch::Error::Trusted(detail) | fetch::Error::Protocol(detail) => {
+            format!("Could not download the Tilo installer: {detail}")
+        }
+        fetch::Error::Hook(detail) => format!("Could not save the Tilo installer: {detail}"),
+    }
 }
 
 pub fn verified_image_observed(
@@ -887,31 +744,25 @@ pub fn verified_image_observed(
 
     let archive_part = root.join("tilo-installer.img.zst.part");
     let image_part = root.join("tilo-installer.img.part");
-    let client = tilo_net::http::blocking_client()
-        .user_agent("Tilo-Imager/1")
-        .timeout(std::time::Duration::from_secs(60 * 60))
-        .build()
-        .map_err(|error| format!("Could not initialize the downloader: {error}"))?;
     let trusted_origin = reqwest::Url::parse("https://code.tilo.so/")
         .map_err(|error| format!("Could not initialize the trusted release origin: {error}"))?;
-    notify(DownloadEvent::Downloading {
-        received: archive_part.metadata().map_or(0, |metadata| metadata.len()),
-        total: release.archive_size,
-    });
-    download_archive_observed(
-        &client,
-        &release.url,
-        &trusted_origin,
+    let downloader = fetch::Downloader::new(
+        trusted_origin,
+        std::time::Duration::from_secs(60 * 60),
+        Some("Tilo-Imager/1"),
+    )
+    .map_err(|error| format!("Could not initialize the downloader: {error}"))?;
+    let url = reqwest::Url::parse(&release.url)
+        .map_err(|error| format!("The Tilo installer has an invalid download URL: {error}"))?;
+    download_archive(
+        &downloader,
+        url,
         &archive_part,
         release.archive_size,
+        &release.archive_sha256,
         control,
         notify,
     )?;
-    notify(DownloadEvent::Verifying);
-    if sha256_controlled(&archive_part, control)? != release.archive_sha256 {
-        let _ = fs::remove_file(&archive_part);
-        return Err("The downloaded Tilo installer did not match its signed catalog.".into());
-    }
 
     let compressed = File::open(&archive_part)
         .map_err(|error| format!("Could not open the verified installer: {error}"))?;
@@ -1033,76 +884,6 @@ impl<R: BufRead> Read for ZstdFrames<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{TcpListener, TcpStream};
-    use std::sync::{Arc, Mutex};
-    use std::thread;
-
-    struct HttpResponse {
-        status: &'static str,
-        headers: Vec<String>,
-        body: Vec<u8>,
-        advertised_size: Option<usize>,
-    }
-
-    fn serve(
-        responses: Vec<HttpResponse>,
-    ) -> (
-        String,
-        reqwest::Url,
-        Arc<Mutex<Vec<String>>>,
-        thread::JoinHandle<()>,
-    ) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::clone(&requests);
-        let handle = thread::spawn(move || {
-            for response in responses {
-                let (mut stream, _) = listener.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
-                    .unwrap();
-                let request = read_request(&mut stream);
-                seen.lock().unwrap().push(request);
-                let size = response.advertised_size.unwrap_or(response.body.len());
-                let mut head = format!(
-                    "HTTP/1.1 {}\r\nContent-Length: {size}\r\nConnection: close\r\n",
-                    response.status
-                );
-                for header in response.headers {
-                    head.push_str(&header);
-                    head.push_str("\r\n");
-                }
-                head.push_str("\r\n");
-                stream.write_all(head.as_bytes()).unwrap();
-                stream.write_all(&response.body).unwrap();
-            }
-        });
-        (
-            format!("http://{address}/installer.img.zst"),
-            reqwest::Url::parse(&format!("http://{address}/")).unwrap(),
-            requests,
-            handle,
-        )
-    }
-
-    fn read_request(stream: &mut TcpStream) -> String {
-        let mut bytes = Vec::new();
-        let mut buffer = [0_u8; 1024];
-        while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-            let read = stream.read(&mut buffer).unwrap();
-            if read == 0 {
-                break;
-            }
-            bytes.extend_from_slice(&buffer[..read]);
-        }
-        String::from_utf8(bytes).unwrap()
-    }
-
-    fn test_client() -> reqwest::blocking::Client {
-        tilo_net::http::blocking_client().build().unwrap()
-    }
-
     tilo_test_env::scenario! {
         fn a_release_is_selected_for_the_architecture_it_was_built_for;
 
@@ -1448,9 +1229,9 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_release_download_keeps_strict_sources_ranges_and_partials;
+        fn a_release_source_keeps_strict_digests_and_identity;
 
-        phase release_sources_keep_strict_digests_identity_and_trusted_redirects;
+        phase release_sources_keep_strict_digests_and_identity;
         {
             {
                 assert!(validate_digest(&"a".repeat(64)).is_ok());
@@ -1490,223 +1271,6 @@ mod tests {
                 );
                 let missing = image.path().with_extension("missing");
                 assert!(source_for(&release, &missing).is_err());
-            }
-
-            {
-                let trusted = reqwest::Url::parse("https://code.tilo.so/").unwrap();
-                assert!(same_origin(
-                    &reqwest::Url::parse("https://code.tilo.so/releases/file").unwrap(),
-                    &trusted
-                ));
-                assert!(!same_origin(
-                    &reqwest::Url::parse("https://code.tilo.so:444/releases/file").unwrap(),
-                    &trusted
-                ));
-                assert!(!same_origin(
-                    &reqwest::Url::parse("http://code.tilo.so/releases/file").unwrap(),
-                    &trusted
-                ));
-            }
-        }
-
-        phase release_download_resumes_only_valid_ranges;
-        {
-            {
-                let payload = b"signed installer archive bytes";
-                let split = 9;
-                let (url, origin, requests, server) = serve(vec![
-                    HttpResponse {
-                        status: "200 OK",
-                        headers: vec![],
-                        body: payload[..split].to_vec(),
-                        advertised_size: Some(payload.len()),
-                    },
-                    HttpResponse {
-                        status: "206 Partial Content",
-                        headers: vec![format!(
-                            "Content-Range: bytes {split}-{}/{}",
-                            payload.len() - 1,
-                            payload.len()
-                        )],
-                        body: payload[split..].to_vec(),
-                        advertised_size: None,
-                    },
-                ]);
-                let cache = tempfile::tempdir().unwrap();
-                let part = cache.path().join("installer.part");
-                let client = test_client();
-
-                assert!(download_archive(&client, &url, &origin, &part, payload.len() as u64).is_err());
-                assert_eq!(fs::read(&part).unwrap(), payload[..split]);
-                download_archive(&client, &url, &origin, &part, payload.len() as u64).unwrap();
-                assert_eq!(fs::read(&part).unwrap(), payload);
-                server.join().unwrap();
-                let requests = requests.lock().unwrap();
-                assert!(!requests[0].contains("Range:"));
-                assert!(requests[1].contains(&format!("range: bytes={split}-")));
-                drop(requests);
-            }
-
-            {
-                let payload = b"complete archive from a range-ignorant server";
-                let (url, origin, requests, server) = serve(vec![HttpResponse {
-                    status: "200 OK",
-                    headers: vec![],
-                    body: payload.to_vec(),
-                    advertised_size: None,
-                }]);
-                let cache = tempfile::tempdir().unwrap();
-                let part = cache.path().join("installer.part");
-                fs::write(&part, &payload[..8]).unwrap();
-
-                download_archive(&test_client(), &url, &origin, &part, payload.len() as u64).unwrap();
-                assert_eq!(fs::read(&part).unwrap(), payload);
-                server.join().unwrap();
-                assert!(requests.lock().unwrap()[0].contains("range: bytes=8-"));
-            }
-
-            {
-                let payload = b"archive with authenticated final digest";
-                let split = 7;
-                let (url, origin, requests, server) = serve(vec![
-                    HttpResponse {
-                        status: "206 Partial Content",
-                        headers: vec![format!(
-                            "Content-Range: bytes {}-{}/{}",
-                            split + 1,
-                            payload.len() - 1,
-                            payload.len()
-                        )],
-                        body: payload[split..].to_vec(),
-                        advertised_size: None,
-                    },
-                    HttpResponse {
-                        status: "200 OK",
-                        headers: vec![],
-                        body: payload.to_vec(),
-                        advertised_size: None,
-                    },
-                ]);
-                let cache = tempfile::tempdir().unwrap();
-                let part = cache.path().join("installer.part");
-                fs::write(&part, &payload[..split]).unwrap();
-
-                download_archive(&test_client(), &url, &origin, &part, payload.len() as u64).unwrap();
-                assert_eq!(fs::read(&part).unwrap(), payload);
-                server.join().unwrap();
-                let requests = requests.lock().unwrap();
-                assert!(requests[0].contains(&format!("range: bytes={split}-")));
-                assert!(!requests[1].contains("Range:"));
-                assert!(!requests[1].contains("range:"));
-                drop(requests);
-            }
-
-            {
-                let payload = b"small complete archive";
-                let (url, origin, requests, server) = serve(vec![HttpResponse {
-                    status: "200 OK",
-                    headers: vec![],
-                    body: payload.to_vec(),
-                    advertised_size: None,
-                }]);
-                let cache = tempfile::tempdir().unwrap();
-                let part = cache.path().join("installer.part");
-                fs::write(&part, vec![b'x'; payload.len() + 1]).unwrap();
-
-                download_archive(&test_client(), &url, &origin, &part, payload.len() as u64).unwrap();
-                assert_eq!(fs::read(&part).unwrap(), payload);
-                server.join().unwrap();
-                assert!(!requests.lock().unwrap()[0].contains("range:"));
-            }
-        }
-
-        phase release_download_failures_and_cancellation_keep_the_partial;
-        {
-            {
-                let payload = b"partial archive survives";
-                let (url, origin, requests, server) = serve(vec![HttpResponse {
-                    status: "503 Service Unavailable",
-                    headers: vec![],
-                    body: b"later".to_vec(),
-                    advertised_size: None,
-                }]);
-                let cache = tempfile::tempdir().unwrap();
-                let part = cache.path().join("installer.part");
-                fs::write(&part, &payload[..6]).unwrap();
-
-                assert!(
-                    download_archive(&test_client(), &url, &origin, &part, payload.len() as u64)
-                        .is_err()
-                );
-                assert_eq!(fs::read(&part).unwrap(), payload[..6]);
-                server.join().unwrap();
-                assert!(requests.lock().unwrap()[0].contains("range: bytes=6-"));
-            }
-
-            {
-                let payload = b"installer bytes with progress";
-                let (url, origin, _requests, server) = serve(vec![HttpResponse {
-                    status: "200 OK",
-                    headers: vec![],
-                    body: payload.to_vec(),
-                    advertised_size: None,
-                }]);
-                let cache = tempfile::tempdir().unwrap();
-                let part = cache.path().join("installer.part");
-                let mut events = Vec::new();
-
-                download_archive_observed(
-                    &test_client(),
-                    &url,
-                    &origin,
-                    &part,
-                    payload.len() as u64,
-                    &DownloadControl::default(),
-                    &mut |event| events.push(event),
-                )
-                .unwrap();
-
-                server.join().unwrap();
-                assert!(events.iter().any(|event| matches!(
-                    event,
-                    DownloadEvent::Downloading { received, total }
-                        if *received == payload.len() as u64 && *total == payload.len() as u64
-                )));
-            }
-
-            {
-                let payload = b"more authenticated installer bytes";
-                let split = 8;
-                let (url, origin, _requests, server) = serve(vec![HttpResponse {
-                    status: "206 Partial Content",
-                    headers: vec![format!(
-                        "Content-Range: bytes {split}-{}/{}",
-                        payload.len() - 1,
-                        payload.len()
-                    )],
-                    body: payload[split..].to_vec(),
-                    advertised_size: None,
-                }]);
-                let cache = tempfile::tempdir().unwrap();
-                let part = cache.path().join("installer.part");
-                fs::write(&part, &payload[..split]).unwrap();
-                let control = DownloadControl::default();
-                control.cancel();
-
-                let error = download_archive_observed(
-                    &test_client(),
-                    &url,
-                    &origin,
-                    &part,
-                    payload.len() as u64,
-                    &control,
-                    &mut |_| {},
-                )
-                .unwrap_err();
-
-                server.join().unwrap();
-                assert!(error.contains("cancelled"));
-                assert_eq!(fs::read(&part).unwrap(), payload[..split]);
             }
         }
     }

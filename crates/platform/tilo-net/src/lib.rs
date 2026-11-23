@@ -146,6 +146,10 @@ mod send_check {
 /// from these functions.
 #[cfg(all(feature = "http", not(target_family = "wasm")))]
 pub mod http {
+    /// One resumable, verified download from a trusted origin.
+    #[cfg(feature = "blocking")]
+    pub mod fetch;
+
     /// The one blocking client a caller keeps for its requests: its own type, so
     /// a caller need not name `reqwest`.
     #[cfg(feature = "blocking")]

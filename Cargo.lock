@@ -20414,6 +20414,7 @@ dependencies = [
  "bytes",
  "flate2",
  "futures-util",
+ "hex",
  "http",
  "http-body",
  "http-body-util",
