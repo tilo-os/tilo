@@ -39,7 +39,7 @@ pub const SEEDED_BY_THIS_BUILD: bool = cfg!(any(debug_assertions, feature = "dev
 pub const APPS: [&str; 5] = [
     "so.tilo.notes",
     "so.tilo.tasks",
-    "so.tilo.chat",
+    "so.tilo.lang.chat",
     "so.tilo.mail",
     "so.tilo.tube",
 ];
@@ -109,13 +109,6 @@ fn seeded_app(person: &str, app: &InstalledApp) -> Result<ResourceService, Strin
     // record.
     let bundle =
         Bundle::read(&app.payload_root).map_err(|error| format!("{}: {error}", app.app_id))?;
-    // The workspace decides what the app's service keeps there against the app's surface, as it
-    // decides a window's writes: named here, as a window's process names it when it opens, so
-    // the service's first keep never waits on a window of the app having run.
-    let surface = bundle
-        .surface()
-        .map_err(|error| format!("{}: {error}", app.app_id))?;
-    collab_types::app_surface::register_package(app.app_id.as_str(), &surface);
     let package = host
         .load_bundle(&bundle)
         .map_err(|error| format!("{}: {error}", app.app_id))?;

@@ -4,6 +4,8 @@ d-so-tilo-chat = Chat
 
 d-so-tilo-lang-chat-keywords = nachrichten, chat, unterhaltung, gespräch, messenger, sofortnachrichten
 
+d-so-tilo-lang-chat-keywords = nachrichten, chat, unterhaltung, gespräch, messenger, sofortnachrichten
+
 d-lmdoxbnn = Unterhaltungen
     .doc = Die Unterhaltungen des Arbeitsbereichs in der Reihenfolge der Seitenleiste: Kanäle außerhalb jeder Kategorie, die Kategorien mit ihren eigenen, und die Direktnachrichten, in der Liste als Personen.
     .noun = { $count ->

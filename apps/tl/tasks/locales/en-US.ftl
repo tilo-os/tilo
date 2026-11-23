@@ -318,9 +318,6 @@ d-lg5gedbh = Items
 
 d-mdhllpbo = Projects
 
-d-c7peh6l3 = Origins
-    .doc = Where the tasks and threads here were first written: one for each place they came from.
-
 d-auinwnh3 = Numbers
     .doc = The highest number given so far: the next task's is one more.
 
@@ -617,7 +614,6 @@ d-dshqxolf = Inbox
 
 d-c6y4cxdd = Assign
     .doc = Gives a task to someone, or to nobody.
-    .w-the-pieces-in-work-already-fill = The pieces in work already fill what this task lets work at once
     .w-it-is-theirs-already = It is theirs already
 
 d-c6y4cxdd-who = Who
@@ -672,25 +668,8 @@ d-xrr33hkc-files = Files
 
 d-xrr33hkc-p = P
 
-d-6tlw3ran = Add origin
-    .doc = Starts a task's work on another tracker's issue: its origin, its page there and its number, and a task of the same origin already here is that task, so importing it again makes none.
-    .did = named where it came from
-
-d-6tlw3ran-author = Author
-
-d-6tlw3ran-source = Source
-
-d-6tlw3ran-handle = Handle
-
-d-6tlw3ran-url = Url
-
-d-6tlw3ran-reference = Reference
-
-d-6tlw3ran-created = Created
-
-d-6tlw3ran-updated = Updated
-
 d-jfoiwgwq = Import issue
+    .doc = Starts a task's work on another tracker's issue: its origin, its page there and its number, and a task of the same origin already here is that task, so importing it again makes none.
     .did = imported an issue
     .w-an-imported-issue-needs-a-key = An imported issue needs a key
 
@@ -723,11 +702,8 @@ d-ab4v7pl5 = Stop waiting
     .doc = Ends every wait a task is on: what it waited for came, which `cause` says in a few words, and whoever is doing it goes on with it.
     .did = went on with
     .w-it-waits-for-nothing = It waits for nothing
-    .w-that-wait-has-passed = That wait has passed
 
 d-ab4v7pl5-cause = Cause
-
-d-ab4v7pl5-on = On
 
 d-tji6xijt = Working place
     .doc = Sets where a task's working material is: the folder of its work, and the note its sessions write.
@@ -756,9 +732,6 @@ d-bx72tblu-pieces = Pieces
 d-6k5mm32z = Session began
     .doc = Says a session on a task began: counted, and its start kept for how long it works.
     .did = began work
-    .w-i-stopped-the-working-time-this = I stopped: the working time this task was given is used up. Give it more time to let me go on.
-    .w-i-stopped-this-task-s-budget = I stopped: this task's budget is spent. Raise it to let me go on.
-    .w-i-stopped-my-work-on-this = I stopped: my work on this was interrupted too often in a row. Tell me to go on and I start again from its notes.
 
 d-lvgvolrt = Session ended
     .doc = Says a session on a task ended: what it spent and how long it worked are added to the task.
@@ -845,10 +818,6 @@ d-2b46hb6u = Import files~present
 d-tk5t43h6 = Import issue~present
 
 d-fnc6zwh7 = Wait~present
-
-d-yxyh2v24 = Resume~present
-
-d-pgzbwzsm = Session began~present
 
 d-tpvjqy5m = Clear done~present
 

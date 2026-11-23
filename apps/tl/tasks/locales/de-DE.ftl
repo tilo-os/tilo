@@ -290,9 +290,6 @@ d-lg5gedbh = Einträge
 
 d-mdhllpbo = Projekte
 
-d-c7peh6l3 = Herkünfte
-    .doc = Wo die Aufgaben und Threads hier zuerst geschrieben wurden: eine je Ort, aus dem sie kamen.
-
 d-auinwnh3 = Nummernstand
     .doc = Die höchste bisher vergebene Nummer: die nächste Aufgabe bekommt die nächste.
 
@@ -589,7 +586,6 @@ d-dshqxolf = Eingang
 
 d-c6y4cxdd = Zuweisen
     .doc = Gibt eine Aufgabe jemandem, oder niemandem.
-    .w-the-pieces-in-work-already-fill = Die Teile in Arbeit füllen schon, was diese Aufgabe gleichzeitig arbeiten lässt
     .w-it-is-theirs-already = Sie gehört bereits dieser Person
 
 d-c6y4cxdd-who = Wer
@@ -644,25 +640,8 @@ d-xrr33hkc-files = Dateien
 
 d-xrr33hkc-p = P
 
-d-6tlw3ran = Herkunft hinzufügen
-    .doc = Beginnt die Arbeit an einem Vorgang eines anderen Trackers: seine Herkunft, seine Seite dort und seine Nummer; eine Aufgabe derselben Herkunft ist schon hier, also entsteht beim erneuten Import keine.
-    .did = genannt, woher sie kam
-
-d-6tlw3ran-author = Autor
-
-d-6tlw3ran-source = Quelle
-
-d-6tlw3ran-handle = Kürzel
-
-d-6tlw3ran-url = Adresse
-
-d-6tlw3ran-reference = Referenz
-
-d-6tlw3ran-created = Erstellt
-
-d-6tlw3ran-updated = Aktualisiert
-
 d-jfoiwgwq = Vorgang importieren
+    .doc = Beginnt die Arbeit an einem Vorgang eines anderen Trackers: seine Herkunft, seine Seite dort und seine Nummer; eine Aufgabe derselben Herkunft ist schon hier, also entsteht beim erneuten Import keine.
     .did = einen Vorgang importiert
     .w-an-imported-issue-needs-a-key = Ein importierter Vorgang braucht einen Schlüssel
 
@@ -695,11 +674,8 @@ d-ab4v7pl5 = Nicht mehr warten
     .doc = Beendet jedes Warten einer Aufgabe: das Erwartete kam, was `cause` in wenigen Worten sagt, und wer sie macht, macht weiter.
     .did = weitergearbeitet
     .w-it-waits-for-nothing = Sie wartet auf nichts
-    .w-that-wait-has-passed = Dieses Warten ist vorbei
 
 d-ab4v7pl5-cause = Ursache
-
-d-ab4v7pl5-on = An
 
 d-tji6xijt = Arbeitsplatz
     .doc = Setzt, wo das Arbeitsmaterial einer Aufgabe liegt: der Ordner ihrer Arbeit und die Notiz, die ihre Sitzungen schreiben.
@@ -728,9 +704,6 @@ d-bx72tblu-pieces = Teile
 d-6k5mm32z = Sitzung begonnen
     .doc = Sagt, dass eine Sitzung an einer Aufgabe begann: gezählt, und ihr Beginn festgehalten für die Dauer der Arbeit.
     .did = Arbeit begonnen
-    .w-i-stopped-the-working-time-this = Ich habe angehalten: die Arbeitszeit, die diese Aufgabe bekam, ist aufgebraucht. Gib ihr mehr Zeit, damit ich weitermachen kann.
-    .w-i-stopped-this-task-s-budget = Ich habe angehalten: das Budget dieser Aufgabe ist aufgebraucht. Erhöhe es, damit ich weitermachen kann.
-    .w-i-stopped-my-work-on-this = Ich habe angehalten: meine Arbeit daran wurde zu oft hintereinander unterbrochen. Sag, dass ich weitermachen soll, und ich beginne wieder bei seinen Notizen.
 
 d-lvgvolrt = Sitzung beendet
     .doc = Sagt, dass eine Sitzung an einer Aufgabe endete: was sie ausgab und wie lange sie arbeitete, wird der Aufgabe zugerechnet.
@@ -817,10 +790,6 @@ d-2b46hb6u = importiert Dateien
 d-tk5t43h6 = importiert einen Vorgang
 
 d-fnc6zwh7 = wartet
-
-d-yxyh2v24 = macht weiter
-
-d-pgzbwzsm = beginnt eine Sitzung
 
 d-tpvjqy5m = Erledigte löschen~present
 

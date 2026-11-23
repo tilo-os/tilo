@@ -45,7 +45,11 @@ fn workspace() -> (Replica, Value) {
     let (ada, _) = Replica::new(
         "ada",
         Workspace::new(),
-        &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)],
+        &[
+            crate::fixtures::AGENT,
+            (DISCUSSION, DISCUSSION_IDS),
+            (TASKS, TASKS_IDS),
+        ],
     );
     ada.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
     let root = Value::resource(&ada.host.root_of(APP).unwrap());

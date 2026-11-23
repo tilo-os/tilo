@@ -2,7 +2,7 @@ app so.tilo.lang.today "Today" (icon: .sun, category: .office)
 
 use so.tilo.notes as notes
 use so.tilo.tasks as todo
-use so.tilo.chat as chat
+use so.tilo.lang.chat as chat
 
 /// The day at a glance, over other apps' roots: each part is a place of its own app, drawn by
 /// that app.

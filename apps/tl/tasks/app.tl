@@ -3,9 +3,9 @@ app so.tilo.tasks "Tasks" (
     category: .office,
     tagline: "Issues of the workspace, on a list and a board",
     keywords: ["tasks", "issues", "issue tracker", "kanban", "board", "to-do", "todo", "tickets", "projects", "agent tasks"],
-    previously: so.tilo.lang.tasks,
 )
 
+use so.tilo.agent as agent
 use so.tilo.lang.discussion as discussion
 use so.tilo.notes as notes
 
@@ -107,15 +107,15 @@ type Wait {
 /// Why a task's work stopped.
 enum StoppedWhy {
     /// It could not go on: the line says what failed.
-    failed (icon: .circle_alert, tone: .danger)
+    failed
     /// Its budget in money is spent.
-    budget (icon: .gauge, tone: .warning)
+    budget
     /// Its budget in working time is spent.
-    time (icon: .clock, tone: .warning)
+    time
     /// Its agent sessions were interrupted and did not come back.
-    lost_worker (icon: .circle_pause, tone: .danger)
+    lost_worker
     /// A person stopped it.
-    person (icon: .user)
+    person
 }
 
 /// That a task's work stopped, and why.
@@ -283,8 +283,6 @@ type Tasks {
     /// Every task, in the order people put them.
     items: Collection<Task>
     projects: Collection<Project>
-    /// Where the tasks and threads here were first written: one for each place they came from.
-    origins: Collection<Origin>
     /// The highest number given so far: the next task's is one more.
     numbers: Int merge counter
 }
@@ -483,56 +481,6 @@ action set_status(t: Task, status: Status, at: Int = 0) uses time (label: "Statu
             }
         }
     }
-    if closed(status) {
-        if let p = t.parent {
-            if p.waiting_for != "" and pieces_through(p) { resume(p, "the pieces are through") }
-        }
-    }
-}
-
-/// Whether the working time a task may use is spent.
-fn time_used(t: Task) -> Bool {
-    if let w = t.work {
-        if let budget = w.budget_ms { w.worked_ms >= budget } else { false }
-    } else { false }
-}
-
-/// Whether the money a task may spend is spent.
-fn money_used(t: Task) -> Bool {
-    if let w = t.work {
-        if let budget = w.budget_micros { w.spent_micros >= budget } else { false }
-    } else { false }
-}
-
-/// Whether the task's sessions were lost too often in a row to begin another.
-fn lost_too_often(t: Task) -> Bool {
-    if let w = t.work { w.session_since != .none and w.lost >= 2 } else { false }
-}
-
-/// Whether work on a piece is over for now: it is closed, waiting for a person to look, or its
-/// work stopped.
-fn through(x: Task) -> Bool {
-    closed(x.status) or x.status == .in_review or x.work?.stopped != .none
-}
-
-/// Whether the work on a piece began and is not over.
-fn in_work(x: Task) -> Bool {
-    not through(x) and if let w = x.work { w.sessions > 0 } else { false }
-}
-
-/// Whether every task under `t` is through.
-fn pieces_through(t: Task) -> Bool {
-    let under = tasks.items.descendants(t, .parent)
-    not under.is_empty() and under.all(x -> through(x))
-}
-
-/// Whether the task's pieces already fill the number of them its task lets be in work at once.
-fn held_back(t: Task) -> Bool {
-    if let p = t.parent {
-        if let at_once = p.work?.pieces_at_once {
-            tasks.items.filter(x -> x.parent == p and x != t).count(x -> in_work(x)) >= at_once
-        } else { false }
-    } else { false }
 }
 
 /// Puts every chosen task in one column (or project) at once, as one change.
@@ -762,14 +710,31 @@ action unfile(t: Task) (label: "Inbox", icon: .inbox, group: "Move to project") 
     t.project = .none
 }
 
-/// Gives a task to someone, or to nobody. Who gave it to an agent, and when, stay on the task:
-/// the assignment is the change the agent's own turn is triggered by.
+/// Gives a task to someone, or to nobody. Giving it to an agent asks the agent to do it, made
+/// from the task, whose replies stand under it; nothing of the task goes to an agent that may not
+/// read it. Who gave it and when stay on the task while an agent has it.
 action assign(t: Task, who: Option<Actor>) uses time (label: "Assign", icon: .user) {
-    require not (who?.kind() == .agent and held_back(t)) "The pieces in work already fill what this task lets work at once"
     require t.assignee != who "It is theirs already"
     t.assignee = who
-    t.assigned_by = if who != .none { .some(invoker) } else { .none }
-    t.assigned_at = if who != .none { .some(now) } else { .none }
+    if let a = who {
+        if a.kind() == .agent {
+            t.assigned_by = .some(invoker)
+            t.assigned_at = .some(now)
+            agent
+                .ask(
+                    agent.agents,
+                    a,
+                    if std.may_read(a, t) { RichText(t.title) } else { RichText("") },
+                )
+                .made_from(t)
+        } else {
+            t.assigned_by = .none
+            t.assigned_at = .none
+        }
+    } else {
+        t.assigned_by = .none
+        t.assigned_at = .none
+    }
 }
 
 /// Gives every chosen task to one person (or nobody), as one change.
@@ -851,30 +816,6 @@ action import_files(files: List<File>, p: Option<Project> = .none) -> List<Task>
 
 /// Starts a task's work on another tracker's issue: its origin, its page there and its number,
 /// and a task of the same origin already here is that task, so importing it again makes none.
-/// Names where a task imported here was first written: one origin per place it came from.
-action add_origin(
-    tasks: Tasks,
-    author: Text,
-    source: Text,
-    handle: Text = "",
-    url: Text = "",
-    reference: Text = "",
-    created: Option<Time> = .none,
-    updated: Option<Time> = .none,
-) -> Origin (icon: .link, label: "Add origin", did: "named where it came from") {
-    tasks.origins.insert(
-        Origin(
-            author: author,
-            handle: if handle == "" { .none } else { .some(handle) },
-            source: source,
-            url: if url == "" { .none } else { .some(url) },
-            reference: if reference == "" { .none } else { .some(reference) },
-            created: created,
-            updated: updated,
-        ),
-    )
-}
-
 action import_issue(origin: Origin, title: Text, key: Text, status: Status = .backlog) -> Task (
     icon: .download,
     label: "Import issue",
@@ -966,15 +907,12 @@ fn latest(a: Option<Time>, b: Option<Time>) -> Option<Time> {
 
 /// Ends every wait a task is on: what it waited for came, which `cause` says in a few words, and
 /// whoever is doing it goes on with it.
-action resume(t: Task, cause: Text = "", on: Text = "") uses time (
+action resume(t: Task, cause: Text = "") uses time (
     label: "Stop waiting",
     icon: .play,
     did: "went on with",
     group: "Plan",
 ) {
-    // A wait is ended by what it waits for: an automation that ended an older wait says so, and
-    // ends nothing newer that another one holds.
-    require on == "" or t.waiting_on == on "That wait has passed"
     applies t.waiting_for != "" or t.waiting_until != .none "It waits for nothing"
     if let w = t.work {
         t.work = Work(
@@ -1094,9 +1032,6 @@ fn work_of(t: Task) -> Work {
 
 /// Says a session on a task began: counted, and its start kept for how long it works.
 action session_began(t: Task) uses time (label: "Session began", did: "began work") {
-    require not time_used(t) "I stopped: the working time this task was given is used up. Give it more time to let me go on."
-    require not money_used(t) "I stopped: this task's budget is spent. Raise it to let me go on."
-    require not lost_too_often(t) "I stopped: my work on this was interrupted too often in a row. Tell me to go on and I start again from its notes."
     let w = work_of(t)
     t.work = Work(
         folder: w.folder,
@@ -1930,6 +1865,10 @@ template view task_body(t: Task) {
             }
             std.after_body {
                 std.linked(t, without: discussion.said_about(t))
+                // What the agents it was given to answer, as they write it.
+                for a in agent.asks_on(t) {
+                    agent.replies(a)
+                }
                 discussion.thread(t)
             }
         }

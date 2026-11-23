@@ -5,10 +5,9 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use tilolang_runtime::blob::FileValue;
-use tilolang_runtime::value::EnumValue;
+use tilolang_runtime::value::{EnumValue, RecordInit};
 use tilolang_runtime::{Actor, InvokeOutcome, Value};
 use tilolang_tilo::host::RootView;
-use tilolang_tilo::runtime::ids::MemberId;
 
 use crate::fixtures::Replica;
 use crate::tasks::{APP, call, create, items, read, target, workspace};
@@ -55,6 +54,29 @@ fn package_of_type(ada: &Replica, ty_name: &str) -> tilolang_runtime::meta::Meta
         return meta;
     }
     ada.host.package("tilo.std").unwrap().meta
+}
+
+/// A declared record type's value, its fields given by name.
+fn record(ada: &Replica, ty_name: &str, fields: &[(&str, Value)]) -> Value {
+    let meta = package_of_type(ada, ty_name);
+    let ty = meta
+        .types
+        .iter()
+        .find(|ty| ty.name == ty_name)
+        .unwrap_or_else(|| panic!("the {ty_name} type"));
+    let mut held = BTreeMap::new();
+    for (name, value) in fields {
+        let field = ty
+            .fields
+            .iter()
+            .find(|field| field.name == *name)
+            .unwrap_or_else(|| panic!("{ty_name} has no field {name}"));
+        held.insert(field.id.clone(), value.clone());
+    }
+    Value::Rec(RecordInit {
+        ty: ty.id.clone(),
+        fields: held,
+    })
 }
 
 fn none() -> Value {
@@ -231,7 +253,7 @@ fn giving_a_task_to_an_agent_keeps_who_gave_it_and_when() {
     let (ada, root) = workspace();
     ada.host.runtime().set_members(
         vec![
-            Member::person("ada", tilo_actions::policy::Role::Owner),
+            Member::person("ada", tilo_action_policy::Role::Owner),
             Member::agent("helper"),
         ],
         None,
@@ -292,6 +314,7 @@ fn a_batch_of_tasks_is_one_change_and_a_blank_one_makes_none() {
         (
             id.as_str(),
             vec![
+                root,
                 Value::List(vec![Value::text("Three"), Value::text("  ")]),
                 none(),
             ],
@@ -356,255 +379,6 @@ fn a_task_waits_and_goes_on_with_its_work_kept() {
     assert_eq!(read(&ada, &one, "waiting_until"), none());
 }
 
-/// Whether invoking `action` with `args` is refused: the action says why, or the platform does.
-fn refused(ada: &Replica, action: &str, args: Vec<Value>) -> bool {
-    let id = ada
-        .host
-        .package(APP)
-        .unwrap()
-        .meta
-        .actions
-        .iter()
-        .find(|a| a.name == action)
-        .unwrap_or_else(|| panic!("no action {action}"))
-        .id
-        .clone();
-    match ada.host.runtime().invoke_action(
-        &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
-        (id.as_str(), args),
-    ) {
-        Ok(outcome) => !matches!(outcome, InvokeOutcome::Done(_)),
-        Err(_) => true,
-    }
-}
-
-/// A session begins only where the task may still be worked: its money and its working time are
-/// left, and its sessions were not lost too often in a row.
-#[test]
-fn a_session_begins_only_where_the_task_may_still_be_worked() {
-    for (money, time) in [(true, false), (false, true)] {
-        let (ada, root) = workspace();
-        let one = task(&ada, &root, "Worked");
-        call(
-            &ada,
-            "set_budget",
-            vec![
-                one.clone(),
-                if money { some(int(10)) } else { none() },
-                if time { some(int(10)) } else { none() },
-                case(&ada, "BudgetBy", "person"),
-            ],
-        );
-        call(
-            &ada,
-            "session_ended",
-            vec![
-                one.clone(),
-                if money { int(10) } else { int(0) },
-                if time { int(10) } else { int(0) },
-            ],
-        );
-        assert!(
-            refused(&ada, "session_began", vec![one.clone()]),
-            "a spent budget begins no session"
-        );
-    }
-
-    // A session lost twice in a row: the next one does not begin until its person says go on.
-    let (ada, root) = workspace();
-    let one = task(&ada, &root, "Lost");
-    for _ in 0..2 {
-        call(&ada, "session_began", vec![one.clone()]);
-        call(
-            &ada,
-            "stop",
-            vec![
-                one.clone(),
-                case(&ada, "StoppedWhy", "lost_worker"),
-                Value::text(""),
-            ],
-        );
-    }
-    assert!(
-        refused(&ada, "session_began", vec![one.clone()]),
-        "two sessions lost in a row begin no third"
-    );
-    call(
-        &ada,
-        "resume",
-        vec![one.clone(), Value::text("its person said go on")],
-    );
-    call(&ada, "session_began", vec![one.clone()]);
-    assert!(
-        !refused(&ada, "session_began", vec![one.clone()]),
-        "told to go on, its sessions begin again"
-    );
-}
-
-/// An automation that ends a wait says which wait it ends: an older one's resume is refused
-/// while a newer wait holds the task.
-#[test]
-fn an_old_automations_resume_is_refused_while_a_newer_wait_holds() {
-    let (ada, root) = workspace();
-    let one = task(&ada, &root, "Waiting");
-    for (what, automation) in [
-        ("the first reply", "automation-1"),
-        ("the second reply", "automation-2"),
-    ] {
-        call(
-            &ada,
-            "wait",
-            vec![
-                one.clone(),
-                Value::text(what),
-                none(),
-                case(&ada, "WaitKind", "change"),
-                Value::text(automation),
-            ],
-        );
-    }
-    ada.commit();
-    assert!(
-        refused(
-            &ada,
-            "resume",
-            vec![
-                one.clone(),
-                Value::text("the first came"),
-                Value::text("automation-1"),
-            ],
-        ),
-        "an older automation ends no newer wait"
-    );
-    assert_eq!(
-        read(&ada, &one, "waiting_for"),
-        Value::text("the second reply"),
-        "the newer wait still holds"
-    );
-    call(
-        &ada,
-        "resume",
-        vec![
-            one.clone(),
-            Value::text("the second came"),
-            Value::text("automation-2"),
-        ],
-    );
-    ada.commit();
-    assert_eq!(
-        read(&ada, &one, "waiting_for"),
-        Value::text(""),
-        "the wait it names ends"
-    );
-}
-
-/// Work on a task's pieces ends its wait once every piece is through: closed, waiting for a
-/// person to look, or stopped.
-#[test]
-fn work_on_the_pieces_resumes_the_task_once_they_are_all_through() {
-    let (ada, root) = workspace();
-    let parent = task(&ada, &root, "Parent");
-    let one = call(
-        &ada,
-        "add_subtask",
-        vec![parent.clone(), Value::text("One")],
-    );
-    let two = call(
-        &ada,
-        "add_subtask",
-        vec![parent.clone(), Value::text("Two")],
-    );
-    call(
-        &ada,
-        "wait",
-        vec![
-            parent.clone(),
-            Value::text("the pieces"),
-            none(),
-            case(&ada, "WaitKind", "pieces"),
-            Value::text(""),
-        ],
-    );
-    ada.commit();
-    assert_eq!(
-        read(&ada, &parent, "waiting_for"),
-        Value::text("the pieces"),
-        "the task waits for its pieces"
-    );
-    call(&ada, "check", vec![one]);
-    ada.commit();
-    assert_eq!(
-        read(&ada, &parent, "waiting_for"),
-        Value::text("the pieces"),
-        "one piece through is not all of them"
-    );
-    call(&ada, "check", vec![two]);
-    ada.commit();
-    assert_eq!(
-        read(&ada, &parent, "waiting_for"),
-        Value::text(""),
-        "the last piece through ends the wait"
-    );
-    let work = format!("{:?}", read(&ada, &parent, "work"));
-    assert!(
-        work.contains("the pieces are through"),
-        "it says what made it go on: {work}"
-    );
-}
-
-/// A task that lets one piece be in work at once takes no second piece given to an agent while
-/// the first is worked.
-#[test]
-fn a_piece_beyond_what_its_task_allows_is_not_given_to_an_agent() {
-    use tilolang_runtime::members::Member;
-    let (ada, root) = workspace();
-    ada.host.runtime().set_members(
-        vec![
-            Member::person("ada", tilo_actions::policy::Role::Owner),
-            tilolang_runtime::members::Member::agent("helper"),
-        ],
-        None,
-    );
-    let parent = task(&ada, &root, "Parent");
-    let one = call(
-        &ada,
-        "add_subtask",
-        vec![parent.clone(), Value::text("One")],
-    );
-    let two = call(
-        &ada,
-        "add_subtask",
-        vec![parent.clone(), Value::text("Two")],
-    );
-    call(
-        &ada,
-        "set_pieces_at_once",
-        vec![parent.clone(), some(int(1))],
-    );
-    call(&ada, "session_began", vec![one.clone()]);
-    ada.commit();
-    let helper = MemberId::agent("helper");
-    let give = |task: &Value| {
-        vec![
-            task.clone(),
-            Value::Opt(Some(Box::new(Value::Actor(Actor::from(helper.clone()))))),
-        ]
-    };
-    assert!(
-        refused(&ada, "assign", give(&two)),
-        "the second piece waits while the first is in work"
-    );
-    call(&ada, "check", vec![one]);
-    ada.commit();
-    call(&ada, "assign", give(&two));
-    ada.commit();
-    assert_eq!(
-        read(&ada, &two, "assignee"),
-        some(Value::Actor(Actor::from(helper))),
-        "with the first piece through, the second is given"
-    );
-}
-
 #[test]
 fn a_tasks_work_records_its_budget_its_sessions_and_what_stopped_it() {
     let (ada, root) = workspace();
@@ -663,18 +437,14 @@ fn a_tasks_work_records_its_budget_its_sessions_and_what_stopped_it() {
 #[test]
 fn an_imported_issue_keeps_its_origin_and_imports_once() {
     let (ada, root) = workspace();
-    let origin = call(
+    let origin = record(
         &ada,
-        "add_origin",
-        vec![
-            root.clone(),
-            Value::text("Mia"),
-            Value::text("GitHub"),
-            Value::text(""),
-            Value::text("https://example.test/issues/7"),
-            Value::text("7"),
-            none(),
-            none(),
+        "Origin",
+        &[
+            ("author", Value::text("Mia")),
+            ("source", Value::text("GitHub")),
+            ("url", some(Value::text("https://example.test/issues/7"))),
+            ("reference", some(Value::text("7"))),
         ],
     );
     let made = call(
@@ -690,13 +460,9 @@ fn an_imported_issue_keeps_its_origin_and_imports_once() {
     assert_eq!(read(&ada, &made, "title"), Value::text("Fix the printer"));
     match read(&ada, &made, "origin") {
         Value::Opt(Some(held)) => {
-            // The origin is a resource of the workspace: the task refers to it.
-            let Value::Ref(held) = *held else {
-                panic!("the origin the task names: {held:?}");
-            };
             assert_eq!(
-                read(&ada, &Value::Ref(held), "reference"),
-                some(Value::text("7"))
+                field(&ada, &held, "Origin", "reference"),
+                Some(some(Value::text("7")))
             );
         }
         other => panic!("its origin is kept: {other:?}"),
@@ -831,64 +597,6 @@ fn a_task_page_shows_its_number_and_its_status() {
     let shown = format!("{:?}", view.tree());
     assert!(shown.contains("Shown"), "the page shows its title: {shown}");
     assert!(shown.contains("#1"), "and its number: {shown}");
-}
-
-/// The page of a task keeps every command it offers behind the "…" beside its title: the host
-/// reads what the task's type declares, so the page names them without the view drawing them.
-#[test]
-fn the_task_page_offers_the_tasks_commands_beside_its_title() {
-    let (ada, root) = workspace();
-    let one = task(&ada, &root, "Shown");
-    ada.commit();
-    let view_id = ada
-        .host
-        .package(APP)
-        .unwrap()
-        .meta
-        .views
-        .iter()
-        .find(|view| view.name == "task_page")
-        .unwrap()
-        .id
-        .clone();
-    let view = ada
-        .host
-        .runtime()
-        .open_view(
-            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
-            &view_id,
-            vec![one],
-        )
-        .unwrap();
-    let more = view
-        .tree()
-        .of_kind("ui.MenuButton")
-        .into_iter()
-        .find(|node| node.key.ends_with("~more"))
-        .unwrap_or_else(|| {
-            panic!(
-                "the page keeps its commands behind a \"…\": {:#?}",
-                view.tree()
-            )
-        });
-    let commands: Vec<String> = more
-        .of_kind("ui.MenuItem")
-        .into_iter()
-        .filter_map(|item| match item.props.get("label") {
-            Some(Value::Text(label)) => Some(label.clone()),
-            _ => None,
-        })
-        .collect();
-    for wanted in ["Complete", "Today", "Tomorrow", "No date", "High", "Delete"] {
-        assert!(
-            commands.iter().any(|command| command == wanted),
-            "the page offers {wanted}: {commands:?}"
-        );
-    }
-    assert!(
-        commands.iter().any(|command| command.starts_with("Assign")),
-        "the page offers the command that asks who does it: {commands:?}"
-    );
 }
 
 #[test]

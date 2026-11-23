@@ -21,7 +21,7 @@ use crate::value::Value;
 
 use Imp::{
     Abort, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet, ActThen, ActUndo,
-    Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt, Base64Decode, BytesLength, CallFn,
+    Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt, BytesLength, CallFn,
     ChangeView, ClipboardCopyImage, ClipboardCopyText, ClipboardPasteImage, ClipboardPasteText,
     CollCount, CollCounted, CollEmpty, CollInsert, CollInsertAs, CollInsertKeyed, CollMove,
     CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives, CollRemove, CollWhere,
@@ -37,10 +37,8 @@ use Imp::{
     ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom,
     MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove,
     MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf,
-    MissingV, ModelCall, NoneV, Notify, Now, Occurrences, OfType, Outside, OutsideAt, PageCall,
-    PdfFields, PdfImport, PdfLinks, PdfMarkup, PdfOutline, PdfPages, PdfPicture, PdfSave, PdfText,
-    PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice,
-    RandomFloat, RandomId,
+    MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, PersonNamed, Phrase,
+    Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
     RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
     RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
     ResTextSet, ResourceRef, RichEmbed, RichEmpty, RichFromMarkdown, RichMarkdown, RichNew,
@@ -48,13 +46,12 @@ use Imp::{
     SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, Steps,
     StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
     StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper,
-    StrWords, Suggest, Take, TimeClock, TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse,
-    TimeShift, TimeSpan, TimeWall, Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew,
-    TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin,
-    UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF,
-    UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet,
-    WebHeaders, WebOk, WebPost, WebStatus, WebStatusText, WebText, Withdraw, Word,
-    WorkspaceMembers,
+    StrWords, Suggest, Take, TimeClock, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today,
+    TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
+    UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiChild, UiNode, UiOn,
+    UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
+    Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
+    WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -151,22 +148,12 @@ pub struct Core {
     /// whose code makes the request. Until the host sets one, every request answers with a
     /// failure saying the host reaches no services.
     pub web: RefCell<Option<Box<dyn crate::web::WebTransport>>>,
-    /// Where `page.call` reaches (`Runtime::set_page`): the page the app's window shows, which
-    /// is the window's engine and not the app's. Until the host sets one, every call answers
-    /// with a failure saying no page is shown.
-    pub page: RefCell<Option<Box<dyn crate::page::PageHost>>>,
     /// The device's files (`Runtime::set_blobs`): the content store a file's bytes are kept in,
     /// and the chooser the person picks with. Until the host sets one, it holds no files.
     pub blobs: RefCell<Option<Box<dyn crate::blob::BlobHost>>>,
     /// The person's clipboard (`Runtime::set_clipboard`): what a copy offers and what a paste
     /// reads. Until the host sets one, nothing copies and nothing pastes.
     pub clipboard: RefCell<Option<Box<dyn crate::clipboard::ClipboardHost>>>,
-    /// The host a notice is raised to (`Runtime::set_notices`): the desktop's notifications, or
-    /// a test's record. Until the host sets one, a notice is only the record the run wrote.
-    pub notices: RefCell<Option<Box<dyn crate::notify::Notices>>>,
-    /// The device's PDF engine (`Runtime::set_pdf`): what a reader asks of a PDF's bytes. Until
-    /// the host sets one, every `pdf.*` call says this device reads no PDFs.
-    pub pdf: RefCell<Box<dyn crate::pdf::PdfHost>>,
     /// What names actors; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     /// How a day or a time of day reads in a sentence; its stored text until the host says
@@ -358,11 +345,8 @@ impl Core {
             authority,
             models: RefCell::new(None),
             web: RefCell::new(None),
-            page: RefCell::new(None),
             blobs: RefCell::new(None),
             clipboard: RefCell::new(None),
-            notices: RefCell::new(None),
-            pdf: RefCell::new(Box::new(crate::pdf::NoPdf)),
             names: RefCell::new(None),
             shown: RefCell::new(None),
             shown_by: RefCell::new(None),
@@ -537,9 +521,10 @@ impl Core {
             Query => self.ret_h(self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?),
             Filters | FilterLit | SortLit => self.catalogue_import(imp, a),
             IdentPart => self.ret_h(self.ident_part(a.h(0)?, a.h(1)?)?),
-            Today | TimeDay | TimeDayIn | TimeFromWall | TimeWall | TimeOfDay | TimeClock
-            | TimeSpan | DayShift | DayPart | DayWeekday | DayStartOfWeek | DayParse
-            | TimeParse | WallClock | DateShow | Occurrences => self.time_import(imp, a),
+            Today | TimeDay | TimeOfDay | TimeClock | TimeSpan | DayShift | DayPart
+            | DayWeekday | DayStartOfWeek | DayParse | TimeParse | WallClock | DateShow => {
+                self.time_import(imp, a)
+            }
             RandomInt | RandomFloat | RandomChoice | RandomShuffle | RandomId => {
                 self.random_import(imp, a)
             }
@@ -560,18 +545,12 @@ impl Core {
             | ActorName | QueueBlock | Now | TimeShift | PersonNamed | AgentNamed
             | InvocationPush | InvocationPop => self.effect_import(imp, a),
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
-            | WebText | BytesLength | Base64Decode => self.web_import(imp, a),
-            PageCall => self.page_import(a),
+            | WebText | BytesLength => self.web_import(imp, a),
             FilePart | FileSize | FileText | FileFiles => self.file_import(imp, a),
             FileOfText | FileOfBytes | FileAt | FileZip => self.file_make(imp, a),
-            FileImageInfo | FileCrop | FileTurn | FileResize | FileEncode | FileThumbnail => {
-                self.image_import(imp, a)
-            }
             ClipboardCopyText | ClipboardCopyImage | ClipboardPasteText | ClipboardPasteImage => {
                 self.clipboard_import(imp, a)
             }
-            PdfPages | PdfOutline | PdfText | PdfLinks | PdfFields | PdfMarkup | PdfImport
-            | PdfPicture | PdfSave => self.pdf_import(imp, a),
             JsonParse | JsonDecode | JsonEncode | StageReading => self.json_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiBindBegin
             | UiOn | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt

@@ -144,6 +144,7 @@ pub(crate) fn an_agent_tidies_notes_and_tasks() -> Tidied {
         "ada",
         Workspace::new(),
         &[
+            crate::fixtures::AGENT,
             (DISCUSSION, DISCUSSION_IDS),
             (NOTES, NOTES_IDS),
             (TASKS, TASKS_IDS),
@@ -385,6 +386,7 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
         "ada",
         ada.doc.fork(),
         &[
+            crate::fixtures::AGENT,
             (DISCUSSION, DISCUSSION_IDS),
             (NOTES, NOTES_IDS),
             (TASKS, TASKS_IDS),

@@ -180,6 +180,7 @@ fn workspace() -> Replica {
         "ada",
         Workspace::new(),
         &[
+            crate::fixtures::AGENT,
             (DISCUSSION, DISCUSSION_IDS),
             (NOTES, NOTES_IDS),
             (TASKS, TASKS_IDS),

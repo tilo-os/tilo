@@ -7,6 +7,8 @@ use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 
 use crate::fixtures::{Replica, ShownPlace, Workspace};
 
+pub(crate) const AGENT: &str = include_str!("../../../../apps/tl/agent/app.tl");
+pub(crate) const AGENT_IDS: &str = include_str!("../../../../apps/tl/agent/app.ids");
 pub(crate) const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 pub(crate) const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 pub(crate) const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
@@ -16,6 +18,7 @@ pub(crate) const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.i
 /// What a task's page is drawn from: the tasks, the discussion under them, and the agents it can
 /// be given to.
 pub(crate) const PACKAGES: &[(&str, &str)] = &[
+    (AGENT, AGENT_IDS),
     (DISCUSSION, DISCUSSION_IDS),
     (NOTES, NOTES_IDS),
     (TASKS, TASKS_IDS),
@@ -1205,11 +1208,12 @@ tilo_test_env::scenario! {
     // under it, however deep, and opening a step opens the tasks it is under while the rest stay.
     {
         let (ada, parent) = launch_post();
+        let tasks = Value::resource(&ada.host.root_of(APP).unwrap());
         let outline = task(&ada, "Outline");
         call(
             &ada,
             "add_subtask",
-            vec![outline.clone(), Value::text("Gather facts")],
+            vec![tasks, outline.clone(), Value::text("Gather facts")],
         );
         ada.commit();
         let facts = task(&ada, "Gather facts");
@@ -2617,7 +2621,7 @@ tilo_test_env::scenario! {
             .collect();
         assert_eq!(
             segments,
-            ["List", "Board", "Page"],
+            ["List", "Board"],
             "the views it declares, in the order it declares them, each saying what it adds to the type's name"
         );
         let icons: Vec<Option<String>> = switch.of_kind("ui.Segment")
@@ -2626,11 +2630,7 @@ tilo_test_env::scenario! {
             .collect();
         assert_eq!(
             icons,
-            [
-                Some("list".to_owned()),
-                Some("columns-2".to_owned()),
-                Some("info".to_owned())
-            ],
+            [Some("list".to_owned()), Some("columns-2".to_owned())],
             "each view says the glyph it reads as"
         );
         assert_eq!(
@@ -2655,8 +2655,10 @@ tilo_test_env::scenario! {
             "no action is drawn as a switch: {toggles:?}"
         );
         assert!(
-            commands.contains(&"New task".to_owned()),
-            "and the project's primary action is a button: {commands:?}"
+            ["New task", "New section", "Rename…"]
+                .iter()
+                .all(|label| commands.contains(&label.to_string())),
+            "and the commands beside it are buttons: {commands:?}"
         );
     }
 

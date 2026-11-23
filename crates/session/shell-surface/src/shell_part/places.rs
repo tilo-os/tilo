@@ -110,7 +110,6 @@ fn layout(record: &str, shows: &str, shown_as: &str) -> LayoutReading {
             key: "w1".to_owned(),
             name: "Home".to_owned(),
             current: true,
-            home: String::new(),
         }],
         rows: vec![LayoutRowReading {
             key: "r1".to_owned(),
@@ -296,7 +295,7 @@ fn the_shell_keeps_no_copy_of_the_apps_it_composes() {
     let host = part.instance.host().expect("the shell runs");
     // The apps the shell's views compose are other apps' here: what the shell's runtime runs of
     // them reads their records from the session, and the shell's record holds none of theirs.
-    for app in ["so.tilo.chat", NOTES_APP, "so.tilo.tasks"] {
+    for app in ["so.tilo.lang.chat", NOTES_APP, "so.tilo.tasks"] {
         assert!(
             host.package(app).is_none(),
             "`{app}` runs as the shell's own package, keeping a copy of its records"
@@ -403,7 +402,7 @@ const TASKS: &str = concat!(
     include_str!("../../../../../apps/tl/tasks/scenarios.tl")
 );
 const TASKS_IDS: &str = include_str!("../../../../../apps/tl/tasks/app.ids");
-const CHAT_APP: &str = "so.tilo.chat";
+const CHAT_APP: &str = "so.tilo.lang.chat";
 const TASKS_APP: &str = "so.tilo.tasks";
 
 /// What Bo writes, and what the task made from it is called.

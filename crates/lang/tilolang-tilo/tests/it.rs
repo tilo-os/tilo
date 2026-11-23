@@ -8,8 +8,7 @@
     clippy::indexing_slicing,
     clippy::panic,
     clippy::needless_pass_by_value,
-    clippy::doc_markdown,
-    reason = "test assertions; YouTube is a name, not code"
+    reason = "test assertions"
 )]
 
 mod agent_queries;
@@ -21,11 +20,9 @@ mod capture;
 mod chained;
 mod chat;
 mod composer;
-mod contacts;
 mod discussion;
 mod done_days;
 mod engines;
-mod feedback_picker;
 mod fixtures;
 mod foreign;
 mod gallery;
@@ -50,15 +47,12 @@ mod notes;
 mod notes_checklist;
 mod notices;
 mod opened;
-mod opens_page;
 mod outbox;
 mod outcomes;
 mod policy;
 mod publication;
-mod readers;
 mod reflection;
 mod relatives;
-mod removed;
 mod resource_service;
 mod resource_store;
 mod rich_text;
@@ -69,6 +63,7 @@ mod surface;
 mod task;
 mod task_api;
 mod tasks;
+mod tasks_agent;
 mod tasks_features;
 mod tasks_places;
 mod tasks_time;
