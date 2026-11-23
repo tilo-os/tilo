@@ -15,7 +15,7 @@ WRAPPER = '/proc/self/cwd/tools/ci/rustc-thin-app-wrapper.sh'
 
 
 class ThinAppCompilerCacheTests(unittest.TestCase):
-    def invocation(self, compiler=None, cargo_compiler=None, extra="", config=None, cache=False, no_cache=False):
+    def invocation(self, compiler=None, cargo_compiler=None, extra="", config=None, cache=False, no_cache=False, under_t=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "os/scripts").mkdir(parents=True)
@@ -45,7 +45,7 @@ class ThinAppCompilerCacheTests(unittest.TestCase):
             for tool in (root / "bin").iterdir():
                 tool.chmod(0o755)
             env = dict(os.environ, REPO=str(root), PATH=str(root / "bin") + os.pathsep + os.environ['PATH'])
-            for key in ('RUSTC', 'CARGO_BUILD_RUSTC', 'RUSTC_WRAPPER', 'TILO_THIN_SCCACHE', 'CARGO', 'CARGO_TARGET_DIR', 'TARGET_DIR', 'PROFILE', 'INCLUDE_PACKAGES', 'BUILD_PACKAGES', 'EXCLUDE_PACKAGES', 'SDK_COMPILER_UNITS'):
+            for key in ('RUSTC', 'CARGO_BUILD_RUSTC', 'RUSTC_WRAPPER', 'TILO_THIN_SCCACHE', 'T_CACHE_SOCKET', 'CARGO', 'CARGO_TARGET_DIR', 'TARGET_DIR', 'PROFILE', 'INCLUDE_PACKAGES', 'BUILD_PACKAGES', 'EXCLUDE_PACKAGES', 'SDK_COMPILER_UNITS'):
                 env.pop(key, None)
             env['CARGO_HOME'] = str(root / 'cargo-home')
             env['EXTRA_CARGO_ARGS'] = extra
@@ -60,6 +60,11 @@ class ThinAppCompilerCacheTests(unittest.TestCase):
                 env['RUSTC_WRAPPER'] = str(backend)
             if no_cache:
                 env['RUSTC_WRAPPER'] = ''
+            if under_t:
+                # What a t job gives the build: its own wrapper for every compile,
+                # and the cache socket that marks the job as t's.
+                env['RUSTC_WRAPPER'] = '/run/t/wrapper'
+                env['T_CACHE_SOCKET'] = str(root / 'cache.sock')
             if config is not None:
                 (root / '.cargo').mkdir()
                 (root / '.cargo/config.toml').write_text(config)
@@ -84,6 +89,15 @@ class ThinAppCompilerCacheTests(unittest.TestCase):
         seen = self.invocation()
         self.assertIn('build.rustc-wrapper="tools/ci/thin-app/sccache"', seen['args'])
         self.assertIsNone(seen['wrapper'])
+
+    def test_under_t_the_job_wrapper_is_left_alone(self):
+        # A t job's cache already wraps every compile, and t refuses a
+        # build.rustc-wrapper of ours: only the workspace wrapper is named.
+        seen = self.invocation(under_t=True)
+        self.assertEqual(seen['wrapper'], '/run/t/wrapper')
+        self.assertIsNone(seen['cache'])
+        self.assertNotIn('build.rustc-wrapper', ' '.join(seen['args']))
+        self.assertIn(f'build.rustc-workspace-wrapper="{WRAPPER}"', seen['args'])
 
     def test_no_cache_still_runs_the_dispatcher(self):
         # An empty RUSTC_WRAPPER asks for no cache; the dispatcher still maps the paths.
