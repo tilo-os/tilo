@@ -16,8 +16,10 @@
 //! serves until interrupted.
 
 use std::io::Write as _;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+
+use tilo_files::native::socket;
 
 use tilo_projector::control::{self, ConnectStage, ProjectorEvent, ProjectorRequest};
 use tilo_projector::{ProjectionDevice, ProjectionMode, ProjectionProtocol};
@@ -46,7 +48,7 @@ fn main() -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let _ = std::fs::remove_file(&socket);
-    let listener = UnixListener::bind(&socket)?;
+    let listener = socket::bind(&socket)?;
     println!("ready {}", socket.display());
     std::io::stdout().flush()?;
     for stream in listener.incoming() {

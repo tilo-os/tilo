@@ -13279,6 +13279,7 @@ dependencies = [
 name = "projector-stand-in"
 version = "0.1.0"
 dependencies = [
+ "tilo-files",
  "tilo-projector",
  "workspace-hack",
 ]

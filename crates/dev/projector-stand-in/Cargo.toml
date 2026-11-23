@@ -7,6 +7,7 @@ license.workspace = true
 description = "A stand-in wireless display broker on the projector's control socket: one receiver to find, connect to and stop, for a session driven by a script"
 
 [dependencies]
+tilo-files = { path = "../../platform/tilo-files" }
 tilo-projector = { path = "../../system/projector", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
