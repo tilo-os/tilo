@@ -565,7 +565,13 @@ impl Imported {
         if bytes.len() > MAX_RESULT {
             return Err(refusal());
         }
-        let receipt: HelperReceipt = serde_json::from_slice(bytes).map_err(|_| refusal())?;
+        let receipt: HelperReceipt = serde_json::from_slice::<
+            prepared_setup_model::stored::StoredPreparedSetupReceipt<
+                tilo_identity::enrolled_transport::CurrentDeviceDeclaration,
+            >,
+        >(bytes)
+        .map_err(|_| refusal())?
+        .0;
         receipt.validate().map_err(|_| refusal())?;
         Ok(Self {
             identity_public_key: receipt.identity_public_key,
@@ -978,7 +984,7 @@ mod tests {
     }
 
     #[test]
-    fn producer_receipt_round_trips_and_refuses_unknown_or_flat_fields() {
+    fn producer_receipt_round_trips_and_refuses_unknown_fields() {
         let key = [7u8; 32];
         let (_, _, _, _, full) = producer_wire_parts(key);
         let parsed = Imported::decode(&serde_json::to_vec(&full).unwrap()).unwrap();
@@ -1019,31 +1025,204 @@ mod tests {
         let mut bad_nested = full;
         bad_nested["portable_flatpak"]["kind"]["extra"] = serde_json::json!(1);
         assert!(Imported::decode(&serde_json::to_vec(&bad_nested).unwrap()).is_err());
+    }
 
-        let apps_ciphertext = [4u8; 32];
+    #[test]
+    fn mine_tip_flat_helper_receipt_decodes_equal_to_kind_and_refuses_flat_protocol() {
+        let key = [7u8; 32];
+        let plan = browser_continuity::Plan::new(
+            "setup-binding".into(),
+            key,
+            vec![
+                browser_continuity::Profile::new(
+                    "a".repeat(64),
+                    browser_continuity::Provider::Chromium,
+                    vec!["browser".into(), "Default".into()],
+                    true,
+                    false,
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        let plan_sha256: [u8; 32] = Sha256::digest(plan.encode().unwrap()).into();
+        let sessions_cipher = [3u8; 32];
+        let apps_cipher = [4u8; 32];
         let apps_manifest = [5u8; 32];
-        let flat_apps = serde_json::json!({
+        let browser_cipher = [6u8; 32];
+
+        // Exact wire layout and field order serialised by `mine-tip`
+        // (`prepared_setup_helper::Receipt`, `service_sessions::Declaration` protocol 1,
+        // `flatpak_transfer::portable::Expectation` protocol 1, `browser_transfer::Expectation`,
+        // `thunderbird_source::ThunderbirdImportReceipt`).
+        let flat_wire = format!(
+            concat!(
+                r#"{{"identity_public_key":{key},"account_count":1,"#,
+                r#""service_sessions":{{"schema":1,"sessions":[{{"id":"discord-session","service":"discord"}}],"sealed_bytes":1024,"ciphertext_sha256":{sessions_cipher}}},"#,
+                r#""device_label":"Ada's laptop","#,
+                r#""portable_home":{{"schema":1,"setup_binding":"setup-binding","selection":"full_home","applications":true}},"#,
+                r#""portable_flatpak":{{"schema":1,"operation":"11111111-1111-4111-8111-111111111111","purpose":"flatpak_applications","filename":"applications-11111111-1111-4111-8111-111111111111.sealed","setup_binding":"setup-binding","sealed_bytes":512,"plaintext_bytes":256,"entries":4,"ciphertext_sha256":{apps_cipher},"manifest_sha256":{apps_manifest},"limits":{{"plaintext_bytes":1048576,"entries":128,"metadata_bytes":65536}}}},"#,
+                r#""browser":{{"plan":{plan},"payload":{{"schema":1,"operation":"22222222-2222-4222-8222-222222222222","purpose":"browser_profiles","filename":"browser-22222222-2222-4222-8222-222222222222.sealed","setup_binding":"setup-binding","sealed_bytes":512,"plaintext_bytes":256,"entries":2,"ciphertext_sha256":{browser_cipher},"plan_sha256":{plan_sha256},"limits":{{"plaintext_bytes":1048576,"entries":64,"metadata_bytes":65536}}}}}},"#,
+                r#""mail":[{{"accounts":[{{"source_id":"account-1","created":true,"needs_reconnect":false,"folders":[{{"source_id":"folder-1","messages":12,"bytes":4096,"local_only":false}}]}}],"address_books":1,"calendars":2}}]}}"#
+            ),
+            key = serde_json::to_string(&key).unwrap(),
+            sessions_cipher = serde_json::to_string(&sessions_cipher).unwrap(),
+            apps_cipher = serde_json::to_string(&apps_cipher).unwrap(),
+            apps_manifest = serde_json::to_string(&apps_manifest).unwrap(),
+            plan = serde_json::to_string(&plan).unwrap(),
+            browser_cipher = serde_json::to_string(&browser_cipher).unwrap(),
+            plan_sha256 = serde_json::to_string(&plan_sha256).unwrap(),
+        );
+        let (_, _, _, _, mut kind_value) = producer_wire_parts(key);
+        kind_value["service_sessions"]
+            .as_object_mut()
+            .unwrap()
+            .remove("consumer_protocol");
+        kind_value["portable_flatpak"]["kind"]["consumer_protocol"] = serde_json::json!(1);
+
+        let from_flat = Imported::decode(flat_wire.as_bytes()).unwrap();
+        let from_kind = Imported::decode(&serde_json::to_vec(&kind_value).unwrap()).unwrap();
+        assert_eq!(from_flat.identity_public_key, from_kind.identity_public_key);
+        assert_eq!(from_flat.account_count, from_kind.account_count);
+        assert_eq!(from_flat.current_identity, from_kind.current_identity);
+        assert_eq!(from_flat.device_label, from_kind.device_label);
+        assert_eq!(from_flat.service_sessions, from_kind.service_sessions);
+        assert_eq!(from_flat.portable_home, from_kind.portable_home);
+        assert_eq!(from_flat.portable_flatpak, from_kind.portable_flatpak);
+        assert_eq!(from_flat.browser, from_kind.browser);
+        assert_eq!(from_flat.mail, from_kind.mail);
+        assert_eq!(
+            from_flat
+                .portable_flatpak
+                .as_ref()
+                .map(|apps| apps.kind.consumer_protocol),
+            Some(1)
+        );
+
+        for protocol in [1, 2] {
+            let with_protocol = flat_wire.replacen(
+                r#""portable_flatpak":{"schema":1,"#,
+                &format!(r#""portable_flatpak":{{"schema":1,"consumer_protocol":{protocol},"#),
+                1,
+            );
+            assert!(
+                Imported::decode(with_protocol.as_bytes()).is_err(),
+                "flat receipt must refuse consumer_protocol={protocol}"
+            );
+        }
+    }
+
+    fn browser_receipt_for_binding(key: [u8; 32], binding: &str) -> serde_json::Value {
+        let plan = browser_continuity::Plan {
+            schema: 1,
+            setup_binding: binding.to_owned(),
+            identity_public_key: key,
+            profiles: vec![
+                browser_continuity::Profile::new(
+                    "a".repeat(64),
+                    browser_continuity::Provider::Chromium,
+                    vec!["browser".into(), "Default".into()],
+                    true,
+                    false,
+                )
+                .unwrap(),
+            ],
+        };
+        let plan_sha256: [u8; 32] = Sha256::digest(serde_json::to_vec(&plan).unwrap()).into();
+        serde_json::json!({
             "identity_public_key": key,
             "account_count": 1,
-            "portable_flatpak": {
-                "schema": 1,
-                "operation": "11111111-1111-4111-8111-111111111111",
-                "purpose": "flatpak_applications",
-                "filename": "applications-11111111-1111-4111-8111-111111111111.sealed",
-                "setup_binding": "setup-binding",
-                "sealed_bytes": 512,
-                "plaintext_bytes": 256,
-                "entries": 4,
-                "ciphertext_sha256": apps_ciphertext,
-                "manifest_sha256": apps_manifest,
-                "limits": {
-                    "plaintext_bytes": 1_048_576,
-                    "entries": 128,
-                    "metadata_bytes": 65_536
+            "browser": {
+                "plan": plan,
+                "payload": {
+                    "operation": "22222222-2222-4222-8222-222222222222",
+                    "filename": "browser-22222222-2222-4222-8222-222222222222.sealed",
+                    "setup_binding": binding,
+                    "sealed_bytes": 512,
+                    "plaintext_bytes": 256,
+                    "entries": 2,
+                    "ciphertext_sha256": vec![6u8; 32],
+                    "limits": {
+                        "plaintext_bytes": 1_048_576,
+                        "entries": 64,
+                        "metadata_bytes": 65_536
+                    },
+                    "kind": {"plan_sha256": plan_sha256}
                 }
             }
-        });
-        assert!(Imported::decode(&serde_json::to_vec(&flat_apps).unwrap()).is_err());
+        })
+    }
+
+    #[test]
+    fn session_decode_enforces_byte_and_control_binding_rules() {
+        let key = [7u8; 32];
+        let (_, applications, _, _, _) = producer_wire_parts(key);
+        for (binding, accepted) in [
+            ("é".repeat(128), true),
+            ("é".repeat(256), false),
+            ("é".repeat(257), false),
+            ("before\u{85}after".to_owned(), false),
+        ] {
+            let mut apps = applications.clone();
+            apps["setup_binding"] = serde_json::json!(binding);
+            let cases = [
+                (
+                    "portable_home",
+                    serde_json::json!({
+                        "identity_public_key": key,
+                        "account_count": 1,
+                        "portable_home": {
+                            "schema": 1,
+                            "setup_binding": binding,
+                            "selection": "full_home",
+                            "applications": false
+                        }
+                    }),
+                ),
+                (
+                    "portable_flatpak",
+                    serde_json::json!({
+                        "identity_public_key": key,
+                        "account_count": 1,
+                        "portable_flatpak": apps,
+                    }),
+                ),
+                (
+                    "flat_portable_flatpak",
+                    serde_json::json!({
+                        "identity_public_key": key,
+                        "account_count": 1,
+                        "portable_flatpak": {
+                            "schema": 1,
+                            "operation": "11111111-1111-4111-8111-111111111111",
+                            "purpose": "flatpak_applications",
+                            "filename": "applications-11111111-1111-4111-8111-111111111111.sealed",
+                            "setup_binding": binding,
+                            "sealed_bytes": 512,
+                            "plaintext_bytes": 256,
+                            "entries": 4,
+                            "ciphertext_sha256": vec![4u8; 32],
+                            "manifest_sha256": vec![5u8; 32],
+                            "limits": {
+                                "plaintext_bytes": 1_048_576,
+                                "entries": 128,
+                                "metadata_bytes": 65_536
+                            }
+                        }
+                    }),
+                ),
+                ("browser", browser_receipt_for_binding(key, &binding)),
+            ];
+            for (label, receipt) in cases {
+                assert_eq!(
+                    Imported::decode(&serde_json::to_vec(&receipt).unwrap()).is_ok(),
+                    accepted,
+                    "{label} binding len={} chars={}",
+                    binding.len(),
+                    binding.chars().count()
+                );
+            }
+        }
     }
 
     fn write_private_file(path: &Path, bytes: &[u8]) {
@@ -1140,12 +1319,18 @@ mod tests {
         );
         assert!(!session_pending(&identity));
 
-        // Unknown fields on a flat stored copy still fail closed.
-        let bad_flat =
-            flat_activated.replacen(r#""schema":1,"#, r#""schema":1,"unexpected":true,"#, 1);
-        write_private_file(&activated_path, bad_flat.as_bytes());
-        assert!(pending.completed(&identity).is_err());
-        assert!(session_pending(&identity));
+        // Flat stored copies carrying `consumer_protocol` or unknown fields still fail closed.
+        for extra in [
+            r#""consumer_protocol":1,"#,
+            r#""consumer_protocol":2,"#,
+            r#""unexpected":true,"#,
+        ] {
+            let bad_flat =
+                flat_activated.replacen(r#""schema":1,"#, &format!(r#""schema":1,{extra}"#), 1);
+            write_private_file(&activated_path, bad_flat.as_bytes());
+            assert!(pending.completed(&identity).is_err(), "{extra}");
+            assert!(session_pending(&identity), "{extra}");
+        }
     }
 
     #[test]
