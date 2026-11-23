@@ -2046,9 +2046,15 @@ impl Core {
             app: AppId::from(pkg.meta.app.as_str()),
             action: aref.action.clone(),
             // What the app's action API takes it by: a compiled package's action by its name, an
-            // action of a description of an app's surface (no module) by the verb it describes.
+            // action of a description of an app's surface (no module) by the verb it describes,
+            // without the app its id is named by (`so.tilo.vision#cancel` is published as
+            // `cancel`).
             name: if pkg.meta.module_hash.is_empty() {
-                meta.id.clone()
+                meta.id
+                    .strip_prefix(pkg.meta.app.as_str())
+                    .and_then(|verb| verb.strip_prefix('#'))
+                    .unwrap_or(&meta.id)
+                    .to_owned()
             } else {
                 meta.name.clone()
             },

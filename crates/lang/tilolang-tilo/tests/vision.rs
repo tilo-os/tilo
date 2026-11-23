@@ -118,6 +118,7 @@ fn describe_is_called_on_the_root_the_session_publishes() {
         Invocation::Action {
             app,
             action,
+            name,
             args,
             target,
             ..
@@ -127,8 +128,9 @@ fn describe_is_called_on_the_root_the_session_publishes() {
         panic!("one invocation of describe: {sent:?}");
     };
     assert_eq!(
-        (app.as_str(), action.as_str()),
-        ("so.tilo.vision", "describe")
+        (app.as_str(), action.as_str(), name.as_str()),
+        ("so.tilo.vision", "so.tilo.vision#describe", "describe"),
+        "the image model's verb, named here by its app, reaches it as the verb it publishes"
     );
     assert_eq!(
         target.as_ref(),

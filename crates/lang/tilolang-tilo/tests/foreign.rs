@@ -138,6 +138,7 @@ tilo_test_env::scenario! {
             Invocation::Action {
                 app,
                 action,
+                name,
                 args,
                 author,
                 target,
@@ -147,7 +148,11 @@ tilo_test_env::scenario! {
         else {
             panic!("one invocation of the app's verb: {sent:?}");
         };
-        assert_eq!((app.as_str(), action.as_str()), (APP, "set-level"));
+        assert_eq!(
+            (app.as_str(), action.as_str(), name.as_str()),
+            (APP, "sound#set-level", "set-level"),
+            "the verb, named here by its app, goes to the app by the name it publishes"
+        );
         assert_eq!(target.as_ref(), Some(&player()));
         assert_eq!(author.as_ref(), Some(&module), "the view's own code asked");
         assert_eq!(args.len(), 2, "{args:?}");
@@ -164,6 +169,133 @@ tilo_test_env::scenario! {
             "{why}"
         );
     }
+}
+
+/// Two apps that each publish a verb of the same name: an alarm and a timer, both `cancel`.
+const ALARM: &str = r#"
+[[resources]]
+kind = "alarm.alarm"
+label = "Alarm"
+version = 1
+fields = [{ path = "ringing", type = "bool" }]
+
+[[resources.verbs]]
+id = "cancel"
+label = "Cancel"
+kind = "undoable"
+"#;
+
+const TIMER: &str = r#"
+[[resources]]
+kind = "timer.timer"
+label = "Timer"
+version = 1
+fields = [{ path = "left", type = "float" }]
+
+[[resources.verbs]]
+id = "cancel"
+label = "Cancel"
+kind = "undoable"
+"#;
+
+/// A view over each app's resource, each with a button for that app's `cancel`.
+const BOTH: &str = r#"app test.kitchen "Kitchen"
+
+use alarm as alarm
+use timer as timer
+
+view alarm_view(a: alarm.Alarm) {
+  button("Stop the alarm", on: alarm.cancel(a)) as stop_alarm
+}
+
+view timer_view(t: timer.Timer) {
+  button("Stop the timer", on: timer.cancel(t)) as stop_timer
+}
+"#;
+
+#[test]
+fn two_apps_publishing_the_same_verb_both_load_and_each_call_reaches_its_own() {
+    let package = |app: &str, title: &str, text: &str| {
+        let surfaces = catalogue::parse_surfaces(text).expect("a surface file");
+        catalogue::package_of(app, title, &surfaces)
+    };
+    let alarm = package("alarm", "Alarm", ALARM);
+    let timer = package("timer", "Timer", TIMER);
+    let host = Host::new(
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
+    host.runtime()
+        .load_foreign(alarm.clone())
+        .expect("the alarm's package loads");
+    host.runtime()
+        .load_foreign(timer.clone())
+        .expect("the timer's package loads beside it, its `cancel` its own");
+    let compiled = tilolang::compile_package(BOTH, &IdsLock::new(), &[alarm, timer])
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    let package = host.load_compiled(&compiled).unwrap();
+    let id_of = |name: &str| {
+        package
+            .meta
+            .views
+            .iter()
+            .find(|view| view.name == name)
+            .expect("the view's declaration")
+            .id
+            .clone()
+    };
+    let anchor = |name: &str| {
+        package
+            .meta
+            .views
+            .iter()
+            .flat_map(|view| &view.anchors)
+            .find(|anchor| anchor.name == name)
+            .expect("the button's anchor")
+            .id
+            .clone()
+    };
+    let alarm_ref = ResourceRef::parse_id("alarm-1", "alarm#Alarm").unwrap();
+    let timer_ref = ResourceRef::parse_id("timer-1", "timer#Timer").unwrap();
+    host.runtime()
+        .set_reading(&alarm_ref, &json!({ "ringing": true }).to_string())
+        .unwrap();
+    host.runtime()
+        .set_reading(&timer_ref, &json!({ "left": 30.0 }).to_string())
+        .unwrap();
+    let alarm_view = host
+        .open_resource(&alarm_ref, Some(&id_of("alarm_view")))
+        .unwrap();
+    let timer_view = host
+        .open_resource(&timer_ref, Some(&id_of("timer_view")))
+        .unwrap();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    alarm_view
+        .press(&anchor("stop_alarm"))
+        .expect("the alarm's cancel");
+    timer_view
+        .press(&anchor("stop_timer"))
+        .expect("the timer's cancel");
+    let reached: Vec<(String, String, Option<ResourceRef>)> = sent
+        .borrow()
+        .iter()
+        .map(|invocation| match invocation {
+            Invocation::Action {
+                app, name, target, ..
+            } => (app.as_str().to_owned(), name.clone(), target.clone()),
+            other @ Invocation::Edit { .. } => panic!("an action of an app: {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        reached,
+        vec![
+            ("alarm".to_owned(), "cancel".to_owned(), Some(alarm_ref)),
+            ("timer".to_owned(), "cancel".to_owned(), Some(timer_ref)),
+        ],
+        "each press goes to its own app, by the verb that app publishes"
+    );
 }
 
 #[test]
@@ -500,6 +632,7 @@ tilo_test_env::scenario! {
             Invocation::Action {
                 app,
                 action,
+                name,
                 args,
                 target,
                 ..
@@ -509,8 +642,13 @@ tilo_test_env::scenario! {
             panic!("one invocation of the directory's verb: {sent:?}");
         };
         assert_eq!(
-            (app.as_str(), action.as_str()),
-            ("so.tilo.contacts", "confirm-endpoint")
+            (app.as_str(), action.as_str(), name.as_str()),
+            (
+                "so.tilo.contacts",
+                "so.tilo.contacts#confirm-endpoint",
+                "confirm-endpoint"
+            ),
+            "Contacts' verb, named here by its app, reaches Contacts as the verb it publishes"
         );
         assert_eq!(target.as_ref(), Some(&directory()));
         assert_eq!(args[0], ("identities".to_owned(), Value::resource(&directory())));

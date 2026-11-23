@@ -424,7 +424,13 @@ const fn effect_class(kind: ActionKind) -> EffectClass {
 /// resources the session publishes as readings (`so.tilo.device#Power`). See the module docs.
 #[must_use]
 pub fn package_of(app: &str, title: &str, surfaces: &[Surface]) -> PackageMeta {
-    package_with(app, title, surfaces, &[], Ids::Readings)
+    let mut meta = package_with(app, title, surfaces, &[], Ids::Readings);
+    // Named by its app ([`action_id`]), as every catalogue names an app's actions: a verb is the
+    // app's own word, and another app publishing the same one (`cancel`) loads beside it.
+    for action in &mut meta.actions {
+        action.id = action_id(app, &action.id);
+    }
+    meta
 }
 
 /// [`package_of`], where each resource of a kind of `instances` is a type too, though it
