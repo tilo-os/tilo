@@ -186,7 +186,7 @@ pub struct Host {
     person: String,
     /// The person's root, kept here as the computer that founded them keeps it: what certifies
     /// their keys and devices.
-    root: tilo_enrollment::root::PersonSigner,
+    root: tilo_identity::store::SigningIdentity,
 }
 
 impl Host {
@@ -196,9 +196,7 @@ impl Host {
         let identities = tilo_identity::store::identity_dir_from_env().unwrap();
         let active = tilo_identity::store::resolve_active_identity(&identities)
             .expect("the person founded here");
-        let root = tilo_enrollment::root::PersonSigner::new(
-            tilo_identity::store::load_from_path(active).unwrap(),
-        );
+        let root = tilo_identity::store::load_from_path(active).unwrap();
         Self {
             workspace: daemon.workspace().to_owned(),
             person: daemon.actor().to_owned(),
