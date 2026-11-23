@@ -80,7 +80,7 @@ impl Readout {
             }
             Osd::Hint(hint) => {
                 readout.on = hint.on;
-                readout.name = hint.name.clone();
+                readout.name.clone_from(&hint.name);
             }
         }
         readout

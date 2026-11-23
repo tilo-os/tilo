@@ -1386,7 +1386,7 @@ impl Service for Served {
             CentreAction::Clear => self.notifications.borrow().clear(),
             CentreAction::UndoClear => self.notifications.borrow().undo_clear(),
             CentreAction::Reply { notification, text } => {
-                self.notifications.borrow().reply(notification, &text)
+                self.notifications.borrow().reply(notification, &text);
             }
             CentreAction::OpenNotice { notification } => {
                 self.notifications.borrow().ask_open(notification);
