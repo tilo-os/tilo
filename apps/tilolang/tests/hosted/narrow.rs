@@ -187,3 +187,77 @@ fn a_note_opened_from_search_in_a_narrow_window_lands_in_front_at_once() {
         session.window.harness().frame_requesters()
     );
 }
+
+// USER REQUIREMENT: a note opens through its own `open` — the resource path a search hit, a
+// link or an agent takes — and Back shows the tree it was opened from again.
+#[test]
+fn a_note_opens_by_its_own_open_and_back_shows_the_tree_again() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = Session::in_window(NOTES, "ada", (420, 860));
+    let file = session.identity_doing("Notebook", "file_note");
+    let filed = session.invoke_doing(
+        &file,
+        &serde_json::json!({ "title": "Groceries", "tag": "home" }),
+    );
+    let note = match filed {
+        ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } => output
+            .resources
+            .into_iter()
+            .next()
+            .expect("the note it filed"),
+        other => panic!("the note was filed: {other:?}"),
+    };
+    session.settle();
+    assert!(
+        !session
+            .window
+            .harness()
+            .targets()
+            .contains_key("nav-shell-back"),
+        "the tree is in front, with nothing over it"
+    );
+
+    // Its own `open`, by the address the app publishes it under: the note stands in front.
+    let doing = ui::tilo_actions::ActionAddress::new(note, "open");
+    let opened = session.invoke_doing(&doing.encode(), &serde_json::json!({}));
+    assert!(
+        matches!(opened, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+        "the note's open answers: {opened:?}"
+    );
+    session.settle();
+    assert!(
+        session
+            .window
+            .harness()
+            .targets()
+            .contains_key("nav-shell-back"),
+        "the note stands in front of the tree, with Back to it"
+    );
+
+    // Back shows the tree again, the note's row in it.
+    session
+        .window
+        .harness()
+        .click_named("nav-shell-back")
+        .expect("Back is shown");
+    session.settle();
+    assert!(
+        !session
+            .window
+            .harness()
+            .targets()
+            .contains_key("nav-shell-back"),
+        "the tree is in front again"
+    );
+    assert!(
+        session
+            .window
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .any(|(_, node)| node
+                .label()
+                .is_some_and(|label| label.contains("Groceries"))),
+        "the tree lists the note it was opened from"
+    );
+}

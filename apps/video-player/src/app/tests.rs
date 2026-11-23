@@ -1019,6 +1019,31 @@ fn transport_settings_reach_the_engine_and_snapshot() {
     }
 }
 
+// USER REQUIREMENT: the player's published transport verbs do what they say: toggle-playback
+// pauses what plays and plays it again, and seek puts the playhead where the person asked.
+#[test]
+fn toggle_playback_and_seek_move_the_picture_as_published() {
+    let mut app = synth_app();
+    app.open_path(Path::new("/tmp/Clip.mp4"))
+        .expect("source identity available");
+    assert!(app.player.is_playing(), "autoplay after open");
+
+    app.perform(VideoEffect::TogglePlayback)
+        .expect("toggle-playback is published");
+    assert!(!app.player.is_playing(), "the press pauses the picture");
+    app.perform(VideoEffect::TogglePlayback)
+        .expect("toggle-playback is published");
+    assert!(app.player.is_playing(), "and presses it again to play");
+
+    app.perform(VideoEffect::Seek { seconds: 50.0 })
+        .expect("seek is published");
+    assert_eq!(
+        app.player.position_ms(),
+        50_000,
+        "the playhead is where the person asked"
+    );
+}
+
 fn transport(playing: bool, position_ms: u64, epoch_ms: u64) -> media::TransportState {
     media::TransportState {
         playing,

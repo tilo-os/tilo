@@ -176,3 +176,103 @@ fn the_watch_history_is_published_and_a_video_it_names_opens() {
         session.shell_says("The watch that needs no winding")
     });
 }
+
+/// Every resource the client publishes, its actions' address among them: each kind, label and
+/// published id, the root's items under it.
+fn client_resources(session: &Session) -> Vec<(String, String, String)> {
+    fn walk(resources: &[tilo_actions::ResourceSpec], out: &mut Vec<(String, String, String)>) {
+        for resource in resources {
+            out.push((
+                resource.kind.clone(),
+                resource.label.clone(),
+                resource.id.as_str().to_owned(),
+            ));
+            walk(&resource.children, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(&session.resources(), &mut out);
+    out
+}
+
+/// The published id of the client's resource of `kind` labelled `label`.
+fn named(session: &Session, kind: &str, label: &str) -> String {
+    let wanted = format!("tl.{TUBE}.{kind}");
+    client_resources(session)
+        .into_iter()
+        .find(|(found, name, _)| *found == wanted && name == label)
+        .map_or_else(|| panic!("no {kind} called {label}"), |(_, _, id)| id)
+}
+
+/// How many resources of `kind` the client publishes.
+fn count_of(session: &Session, kind: &str) -> usize {
+    let wanted = format!("tl.{TUBE}.{kind}");
+    client_resources(session)
+        .into_iter()
+        .filter(|(found, _, _)| *found == wanted)
+        .count()
+}
+
+/// The arguments of a JSON object, as an invocation takes them.
+fn args(given: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    given.as_object().cloned().unwrap_or_default()
+}
+
+/// The client's own actions, by the addresses the session publishes them under: watching a
+/// video puts it in the watch history, forgetting it takes it out, deleting the history empties
+/// it, and a playlist opens its own page.
+#[test]
+fn the_clients_history_and_playlist_actions_run_by_their_published_addresses() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+
+    // A video the scenario left unwatched: playing it part way records it in the history.
+    let contest = named(&session, "Video", "Twenty minutes before the contest");
+    assert_eq!(
+        count_of(&session, "WatchEntry"),
+        3,
+        "the scenario's three watched videos"
+    );
+    session
+        .invoke(
+            &contest,
+            "progress",
+            &args(serde_json::json!({ "at": 0.4 })),
+        )
+        .expect("the video's progress runs");
+    until(&mut session, "the video in the history", |session| {
+        client_resources(session).iter().any(|(kind, label, _)| {
+            *kind == format!("tl.{TUBE}.WatchEntry") && label == "Twenty minutes before the contest"
+        })
+    });
+    assert_eq!(count_of(&session, "WatchEntry"), 4);
+
+    // Forgetting it takes it out again, the other three staying.
+    session
+        .invoke(&contest, "forget", &args(serde_json::json!({})))
+        .expect("forget runs");
+    until(&mut session, "the video out of the history", |session| {
+        count_of(session, "WatchEntry") == 3
+    });
+
+    // Deleting the history empties it.
+    let client = named(&session, "YouTube", "YouTube");
+    session
+        .invoke(&client, "delete_history", &args(serde_json::json!({})))
+        .expect("deleting the history runs");
+    until(&mut session, "the history emptied", |session| {
+        count_of(session, "WatchEntry") == 0
+    });
+
+    // A playlist opens its own page, naming itself.
+    let playlist = named(&session, "Playlist", "Science, explained");
+    session
+        .invoke(&playlist, "open", &args(serde_json::json!({})))
+        .expect("the playlist opens");
+    until(&mut session, "the playlist's page", |session| {
+        placed_resources(session).iter().any(|(kind, label)| {
+            *kind == format!("tl.{TUBE}.Playlist") && label == "Science, explained"
+        })
+    });
+}

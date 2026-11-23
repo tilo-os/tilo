@@ -425,6 +425,39 @@ impl Session {
         texts
     }
 
+    /// Open `resource` through the `open` the app publishes for it, by the address the
+    /// catalogue offers it under, as a person's row or an agent's call does; then settle.
+    fn open_showing(&mut self, resource: &ResourceRef) {
+        let published = tilolang_tilo::publish::resource_id(APP, &resource.id_string());
+        let doing = ui::tilo_actions::ActionAddress::new(published.clone(), "open");
+        let opened = self.invoke_doing(&doing.encode(), &serde_json::json!({}));
+        assert!(
+            matches!(opened, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+            "{published}'s open answers: {opened:?}"
+        );
+        self.settle();
+    }
+
+    /// The rows of the page the window opened beside its list, each row's texts: what a person
+    /// reads in the mailbox they opened.
+    fn page_rows(&mut self) -> Vec<Vec<String>> {
+        let view = self.hosted().view().expect("the window is connected");
+        let mut rows = Vec::new();
+        for list in view.lists() {
+            if !list.starts_with(tilo_app_window::shell::DETAIL) {
+                continue;
+            }
+            let shown = view.rows_of(&list).expect("the list's rows");
+            let shown = shown.borrow();
+            for key in shown.rendered() {
+                let mut texts = Vec::new();
+                super::texts(shown.row(&key).expect("a rendered row"), &mut texts);
+                rows.push(texts);
+            }
+        }
+        rows
+    }
+
     /// How many conversations the account's window lists in the sidebar's place `place`: the
     /// place is chosen first, as a person clicks it, because a window opens on the place it was
     /// left at.
@@ -2112,5 +2145,179 @@ fn a_message_goes_out_from_its_identity_as_formatted_mail() {
     assert!(
         !sent.contains("Bcc:"),
         "a blind recipient is never named in the message: {sent}"
+    );
+}
+
+/// Whether the conversation `thread` is filed in the mailbox `key`.
+fn in_box(session: &Session, thread: &ResourceRef, key: &str) -> bool {
+    matches!(
+        session.value_of(thread, "boxes"),
+        RtValue::List(ref boxes) if boxes.contains(&RtValue::text(key))
+    )
+}
+
+// USER REQUIREMENT: deleting a conversation moves it to the trash — it leaves the inbox, shows
+// under Trash, and reaches the server — and moving it files it in the mailbox the person chose.
+#[test]
+fn deleting_a_conversation_trashes_it_and_moving_it_files_it_elsewhere() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let account = session.accounts().remove(0);
+    let dinner = session.thread("Dinner on Friday?");
+
+    session.call("delete", &dinner, &json!({}));
+    assert!(in_box(&session, &dinner, "trash"), "it is in the trash");
+    assert!(!in_box(&session, &dinner, "inbox"), "and left the inbox");
+    assert_eq!(
+        session.place_count(&account, "Trash"),
+        Some(1),
+        "the Trash place lists it"
+    );
+    let shown_titles = session.titles();
+    assert!(
+        !shown_titles.iter().any(|title| title == "Bo Chen"),
+        "the inbox's list no longer shows it: {shown_titles:?}"
+    );
+    session.until("the server to hold it in the trash", |_| {
+        servers.imap.messages("INBOX").len() == 2
+            && servers.imap.messages("[Gmail]/Trash").len() == 1
+    });
+
+    // Moving the other conversation to Junk takes both its messages out of the inbox, here and
+    // on the server.
+    let plan = session.thread("Launch plan");
+    let junk = session.refs(&account, "mailboxes")[4].clone();
+    assert_eq!(session.text(&junk, "key"), "junk");
+    session.call(
+        "move_to",
+        &plan,
+        &json!({ "to": {
+            "app": APP,
+            "kind": format!("tl.{APP}.Mailbox"),
+            "id": junk.id_string(),
+            "label": "Junk",
+        } }),
+    );
+    assert!(in_box(&session, &plan, "junk"), "it is in Junk");
+    assert!(!in_box(&session, &plan, "inbox"), "and left the inbox");
+    assert_eq!(
+        session.place_count(&account, "Junk"),
+        Some(1),
+        "the Junk place lists it"
+    );
+    session.until("the server to hold it in junk", |_| {
+        servers.imap.messages("INBOX").is_empty()
+            && servers.imap.messages("[Gmail]/Spam").len() == 2
+    });
+}
+
+// USER REQUIREMENT: forwarding and replying to all make a draft that says what it answers, opens
+// in the composer when the person asks to see it, and goes when they throw it away.
+#[test]
+fn forward_reply_all_open_and_discard_work_on_the_composers_draft() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let plan = session.thread("Launch plan");
+
+    let forwarded = session.made("forward", &plan, &json!({}));
+    assert_eq!(session.text(&forwarded, "subject"), "Fwd: Launch plan");
+    assert_eq!(
+        session.text(&forwarded, "to"),
+        "",
+        "a forward is addressed by the person"
+    );
+    assert!(
+        session
+            .text(&forwarded, "body")
+            .contains("> Agreed on the twelfth."),
+        "it carries the message it sends on: {:?}",
+        session.text(&forwarded, "body")
+    );
+    // Its `open` shows the composer in the window: the subject it sends on, where it goes from,
+    // and the Send that would carry it, dimmed until it names someone.
+    session.open_showing(&forwarded);
+    let shown = session.shown();
+    for said in [
+        "Fwd: Launch plan",
+        "sam@rivera.example",
+        "It goes to nobody yet",
+    ] {
+        assert!(
+            shown.iter().any(|text| text == said),
+            "{said:?} in the composer: {shown:#?}"
+        );
+    }
+
+    let answered = session.made("reply_all", &plan, &json!({}));
+    assert_eq!(session.text(&answered, "to"), "ada@analytical.example");
+    assert_eq!(
+        session.text(&answered, "cc"),
+        ME,
+        "everyone the message went to answers"
+    );
+    assert_eq!(session.text(&answered, "subject"), "Re: Launch plan");
+
+    // Its open shows it, and throwing it away takes it out of the window's drafts.
+    session.open_showing(&answered);
+    assert!(
+        session.shown().iter().any(|text| text == "Re: Launch plan"),
+        "the answered draft shows in the window"
+    );
+    let root = session.mail_root();
+    assert_eq!(session.refs(&root, "drafts").len(), 2, "both drafts wait");
+    session.call(
+        "discard",
+        &root,
+        &json!({ "d": {
+            "app": APP,
+            "kind": format!("tl.{APP}.Draft"),
+            "id": answered.id_string(),
+            "label": "Re: Launch plan",
+        } }),
+    );
+    let waiting = session.refs(&root, "drafts");
+    assert_eq!(waiting, vec![forwarded.clone()], "only the forward waits");
+}
+
+// USER REQUIREMENT: a mailbox opens as its own page: the conversations filed in it, and nothing
+// of another's.
+#[test]
+fn opening_a_mailbox_shows_the_conversations_filed_in_it() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let account = session.accounts().remove(0);
+    let dinner = session.thread("Dinner on Friday?");
+
+    // The inbox holds both conversations.
+    let inbox = session.refs(&account, "mailboxes")[0].clone();
+    session.open_showing(&inbox);
+    let rows = session.page_rows();
+    assert_eq!(
+        rows.len(),
+        2,
+        "the inbox shows its two conversations: {rows:#?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|texts| texts.iter().any(|text| text == "Bo Chen")),
+        "and names who wrote: {rows:#?}"
+    );
+
+    // The archive holds only the conversation moved into it.
+    let archive = session.refs(&account, "mailboxes")[1].clone();
+    session.call("archive", &dinner, &json!({}));
+    session.open_showing(&archive);
+    let rows = session.page_rows();
+    assert_eq!(
+        rows.len(),
+        1,
+        "the archive shows the one filed in it: {rows:#?}"
+    );
+    assert!(
+        rows[0].iter().any(|text| text == "Bo Chen"),
+        "the conversation filed in it: {rows:#?}"
     );
 }
