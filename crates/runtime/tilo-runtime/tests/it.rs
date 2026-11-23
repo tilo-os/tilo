@@ -20,6 +20,8 @@ tilo_automerge_isolate::test_worker!();
 mod device_actions;
 #[path = "device_host.rs"]
 mod device_host;
+#[path = "root_holder_login.rs"]
+mod root_holder_login;
 #[path = "runtime_daemon_process.rs"]
 mod runtime_daemon_process;
 #[path = "session_api_connect.rs"]

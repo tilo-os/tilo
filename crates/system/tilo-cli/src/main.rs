@@ -398,6 +398,12 @@ enum Cmd {
         /// hostname when not given.
         #[arg(long, conflicts_with_all = ["new_identity", "recovery_key"])]
         label: Option<String>,
+        /// Instead, on a computer that holds your Tilo identity: log in at the server whose
+        /// `web-host.json` line this is (the JSON itself, or the file's path). Your identity here
+        /// certifies this computer, so no ticket is needed; the computer then takes in every
+        /// workspace of yours that server keeps, and serves the files it holds of them.
+        #[arg(long, conflicts_with_all = ["ticket", "new_identity", "recovery_key", "agent"])]
+        server: Option<String>,
     },
     /// Tilo's MCP server over stdio, for the agent on this computer
     /// (an agent adds it to its own MCP configuration).
@@ -1328,6 +1334,12 @@ fn recovery_words() -> Result<zeroize::Zeroizing<String>> {
 
 /// `tilo login` with no ticket, or with an invitation link. `None` for every other command.
 fn login_without_a_tab(cli: &Cli) -> Option<Result<ExitCode>> {
+    if let Cmd::Login {
+        server: Some(host), ..
+    } = &cli.cmd
+    {
+        return Some(login::login_at_server(host));
+    }
     if let Cmd::Login {
         ticket: None,
         new_identity: false,
