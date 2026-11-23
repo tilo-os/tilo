@@ -419,22 +419,6 @@ pub struct InstalledRetainedLaunchInput {
     projection: RetainedSourceProjection,
 }
 impl InstalledRetainedLaunchInput {
-    /// Canonical enrolled material from the held installed anchor; a daemon certificate or public
-    /// verifier record can never select these keys.
-    pub fn current_history_material(
-        &self,
-        cancel: &AtomicBool,
-    ) -> io::Result<(DeviceCert, RevocationList)> {
-        self.revalidate(cancel)?;
-        let (certificate, revocations) = self.reviewed.anchor.current()?;
-        if certificate.user_public_key != self.person_public_key()
-            || revocations.refuses(&certificate)
-        {
-            return Err(refused());
-        }
-        self.revalidate(cancel)?;
-        Ok((certificate, revocations))
-    }
     pub fn native_owner_sha256(&self, cancel: &AtomicBool) -> io::Result<[u8; 32]> {
         self.revalidate(cancel)?;
         let owner = self.projection.native_owner_sha256(cancel)?;

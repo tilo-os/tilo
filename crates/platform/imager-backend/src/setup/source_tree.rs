@@ -216,14 +216,6 @@ impl Exclusions {
         &self.windows_whole
     }
 
-    /// The plan and the producer that applies it check the shape again.
-    pub fn home_paths(&self) -> std::io::Result<Vec<NativePath>> {
-        self.home
-            .iter()
-            .map(|path| Ok(NativePath::encode(path)))
-            .collect()
-    }
-
     pub fn len(&self) -> usize {
         self.home
             .len()

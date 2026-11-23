@@ -195,13 +195,6 @@ impl HomeSource {
     ) -> io::Result<Arc<Self>> {
         Self::review_media_preparation(home, exclusions, cancel, None)
     }
-    pub fn review_media_with_working_storage(
-        home: &Path,
-        cancel: &AtomicBool,
-        storage: &dyn Fn() -> io::Result<Arc<super::migration_review::InventoryScratch>>,
-    ) -> io::Result<Arc<Self>> {
-        Self::review_media_preparation(home, &[], cancel, Some(storage))
-    }
     /// Refuses unsafe grants, unavailable working storage and exclusions outside the Home.
     pub fn review_selected_media_with_working_storage(
         home: &Path,
