@@ -218,7 +218,7 @@ wrapper = ["bash", "-c", "export TILO_TEST_ASSET_CACHE=\"$CARGO_TARGET_DIR/test-
 args = ["--locked", "--examples"]
 unify = "workspace-unify"
 packages = [
-    "accounts", "app-cli", "browser", "calculator", "key-group", "code-editor",
+    "accounts", "app-cli", "browser", "key-group", "code-editor",
     "containers", "discord-worker", "file-explorer", "imager", "launcher", "local-model-service",
     "osk", "runtime-bundle", "runtime-portal", "scratchpad", "settings", "store",
     "tilo-agent-session", "tilo-app", "tilo-bluez",
