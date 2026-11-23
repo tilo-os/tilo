@@ -59,6 +59,9 @@ tilo-process = { path = "../../platform/tilo-process" }
 tilo-documents.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
+# Where no session serves the clipboard, this process serves the same wire from
+# the OS clipboard, so an app on a person's own desktop still copies and pastes.
+tilo-clipboard = { path = "../../platform/tilo-clipboard", features = ["x11"] }
 # Launch phase marks, handed to the app so its startup file covers the time
 # before its own `main` (run.rs, `splice_startup_marks`).
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }

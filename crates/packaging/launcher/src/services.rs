@@ -461,11 +461,41 @@ fn resolve_chooser_bind_at(
     }))
 }
 
-/// Connect the session's clipboard on the app's behalf: the one service a Rust app and a
-/// tilolang instance both reach their copy and paste through. None when the launch runs without
-/// services or the session serves none, and the app's copies and pastes are then refused.
+/// Connect the clipboard on the app's behalf: the one service a Rust app and a tilolang instance
+/// both reach their copy and paste through.
+///
+/// Inside a Tilo session the session's clipboard answers, so a copy is the person's copy on their
+/// other devices too. Where no session serves one — the person's own macOS, Windows or Linux
+/// desktop, or a dev run outside a session — this process serves the same wire from the operating
+/// system's clipboard ([`tilo_clipboard::os`]) on a thread that lives as long as the app. None
+/// when the launch runs without services, and the app's copies and pastes are then refused.
 pub fn resolve_clipboard_bind(no_services: bool) -> Option<ResolvedService> {
-    resolve_clipboard_bind_at(&socket_for(CLIPBOARD_SERVICE), no_services)
+    if no_services {
+        return None;
+    }
+    let path = socket_for(CLIPBOARD_SERVICE);
+    if path.exists() {
+        return resolve_clipboard_bind_at(&path, false);
+    }
+    serve_os_clipboard()
+}
+
+/// The clipboard this process serves where no session does: the app's end of a socket pair whose
+/// other end answers from the operating system's clipboard.
+fn serve_os_clipboard() -> Option<ResolvedService> {
+    let (app, serving) = UnixStream::pair().ok()?;
+    std::thread::Builder::new()
+        .name("tilo-clipboard-os".into())
+        .spawn(move || {
+            let side = tilo_clipboard::service::BackendSide::new(tilo_clipboard::os());
+            tilo_clipboard::service::serve(serving, &side);
+        })
+        .ok()?;
+    Some(ResolvedService {
+        name: CLIPBOARD_SERVICE.to_string(),
+        host: OwnedFd::from(app),
+        child_fd: CLIPBOARD_CHILD_FD,
+    })
 }
 
 fn resolve_clipboard_bind_at(path: &Path, no_services: bool) -> Option<ResolvedService> {
@@ -1417,6 +1447,20 @@ mod tests {
                     "--no-services refuses the clipboard"
                 );
                 drop(listener);
+            }
+            {
+                // No Tilo session serves the clipboard here: the launcher serves the same wire
+                // from the OS clipboard instead of leaving the app without one.
+                let dir = tempfile::tempdir().expect("runtime");
+                let _env = runtime_dir_env(dir.path());
+                assert!(
+                    resolve_clipboard_bind(false).is_some(),
+                    "without a session the launcher serves the OS clipboard"
+                );
+                assert!(
+                    resolve_clipboard_bind(true).is_none(),
+                    "--no-services still refuses the clipboard"
+                );
             }
             {
                 use std::io::Read;

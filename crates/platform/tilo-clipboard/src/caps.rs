@@ -20,8 +20,9 @@ pub(crate) const WEB_PRIMARY: &str = "Browsers have no middle-click selection.";
 
 impl tilo_platform_caps::Feature for Feature {
     /// The feature's availability on Linux, macOS and the web, in that
-    /// order. A process its session handed no clipboard connection provides
-    /// nothing: it copies nothing and pastes nothing.
+    /// order. A process handed no clipboard connection (neither a session nor a
+    /// launcher serves one) provides nothing: it copies nothing and pastes
+    /// nothing.
     fn targets(self) -> [Availability; 3] {
         use Availability::{Available, Unsupported};
         match self {

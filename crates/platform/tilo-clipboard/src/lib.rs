@@ -8,33 +8,52 @@
 
 //! The clipboard: one API on Linux, macOS and the web.
 //!
-//! [`ClipboardBackend`] is the boundary a host fills; [`system`] is this target's
-//! backend:
+//! [`ClipboardBackend`] is the boundary a host fills; [`system`] is this process's clipboard:
 //!
 //! | Target | Backend |
 //! |---|---|
-//! | Linux, macOS | the connection the app's session opened for it ([`service::Connected`]) |
+//! | Linux, macOS | the connection the app's session or launcher opened for it ([`service::Connected`]) |
 //! | Web | the trusted clipboard event being dispatched ([`events`]), else a synchronous copy inside the user's click |
 //!
-//! An app runs in a process of its own, so it holds no selection to offer or read: the session
-//! holds the person's selection, and an app's copies and pastes cross to it over the one service
-//! ([`service`]) whether the app is written in Rust or in tilolang. A process handed no connection
-//! (no session serves one, or the launch runs without services) copies nothing and pastes nothing,
-//! rather than keeping a copy that reaches no one.
+//! An app runs in a process of its own, so it holds no selection to offer or read: the process
+//! that holds the person's selection serves it, and an app's copies and pastes cross to it over the
+//! one service ([`service`]) whether the app is written in Rust or in tilolang. Where a Tilo
+//! session serves no clipboard — a person's own macOS, Windows or Linux desktop, or `tilo-app run`
+//! outside a session — the launcher serves the same wire from the operating system's clipboard
+//! ([`os`]). A process handed no connection (the launch runs without services) copies nothing and
+//! pastes nothing, rather than keeping a copy that reaches no one.
 
 use std::sync::{Mutex, OnceLock};
 
 mod caps;
 pub use caps::{Availability, Feature, Unsupported, availability, available};
 
+#[cfg(target_os = "linux")]
+mod lifecycle;
+/// Runner-owned native clipboard attachment (Wayland only).
+#[cfg(target_os = "linux")]
+pub use lifecycle::ClipboardAttachment;
+#[cfg(not(target_os = "linux"))]
+pub struct ClipboardAttachment {
+    _private: (),
+}
+pub mod conformance;
 pub mod events;
-/// The clipboard over a connection an app's session opened for it: `serve` answers on the
-/// session's end, [`service::Connected`] and [`service::ServiceClipboard`] are the app's.
+/// The clipboard over a connection an app's session or launcher opened for it: `serve` answers on
+/// the serving end, [`service::Connected`] and [`service::ServiceClipboard`] are the app's.
 #[cfg(unix)]
 pub mod service;
 
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+mod native;
+#[cfg(target_os = "linux")]
+mod wayland;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web;
+
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use wayland::WaylandClipboard;
 
 pub const MAX_CLIPBOARD_HTML_BYTES: usize = 1024 * 1024;
 
@@ -450,8 +469,8 @@ impl std::fmt::Debug for ReservedCopy {
     }
 }
 
-/// This process's clipboard: over the connection its session opened for it on Linux and macOS
-/// ([`service::ServiceClipboard`]), and the browser's clipboard on the web.
+/// This process's clipboard: over the connection its session or launcher opened for it on Linux
+/// and macOS ([`service::ServiceClipboard`]), and the browser's clipboard on the web.
 pub fn system() -> std::sync::Arc<dyn ClipboardBackend> {
     static SYSTEM: OnceLock<std::sync::Arc<dyn ClipboardBackend>> = OnceLock::new();
     SYSTEM.get_or_init(backend).clone()
@@ -478,6 +497,72 @@ fn backend() -> std::sync::Arc<dyn ClipboardBackend> {
 /// connection, which must refuse rather than keep a copy that reaches no one.
 pub fn unavailable() -> std::sync::Arc<dyn ClipboardBackend> {
     std::sync::Arc::new(Nowhere)
+}
+
+/// The operating system's clipboard of this process: the selection a person's own desktop holds.
+///
+/// This is for the process that serves an app's clipboard where no Tilo session does — the
+/// launcher, or `tilo-app run` — not for an app, which talks only to [`service::Connected`]. On
+/// Linux it is the process's own Wayland connection once [`attach_wayland_display`] has attached
+/// one, `arboard` on X11 with the `x11` feature, and a buffer private to the process when the
+/// seat offers neither; on macOS and Windows it is `arboard`.
+pub fn os() -> std::sync::Arc<dyn ClipboardBackend> {
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    {
+        static OS: OnceLock<std::sync::Arc<dyn ClipboardBackend>> = OnceLock::new();
+        OS.get_or_init(|| std::sync::Arc::new(native::NativeClipboard::default()))
+            .clone()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        unavailable()
+    }
+}
+
+/// Route the operating system's clipboard ([`os`]) through the process's own Wayland connection,
+/// so copies go through the connection that owns the focused surface — the compositor only
+/// accepts `set_selection` from that one.
+///
+/// Pass the runner's owned display handle, not a borrow of the event loop. Keep the returned guard
+/// until the process closes. Dropping it refuses new calls and schedules teardown without waiting on
+/// protocol workers.
+pub fn attach_wayland_display(
+    handle: impl raw_window_handle::HasDisplayHandle + Send + Sync + 'static,
+) -> Option<ClipboardAttachment> {
+    attach(handle)
+}
+
+#[cfg(target_os = "linux")]
+fn attach(
+    handle: impl raw_window_handle::HasDisplayHandle + Send + Sync + 'static,
+) -> Option<ClipboardAttachment> {
+    native::attach_wayland(handle)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn attach(
+    _handle: impl raw_window_handle::HasDisplayHandle + Send + Sync + 'static,
+) -> Option<ClipboardAttachment> {
+    None
+}
+
+/// Emit the "this clipboard does not leave the process" warning exactly once.
+///
+/// Once per process, not once per call: a text editor pastes often, and a log
+/// line per keystroke would bury the fact instead of reporting it.
+pub fn warn_fallback_once(op: &str) {
+    static WARNED: OnceLock<()> = OnceLock::new();
+    WARNED.get_or_init(|| {
+        tracing::warn!(
+            target: "tilo_ui::clipboard",
+            operation = op,
+            "no system clipboard: falling back to an in-process buffer. Copy and paste \
+             will work inside this process and silently do nothing between processes. \
+             On Wayland this means the compositor advertises neither \
+             wl_data_device_manager nor zwp_primary_selection_device_manager_v1, or the \
+             window has no keyboard focus yet."
+        );
+    });
 }
 
 struct Nowhere;
@@ -566,6 +651,9 @@ impl ClipboardBackend for InProcessClipboard {
 pub(crate) mod tests {
     use super::*;
 
+    /// Serialises tests that drive the process's one OS clipboard.
+    pub(crate) static SYSTEM: Mutex<()> = Mutex::new(());
+
     #[test]
     fn a_copy_settles_once_and_runs_what_waits_on_it() {
         let (copy, settler) = ClipboardCopy::pending();
@@ -636,5 +724,25 @@ pub(crate) mod tests {
             std::sync::Arc::as_ptr(&first),
             std::sync::Arc::as_ptr(&second)
         ));
+    }
+
+    tilo_test_env::scenario! {
+        fn the_in_process_and_system_clipboards_conform;
+
+        phase the_in_process_clipboard_conforms;
+        {
+            conformance::check_local(&InProcessClipboard::default());
+        }
+
+        phase the_system_clipboard_conforms_with_or_without_a_system_clipboard;
+        {
+            let _system = SYSTEM.lock();
+            let system = os();
+            conformance::check_system(&*system);
+            assert!(std::ptr::addr_eq(
+                std::sync::Arc::as_ptr(&system),
+                std::sync::Arc::as_ptr(&self::os())
+            ));
+        }
     }
 }

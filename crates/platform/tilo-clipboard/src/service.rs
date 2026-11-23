@@ -16,7 +16,7 @@
 use std::io::Write as _;
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use wire_frame::Framing;
@@ -446,6 +446,124 @@ fn service_target(target: ClipboardTarget) -> Target {
     }
 }
 
+fn clipboard_target(target: Target) -> ClipboardTarget {
+    match target {
+        Target::Clipboard => ClipboardTarget::Clipboard,
+        Target::Primary => ClipboardTarget::Primary,
+    }
+}
+
+/// The service's answer where no Tilo session serves the clipboard: an app's copies and pastes
+/// over the operating system's own clipboard, served by the process that started the app (the
+/// launcher, or `tilo-app run`). An app still talks only to [`Connected`] either way.
+pub struct BackendSide {
+    backend: Arc<dyn ClipboardBackend>,
+}
+
+impl BackendSide {
+    /// The service side of `backend`: the operating system's clipboard, or a test's.
+    #[must_use]
+    pub fn new(backend: Arc<dyn ClipboardBackend>) -> Self {
+        Self { backend }
+    }
+
+    fn text_of<'a>(formats: &'a [(String, Vec<u8>)], mime: &str) -> Option<&'a str> {
+        formats
+            .iter()
+            .find(|(held, _)| held == mime)
+            .and_then(|(_, bytes)| std::str::from_utf8(bytes).ok())
+    }
+}
+
+impl ClipboardSide for BackendSide {
+    fn copy(&self, target: Target, secret: bool, formats: &[(String, Vec<u8>)]) -> bool {
+        if secret {
+            // Histories and device sync are told not to keep a secret by the marker the OS
+            // backend offers beside the words; outside a Tilo session the OS clipboard's own
+            // conventions apply.
+            return Self::text_of(formats, "text/plain")
+                .is_some_and(|text| self.backend.set_secret_text(text));
+        }
+        if let (Some(html), Some(plain)) = (
+            Self::text_of(formats, "text/html"),
+            Self::text_of(formats, "text/plain"),
+        ) {
+            return self.backend.set_rich_text(html, plain);
+        }
+        let Some((mime, bytes)) = formats.first() else {
+            return false;
+        };
+        if mime.starts_with("image/") {
+            if target != Target::Clipboard {
+                return false;
+            }
+            let Some((width, height, rgba)) = decode_image(bytes) else {
+                return false;
+            };
+            return self.backend.set_image(width, height, &rgba);
+        }
+        if mime == "text/plain" {
+            let Ok(text) = std::str::from_utf8(bytes) else {
+                return false;
+            };
+            return self.backend.set_text(clipboard_target(target), text);
+        }
+        false
+    }
+
+    fn paste(&self, target: Target, types: &[&str]) -> Formats {
+        let target = clipboard_target(target);
+        let mut held = Vec::new();
+        for want in types {
+            match *want {
+                "text/plain" => {
+                    if let Some(text) = self.backend.text(target)
+                        && !text.is_empty()
+                        && text.len() <= most_of("text/plain")
+                    {
+                        held.push(((*want).to_owned(), text.into_bytes()));
+                    }
+                }
+                "text/html" => {
+                    if let Some(offer) = self.backend.rich_text()
+                        && offer.html.len() <= most_of("text/html")
+                    {
+                        held.push(((*want).to_owned(), offer.html.into_bytes()));
+                    }
+                }
+                mime if mime.starts_with("image/") => {
+                    let Some(image) = self.backend.image() else {
+                        continue;
+                    };
+                    if image.mime == mime
+                        && image.bytes.len() <= most_of(mime)
+                        && image.bytes.len() <= MAX_PASTED_IMAGE_BYTES
+                    {
+                        held.push(((*want).to_owned(), image.bytes));
+                    }
+                }
+                _ => {}
+            }
+        }
+        held
+    }
+}
+
+/// An encoded image as RGBA8 and its size, for an OS clipboard that takes pixels.
+fn decode_image(bytes: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
+    let image = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let (width, height) = image.dimensions();
+    let rgba = image.into_raw();
+    if rgba.len() > MAX_CLIPBOARD_IMAGE_INPUT_BYTES {
+        return None;
+    }
+    Some((
+        usize::try_from(width).ok()?,
+        usize::try_from(height).ok()?,
+        rgba,
+    ))
+}
+
 /// An RGBA8 image as PNG, when it is well formed and the image clipboard takes it.
 fn encode_png(width: usize, height: usize, rgba: &[u8]) -> Option<Vec<u8>> {
     if width == 0 || height == 0 || rgba.len() > MAX_CLIPBOARD_IMAGE_INPUT_BYTES {
@@ -652,5 +770,153 @@ mod tests {
         assert_eq!(most_of("text/html"), TEXT);
         assert_eq!(most_of("image/png"), MAX_CLIPBOARD_IMAGE_INPUT_BYTES);
         assert_eq!(most_of("image/jpeg"), MAX_CLIPBOARD_IMAGE_INPUT_BYTES);
+    }
+
+    /// An in-memory OS clipboard: what the launcher's side reads and writes on a person's own
+    /// desktop, with no Tilo session and no display.
+    #[derive(Default)]
+    struct TestOs {
+        text: Mutex<[Option<String>; 2]>,
+        rich: Mutex<Option<(String, String)>>,
+        image: Mutex<Option<(&'static str, Vec<u8>)>>,
+        secret: Mutex<bool>,
+    }
+
+    impl TestOs {
+        fn slot(target: ClipboardTarget) -> usize {
+            match target {
+                ClipboardTarget::Clipboard => 0,
+                ClipboardTarget::Primary => 1,
+            }
+        }
+    }
+
+    impl ClipboardBackend for TestOs {
+        fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
+            held(self.text.lock())[Self::slot(target)] = Some(text.to_owned());
+            if target == ClipboardTarget::Clipboard {
+                *held(self.rich.lock()) = None;
+            }
+            true
+        }
+
+        fn text(&self, target: ClipboardTarget) -> Option<String> {
+            held(self.text.lock())[Self::slot(target)].clone()
+        }
+
+        fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+            self.set_text(ClipboardTarget::Clipboard, plain);
+            *held(self.rich.lock()) = Some((html.to_owned(), plain.to_owned()));
+            true
+        }
+
+        fn rich_text(&self) -> Option<RichTextOffer> {
+            let (html, plain) = held(self.rich.lock()).clone()?;
+            Some(RichTextOffer {
+                html,
+                plain: Some(plain),
+            })
+        }
+
+        fn set_secret_text(&self, text: &str) -> bool {
+            *held(self.secret.lock()) = true;
+            self.set_text(ClipboardTarget::Clipboard, text)
+        }
+
+        fn set_image(&self, width: usize, height: usize, rgba: &[u8]) -> bool {
+            let Some(png) = encode_png(width, height, rgba) else {
+                return false;
+            };
+            *held(self.image.lock()) = Some(("image/png", png));
+            true
+        }
+
+        fn image(&self) -> Option<ClipboardImage> {
+            held(self.image.lock())
+                .clone()
+                .map(|(mime, bytes)| ClipboardImage { mime, bytes })
+        }
+
+        fn name(&self) -> &'static str {
+            "test-os"
+        }
+    }
+
+    /// The launcher's service over one OS clipboard, for a Rust app and a tilolang instance that
+    /// have no Tilo session: each gets its own connection to the same served clipboard.
+    fn served_by_os() -> (Arc<TestOs>, ServiceClipboard, Connected) {
+        let os = Arc::new(TestOs::default());
+        let (rust_app, rust_session) = UnixStream::pair().expect("a socket pair");
+        let (lang_app, lang_session) = UnixStream::pair().expect("a socket pair");
+        for session in [rust_session, lang_session] {
+            let backend = os.clone() as Arc<dyn ClipboardBackend>;
+            std::thread::spawn(move || serve(session, &BackendSide::new(backend)));
+        }
+        (
+            os,
+            ServiceClipboard(Connected::connect(rust_app).expect("the connection is usable")),
+            Connected::connect(lang_app).expect("the connection is usable"),
+        )
+    }
+
+    #[test]
+    fn with_no_session_both_languages_copy_and_paste_through_the_launchers_os_clipboard() {
+        let (os, rust, lang) = served_by_os();
+        assert!(rust.set_text(ClipboardTarget::Clipboard, "from the Rust app"));
+        assert_eq!(
+            os.text(ClipboardTarget::Clipboard).as_deref(),
+            Some("from the Rust app")
+        );
+        assert_eq!(
+            lang.paste(&["text/plain"]),
+            Some(("text/plain".to_owned(), b"from the Rust app".to_vec())),
+            "what a Rust app copies with no session is what a tilolang app pastes"
+        );
+        assert!(lang.copy("text/plain", b"from the language"));
+        assert_eq!(
+            rust.text(ClipboardTarget::Clipboard).as_deref(),
+            Some("from the language"),
+            "what a tilolang app copies with no session is what a Rust app pastes"
+        );
+
+        assert!(rust.set_rich_text("<b>bold</b>", "bold"));
+        assert_eq!(
+            lang.paste(&["text/plain"]),
+            Some(("text/plain".to_owned(), b"bold".to_vec()))
+        );
+        assert_eq!(
+            rust.rich_text().and_then(|offer| offer.plain),
+            Some("bold".to_owned())
+        );
+
+        assert!(rust.set_image(1, 1, &[0x89, b'P', b'N', b'G']));
+        let (mime, png) = lang.paste(&IMAGE_TYPES).expect("the image pastes");
+        assert_eq!(mime, "image/png");
+        assert!(png.starts_with(b"\x89PNG"));
+        assert!(lang.copy("image/png", &png));
+        assert_eq!(
+            rust.image().map(|image| (image.mime, image.bytes)),
+            Some(("image/png", png))
+        );
+
+        assert!(rust.set_text(ClipboardTarget::Primary, "picked"));
+        assert_eq!(
+            rust.text(ClipboardTarget::Primary).as_deref(),
+            Some("picked")
+        );
+        assert_ne!(
+            rust.text(ClipboardTarget::Clipboard).as_deref(),
+            Some("picked")
+        );
+
+        assert!(rust.set_secret_text("hunter2"));
+        assert!(
+            *held(os.secret.lock()),
+            "the OS side is told it is a secret"
+        );
+        assert_eq!(
+            lang.paste(&["text/plain"]),
+            Some(("text/plain".to_owned(), b"hunter2".to_vec()))
+        );
     }
 }
