@@ -954,10 +954,12 @@ impl Checker<'_> {
             // A length scaled by a number (`(w * zoom) * 1rem`, `24rem / 2`): a view sizes
             // what it shows by what it reads, and a length keeps its unit.
             (Ty::Length(unit), Ty::Float) if op != BinOp::Rem => {
-                Ex::new(Ek::Bin(bop, Box::new(l), Box::new(r)), Ty::Length(*unit))
+                let unit = *unit;
+                Ex::new(Ek::Bin(bop, Box::new(l), Box::new(r)), Ty::Length(unit))
             }
             (Ty::Float, Ty::Length(unit)) if op == BinOp::Mul => {
-                Ex::new(Ek::Bin(bop, Box::new(l), Box::new(r)), Ty::Length(*unit))
+                let unit = *unit;
+                Ex::new(Ek::Bin(bop, Box::new(l), Box::new(r)), Ty::Length(unit))
             }
             (Ty::Text, Ty::Text) if op == BinOp::Add => {
                 Ex::host(Imp::StrConcat, vec![l, r], Ty::Text)

@@ -664,7 +664,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
         id: "host-call-member",
         doc: "Someone in the system's call held on a resource: who is in a voice channel, a person of the workspace or someone a bridge carries in from another service.",
         fields: &[
-            ("who", "Actor", "Who it is: for someone a bridge carries in, the person the bridge speaks for."),
+            (
+                "who",
+                "Actor",
+                "Who it is: for someone a bridge carries in, the person the bridge speaks for.",
+            ),
             (
                 "mine",
                 "Bool",
@@ -705,7 +709,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
         id: "host-invoked",
         doc: "An invocation on the system's dispatch as its record reads now: an agent's turn, one step of it, a question it waits on a person's answer to, or a line a person ran. Read by its id with `invoked(id)`; the view runs again as it moves.",
         fields: &[
-            ("record", "Invocation", "Its record, which `host.cancel`, `host.retry` and `host.resolve` act on."),
+            (
+                "record",
+                "Invocation",
+                "Its record, which `host.cancel`, `host.retry` and `host.resolve` act on.",
+            ),
             (
                 "state",
                 "Text",
@@ -716,13 +724,41 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Text",
                 "What it calls, `<app>#<action>`, while the dispatch remembers it.",
             ),
-            ("title", "Text", "What it was called when it was started; empty when it was named nothing."),
-            ("summary", "Text", "What its newest change did, by the action's label."),
-            ("failure", "Text", "Why it failed, typed (`confirmation_required`); empty when it did not."),
-            ("calls", "List<Text>", "The ids of the invocations it made, oldest first: its steps."),
-            ("provider", "Text", "The model provider its model call went to; empty for a step that called no model."),
-            ("model", "Text", "The model its model call asked; empty for a step that called no model."),
-            ("cost", "Float", "What its model call cost, in US dollars; 0 when it called none."),
+            (
+                "title",
+                "Text",
+                "What it was called when it was started; empty when it was named nothing.",
+            ),
+            (
+                "summary",
+                "Text",
+                "What its newest change did, by the action's label.",
+            ),
+            (
+                "failure",
+                "Text",
+                "Why it failed, typed (`confirmation_required`); empty when it did not.",
+            ),
+            (
+                "calls",
+                "List<Text>",
+                "The ids of the invocations it made, oldest first: its steps.",
+            ),
+            (
+                "provider",
+                "Text",
+                "The model provider its model call went to; empty for a step that called no model.",
+            ),
+            (
+                "model",
+                "Text",
+                "The model its model call asked; empty for a step that called no model.",
+            ),
+            (
+                "cost",
+                "Float",
+                "What its model call cost, in US dollars; 0 when it called none.",
+            ),
         ],
     },
     ValueType {
@@ -732,8 +768,16 @@ pub const VALUE_TYPES: &[ValueType] = &[
         fields: &[
             ("line", "Text", "The line, as they typed it."),
             ("running", "Bool", "Whether it runs still."),
-            ("said", "Text", "What it answered, in the person's words; empty while it runs."),
-            ("failed", "Bool", "Whether it failed: what it answered says why."),
+            (
+                "said",
+                "Text",
+                "What it answered, in the person's words; empty while it runs.",
+            ),
+            (
+                "failed",
+                "Bool",
+                "Whether it failed: what it answered says why.",
+            ),
         ],
     },
 ];
@@ -835,6 +879,7 @@ fn record_action(id: &str, label: &str, doc: &str, rest: Vec<ParamMeta>) -> Acti
         invokes: false,
         carries: false,
         outside: Vec::new(),
+        search: None,
         opens: Vec::new(),
     }
 }

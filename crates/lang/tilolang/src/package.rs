@@ -672,7 +672,6 @@ fn build_meta(
                     guard: false,
                     applies: false,
                     outside: Vec::new(),
-                    moderates: false,
                     search: None,
                     opens: Vec::new(),
                 });
@@ -775,7 +774,6 @@ fn build_meta(
                         .unwrap_or_default(),
                     search: c.present.search.clone(),
                     opens: c.present.opens.clone(),
-                    moderates: c.present.moderates,
                 });
                 if let Some(v) = env.callables.iter().find(|v| {
                     v.own && v.kind == CKind::View && Some(&v.id) == c.present.view.as_ref()
@@ -1052,7 +1050,7 @@ pub fn compile_program_reading(
             invokes: false,
             carries: false,
             outside: Vec::new(),
-            moderates: false,
+            search: None,
             opens: Vec::new(),
         }],
         ..PackageMeta::default()
