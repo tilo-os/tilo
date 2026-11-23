@@ -17,7 +17,7 @@ use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
 use tilolang_runtime::Words;
 use tilolang_runtime::meta::Ty;
 
-use crate::action::{CREATE_ACTION, DIRECT_EDITS, ORIGIN_ACTION};
+use crate::action::{BLOCK_EDITS, CREATE_ACTION, DIRECT_EDITS, ORIGIN_ACTION};
 use tilolang_runtime::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 
 use crate::meta::{MetaExt as _, action_kind};
@@ -382,6 +382,20 @@ pub(crate) fn editable_field_names(ty: &TypeMeta, merge: Merge) -> Vec<String> {
         .collect()
 }
 
+/// The names of the fields of `ty` that hold rich text, the ones a paragraph edit changes.
+pub(crate) fn rich_field_names(ty: &TypeMeta) -> Vec<String> {
+    ty.fields
+        .iter()
+        .filter(|field| {
+            matches!(
+                tilolang_runtime::meta::parse_ty(field.ty.trim(), ""),
+                Ok(Ty::RichText)
+            )
+        })
+        .map(|field| field.name.clone())
+        .collect()
+}
+
 /// Which kinds of field an [`edit_verbs`] verb may set: a text (plain or rich), or a flag.
 #[derive(Clone, Copy)]
 pub(crate) enum Merge {
@@ -460,7 +474,64 @@ fn edit_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
             field: None,
         }
     }));
+    // A type with rich text offers an agent the edits of one paragraph of it, by the address
+    // block search publishes for that paragraph. A plain text has no paragraphs to address.
+    verbs.extend(block_verbs(declared));
     verbs
+}
+
+/// The verbs an agent changes one paragraph of a rich-text field of `declared` by
+/// ([`BLOCK_EDITS`]): each names the paragraph by the address block search gives it
+/// (`tl:<app>:<id>#<field>.<place>`), and what sets it takes the paragraph's Markdown.
+fn block_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
+    let rich = rich_field_names(declared);
+    if rich.is_empty() {
+        return Vec::new();
+    }
+    let described = format!(
+        concat!(
+            "The paragraph's address, `tl:<app>:<id>#<field>.<place>`, ",
+            "as block search names one; the text's fields: {}",
+        ),
+        rich.join(", ")
+    );
+    BLOCK_EDITS
+        .into_iter()
+        .map(|edit| {
+            let mut params = vec![ParamSurface {
+                name: "block".to_owned(),
+                required: true,
+                schema: json!({"type": "string", "description": described.clone()}),
+                ty: FieldType::Text,
+                within: None,
+            }];
+            if edit.text {
+                params.push(ParamSurface {
+                    name: "text".to_owned(),
+                    required: true,
+                    schema: json!({
+                        "type": "string",
+                        "description": "What the paragraph says, as Markdown.",
+                    }),
+                    ty: FieldType::Text,
+                    within: None,
+                });
+            }
+            VerbSurface {
+                id: edit.id.to_owned(),
+                name: String::new(),
+                label: edit.label.to_owned(),
+                description: Some(edit.description.to_owned()),
+                kind: ActionKind::Undoable,
+                destructive: false,
+                incoming_message: false,
+                params,
+                returns: None,
+                writes: vec![RESOURCE_UNIT.to_owned()],
+                field: None,
+            }
+        })
+        .collect()
 }
 
 /// The verb of what an outside origin writes: its service's answer, taken into the resources the

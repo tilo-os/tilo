@@ -100,6 +100,27 @@
       }
     },
     {
+      "id": "agent-edits-a-paragraph",
+      "said": "An agent rewrites the note's heading through the action that edits one paragraph, and the outline shows it",
+      "ops": {
+        "tl": [
+          {
+            "act": [
+              "tl.so.tilo.notes.Note",
+              "edit-block",
+              {
+                "block": "body.0",
+                "text": "## Packing list"
+              }
+            ]
+          },
+          {
+            "wait_for": "Packing list"
+          }
+        ]
+      }
+    },
+    {
       "id": "sub-note",
       "said": "Make a sub-note under it",
       "ops": {

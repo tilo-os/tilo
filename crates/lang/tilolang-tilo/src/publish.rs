@@ -17,16 +17,20 @@ use tilo_actions::{
     Noun, OperationKind, ParamType, ResourceSpec, ResourceType, ResourceViewSpec, Target,
 };
 
-use crate::action::{DIRECT_EDITS, DirectEdit, DynAction};
+use crate::action::{BLOCK_EDITS, BlockEdit, BlockEditKind, DIRECT_EDITS, DirectEdit, DynAction};
 use crate::resources::{ResourceStore, Watch};
 use tilolang_runtime::ids::Actor;
 use tilolang_runtime::meta::{ActionMeta, FieldKind, Meta, Ty, TypeMeta};
-use tilolang_runtime::store::{ANY_FIELD, ChangeNote, FieldSpec, Mutation, Scalar, Store as _};
+use tilolang_runtime::store::{
+    ANY_FIELD, ChangeNote, FieldSpec, FieldValue, Mutation, Scalar, Store as _,
+};
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::words::Words;
 
 use crate::meta::{MetaExt as _, action_kind};
-use crate::surface::{Merge, editable_field_names, is_destructive, published_param};
+use crate::surface::{
+    Merge, editable_field_names, is_destructive, published_param, rich_field_names,
+};
 
 /// What the declaration `id` is called in the reader's language: `source`, its words in the
 /// package's own, when no catalogue of theirs holds it.
@@ -472,9 +476,9 @@ pub struct ActionTypes {
 
 /// The action types of the resources of one tilolang type.
 struct TypeActions {
-    /// The two direct edits ([`edit_types`]), which every document of the type offers, root and
-    /// item alike.
-    edits: [Arc<ActionType>; 2],
+    /// The direct edits ([`edit_types`]), which every document of the type offers, root and
+    /// item alike: its text and flag fields, and one paragraph of its rich text.
+    edits: Vec<Arc<ActionType>>,
     /// The actions whose target is the type.
     actions: Vec<Arc<ActionType>>,
     /// The views that show a resource of the type, each with the action that opens it through
@@ -1891,9 +1895,33 @@ pub fn edit_action(
         crate::action::EDIT_TEXT_ACTION
     };
     let args = serde_json::json!({"field": field_id, "value": value});
+    commit_edit(
+        store,
+        meta,
+        &meta.kind_of(type_name),
+        &at,
+        &mutation,
+        action_id,
+        args,
+        invoker,
+    )
+}
+
+/// Write `mutation` to `at` as `invoker`'s change of the action `action_id`, recording `args`:
+/// the write every direct edit makes, whether it sets a field or one paragraph of its rich text.
+fn commit_edit(
+    store: &ResourceStore,
+    meta: &Meta,
+    kind: &str,
+    at: &ResourceRef,
+    mutation: &Mutation,
+    action_id: &str,
+    args: Json,
+    invoker: Option<&Actor>,
+) -> Result<DynAction, String> {
     let mut store = store.clone();
     let txn = store.begin().map_err(|error| error.to_string())?;
-    if let Err(error) = store.apply(txn, &at, &mutation) {
+    if let Err(error) = store.apply(txn, at, mutation) {
         store.rollback(txn);
         return Err(error.to_string());
     }
@@ -1911,7 +1939,7 @@ pub fn edit_action(
         .map_err(|error| error.to_string())?;
     Ok(DynAction {
         app: meta.app.clone(),
-        kind: meta.kind_of(type_name),
+        kind: kind.to_owned(),
         action_id: action_id.to_owned(),
         args,
         authorship: crate::action::Authorship {
@@ -1946,6 +1974,29 @@ pub fn plan_edit(
     request: &PlanRequest<'_>,
     invoker: &Actor,
 ) -> Option<Result<DynAction, String>> {
+    if let Some(edit) = BLOCK_EDITS
+        .into_iter()
+        .find(|edit| edit.id == request.action_id)
+    {
+        let declared = meta
+            .types
+            .iter()
+            .find(|declared| meta.kind_of(&declared.name) == request.kind)?;
+        let Some(id) = request.resource else {
+            return Some(Err(
+                "a paragraph edit names the resource it edits".to_owned()
+            ));
+        };
+        return Some(edit_block_action(
+            store,
+            meta,
+            &declared.name,
+            id,
+            request.args,
+            edit,
+            Some(invoker),
+        ));
+    }
     let flag = DIRECT_EDITS
         .iter()
         .find(|direct| direct.id == request.action_id)?
@@ -1993,9 +2044,145 @@ fn field_names(declared: &TypeMeta) -> String {
         .join(", ")
 }
 
-/// The two direct edit actions of a resource, whose target is its id: a bound text input and
-/// a bound checkbox. The verbs and their arguments are [`DIRECT_EDITS`]'.
-fn edit_types(meta: &Meta, type_name: &str, planner: &Arc<dyn Planner>) -> [Arc<ActionType>; 2] {
+/// The paragraph edit `edit` `args` asks for, written to `store` as `invoker`'s: the paragraph of
+/// a rich-text field of the resource `id` that `args.block` names
+/// (`tl:<app>:<id>#<field>.<place>`) is set to what its Markdown says, preceded by it, or removed
+/// ([`crate::action::BLOCK_EDITS`]). The text is read and written as the value it already holds
+/// with that one paragraph changed, which the store writes as the splices of that paragraph: a
+/// concurrent edit of another paragraph merges, and history keeps one change.
+///
+/// # Errors
+/// The type has no such rich-text field, the address names no paragraph the text holds or names
+/// another resource, the text is no document, or the store refused the write.
+pub fn edit_block_action(
+    store: &ResourceStore,
+    meta: &Meta,
+    type_name: &str,
+    id: &str,
+    args: &serde_json::Map<String, Json>,
+    edit: BlockEdit,
+    invoker: Option<&Actor>,
+) -> Result<DynAction, String> {
+    let declared = meta
+        .type_named(type_name)
+        .ok_or_else(|| format!("the package declares no type `{type_name}`"))?;
+    let address = args
+        .get("block")
+        .and_then(Json::as_str)
+        .unwrap_or_default()
+        .trim();
+    if address.is_empty() {
+        return Err("name the paragraph as `tl:<app>:<id>#<field>.<place>`".to_owned());
+    }
+    let (field, place) = paragraph_at(meta, id, address)?;
+    let no_field = || {
+        format!(
+            "the type `{type_name}` has no field `{field}`; its fields are: {}",
+            field_names(declared)
+        )
+    };
+    let field_id = declared
+        .fields
+        .iter()
+        .find(|known| known.name == field)
+        .or_else(|| declared.fields.iter().find(|known| known.id == field))
+        .map(|known| known.id.clone())
+        .ok_or_else(no_field)?;
+    let kind = store
+        .kinds()
+        .get(&declared.id)
+        .and_then(|entry| entry.fields.get(&field_id))
+        .map(|entry| entry.kind)
+        .ok_or_else(no_field)?;
+    if kind != FieldKind::RichText {
+        return Err(format!(
+            "the field `{field}` is no rich text: a paragraph is changed in a `RichText` field"
+        ));
+    }
+    let at = ResourceRef::parse_id(id, declared.id.clone())
+        .ok_or_else(|| format!("`{id}` is not a resource id"))?;
+    let held = store
+        .read(
+            &at,
+            &FieldSpec {
+                id: field_id.clone(),
+                kind,
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    let FieldValue::Rich(rich) = held else {
+        return Err(format!("the field `{field}` is no rich text"));
+    };
+    let text = args.get("text").and_then(Json::as_str).unwrap_or_default();
+    let said = || -> Result<Vec<tilo_doc::snapshot::BlockView>, String> {
+        if text.trim().is_empty() {
+            return Err(format!(
+                "`{}` takes what the paragraph says; `{}` removes one",
+                edit.id,
+                crate::action::DELETE_BLOCK_ACTION
+            ));
+        }
+        tilolang_runtime::rich::RichValue::from_markdown(text).map(|rich| rich.blocks)
+    };
+    let change = match edit.kind {
+        BlockEditKind::Replace => tilolang_runtime::rich::BlockChange::Replace(said()?),
+        BlockEditKind::Insert => tilolang_runtime::rich::BlockChange::Insert(said()?),
+        BlockEditKind::Delete => tilolang_runtime::rich::BlockChange::Delete,
+    };
+    let value = rich.with_block(place, &change)?;
+    let mutation = Mutation::SetRich {
+        field: field_id,
+        value,
+    };
+    let mut recorded = serde_json::Map::new();
+    recorded.insert("block".to_owned(), Json::String(address.to_owned()));
+    if edit.text {
+        recorded.insert("text".to_owned(), Json::String(text.to_owned()));
+    }
+    commit_edit(
+        store,
+        meta,
+        &meta.kind_of(type_name),
+        &at,
+        &mutation,
+        edit.id,
+        Json::Object(recorded),
+        invoker,
+    )
+}
+
+/// The field and the place a paragraph address names (`tl:<app>:<id>#<field>.<place>`), checked
+/// against the resource `id` of the app: an address that names a resource names this one.
+fn paragraph_at<'a>(meta: &Meta, id: &str, address: &'a str) -> Result<(&'a str, usize), String> {
+    let (named, at) = match address.split_once('#') {
+        Some((named, at)) => (Some(named.trim()), at.trim()),
+        None => (None, address),
+    };
+    if let Some(named) = named
+        && named != resource_id(&meta.app, id)
+        && named != id
+    {
+        return Err(format!(
+            "the address names `{named}`, not `{}`",
+            resource_id(&meta.app, id)
+        ));
+    }
+    let Some((field, place)) = at.rsplit_once('.') else {
+        return Err(format!(
+            "`{address}` names no paragraph: name it as `tl:<app>:<id>#<field>.<place>`"
+        ));
+    };
+    let place: usize = place
+        .trim()
+        .parse()
+        .map_err(|_| format!("`{}` is no paragraph place", place.trim()))?;
+    Ok((field.trim(), place))
+}
+
+/// The direct edit actions of a resource, whose target is its id: a bound text input and a bound
+/// checkbox, and — for a type with rich text — the edits of one paragraph of it. The verbs and
+/// their arguments are [`DIRECT_EDITS`]' and [`BLOCK_EDITS`]'.
+fn edit_types(meta: &Meta, type_name: &str, planner: &Arc<dyn Planner>) -> Vec<Arc<ActionType>> {
     // The fields `edit-text` and `edit-flag` may set, by their names: a caller reads the list
     // in the parameter's description rather than guessing at an internal id. The parameter is
     // not restricted to them, though: a bound control's `$edit` hands the field's internal id
@@ -2072,5 +2259,77 @@ fn edit_types(meta: &Meta, type_name: &str, planner: &Arc<dyn Planner>) -> [Arc<
         .for_audience(tilo_actions::Audience::Agents);
         Arc::clone(spec.action_type())
     };
-    DIRECT_EDITS.map(make)
+    let mut out: Vec<Arc<ActionType>> = DIRECT_EDITS.into_iter().map(make).collect();
+    // A type with rich text offers one paragraph of it, by its address, to an agent: block
+    // search finds a paragraph and names it so, and the edit is a splice of that paragraph.
+    let rich = declared.as_ref().map(rich_field_names).unwrap_or_default();
+    if !rich.is_empty() {
+        let described = format!(
+            "The paragraph's address, `tl:<app>:<id>#<field>.<place>`, as block search names one; \
+             the text's fields: {}",
+            rich.join(", ")
+        );
+        for edit in BLOCK_EDITS {
+            out.push(Arc::clone(&block_edit_type(
+                meta, type_name, planner, edit, &described,
+            )));
+        }
+    }
+    out
+}
+
+/// The action type of the paragraph edit `edit` of the resources of `type_name` of `meta`, whose
+/// `block` parameter is described by `described`: it plans through `planner`, as the direct
+/// edits do, and an agent is its audience.
+fn block_edit_type(
+    meta: &Meta,
+    type_name: &str,
+    planner: &Arc<dyn Planner>,
+    edit: BlockEdit,
+    described: &str,
+) -> Arc<ActionType> {
+    let (app, kind) = (meta.app.clone(), meta.kind_of(type_name));
+    let planner = Arc::clone(planner);
+    let mut params = vec![ActionParam::required_owned(
+        "block",
+        ParamType::Text,
+        described.to_owned(),
+    )];
+    if edit.text {
+        params.push(ActionParam::required(
+            "text",
+            ParamType::Text,
+            "What the paragraph says, as Markdown",
+        ));
+    }
+    let spec = ActionSpec::typed_on(
+        edit.id,
+        edit.label,
+        edit.label,
+        ExecutionLocus::ClientLocal,
+        params,
+        move |target: &Target, args: &ActionArgs| {
+            let json = args.to_json();
+            let refused = |message: String| EncodedAction {
+                type_id: INVALID_ARGUMENTS_TYPE.to_owned(),
+                payload: message.into_bytes(),
+            };
+            let caller = planner.caller();
+            let request = PlanRequest {
+                app: &app,
+                kind: &kind,
+                action_id: edit.id,
+                resource: target.get::<String>().map(String::as_str),
+                args: &json,
+                caller: caller.as_ref(),
+                from: None,
+            };
+            planner
+                .plan(&request)
+                .and_then(|planned| planned.encode().map_err(|error| error.to_string()))
+                .unwrap_or_else(refused)
+        },
+    )
+    .for_audience(tilo_actions::Audience::Agents);
+    Arc::clone(spec.action_type())
 }

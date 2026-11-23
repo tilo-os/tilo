@@ -106,7 +106,8 @@ Each entry is the closest working design to `docs/designs/app-language`.
 
 - One `surface.toml` for the host's app id, generated from the loaded packages' metadata: the
   `tl.host` kind, one `tl.<app>.<Type>` per declared type (verbs: the actions whose first
-  parameter is that type, plus `edit-text` and `edit-flag`), and one `tl.<app>` per package for
+  parameter is that type, plus `edit-text` and `edit-flag`, and `edit-block`, `insert-block` and
+  `delete-block` for a type with a rich-text field), and one `tl.<app>` per package for
   its document-less actions. Verb ids are the declarations' ids; labels are their names.
 - `run-block` is declared Undoable (the strictest class a block may have short of Outside); the
   runtime's authority narrows it per invocation. `read-values`, `read-for-program` and

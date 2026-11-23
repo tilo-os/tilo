@@ -25,6 +25,67 @@ pub const EDIT_TEXT_ACTION: &str = tilolang_runtime::store::EDIT_TEXT_ACTION;
 /// The action id of a bound checkbox changing its field.
 pub const EDIT_FLAG_ACTION: &str = tilolang_runtime::store::EDIT_FLAG_ACTION;
 
+/// The action ids of the three paragraph edits every resource of a type with a rich-text field
+/// offers: one paragraph of it, named by the address block search publishes for it
+/// (`tl:<app>:<id>#<field>.<place>`), is set, preceded or removed. Each is a splice of that
+/// paragraph's text, never a write of the whole body: a concurrent edit of another paragraph
+/// merges, and the change is one paragraph's in the note's history.
+pub const EDIT_BLOCK_ACTION: &str = tilolang_runtime::store::EDIT_BLOCK_ACTION;
+/// Puts paragraphs before the one the address names.
+pub const INSERT_BLOCK_ACTION: &str = tilolang_runtime::store::INSERT_BLOCK_ACTION;
+/// Removes the paragraph the address names, and the paragraphs it holds.
+pub const DELETE_BLOCK_ACTION: &str = tilolang_runtime::store::DELETE_BLOCK_ACTION;
+
+/// How a paragraph edit changes the paragraph its address names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockEditKind {
+    Replace,
+    Insert,
+    Delete,
+}
+
+/// One paragraph edit, as a resource of a type with a rich-text field offers it: its verb, what
+/// the change reads as, whether it takes the paragraph's text (a deletion takes none), and how it
+/// changes the paragraph ([`BlockEditKind`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockEdit {
+    /// The verb a change of the paragraph names.
+    pub id: &'static str,
+    /// What the action reads as.
+    pub label: &'static str,
+    /// What the action does, for the catalogue and an agent reading the surface.
+    pub description: &'static str,
+    /// Whether it takes the paragraph's text, as Markdown.
+    pub text: bool,
+    /// How it changes the paragraph.
+    pub kind: BlockEditKind,
+}
+
+/// The three paragraph edits ([`EDIT_BLOCK_ACTION`] and its two siblings).
+pub const BLOCK_EDITS: [BlockEdit; 3] = [
+    BlockEdit {
+        id: EDIT_BLOCK_ACTION,
+        label: "Edit a paragraph",
+        description: "Set one paragraph of a rich-text field to what a Markdown text says.",
+        text: true,
+        kind: BlockEditKind::Replace,
+    },
+    BlockEdit {
+        id: INSERT_BLOCK_ACTION,
+        label: "Add a paragraph",
+        description: "Put a paragraph before the one the address names.",
+        text: true,
+        kind: BlockEditKind::Insert,
+    },
+    BlockEdit {
+        id: DELETE_BLOCK_ACTION,
+        label: "Delete a paragraph",
+        description: "Remove the paragraph the address names, and the paragraphs it holds.",
+        text: false,
+        kind: BlockEditKind::Delete,
+    },
+];
+
 /// A bound control's edit of one field — a text input or a checkbox — as a resource offers it:
 /// the API gives it an action ([`crate::publish`]), and the surface publishes it as the verb a
 /// change of the field names ([`crate::surface`]). One declaration, so the arguments a change is

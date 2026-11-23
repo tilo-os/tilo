@@ -181,7 +181,7 @@ d-zvgl2tzt = Rename
 d-zvgl2tzt-title = Title
 
 d-6fwsh5ui = Add text
-    .doc = Writes `text` (Markdown) at the end of a note, under what it says already: a line, a list or a paragraph added to it.
+    .doc = Writes `text` (Markdown) at the end of a note, as paragraphs of its own under what it says already: a line, a list or a paragraph added to it, never running on into its last paragraph.
     .did = added to a note
 
 d-6fwsh5ui-text = Text

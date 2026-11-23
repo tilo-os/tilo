@@ -313,6 +313,9 @@ imports! {
     RichNew = "rich_new" ([H] -> [H]);
     RichPart = "rich_part" ([H, I32] -> [H]);
     RichEmpty = "rich_empty" ([H] -> [I32]);
+    // `r.appended(other)`: the document with `other`'s paragraphs following as paragraphs of
+    // their own, never running on into the last paragraph `RichText(a, b)` continues.
+    RichAppended = "rich_appended" ([H, H] -> [H]);
     RichTime = "rich_time" ([H] -> [H]);
     // `RichText.from_markdown(text, links:, from:)`: the document a Markdown text says, a link to a page
     // of the bundle read as the reference to it. The arguments are the text, the pages by the address each

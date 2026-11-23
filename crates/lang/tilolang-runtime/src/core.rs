@@ -39,21 +39,21 @@ use Imp::{
     ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF,
     ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom, MapGetH,
     MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove, MapRemoveValue,
-    MapSetAdd, MapSetRemove, SheetEdit, SheetEntry, SheetFile, SheetNumbers, SheetOfFile,
-    SheetRanges, SheetRecords, SheetValues, MatchGroup, MayRead, Me, Members, Mentions, MetaOf, MissingV,
+    MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf, MissingV,
     ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, PersonNamed, Phrase, Print,
     PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt,
     RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs,
     RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
-    ResourceRef, RichEmbed, RichEmpty, RichFromMarkdown, RichMarkdown, RichNew, RichPart,
-    RichRelinked, RichTime, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH,
-    SomeI, SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, Steps, StrCmp,
-    StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
-    StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToFloat, StrToInt, StrTrim,
-    StrUpper, StrWords, Suggest, Take, TimeClock, TimeDay, TimeOfDay, TimeParse, TimeShift,
-    TimeSpan, Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
-    TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiChild, UiNode,
-    UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+    ResourceRef, RichAppended, RichEmbed, RichEmpty, RichFromMarkdown, RichMarkdown, RichNew,
+    RichPart, RichRelinked, RichTime, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, SheetEdit,
+    SheetEntry, SheetFile, SheetNumbers, SheetOfFile, SheetRanges, SheetRecords, SheetValues,
+    Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt,
+    StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen,
+    StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToFloat,
+    StrToInt, StrTrim, StrUpper, StrWords, Suggest, Take, TimeClock, TimeDay, TimeOfDay, TimeParse,
+    TimeShift, TimeSpan, Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF,
+    TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiChild,
+    UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
     VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost,
     WebStatus, WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
 };
@@ -536,8 +536,8 @@ impl Core {
             RandomInt | RandomFloat | RandomChoice | RandomShuffle | RandomId => {
                 self.random_import(imp, a)
             }
-            RichNew | RichPart | RichEmpty | RichTime | RichFromMarkdown | RichMarkdown
-            | RichEmbed | RichRelinked => self.rich_import(imp, a),
+            RichNew | RichPart | RichEmpty | RichAppended | RichTime | RichFromMarkdown
+            | RichMarkdown | RichEmbed | RichRelinked => self.rich_import(imp, a),
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF

@@ -428,6 +428,16 @@ pub const EDIT_TEXT_ACTION: &str = "edit-text";
 /// The action id of a change a bound control makes to the flag field it shows.
 pub const EDIT_FLAG_ACTION: &str = "edit-flag";
 
+/// The action id of a change that sets one paragraph of a rich-text field to what a Markdown
+/// text says, named by the paragraph's address (`tl:<app>:<id>#<field>.<place>`).
+pub const EDIT_BLOCK_ACTION: &str = "edit-block";
+
+/// The action id of a change that puts paragraphs before the one a paragraph's address names.
+pub const INSERT_BLOCK_ACTION: &str = "insert-block";
+
+/// The action id of a change that removes the paragraph a paragraph's address names.
+pub const DELETE_BLOCK_ACTION: &str = "delete-block";
+
 /// One version of a resource, as history keeps it: who made it, when, by which action, in
 /// which run, and what it did to the resource.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

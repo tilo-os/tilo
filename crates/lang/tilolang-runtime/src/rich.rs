@@ -173,6 +173,17 @@ fn read_block(
 }
 
 impl RichValue {
+    /// The text a Markdown document says, as `RichText.from_markdown(text)` reads one, without a
+    /// bundle of pages to resolve its links against.
+    ///
+    /// # Errors
+    /// When the text is not a document.
+    pub fn from_markdown(markdown: &str) -> Result<Self, String> {
+        tilo_doc_codecs::rich::blocks_of_markdown(markdown)
+            .map(|blocks| Self { blocks })
+            .map_err(|why| format!("this text is not a document: {why}"))
+    }
+
     /// `RichText("…")`: the text, a paragraph per line, unformatted.
     #[must_use]
     pub fn from_text(text: &str) -> Self {
@@ -396,6 +407,28 @@ impl RichValue {
         });
     }
 
+    /// This text with `other` following it as paragraphs of its own
+    /// (`r.appended(other)`): each paragraph of `other` starts one, the way appending a
+    /// document to another reads, where [`Self::push_rich`] continues the last paragraph when it
+    /// holds text. An empty paragraph a trailing line break left open is the place `other`'s
+    /// first paragraph starts ([`left_open`]).
+    #[must_use]
+    pub fn appended(&self, other: &Self) -> Self {
+        let mut out = self.clone();
+        let mut blocks = other.blocks.iter();
+        if let Some(first) = blocks.next() {
+            out.push_own_block(BlockView {
+                id: String::new(),
+                ..first.clone()
+            });
+        }
+        out.blocks.extend(blocks.map(|b| BlockView {
+            id: String::new(),
+            ..b.clone()
+        }));
+        out
+    }
+
     /// Append `other` with its formatting: its first paragraph continues the last one, the
     /// rest follow it. A paragraph that is one projection (an embed) is a block of its own, so
     /// it never continues the paragraph before it, and text never runs on into it.
@@ -496,6 +529,99 @@ impl RichValue {
             .find(|(_, b)| !b.id.is_empty() && b.id == block)
             .map(|(a, _)| a)
     }
+
+    /// How many paragraphs it holds, the paragraphs a list item holds counted with it
+    /// ([`Self::with_block`]'s places).
+    #[must_use]
+    pub fn paragraph_count(&self) -> usize {
+        fn count(blocks: &[BlockView]) -> usize {
+            blocks
+                .iter()
+                .map(|block| 1usize.saturating_add(count(&block.children)))
+                .sum()
+        }
+        count(&self.blocks)
+    }
+
+    /// The way from the text's own paragraphs down to the one at `place`: the index of each
+    /// block to walk, from the top. The place is counted as block search counts it: each
+    /// paragraph before the paragraphs it holds, in the order they are read.
+    fn path_to(&self, place: usize) -> Option<Vec<usize>> {
+        fn walk(blocks: &[BlockView], place: &mut usize, path: &mut Vec<usize>) -> bool {
+            for (index, block) in blocks.iter().enumerate() {
+                path.push(index);
+                if *place == 0 {
+                    return true;
+                }
+                *place = place.saturating_sub(1);
+                if walk(&block.children, place, path) {
+                    return true;
+                }
+                path.pop();
+            }
+            false
+        }
+        let mut path = Vec::new();
+        let mut place = place;
+        walk(&self.blocks, &mut place, &mut path).then_some(path)
+    }
+
+    /// This text with the paragraph at `place` changed as `change` says: the place counted as
+    /// block search counts it ([`Self::paragraph_count`]), which is what a paragraph's address
+    /// in a record (`tl:<app>:<id>#<field>.<place>`) names. A paragraph that holds other
+    /// paragraphs is the text's own; one inside another, and the paragraphs it holds, are not
+    /// changed here.
+    ///
+    /// # Errors
+    /// When the text holds no paragraph at that place, or the place names a paragraph nested in
+    /// another.
+    pub fn with_block(&self, place: usize, change: &BlockChange) -> Result<Self, String> {
+        let Some(path) = self.path_to(place) else {
+            return Err(format!(
+                "the text has no paragraph {place}: it holds {}",
+                self.paragraph_count()
+            ));
+        };
+        let Some(index) = path.first().copied().filter(|_| path.len() == 1) else {
+            return Err(format!(
+                "paragraph {place} is inside another; a paragraph of the text itself is the one changed"
+            ));
+        };
+        let mut out = self.clone();
+        if matches!(change, BlockChange::Replace(_))
+            && out
+                .blocks
+                .get(index)
+                .is_some_and(|block| !block.children.is_empty())
+        {
+            return Err(format!(
+                "paragraph {place} holds paragraphs of its own; delete it or change one of them"
+            ));
+        }
+        match change {
+            BlockChange::Replace(blocks) => {
+                out.blocks.splice(index..=index, blocks.iter().cloned());
+            }
+            BlockChange::Insert(blocks) => {
+                out.blocks.splice(index..index, blocks.iter().cloned());
+            }
+            BlockChange::Delete => {
+                out.blocks.remove(index);
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// How [`RichValue::with_block`] changes the paragraph at a place.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BlockChange {
+    /// The paragraph reads as these blocks do, in its place.
+    Replace(Vec<BlockView>),
+    /// These blocks come before the paragraph, which keeps its place after them.
+    Insert(Vec<BlockView>),
+    /// The paragraph is removed from the text.
+    Delete,
 }
 
 /// Write `value` as the rich text under the map `obj` of `doc`, making the rich text there

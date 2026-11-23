@@ -184,8 +184,8 @@ fn aggregates(item: &Ty) -> Vec<&'static str> {
 pub fn described(ty: &Ty) -> String {
     match ty {
         Ty::RichText => {
-            "is_empty and markdown(links:, from:) (and the members excerpt, text, markdown, \
-             references, people)"
+            "is_empty, appended(other) and markdown(links:, from:) (and the members excerpt, \
+             text, markdown, references, people)"
                 .to_owned()
         }
         Ty::Bytes => "text, len".to_owned(),

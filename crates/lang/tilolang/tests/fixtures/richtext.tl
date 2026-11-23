@@ -74,7 +74,7 @@ action edit(p: Post, body: RichText) {
 
 /// Adds a line after what a post says, keeping it.
 action append(p: Post, line: Text) {
-    p.body = RichText(p.body, "\n", line)
+    p.body = p.body.appended(RichText(line))
 }
 
 /// Adds a reference to a task at the end of what a post says.

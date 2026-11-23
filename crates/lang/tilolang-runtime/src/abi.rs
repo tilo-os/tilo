@@ -290,6 +290,7 @@ imports! {
     (RichNew, "rich_new", "i", "i"),
     (RichPart, "rich_part", "ii", "i"),
     (RichEmpty, "rich_empty", "i", "i"),
+    (RichAppended, "rich_appended", "ii", "i"),
     (RichTime, "rich_time", "i", "i"),
     (RichFromMarkdown, "rich_from_markdown", "iiii", "i"),
     (RichMarkdown, "rich_markdown", "iii", "i"),

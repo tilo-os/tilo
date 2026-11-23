@@ -391,10 +391,10 @@ action retitle(n: Note, title: Text) (icon: .pencil, label: "Rename") {
     n.title = title
 }
 
-/// Writes `text` (Markdown) at the end of a note, under what it says already: a line, a list or
-/// a paragraph added to it.
+/// Writes `text` (Markdown) at the end of a note, as paragraphs of its own under what it says
+/// already: a line, a list or a paragraph added to it, never running on into its last paragraph.
 action add_text(n: Note, text: Text) (icon: .pencil, label: "Add text", did: "added to a note") {
-    n.body = RichText(n.body, RichText.from_markdown(text))
+    n.body = n.body.appended(RichText.from_markdown(text))
 }
 
 /// Writes `text` (Markdown) at the end of the note titled `title`, the case of its letters aside:
@@ -407,7 +407,7 @@ action append_to_note(nb: Notebook, title: Text, text: Text) (
 ) {
     require titled(nb, title) != .none "No note is titled {title}"
     if let n = titled(nb, title) {
-        n.body = RichText(n.body, RichText.from_markdown(text))
+        n.body = n.body.appended(RichText.from_markdown(text))
     }
 }
 
@@ -522,7 +522,7 @@ action insert_image(n: Note, image: File, alt: Text = "") (icon: .image, did: "a
         .replace("]", " ")
         .replace("(", " ")
         .replace(")", " ")
-    n.body = RichText(n.body, "\n![{description}]({image.url})")
+    n.body = n.body.appended(RichText.from_markdown("![{description}]({image.url})"))
     n.images.put(image.url, base_name(image.name))
 }
 
@@ -927,7 +927,7 @@ action import_archive(nb: Notebook, file: File) (
                                 .err(_) => "",
                             }
                             if let table = csv_table(csv) {
-                                made.body = RichText(made.body, RichText.from_markdown(table))
+                                made.body = made.body.appended(RichText.from_markdown(table))
                             }
                         }
                     }

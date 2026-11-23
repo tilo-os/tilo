@@ -2714,6 +2714,27 @@ impl Checker<'_> {
             (Ty::RichText, "is_empty") if args.is_empty() => {
                 Ex::host(Imp::RichEmpty, vec![r], Ty::Bool)
             }
+            // `r.appended(other)`: this document with `other`'s paragraphs following as
+            // paragraphs of their own, never running on into the last.
+            (Ty::RichText, "appended") => {
+                let [other] = args else {
+                    self.err(
+                        "E022",
+                        span,
+                        "`.appended` takes the text that follows it: `r.appended(RichText.from_markdown(text))`",
+                    );
+                    return Ex::error();
+                };
+                if let Some(named) = &other.name {
+                    self.err(
+                        "E022",
+                        named.span,
+                        "`.appended` takes the text by position: `r.appended(other)`",
+                    );
+                }
+                let other = self.expr_as(&other.value, &Ty::RichText);
+                Ex::host(Imp::RichAppended, vec![r, other], Ty::RichText)
+            }
             // `r.markdown(links: pages, from: folder)`: each reference to a page of `links` a link
             // to that page, at the path from the folder the page is written in.
             (Ty::RichText, "markdown") => {

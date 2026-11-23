@@ -1,6 +1,7 @@
 //! The `RichText` imports: `RichText(...)` (with a time as a part, `rich_time`),
 //! `RichText.from_markdown(text)`, and the members `r.excerpt`, `r.text`, `r.markdown`,
-//! `r.references`, `r.people`, `r.relinked(...)` and `r.is_empty()` (see [`crate::rich`]).
+//! `r.references`, `r.people`, `r.relinked(...)`, `r.appended(other)` and `r.is_empty()` (see
+//! [`crate::rich`]).
 //!
 //! `r.excerpt`, `r.text` and `r.markdown` are the text as the person running the code reads
 //! it: each reference to a resource they hold by its title now, one they cannot read as only
@@ -73,6 +74,7 @@ impl Core {
                 self.ret_h(part)
             }
             Imp::RichEmpty => ret_i32(i32::from(self.rich_arg(a.h(0)?)?.is_empty())),
+            Imp::RichAppended => self.rich_appended(a),
             // `RichText.from_markdown(text, links: pages, from: folder)`: the document a
             // Markdown text says, read the one way every app reads one (`tilo_doc_codecs::rich`),
             // a picture kept as the Markdown it is written as, and a link to a page of the
@@ -291,6 +293,15 @@ impl Core {
 }
 
 impl Core {
+    /// `r.appended(other)`: the document with `other`'s paragraphs following as paragraphs of
+    /// their own, which is how appending a document to another reads (`RichText(a, b)`
+    /// continues the last paragraph instead).
+    fn rich_appended(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let r = self.rich_arg(a.h(0)?)?;
+        let other = self.rich_arg(a.h(1)?)?;
+        self.ret_h(Value::Rich(r.appended(&other)))
+    }
+
     /// `r.relinked(links: pages, sources: sources)`: the document `r` is, block for block, with
     /// each link to a page of `pages` (the address it stands at, by the resource it is) the
     /// reference to that resource, as a bundle of pages reads one ([`pages_read`]), and each

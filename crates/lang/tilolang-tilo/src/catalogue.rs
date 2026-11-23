@@ -26,7 +26,10 @@ use tilolang_runtime::meta::{
     TypeMeta, VariantMeta,
 };
 
-use crate::action::{CREATE_ACTION, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION, ORIGIN_ACTION};
+use crate::action::{
+    CREATE_ACTION, DELETE_BLOCK_ACTION, EDIT_BLOCK_ACTION, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION,
+    INSERT_BLOCK_ACTION, ORIGIN_ACTION,
+};
 
 /// The surface file of an app directory, next to its manifest.
 pub const SURFACE_FILE: &str = "surface.toml";
@@ -379,13 +382,17 @@ fn action_name(id: &str) -> String {
     id.replace(['-', '.', ':'], "_")
 }
 
-/// The verbs only the platform invokes: creation, bound edits and what an outside origin writes.
+/// The verbs only the platform invokes: creation, bound edits, the edits of one paragraph of a
+/// rich text and what an outside origin writes.
 fn platform_verb(verb: &VerbSurface) -> bool {
     [
         CREATE_ACTION,
         ORIGIN_ACTION,
         EDIT_TEXT_ACTION,
         EDIT_FLAG_ACTION,
+        EDIT_BLOCK_ACTION,
+        INSERT_BLOCK_ACTION,
+        DELETE_BLOCK_ACTION,
     ]
     .contains(&verb.id.as_str())
 }

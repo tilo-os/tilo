@@ -1241,6 +1241,48 @@ mod cases {
         );
     }
 
+    /// What a person or an agent adds to a note goes under what it says, as paragraphs of their
+    /// own: never run on into the end of the note's last paragraph. A note named by its title
+    /// appends the same way, and a paragraph already written keeps its id.
+    #[test]
+    fn text_added_to_a_note_starts_a_paragraph_of_its_own() {
+        let n = Notes::new();
+        let note = n.titled("Groceries");
+        let add = |text: &str| n.call("add_text", vec![Value::resource(&note), Value::text(text)]);
+        add("Bread and milk");
+        let first = n.body_of(&note).blocks[0].id.clone();
+        add("The budget is for bread.");
+        n.call(
+            "append_to_note",
+            vec![
+                Value::resource(&n.nb),
+                Value::text(" GROCERIES "),
+                Value::text("- eggs"),
+            ],
+        );
+
+        let body = n.body_of(&note);
+        let said: Vec<(&str, &str)> = body
+            .blocks
+            .iter()
+            .map(|block| (block.kind.as_str(), block.text.as_str()))
+            .collect();
+        assert_eq!(
+            said,
+            [
+                ("paragraph", "Bread and milk"),
+                ("paragraph", "The budget is for bread."),
+                ("list_item", "eggs"),
+            ],
+            "each addition is a paragraph of its own: {:?}",
+            body.written_text()
+        );
+        assert_eq!(
+            body.blocks[0].id, first,
+            "the paragraph written first keeps its id, edited rather than replaced"
+        );
+    }
+
     /// What a person arrives with, dropped on the notebook or chosen from its File menu: a
     /// Markdown file, a folder of Markdown pages, a Notion export, pages with pictures, and a
     /// migration from a wiki. Each zip comes in as the notebook's tree — a page under the page
