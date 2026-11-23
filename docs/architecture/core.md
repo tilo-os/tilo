@@ -182,7 +182,10 @@ the weather in Bangalore. A new agent comes with the triggers a member would
 expect (mentions, direct messages, assigned tasks), and its person changes them
 like any automation's. A trigger starts a turn, and the agent answers where it
 was triggered: in the chat, on the task, in the note. There is no separate
-record of asking. The agent engine runs inside each device's one daemon and runs the
+record of asking. A turn is an invocation of the agent's answer action, so its
+state, steps and output are that invocation record's, and its cause is the
+address of the change that triggered it. Its triggers are an ordinary shortcut
+its person owns. The agent engine runs inside each device's one daemon and runs the
 agent's triggers; it never reads an app's own fields. Which eligible device runs a turn is the one placement rule of where work
 runs, decided in one function, `tilo_workspace_service::work::takes_turn`. Everything a turn writes
 is a member write for the agent, signed by the device that runs it.
