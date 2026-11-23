@@ -352,11 +352,8 @@ impl Timeline {
         if !self.rect.contains(point) {
             return None;
         }
-        let tokens = self.tokens();
-        let head = (tokens.weekday_h + 2.0 * tokens.s2).ceil();
+        let (head, cell_w, cell_h) = self.month_metrics();
         let grid_top = self.rect.y0 + head;
-        let cell_w = self.rect.width() / 7.0;
-        let cell_h = (self.rect.height() - head) / 6.0;
         if cell_w <= 0.0 || cell_h <= 0.0 || point.y < grid_top {
             return None;
         }
@@ -642,6 +639,145 @@ impl Timeline {
         head + 6.0 * row
     }
 
+    /// How the month grid divides its box: the weekday head's height and a cell's size.
+    fn month_metrics(&self) -> (f64, f64, f64) {
+        let tokens = self.tokens();
+        let head = (tokens.weekday_h + 2.0 * tokens.s2).ceil();
+        (
+            head,
+            self.rect.width() / 7.0,
+            (self.rect.height() - head) / 6.0,
+        )
+    }
+
+    /// Where the month grid's cell `row`, `col` stands, or `None` for a grid with no room in it.
+    fn month_cell_rect(&self, row: usize, col: usize) -> Option<Rect> {
+        let (head, cell_w, cell_h) = self.month_metrics();
+        if cell_w <= 0.0 || cell_h <= 0.0 {
+            return None;
+        }
+        let x0 = self.rect.x0 + cell_w * col as f64;
+        let y0 = self.rect.y0 + head + cell_h * row as f64;
+        Some(Rect::new(x0, y0, x0 + cell_w, y0 + cell_h))
+    }
+
+    /// Where a month cell's `slot`th event chip stands.
+    fn month_chip_rect(&self, cell: Rect, slot: usize) -> Rect {
+        let tokens = self.tokens();
+        let s1 = tokens.s1;
+        let pill_r = f64::midpoint(tokens.day_h, s1).ceil();
+        let top = cell.y0 + s1 + 2.0 * pill_r + s1 + slot as f64 * (tokens.strip_h + s1);
+        Rect::new(cell.x0 + s1, top, cell.x1 - s1, top + tokens.strip_h + s1)
+    }
+
+    /// Where an all-day event's chip stands in its day's strip, at `row`.
+    fn all_day_rect(&self, column: Rect, row: usize, geom: TimelineGeom) -> Rect {
+        let tokens = self.tokens();
+        let s1 = tokens.s1;
+        let chip_h = if geom.allday_rows <= 1 {
+            (geom.allday_h - 2.0 * s1).max(1.0)
+        } else {
+            tokens.strip_h
+        };
+        let top = self.rect.y0 + geom.head_h + s1 + row as f64 * (chip_h + s1);
+        Rect::new(
+            column.x0 + geom.block_inset,
+            top,
+            column.x1 - geom.block_inset,
+            top + chip_h,
+        )
+    }
+
+    /// The key the day `day` is known by among its days: what an action on one of its events
+    /// comes back with.
+    fn day_key(day: Date) -> u64 {
+        crate::a11y::hash_key(&("timeline.day", day.to_string()))
+    }
+
+    /// The key an event is known by among its day's events.
+    fn item_key(item: &TimelineItem) -> u64 {
+        crate::a11y::hash_key(&("timeline.item", &item.id))
+    }
+
+    /// The one thing an action on `item`'s element acts on: the item, by its day and its own key.
+    fn item_target(item: &TimelineItem) -> String {
+        crate::composition::keyed_target(
+            "timeline",
+            &[Self::day_key(item.day), Self::item_key(item)],
+        )
+    }
+
+    /// When an event is, as a person reads it: its hours, or the days it takes.
+    fn item_time_text(item: &TimelineItem) -> String {
+        if item.all_day {
+            if item.spans_days() {
+                crate::format::day_range(item.day, item.end_day)
+            } else {
+                crate::format::date(item.day)
+            }
+        } else {
+            crate::format::range(
+                &super::minute_text(item.start_min),
+                &super::minute_text(item.clock_end_min.min(MINUTES_PER_DAY)),
+            )
+        }
+    }
+
+    /// When an event is, as a machine reads it: ISO start and end, or the days it takes.
+    fn item_value(item: &TimelineItem) -> String {
+        let (start, end) = if item.all_day {
+            (item.day.to_string(), item.end_day.to_string())
+        } else {
+            (
+                datetime_iso(item.day, item.start_min),
+                datetime_iso(item.day, item.clock_end_min.min(MINUTES_PER_DAY)),
+            )
+        };
+        crate::format::machine!(
+            "the span of time an event covers, as a page's <time> holds it",
+            if start == end {
+                start
+            } else {
+                format!("{start}/{end}")
+            }
+        )
+    }
+
+    /// The event at `index` as a reader and a page find it: its title, when it is, and the action
+    /// a press on it runs.
+    fn item_access(&self, index: usize, bounds: Option<Rect>) -> Option<AccessNode> {
+        let item = self.items.get(index)?;
+        let node = AccessNode::new(Role::Button)
+            .with_name(item.title.clone())
+            .with_description(Self::item_time_text(item))
+            .with_value(Self::item_value(item))
+            .with_item(item.id.clone())
+            .with_action_target(Self::item_target(item))
+            .with_state(
+                AccessState::new()
+                    .focusable(true)
+                    .selected(self.focus == Some(index)),
+            );
+        Some(match bounds {
+            Some(rect) => node.with_bounds(rect),
+            None => node,
+        })
+    }
+
+    /// The day `day` as a reader and a page find it: a group named by its date, its date in a
+    /// `<time>`, and what stands on it.
+    fn day_access(day: Date, bounds: Rect, items: Vec<AccessNode>) -> AccessNode {
+        AccessNode::new(Role::Group)
+            .with_name(crate::format::day_heading(day, false))
+            .with_value(crate::format::machine!(
+                "a day on a timeline, as a page's <time> holds it",
+                day.to_string()
+            ))
+            .with_key(Self::day_key(day))
+            .with_bounds(bounds)
+            .with_children(items)
+    }
+
     #[cfg(test)]
     pub(crate) fn painted(&self) -> usize {
         self.last_painted
@@ -730,11 +866,71 @@ fn datetime_iso(day: Date, minute: i64) -> String {
 }
 
 impl Widget for Timeline {
-    /// A picture of the grid, redrawn when its days or the items it names change: the items it
-    /// shows are in its semantics, which the picture's version folds in.
+    /// The grid as a page lays it out: a column for each day with its date, and each event a
+    /// button showing its title and the hours it takes. The days, their dates and their events
+    /// are the structure [`Self::accessibility`] publishes, so a reader, a page's find and a
+    /// press all reach the same thing.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::{Ground, SemanticText, TextLook, rgba8};
+        let theme = cx.theme().clone();
+        let colors = &theme.tokens.colors;
+        let surfaces = colors.surfaces.content;
+        let styles = super::TimelineText::of(&theme);
+        let by_id: HashMap<&str, &TimelineItem> = self
+            .items
+            .iter()
+            .map(|item| (item.id.as_str(), item))
+            .collect();
+        let columns = if self.mode == TimelineMode::Month {
+            7
+        } else {
+            self.days.len().max(1)
+        };
         cx.element("div");
-        cx.picture();
+        cx.flow(&format!(
+            "display:grid;grid-template-columns:repeat({columns},minmax(0,1fr));gap:12px;\
+             padding:8px;min-width:0;"
+        ));
+        let look = |node: &AccessNode| -> SemanticText {
+            if node.role == Role::Group {
+                let words = TextLook::new(String::new(), &styles.day, Some(colors.text_primary));
+                return SemanticText::new(words.clone(), words).on(Ground {
+                    fill: Some(rgba8(surfaces)),
+                    edge: Some(rgba8(theme.border_standard)),
+                    radius: f64::from(theme.radius_standard),
+                    inset: [0.0, 0.0],
+                });
+            }
+            let item = node.item.as_deref().and_then(|id| by_id.get(id).copied());
+            let Some(item) = item else {
+                return SemanticText::new(
+                    TextLook::new(String::new(), &styles.title, Some(colors.text_primary)),
+                    TextLook::new(String::new(), &styles.subtitle, Some(colors.text_dim)),
+                );
+            };
+            let wash = if item.all_day {
+                super::face::ALL_DAY_WASH
+            } else {
+                0.22
+            };
+            let tinted = colors.tinted_chip_on(
+                surfaces,
+                item.tone.color(&theme),
+                wash,
+                crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+            );
+            SemanticText::new(
+                TextLook::new(String::new(), &styles.title, Some(tinted.ink)),
+                TextLook::new(String::new(), &styles.subtitle, Some(tinted.ink)),
+            )
+            .on(Ground {
+                fill: Some(rgba8(tinted.fill)),
+                edge: Some(rgba8(tinted.border)),
+                radius: f64::from(theme.tokens.radii.item),
+                inset: [0.0, 0.0],
+            })
+        };
+        cx.semantic_children("days", &look);
     }
 
     crate::described!();
@@ -1049,69 +1245,128 @@ impl Widget for Timeline {
         "Timeline"
     }
 
+    /// The grid as a reader hears it: each day a group named by its date, and what stands on it.
+    /// Only what the viewport shows is a node, as only what it shows is painted, but every
+    /// all-day event is one wherever its day is shown.
     fn accessibility(&self) -> Option<AccessNode> {
-        let mut children = Vec::new();
-        if self.mode == TimelineMode::Month {
-            for day in &self.days {
-                children.push(
-                    AccessNode::new(Role::Cell)
-                        .with_name(crate::format::date(*day))
-                        .with_state(AccessState::new().selected(*day == self.anchor)),
-                );
+        // Each event once, under the day it starts on, so neither the week's few days nor the
+        // month's many read the whole list again.
+        let mut on_day: Vec<Vec<(usize, &TimelineItem)>> = vec![Vec::new(); self.days.len()];
+        for (index, item) in self.items.iter().enumerate() {
+            if let Some(col) = self.column(item.day)
+                && let Some(day) = on_day.get_mut(col)
+            {
+                day.push((index, item));
             }
+        }
+        let geom = self.geom();
+        let splits = if self.mode == TimelineMode::Month {
+            Vec::new()
         } else {
-            let geom = self.geom();
-            let splits = self.item_splits();
-            for (index, item) in self.items.iter().enumerate() {
-                if item.all_day {
-                    children.push(
-                        AccessNode::new(Role::ListItem)
-                            .with_name(item.title.clone())
-                            .with_state(AccessState::new().selected(self.focus == Some(index))),
-                    );
-                    continue;
-                }
-                let Some(rect) = self.item_rect(index, geom, &splits) else {
+            self.item_splits()
+        };
+        let mut days = Vec::new();
+        for (col, day) in self.days.iter().enumerate() {
+            let Some(on_day) = on_day.get(col) else {
+                continue;
+            };
+            if self.mode == TimelineMode::Month {
+                let Some(cell) = self.month_cell_rect(col / 7, col % 7) else {
                     continue;
                 };
-                if rect.intersect(self.rect).height() <= 0.0 {
-                    continue;
+                let mut items = Vec::new();
+                let mut on_cell: Vec<(usize, &TimelineItem)> = on_day.clone();
+                on_cell.sort_by_key(|(_, item)| item.start_min);
+                for (slot, (at, _)) in on_cell.into_iter().enumerate() {
+                    let rect = self.month_chip_rect(cell, slot);
+                    // A cell shows the chips it has room for; the rest are its "more" row.
+                    if rect.y0 >= cell.y1 {
+                        continue;
+                    }
+                    if let Some(node) = self.item_access(at, Some(rect)) {
+                        items.push(node);
+                    }
                 }
-                children.push(
-                    AccessNode::new(Role::ListItem)
-                        .with_name(item.title.clone())
-                        .with_bounds(rect)
-                        .with_state(AccessState::new().selected(self.focus == Some(index))),
-                );
+                days.push(Self::day_access(*day, cell, items));
+            } else {
+                let column_w = super::column_width(self.rect, self.days.len(), geom);
+                let x0 = self.rect.x0 + geom.gutter + column_w * col as f64;
+                let column = Rect::new(x0, self.rect.y0, x0 + column_w, self.rect.y1);
+                let mut items = Vec::new();
+                let mut all_day: Vec<(usize, &TimelineItem)> = on_day
+                    .iter()
+                    .copied()
+                    .filter(|(_, item)| item.all_day)
+                    .collect();
+                all_day.sort_by_key(|(_, item)| std::cmp::Reverse(item.nights()));
+                for (row, (index, _)) in all_day.into_iter().enumerate() {
+                    let rect = self.all_day_rect(column, row, geom);
+                    if let Some(node) = self.item_access(index, Some(rect)) {
+                        items.push(node);
+                    }
+                }
+                let mut timed: Vec<(usize, &TimelineItem)> = on_day
+                    .iter()
+                    .copied()
+                    .filter(|(_, item)| !item.all_day)
+                    .collect();
+                timed.sort_by_key(|(_, item)| (item.start_min, item.id.as_str()));
+                for (index, _) in timed {
+                    let Some(rect) = self.item_rect(index, geom, &splits) else {
+                        continue;
+                    };
+                    if rect.intersect(self.rect).height() <= 0.0 {
+                        continue;
+                    }
+                    if let Some(node) = self.item_access(index, Some(rect)) {
+                        items.push(node);
+                    }
+                }
+                days.push(Self::day_access(*day, column, items));
             }
         }
         Some(
             AccessNode::new(Role::Group)
                 .with_optional_name(self.label.clone())
                 .with_state(AccessState::new().focused(self.focus.is_some()))
-                .with_children(children),
+                .with_children(days),
         )
     }
 
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _key_path: &[u64],
+        key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &crate::widget::ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
+        use crate::a11y::Action;
+        if !matches!(action, Action::Activate | Action::Focus) {
             return false;
         }
-        let Some(index) = self.focus else {
-            return false;
+        // The element an action names carries the event's own key: the last of its path. One an
+        // assistive technology held across a change may name an event that is gone, which is
+        // nothing to press rather than the event now at its old place.
+        let index = match key_path.last() {
+            Some(&key) => match self
+                .items
+                .iter()
+                .position(|item| Self::item_key(item) == key)
+            {
+                Some(index) => index,
+                None => return false,
+            },
+            None => match self.focus {
+                Some(index) if self.items.get(index).is_some() => index,
+                _ => return false,
+            },
         };
-        if self.items.get(index).is_some() {
+        self.focus = Some(index);
+        self.dirty = true;
+        if matches!(action, Action::Activate) {
             self.fire_item(index, "press");
-            true
-        } else {
-            false
         }
+        true
     }
 
     #[cfg(test)]

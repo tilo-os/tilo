@@ -15,7 +15,8 @@ use crate::widget::TimelineDensity;
 
 use super::{
     Ghost, MonthTarget, Split, TimelineGeom, TimelineItem, TimelineTarget, TimelineText,
-    TimelineTokens, block_rect, column_width, geometry, hour_label, in_split, splits_for,
+    TimelineTokens, block_rect, column_width, geometry, hour_label, in_split, minute_text,
+    splits_for,
 };
 
 /// The wash an all-day event is tinted with on the ground it sits on.
@@ -598,11 +599,6 @@ impl TimelineFace<'_> {
         }
         ctx.scene.pop_layer();
     }
-}
-
-fn minute_text(minute: i64) -> String {
-    let minute = u32::try_from(minute.clamp(0, super::MINUTES_PER_DAY)).unwrap_or(0);
-    crate::clock::hour_minute(minute / 60, minute % 60)
 }
 
 /// One day's cell in the month grid: its rectangle, the day, where its chips start, and the

@@ -3,6 +3,7 @@
 use super::widget::ItemEvents;
 use super::*;
 use crate::component::{Event, Fired, Intent, Value};
+use crate::composition::Composed;
 use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -276,5 +277,251 @@ tilo_test_env::scenario! {
             .count();
         assert!(chips >= 1, "the day's events show");
         assert!(chips < 5, "only the slots a cell has show, the rest is more");
+    }
+}
+
+/// The composed node of the widget named `widget`, depth first.
+fn by_widget<'a>(node: &'a Composed, widget: &str) -> Option<&'a Composed> {
+    if node.widget == widget {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| by_widget(child, widget))
+}
+
+/// Every node of `node` and what is under it, depth first.
+fn parts<'a>(node: &'a Composed, out: &mut Vec<&'a Composed>) {
+    out.push(node);
+    for child in &node.children {
+        parts(child, out);
+    }
+}
+
+fn attr<'a>(node: &'a Composed, name: &str) -> Option<&'a str> {
+    node.attrs
+        .iter()
+        .find(|(each, _)| *each == name)
+        .map(|(_, value)| value.as_str())
+}
+
+fn words(node: &Composed) -> Option<&str> {
+    match node.own.as_ref() {
+        Some(crate::composition::Own::Text(look)) => Some(look.text.as_str()),
+        _ => None,
+    }
+}
+
+/// A week of fifty events, some of them titled past one column's width.
+fn fifty_items(days: &[Date]) -> Vec<TimelineItem> {
+    (0..50)
+        .map(|index| {
+            let day = days[index % days.len()];
+            let start = 7 * 60 + i64::try_from(index % 12).unwrap_or(0) * 45;
+            let title = if index % 5 == 0 {
+                format!(
+                    "Event {index}: a title long enough to run past the width of one day's column"
+                )
+            } else {
+                format!("Event {index}")
+            };
+            let mut each = item(index, day, start, start + 40);
+            each.title = title;
+            each
+        })
+        .collect()
+}
+
+tilo_test_env::scenario! {
+    /// The grid as a page shows it: days a reader can find by their dates, events with their
+    /// times, and a press on an event's element the press it makes when clicked.
+    fn the_week_is_a_page_of_days_and_events_with_their_times;
+
+    phase each_day_is_a_section_with_a_time_and_each_event_a_button_with_its_hours;
+    {
+        let anchor = Date::new(2026, 8, 31).unwrap();
+        let mut timeline = Timeline::new(TimelineMode::Week, anchor, Vec::new());
+        timeline.show_now = false;
+        timeline.layout_for(area(), &Theme::dark());
+        let days = timeline.days.clone();
+        timeline.set_items_for_test(fifty_items(&days));
+        timeline.layout_for(area(), &Theme::dark());
+        let mut host = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            timeline,
+            (1280, 820),
+            Theme::dark(),
+        );
+        host.relayout();
+        let composition = host.composition();
+        let grid = by_widget(&composition.root, "Timeline").expect("the grid is composed");
+
+        let sections: Vec<&Composed> = grid
+            .children
+            .iter()
+            .filter(|child| child.tag == Some("section"))
+            .collect();
+        assert_eq!(sections.len(), 7, "a week is seven day groups");
+        let mut buttons = Vec::new();
+        for (column, section) in sections.iter().enumerate() {
+            let access = section.semantics.as_ref().expect("a day says what it is");
+            assert_eq!(access.role, crate::a11y::Role::Group);
+            let day = days[column];
+            let iso = day.to_string();
+            let heading = crate::format::day_heading(day, false);
+            assert_eq!(access.value.as_deref(), Some(iso.as_str()));
+            assert_eq!(access.name.as_deref(), Some(heading.as_str()));
+            let date = section
+                .children
+                .iter()
+                .find(|part| part.tag == Some("time"))
+                .expect("the day's date is a time");
+            assert_eq!(attr(date, "datetime"), Some(iso.as_str()));
+            assert_eq!(words(date), Some(heading.as_str()));
+            buttons.extend(
+                section
+                    .children
+                    .iter()
+                    .filter(|part| part.tag == Some("button")),
+            );
+        }
+        assert!(buttons.len() > 10, "the events the viewport shows are buttons");
+        for &button in &buttons {
+            let access = button.semantics.as_ref().expect("an event says what it is");
+            assert_eq!(access.role, crate::a11y::Role::Button);
+            assert_eq!(words(button), access.name.as_deref());
+            let value = access.value.as_deref().expect("an event carries its time");
+            assert!(value.contains('T') && value.contains('/'), "{value}");
+            assert_eq!(
+                access.description.as_deref().map(str::to_owned),
+                button
+                    .children
+                    .iter()
+                    .find(|part| part.tag == Some("time"))
+                    .and_then(|time| words(time).map(str::to_owned))
+            );
+            let time = button
+                .children
+                .iter()
+                .find(|part| part.tag == Some("time"))
+                .expect("an event's hours are a time");
+            assert_eq!(attr(time, "datetime"), Some(value));
+            let target = access
+                .action_target
+                .as_deref()
+                .expect("an event names what a press on it acts on");
+            assert!(target.starts_with("tilo.key-action:timeline:"), "{target}");
+        }
+
+        // The page itself: sections and times a person's browser lays out, the long titles intact
+        // and each event's element acting as its own press.
+        let html = crate::composition::page::Page::new().render(&composition);
+        assert!(html.contains("<section"), "a day is a section");
+        assert_eq!(html.matches("<section").count(), 7);
+        assert!(
+            html.matches("<time ").count() >= 7,
+            "each day's date is a time: {html}"
+        );
+        assert!(html.contains(&format!("datetime=\"{}\"", days[0])));
+        assert!(html.contains("a title long enough to run past the width of one day"));
+        assert!(html.contains("data-t=\"tilo.key-action:timeline:"));
+    }
+
+    phase activating_an_events_element_presses_what_a_click_on_it_presses;
+    {
+        let queue: crate::Intents<Fired> = crate::Intents::default();
+        let anchor = Date::new(2026, 8, 31).unwrap();
+        let mut timeline = Timeline::new(TimelineMode::Week, anchor, Vec::new());
+        timeline.show_now = false;
+        timeline.layout_for(area(), &Theme::dark());
+        let day = timeline.days[2];
+        timeline.set_items_for_test(vec![item(0, day, 9 * 60, 10 * 60)]);
+        timeline.set_item_events_for_test(vec![item_events(&queue)]);
+        let mut host = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            timeline,
+            (1280, 820),
+            Theme::dark(),
+        );
+        host.relayout();
+        let composition = host.composition();
+        let grid = by_widget(&composition.root, "Timeline").expect("the grid is composed");
+        let mut all = Vec::new();
+        parts(grid, &mut all);
+        let button = all
+            .iter()
+            .find(|part| part.tag == Some("button"))
+            .expect("the event is a button");
+        let target = button
+            .semantics
+            .as_ref()
+            .and_then(|access| access.action_target.clone())
+            .expect("the button names its event");
+
+        let [x, y, width, height] = button.rect;
+        host.click_at(x + width / 2.0, y + height / 2.0);
+        let clicked = queue.take();
+        assert_eq!(clicked.len(), 1, "the click pressed the event");
+        assert_eq!(clicked[0].event, "pressed");
+        assert_eq!(clicked[0].value, Some(Value::Resource("resource-0".into())));
+
+        host.perform_semantic_named(
+            "Timeline",
+            Some(target.as_str()),
+            &crate::a11y::Action::Activate,
+        )
+        .expect("the event's element takes the activation");
+        let pressed = queue.take();
+        assert_eq!(pressed.len(), 1);
+        assert_eq!(pressed[0].event, clicked[0].event);
+        assert_eq!(pressed[0].value, clicked[0].value);
+    }
+
+    phase the_month_shows_each_cell_as_the_day_it_is_with_its_events;
+    {
+        let day = Date::new(2026, 11, 3).unwrap();
+        let mut timeline = Timeline::new(TimelineMode::Month, day, Vec::new());
+        timeline.layout_for(Rect::new(0.0, 0.0, 980.0, 760.0), &Theme::dark());
+        timeline.set_items_for_test(vec![item(0, day, 9 * 60, 10 * 60)]);
+        timeline.layout_for(Rect::new(0.0, 0.0, 980.0, 760.0), &Theme::dark());
+        let access = timeline.accessibility().expect("the month says what it is");
+        assert_eq!(access.children.len(), 42, "six weeks of day cells");
+        let heading = crate::format::day_heading(day, false);
+        let cell = access
+            .children
+            .iter()
+            .find(|cell| cell.value.as_deref() == Some("2026-11-03"))
+            .expect("the day's own cell");
+        assert_eq!(cell.role, crate::a11y::Role::Group);
+        assert_eq!(cell.name.as_deref(), Some(heading.as_str()));
+        assert!(cell.bounds.is_some(), "a cell stands somewhere");
+        assert_eq!(cell.children.len(), 1, "the day's event");
+        assert!(cell.children[0].bounds.is_some());
+    }
+
+    phase ten_thousand_events_are_as_many_nodes_as_the_viewport_shows;
+    {
+        let mut timeline = week(Date::new(2026, 8, 31).unwrap());
+        let days = timeline.days.clone();
+        let items = (0..10_000)
+            .map(|index| {
+                let start = (i64::try_from(index).unwrap_or(0) * 10) % (24 * 60);
+                item(index, days[index % 7], start, start + 1)
+            })
+            .collect();
+        timeline.set_items_for_test(items);
+        timeline.layout_for(Rect::new(100.0, 40.0, 1300.0, 240.0), &Theme::dark());
+        let access = timeline.accessibility().expect("the grid says what it is");
+        let nodes = access.nodes().len();
+        assert!(nodes > 7, "the days and what shows of them are nodes");
+        assert!(
+            nodes < 2_000,
+            "only what the viewport shows is a node, not all 10k (was {nodes})"
+        );
+        for day in &access.children {
+            for node in &day.children {
+                assert!(node.bounds.is_some(), "a shown event stands somewhere");
+            }
+        }
     }
 }

@@ -1296,6 +1296,45 @@ impl<'a> HtmlCx<'a> {
         walk(self, access, key, &mut index);
     }
 
+    /// Every node of the widget's own semantics ([`Self::semantics`]) as a page element of its
+    /// own, and the nodes under it: what a widget that shows a structure it publishes for a
+    /// reader gives a page to lay out and search.
+    ///
+    /// Each node is its role's element — a group a `<section>`, a button a `<button>`, a list's
+    /// row an `<li>`, a leaf a `<span>` — and a node whose `value` is a date, a time or a span of
+    /// them says it in a `<time datetime="…">`: the element itself where the node is a leaf, and
+    /// a `<time>` beside the node's words where it has them (a day's date above its events, an
+    /// event's hours under its title). Its time shows the node's description, or its name where
+    /// it has none. A node's `action_target` comes back the same way a press on it does, so a
+    /// page's element acts as the widget's own control.
+    ///
+    /// Each node stands where its bounds say; one with none stands where its parent does.
+    pub fn semantic_children(
+        &mut self,
+        key: &str,
+        look: &dyn Fn(&crate::a11y::AccessNode) -> SemanticText,
+    ) {
+        let Some(root) = self.composed.semantics.clone() else {
+            return;
+        };
+        let fallback = self.composed.rect;
+        let fallback = vello::kurbo::Rect::new(
+            fallback[0],
+            fallback[1],
+            fallback[0] + fallback[2],
+            fallback[1] + fallback[3],
+        );
+        for (index, child) in root.children.iter().enumerate() {
+            semantic_parts(
+                &mut self.composed,
+                &format!("{key}.{index}"),
+                child,
+                look,
+                fallback,
+            );
+        }
+    }
+
     /// The widget is a control showing `face`.
     pub fn face(&mut self, face: Face) {
         self.composed.own = Some(Own::Face(face));
@@ -1465,6 +1504,151 @@ impl<'a> HtmlCx<'a> {
     #[must_use]
     pub fn semantics(&self) -> Option<&crate::a11y::AccessNode> {
         self.composed.semantics.as_ref()
+    }
+}
+
+/// How a page sets the words of one semantic node and of the time it holds
+/// ([`HtmlCx::semantic_children`]): the look carries type and colour, and the node's own words
+/// replace the ones it was built with.
+#[derive(Clone, Debug)]
+pub struct SemanticText {
+    /// The look of the node's own words: an event's title, a row's name.
+    pub words: TextLook,
+    /// The look of the time it carries: a day's date, an event's hours.
+    pub time: TextLook,
+    /// The ground its element is filled with, where it has one of its own (a chip's tint).
+    pub ground: Option<Ground>,
+}
+
+impl SemanticText {
+    /// The words of a node and of its time set as given, on its container's ground.
+    #[must_use]
+    pub fn new(words: TextLook, time: TextLook) -> Self {
+        Self {
+            words,
+            time,
+            ground: None,
+        }
+    }
+
+    /// Its element is filled with `ground` under its words.
+    #[must_use]
+    pub fn on(mut self, ground: Ground) -> Self {
+        self.ground = Some(ground);
+        self
+    }
+}
+
+/// Whether `value` is a date, a time, a moment or a span of them: what a `<time>`'s `datetime`
+/// holds, and what makes a semantic node one a page shows as time.
+fn is_time_value(value: &str) -> bool {
+    // A clock or a date says so in its punctuation; a count, a percentage or a word does not.
+    let plain = |part: &str| {
+        (part.contains(':') || part.contains('-'))
+            && (part.parse::<jiff::civil::DateTime>().is_ok()
+                || part.parse::<jiff::civil::Date>().is_ok()
+                || part.parse::<jiff::civil::Time>().is_ok())
+    };
+    let mut parts = value.split('/');
+    let (Some(start), end) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    plain(start) && end.is_none_or(plain) && parts.next().is_none()
+}
+
+/// The element a semantic node is: its role's, or a `<time>` where it is a leaf that carries one.
+fn semantic_tag(node: &crate::a11y::AccessNode) -> &'static str {
+    use crate::a11y::Role;
+    if node.role == Role::Group {
+        return "section";
+    }
+    if node.value.as_deref().is_some_and(is_time_value)
+        && matches!(
+            node.role,
+            Role::StaticText | Role::Paragraph | Role::Label | Role::Heading { .. }
+        )
+    {
+        return "time";
+    }
+    match node.role {
+        Role::Button | Role::ToggleButton => "button",
+        Role::ListItem => "li",
+        Role::Link => "a",
+        Role::Paragraph => "p",
+        _ => "span",
+    }
+}
+
+/// How a semantic node's element is laid out by the page.
+fn semantic_layout(tag: &str) -> &'static str {
+    match tag {
+        "section" => {
+            "display:flex;flex-direction:column;gap:6px;min-width:0;\
+             padding:8px;box-sizing:border-box;"
+        }
+        "button" => {
+            "display:flex;flex-direction:column;align-items:flex-start;gap:2px;\
+             text-align:start;border:0;padding:6px 8px;min-width:0;overflow-wrap:anywhere;"
+        }
+        "time" => "display:block;font-variant-numeric:tabular-nums;",
+        "li" => "display:block;min-width:0;overflow-wrap:anywhere;",
+        _ => "display:block;min-width:0;",
+    }
+}
+
+/// `node` and the nodes under it as parts of `composed`: [`HtmlCx::semantic_children`].
+fn semantic_parts(
+    composed: &mut Composed,
+    key: &str,
+    node: &crate::a11y::AccessNode,
+    look: &dyn Fn(&crate::a11y::AccessNode) -> SemanticText,
+    fallback: vello::kurbo::Rect,
+) {
+    let area = node
+        .bounds
+        .map_or(fallback, crate::a11y::AccessBounds::to_rect);
+    let style = look(node);
+    let time = node.value.as_deref().filter(|value| is_time_value(value));
+    let tag = semantic_tag(node);
+    let words = |look: &TextLook, text: &str| {
+        let mut look = look.clone();
+        text.clone_into(&mut look.text);
+        look
+    };
+    let name_look = node.name.as_ref().map(|name| words(&style.words, name));
+    let time_words = node
+        .description
+        .clone()
+        .filter(|description| !description.trim().is_empty())
+        .or_else(|| node.name.clone());
+    let part = composed.part(key, "Semantics", area);
+    part.tag = Some(tag);
+    part.layout = Some(semantic_layout(tag).to_owned());
+    part.focusable = node.state.focusable || node.action_target.is_some();
+    part.semantics = Some(node.clone());
+    part.ground = style.ground;
+    if tag == "time" {
+        if let Some(value) = time {
+            part.attrs.push(("datetime", value.to_owned()));
+        }
+        part.own = name_look.map(Own::Text);
+    } else if node.role != crate::a11y::Role::Group
+        && let Some(look) = name_look
+    {
+        part.own = Some(Own::Text(look));
+    }
+    if tag != "time"
+        && let Some(value) = time
+        && let Some(text) = time_words
+    {
+        let time_part = part.part("time", "Semantics", area);
+        time_part.tag = Some("time");
+        time_part.layout = Some(semantic_layout("time").to_owned());
+        time_part.attrs.push(("datetime", value.to_owned()));
+        time_part.own = Some(Own::Text(words(&style.time, &text)));
+    }
+    for (index, child) in node.children.iter().enumerate() {
+        semantic_parts(part, &index.to_string(), child, look, area);
     }
 }
 
@@ -1734,6 +1918,21 @@ mod tests {
         host.perform_semantic_named(&row.path, Some(&target), &Action::ToggleCheck)
             .expect("the box takes the toggle");
         assert!(checked.get(), "the press reached the row's box");
+    }
+
+    #[test]
+    fn a_time_value_is_a_date_a_moment_a_clock_or_a_span_of_them() {
+        assert!(super::is_time_value("2026-08-31"));
+        assert!(super::is_time_value("09:00"));
+        assert!(super::is_time_value("2026-08-31T09:00:00"));
+        assert!(super::is_time_value(
+            "2026-08-31T09:00:00/2026-08-31T10:30:00"
+        ));
+        assert!(super::is_time_value("2026-11-02/2026-11-05"));
+        assert!(!super::is_time_value(""));
+        assert!(!super::is_time_value("12"));
+        assert!(!super::is_time_value("50 percent"));
+        assert!(!super::is_time_value("2026-08-31/2026-08-31/2026-08-31"));
     }
 
     #[test]

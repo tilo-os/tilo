@@ -482,6 +482,13 @@ pub struct Split {
     pub of: usize,
 }
 
+/// The clock `minute` minutes from midnight reads as (`09:00`), in the person's clock: what an
+/// event's chip shows and a reader is told.
+pub(crate) fn minute_text(minute: i64) -> String {
+    let minute = u32::try_from(minute.clamp(0, MINUTES_PER_DAY)).unwrap_or(0);
+    crate::clock::hour_minute(minute / 60, minute % 60)
+}
+
 /// The same translation from a block to its share of the column, as the app's hit-testing used.
 #[must_use]
 pub fn in_split(block: Rect, split: Split) -> Rect {
