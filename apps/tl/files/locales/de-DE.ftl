@@ -289,6 +289,19 @@ d-tjvt3ycq = Neuer Ordner
 
 d-tjvt3ycq-name = Name
 
+d-ni4lcmis = Vorlagen
+    .doc = Die Vorlagen, die die Person in `~/Templates` hält, angeboten, wenn eine neue Datei benannt wird.
+
+d-k3lu4ge3 = Neue Datei beginnen
+    .doc = Liest die Vorlagen der Person in `~/Templates`, damit das Benennen einer neuen Datei sie anbieten kann.
+
+d-m2ye55z2 = Aus einer Vorlage
+    .doc = Kopiert die Vorlage `template` an den gezeigten Ort unter dem Namen `typed` oder dem der Vorlage.
+
+d-m2ye55z2-template = Vorlage
+
+d-m2ye55z2-typed = Getippt
+
 d-o4nc1mt2 = Neue Datei
     .doc = Legt eine Textdatei namens `name` an dem gezeigten Ort an, damit die Person sie füllt.
 
@@ -416,6 +429,7 @@ d-n9jkqy4o = Dateien
     .w-dismiss = Schließen
     .w-name-of-the-new-folder = Name des neuen Ordners
     .w-name-of-the-new-file = Name der neuen Datei
+    .w-from-a-template = Aus einer Vorlage
     .w-new-name = Neuer Name
     .w-no-apps-yet = Noch keine Apps
     .w-the-apps-on-this-device-stand = Die Apps dieses Geräts stehen hier, sobald eine installiert ist.

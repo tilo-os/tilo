@@ -147,6 +147,9 @@ d-l1bciwln = Words
 d-pnt3r5fh = Selected
     .doc = The entry the person chose, by its path; empty while nothing is chosen.
 
+d-ni4lcmis = Templates
+    .doc = The templates the person keeps in `~/Templates`, offered when a new file is named.
+
 d-fpb2xkum = Notice
     .doc = The last thing that went wrong, for the window to say; empty while nothing did.
 
@@ -295,6 +298,16 @@ d-tjvt3ycq = New folder
 
 d-tjvt3ycq-name = Name
 
+d-k3lu4ge3 = Start new file
+    .doc = Reads the person's `~/Templates`, so naming a new file can offer them.
+
+d-m2ye55z2 = New from template
+    .doc = Copies the template `template` into the place shown under `typed`'s name, or the template's.
+
+d-m2ye55z2-template = Template
+
+d-m2ye55z2-typed = Typed
+
 d-o4nc1mt2 = New file
     .doc = Makes a text file named `name` in the place shown, for the person to fill.
 
@@ -417,6 +430,7 @@ d-n9jkqy4o = Files
     .w-name-of-the-new-folder = Name of the new folder
     .w-name-of-the-new-file = Name of the new file
     .w-new-name = New name
+    .w-from-a-template = From a template
     .w-no-apps-yet = No apps yet
     .w-the-apps-on-this-device-stand = The apps on this device stand here once one is installed.
     .w-couldn-t-open = Couldn’t open “{ $name_of }”

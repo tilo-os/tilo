@@ -100,6 +100,8 @@ type Session (readers: author) {
     words: Text = ""
     /// The entry the person chose, by its path; empty while nothing is chosen.
     selected: Text = ""
+    /// The templates the person keeps in `~/Templates`, offered when a new file is named.
+    templates: List<Text>
     /// The last thing that went wrong, for the window to say; empty while nothing did.
     notice: Text = ""
 }
@@ -358,6 +360,45 @@ action new_folder(f: Files, name: Text = "New folder") uses files, time (icon: .
         .ok(_) => { read_listing(f, s.here) }
         .err(why) => {
             s.notice = "Couldn’t make the folder: {why}"
+        }
+    }
+}
+
+/// Reads the person's `~/Templates`, so naming a new file can offer them.
+action start_new_file(f: Files) uses files {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    match File.list("~/Templates") {
+        .ok(found) => {
+            s.templates = found.filter(e -> not e.folder and not e.hidden).map(e -> e.name)
+        }
+        .err(_) => {
+            s.templates = []
+        }
+    }
+}
+
+/// Copies the template `template` into the place shown under `typed`'s name, or the template's.
+action new_from_template(f: Files, template: Text, typed: Text) uses files, time {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    if not folder_place(s.here) {
+        s.notice = "Open a folder to make a file in it"
+        return
+    }
+    let named = if typed.trim() == "" { template } else { typed.trim() }
+    match File.read(join("~/Templates", template)) {
+        .ok(bytes) => {
+            match File.write(join(s.here, named), bytes) {
+                .ok(_) => {
+                    read_listing(f, s.here)
+                    note_recent(f, named, join(s.here, named))
+                }
+                .err(why) => {
+                    s.notice = "Couldn’t make the file: {why}"
+                }
+            }
+        }
+        .err(why) => {
+            s.notice = "Couldn’t read the template: {why}"
         }
     }
 }
@@ -800,7 +841,7 @@ view files(f: Files) {
                         }
                     }
                     if naming != "" {
-                        naming_row(f, naming, name)
+                        naming_row(f, s, naming, name)
                     }
                     if s.here == "recent" {
                         recent_files(f, s)
@@ -1047,7 +1088,7 @@ view view_options(f: Files, s: Session, naming: State<Text>, name: State<Text>) 
                 on choose: set(naming, "new").then(set(name, ""))
             }
             ui.MenuItem("New file", icon: .file_plus) {
-                on choose: set(naming, "new-file").then(set(name, ""))
+                on choose: start_new_file(f).then(set(naming, "new-file")).then(set(name, ""))
             }
             ui.MenuItem("Refresh", icon: .refresh) {
                 on choose: refresh(f)
@@ -1080,7 +1121,7 @@ view view_options(f: Files, s: Session, naming: State<Text>, name: State<Text>) 
 }
 
 /// The field asking for a name: a folder being made, a file, or an entry renamed.
-view naming_row(f: Files, naming: State<Text>, name: State<Text>) {
+view naming_row(f: Files, s: Session, naming: State<Text>, name: State<Text>) {
     row(gap: .related, align: .center) {
         ui.TextInput(
             bind: name,
@@ -1092,6 +1133,16 @@ view naming_row(f: Files, naming: State<Text>, name: State<Text>) {
         ) {
             on submit(typed): name_it(f, naming, typed).then(set(naming, ""))
             on cancel: set(naming, "")
+        }
+    }
+    if naming == "new-file" and not s.templates.is_empty() {
+        row(gap: .tight, align: .center) {
+            text("From a template", role: .caption, secondary: true)
+            for template in s.templates {
+                ui.Button(template, role: .plain) {
+                    on press: new_from_template(f, template, name).then(set(naming, ""))
+                }
+            }
         }
     }
 }
