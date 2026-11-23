@@ -956,10 +956,9 @@ view suggestions<R>(of: R) {
 /// fields the change wrote, the person looking as "You" — or, where every change the step folds
 /// is one action's and that action's words say how many, the step's own words ("wrote 7
 /// messages"), so the count stands in the sentence and no count stands beside it. A step of
-/// several other changes says how many ("You · 2 changes"), and opened, each says what it did. What the
-/// sentence leaves out stands
-/// under it, muted (`version_notes`): each field the change wrote, what it held before beside
-/// what it holds now, each as the field's type shows it. Steps of one hand, within the hour,
+/// several other changes says how many ("You · 2 changes"), and opened, each says what it did.
+/// What the sentence leaves out stands under it, muted (`version_notes`): each field the change
+/// wrote, what it held before beside what it holds now, each as the field's type shows it. Steps of one hand, within the hour,
 /// group under the face of the step that opens them; each step says where it stands among the
 /// visits, so an entry reads nothing of the steps around it.
 ///
@@ -973,141 +972,88 @@ view suggestions<R>(of: R) {
 /// one step: it says how many items it changed, and its undo takes them all back together.
 ///
 /// It is what a window shows when its bar's History is pressed, of the resource the window shows,
-/// so no app places it on its pages.
+/// so no app places it on its pages; its heading names that resource ("History of Trip to
+/// Lisbon"), since a window shows a list as readily as one item.
 view history<R>(of: R) {
     state open: Text = ""
     let steps = steps(of)
     if not steps.is_empty() {
-        section(phrase("tilolang-history")) {
-            for s in steps {
-                let key = "{s.at}/{s.who}"
-                // The step above this one: where it is the same hand's a moment before, this
-                // one joins the visit that step's face opened. Where it stands among the visits
-                // is the step's own, so an entry reads nothing of the steps around it.
-                let joined = not s.opens
-                // The newest step, whose result is what the page shows.
-                let newest = s.latest
-                // The step's first change made the resource: the step holds its making, and
-                // nothing of it is taken back from the page of the thing it made. A step's
-                // versions run oldest first, so its newest is what its sentence says.
-                let made = if let v = s.versions.first() { v.kind == "created" } else { false }
-                let undoable = not made and (s.run != .none or s.mine and s.changes == 1)
-                stack(gap: .related) {
-                    row(gap: .tight, align: .start) {
-                        if joined {
-                            // The room the face above takes, so one visit lines up under it.
-                            stack(min: 2rem, max: 2rem) {
-                            }
-                        } else {
-                            avatar(s.who)
-                        }
-                        stack(gap: .tight, fill: 1.0) {
-                            // Who, what, when: one sentence. It wraps rather than squeezing the
-                            // name it opens with, and what can be taken back at its end is one
-                            // quiet control.
-                            row(gap: .tight, align: .center, wrap: true) {
-                                if let v = s.versions.last() {
-                                    ui.Text(v.actor, role: .label)
-                                    // A run's own words stand under its sentence: its changes are
-                                    // what it did, and it names them all. The step's own words
-                                    // stand where they say how many changes it folds. A step of
-                                    // several changes says whose they are and how many: each of
-                                    // them says what it did where the step is opened, so the
-                                    // heading repeats none of them.
-                                    if s.run == .none {
-                                        if s.said != "" {
-                                            ui.Text(s.said, role: .label)
-                                        } else if s.changes > 1 {
-                                            ui.Text("·", role: .caption, secondary: true)
-                                            ui.Text(
-                                                phrase(
-                                                    "tilolang-history-changes",
-                                                    count: s.changes,
-                                                ),
-                                                role: .label,
-                                            )
-                                        } else {
-                                            std.version_said(v)
-                                        }
+        // It stands where the page did, so it keeps the page's gutters.
+        let titled = meta(of).title
+        let name = if titled.trim() == "" { phrase("tilolang-untitled") } else { titled }
+        ui.Scroll {
+            page {
+                section(phrase("tilolang-history-of", title: name)) {
+                    for s in steps {
+                        let key = "{s.at}/{s.who}"
+                        // The step above this one: where it is the same hand's a moment before, this
+                        // one joins the visit that step's face opened. Where it stands among the visits
+                        // is the step's own, so an entry reads nothing of the steps around it.
+                        let joined = not s.opens
+                        // The newest step, whose result is what the page shows.
+                        let newest = s.latest
+                        // The step's first change made the resource: the step holds its making, and
+                        // nothing of it is taken back from the page of the thing it made. A step's
+                        // versions run oldest first, so its newest is what its sentence says.
+                        let made = if let v = s.versions.first() {
+                            v.kind == "created"
+                        } else { false }
+                        let undoable = not made and (s.run != .none or s.mine and s.changes == 1)
+                        stack(gap: .related) {
+                            row(gap: .tight, align: .start) {
+                                if joined {
+                                    // The room the face above takes, so one visit lines up under it.
+                                    stack(min: 2rem, max: 2rem) {
                                     }
+                                } else {
+                                    avatar(s.who)
                                 }
-                                ui.Text("·", role: .caption, secondary: true)
-                                ui.Time(s.at, role: .caption, secondary: true)
-                                spacer()
-                                // Taken back here, quietly, on the step the page ends with; in
-                                // the step's menu anywhere older.
-                                if undoable {
-                                    if newest {
-                                        if let run = s.run {
-                                            ui.Button(
-                                                phrase("tilolang-undo"),
-                                                role: .plain,
-                                                size: .small,
-                                            ) {
-                                                on press: undo(run)
-                                            }
-                                        } else if let v = s.versions.last() {
-                                            ui.Button(
-                                                phrase("tilolang-undo"),
-                                                role: .plain,
-                                                size: .small,
-                                            ) {
-                                                on press: undo(v)
-                                            }
-                                        }
-                                    } else {
-                                        ui.MenuButton(
-                                            phrase("tilolang-history-actions"),
-                                            icon: .more_horizontal,
-                                            icon_only: true,
-                                            role: .plain,
-                                        ) {
-                                            if let run = s.run {
-                                                ui.MenuItem(
-                                                    phrase("tilolang-history-revert"),
-                                                    icon: .undo_2,
-                                                ) {
-                                                    on choose: undo(run)
-                                                }
-                                            } else if let v = s.versions.last() {
-                                                ui.MenuItem(
-                                                    phrase("tilolang-history-revert"),
-                                                    icon: .undo_2,
-                                                ) {
-                                                    on choose: undo(v)
+                                stack(gap: .tight, fill: 1.0) {
+                                    // Who, what, when: one sentence. It wraps rather than squeezing the
+                                    // name it opens with, and what can be taken back at its end is one
+                                    // quiet control.
+                                    row(gap: .tight, align: .center, wrap: true) {
+                                        if let v = s.versions.last() {
+                                            ui.Text(v.actor, role: .label)
+                                            // A run's own words stand under its sentence: its changes are
+                                            // what it did, and it names them all. The step's own words
+                                            // stand where they say how many changes it folds. A step of
+                                            // several changes says whose they are and how many: each of
+                                            // them says what it did where the step is opened, so the
+                                            // heading repeats none of them.
+                                            if s.run == .none {
+                                                if s.said != "" {
+                                                    ui.Text(s.said, role: .label)
+                                                } else if s.changes > 1 {
+                                                    ui.Text("·", role: .caption, secondary: true)
+                                                    ui.Text(
+                                                        phrase(
+                                                            "tilolang-history-changes",
+                                                            count: s.changes,
+                                                        ),
+                                                        role: .label,
+                                                    )
+                                                } else {
+                                                    std.version_said(v)
                                                 }
                                             }
                                         }
-                                    }
-                                }
-                            }
-                            if let run = s.run {
-                                if run.title != "" {
-                                    ui.Text(run.title, role: .caption, secondary: true)
-                                }
-                            }
-                            if s.changes == 1 {
-                                if let v = s.versions.last() {
-                                    std.version_notes(v, spoken: s.run == .none)
-                                }
-                            } else if s.changes > 1 {
-                                if open == key {
-                                    ui.Button(
-                                        phrase("tilolang-history-hide"),
-                                        role: .plain,
-                                        size: .small,
-                                    ) {
-                                        on press: set(open, "")
-                                    }
-                                    for v in s.versions {
-                                        stack(gap: .tight) {
-                                            row(gap: .tight, align: .center, wrap: true) {
-                                                ui.Text(v.actor, role: .label)
-                                                std.version_said(v)
-                                                ui.Text("·", role: .caption, secondary: true)
-                                                ui.Time(v.at, role: .caption, secondary: true)
-                                                spacer()
-                                                if v.mine and v.kind != "created" {
+                                        ui.Text("·", role: .caption, secondary: true)
+                                        ui.Time(s.at, role: .caption, secondary: true)
+                                        spacer()
+                                        // Taken back here, quietly, on the step the page ends with; in
+                                        // the step's menu anywhere older.
+                                        if undoable {
+                                            if newest {
+                                                if let run = s.run {
+                                                    ui.Button(
+                                                        phrase("tilolang-undo"),
+                                                        role: .plain,
+                                                        size: .small,
+                                                    ) {
+                                                        on press: undo(run)
+                                                    }
+                                                } else if let v = s.versions.last() {
                                                     ui.Button(
                                                         phrase("tilolang-undo"),
                                                         role: .plain,
@@ -1116,17 +1062,88 @@ view history<R>(of: R) {
                                                         on press: undo(v)
                                                     }
                                                 }
+                                            } else {
+                                                ui.MenuButton(
+                                                    phrase("tilolang-history-actions"),
+                                                    icon: .more_horizontal,
+                                                    icon_only: true,
+                                                    role: .plain,
+                                                ) {
+                                                    if let run = s.run {
+                                                        ui.MenuItem(
+                                                            phrase("tilolang-history-revert"),
+                                                            icon: .undo_2,
+                                                        ) {
+                                                            on choose: undo(run)
+                                                        }
+                                                    } else if let v = s.versions.last() {
+                                                        ui.MenuItem(
+                                                            phrase("tilolang-history-revert"),
+                                                            icon: .undo_2,
+                                                        ) {
+                                                            on choose: undo(v)
+                                                        }
+                                                    }
+                                                }
                                             }
-                                            std.version_notes(v, spoken: s.run == .none)
                                         }
                                     }
-                                } else {
-                                    ui.Button(
-                                        phrase("tilolang-history-show"),
-                                        role: .plain,
-                                        size: .small,
-                                    ) {
-                                        on press: set(open, key)
+                                    if let run = s.run {
+                                        if run.title != "" {
+                                            ui.Text(run.title, role: .caption, secondary: true)
+                                        }
+                                    }
+                                    if s.changes == 1 {
+                                        if let v = s.versions.last() {
+                                            std.version_notes(v, spoken: s.run == .none)
+                                        }
+                                    } else if s.changes > 1 {
+                                        if open == key {
+                                            ui.Button(
+                                                phrase("tilolang-history-hide"),
+                                                role: .plain,
+                                                size: .small,
+                                            ) {
+                                                on press: set(open, "")
+                                            }
+                                            for v in s.versions {
+                                                stack(gap: .tight) {
+                                                    row(gap: .tight, align: .center, wrap: true) {
+                                                        ui.Text(v.actor, role: .label)
+                                                        std.version_said(v)
+                                                        ui.Text(
+                                                            "·",
+                                                            role: .caption,
+                                                            secondary: true,
+                                                        )
+                                                        ui.Time(
+                                                            v.at,
+                                                            role: .caption,
+                                                            secondary: true,
+                                                        )
+                                                        spacer()
+                                                        if v.mine and v.kind != "created" {
+                                                            ui.Button(
+                                                                phrase("tilolang-undo"),
+                                                                role: .plain,
+                                                                size: .small,
+                                                            ) {
+                                                                on press: undo(v)
+                                                            }
+                                                        }
+                                                    }
+                                                    std.version_notes(v, spoken: s.run == .none)
+                                                }
+                                            }
+                                        } else {
+                                            ui.Button(
+                                                phrase("tilolang-history-show"),
+                                                role: .plain,
+                                                size: .small,
+                                            ) {
+                                                on press: set(open, key)
+                                            }
+                                        }
                                     }
                                 }
                             }

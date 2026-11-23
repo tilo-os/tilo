@@ -979,10 +979,10 @@ mod cases {
             "{}",
             dump(view.tree())
         );
-        // When it was made: one moment, because nothing has written it since. The note's line
-        // stands before its body and its history, whose own times come after it.
-        assert_eq!(moments(&view)[..1], ["2026-06-30T08:00:00Z"]);
-        assert!(line_says(&view, "Created"), "{}", dump(view.tree()));
+        // Nothing wrote it since it was made, so the line says no moment: who made it and when
+        // is the window's History's to say, not the page's.
+        assert!(moments(&view).is_empty(), "{}", dump(view.tree()));
+        assert!(!line_says(&view, "Created"), "{}", dump(view.tree()));
         assert!(!line_says(&view, "Edited"), "nothing wrote it since");
 
         // Written into: the note holds those words, and the moment it was written is its own.
@@ -995,9 +995,9 @@ mod cases {
         .unwrap();
         view.poll_patches().unwrap();
         assert_eq!(
-            moments(&view)[..2],
-            ["2026-06-30T08:00:00Z", "2026-06-30T08:05:00Z"],
-            "the note was made at one moment and written at another"
+            moments(&view),
+            ["2026-06-30T08:05:00Z"],
+            "the line says when the note was written, not when it was made"
         );
         assert!(line_says(&view, "Edited"), "{}", dump(view.tree()));
         assert!(line_says(&view, "6 words"), "{:?}", said(&view));
@@ -1037,8 +1037,8 @@ mod cases {
             dump(view.tree())
         );
         assert!(
-            line_says(&view, "Created"),
-            "and still says what is known of it"
+            !line_says(&view, "Created"),
+            "and says nothing of its making"
         );
     }
 

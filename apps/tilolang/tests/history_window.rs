@@ -12,13 +12,14 @@ pub(crate) fn times(app: &mut impl Driven) -> Vec<String> {
     // when the note was made, and are no step of it.
     let heading = all
         .iter()
-        // The section's own heading, not the bar's button of the same name.
+        // The section's own heading, which names what it is the history of.
         .filter(|node| {
             node.widget == "Text"
                 && node
                     .semantics
                     .as_ref()
-                    .is_some_and(|semantics| semantics.name.as_deref() == Some("History"))
+                    .and_then(|semantics| semantics.name.as_deref())
+                    .is_some_and(|name| name.starts_with("History of "))
         })
         .map(|node| node.rect[1])
         .fold(None, |least: Option<f64>, y| {
@@ -32,7 +33,7 @@ pub(crate) fn times(app: &mut impl Driven) -> Vec<String> {
 }
 
 /// Whether the window shows a history: the section of the system's history view, headed
-/// "History" (the bar's button of that name is no text of the window's).
+/// "History of" what it shows (the bar's button, "History", is no text of the window's).
 pub(crate) fn shows_history(app: &mut impl Driven) -> bool {
     let snapshot = app.harness().inspection();
     snapshot.root.nodes().iter().any(|node| {
@@ -40,7 +41,8 @@ pub(crate) fn shows_history(app: &mut impl Driven) -> bool {
             && node
                 .semantics
                 .as_ref()
-                .is_some_and(|semantics| semantics.name.as_deref() == Some("History"))
+                .and_then(|semantics| semantics.name.as_deref())
+                .is_some_and(|name| name.starts_with("History of "))
     })
 }
 

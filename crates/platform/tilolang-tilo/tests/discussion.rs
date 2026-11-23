@@ -645,7 +645,7 @@ fn a_comment_is_about_its_task_so_the_page_does_not_list_it_as_made_from_it() {
 fn a_history_entry_says_what_was_done_in_the_apps_words_not_in_its_declaration() {
     let (ada, _bo, task, _said, _asked) = ada_and_bo_after_a_comment();
     let history_title =
-        |node: &&UiNode| node.props.get("title") == Some(&Value::text("tilolang-history"));
+        |node: &&UiNode| node.props.get("title") == Some(&Value::text("tilolang-history-of"));
     let page = ada.host.open_resource(&task, None).unwrap();
     assert!(
         !page.tree().of_kind("ui.Section").iter().any(history_title),

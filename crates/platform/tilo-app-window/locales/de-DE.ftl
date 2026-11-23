@@ -113,7 +113,7 @@ tilolang-none-value = Keine Angabe
 tilolang-empty-value = Leer
 tilolang-yes = Ja
 tilolang-no = Nein
-tilolang-history = Verlauf
+tilolang-history-of = Verlauf von { $title }
 tilolang-history-changes = { $count ->
     [one] 1 Änderung
    *[other] { $count } Änderungen
