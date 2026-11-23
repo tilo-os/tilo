@@ -86,7 +86,7 @@ async fn invoke(
 }
 
 /// What the host offers its person's devices, in the order it lists them.
-const HOST_OPERATIONS: [&str; 21] = [
+const HOST_OPERATIONS: [&str; 23] = [
     CREATE_WORKSPACE,
     tilo_server_session::workspaces::CREATE_OWN_WORKSPACE,
     DELETE_WORKSPACE,
@@ -108,6 +108,8 @@ const HOST_OPERATIONS: [&str; 21] = [
     super::LIST_SERVERS,
     super::ADMIT_MACHINE,
     super::ADMIT_SERVER,
+    super::KEEP_RECOVERY_KEY,
+    super::RECOVERY_KEYS,
 ];
 
 #[tokio::test]

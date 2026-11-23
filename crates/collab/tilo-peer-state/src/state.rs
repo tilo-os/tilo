@@ -102,7 +102,6 @@ pub use held::{MAX_HELD_BYTES, MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPU
 pub use native_publication::NativePublicationCut;
 pub use personal::device_grants::{DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept, Refusal};
 pub use personal::link::{AdmittedFrame, PERSONAL_ALPN, PersonalSync, update_person_resource};
-pub use personal::machines::{self as machines, MachineRecovery};
 pub use personal::scopes::{device_resource, resource_owner};
 pub use personal::{
     DEVICE_FACTS, ENROLLMENT_KIND, PeerPersonal, PersonalStore, WIFI_KIND, WORKSPACES_KIND,

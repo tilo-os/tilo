@@ -249,7 +249,7 @@ fn auth_said(error: &tilo_server_protocol::auth::AuthError) -> String {
 const ENTER_TRIES: u32 = 3;
 
 /// Enter the workspace, asking again a few times with a growing pause.
-async fn connect_retrying(key: &SigningKey, device: &Device) -> Result<Entered> {
+pub(crate) async fn connect_retrying(key: &SigningKey, device: &Device) -> Result<Entered> {
     let mut pause = std::time::Duration::from_secs(1);
     let mut last = None;
     for _ in 0..ENTER_TRIES {

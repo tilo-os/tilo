@@ -55,7 +55,6 @@ use web_time::{Duration, SystemTime};
 
 pub mod device_grants;
 pub mod link;
-pub mod machines;
 pub mod scopes;
 
 use scopes::resource_owner;

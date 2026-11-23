@@ -62,7 +62,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
-pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 21] = [
+pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 23] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -275,6 +275,26 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 21] = [
         },
         ServiceOperation::AdmitServer,
     ),
+    (
+        Verb {
+            id: KEEP_RECOVERY_KEY,
+            label: "Keep this machine's disk recovery key",
+            check: KEEP_RECOVERY_KEY,
+            kind: ActionKind::Undoable,
+            params: keep_recovery_key_params,
+        },
+        ServiceOperation::KeepRecoveryKey,
+    ),
+    (
+        Verb {
+            id: RECOVERY_KEYS,
+            label: "Read your machines' disk recovery keys",
+            check: RECOVERY_KEYS,
+            kind: ActionKind::Read,
+            params: Vec::new,
+        },
+        ServiceOperation::ListRecoveryKeys,
+    ),
 ];
 
 /// Plan a machine: the plan document the person's window or command wrote,
@@ -293,6 +313,18 @@ pub(super) const ADMIT_MACHINE: &str = "machine.admit";
 /// Take a server in among the person's servers, by the certificate its ticket's login answered
 /// with and where its endpoint is dialled.
 pub(super) const ADMIT_SERVER: &str = "server.admit";
+/// Keep the disk recovery key of the machine that asks.
+pub(super) const KEEP_RECOVERY_KEY: &str = tilo_actions::remote::machines::KEEP_RECOVERY_KEY;
+/// The disk recovery keys of the person's machines.
+pub(super) const RECOVERY_KEYS: &str = tilo_actions::remote::machines::RECOVERY_KEYS;
+
+fn keep_recovery_key_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "key",
+        ParamType::Text,
+        "The disk recovery key this machine installed with.",
+    )]
+}
 
 fn admit_server_params() -> Vec<ActionParam> {
     vec![
@@ -800,7 +832,7 @@ impl Workspaces {
             operation if operation.of_machines() => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
-                Box::pin(machine::invoke(self, operation, &args)).await
+                Box::pin(machine::invoke(self, device, operation, &args)).await
             }
             ServiceOperation::AdmitServer => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -949,6 +981,19 @@ impl Workspaces {
         };
         if entering {
             return Ok(());
+        }
+        // A disk's recovery key opens it with nothing else: only the person, on a device of
+        // their own, keeps or reads one. No agent is asked on their behalf, and a stand-in is
+        // no device of theirs.
+        if matches!(verb.id, KEEP_RECOVERY_KEY | RECOVERY_KEYS) {
+            return if caller.acting().is_person()
+                && !device.capabilities.stand_in
+                && caller.device_public_key() == Some(&device.device_public_key)
+            {
+                Ok(())
+            } else {
+                Err(ActionCallError::UnknownAction)
+            };
         }
         // A machine's own record, written when the person certified the machine with their root:
         // their device asks it as itself (the session's agent is that device's run), so no agent

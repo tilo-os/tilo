@@ -243,7 +243,6 @@ fn pair_device(
         requester_lease,
         port: 0,
         person_uid: None,
-        recovery_key: None,
     };
     tilo_enrollment::local_link::redeem(link, options, |progress| {
         if let PairingProgress::Waiting { code, label } = progress {

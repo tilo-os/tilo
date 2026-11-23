@@ -83,6 +83,10 @@ fn descriptor(step: &str) -> ActionDescriptor {
         machines::LIST => ("List the machines you planned", OperationKind::View),
         machines::SHOW => ("Show a machine you planned", OperationKind::View),
         machines::SERVERS => ("List your servers", OperationKind::View),
+        machines::RECOVERY_KEYS => (
+            "Read your machines' disk recovery keys",
+            OperationKind::View,
+        ),
         _ => ("Take a planned machine in", OperationKind::Effect),
     };
     let contract = if kind == OperationKind::View {
@@ -147,6 +151,11 @@ impl HostStepServices for MachineSteps {
                 request.address.resource == machines::RESOURCE && request.address.action == *step
             })
             .ok_or("unknown machine step")?;
+        // A disk's recovery key is the person's alone: the installer's window plans machines,
+        // and neither it nor an agent reads what opens their disks.
+        if step == machines::RECOVERY_KEYS && (request.actor.is_app() || request.actor.is_agent()) {
+            return Err("only you read your machines' recovery keys, on a device of yours".into());
+        }
         let arguments = Self::arguments(request)?;
         Ok(self.ask(step, arguments)?.map(outcome))
     }

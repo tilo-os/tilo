@@ -75,8 +75,8 @@ pub use state::GovernanceHeads;
 pub use state::mail_send_lease;
 /// The person's own documents between their devices, with no host in between.
 pub use state::{
-    AdmittedFrame, MachineRecovery, PERSONAL_ALPN, PersonalSync, device_resource, machines,
-    resource_owner, store_path, update_person_resource,
+    AdmittedFrame, PERSONAL_ALPN, PersonalSync, device_resource, resource_owner, store_path,
+    update_person_resource,
 };
 pub use state::{
     BOT_SCHEDULES_KEY, CLOCK_SKEW_NS, COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus,

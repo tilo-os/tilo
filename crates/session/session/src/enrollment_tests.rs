@@ -259,7 +259,6 @@ fn a_machine_answered_on_another_device_is_admitted_with_no_sheet_open() {
         label: "Cupboard".into(),
         hardware: "8 cores".into(),
         kind: EnrollmentKind::PersonalDevice,
-        recovery_key: None,
     };
     let (envelope, response_secret) =
         encrypt_request(&request, serving.device.verifying_key().to_bytes()).unwrap();
@@ -350,43 +349,4 @@ fn a_machine_answered_on_another_device_is_admitted_with_no_sheet_open() {
         serving.root_key.verifying_key().to_bytes()
     );
     let _ = std::thread::spawn(move || drop(served));
-}
-
-/// A machine that installs with nobody at its screen hands its disk's recovery
-/// key over with its ask: the device that carries the approval out keeps it in
-/// the person's own store, where their devices — and nothing else — read it.
-#[test]
-fn a_machines_recovery_key_is_kept_in_the_persons_store_with_its_ask() {
-    let keeper = Keeper::new(11);
-    let store = store_of(&keeper.cert, &keeper.cert, &keeper.device);
-    let machine_key = SigningKey::from_bytes(&[0x51; 32]);
-    let machine = tilo_enrollment::WaitingMachine::of(
-        machine_key.verifying_key().to_bytes(),
-        [0x52; 32],
-        "Ryzen",
-        "16 cores",
-    )
-    .with_recovery_key(Some("0123-4567-89ab-cdef".into()));
-
-    super::keep_machine_recovery(&store, &machine, "0123-4567-89ab-cdef", 1_700)
-        .expect("the key is kept");
-
-    let kept = store.read(|store| store.person_resource(tilo_peer_state::machines::KIND));
-    let entries = tilo_peer_state::machines::read(&kept.expect("the store holds the machines"));
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].machine, machine.device);
-    assert_eq!(entries[0].label, "Ryzen");
-    assert_eq!(entries[0].key, "0123-4567-89ab-cdef");
-    assert_eq!(entries[0].at_ns, 1_700);
-
-    // A machine that installs again replaces its own entry, and one that
-    // hands over nothing writes nothing.
-    super::keep_machine_recovery(&store, &machine, "fedc-ba98-7654-3210", 1_800)
-        .expect("the key is kept again");
-    let without = tilo_enrollment::WaitingMachine::of([0x61; 32], [0x62; 32], "Other", "");
-    let kept = store.read(|store| store.person_resource(tilo_peer_state::machines::KIND));
-    let entries = tilo_peer_state::machines::read(&kept.expect("the store holds the machines"));
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].key, "fedc-ba98-7654-3210");
-    assert!(without.recovery_key.is_none());
 }

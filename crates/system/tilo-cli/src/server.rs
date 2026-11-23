@@ -22,7 +22,7 @@ use tilo_actions::{ActionAddress, InvocationId};
 use tilo_control::front::{self, Spelling};
 use tilo_device_identity::persist;
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_protocol::servers::{PersonServer, person_workspace_id};
+use tilo_server_protocol::servers::{PersonServer, RecoveryKey, person_workspace_id};
 use tilo_server_protocol::transport::{
     Envelope, Opening, REMOTE_ACTION_ENVELOPE_VERSION, ServerAnswer, ServerOperation,
     ServerOperationResult, ServerStatus, UnlockMethod,
@@ -102,18 +102,27 @@ pub enum ServerCmd {
         server: String,
     },
     /// The disk recovery key of a server whose install had nobody at its
-    /// screen: the person's own devices keep it, and this computer is one of
-    /// them. Prints it, or whether one is saved with `--json`.
+    /// screen: the vault of your Servers workspace keeps it, and every device
+    /// of yours reads it there.
     #[command(
         after_help = "Examples:\n  tilo server recovery-key ryzen\n  tilo server recovery-key ryzen --json"
     )]
     RecoveryKey {
-        /// The server: the name it was enrolled under, its device key, or its
-        /// machine key.
+        /// The server: the name it was enrolled under, or its device key.
         server: String,
-        /// The saved key and its machine as one JSON object.
+        /// The key, its machine and its name as one JSON object.
         #[arg(long)]
         json: bool,
+    },
+    /// Hand this machine's disk recovery key to your devices: the vault of
+    /// your Servers workspace keeps it. The installer runs this as soon as the
+    /// machine is one of your devices, and keeps no copy.
+    #[command(
+        after_help = "Example:\n  tilo server keep-recovery-key /run/tilo-install/recovery-key"
+    )]
+    KeepRecoveryKey {
+        /// The file the key is in, never the key itself.
+        file: std::path::PathBuf,
     },
 }
 
@@ -146,6 +155,7 @@ pub fn serve(cmd: ServerCmd) -> Result<std::process::ExitCode> {
                 }
                 ServerCmd::List => return list(),
                 ServerCmd::RecoveryKey { server, json } => return recovery_key(&server, json),
+                ServerCmd::KeepRecoveryKey { file } => return keep_recovery_key(&file),
             };
             let result = ask(&server, &operation)?;
             print(&result, json)?;
@@ -159,7 +169,7 @@ fn list() -> Result<std::process::ExitCode> {
     if servers.is_empty() {
         bail!("you have no servers yet; enroll one from your desktop (`tilo device enroll`)");
     }
-    let saved = saved_recovery_keys().unwrap_or_default();
+    let saved = recovery_keys().unwrap_or_default();
     for server in servers {
         let each = saved
             .iter()
@@ -175,31 +185,35 @@ fn list() -> Result<std::process::ExitCode> {
     Ok(std::process::ExitCode::SUCCESS)
 }
 
-/// The disk recovery keys this computer's person keeps in their own store, as
-/// the devices that approved an install wrote them there: nothing when this
-/// computer holds none or cannot open the store, which is a store that has
-/// not reached it yet.
-fn saved_recovery_keys() -> Result<Vec<tilo_session_client::machines::MachineRecovery>> {
-    let state = tilo_paths::state_dir().context("this account has no state directory (no HOME)")?;
-    let paths = identity::paths();
-    let user = persist::read_public_key(&paths.user_pubkey)
-        .context("this computer holds no identity; there is no store to read")?;
-    let cert = persist::read_device_cert(&paths.device_cert_for_user(&user))
-        .or_else(|_| persist::read_device_cert(&paths.device_cert))
-        .context("this computer holds no certificate for its device")?;
-    tilo_session_client::machines::saved_recovery_keys(&state, user, cert)
-        .map_err(|error| anyhow::anyhow!(error))
+/// The disk recovery keys of the person's machines, as the vault of their
+/// Servers workspace keeps them, read through this computer's session.
+fn recovery_keys() -> Result<Vec<RecoveryKey>> {
+    let answer = front::call_target(
+        &crate::desktop::sockets(),
+        machines::target(machines::RECOVERY_KEYS),
+        "Read your machines' disk recovery keys",
+        &serde_json::json!({}),
+        &Spelling::tilo(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    serde_json::from_value(
+        answer
+            .get("result")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+    )
+    .context("the session's list of your recovery keys does not read")
 }
 
-/// The saved recovery key of `server`: the person's own device keeps it, and
-/// this computer is one of them.
+/// The saved recovery key of `server`, as the vault of the person's Servers
+/// workspace keeps it.
 fn recovery_key(server: &str, json: bool) -> Result<std::process::ExitCode> {
     let asked = server.trim();
     let servers = servers().unwrap_or_default();
     let peer = servers
         .iter()
         .find(|server| server.label == asked || server.device == asked);
-    let keys = saved_recovery_keys()?;
+    let keys = recovery_keys()?;
     let entry = keys
         .iter()
         .find(|entry| {
@@ -211,8 +225,8 @@ fn recovery_key(server: &str, json: bool) -> Result<std::process::ExitCode> {
         });
     let Some(entry) = entry else {
         bail!(
-            "no recovery key is saved here for {asked}: one of your own devices that approved its \
-             install keeps it, and this computer is one of them once their stores have met"
+            "no recovery key is saved for {asked}: a server keeps one in your Servers workspace \
+             as it installs with nobody at its screen"
         );
     };
     if json {
@@ -222,7 +236,6 @@ fn recovery_key(server: &str, json: bool) -> Result<std::process::ExitCode> {
                 "machine": entry.machine,
                 "label": entry.label,
                 "key": entry.key,
-                "at_ns": entry.at_ns,
             })
         );
     } else {
@@ -230,6 +243,38 @@ fn recovery_key(server: &str, json: bool) -> Result<std::process::ExitCode> {
         println!("  machine:      {}", entry.machine);
         println!("  recovery key: {}", entry.key);
     }
+    Ok(std::process::ExitCode::SUCCESS)
+}
+
+/// Hand the disk recovery key in `file` to the person's devices, as this
+/// machine, through the host its login enters: the vault of their Servers
+/// workspace keeps it there.
+fn keep_recovery_key(file: &std::path::Path) -> Result<std::process::ExitCode> {
+    let key = std::fs::read_to_string(file)
+        .with_context(|| format!("reading the recovery key in {}", file.display()))?;
+    let key = key.trim();
+    if key.is_empty() {
+        bail!("{} holds no recovery key", file.display());
+    }
+    let place = tilo_device_identity::login::Place::here(identity::paths())?;
+    let (signing, device) = tilo_device_identity::login::load(&place)?.ok_or_else(|| {
+        anyhow::anyhow!("this machine is not one of your devices yet: run `tilo login` first")
+    })?;
+    let runtime = crate::login::runtime()?;
+    let kept = runtime.block_on(async {
+        let entered = crate::login::connect_retrying(&signing, &device).await?;
+        let kept = entered
+            .host_action(
+                machines::KEEP_RECOVERY_KEY,
+                serde_json::Map::from_iter([("key".to_owned(), key.into())]),
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"));
+        entered.close();
+        kept
+    });
+    kept.context("your devices did not keep this machine's recovery key")?;
+    println!("Your devices keep this machine's disk recovery key.");
     Ok(std::process::ExitCode::SUCCESS)
 }
 

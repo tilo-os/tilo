@@ -431,7 +431,6 @@ pub fn waiting_of(pending: &PendingApproval) -> WaitingMachine {
         &pending.request.hardware,
     )
     .with_nonce(pending.token.nonce)
-    .with_recovery_key(pending.request.recovery_key.clone())
 }
 
 /// Wait for a device to acknowledge its signed configuration on a local

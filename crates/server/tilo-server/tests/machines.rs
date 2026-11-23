@@ -30,6 +30,8 @@ const HOST_RESOURCE: &str = "host.workspaces";
 const PLAN_MACHINE: &str = "machine.plan";
 const ADMIT_MACHINE: &str = "machine.admit";
 const LIST_SERVERS: &str = "machine.servers";
+const KEEP_RECOVERY_KEY: &str = "machine.keep-recovery-key";
+const RECOVERY_KEYS: &str = "machine.recovery-keys";
 
 /// A host on `device`'s own endpoint that keeps the workspaces of people's
 /// own, as a device's own workspace service does.
@@ -768,4 +770,168 @@ async fn a_new_device_reads_the_wifi_and_devices_its_person_kept() {
         }
     })
     .await;
+}
+
+/// What the host answered for `action` on `session`: a refusal included.
+async fn host_status(
+    session: &ServerClient,
+    action: &str,
+    argument: serde_json::Value,
+) -> ReceiptStatus {
+    let serde_json::Value::Object(argument) = argument else {
+        panic!("arguments are an object");
+    };
+    tilo_test_env::within(
+        "the host answers its own action",
+        tilo_server::workspaces::ask_host(
+            session,
+            InvokeRequest {
+                invocation: InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: HOST_PROVIDER.into(),
+                    address: ActionAddress::new(HOST_RESOURCE.to_owned(), action),
+                },
+                argument: InvokeArgument::Json(argument),
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+                signed: None,
+            },
+        ),
+    )
+    .await
+    .expect("the host answers")
+}
+
+/// A key `user` made for an agent of theirs to act in all their workspaces.
+fn agent_key(user: &TestUser) -> TestDevice {
+    let sk = ed25519_dalek::SigningKey::from_bytes(&[0x4b; 32]);
+    let now = tilo_clock::unix_now_ns();
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: user.user_pk,
+        device_public_key: sk.verifying_key().to_bytes(),
+        device_label: "agent".into(),
+        capabilities: DeviceCapabilities::agent_grant(
+            tilo_user_identity::AgentScope::AllWorkspaces,
+        ),
+        issued_at_ns: now,
+        // A grant holds for a bounded time.
+        expires_at_ns: Some(now.saturating_add(24 * 60 * 60 * 1_000_000_000)),
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &user.user_sk).unwrap();
+    TestDevice { sk, cert }
+}
+
+/// A machine that installed with nobody at its screen hands its disk's
+/// recovery key to the host its login enters, as itself, and keeps no copy:
+/// the vault of the person's Servers workspace keeps it under the machine's
+/// device key, and any other device of theirs reads it back there, as
+/// `tilo server recovery-key` does. A machine that installs again replaces its
+/// key. An agent's key of the same person and another person's device read
+/// nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_machine_keeps_its_disk_recovery_key_and_only_its_person_reads_it() {
+    use tilo_server_protocol::servers::RecoveryKey;
+
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let cupboard = alice.enrol("cupboard", DeviceCapabilities::member());
+    let phone = alice.enrol("phone", DeviceCapabilities::member());
+    // The laptop takes part in its workspaces' channels, as a person's own device does: its
+    // keys open the vault. It lets other people's devices in, so one of them can ask.
+    let laptop_host = crate::common::serve_with_keys(
+        &alice,
+        &laptop,
+        WorkSetting {
+            from: tilo_server_protocol::WorkFrom::Anyone,
+            ..WorkSetting::own_person()
+        },
+        tempfile::tempdir().unwrap(),
+        Some(tilo_workspace_service::workspaces::DeviceKeyGroups {
+            keys: Arc::<tilo_workspace_service::workspaces::fixtures::TestGroupKeys>::default(),
+            sink: None,
+        }),
+    )
+    .await;
+    servers::found(laptop_host.host.workspaces()).await.unwrap();
+    let machine_key = hex::encode(cupboard.device_pubkey());
+
+    // The installer, right after the machine logged in with its ticket.
+    let machine = own_session(&alice, &cupboard, &laptop_host).await;
+    let kept: String = host_action(
+        &machine,
+        KEEP_RECOVERY_KEY,
+        serde_json::json!({ "key": "111111-222222-333333-444444\n" }),
+    )
+    .await;
+    assert_eq!(
+        kept, machine_key,
+        "the key is kept under the machine's own key"
+    );
+
+    // `tilo server recovery-key cupboard` on another device of the person.
+    let session = own_session(&alice, &phone, &laptop_host).await;
+    let keys: Vec<RecoveryKey> = host_action(&session, RECOVERY_KEYS, serde_json::json!({})).await;
+    assert_eq!(
+        keys,
+        vec![RecoveryKey {
+            machine: machine_key.clone(),
+            label: "cupboard".into(),
+            key: "111111-222222-333333-444444".into(),
+        }]
+    );
+
+    // Installed again, the machine hands its new key: one entry, the new key.
+    let _: String = host_action(
+        &machine,
+        KEEP_RECOVERY_KEY,
+        serde_json::json!({ "key": "555555-666666-777777-888888" }),
+    )
+    .await;
+    let keys: Vec<RecoveryKey> = host_action(&session, RECOVERY_KEYS, serde_json::json!({})).await;
+    assert_eq!(keys.len(), 1, "{keys:?}");
+    assert_eq!(keys[0].key, "555555-666666-777777-888888");
+
+    // An agent's key of the same person reads no recovery key, and keeps none.
+    let agents = own_session(&alice, &agent_key(&alice), &laptop_host).await;
+    for (action, argument) in [
+        (RECOVERY_KEYS, serde_json::json!({})),
+        (KEEP_RECOVERY_KEY, serde_json::json!({ "key": "999999" })),
+    ] {
+        let status = host_status(&agents, action, argument).await;
+        assert!(
+            !matches!(status, ReceiptStatus::Completed { .. }),
+            "an agent's key is refused {action}: {status:?}"
+        );
+    }
+
+    // Another person's device reaches the host and reads nothing there.
+    let bob = TestUser::fresh("Bob");
+    let bobs = bob.enrol("laptop", DeviceCapabilities::primary());
+    let outsider = ServerClient::connect_v2_to_enrolled_home_peer(
+        device_endpoint(&bobs).await,
+        laptop_host.host.node_addr(),
+        alice.user_pk,
+        laptop_host.host.device_cert().device_public_key,
+        bobs.cert.clone(),
+        bobs.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .expect("the host lets another person's device in");
+    let status = host_status(&outsider, RECOVERY_KEYS, serde_json::json!({})).await;
+    assert!(
+        !matches!(status, ReceiptStatus::Completed { .. }),
+        "another person's device is refused: {status:?}"
+    );
+    let keys: Vec<RecoveryKey> = host_action(&session, RECOVERY_KEYS, serde_json::json!({})).await;
+    assert_eq!(
+        keys[0].key, "555555-666666-777777-888888",
+        "nothing else changed it"
+    );
 }

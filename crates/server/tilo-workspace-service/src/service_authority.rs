@@ -124,6 +124,13 @@ pub enum ServiceOperation {
     /// document, which this host holds and governs, as the server's own start
     /// would have made it. Only a device of the person, never an agent's grant.
     AdmitServer,
+    /// Keep the disk recovery key of the calling machine in the vault of the host's person's
+    /// Servers workspace, under the machine's own device key: the machine asks it for itself as
+    /// it installs. Only a device of the person, never an agent's grant or a stand-in.
+    KeepRecoveryKey,
+    /// The disk recovery keys of the host's person's machines, as that vault keeps them. Only a
+    /// device of the person, never an agent's grant or a stand-in.
+    ListRecoveryKeys,
 }
 
 impl ServiceOperation {
@@ -155,6 +162,8 @@ impl ServiceOperation {
             Self::ListServers => "machine.servers",
             Self::AdmitMachine => "machine.admit",
             Self::AdmitServer => "server.admit",
+            Self::KeepRecoveryKey => "machine.keep-recovery-key",
+            Self::ListRecoveryKeys => "machine.recovery-keys",
         }
     }
 
@@ -168,6 +177,8 @@ impl ServiceOperation {
                 | Self::ShowMachine
                 | Self::ListServers
                 | Self::AdmitMachine
+                | Self::KeepRecoveryKey
+                | Self::ListRecoveryKeys
         )
     }
 
@@ -241,7 +252,9 @@ impl ServiceOperation {
             | Self::ShowMachine
             | Self::ListServers
             | Self::AdmitMachine
-            | Self::AdmitServer => false,
+            | Self::AdmitServer
+            | Self::KeepRecoveryKey
+            | Self::ListRecoveryKeys => false,
         }
     }
 }
@@ -251,7 +264,7 @@ mod tests {
     use super::ServiceOperation;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
-    const ALL: [ServiceOperation; 24] = [
+    const ALL: [ServiceOperation; 26] = [
         ServiceOperation::CreateWorkspace,
         ServiceOperation::ListWorkspaces,
         ServiceOperation::EnterWorkspace,
@@ -276,6 +289,8 @@ mod tests {
         ServiceOperation::ListServers,
         ServiceOperation::AdmitMachine,
         ServiceOperation::AdmitServer,
+        ServiceOperation::KeepRecoveryKey,
+        ServiceOperation::ListRecoveryKeys,
     ];
 
     fn device(person: [u8; 32], capabilities: DeviceCapabilities) -> DeviceCert {
