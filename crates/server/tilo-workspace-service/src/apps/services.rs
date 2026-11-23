@@ -863,5 +863,6 @@ impl ProcessServices {
         "workspace_nodes",
         "hosted_workspaces",
         "resources",
+        "shell",
     ];
 }
