@@ -915,7 +915,7 @@ requires = ["arch=x86_64"]
 [[check]]
 name = "web-node-tests"
 egress = { to = ["nodejs.org:443"], pinned = true }
-run = "set -euo pipefail\nversion=24.22.3\ntarball=node-v$version-linux-x64\ncurl -sSfL -o /tmp/node.tar.xz \"https://nodejs.org/dist/v$version/$tarball.tar.xz\"\nprintf '%s  %s\\n' 4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb /tmp/node.tar.xz | sha256sum -c -\ntar --no-same-owner -xJf /tmp/node.tar.xz -C /tmp\nexport PATH=/tmp/$tarball/bin:$PATH\nnode --version\nnode --test crates/browser/tilo-browser-runtime/web/pairing.test.mjs crates/browser/tilo-browser-runtime/web/storage.test.mjs crates/browser/tilo-browser-runtime/web/transfer-staging.test.mjs crates/server/tilo-server/src/web/page/page.test.mjs\n"
+run = "set -euo pipefail\nversion=24.22.3\ntarball=node-v$version-linux-x64\ncurl -sSfL -o /tmp/node.tar.xz \"https://nodejs.org/dist/v$version/$tarball.tar.xz\"\nprintf '%s  %s\\n' 4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb /tmp/node.tar.xz | sha256sum -c -\ntar --no-same-owner -xJf /tmp/node.tar.xz -C /tmp\nexport PATH=/tmp/$tarball/bin:$PATH\nnode --version\nnode --test crates/browser/tilo-browser-runtime/web/pairing.test.mjs crates/browser/tilo-browser-runtime/web/storage.test.mjs crates/browser/tilo-browser-runtime/web/transfer-staging.test.mjs crates/browser/tilo-browser-runtime/web/device-key.test.mjs crates/browser/tilo-browser-runtime/web/identity.test.mjs crates/server/tilo-server/src/web/page/page.test.mjs\n"
 requires = ["arch=x86_64"]
 
 # The media editor's JavaScript in a real browser: the editor muxes and plays back media in the

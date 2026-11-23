@@ -102,7 +102,6 @@ tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
-tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-process = { path = "../../platform/tilo-process" }
 libc.workspace = true

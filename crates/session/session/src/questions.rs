@@ -280,7 +280,6 @@ impl Asker {
     pub(crate) fn follow(
         &self,
         notifications: &Rc<RefCell<crate::notifications::SessionNotifications>>,
-        shown_inline: impl Fn(&Question) -> bool,
     ) {
         let Some(questions) = &self.questions else {
             return;
@@ -289,7 +288,7 @@ impl Asker {
             .get_or_init(|| crate::notifications::RoleNotices::tagged(notifications, LATER_TAG));
         self.settle(questions);
         self.recall(questions);
-        self.retire(questions, &shown_inline);
+        self.retire(questions);
         // The sheet saying what was granted makes way for a question that arrived meanwhile.
         if self.shown.borrow().is_some() && !questions.pending().is_empty() {
             let granted_shown = self
@@ -314,7 +313,7 @@ impl Asker {
         let showing = questions
             .pending()
             .into_iter()
-            .filter(|question| !shown_inline(question) && !later.contains(&question.handle))
+            .filter(|question| !later.contains(&question.handle))
             .filter(|question| {
                 !portal_busy || question.kind == tilo_portal::file_chooser::FILE_CHOOSER_QUESTION
             })
@@ -529,7 +528,7 @@ impl Asker {
 
     /// Take the sheet down when its question is gone from under it, or show it again when its
     /// service changed what it asks.
-    fn retire(&self, questions: &Questions, shown_inline: impl Fn(&Question) -> bool) {
+    fn retire(&self, questions: &Questions) {
         let current = self.shown.borrow().as_ref().map(Shown::state);
         let Some((handle, sheet, details)) = current else {
             return;
@@ -537,10 +536,7 @@ impl Asker {
         let Some(handle) = handle else {
             return;
         };
-        let Some(question) = questions
-            .question(&handle)
-            .filter(|question| !shown_inline(question))
-        else {
+        let Some(question) = questions.question(&handle) else {
             self.shown.borrow_mut().take();
             self.take_down(sheet);
             return;
@@ -911,7 +907,6 @@ fn compose(question: &Question) -> Option<Composed> {
         crate::step_questions::KIND => step_question(&question.handle, details)?,
         crate::network::DEVICE_UNLOCK => device_unlock(&question.handle, details)?,
         crate::network::DEVICE_ENROL => device_enrol(&question.handle, details)?,
-        crate::enrollment::KIND => machine_enrol(&question.handle, details)?,
         crate::network_reach::KIND => reach(&question.handle, &who, details)?,
         _ => return None,
     };
@@ -1155,22 +1150,6 @@ fn device_enrol(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
         dialog.caution = Some(word("network-device-enrol-unattended"));
     }
     dialog.confirm_label = word("network-device-enrol-allow");
-    Some((dialog, Plan::Confirm))
-}
-
-/// A machine asks to join the person: what it is and the code both sides show.
-/// Answering admits it, and the sheet's cancel turns it away, as the notice's
-/// own two answers do. The enrolment itself is kept by
-/// [`crate::enrollment::answer`], so it reaches the device serving the machine
-/// whichever of the person's devices answered.
-fn machine_enrol(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
-    let asked: crate::enrollment::Waiting = serde_json::from_value(details).ok()?;
-    let mut dialog = review(
-        handle,
-        word("machines-waiting-title"),
-        crate::enrollment::described(&asked),
-    );
-    dialog.confirm_label = words("machines-waiting-approve", &[("code", &asked.code)]);
     Some((dialog, Plan::Confirm))
 }
 

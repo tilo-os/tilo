@@ -241,21 +241,17 @@ mod tests {
     use getrandom::{SysRng, rand_core::UnwrapErr};
     use std::os::unix::fs::PermissionsExt;
     use std::time::SystemTime;
-    use threshold_identity::ThresholdIdentity;
     use tilo_identity::store::IdentityRecord;
 
     fn fixture_record() -> IdentityRecord {
-        let mut rng = UnwrapErr(SysRng);
-        let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        IdentityRecord::from_threshold_identity(
-            &id,
+        IdentityRecord::from_root(
+            &ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng)),
             "alice",
             [248, 113, 113],
             SystemTime::UNIX_EPOCH
                 .checked_add(std::time::Duration::from_secs(100))
                 .unwrap_or(SystemTime::UNIX_EPOCH),
         )
-        .unwrap()
     }
 
     /// Write a record private from creation, as every writer of the identity

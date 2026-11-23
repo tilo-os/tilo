@@ -111,6 +111,8 @@ tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 tilo-identity = { path = "../../crates/runtime/tilo-identity" }
 tilo-identity-client = { path = "../../crates/runtime/tilo-identity-client" }
 tilo-server-protocol = { path = "../../crates/server/tilo-server-protocol" }
+# The certificate this machine's person issues an image it writes.
+tilo-server-client = { path = "../../crates/server/tilo-server-client" }
 automerge.workspace = true
 cap-fs-ext = "3.4.6"
 cap-primitives = "3.4.6"

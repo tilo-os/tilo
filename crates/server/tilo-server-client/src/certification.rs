@@ -1,22 +1,13 @@
-//! Answer browser and computer enrollment requests with a browser-policy
-//! certificate. The server carries the requests and answers.
-
-#![cfg_attr(
-    all(target_arch = "wasm32", target_os = "unknown"),
-    allow(
-        clippy::future_not_send,
-        reason = "WebCrypto signs through JavaScript on the page's thread"
-    )
-)]
+//! The certificates a person's root issues: answering a device's pairing
+//! request through the server with a browser-policy certificate, and
+//! certifying a device whose key the root's holder already has.
 
 mod held_root;
 pub use held_root::{
     IssuedRole, certify_with_root, issue_agent_grant, issue_device_cert, issue_sign_in_cert,
 };
 
-use tilo_server_client::{
-    CertifyError, DeviceSigner, MemberServer, decide_pairing, pending_pairings,
-};
+use crate::{CertifyError, DeviceSigner, MemberServer, decide_pairing, pending_pairings};
 use tilo_user_identity::{
     CertificationError, CertificationPolicy, CertificationRequest, DeviceCert, RevocationList,
     issue_device_cert_async, verify_issued_cert,

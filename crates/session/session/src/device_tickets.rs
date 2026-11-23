@@ -54,6 +54,12 @@ impl DeviceTickets {
         }
     }
 
+    /// Serve a ticket for a computer to join this device's, as the one string the person hands
+    /// on: what Settings' "Add a device" sheet shows where no web host keeps the workspace.
+    pub(crate) async fn issue(&self) -> Result<String, String> {
+        self.tickets.issue(None).await.map(|ticket| ticket.encode())
+    }
+
     /// Serve again the planned machines' tickets this device issued before it last stopped,
     /// once its workspace service, and with it the person's Servers workspace, is open.
     pub(crate) fn restore_once_open(&self) {
@@ -149,9 +155,7 @@ impl Issuer for Desktop {
         else {
             return Ok(None);
         };
-        Ok(Some(Arc::new(tilo_enrollment::root::PersonSigner::new(
-            key,
-        ))))
+        Ok(Some(Arc::new(key)))
     }
 
     fn entry(&self) -> BoxFuture<'_, Result<Entry, String>> {

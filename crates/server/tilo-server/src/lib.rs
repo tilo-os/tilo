@@ -123,7 +123,7 @@ pub use tilo_workspace_service::{
 use tilo_workspace_service::{authority_epoch, handshake, workspace_access};
 
 pub use tilo_server_client::frame;
-pub use tilo_server_protocol::{auth, certify, config, devices, live, mesh, policy, process_lease};
+pub use tilo_server_protocol::{auth, certify, config, devices, live, mesh, policy};
 pub use tilo_server_session::{client, coedit};
 
 /// The server wire messages ([`tilo_server_protocol::transport`]) together with
@@ -147,7 +147,6 @@ pub use mesh::{
     ServiceCapabilities,
 };
 pub use policy::TrustPolicy;
-pub use process_lease::ProcessLease;
 pub use transport::{ALPN, Envelope};
 
 /// Semantic version emitted by `tilo-server --version`. Tied to the

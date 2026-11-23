@@ -1,5 +1,5 @@
-//! BIP39 mnemonics of the English wordlist, for the paper recovery share
-//! and the 24-word recovery key of a single-device identity.
+//! BIP39 mnemonics of the English wordlist, for the 24-word recovery key of
+//! a person's root.
 //!
 //! The wordlist is one string of 2048 words separated by single spaces, not
 //! a table of 2048 `&str`: a table is 2048 pointers the loader relocates in
@@ -409,7 +409,7 @@ mod tests {
             )
         );
 
-        // A 32-byte share round-trips through its 24 words.
+        // A 32-byte seed round-trips through its 24 words.
         let entropy: Vec<u8> = (0u8..32)
             .map(|byte| byte.wrapping_mul(37).wrapping_add(11))
             .collect();

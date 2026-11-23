@@ -16,7 +16,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::SigningKey;
-use threshold_identity::bip39::{self, MnemonicError};
+use tilo_user_identity::recovery_words::{self, MnemonicError};
 use zeroize::Zeroizing;
 
 use super::{IdentityLock, Privacy, SecretProvider, identity_from_record, ondisk, replace};
@@ -124,7 +124,7 @@ pub fn recovery_words_error(error: &io::Error) -> Option<RecoveryWordsError> {
 /// them, see [`super::is_secret_service_unavailable_io`]).
 pub fn recovery_words(identity_path: impl AsRef<Path>) -> io::Result<Zeroizing<String>> {
     let seed = single_device_seed(identity_path.as_ref())?;
-    bip39::encode(seed.as_slice())
+    recovery_words::encode(seed.as_slice())
         .ok_or_else(|| io::Error::other("a 32-byte seed did not encode as words"))
 }
 /// Check that `phrase` is a well-formed recovery key, without restoring it.
@@ -162,7 +162,7 @@ pub fn recovery_words_progress(phrase: &str) -> RecoveryWordsProgress {
     let unknown_word = words
         .iter()
         .take(finished)
-        .position(|word| !bip39::is_word(word))
+        .position(|word| !recovery_words::is_word(word))
         .map(|at| at.saturating_add(1));
     RecoveryWordsProgress {
         words: words.len(),
@@ -185,7 +185,7 @@ pub fn unknown_recovery_words(phrase: &str) -> Vec<Range<usize>> {
                 start = None;
                 let finished = at < phrase.len();
                 let word = Zeroizing::new(phrase.get(from..at).unwrap_or_default().to_lowercase());
-                if finished && !bip39::is_word(&word) {
+                if finished && !recovery_words::is_word(&word) {
                     unknown.push(from..at);
                 }
             }
@@ -198,7 +198,7 @@ pub fn unknown_recovery_words(phrase: &str) -> Vec<Range<usize>> {
 /// `None` when no single word stands out.
 #[must_use]
 pub fn closest_recovery_word(typed: &str) -> Option<&'static str> {
-    bip39::closest_word(&Zeroizing::new(typed.to_lowercase()))
+    recovery_words::closest_word(&Zeroizing::new(typed.to_lowercase()))
 }
 
 /// The identity (its public key; hex of it is the fingerprint) `phrase`
@@ -482,7 +482,7 @@ fn decode_seed(phrase: &str) -> Result<Zeroizing<[u8; 32]>, RecoveryWordsError> 
     if found != RECOVERY_WORD_COUNT {
         return Err(RecoveryWordsError::WordCount { found });
     }
-    let entropy = bip39::decode(&normalized)?;
+    let entropy = recovery_words::decode(&normalized)?;
     let mut seed = Zeroizing::new([0_u8; 32]);
     if entropy.len() != seed.len() {
         return Err(RecoveryWordsError::WordCount { found });
@@ -531,7 +531,7 @@ mod tests {
     }
 
     fn words_of(seed: u8) -> Zeroizing<String> {
-        bip39::encode(&[seed; 32]).unwrap()
+        recovery_words::encode(&[seed; 32]).unwrap()
     }
 
     tilo_test_env::scenario! {

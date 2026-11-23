@@ -539,16 +539,6 @@ impl Shared {
                 self.invoke_app_action(LaunchpadAppAction::connect_agent());
             }
             choice => {
-                // A machine that asked to join over the internet is answered here: the
-                // notification's own buttons admit it or turn it away.
-                if let Some((ask, approve)) = crate::enrollment::answer_of(choice) {
-                    self.answer_enrolling(&ask, approve);
-                    return;
-                }
-                if crate::enrollment::review_of(choice).is_some() {
-                    self.open_pair_device();
-                    return;
-                }
                 // A device another of the person's devices found asks here to act as them: the
                 // banner's own buttons are its answer.
                 if let Some(fabric) = &self.fabric

@@ -74,7 +74,6 @@ wire-frame = { path = "../../platform/wire-frame" }
 
 [dev-dependencies]
 tilo-mcp = { path = "../../runtime/tilo-mcp", features = ["test-support"] }
-tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 

@@ -3045,12 +3045,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "const-crc32-nostd"
-version = "1.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "808ac43170e95b11dd23d78aa9eaac5bea45776a602955552c4e833f3f0f823d"
-
-[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3561,7 +3555,7 @@ dependencies = [
  "hybrid-array",
  "num-traits",
  "rand_core 0.10.0",
- "serdect 0.4.3",
+ "serdect",
  "subtle",
  "zeroize",
 ]
@@ -4030,17 +4024,6 @@ checksum = "cc3dc5ad92c2e2d1c193bbbbdf2ea477cb81331de4f3103f267ca18368b988c4"
 dependencies = [
  "powerfmt",
  "serde_core",
-]
-
-[[package]]
-name = "derive-getters"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74ef43543e701c01ad77d3a5922755c6a1d71b22d942cb8042be4994b380caff"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -4603,7 +4586,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29fcf32e6c73d1079f83ab4d782de2d81620346a5f38c6237a86a22f8368980a"
 dependencies = [
  "pkcs8 0.11.0",
- "serdect 0.4.3",
+ "serdect",
  "signature 3.0.0",
 ]
 
@@ -5613,55 +5596,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "frost-core"
-version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81ef2787af391c7e8bedc037a3b9ea03dde803fbd93e778e6bb369547800e5cd"
-dependencies = [
- "byteorder",
- "const-crc32-nostd",
- "derive-getters",
- "document-features",
- "hex",
- "itertools 0.14.0",
- "postcard",
- "rand_core 0.6.4",
- "serde",
- "serdect 0.2.0",
- "thiserror 2.0.21",
- "visibility",
- "zeroize",
- "zeroize_derive",
-]
-
-[[package]]
-name = "frost-ed25519"
-version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df345f704e41812a3ab238331a393126f76996c176d204296e289efe946c57f0"
-dependencies = [
- "curve25519-dalek 4.1.3",
- "document-features",
- "frost-core",
- "frost-rerandomized",
- "rand_core 0.6.4",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "frost-rerandomized"
-version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f4c5cedd2426728adef2c0b1720f57676354c473836d1ccc50d0f0d1c91942b"
-dependencies = [
- "derive-getters",
- "document-features",
- "frost-core",
- "hex",
- "rand_core 0.6.4",
 ]
 
 [[package]]
@@ -7854,6 +7788,7 @@ dependencies = [
  "tilo-process",
  "tilo-seal",
  "tilo-secrets",
+ "tilo-server-client",
  "tilo-server-protocol",
  "tilo-test-env",
  "tilo-user-identity",
@@ -7927,7 +7862,6 @@ dependencies = [
  "tilo-dav",
  "tilo-desktop-entry",
  "tilo-device-identity",
- "tilo-enrollment",
  "tilo-files",
  "tilo-handoff",
  "tilo-identity",
@@ -13237,7 +13171,7 @@ dependencies = [
  "elliptic-curve 0.14.1",
  "once_cell",
  "primefield",
- "serdect 0.4.3",
+ "serdect",
  "wnaf",
 ]
 
@@ -15595,16 +15529,6 @@ dependencies = [
 
 [[package]]
 name = "serdect"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a84f14a19e9a014bb9f4512488d9829a68e04ecabffb0f9904cd1ace94598177"
-dependencies = [
- "base16ct 0.2.0",
- "serde",
-]
-
-[[package]]
-name = "serdect"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66cf8fedced2fcf12406bcb34223dffb92eaf34908ede12fed414c82b7f00b3e"
@@ -17316,24 +17240,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "threshold-identity"
-version = "0.1.0"
-dependencies = [
- "collab-types",
- "ed25519-dalek 3.0.0",
- "frost-ed25519",
- "rand_chacha 0.10.0",
- "rand_core 0.10.0",
- "serde",
- "serde_bytes",
- "sha2 0.11.0",
- "thiserror 2.0.21",
- "tilo-action-policy",
- "workspace-hack",
- "zeroize",
-]
-
-[[package]]
 name = "thumbnails"
 version = "0.1.0"
 dependencies = [
@@ -17687,7 +17593,6 @@ dependencies = [
  "tilo-clock",
  "tilo-device-identity",
  "tilo-endpoint-reachability",
- "tilo-enrollment",
  "tilo-files",
  "tilo-identity",
  "tilo-mcp",
@@ -17905,7 +17810,6 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.21",
- "threshold-identity",
  "tilo-files",
  "tilo-mime",
  "tilo-paths",
@@ -18345,14 +18249,12 @@ dependencies = [
  "postcard",
  "serde",
  "serde_json",
- "threshold-identity",
  "tilo-action-policy",
  "tilo-actions",
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-device-identity",
- "tilo-enrollment",
  "tilo-live",
  "tilo-peer-state",
  "tilo-reference",
@@ -18514,7 +18416,6 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-deployment-status",
  "tilo-device-identity",
- "tilo-enrollment",
  "tilo-files",
  "tilo-formats",
  "tilo-fs",
@@ -19407,42 +19308,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-enrollment"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "collab-types",
- "ed25519-dalek 3.0.0",
- "getrandom 0.4.3",
- "hex",
- "iroh",
- "iroh-base",
- "libc",
- "postcard",
- "rand 0.10.3",
- "rustix 1.1.6",
- "serde",
- "serde_json",
- "socket2",
- "tempfile",
- "tilo-clock",
- "tilo-device-identity",
- "tilo-files",
- "tilo-identity",
- "tilo-identity-client",
- "tilo-seal",
- "tilo-server-client",
- "tilo-server-protocol",
- "tilo-test-env",
- "tilo-user-identity",
- "tokio",
- "tracing",
- "workspace-hack",
- "zeroize",
-]
-
-[[package]]
 name = "tilo-environment"
 version = "0.1.0"
 dependencies = [
@@ -19884,7 +19749,6 @@ dependencies = [
  "serial_test",
  "sha2 0.11.0",
  "tempfile",
- "threshold-identity",
  "tilo-action-policy",
  "tilo-actions",
  "tilo-advisory-lock",
@@ -20901,7 +20765,6 @@ dependencies = [
  "staging-handoff-model",
  "taffy",
  "tempfile",
- "threshold-identity",
  "tilo-actions",
  "tilo-api",
  "tilo-app-state",
@@ -20909,7 +20772,6 @@ dependencies = [
  "tilo-clock",
  "tilo-desktop",
  "tilo-device-identity",
- "tilo-enrollment",
  "tilo-files",
  "tilo-handoff",
  "tilo-identity",
@@ -21627,7 +21489,6 @@ dependencies = [
  "tilo-device-identity",
  "tilo-dialogs",
  "tilo-endpoint-reachability",
- "tilo-enrollment",
  "tilo-failure",
  "tilo-files",
  "tilo-fs",
@@ -21926,7 +21787,6 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-device-identity",
  "tilo-endpoint-reachability",
- "tilo-enrollment",
  "tilo-files",
  "tilo-fs",
  "tilo-fs-client",
@@ -22038,7 +21898,6 @@ dependencies = [
  "tilo-device-identity",
  "tilo-files",
  "tilo-paths",
- "tilo-process",
  "tilo-test-env",
  "tilo-unlock-protocol",
  "tilo-user-identity",
@@ -22208,7 +22067,6 @@ dependencies = [
  "tilo-dictation",
  "tilo-documents",
  "tilo-endpoint-reachability",
- "tilo-enrollment",
  "tilo-failure",
  "tilo-feedback",
  "tilo-files",
@@ -22367,7 +22225,6 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-device-identity",
  "tilo-endpoint-reachability",
- "tilo-enrollment",
  "tilo-fs",
  "tilo-identity",
  "tilo-live",
@@ -23125,6 +22982,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
+ "sha2 0.11.0",
  "thiserror 2.0.21",
  "tilo-automerge",
  "tilo-automerge-fork",
@@ -25762,17 +25620,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "visibility"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d674d135b4a8c1d7e813e2f8d1c9a58308aee4a680323066025e53132218bd91"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "vte"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -27875,7 +27722,6 @@ dependencies = [
  "indexmap",
  "ipnet",
  "itertools 0.13.0",
- "itertools 0.14.0",
  "kurbo",
  "lazy_static",
  "libc",
@@ -27925,7 +27771,6 @@ dependencies = [
  "rand 0.10.3",
  "rand 0.8.8",
  "rand 0.9.2",
- "rand_chacha 0.10.0",
  "rand_chacha 0.3.1",
  "rand_chacha 0.9.0",
  "rand_core 0.6.4",
@@ -28248,7 +28093,6 @@ dependencies = [
  "console-control",
  "console-model",
  "console-model-wasm",
- "const-crc32-nostd",
  "const-oid 0.10.2",
  "const-oid 0.9.6",
  "constant_time_eq",
@@ -28328,7 +28172,6 @@ dependencies = [
  "der-parser",
  "der_derive",
  "deranged",
- "derive-getters",
  "derive_builder",
  "derive_builder_core",
  "derive_builder_macro",
@@ -28455,9 +28298,6 @@ dependencies = [
  "fontconfig-parser",
  "fontdb",
  "form_urlencoded",
- "frost-core",
- "frost-ed25519",
- "frost-rerandomized",
  "fs-content",
  "fs-native",
  "fs-protocol",
@@ -29142,8 +28982,7 @@ dependencies = [
  "serde_with",
  "serde_with_macros",
  "serde_yaml",
- "serdect 0.2.0",
- "serdect 0.4.3",
+ "serdect",
  "serial2",
  "serial_test",
  "serial_test_derive",
@@ -29274,7 +29113,6 @@ dependencies = [
  "thiserror-impl 1.0.69",
  "thiserror-impl 2.0.21",
  "thread_local",
- "threshold-identity",
  "tiff",
  "tilo-accessibility-settings",
  "tilo-accesskit-winit",
@@ -29365,7 +29203,6 @@ dependencies = [
  "tilo-egress",
  "tilo-endpoint-reachability",
  "tilo-engine-loader",
- "tilo-enrollment",
  "tilo-environment",
  "tilo-esp-write",
  "tilo-extension",
@@ -29681,7 +29518,6 @@ dependencies = [
  "version_check",
  "video-editor",
  "video-player",
- "visibility",
  "vte",
  "wacore",
  "wacore-appstate",

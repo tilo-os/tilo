@@ -53,7 +53,7 @@ and
 `crates/runtime/tilo-identity/src/store/unix.rs::tests::a_local_secret_must_derive_the_recorded_key_to_sign`
 (phase `secret_that_does_not_derive_the_recorded_pubkey_is_refused`).
 The `identity_flow` widget cited above no longer exists; the record encoder is
-`crates/runtime/tilo-identity/src/store/unix.rs` (`IdentityRecord::from_threshold_identity`).
+`crates/runtime/tilo-identity/src/store/unix.rs` (`IdentityRecord::from_root`).
 
 ---
 

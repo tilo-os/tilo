@@ -102,14 +102,14 @@
     },
     {
       "id": "second-device",
-      "title": "Pair a phone and keep working on both",
-      "intent": "Ada works in Tilo on her laptop and adds her phone as another of her devices with Pair a new device. Both then show the same workspace: a Chat message or Tasks issue written on either shows on the other within about two seconds, and the phone still shows them after it opens Tilo again.",
+      "title": "Add a second computer with the ticket Add a device shows",
+      "intent": "Ada works in Tilo on her laptop, whose workspace no host on the web keeps, and opens Add a device: it shows a ticket from the laptop. Her second computer logs in with it and is then one of her devices.",
       "walk": "shell",
       "driver": "shell/second-device.py",
       "steps": [
         "Ada opens Tilo on her laptop",
         "Ada asks her laptop for a way to add a new device",
-        "Ada adds her phone as one of her devices"
+        "Ada adds her second computer as one of her devices"
       ]
     },
     {

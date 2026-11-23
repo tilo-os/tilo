@@ -361,9 +361,7 @@ pub(super) fn root_in(dir: std::path::PathBuf) -> RootSource {
     Arc::new(move || {
         let active = tilo_identity::store::resolve_active_identity(&dir)
             .ok_or_else(|| anyhow::anyhow!("the test's identity is gone"))?;
-        Ok(Some(tilo_enrollment::root::PersonSigner::new(
-            tilo_identity::store::load_from_path(active)?,
-        )))
+        Ok(Some(tilo_identity::store::load_from_path(active)?))
     })
 }
 

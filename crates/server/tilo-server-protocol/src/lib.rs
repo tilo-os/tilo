@@ -27,9 +27,7 @@
 //!   always-on peer;
 //! - [`hosted`] — what a host hands the browser session in a workspace's VM when
 //!   it gives it the workspace, and the address such a machine reaches it at;
-//! - [`metrics`] — the counter snapshot the daemon persists for status UIs;
-//! - [`process_lease`] — the PID + start-time pair carried across the
-//!   enrollment privilege boundary.
+//! - [`metrics`] — the counter snapshot the daemon persists for status UIs.
 //!
 //! The serialized forms are persisted on disk and exchanged on the wire, so
 //! they are compatibility surfaces: `tests/formats.rs` pins an encoded
@@ -55,7 +53,6 @@ pub mod metrics;
 pub mod operator;
 pub mod page;
 pub mod policy;
-pub mod process_lease;
 pub mod public_avatars;
 pub mod refusal;
 pub mod servers;
@@ -72,14 +69,13 @@ pub use tilo_workspace_join::delegation;
 
 pub use auth::{AuthError, AuthenticatedPeer};
 pub use config::{ConfigError, ServerConfig};
-pub use devices::{personal_device_peer_path, remember_personal_device, valid_device_label};
+pub use devices::valid_device_label;
 pub use mesh::{
     ComputeAccelerator, DeviceKey, DeviceMeshProfile, PowerAvailability, ServerAdvertisement,
     ServiceCapabilities,
 };
 pub use metrics::MetricsSnapshot;
 pub use policy::TrustPolicy;
-pub use process_lease::ProcessLease;
 pub use transport::{ALPN, DocumentAnswer, Envelope};
 pub use work::{Whose, WorkFrom, WorkKinds, WorkSetting, WorkWhen};
 

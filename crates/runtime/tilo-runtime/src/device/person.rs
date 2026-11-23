@@ -3,7 +3,7 @@
 //! computer holds no root; adding a device is asked of one of their computers that does.
 
 use anyhow::Result;
-use tilo_enrollment::root::PersonSigner;
+use tilo_identity::store::SigningIdentity;
 
 /// Whether this computer holds the root of `person`, read from the identity's public record
 /// alone, so the process stays dumpable.
@@ -21,7 +21,7 @@ pub(crate) fn holds_root_of(person: &[u8; 32]) -> bool {
 ///
 /// # Errors
 /// The identity store cannot be read.
-pub(crate) fn root() -> Result<Option<PersonSigner>> {
+pub(crate) fn root() -> Result<Option<SigningIdentity>> {
     let Ok(dir) = tilo_identity::store::identity_dir_from_env() else {
         return Ok(None);
     };
@@ -33,6 +33,5 @@ pub(crate) fn root() -> Result<Option<PersonSigner>> {
     {
         return Ok(None);
     }
-    let identity = tilo_identity::store::load_from_path(active)?;
-    Ok(Some(PersonSigner::new(identity)))
+    Ok(Some(tilo_identity::store::load_from_path(active)?))
 }

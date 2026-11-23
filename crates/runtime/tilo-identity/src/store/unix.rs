@@ -3,17 +3,12 @@ use std::io::{self, Read};
 #[cfg(test)]
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
-use threshold_identity::{
-    ThresholdIdentity,
-    signing::{SigningRound1, SigningRound1Commitment, SigningRound2Partial, SigningSessionNonces},
-};
 use tilo_files::native::atomic::{Privacy, replace};
 use zeroize::Zeroizing;
 
@@ -802,9 +797,9 @@ mod ondisk {
     use std::time::SystemTime;
 
     use collab_types::Ed25519PublicKey;
+    use ed25519_dalek::SigningKey;
     use serde::de::{SeqAccess, Visitor};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use threshold_identity::ThresholdIdentity;
     use zeroize::Zeroizing;
 
     use super::SecretReference;
@@ -825,51 +820,38 @@ mod ondisk {
     }
 
     impl IdentityRecord {
-        /// The record a newly minted single-device identity is written as.
-        ///
-        /// # Errors
-        ///
-        /// Fails if the threshold engine cannot export the device share. The
-        /// result holds that share and must be treated as secret material.
-        pub fn from_threshold_identity(
-            identity: &ThresholdIdentity,
+        /// The record a person's root is written as on the device that holds
+        /// it: a single-device record carrying the root's seed inline. The
+        /// result holds that seed and must be treated as secret material.
+        #[must_use]
+        pub fn from_root(
+            root: &SigningKey,
             display_name: impl Into<String>,
             avatar_color: [u8; 3],
             created_at: SystemTime,
-        ) -> io::Result<Self> {
-            let (single_device, secret_bytes) = if let Some(seed) = identity.single_device_seed() {
-                (true, seed.to_vec())
-            } else {
-                (
-                    false,
-                    identity
-                        .export_device_secret()
-                        .map_err(io::Error::other)?
-                        .to_vec(),
-                )
-            };
+        ) -> Self {
             let ts = created_at
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .ok()
                 .and_then(|since| i64::try_from(since.as_secs()).ok())
                 .and_then(|secs| jiff::Timestamp::from_second(secs).ok())
                 .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-            Ok(Self {
+            Self {
                 profile_photo: None,
                 display_name: display_name.into(),
                 avatar_color,
                 threshold_identity: SerializableIdentity {
-                    single_device,
-                    group_public_key: *identity.group_public_key().as_bytes(),
-                    threshold: identity.threshold,
-                    total_shares: identity.total_shares,
-                    share_index: identity.this_share_index,
-                    secret_bytes: Zeroizing::new(secret_bytes),
+                    single_device: true,
+                    group_public_key: root.verifying_key().to_bytes(),
+                    threshold: 1,
+                    total_shares: 1,
+                    share_index: 1,
+                    secret_bytes: Zeroizing::new(root.to_bytes().to_vec()),
                 },
                 created_at: format!("{ts:.0}"),
                 schema_version: 1,
                 secret_ref: None,
-            })
+            }
         }
 
         /// The identity's public key, the actor every resource it owns names.
@@ -1094,17 +1076,10 @@ pub struct SigningIdentity {
     single_device: bool,
 }
 
-#[allow(
-    clippy::large_enum_variant,
-    reason = "Local carries a bare signing key while LocalThreshold carries a restored share \
-              behind a Mutex; boxing them would touch every match arm for a few dozen bytes of \
-              stack on a type constructed once per identity, not per message"
-)]
 enum SigningSource {
+    /// The person's root, or `None` on a device that holds only its public
+    /// half and signs nothing as the person.
     Local(Option<SigningKey>),
-    /// Restored device-local FROST share. It stays inside the host and is
-    /// usable only by the trusted quorum coordinator, never exported to apps.
-    LocalThreshold(Mutex<ThresholdIdentity>),
 }
 
 #[allow(
@@ -1144,85 +1119,25 @@ impl tilo_user_identity::StatementSigner for SigningIdentity {
     }
 }
 
+/// The person's root as a device signer: what signs a certificate for a new
+/// device of theirs. A device that holds only the public half refuses.
+impl collab_types::signer::DeviceSigner for SigningIdentity {
+    fn device_public_key(&self) -> [u8; 32] {
+        self.group_public_key()
+    }
+
+    fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
+        let signed = match &self.source {
+            SigningSource::Local(Some(key)) => Ok(Signer::sign(key, &message).to_bytes()),
+            SigningSource::Local(None) => Err(collab_types::signer::SignError(
+                super::CANNOT_SIGN_ALONE.to_owned(),
+            )),
+        };
+        Box::pin(std::future::ready(signed))
+    }
+}
+
 impl SigningIdentity {
-    /// Start one host-coordinated FROST signing round without exporting this
-    /// device's share. This succeeds only for a threshold identity loaded by
-    /// the trusted launcher; sandbox clients receive a broker source and
-    /// cannot invoke the local-share path.
-    pub fn threshold_sign_round1<R: rand_core::CryptoRng + ?Sized>(
-        &self,
-        rng: &mut R,
-    ) -> Result<SigningRound1, NotAvailable> {
-        let SigningSource::LocalThreshold(identity) = &self.source else {
-            return Err(NotAvailable::ConnectionFailed(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "threshold rounds are available only to the trusted identity host",
-            )));
-        };
-        identity
-            .lock()
-            .map_err(|_| {
-                NotAvailable::ConnectionFailed(io::Error::other("identity lock poisoned"))
-            })?
-            .sign_round1(rng)
-            .map_err(|error| {
-                NotAvailable::ConnectionFailed(io::Error::other(format!(
-                    "threshold round 1 failed: {error}"
-                )))
-            })
-    }
-
-    pub fn threshold_sign_round2(
-        &self,
-        nonces: SigningSessionNonces,
-        message: &[u8],
-        commitments: &[SigningRound1Commitment],
-    ) -> Result<SigningRound2Partial, NotAvailable> {
-        let SigningSource::LocalThreshold(identity) = &self.source else {
-            return Err(NotAvailable::ConnectionFailed(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "threshold rounds are available only to the trusted identity host",
-            )));
-        };
-        identity
-            .lock()
-            .map_err(|_| {
-                NotAvailable::ConnectionFailed(io::Error::other("identity lock poisoned"))
-            })?
-            .sign_round2_raw(nonces, message, commitments)
-            .map_err(|error| {
-                NotAvailable::ConnectionFailed(io::Error::other(format!(
-                    "threshold round 2 failed: {error}"
-                )))
-            })
-    }
-
-    /// Aggregate a confirmed quorum's partials into the ordinary Ed25519
-    /// signature consumed by the rest of Tilo.
-    pub fn aggregate_threshold_signature(
-        &self,
-        partials: &[SigningRound2Partial],
-    ) -> Result<[u8; 64], NotAvailable> {
-        let SigningSource::LocalThreshold(identity) = &self.source else {
-            return Err(NotAvailable::ConnectionFailed(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "threshold aggregation is available only to the trusted identity host",
-            )));
-        };
-        identity
-            .lock()
-            .map_err(|_| {
-                NotAvailable::ConnectionFailed(io::Error::other("identity lock poisoned"))
-            })?
-            .aggregate_signature(partials)
-            .map(|signature| *signature.as_bytes())
-            .map_err(|error| {
-                NotAvailable::ConnectionFailed(io::Error::other(format!(
-                    "threshold aggregation failed: {error}"
-                )))
-            })
-    }
-
     pub fn display_name(&self) -> &str {
         &self.display_name
     }
@@ -1235,8 +1150,8 @@ impl SigningIdentity {
         self.avatar_color
     }
 
-    /// The 32-byte group public key — byte-compatible with a standard Ed25519
-    /// verifier, stable across threshold enrolments until the next DKG rotation.
+    /// The person's 32-byte Ed25519 public key: the actor every resource
+    /// they own names.
     pub fn group_public_key(&self) -> [u8; 32] {
         self.group_public_key
     }
@@ -1261,7 +1176,7 @@ impl SigningIdentity {
         self.total_shares
     }
 
-    /// 1-indexed share number this device holds.
+    /// `1` for a root this device holds, `0` for a public projection.
     pub fn share_index(&self) -> u16 {
         self.share_index
     }
@@ -1271,29 +1186,20 @@ impl SigningIdentity {
         self.single_device
     }
 
-    /// Sign a message locally. In single-device mode, returns the raw 64-byte
-    /// Ed25519 signature; in threshold mode, returns
-    /// [`NotAvailable::ConnectionFailed`] — threshold signing needs the
-    /// multi-device FROST ceremony via `threshold-identity` instead.
+    /// Sign a message with the person's root, as the raw 64-byte Ed25519
+    /// signature.
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable::ConnectionFailed`] in threshold mode, or if
-    /// signing fails.
+    /// Returns [`NotAvailable::ConnectionFailed`] when this device holds only
+    /// the root's public half.
     pub fn sign(&self, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
         match &self.source {
             SigningSource::Local(Some(sk)) => Ok(sk.sign(message).to_bytes()),
             SigningSource::Local(None) => Err(NotAvailable::ConnectionFailed(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "threshold-mode signing is not supported by the identity store; \
-                 use tilo-threshold-identity + the multi-device orchestrator instead",
+                super::CANNOT_SIGN_ALONE,
             ))),
-            SigningSource::LocalThreshold(_) => {
-                Err(NotAvailable::ConnectionFailed(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "threshold signature is awaiting approval from another enrolled device",
-                )))
-            }
         }
     }
 
@@ -1304,7 +1210,7 @@ impl SigningIdentity {
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable::ConnectionFailed`] for a threshold share or a
+    /// Returns [`NotAvailable::ConnectionFailed`] for a public-only record or a
     /// broker connection, which hold no root to derive from.
     pub fn secret_sync_key(&self) -> Result<tilo_seal::SecretKey, NotAvailable> {
         match &self.source {
@@ -1314,7 +1220,7 @@ impl SigningIdentity {
                     Zeroizing::new(blake3::derive_key("tilo secret-sync key v1", seed.as_ref()));
                 Ok(tilo_seal::SecretKey::from_bytes(*derived))
             }
-            _ => Err(NotAvailable::ConnectionFailed(io::Error::new(
+            SigningSource::Local(None) => Err(NotAvailable::ConnectionFailed(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "the secret-sync key needs the person's root on this device",
             ))),
@@ -1357,30 +1263,6 @@ impl SigningIdentity {
             share_index,
             single_device: signing_key.is_some(),
             source: SigningSource::Local(signing_key),
-        }
-    }
-
-    fn from_threshold_parts(
-        display_name: String,
-        avatar_color: [u8; 3],
-        identity: ThresholdIdentity,
-    ) -> Self {
-        let group_public_key = *identity.group_public_key().as_bytes();
-        let threshold = identity.threshold;
-        let total_shares = identity.total_shares;
-        let share_index = identity.this_share_index;
-        Self {
-            profile_photo: None,
-            display_name,
-            avatar_color,
-            group_public_key,
-            signing_public_key: group_public_key,
-            device_certificate: None,
-            threshold,
-            total_shares,
-            share_index,
-            source: SigningSource::LocalThreshold(Mutex::new(identity)),
-            single_device: false,
         }
     }
 }
@@ -1664,41 +1546,22 @@ fn identity_from_record_parts(
     }
 
     if !ti.single_device {
-        if secret.is_empty() {
-            if ti.threshold == 1 && ti.total_shares == 1 && ti.share_index == 0 {
-                return Ok(SigningIdentity::from_local_parts(
-                    record.display_name,
-                    record.avatar_color,
-                    ti.group_public_key,
-                    ti.threshold,
-                    ti.total_shares,
-                    ti.share_index,
-                    None,
-                ));
-            }
+        // A record that is not a single-device root signs nothing here: a
+        // public projection, or one still holding a share of a key split
+        // across devices, which no signer of this store can use. Either
+        // loads as the person's public half.
+        let projection = ti.threshold == 1 && ti.total_shares == 1 && ti.share_index == 0;
+        if secret.is_empty() && !projection {
             return Err(LoadFailure::SecuredRecordNeedsProvider.into_not_available());
         }
-        let identity =
-            ThresholdIdentity::from_device_secret(secret, ti.total_shares).map_err(|e| {
-                NotAvailable::ConnectionFailed(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("threshold device share rejected: {e}"),
-                ))
-            })?;
-        if identity.group_public_key().as_bytes() != &ti.group_public_key
-            || identity.threshold != ti.threshold
-            || identity.this_share_index != ti.share_index
-        {
-            return Err(LoadFailure::PublicKeyMismatch {
-                derived: Box::new(*identity.group_public_key().as_bytes()),
-                recorded: Box::new(ti.group_public_key),
-            }
-            .into_not_available());
-        }
-        return Ok(SigningIdentity::from_threshold_parts(
+        return Ok(SigningIdentity::from_local_parts(
             record.display_name,
             record.avatar_color,
-            identity,
+            ti.group_public_key,
+            ti.threshold,
+            ti.total_shares,
+            ti.share_index,
+            None,
         ));
     }
 
@@ -1759,21 +1622,19 @@ mod tests {
 
         phase json_round_trip_keeps_presentation_and_public_key;
         {
-            let mut rng = UnwrapErr(SysRng);
-            let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-            let rec = IdentityRecord::from_threshold_identity(
+            let id = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let rec = IdentityRecord::from_root(
                 &id,
                 "alice",
                 [248, 113, 113],
                 std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100),
-            )
-            .unwrap();
+            );
             let back = IdentityRecord::from_json_bytes(&rec.to_json_bytes().unwrap()).unwrap();
             assert_eq!(back.display_name, "alice");
             assert_eq!(back.avatar_color, [248, 113, 113]);
             assert_eq!(
-                back.public_key().as_bytes(),
-                id.group_public_key().as_bytes()
+                *back.public_key().as_bytes(),
+                id.verifying_key().to_bytes()
             );
         }
 
@@ -1786,15 +1647,13 @@ mod tests {
         {
             use ed25519_dalek::{Verifier, VerifyingKey};
 
-            let mut rng = UnwrapErr(SysRng);
-            let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-            let rec = IdentityRecord::from_threshold_identity(
+            let id = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let rec = IdentityRecord::from_root(
                 &id,
                 "alice",
                 [248, 113, 113],
                 std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100),
-            )
-            .unwrap();
+            );
             let on_disk = IdentityRecord::from_json_bytes(&rec.to_json_bytes().unwrap()).unwrap();
 
             let seed: [u8; 32] = on_disk
@@ -2495,81 +2354,36 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn threshold_shares_must_be_real_to_participate;
+        fn a_record_holding_a_share_of_a_split_key_signs_nothing;
 
-        phase synthetic_threshold_bytes_are_rejected;
+        // A record from when a key could be split across devices loads as
+        // the person's public half: no signer here can use a share.
+        phase it_loads_public_only_and_refuses_to_sign;
         {
-            let zero32: Vec<u8> = vec![0; 32];
             let record = serde_json::json!({
                 "display_name": "Alice",
                 "avatar_color": [0, 0, 0],
                 "threshold_identity": {
                     "single_device": false,
-                    "group_public_key": zero32,
+                    "group_public_key": vec![7_u8; 32],
                     "threshold": 2_u16,
                     "total_shares": 3_u16,
                     "share_index": 1_u16,
-                    "secret_bytes": zero32,
-                },
-                "created_at": "2026-07-02T00:00:00Z",
-                "schema_version": 1,
-            });
-            let bytes = serde_json::to_vec(&record).unwrap();
-            assert!(load_from_bytes(&bytes).is_err());
-        }
-
-        phase real_threshold_share_restores_and_participates_in_broker_rounds;
-        {
-            let mut rng = UnwrapErr(SysRng);
-            let mut a = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-            let mut b = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-            let (mut session_a, round1_a) = a.begin_enrolment(1, 2, 2, &mut rng).unwrap();
-            let (mut session_b, round1_b) = b.begin_enrolment(2, 2, 2, &mut rng).unwrap();
-            let out_a = session_a.receive_round1(&[round1_b]).unwrap();
-            let out_b = session_b.receive_round1(&[round1_a]).unwrap();
-            session_a.receive_round2(&[out_b[&1].clone()]).unwrap();
-            session_b.receive_round2(&[out_a[&2].clone()]).unwrap();
-            a.adopt_dkg_outcome(session_a).unwrap();
-            b.adopt_dkg_outcome(session_b).unwrap();
-
-            let secret = a.export_device_secret().unwrap();
-            let record = serde_json::json!({
-                "display_name": "Alice",
-                "avatar_color": [12, 34, 56],
-                "threshold_identity": {
-                    "single_device": false,
-                    "group_public_key": a.group_public_key().as_bytes(),
-                    "threshold": 2_u16,
-                    "total_shares": 2_u16,
-                    "share_index": 1_u16,
-                    "secret_bytes": secret.as_slice(),
+                    "secret_bytes": vec![1_u8; 64],
                 },
                 "created_at": "2026-07-02T00:00:00Z",
                 "schema_version": 1,
             });
             let identity = load_from_bytes(&serde_json::to_vec(&record).unwrap()).unwrap();
+            assert_eq!(identity.group_public_key(), [7; 32]);
             assert!(!identity.is_single_device());
-
-            let message = b"confirmed operation";
-            let signing_round_a = identity.threshold_sign_round1(&mut rng).unwrap();
-            let signing_round_b = b.sign_round1(&mut rng).unwrap();
-            let commitments = vec![
-                signing_round_a.commitment.clone(),
-                signing_round_b.commitment.clone(),
-            ];
-            let partial_a = identity
-                .threshold_sign_round2(signing_round_a.nonces, message, &commitments)
-                .unwrap();
-            let partial_b = b
-                .sign_round2_raw(signing_round_b.nonces, message, &commitments)
-                .unwrap();
-            let signature = identity
-                .aggregate_threshold_signature(&[partial_a, partial_b])
-                .unwrap();
-            ed25519_dalek::VerifyingKey::from_bytes(a.group_public_key().as_bytes())
-                .unwrap()
-                .verify_strict(message, &ed25519_dalek::Signature::from_bytes(&signature))
-                .unwrap();
+            let refused = identity.sign(b"an operation").unwrap_err();
+            assert!(refused.to_string().contains(super::super::CANNOT_SIGN_ALONE));
+            let signed = collab_types::signer::sign_now(&identity, b"an operation".to_vec());
+            assert_eq!(
+                signed,
+                Err(collab_types::signer::SignError(super::super::CANNOT_SIGN_ALONE.to_owned()))
+            );
         }
     }
 
@@ -3056,5 +2870,54 @@ mod identity_record_vector_tests {
         let written =
             String::from_utf8(record.to_json_bytes().expect("the record encodes")).expect("utf-8");
         assert_eq!(written.trim_end(), fixture.trim_end());
+    }
+
+    /// A person's root on disk, as the store has written it since roots
+    /// were first kept: schema 1 holds the seed inline, schema 2 names the
+    /// secret store that holds it. The key is RFC 8032's first test vector.
+    /// Every byte of these files is the contract: a root written by an older
+    /// build must load, sign and be written back unchanged.
+    #[test]
+    fn a_kept_root_loads_signs_and_writes_back_byte_for_byte() {
+        use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
+
+        const PUBLIC: &str = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+        const SEED: &str = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+        let schema_1 = include_bytes!("../../tests/fixtures/primary-schema-1.json");
+        let schema_2 = include_bytes!("../../tests/fixtures/primary-schema-2.json");
+        let public =
+            VerifyingKey::from_bytes(&hex::decode(PUBLIC).unwrap().try_into().unwrap()).unwrap();
+        let signs_as_the_root = |identity: &super::SigningIdentity| {
+            assert_eq!(hex::encode(identity.group_public_key()), PUBLIC);
+            assert!(identity.is_single_device());
+            let signature = identity.sign(b"a kept root").unwrap();
+            public
+                .verify(b"a kept root", &Signature::from_bytes(&signature))
+                .unwrap();
+        };
+
+        for bytes in [&schema_1[..], &schema_2[..]] {
+            let record = IdentityRecord::from_json_bytes(bytes).unwrap();
+            assert_eq!(record.to_json_bytes().unwrap(), bytes);
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        super::ensure_private_dir(dir.path()).unwrap();
+        let primary = dir.path().join("primary.json");
+        super::replace(&primary, schema_1, super::Privacy::OwnerOnly).unwrap();
+        signs_as_the_root(&load_from_bytes(schema_1).unwrap());
+        signs_as_the_root(&super::load_from_path(primary.clone()).unwrap());
+
+        // Moving the seed into the secret store writes exactly schema 2.
+        let provider = super::secure_store::fallback_provider(dir.path());
+        super::secure_identity_with_provider(dir.path(), "primary", &provider).unwrap();
+        assert_eq!(std::fs::read(&primary).unwrap(), schema_2);
+        assert_eq!(
+            super::secure_store::SecretProvider::load(&provider, PUBLIC)
+                .unwrap()
+                .as_slice(),
+            hex::decode(SEED).unwrap()
+        );
+        signs_as_the_root(&super::load_from_path(primary).unwrap());
     }
 }

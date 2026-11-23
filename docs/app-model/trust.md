@@ -31,16 +31,6 @@ Store it out-of-band; treat it as a signing secret. The corresponding
 public key comes out of Ed25519's key derivation and lands in the
 `.tapp` on every pack.
 
-## Threshold signing
-
-Under the hood, `SigningIdentity` wraps EITHER a plain `SigningKey` or a
-1-of-1 `ThresholdIdentity`. FROST-based threshold Ed25519 signatures
-verify identically to plain Ed25519 signatures at the wire, so a
-k-of-n aggregated signature just IS the signature in the `.tapp`. The
-aggregation flow itself is driven outside the `pkg` crate; call
-`pack_with_signature` with the aggregated bytes if you have your own
-signing service.
-
 ## The signed root
 
 The bytes signed are:

@@ -17,8 +17,6 @@ homepage.workspace = true
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # One rule for which language a locale names, shared with the packs.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
-# A process's id and kernel start time, the lease's identity.
-tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 # Certificates embedded in home-peer registrations and checked by the
 # trust policy.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }

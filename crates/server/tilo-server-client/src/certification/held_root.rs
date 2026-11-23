@@ -1,7 +1,7 @@
 //! Issue a certificate where the person already holds the root and has the
 //! device key from local sign-in or an explicit enrollment handoff.
 
-use tilo_server_client::{CertifyError, DeviceSigner};
+use crate::{CertifyError, DeviceSigner};
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert,
     certification::{CERTIFICATION_CLOCK_ALLOWANCE_NS, MAX_CERTIFICATION_LABEL_BYTES},
@@ -49,7 +49,7 @@ pub async fn issue_device_cert(
 
 /// Have `root` certify `device_public_key`, this browser's own device key,
 /// for the proof a service signs its person in with
-/// ([`sign_in_proof`](tilo_server_client::sign_in_proof)).
+/// ([`sign_in_proof`](crate::sign_in_proof)).
 ///
 /// The service reads the certificate by its own clock the moment the answer
 /// arrives, and that clock may be behind this device's. So the certificate is

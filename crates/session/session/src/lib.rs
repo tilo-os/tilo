@@ -209,8 +209,6 @@ mod engine_records;
 #[cfg(target_os = "linux")]
 mod engine_write;
 #[cfg(target_os = "linux")]
-mod enrollment;
-#[cfg(target_os = "linux")]
 mod env;
 #[cfg(target_os = "linux")]
 mod feedback;

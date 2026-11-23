@@ -38,7 +38,7 @@
  * two things that travel, not the root: the envelope that opens it elsewhere
  * and the revocations its root signed.
  *
- * Storage is `{get(key), put(key, value), delete(key)}`; `idbStorage()`
+ * Storage is `{get(key), all(), put(key, value), delete(key)}`; `idbStorage()`
  * provides it over IndexedDB with strict durability.
  */
 
@@ -394,18 +394,19 @@ export function rememberBrowserDevice(certified, namespaces = globalThis.localSt
 const STORE_BEFORE = 'custody';
 
 /**
- * `{get, put, delete}` over one IndexedDB object store, strict durability.
+ * `{get, all, put, delete}` over one IndexedDB object store, strict durability.
  *
  * A browser that entered before the store had today's name holds its device keys and its
  * person in the older store, and they are read and written there, where they are. Another
  * store can only be made by opening the database at a newer version, and then a page loaded
  * before could not open the database any more, and a page of now would wait for as long as
- * such a page is open in another tab. So the database stays at the version it has.
+ * such a page is open in another tab. So the database stays at the version it has. Without
+ * `create`, a browser that has no database is left without one: the upgrade is aborted.
  */
-export function idbStorage({indexedDB = globalThis.indexedDB, name = 'tilo-device', store = 'device-key'} = {}) {
+export function idbStorage({indexedDB = globalThis.indexedDB, name = 'tilo-device', store = 'device-key', create = true} = {}) {
   const open = () => new Promise((resolve, reject) => {
     const request = indexedDB.open(name, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(store);
+    request.onupgradeneeded = () => (create ? request.result.createObjectStore(store) : request.transaction.abort());
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
@@ -427,9 +428,26 @@ export function idbStorage({indexedDB = globalThis.indexedDB, name = 'tilo-devic
   };
   return {
     get: key => run('readonly', s => s.get(key)),
+    all: () => run('readonly', s => s.getAll()),
     put: (key, value) => run('readwrite', s => s.put(value, key)),
     delete: key => run('readwrite', s => s.delete(key)),
   };
+}
+
+/**
+ * The device keys this browser holds that it kept a certificate of
+ * (`BROWSER_DEVICES`): each as `{certificate, privateKey}`, the certificate's text as it was
+ * issued (its nanosecond times are signed, and a number rounds them) and the key that signs
+ * with it. A browser that never had a device gets no database from this.
+ */
+export async function certifiedDeviceKeys({indexedDB = globalThis.indexedDB, namespaces = globalThis.localStorage} = {}) {
+  let exact = {};
+  try { exact = JSON.parse(namespaces?.getItem(BROWSER_DEVICES) ?? 'null')?.exact ?? {}; } catch { /* none kept */ }
+  if (!Object.keys(exact).length) return [];
+  const kept = await idbStorage({indexedDB, create: false}).all().catch(() => []);
+  return kept
+    .filter(key => key?.kind === 'webcrypto-ed25519' && exact[hex(key.publicKey)])
+    .map(key => ({certificate: exact[hex(key.publicKey)], privateKey: key.privateKey}));
 }
 
 /** Where the person this browser is is kept, in the same store as the tab's

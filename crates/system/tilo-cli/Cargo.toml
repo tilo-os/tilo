@@ -54,7 +54,6 @@ tilo-automerge-isolate.workspace = true
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 iroh-base.workspace = true
 # HTTPS to a site and a host, as every client of the server makes its requests.
-tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 tilo-server-client = { path = "../../server/tilo-server-client" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 # `tilo login <invitation link>` reads the signed invitation and the server's iroh address in it.

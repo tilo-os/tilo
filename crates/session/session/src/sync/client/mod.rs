@@ -368,9 +368,6 @@ pub(crate) struct Local {
     fabric: Option<Arc<SessionFabric>>,
     /// This session's Nearby Send, once the session made it.
     nearby: RefCell<Option<Arc<crate::nearby_transfer::NearbyTransfer>>>,
-    /// The machines this session answers, once it serves their enrollment endpoint: what a
-    /// pairing link shown here is made by.
-    enrollment_links: std::sync::OnceLock<crate::enrollment::LocalLinks>,
     /// Where this device's actions are served, and how an app here reaches the person's other
     /// devices: `None` until the endpoint has bound.
     device_actions: Arc<std::sync::OnceLock<DeviceActions>>,
@@ -1822,19 +1819,6 @@ impl Client {
         self.hosting.local.attach_nearby(nearby);
     }
 
-    /// The machines this session answers from now on: what a pairing link shown here is made by.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn keep_machine_links(&self, links: crate::enrollment::LocalLinks) {
-        let _ = self.hosting.local.enrollment_links.set(links);
-    }
-
-    /// The machines this session answers, once it serves their enrollment endpoint.
-    #[must_use]
-    #[cfg(target_os = "linux")]
-    pub(crate) fn enrollment_links(&self) -> Option<&crate::enrollment::LocalLinks> {
-        self.hosting.local.enrollment_links.get()
-    }
-
     /// Dial the person's other devices as this session's siblings, and wake the session when
     /// their own workspace moves: the session between two of theirs is where they tell each other
     /// what they hold, and carries their device fabric.
@@ -2171,7 +2155,6 @@ impl Local {
                 topologies: RefCell::new(std::collections::BTreeMap::new()),
                 fabric,
                 nearby: RefCell::new(None),
-                enrollment_links: std::sync::OnceLock::new(),
                 device_actions,
                 reachability: RefCell::new(reachability),
                 live: RefCell::new(live),
@@ -2207,7 +2190,6 @@ impl Local {
             topologies: RefCell::new(std::collections::BTreeMap::new()),
             fabric: None,
             nearby: RefCell::new(None),
-            enrollment_links: std::sync::OnceLock::new(),
             device_actions: Arc::new(std::sync::OnceLock::new()),
             reachability: RefCell::new(Reachability::default()),
             live: RefCell::new(None),

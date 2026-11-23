@@ -583,12 +583,6 @@ so-tilo-desktop-overlays-open-surface = Eine Oberfläche öffnen
 so-tilo-desktop-window-menu-choose = Eine Zeile wählen
 so-tilo-desktop-window-menu-close = Das Fenstermenü schließen
 so-tilo-desktop-window-menu-open = Das Fenstermenü öffnen
-machines-waiting-source = Deine Geräte
-machines-waiting-title = Gerät bestätigen
-machines-waiting-body = { $machine } möchte beitreten. Vergleiche Code { $code } auf beiden Geräten.
-machines-waiting-review = Anfrage ansehen
-machines-waiting-approve = { $code } bestätigen
-machines-waiting-decline = Ablehnen
 
 ## Die Beschreibung eines Parameters wird als `<Label>-<Argument>` gelesen.
 

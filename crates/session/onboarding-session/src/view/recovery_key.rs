@@ -19,7 +19,7 @@ pub(super) fn import_recovery_words(
     identity_paths: &tilo_device_identity::IdentityPaths,
     words: &str,
 ) -> Result<MintedIdentity, String> {
-    let profile = tilo_enrollment::install::restore_from_recovery_words(
+    let profile = tilo_identity::provisioning::restore_from_recovery_words(
         import_dir,
         identity_paths,
         words,
@@ -313,7 +313,7 @@ mod tests {
         phase a_recovery_key_is_checked_while_typed_and_restores_only_when_valid;
         {
             let seed = [0x3f_u8; 32];
-            let words = threshold_identity::bip39::encode(&seed)
+            let words = tilo_user_identity::recovery_words::encode(&seed)
                 .expect("32 bytes encode")
                 .to_string();
             let restored = Arc::new(Mutex::new(Vec::<String>::new()));

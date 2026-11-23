@@ -6,7 +6,7 @@
 //! device proves the person to the service
 //! ([`tilo_server_client::sign_in_proof`]), and — when the person lets an
 //! agent act for them — the root certifies the key the service generated for
-//! the grant ([`tilo_enrollment::certification::issue_agent_grant`]).
+//! the grant ([`tilo_server_client::certification::issue_agent_grant`]).
 //!
 //! The certificate the proof carries is issued for this answer alone: a host
 //! issues the page's device certificate when it joins a workspace, and a
@@ -15,11 +15,11 @@
 //! The service reads both certificates by its own clock the moment the
 //! answer arrives, and a person's computer is seldom the one that is behind.
 //! So both are valid from the one clock allowance before this browser's
-//! clock ([`tilo_enrollment::certification::issue_sign_in_cert`]), as a paired device's
+//! clock ([`tilo_server_client::certification::issue_sign_in_cert`]), as a paired device's
 //! certificate is, and the service keeps its exact check.
 
 use serde::{Deserialize, Serialize};
-use tilo_enrollment::certification::{issue_agent_grant, issue_sign_in_cert};
+use tilo_server_client::certification::{issue_agent_grant, issue_sign_in_cert};
 use tilo_server_client::{DeviceSigner as _, encode, grant_label, sign_in_proof};
 use tilo_user_identity::{AgentScope, DeviceCapabilities};
 use wasm_bindgen::prelude::*;

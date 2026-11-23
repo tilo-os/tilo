@@ -27,9 +27,9 @@ use collab_types::presence::Presence;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use key_group::{ContentKeys, KeyGroup, MemberKey};
-use tilo_enrollment::certification::answer_pairing;
-use tilo_enrollment::requester::certify;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_server_client::certification::answer_pairing;
+use tilo_server_client::certify::certify;
 use tilo_server_client::{Carrier, MemberApprover, ServerAddress, pending_pairings};
 use tilo_session_client::MemoryPeerStore;
 use tilo_user_identity::{

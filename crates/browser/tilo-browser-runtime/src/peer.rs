@@ -576,7 +576,7 @@ pub async fn certify_device(
     };
     let host = server_at(&address)?;
     let (cert, server_cert, label) =
-        tilo_enrollment::requester::certify(&host, user, &label, invite, &signer, |code| {
+        tilo_server_client::certify::certify(&host, user, &label, invite, &signer, |code| {
             let _ = on_pairing_code.call1(&JsValue::NULL, &code.into());
         })
         .await
@@ -645,12 +645,12 @@ pub async fn issue_device_cert(
     role: String,
 ) -> Result<String, JsError> {
     let role = match role.as_str() {
-        "browser" => tilo_enrollment::certification::IssuedRole::Browser,
-        "node" | "session" => tilo_enrollment::certification::IssuedRole::Device,
+        "browser" => tilo_server_client::certification::IssuedRole::Browser,
+        "node" | "session" => tilo_server_client::certification::IssuedRole::Device,
         _ => return Err(js_error("role must be browser, node or session")),
     };
     let root = PageSigner::from_js(&root)?;
-    let cert = tilo_enrollment::certification::issue_device_cert(
+    let cert = tilo_server_client::certification::issue_device_cert(
         &root,
         device_key(&device_public_key_hex)?,
         &label,
@@ -935,7 +935,7 @@ pub async fn certify_with_root(
     let signer = PageSigner::from_js(&device_key)?;
     let server_cert: DeviceCert = serde_json::from_str(&host_cert).map_err(js_error)?;
     let (cert, server_cert) =
-        tilo_enrollment::certification::certify_with_root(&root, &signer, &label, &server_cert)
+        tilo_server_client::certification::certify_with_root(&root, &signer, &label, &server_cert)
             .await
             .map_err(js_error)?;
     serde_json::to_string(&Certified {
@@ -1083,7 +1083,7 @@ impl PairingHost {
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or_else(|| JsError::new("a request digest is 64 hex characters"))?;
         let issued =
-            tilo_enrollment::certification::answer_pairing(&self.0, &root, digest, approved)
+            tilo_server_client::certification::answer_pairing(&self.0, &root, digest, approved)
                 .await
                 .map_err(js_error)?;
         issued

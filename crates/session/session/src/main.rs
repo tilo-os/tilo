@@ -2,7 +2,6 @@
 //! [--connector NAME] [--output [NAME=]WxH[@X,Y]]... [--scale S|--panel-mm WxH]
 //! [--shell screen] [--host-desktop] [--agent-key FILE]
 //! [--test-control PATH] [--admin-control PATH] [--seed-apps] [-- command args...]`.
-//! `tilo-session --pair-device-link-file FILE` enrolls a fresh device before its first session.
 //! It listens on a fresh `wayland-N` socket, serves X11 clients one display per
 //! workspace (unless `--no-x11`), prints the socket and the MCP server it serves,
 //! and starts `command` with `WAYLAND_DISPLAY` set to it; with a command, the

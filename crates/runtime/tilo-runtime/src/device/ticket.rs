@@ -31,7 +31,7 @@ use tilo_device_identity::login::{
     APPROVE, Device, Direction, Entry, ISSUE, LOG_IN, PENDING, PROVIDER, Place, REPORTED, RESOURCE,
     Reached, Report, TICKET_LIFETIME_NS, Ticket,
 };
-use tilo_enrollment::root::PersonSigner;
+use tilo_identity::store::SigningIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ActionService, NoActions};
 use tilo_session_client::device::Device as Entered;
@@ -238,7 +238,7 @@ pub(crate) fn descriptor(
 
 /// The person's root on this computer, read when a ticket is asked for: the store the daemon
 /// keeps, or a test's own.
-pub(crate) type RootSource = Arc<dyn Fn() -> Result<Option<PersonSigner>> + Send + Sync>;
+pub(crate) type RootSource = Arc<dyn Fn() -> Result<Option<SigningIdentity>> + Send + Sync>;
 
 /// A workspace this daemon founded and governs, which a computer added here enters through it.
 #[derive(Clone)]

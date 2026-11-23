@@ -1687,8 +1687,17 @@ impl Session {
                 wake: Some(options.wake.handle()),
             })
         });
+        // Where the sheet's ticket comes from, for a workspace no host on the web keeps: the ticket
+        // service Settings' Add a device asks too, on this session's endpoint and device actions.
         let adding = crate::pair_device::Adding::new(
-            Rc::clone(&clipboard) as Rc<dyn crate::platform::clipboard::Clipboard>
+            Rc::clone(&clipboard) as Rc<dyn crate::platform::clipboard::Clipboard>,
+            sync.as_deref().map(|sync| {
+                crate::device_tickets::DeviceTickets::new(
+                    Some(sync.endpoint_handle()),
+                    Some(sync.actions_handle()),
+                    workspace_service.clone(),
+                )
+            }),
         );
         let landings = Rc::new(crate::landing::Landings::new(options.wake.handle()));
         // A share's write into a workspace's governance answers through the same landings.

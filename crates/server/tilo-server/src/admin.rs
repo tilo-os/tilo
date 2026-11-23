@@ -295,8 +295,8 @@ fn cmd_revoke_device(
         "compromised" => tilo_user_identity::RevocationReason::Compromised,
         _ => anyhow::bail!("reason must be lost, stolen, retired, or compromised"),
     };
-    let root = tilo_server::root_signer::load_root(Some(identity_dir))?;
-    tilo_server::root_signer::revoke_device(&cfg.state_root, root.as_ref(), pk, reason)?;
+    let root = tilo_identity::store::load_person_root(identity_dir)?;
+    tilo_server::root_signer::revoke_device(&cfg.state_root, &root, pk, reason)?;
     println!("revoked device {} ({reason:?})", hex::encode(pk));
     println!("a running tilo-server disconnects the device within one second");
     Ok(())

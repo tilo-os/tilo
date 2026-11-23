@@ -256,9 +256,6 @@ tilo-server-session = { path = "../../server/tilo-server-session" }
 # This device's relays wait in the collaboration endpoint until a workspace
 # it shows has someone else in it, and its key is published only then.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
-# The one enrollment every image uses: the session answers a machine that asks
-# to join with the same code the image's helper does, for as long as it runs.
-tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 # The device's certificate authority the broker admits a join with: the
 # identity store's selected identity and the devices it certifies now.
 tilo-identity-authority = { path = "../identity-authority" }

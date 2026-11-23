@@ -319,7 +319,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // A key Bob made for that one workspace enters it straight from its session with the host, in
     // no other workspace first: the host invites it in on the session and it redeems there.
     let script_key = new_key();
-    let script_cert = tilo_enrollment::certification::issue_agent_grant(
+    let script_cert = tilo_server_client::certification::issue_agent_grant(
         &bob,
         script_key.verifying_key().to_bytes(),
         "A script",

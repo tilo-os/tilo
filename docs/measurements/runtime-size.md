@@ -212,7 +212,7 @@ in every process before `main`. Where the runtime needs such a table, it is
 laid out as offsets into one string literal instead, which is plain
 `.rodata`: MIME types by extension (`tilo-mime`, generated from mime_guess by
 `tools/mime-table.py`), the BIP39 wordlist of recovery phrases
-(`threshold-identity`'s `bip39.rs`), pulldown-cmark's HTML entities
+(`tilo-user-identity`'s `recovery_words.rs`), pulldown-cmark's HTML entities
 (`vendor/pulldown-cmark`) and regex-syntax's Unicode name and case-folding
 tables (`vendor/regex-syntax`, written by `tools/regex-syntax-tables.py`).
 The surface check fails on mime_guess or bip39 back in the runtime

@@ -146,7 +146,6 @@
   "test-http": {"libraries": 1582242, "tests": 3389232},
   "test-server": {"libraries": 1948098, "tests": 1494698608},
   "themes": {"libraries": 14464042, "tests": 1040591752},
-  "threshold-identity": {"libraries": 4545877, "tests": 12375216},
   "thumbnails": {"libraries": 0, "tests": 558154392},
   "tilo-accessibility-settings": {"libraries": 1113793, "tests": 13241808},
   "tilo-accounts-engine": {"libraries": 0, "tests": 2852024},

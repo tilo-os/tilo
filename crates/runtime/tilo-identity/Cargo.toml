@@ -47,7 +47,6 @@ registry-types = { path = "../../packaging/registry-types" }
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-threshold-identity = { path = "../../collab/threshold-identity" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }

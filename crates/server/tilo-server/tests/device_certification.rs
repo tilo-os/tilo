@@ -542,7 +542,7 @@ async fn a_device_dates_its_request_a_minute_back_and_waits_as_long_as_before() 
         let device = device.clone();
         let person = user.user_pk;
         async move {
-            tilo_enrollment::requester::certify(&host, person, "Phone", [0; 16], &device, |_| {})
+            tilo_server_client::certify::certify(&host, person, "Phone", [0; 16], &device, |_| {})
                 .await
         }
     });

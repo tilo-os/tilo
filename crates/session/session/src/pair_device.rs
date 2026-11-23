@@ -7,11 +7,15 @@
 //! that admits the person's device, and asking once it ran out makes a new one, so the code on
 //! screen is never one that admits nothing. While a link works, this device waits at its host for
 //! the device that opens it ([`crate::certification::watch_host`]). A workspace no host on the web
-//! keeps uses this device’s native enrollment endpoint.
+//! keeps has no link: the sheet shows a ticket this device serves instead
+//! ([`crate::device_tickets`]), which the new computer spends with `tilo login`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use tilo_lock::MutexRecover as _;
 
 use tilo_sheets::SheetState as _;
 use tilo_sheets::pair_device::{AddDevice, AddDeviceState, PairDeviceEffect};
@@ -35,9 +39,9 @@ pub(crate) struct Place {
     pub person: [u8; 32],
 }
 
-/// When the site link needs a native fallback, or pairing is unavailable.
+/// When the site link gives way to a ticket, or pairing is unavailable.
 pub(crate) enum NoLink {
-    /// No web host keeps the workspace in front. Try native enrollment.
+    /// No web host keeps the workspace in front: a ticket from this device takes the link's place.
     Nearby,
     /// The catalogue key saying why.
     Because(&'static str),
@@ -53,44 +57,45 @@ pub(crate) struct Waiting {
     pub until_ms: u64,
 }
 
-struct LocalOffer {
-    person: [u8; 32],
-    link: String,
-    expires_at_ms: u64,
+/// The ticket the sheet shows where there is no link: asked of this device's ticket service, then
+/// shown until it runs out, or why it could not be had.
+enum TicketOffer {
+    Asking(Arc<Mutex<Option<Result<String, String>>>>),
+    Shown { ticket: String, expires_at_ms: u64 },
+    Refused(String),
 }
+
+/// How long a ticket admits a computer, as the sheet counts it down.
+const TICKET_LIFETIME_MS: u64 = tilo_device_identity::login::TICKET_LIFETIME_NS / 1_000_000;
 
 /// The link the sheet shows, and what its presses do.
 pub(crate) struct Adding {
     invites: RefCell<Invites>,
-    local: RefCell<Option<LocalOffer>>,
+    /// Where a ticket comes from: this device's own ticket service, on a session that takes part
+    /// as someone.
+    tickets: Option<crate::device_tickets::DeviceTickets>,
+    ticket: RefCell<Option<TicketOffer>>,
     clipboard: Rc<dyn Clipboard>,
     /// The link last put on the clipboard, while it is still the one shown: what the copy button
     /// says it did.
     copied: RefCell<Option<String>>,
     /// Where the link last shown sends a new device.
     waiting: RefCell<Option<Waiting>>,
-    /// The machines that asked to join, as the person's store holds them, and
-    /// what tells the person of each once.
-    machines: RefCell<Vec<crate::enrollment::Waiting>>,
-    told: RefCell<std::collections::BTreeSet<String>>,
-    /// The question put to the person for each machine still waiting, by ask:
-    /// the sheet's own resource for the same ask, which an agent answers
-    /// through the question actions.
-    parked: RefCell<std::collections::BTreeMap<String, tilo_service::Asked>>,
 }
 
 impl Adding {
     #[must_use]
-    pub(crate) fn new(clipboard: Rc<dyn Clipboard>) -> Self {
+    pub(crate) fn new(
+        clipboard: Rc<dyn Clipboard>,
+        tickets: Option<crate::device_tickets::DeviceTickets>,
+    ) -> Self {
         Self {
             invites: RefCell::new(Invites::default()),
-            local: RefCell::default(),
+            tickets,
+            ticket: RefCell::default(),
             clipboard,
             copied: RefCell::default(),
             waiting: RefCell::default(),
-            machines: RefCell::default(),
-            told: RefCell::default(),
-            parked: RefCell::default(),
         }
     }
 
@@ -105,16 +110,8 @@ impl Adding {
     pub(crate) fn device(&self, place: Result<Place, NoLink>, now_ms: u64) -> AddDevice {
         let place = match place {
             Ok(place) => place,
-            Err(NoLink::Nearby) => {
-                let mut device = AddDevice::nearby();
-                device.waiting = self.waiting_machines();
-                return device;
-            }
-            Err(NoLink::Because(key)) => {
-                let mut device = AddDevice::refusing(&tilo_sheets::word(key));
-                device.waiting = self.waiting_machines();
-                return device;
-            }
+            Err(NoLink::Nearby) => return self.ticket(now_ms),
+            Err(NoLink::Because(key)) => return AddDevice::refusing(&tilo_sheets::word(key)),
         };
         match self.invites.borrow_mut().at(
             &place.site,
@@ -135,138 +132,97 @@ impl Adding {
                     person: place.person,
                     until_ms: shown.expires_at_ms,
                 });
-                device.waiting = self.waiting_machines();
                 device
             }
             Err(reason) => {
                 tracing::warn!(%reason, "no pairing link could be made");
-                let mut device = AddDevice::refusing(&tilo_sheets::word("pair-device-no-link"));
-                device.waiting = self.waiting_machines();
+                AddDevice::refusing(&tilo_sheets::word("pair-device-no-link"))
+            }
+        }
+    }
+
+    /// The sheet with this device's ticket at `now_ms`: one is asked for once none is shown or the
+    /// one shown ran out, and shown once this device served it.
+    fn ticket(&self, now_ms: u64) -> AddDevice {
+        let mut offer = self.ticket.borrow_mut();
+        let answered = match offer.as_ref() {
+            Some(TicketOffer::Asking(answer)) => answer.lock_recover().take(),
+            _ => None,
+        };
+        if let Some(answer) = answered {
+            *offer = Some(match answer {
+                Ok(ticket) => TicketOffer::Shown {
+                    ticket,
+                    expires_at_ms: now_ms.saturating_add(TICKET_LIFETIME_MS),
+                },
+                Err(reason) => TicketOffer::Refused(reason),
+            });
+        }
+        let ran_out = matches!(offer.as_ref(), Some(TicketOffer::Shown { expires_at_ms, .. }) if *expires_at_ms <= now_ms);
+        if offer.is_none() || ran_out {
+            *offer = Some(self.ask_ticket());
+        }
+        match offer.as_ref() {
+            Some(TicketOffer::Shown {
+                ticket,
+                expires_at_ms,
+            }) => {
+                let mut device = AddDevice::ticket(ticket, minutes_left(*expires_at_ms, now_ms));
+                if self.copied.borrow().as_deref() == Some(ticket.as_str()) {
+                    device.copy = device.copied.clone();
+                }
                 device
             }
+            Some(TicketOffer::Refused(reason)) => AddDevice::refusing(reason),
+            Some(TicketOffer::Asking(_)) | None => AddDevice::asking(),
         }
     }
 
-    fn local(
-        &self,
-        links: &crate::enrollment::LocalLinks,
-        person: [u8; 32],
-        now_ms: u64,
-    ) -> AddDevice {
-        let mut local = self.local.borrow_mut();
-        if local
-            .as_ref()
-            .is_none_or(|offer| offer.person != person || offer.expires_at_ms <= now_ms)
-        {
-            *local = links
-                .issue(person, now_ms)
-                .map(|(link, expires_at_ms)| LocalOffer {
-                    person,
-                    link,
-                    expires_at_ms,
-                });
-        }
-        let Some(offer) = local.as_ref() else {
-            return self.device(Err(NoLink::Nearby), now_ms);
+    /// Ask this device's ticket service for a ticket, off the shell's thread.
+    fn ask_ticket(&self) -> TicketOffer {
+        let Some(tickets) = self.tickets.clone() else {
+            return TicketOffer::Refused(tilo_sheets::word("pair-device-not-yours"));
         };
-        let mut device = AddDevice::of(&offer.link, minutes_left(offer.expires_at_ms, now_ms));
-        device.in_tilo = tilo_sheets::word("pair-device-local-link");
-        if self.copied.borrow().as_deref() == Some(offer.link.as_str()) {
-            device.copy = device.copied.clone();
-        }
-        device.waiting = self.waiting_machines();
-        device
-    }
-
-    /// What the person's store holds now: the asks no device answered yet.
-    pub(crate) fn holding(&self, machines: Vec<crate::enrollment::Waiting>) {
-        *self.machines.borrow_mut() = machines;
-    }
-
-    /// The machines waiting for the person's answer, as the sheet lists them.
-    fn waiting_machines(&self) -> Vec<tilo_sheets::pair_device::WaitingMachine> {
-        self.machines
-            .borrow()
-            .iter()
-            .map(|machine| tilo_sheets::pair_device::WaitingMachine {
-                ask: machine.ask.clone(),
-                label: machine.label.clone(),
-                code: machine.code.clone(),
-            })
-            .collect()
-    }
-
-    /// Let in the machine whose own `tilo://enroll?…` line the person pasted: this device dials
-    /// it and approves it there, answering as either kind of machine.
-    pub(crate) fn scan(link: &str) {
-        let Ok(paths) = tilo_identity::device_admin::PersonPaths::from_env() else {
-            return;
+        let runtime = match tilo_rt::try_app() {
+            Ok(runtime) => runtime,
+            Err(error) => return TicketOffer::Refused(error.to_string()),
         };
-        if let Err(error) = crate::enrollment::approve_line(link, paths.root, paths.dir) {
-            tracing::warn!(%error, "a machine's link was not approved");
+        let answer = Arc::new(Mutex::new(None));
+        let answered = Arc::clone(&answer);
+        drop(runtime.spawn(async move {
+            let issued = tickets.issue().await;
+            *answered.lock_recover() = Some(issued);
+        }));
+        TicketOffer::Asking(answer)
+    }
+
+    /// Forget a ticket that could not be had, so opening the sheet again asks anew.
+    fn forget_refusal(&self) {
+        let mut offer = self.ticket.borrow_mut();
+        if matches!(offer.as_ref(), Some(TicketOffer::Refused(_))) {
+            *offer = None;
         }
     }
 
-    /// Note that the person was told of the machine whose ask this is; `false` when they were
-    /// already.
-    pub(crate) fn note_told(&self, ask: &str) -> bool {
-        self.told.borrow_mut().insert(ask.to_owned())
-    }
-
-    /// Whether the machine whose ask this is already has its question up.
-    fn parked(&self, ask: &str) -> bool {
-        self.parked.borrow().contains_key(ask)
-    }
-
-    /// Put the machine's ask on the question sheet under `asked`.
-    pub(crate) fn park(&self, ask: String, asked: tilo_service::Asked) {
-        self.parked.borrow_mut().insert(ask, asked);
-    }
-
-    /// The answers the person gave on the question sheet since the last pass,
-    /// by ask: `None` is the question's cancel.
-    pub(crate) fn answers(&self) -> Vec<(String, Option<tilo_service::Answer>)> {
-        let now = tilo_clock::now();
-        let mut parked = self.parked.borrow_mut();
-        let mut resolved = Vec::new();
-        parked.retain(|ask, asked| match asked.until(Some(now)) {
-            Some(answer) => {
-                resolved.push((ask.clone(), answer));
-                false
-            }
-            None => true,
-        });
-        resolved
-    }
-
-    /// Withdraw retired questions and any notices the open sheet now presents inline.
-    fn retire(&self, waiting: &[crate::enrollment::Waiting], inline: bool) -> Vec<String> {
-        let pending = |ask: &str| waiting.iter().any(|machine| machine.ask == ask);
-        self.parked.borrow_mut().retain(|ask, _| pending(ask));
-        let mut withdrawn = Vec::new();
-        self.told.borrow_mut().retain(|ask| {
-            if inline || !pending(ask) {
-                withdrawn.push(ask.clone());
-                false
-            } else {
-                true
-            }
-        });
-        withdrawn
+    /// When the ticket shown next changes on its own: its minutes count down, or the answer to the
+    /// ask for one is looked for again.
+    fn ticket_next_in(&self, now_ms: u64) -> Option<Duration> {
+        match self.ticket.borrow().as_ref()? {
+            TicketOffer::Asking(_) => Some(Duration::from_millis(100)),
+            TicketOffer::Shown { expires_at_ms, .. } => Some(next_count_in(*expires_at_ms, now_ms)),
+            TicketOffer::Refused(_) => None,
+        }
     }
 
     /// Carry out what the person pressed in the sheet, and say the link is on the clipboard when it
     /// is.
-    pub(crate) fn take(&self, state: &AddDeviceState, answer: impl Fn(&str, bool)) {
+    pub(crate) fn take(&self, state: &AddDeviceState) {
         for effect in state.take_asked() {
             match effect {
                 PairDeviceEffect::Copy { link } => {
                     self.clipboard.copy(link.clone(), ON_CLIPBOARD_FOR);
                     *self.copied.borrow_mut() = Some(link);
                 }
-                PairDeviceEffect::Approve { ask } => answer(&ask, true),
-                PairDeviceEffect::Decline { ask } => answer(&ask, false),
-                PairDeviceEffect::Link { link } => Self::scan(&link),
                 // Its own close: the sheet took itself down as it asked.
                 PairDeviceEffect::Done => {}
             }
@@ -296,87 +252,23 @@ impl crate::Shared {
         let Some(state) = self.pair_device.as_ref() else {
             return;
         };
+        self.adding.forget_refusal();
         state.presentation().open(false);
         self.follow_pair_device();
-    }
-
-    pub(crate) fn pair_device_open(&self) -> bool {
-        self.pair_device
-            .as_ref()
-            .is_some_and(|state| state.presentation().is_open())
     }
 
     /// Keep the sheet current while it is up: the link that admits a device, renewed once the one
     /// shown ran out, and what its presses do.
     pub(crate) fn follow_pair_device(&self) {
         if let Some(state) = self.pair_device.as_ref() {
-            self.adding.take(state, |ask, approve| {
-                if let Some(questions) = self.asker.questions() {
-                    let handle = crate::enrollment::question_handle(ask);
-                    if approve {
-                        questions.answer(&handle, tilo_service::Answer::default());
-                    } else {
-                        questions.decline(&handle);
-                    }
-                }
-            });
+            self.adding.take(state);
         }
-        // The store's wake must put the request on screen in this pass, even when the
-        // owner leaves the sheet idle and no further input wakes the shell.
-        self.follow_enrolling();
         if let Some(state) = self.pair_device.as_ref()
             && state.presentation().is_open()
         {
             state.show(self.pairing_device(ui::time::unix_now_ms()));
         }
         self.wait_for_new_device();
-    }
-
-    /// Put each machine that asks to join to the person once, and take back the asks that are
-    /// gone: what the person's own workspace holds is what every one of their devices
-    /// shows, and an ask any of them answered leaves them all at once. Each ask is also a question resource while it
-    /// waits, so an agent answers the machine through the same sheet as a person does.
-    pub(crate) fn follow_enrolling(&self) {
-        let Some(store) = self.sync.as_ref().and_then(|sync| sync.person_resources()) else {
-            return;
-        };
-        let held = crate::enrollment::held(&store);
-        let inline = self.pair_device_open();
-        for ask in self.adding.retire(&held.waiting, inline) {
-            self.telling().withdraw(&crate::enrollment::tag(&ask));
-        }
-        self.adding.holding(held.waiting.clone());
-        if let Some(questions) = self.asker.questions() {
-            for machine in &held.waiting {
-                if !self.adding.parked(&machine.ask) {
-                    self.adding.park(
-                        machine.ask.clone(),
-                        questions.ask(crate::enrollment::question(machine)),
-                    );
-                }
-            }
-        }
-        if !inline {
-            for machine in &held.waiting {
-                if self.adding.note_told(&machine.ask) {
-                    self.telling().show(&crate::enrollment::notice(machine));
-                }
-            }
-        }
-        for (ask, answer) in self.adding.answers() {
-            self.answer_enrolling(&ask, crate::enrollment::admits(answer.as_ref()));
-        }
-    }
-
-    /// The person answered a machine that asked to join: approving admits it. The answer is
-    /// written to their own workspace, and whichever of their devices serves the machine
-    /// carries it out.
-    pub(crate) fn answer_enrolling(&self, ask: &str, approve: bool) {
-        let Some(store) = self.sync.as_ref().and_then(|sync| sync.person_resources()) else {
-            return;
-        };
-        crate::enrollment::answer(&store, ask, approve);
-        self.telling().withdraw(&crate::enrollment::tag(ask));
     }
 
     /// When the sheet next changes on its own while it is up: its minutes count down, and the link
@@ -388,13 +280,7 @@ impl crate::Shared {
         }
         let now_ms = ui::time::unix_now_ms();
         let after = if matches!(self.pairing_place(), Err(NoLink::Nearby)) {
-            self.adding
-                .local
-                .borrow()
-                .as_ref()
-                .map_or(Duration::from_millis(250), |offer| {
-                    next_count_in(offer.expires_at_ms, now_ms)
-                })
+            self.adding.ticket_next_in(now_ms)?
         } else {
             next_count_in(self.adding.waiting()?.until_ms, now_ms)
         };
@@ -416,21 +302,12 @@ impl crate::Shared {
     }
 
     fn pairing_device(&self, now_ms: u64) -> AddDevice {
-        let place = self.pairing_place();
-        if matches!(place, Err(NoLink::Nearby))
-            && let Some(engine) = self.engine.as_ref()
-            && let Some(links) = self.sync.as_ref().and_then(|sync| sync.enrollment_links())
-        {
-            return self
-                .adding
-                .local(links, engine.identity().device_cert.user_public_key, now_ms);
-        }
-        self.adding.device(place, now_ms)
+        self.adding.device(self.pairing_place(), now_ms)
     }
 
     /// Where the link goes: the workspace in front at the web host that keeps it,
     /// and the person whose device a newcomer becomes. Without a web keeper,
-    /// use the native enrollment endpoint.
+    /// the sheet shows a ticket instead.
     fn pairing_place(&self) -> Result<Place, NoLink> {
         // Only a device of the person's answers the new device, on their own devices' fabric.
         let engine = self
@@ -517,7 +394,7 @@ mod tests {
 
     fn adding() -> (Adding, Rc<Sheets>) {
         let clipboard = Rc::new(Sheets::default());
-        let adding = Adding::new(Rc::clone(&clipboard) as Rc<dyn Clipboard>);
+        let adding = Adding::new(Rc::clone(&clipboard) as Rc<dyn Clipboard>, None);
         (adding, clipboard)
     }
 
@@ -542,14 +419,17 @@ mod tests {
             assert_ne!(renewed.link, first.link);
         }
 
-        phase without_a_host_on_the_web_the_sheet_offers_nearby;
-        // A workspace no host on the web keeps: no link, and the sheet says to add the device nearby
-        // rather than showing a code that admits nobody.
+        phase without_a_host_on_the_web_the_sheet_asks_for_a_ticket;
+        // A workspace no host on the web keeps: no link, and a session that takes part as nobody
+        // has no ticket to show either, and says so rather than show a code that admits nobody.
         {
             let (adding, _) = adding();
             let device = adding.device(Err(NoLink::Nearby), START);
             assert_eq!(device.link, "");
-            assert_eq!(device.refusal, AddDevice::nearby().refusal);
+            assert_eq!(
+                device.refusal,
+                AddDevice::refusing(&tilo_sheets::word("pair-device-not-yours")).refusal
+            );
             assert!(adding.waiting().is_none(), "nothing to wait for");
         }
 
@@ -613,184 +493,5 @@ mod tests {
             let later = adding.device(Ok(place()), START + 60_000);
             assert_eq!(later.lasting, AddDevice::of(&first.link, 9).lasting);
         }
-    }
-
-    /// The person approves the machine they planned, and the session carries the
-    /// approval into the machine's entry: the entry the plan made under the
-    /// plan's id becomes the machine's, under its device key, in the Servers
-    /// workspace the session's own host holds. Nothing here is a fixture of the
-    /// service: the session asks its own host the same `machine.*` operations a
-    /// window of theirs does.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one test walks an identity, a session, its own workspace service and the person's approval"
-    )]
-    fn the_persons_approval_takes_a_planned_machine_into_its_entry() {
-        let _settled = ui::motion::testing::settled();
-        let root = tempfile::tempdir().expect("a directory for the identity");
-        let xdg = root.path().join("config");
-        let system = root.path().join("system");
-        let state = root.path().join("state");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", &xdg)
-            .set("TILO_IDENTITY_ROOT", &system)
-            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-        tilo_identity::provisioning::ensure_collaboration_identity(
-            &xdg.join("tilo/identity"),
-            &tilo_device_identity::IdentityPaths::under(&system),
-            tilo_identity::provisioning::IdentityStorage::Files,
-        )
-        .expect("this computer's identity");
-        let mut session = crate::Session::headless(
-            crate::Options {
-                presentation: ui::headless::fixture_runner_inputs,
-                collab: true,
-                shell: true,
-                state: Some(state),
-                ..crate::Options::default()
-            },
-            &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
-        )
-        .expect("a session");
-        let engine = session.shared.engine.clone().expect("this device's engine");
-        let person = engine.identity().device_cert.user_public_key;
-        let admin = tilo_server_protocol::servers::person_workspace_id(&person);
-
-        // The machine's own key, as it enrolled with the token the plan names.
-        let machine = "cd".repeat(32);
-        let nonce = "ab".repeat(16);
-        let plan_id = "0123456789abcdef0123456789abcdef";
-        let plan = serde_json::json!({
-            "schema": 1,
-            "plan": plan_id,
-            "revision": 1,
-            "destination": "tilo-server",
-            "name": "cupboard",
-            "network": { "addressing": "dhcp" },
-            "disk": { "kind": "empty" },
-            "unlock": "tpm",
-            "updates": "stable",
-            "hosting": [],
-            "open": [],
-            "token": { "nonce": nonce, "expires_at_ns": u64::MAX },
-        })
-        .to_string();
-        let runtime = tilo_rt::try_app().expect("the app runtime");
-        let planned = runtime.block_on(
-            engine
-                .ask_own_host(
-                    "machine.plan",
-                    serde_json::Map::from_iter([
-                        ("plan".to_owned(), plan.into()),
-                        ("label".to_owned(), "cupboard".into()),
-                        ("token_file".to_owned(), "/tmp/cupboard.token".into()),
-                        ("installer_url".to_owned(), "https://tilo.sh".into()),
-                    ]),
-                )
-                .expect("this device holds its own Servers workspace"),
-        );
-        assert!(planned.is_ok(), "the plan is written: {planned:?}");
-
-        // The person's approval, as their device keeps it: the machine's ask
-        // carries the plan's nonce, so the session knows which entry it is.
-        let ask = "ef".repeat(16);
-        session.shared.open_pair_device();
-        for _ in 0..5 {
-            session
-                .step(Duration::from_millis(16))
-                .expect("the sheet opens");
-        }
-        let idle = tilo_sheets::word("pair-device-waiting-nothing");
-        assert!(session.accessible_labels().contains(&idle));
-        {
-            let store = session
-                .shared
-                .sync
-                .as_ref()
-                .and_then(|sync| sync.person_resources())
-                .expect("the person's own workspace");
-            crate::enrollment::enter(
-                &store,
-                &tilo_enrollment::waiting::WaitingMachine {
-                    ask,
-                    device: machine.clone(),
-                    service: "ef".repeat(32),
-                    label: "cupboard".into(),
-                    hardware: String::new(),
-                    code: "123-456".into(),
-                    nonce,
-                },
-            )
-            .expect("the ask is kept in the person's own workspace");
-        }
-        // The person answers the machine through the same question surface an
-        // agent uses: the ask is a question while it waits, and answering it
-        // approves the machine.
-        session.shared.follow_pair_device();
-        session
-            .step(Duration::from_millis(16))
-            .expect("a pass without input");
-        let controls = session.controls();
-        assert!(
-            controls
-                .iter()
-                .any(|control| control.name == "Approve cupboard with code 123-456"),
-            "the request appears on the idle sheet: {controls:?}",
-        );
-        assert!(!session.accessible_labels().contains(&idle));
-        let questions = session
-            .shared
-            .asker
-            .questions()
-            .expect("the session publishes the questions it asks");
-        let question = questions
-            .pending()
-            .into_iter()
-            .find(|question| question.kind == crate::enrollment::KIND)
-            .expect("the machine asking to join is a question");
-        assert_eq!(question.label, "cupboard");
-        assert!(questions.answer(&question.handle, tilo_service::Answer::default()));
-        session.shared.follow_pair_device();
-
-        // The entry is the machine's under its device key once the session
-        // carried the approval out: the plan's own id names the entry before
-        // that, and the machine's key only after.
-        let deadline = tilo_test_env::hang_deadline();
-        while std::time::Instant::now() < deadline {
-            session.step(std::time::Duration::from_millis(1)).ok();
-            let entry = runtime.block_on(
-                engine
-                    .ask_own_host(
-                        "machine.show",
-                        serde_json::Map::from_iter([("plan".to_owned(), machine.clone().into())]),
-                    )
-                    .expect("this device holds its own Servers workspace"),
-            );
-            if entry.is_ok() {
-                assert!(
-                    runtime
-                        .block_on(
-                            engine
-                                .ask_own_host(
-                                    "machine.show",
-                                    serde_json::Map::from_iter([(
-                                        "plan".to_owned(),
-                                        plan_id.into(),
-                                    )]),
-                                )
-                                .expect("this device holds its own Servers workspace"),
-                        )
-                        .is_ok(),
-                    "the plan still reads under its own id: the entry keeps it"
-                );
-                assert_eq!(
-                    admin,
-                    tilo_server_protocol::servers::person_workspace_id(&person)
-                );
-                return;
-            }
-        }
-        panic!("the approval did not take the machine into its entry");
     }
 }

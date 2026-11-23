@@ -1819,7 +1819,6 @@
  "threshold identity": {
   "names": [
    "ThresholdIdentity",
-   "from_threshold_identity",
    "threshold_identity"
   ],
   "lines": 0
@@ -1898,8 +1897,6 @@
    "EnrollmentToken",
    "EnrollmentView",
    "Enrolment",
-   "EnrolmentRound1",
-   "EnrolmentRound2",
    "HANDOFF",
    "HANDOFFS",
    "HANDOFF_ACTION",
@@ -2117,7 +2114,6 @@
    "attach_deferred_handoff",
    "authenticate_launcher_handoff",
    "authenticated_password_handoff_is_bound_to_exact_setup_and_defer_clears_it",
-   "begin_enrolment",
    "begin_write_refuses_actual_home_before_handoff_or_writer",
    "begin_write_refuses_actual_protected_preparation_before_handoff_or_writer",
    "begin_write_refuses_actual_selected_apps_before_handoff_or_writer",
@@ -2570,7 +2566,6 @@
    "the_production_handoff_retains_ciphertext_until_verified",
    "the_resource_keeps_scans_and_handoffs_and_converges",
    "the_setup_handoff_copy",
-   "tilo_enrollment",
    "tilo_handoff",
    "timers_ring_once_per_deadline_across_restart_and_native_handoff",
    "tpm_handoff",
@@ -3221,7 +3216,6 @@
    "push_runtime_and_broker",
    "queued_publication_terminal_case",
    "read_request_rejects_ambient_paths_and_changed_operation_after_private_publication",
-   "real_threshold_share_restores_and_participates_in_broker_rounds",
    "realtime_delegation_trusts_only_broker_identity",
    "realtime_delegation_uses_only_broker_authenticated_identity",
    "receipt_publication_admission_memory_disk_and_poisoning",

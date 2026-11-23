@@ -1,8 +1,7 @@
-//! The person's root, held by this device, for enrollment and host retirement.
+//! The person's root, held by this device, for host retirement.
 
 use anyhow::Context;
-
-pub use tilo_enrollment::root::{RootSigner, load_root};
+use tilo_user_identity::StatementSigner;
 
 /// Sign a revocation of `device` with `root` and append it to the server
 /// state's revocation log at `state_root`, where every start of the host reads
@@ -14,7 +13,7 @@ pub use tilo_enrollment::root::{RootSigner, load_root};
 /// or replaced.
 pub fn revoke_device(
     state_root: &std::path::Path,
-    root: &dyn RootSigner,
+    root: &dyn StatementSigner,
     device: [u8; 32],
     reason: tilo_user_identity::RevocationReason,
 ) -> anyhow::Result<(tilo_user_identity::RevocationEntry, bool)> {
@@ -53,14 +52,13 @@ mod tests {
                 tilo_identity::provisioning::IdentityStorage::Files,
             )
             .unwrap();
-            assert!(load_root(None).is_err(), "no store named, no root");
-            let root = load_root(Some(&identities)).unwrap();
+            let root = tilo_identity::store::load_person_root(&identities).unwrap();
             assert_eq!(root.public_key(), person.verifying_key().to_bytes());
             let state = temp.path().join("state");
             std::fs::create_dir_all(&state).unwrap();
             let (entry, appended) = revoke_device(
                 &state,
-                root.as_ref(),
+                &root,
                 [62; 32],
                 tilo_user_identity::RevocationReason::Lost,
             )
@@ -90,7 +88,7 @@ mod tests {
                 serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
             metadata["secret_ref"]["backend"] = "fixture-unavailable-provider".into();
             std::fs::write(&record, serde_json::to_vec(&metadata).unwrap()).unwrap();
-            assert!(load_root(Some(&identities)).is_err());
+            assert!(tilo_identity::store::load_person_root(&identities).is_err());
         }
 
         phase host_record_public_projection_cannot_sign;
@@ -116,7 +114,7 @@ mod tests {
                 tilo_identity::store::resolve_active_identity(&identities),
                 Some(record)
             );
-            assert!(load_root(Some(&identities)).is_err());
+            assert!(tilo_identity::store::load_person_root(&identities).is_err());
         }
     }
 }

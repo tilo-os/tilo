@@ -789,21 +789,13 @@ pair-device-lasting = { $minutes ->
    *[other] Gilt einmal, für die nächsten { $minutes } Minuten.
 }
 pair-device-in-tilo = Auf einem Computer mit Tilo fügst du den Link in „Arbeitsbereich beitreten“ ein.
-pair-device-local-link = Wähle auf dem neuen Tilo-Gerät „Meine vorhandene Tilo-Identität verwenden“ und füge den Link ein. Vergleiche vor der Bestätigung die Codes.
-pair-device-nearby = Dein neues Gerät erreicht diesen Computer nicht von unterwegs, deshalb gibt es keinen Link. Füge es stattdessen in der Nähe hinzu: Wähle auf dem neuen Gerät „Meine vorhandene Tilo-Identität verwenden“. Wähle dann in den Einstellungen unter „Deine Geräte“ „Gerät hinzufügen“ und prüfe, dass beide denselben Code zeigen.
 pair-device-no-workspace = Öffne zuerst einen Arbeitsbereich: Der Link öffnet ihn auf deinem neuen Gerät.
 pair-device-no-host = Dieser Computer weiß noch nicht, wo der Host des Arbeitsbereichs erreichbar ist. Öffne den Arbeitsbereich erneut und füge das Gerät dann hinzu.
 pair-device-not-yours = Dieser Computer ist nicht als du angemeldet und kann daher kein neues Gerät aufnehmen.
 pair-device-no-link = Der Link ließ sich nicht erstellen. Schließe dies und versuche es noch einmal.
-pair-device-waiting-title = Geräteanfragen
-pair-device-waiting-nothing = Wir warten auf die Anfrage eines Geräts.
-pair-device-waiting-code = Code { $code }
-pair-device-waiting-approve = Bestätigen
-pair-device-waiting-approve-code = { $device } mit Code { $code } bestätigen
-pair-device-waiting-deny-device = { $device } ablehnen
-pair-device-waiting-decline = Ablehnen
-pair-device-link-field = Link von deinem neuen Gerät
-pair-device-link-use = Link verwenden
-so-tilo-pair-device-link-approve = Das Gerät zulassen, das beitreten möchte
-so-tilo-pair-device-link-decline = Das Gerät ablehnen, das beitreten möchte
-so-tilo-pair-device-link-link = Das Gerät zulassen, dessen Verknüpfung eingefügt wurde
+pair-device-ticket-description = Gib dieses Ticket auf deinem neuen Computer ein, damit er einer deiner wird.
+pair-device-ticket-label = Das Ticket
+pair-device-ticket-copy = Ticket kopieren
+pair-device-ticket-alt = Das Ticket als Code zum Scannen
+pair-device-ticket-in-tilo = Öffne auf dem neuen Computer Tilo, wähle „Meine vorhandene Identität verwenden“ und tippe das Ticket ein. Alternativ kannst du dort tilo login mit dem Ticket ausführen.
+pair-device-ticket-asking = Dieser Computer stellt ein Ticket aus …

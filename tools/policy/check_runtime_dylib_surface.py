@@ -273,8 +273,8 @@ LAZY_EDGES = {
 TABLES = {
     "mime_guess": "an extension table of ~1400 string slices; the runtime looks types up "
                   "through tilo-mime",
-    "bip39": "a wordlist of 2048 string slices; threshold-identity encodes recovery phrases "
-             "itself",
+    "bip39": "a wordlist of 2048 string slices; tilo-user-identity encodes recovery "
+             "phrases itself",
 }
 
 

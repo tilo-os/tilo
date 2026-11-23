@@ -55,8 +55,8 @@
 //! - No I/O. The crate is pure types + pure functions. Where a machine keeps
 //!   these values — the device key in its keystore, certificates, revocations
 //!   — is `tilo-device-identity`.
-//! - No key recovery / paper share. `threshold-identity` already
-//!   solves that; this crate is single-key so the wire shape stays simple.
+//! - No key storage or recovery flow. [`recovery_words`] only encodes a
+//!   root seed as words; keeping and restoring it is `tilo-identity`'s.
 //! - No transport. Peers exchange enrollment tokens out-of-band
 //!   (QR code, LAN mdns, typed string); this crate serialises the
 //!   token and validates it, but does not send it.
@@ -80,6 +80,7 @@ pub mod enrollment;
 pub mod fleet;
 pub mod image;
 pub mod projection;
+pub mod recovery_words;
 pub mod revocation;
 pub mod root_statement;
 pub mod sign;

@@ -127,9 +127,9 @@ impl OnboardingView {
                 );
                 let words = match state {
                     OnboardingVisualState::RecoveryKeyDifferent => {
-                        threshold_identity::bip39::encode(&[0x5a; 32])
+                        tilo_user_identity::recovery_words::encode(&[0x5a; 32])
                     }
-                    _ => threshold_identity::bip39::encode(&seed),
+                    _ => tilo_user_identity::recovery_words::encode(&seed),
                 }
                 .map(|words| words.to_string())
                 .unwrap_or_default();
@@ -181,7 +181,7 @@ impl OnboardingView {
                 let _ = self.flow.complete(minted);
                 if state == OnboardingVisualState::BackupRecoveryKey {
                     let mut copy = RecoveryKeyCopy::new(
-                        threshold_identity::bip39::encode(&[0x3f; 32]).unwrap_or_default(),
+                        tilo_user_identity::recovery_words::encode(&[0x3f; 32]).unwrap_or_default(),
                         self.key_answers.clone(),
                     );
                     copy.checks = [3, 11, 20];

@@ -19,8 +19,8 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::persist::{load_device_key, read_device_cert};
-use tilo_enrollment::root::PersonSigner;
 use tilo_identity::provisioning::IdentityStorage;
+use tilo_identity::store::SigningIdentity;
 use tilo_user_identity::StatementSigner as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, SignInProof};
 
@@ -29,7 +29,7 @@ use crate::login;
 /// The person this computer holds the root of.
 pub struct Person {
     /// Their root, from the identity store it is kept in.
-    pub root: PersonSigner,
+    pub root: SigningIdentity,
     pub device: SigningKey,
     /// The certificate the root signed for [`Self::device`].
     pub cert: DeviceCert,
@@ -106,7 +106,7 @@ pub fn held() -> Result<Option<Person>> {
     } else {
         String::new()
     };
-    let root = PersonSigner::new(identity);
+    let root = identity;
     let user = root.public_key();
     let paths = paths();
     let cert = read_device_cert(&paths.device_cert_for_user(&user))
@@ -330,7 +330,7 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
 pub fn restore(words: &str) -> Result<Person> {
     convert_earlier()?;
     let dir = dir()?;
-    tilo_enrollment::install::restore_from_recovery_words(
+    tilo_identity::provisioning::restore_from_recovery_words(
         &dir,
         &paths(),
         words,
@@ -818,7 +818,7 @@ mod tests {
         )
         .unwrap();
         let person = Person {
-            root: PersonSigner::new(tilo_identity::store::load_from_path(kept).unwrap()),
+            root: tilo_identity::store::load_from_path(kept).unwrap(),
             device: device_key,
             cert,
             name: "Ada".into(),

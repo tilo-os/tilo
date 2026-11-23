@@ -220,7 +220,6 @@ doc = false
 "console-control" = { path = "../../crates/os/console-control", default-features = false, features = [] }
 "console-model" = { path = "../../apps/console-model", default-features = false, features = [] }
 "console-model-wasm" = { path = "../../apps/console-model-wasm", default-features = false, features = [] }
-"const-crc32-nostd-1_3_1" = { package = "const-crc32-nostd", version = "^1.3.1", default-features = false, features = [] }
 "const-oid-0_10_2" = { package = "const-oid", version = "^0.10.2", default-features = false, features = ["db"] }
 "const-oid-0_9_6" = { package = "const-oid", version = "^0.9.6", default-features = false, features = ["db", "std"] }
 "constant_time_eq-0_4_2" = { package = "constant_time_eq", version = "^0.4.2", default-features = false, features = ["default", "std"] }
@@ -394,9 +393,6 @@ doc = false
 "fontconfig-parser-0_5_8" = { package = "fontconfig-parser", version = "^0.5.8", default-features = false, features = [] }
 "fontdb-0_23_0" = { package = "fontdb", version = "^0.23.0", default-features = false, features = ["default", "fontconfig", "fontconfig-parser", "fs", "memmap", "memmap2", "std"] }
 "form_urlencoded-1_2_3" = { package = "form_urlencoded", version = "^1.2.3", default-features = false, features = ["alloc", "default", "std"] }
-"frost-core-3_0_0" = { package = "frost-core", version = "^3.0.0", default-features = false, features = ["internals", "serde", "serialization"] }
-"frost-ed25519-3_0_0" = { package = "frost-ed25519", version = "^3.0.0", default-features = false, features = ["default", "serde", "serialization"] }
-"frost-rerandomized-3_0_0" = { package = "frost-rerandomized", version = "^3.0.0", default-features = false, features = ["serde", "serialization"] }
 "fs-content" = { path = "../../crates/system/fs-content", default-features = false, features = [] }
 "fs-native" = { path = "../../crates/system/fs-native", default-features = false, features = [] }
 "fs-protocol" = { path = "../../crates/system/fs-protocol", default-features = false, features = [] }
@@ -1018,7 +1014,6 @@ doc = false
 "serde_urlencoded-0_7_1" = { package = "serde_urlencoded", version = "^0.7.1", default-features = false, features = [] }
 "serde_with-3_21_0" = { package = "serde_with", version = "^3.21.0", default-features = false, features = ["alloc", "macros"] }
 "serde_yaml-0_9_34_deprecated" = { package = "serde_yaml", version = "^0.9.34+deprecated", default-features = false, features = [] }
-"serdect-0_2_0" = { package = "serdect", version = "^0.2.0", default-features = false, features = ["alloc", "default"] }
 "serdect-0_4_3" = { package = "serdect", version = "^0.4.3", default-features = false, features = [] }
 "serial2-0_2_37" = { package = "serial2", version = "^0.2.37", default-features = false, features = [] }
 "serial_test-3_4_0" = { package = "serial_test", version = "^3.4.0", default-features = false, features = ["async", "default", "logging"] }
@@ -1140,7 +1135,6 @@ doc = false
 "thiserror-1_0_69" = { package = "thiserror", version = "^1.0.69", default-features = false, features = [] }
 "thiserror-2_0_21" = { package = "thiserror", version = "^2.0.21", default-features = false, features = ["default", "std"] }
 "thread_local-1_1_9" = { package = "thread_local", version = "^1.1.9", default-features = false, features = [] }
-"threshold-identity" = { path = "../../crates/collab/threshold-identity", default-features = false, features = [] }
 "tiff-0_11_3" = { package = "tiff", version = "^0.11.3", default-features = false, features = ["default", "deflate", "fax", "jpeg", "lzw"] }
 "tilo-accessibility-settings" = { path = "../../crates/platform/tilo-accessibility-settings", default-features = false, features = ["model"] }
 "tilo-accesskit-winit-0_34_0" = { package = "tilo-accesskit-winit", path = "../../vendor/accesskit_winit", default-features = false, features = ["accesskit_unix", "rwh_06", "tokio"] }
@@ -1231,7 +1225,6 @@ doc = false
 "tilo-egress" = { path = "../../crates/runtime/egress", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../crates/system/endpoint-reachability", default-features = false, features = ["test-support"] }
 "tilo-engine-loader" = { path = "../../crates/runtime/engine-loader", default-features = false, features = [] }
-"tilo-enrollment" = { path = "../../crates/collab/tilo-enrollment", default-features = false, features = [] }
 "tilo-environment" = { path = "../../crates/vm/environment", default-features = false, features = [] }
 "tilo-esp-write" = { path = "../../crates/os/esp-write", default-features = false, features = [] }
 "tilo-extension" = { path = "../../crates/os/extension-helper", default-features = false, features = [] }
@@ -1782,7 +1775,6 @@ doc = false
 "compression-codecs-0_4_36" = { package = "compression-codecs", version = "^0.4.36", default-features = false, features = ["brotli", "flate2", "gzip", "memchr"] }
 "compression-core-0_4_31" = { package = "compression-core", version = "^0.4.31", default-features = false, features = [] }
 "concurrent-queue-2_5_0" = { package = "concurrent-queue", version = "^2.5.0", default-features = false, features = ["default", "std"] }
-"const-crc32-nostd-1_3_1" = { package = "const-crc32-nostd", version = "^1.3.1", default-features = false, features = [] }
 "const-oid-0_10_2" = { package = "const-oid", version = "^0.10.2", default-features = false, features = ["db"] }
 "const-oid-0_9_6" = { package = "const-oid", version = "^0.9.6", default-features = false, features = ["db", "std"] }
 "constant_time_eq-0_4_2" = { package = "constant_time_eq", version = "^0.4.2", default-features = false, features = ["default", "std"] }
@@ -1840,7 +1832,6 @@ doc = false
 "der-parser-10_0_0" = { package = "der-parser", version = "^10.0.0", default-features = false, features = ["bigint", "default", "num-bigint", "std"] }
 "der_derive-0_7_3" = { package = "der_derive", version = "^0.7.3", default-features = false, features = [] }
 "deranged-0_5_6" = { package = "deranged", version = "^0.5.6", default-features = false, features = ["default", "powerfmt", "serde"] }
-"derive-getters-0_5_0" = { package = "derive-getters", version = "^0.5.0", default-features = false, features = ["default"] }
 "derive_builder-0_20_2" = { package = "derive_builder", version = "^0.20.2", default-features = false, features = ["default", "std"] }
 "derive_builder_core-0_20_2" = { package = "derive_builder_core", version = "^0.20.2", default-features = false, features = ["lib_has_std"] }
 "derive_builder_macro-0_20_2" = { package = "derive_builder_macro", version = "^0.20.2", default-features = false, features = ["lib_has_std"] }
@@ -1911,9 +1902,6 @@ doc = false
 "fontconfig-parser-0_5_8" = { package = "fontconfig-parser", version = "^0.5.8", default-features = false, features = [] }
 "fontdb-0_23_0" = { package = "fontdb", version = "^0.23.0", default-features = false, features = ["default", "fontconfig", "fontconfig-parser", "fs", "memmap", "memmap2", "std"] }
 "form_urlencoded-1_2_3" = { package = "form_urlencoded", version = "^1.2.3", default-features = false, features = ["alloc", "default", "std"] }
-"frost-core-3_0_0" = { package = "frost-core", version = "^3.0.0", default-features = false, features = ["internals", "serde", "serialization"] }
-"frost-ed25519-3_0_0" = { package = "frost-ed25519", version = "^3.0.0", default-features = false, features = ["default", "serde", "serialization"] }
-"frost-rerandomized-3_0_0" = { package = "frost-rerandomized", version = "^3.0.0", default-features = false, features = ["serde", "serialization"] }
 "fs-content" = { path = "../../crates/system/fs-content", default-features = false, features = [] }
 "fs-native" = { path = "../../crates/system/fs-native", default-features = false, features = [] }
 "fs-protocol" = { path = "../../crates/system/fs-protocol", default-features = false, features = [] }
@@ -2354,7 +2342,6 @@ doc = false
 "serde_spanned-1_1_1" = { package = "serde_spanned", version = "^1.1.1", default-features = false, features = ["alloc", "serde", "std"] }
 "serde_urlencoded-0_7_1" = { package = "serde_urlencoded", version = "^0.7.1", default-features = false, features = [] }
 "serde_with_macros-3_21_0" = { package = "serde_with_macros", version = "^3.21.0", default-features = false, features = [] }
-"serdect-0_2_0" = { package = "serdect", version = "^0.2.0", default-features = false, features = ["alloc", "default"] }
 "serdect-0_4_3" = { package = "serdect", version = "^0.4.3", default-features = false, features = [] }
 "serial_test_derive-3_4_0" = { package = "serial_test_derive", version = "^3.4.0", default-features = false, features = ["async", "default"] }
 "settings-store" = { path = "../../crates/system/settings-store", default-features = false, features = ["model", "watch"] }
@@ -2436,7 +2423,6 @@ doc = false
 "thiserror-impl-1_0_69" = { package = "thiserror-impl", version = "^1.0.69", default-features = false, features = [] }
 "thiserror-impl-2_0_21" = { package = "thiserror-impl", version = "^2.0.21", default-features = false, features = [] }
 "thread_local-1_1_9" = { package = "thread_local", version = "^1.1.9", default-features = false, features = [] }
-"threshold-identity" = { path = "../../crates/collab/threshold-identity", default-features = false, features = [] }
 "tiff-0_11_3" = { package = "tiff", version = "^0.11.3", default-features = false, features = ["default", "deflate", "fax", "jpeg", "lzw"] }
 "tilo-action-policy" = { path = "../../crates/collab/action-policy", default-features = false, features = [] }
 "tilo-actions" = { path = "../../crates/collab/actions", default-features = false, features = ["off-worker", "test-support"] }
@@ -2604,7 +2590,6 @@ doc = false
 "vergen-lib-0_1_6" = { package = "vergen-lib", version = "^0.1.6", default-features = false, features = ["build", "default", "git"] }
 "version-compare-0_2_1" = { package = "version-compare", version = "^0.2.1", default-features = false, features = [] }
 "version_check-0_9_5" = { package = "version_check", version = "^0.9.5", default-features = false, features = [] }
-"visibility-0_1_1" = { package = "visibility", version = "^0.1.1", default-features = false, features = [] }
 "vte-0_15_0" = { package = "vte", version = "^0.15.0", default-features = false, features = ["ansi", "bitflags", "cursor-icon", "default", "log", "serde", "std"] }
 "wacore-derive-0_7_0" = { package = "wacore-derive", version = "^0.7.0", default-features = false, features = [] }
 "walkdir-2_5_0" = { package = "walkdir", version = "^2.5.0", default-features = false, features = [] }
@@ -2877,7 +2862,6 @@ doc = false
 "console-control" = { path = "../../crates/os/console-control", default-features = false, features = [] }
 "console-model" = { path = "../../apps/console-model", default-features = false, features = [] }
 "console-model-wasm" = { path = "../../apps/console-model-wasm", default-features = false, features = [] }
-"const-crc32-nostd-1_3_1" = { package = "const-crc32-nostd", version = "^1.3.1", default-features = false, features = [] }
 "const-oid-0_10_2" = { package = "const-oid", version = "^0.10.2", default-features = false, features = ["db"] }
 "const-oid-0_9_6" = { package = "const-oid", version = "^0.9.6", default-features = false, features = ["db", "std"] }
 "constant_time_eq-0_4_2" = { package = "constant_time_eq", version = "^0.4.2", default-features = false, features = ["default", "std"] }
@@ -3051,9 +3035,6 @@ doc = false
 "fontconfig-parser-0_5_8" = { package = "fontconfig-parser", version = "^0.5.8", default-features = false, features = [] }
 "fontdb-0_23_0" = { package = "fontdb", version = "^0.23.0", default-features = false, features = ["default", "fontconfig", "fontconfig-parser", "fs", "memmap", "memmap2", "std"] }
 "form_urlencoded-1_2_3" = { package = "form_urlencoded", version = "^1.2.3", default-features = false, features = ["alloc", "default", "std"] }
-"frost-core-3_0_0" = { package = "frost-core", version = "^3.0.0", default-features = false, features = ["internals", "serde", "serialization"] }
-"frost-ed25519-3_0_0" = { package = "frost-ed25519", version = "^3.0.0", default-features = false, features = ["default", "serde", "serialization"] }
-"frost-rerandomized-3_0_0" = { package = "frost-rerandomized", version = "^3.0.0", default-features = false, features = ["serde", "serialization"] }
 "fs-content" = { path = "../../crates/system/fs-content", default-features = false, features = [] }
 "fs-native" = { path = "../../crates/system/fs-native", default-features = false, features = [] }
 "fs-protocol" = { path = "../../crates/system/fs-protocol", default-features = false, features = [] }
@@ -3675,7 +3656,6 @@ doc = false
 "serde_urlencoded-0_7_1" = { package = "serde_urlencoded", version = "^0.7.1", default-features = false, features = [] }
 "serde_with-3_21_0" = { package = "serde_with", version = "^3.21.0", default-features = false, features = ["alloc", "macros"] }
 "serde_yaml-0_9_34_deprecated" = { package = "serde_yaml", version = "^0.9.34+deprecated", default-features = false, features = [] }
-"serdect-0_2_0" = { package = "serdect", version = "^0.2.0", default-features = false, features = ["alloc", "default"] }
 "serdect-0_4_3" = { package = "serdect", version = "^0.4.3", default-features = false, features = [] }
 "serial2-0_2_37" = { package = "serial2", version = "^0.2.37", default-features = false, features = [] }
 "serial_test-3_4_0" = { package = "serial_test", version = "^3.4.0", default-features = false, features = ["async", "default", "logging"] }
@@ -3797,7 +3777,6 @@ doc = false
 "thiserror-1_0_69" = { package = "thiserror", version = "^1.0.69", default-features = false, features = [] }
 "thiserror-2_0_21" = { package = "thiserror", version = "^2.0.21", default-features = false, features = ["default", "std"] }
 "thread_local-1_1_9" = { package = "thread_local", version = "^1.1.9", default-features = false, features = [] }
-"threshold-identity" = { path = "../../crates/collab/threshold-identity", default-features = false, features = [] }
 "tiff-0_11_3" = { package = "tiff", version = "^0.11.3", default-features = false, features = ["default", "deflate", "fax", "jpeg", "lzw"] }
 "tilo-accessibility-settings" = { path = "../../crates/platform/tilo-accessibility-settings", default-features = false, features = ["model"] }
 "tilo-accesskit-winit-0_34_0" = { package = "tilo-accesskit-winit", path = "../../vendor/accesskit_winit", default-features = false, features = ["accesskit_unix", "rwh_06", "tokio"] }
@@ -3888,7 +3867,6 @@ doc = false
 "tilo-egress" = { path = "../../crates/runtime/egress", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../crates/system/endpoint-reachability", default-features = false, features = ["test-support"] }
 "tilo-engine-loader" = { path = "../../crates/runtime/engine-loader", default-features = false, features = [] }
-"tilo-enrollment" = { path = "../../crates/collab/tilo-enrollment", default-features = false, features = [] }
 "tilo-environment" = { path = "../../crates/vm/environment", default-features = false, features = [] }
 "tilo-esp-write" = { path = "../../crates/os/esp-write", default-features = false, features = [] }
 "tilo-extension" = { path = "../../crates/os/extension-helper", default-features = false, features = [] }
@@ -4440,7 +4418,6 @@ doc = false
 "compression-codecs-0_4_36" = { package = "compression-codecs", version = "^0.4.36", default-features = false, features = ["brotli", "flate2", "gzip", "memchr"] }
 "compression-core-0_4_31" = { package = "compression-core", version = "^0.4.31", default-features = false, features = [] }
 "concurrent-queue-2_5_0" = { package = "concurrent-queue", version = "^2.5.0", default-features = false, features = ["default", "std"] }
-"const-crc32-nostd-1_3_1" = { package = "const-crc32-nostd", version = "^1.3.1", default-features = false, features = [] }
 "const-oid-0_10_2" = { package = "const-oid", version = "^0.10.2", default-features = false, features = ["db"] }
 "const-oid-0_9_6" = { package = "const-oid", version = "^0.9.6", default-features = false, features = ["db", "std"] }
 "constant_time_eq-0_4_2" = { package = "constant_time_eq", version = "^0.4.2", default-features = false, features = ["default", "std"] }
@@ -4497,7 +4474,6 @@ doc = false
 "der-parser-10_0_0" = { package = "der-parser", version = "^10.0.0", default-features = false, features = ["bigint", "default", "num-bigint", "std"] }
 "der_derive-0_7_3" = { package = "der_derive", version = "^0.7.3", default-features = false, features = [] }
 "deranged-0_5_6" = { package = "deranged", version = "^0.5.6", default-features = false, features = ["default", "powerfmt", "serde"] }
-"derive-getters-0_5_0" = { package = "derive-getters", version = "^0.5.0", default-features = false, features = ["default"] }
 "derive_builder-0_20_2" = { package = "derive_builder", version = "^0.20.2", default-features = false, features = ["default", "std"] }
 "derive_builder_core-0_20_2" = { package = "derive_builder_core", version = "^0.20.2", default-features = false, features = ["lib_has_std"] }
 "derive_builder_macro-0_20_2" = { package = "derive_builder_macro", version = "^0.20.2", default-features = false, features = ["lib_has_std"] }
@@ -4568,9 +4544,6 @@ doc = false
 "fontconfig-parser-0_5_8" = { package = "fontconfig-parser", version = "^0.5.8", default-features = false, features = [] }
 "fontdb-0_23_0" = { package = "fontdb", version = "^0.23.0", default-features = false, features = ["default", "fontconfig", "fontconfig-parser", "fs", "memmap", "memmap2", "std"] }
 "form_urlencoded-1_2_3" = { package = "form_urlencoded", version = "^1.2.3", default-features = false, features = ["alloc", "default", "std"] }
-"frost-core-3_0_0" = { package = "frost-core", version = "^3.0.0", default-features = false, features = ["internals", "serde", "serialization"] }
-"frost-ed25519-3_0_0" = { package = "frost-ed25519", version = "^3.0.0", default-features = false, features = ["default", "serde", "serialization"] }
-"frost-rerandomized-3_0_0" = { package = "frost-rerandomized", version = "^3.0.0", default-features = false, features = ["serde", "serialization"] }
 "fs-content" = { path = "../../crates/system/fs-content", default-features = false, features = [] }
 "fs-native" = { path = "../../crates/system/fs-native", default-features = false, features = [] }
 "fs-protocol" = { path = "../../crates/system/fs-protocol", default-features = false, features = [] }
@@ -5011,7 +4984,6 @@ doc = false
 "serde_spanned-1_1_1" = { package = "serde_spanned", version = "^1.1.1", default-features = false, features = ["alloc", "serde", "std"] }
 "serde_urlencoded-0_7_1" = { package = "serde_urlencoded", version = "^0.7.1", default-features = false, features = [] }
 "serde_with_macros-3_21_0" = { package = "serde_with_macros", version = "^3.21.0", default-features = false, features = [] }
-"serdect-0_2_0" = { package = "serdect", version = "^0.2.0", default-features = false, features = ["alloc", "default"] }
 "serdect-0_4_3" = { package = "serdect", version = "^0.4.3", default-features = false, features = [] }
 "serial_test_derive-3_4_0" = { package = "serial_test_derive", version = "^3.4.0", default-features = false, features = ["async", "default"] }
 "settings-store" = { path = "../../crates/system/settings-store", default-features = false, features = ["model", "watch"] }
@@ -5093,7 +5065,6 @@ doc = false
 "thiserror-impl-1_0_69" = { package = "thiserror-impl", version = "^1.0.69", default-features = false, features = [] }
 "thiserror-impl-2_0_21" = { package = "thiserror-impl", version = "^2.0.21", default-features = false, features = [] }
 "thread_local-1_1_9" = { package = "thread_local", version = "^1.1.9", default-features = false, features = [] }
-"threshold-identity" = { path = "../../crates/collab/threshold-identity", default-features = false, features = [] }
 "tiff-0_11_3" = { package = "tiff", version = "^0.11.3", default-features = false, features = ["default", "deflate", "fax", "jpeg", "lzw"] }
 "tilo-action-policy" = { path = "../../crates/collab/action-policy", default-features = false, features = [] }
 "tilo-actions" = { path = "../../crates/collab/actions", default-features = false, features = ["off-worker", "test-support"] }
@@ -5261,7 +5232,6 @@ doc = false
 "vergen-lib-0_1_6" = { package = "vergen-lib", version = "^0.1.6", default-features = false, features = ["build", "default", "git"] }
 "version-compare-0_2_1" = { package = "version-compare", version = "^0.2.1", default-features = false, features = [] }
 "version_check-0_9_5" = { package = "version_check", version = "^0.9.5", default-features = false, features = [] }
-"visibility-0_1_1" = { package = "visibility", version = "^0.1.1", default-features = false, features = [] }
 "vte-0_15_0" = { package = "vte", version = "^0.15.0", default-features = false, features = ["ansi", "bitflags", "cursor-icon", "default", "log", "serde", "std"] }
 "wacore-derive-0_7_0" = { package = "wacore-derive", version = "^0.7.0", default-features = false, features = [] }
 "walkdir-2_5_0" = { package = "walkdir", version = "^2.5.0", default-features = false, features = [] }

@@ -12,7 +12,6 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use crate::store::IdentityRecord;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use threshold_identity::ThresholdIdentity;
 use tilo_device_identity::persist::DeviceKeyOwnership;
 use tilo_device_identity::{IdentityPaths, persist};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
@@ -304,14 +303,12 @@ fn create_named_primary_identity(
     avatar_color: [u8; 3],
     storage: IdentityStorage,
 ) -> io::Result<ProvisionOutcome> {
-    let mut rng = UnwrapErr(SysRng);
-    let identity = ThresholdIdentity::bootstrap_single_device(&mut rng)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    let pubkey_hex = hex::encode(identity.group_public_key().as_bytes());
+    let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+    let pubkey_hex = hex::encode(root.verifying_key().as_bytes());
     import_whole_identity(
         identity_dir,
         PRIMARY_IDENTITY_ID,
-        &identity,
+        &root,
         display_name,
         avatar_color,
         storage,
@@ -359,11 +356,10 @@ pub fn import_single_device_root_as(
     storage: IdentityStorage,
 ) -> io::Result<PathBuf> {
     prepare_identity_directory(identity_dir)?;
-    let identity = ThresholdIdentity::from_single_device_seed(&Zeroizing::new(root.to_bytes()));
     let path = import_whole_identity(
         identity_dir,
         id,
-        &identity,
+        root,
         display_name,
         crate::store::DEFAULT_AVATAR_COLOR,
         storage,
@@ -375,17 +371,17 @@ pub fn import_single_device_root_as(
 fn import_whole_identity(
     identity_dir: &Path,
     id: &str,
-    identity: &ThresholdIdentity,
+    root: &ed25519_dalek::SigningKey,
     display_name: &str,
     avatar_color: [u8; 3],
     storage: IdentityStorage,
 ) -> io::Result<PathBuf> {
-    let mut record = IdentityRecord::from_threshold_identity(
-        identity,
+    let mut record = IdentityRecord::from_root(
+        root,
         display_name,
         avatar_color,
         std::time::SystemTime::now(),
-    )?;
+    );
     let encoded = record.to_json_bytes();
     record.threshold_identity.secret_bytes.zeroize();
     let bytes = Zeroizing::new(encoded?);
@@ -407,23 +403,23 @@ fn ensure_primary_identity_in_context(
 
     // Mint through the same encoder the interactive ceremony uses, so
     // there's exactly one writer of the on-disk record — the two provisioning paths can't drift apart in what they store.
-    let mut rng = UnwrapErr(SysRng);
-    let identity = ThresholdIdentity::bootstrap_single_device(&mut rng)
-        .map_err(|e| io::Error::other(e.to_string()))?;
-    let pubkey_hex = hex::encode(identity.group_public_key().as_bytes());
+    let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+    let pubkey_hex = hex::encode(root.verifying_key().as_bytes());
     let display_name = match context {
         IdentityProvisioningContext::NativeTilo => String::new(),
         IdentityProvisioningContext::LegacyLinuxHost => login_account_display_name(),
         #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
         IdentityProvisioningContext::ThrowawayTest => THROWAWAY_TEST_IDENTITY_NAME.to_owned(),
     };
-    let record = IdentityRecord::from_threshold_identity(
-        &identity,
+    let mut record = IdentityRecord::from_root(
+        &root,
         &display_name,
         crate::store::DEFAULT_AVATAR_COLOR,
         std::time::SystemTime::now(),
-    )?;
-    let bytes = record.to_json_bytes()?;
+    );
+    let encoded = record.to_json_bytes();
+    record.threshold_identity.secret_bytes.zeroize();
+    let bytes = Zeroizing::new(encoded?);
 
     import_identity_record(identity_dir, PRIMARY_IDENTITY_ID, &bytes, storage)?;
     mark_founding(identity_dir)?;
@@ -526,6 +522,39 @@ pub fn ensure_collaboration_identity_for_legacy_linux_host(
     )
 }
 
+/// Restore the person encoded in their recovery words and certify this device.
+/// The recovery key supplies the root alone. Any presentation already kept
+/// for that identity stays with the record.
+///
+/// # Errors
+/// Invalid words, words for a different active identity, or a failure to
+/// restore the record or certify the device.
+#[cfg(unix)]
+pub fn restore_from_recovery_words(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    words: &str,
+    label: Option<&str>,
+    storage: IdentityStorage,
+) -> io::Result<crate::store::IdentityProfile> {
+    let profile = crate::store::IdentityRegistryStore::at(identity_dir)
+        .import_recovery_words(words, "", storage)?;
+    let runtime_id = profile
+        .record_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid identity id"))?;
+    crate::store::set_active_identity(identity_dir, runtime_id)?;
+    if let Some(label) = label {
+        ensure_collaboration_identity_with_device_label(identity_dir, paths, storage, label)?;
+    } else {
+        ensure_collaboration_identity(identity_dir, paths, storage)?;
+    }
+    crate::device_fleet::DeviceFleetStore::at(identity_dir, paths.clone())
+        .register_current_device(&profile.id)?;
+    Ok(profile)
+}
+
 /// Complete this device's own side of an enrollment made without the root: the
 /// certificate filed for its person, a public record naming that person as
 /// the account's active identity under `identity_dir`, and a fleet that knows
@@ -537,6 +566,49 @@ pub fn complete_enrolled_device(
     identity_dir: &Path,
     paths: &IdentityPaths,
     now_ns: u64,
+) -> Result<bool, io::Error> {
+    complete_enrolled(identity_dir, paths, now_ns, |person| {
+        crate::store::public_member_record(
+            crate::store::UNNAMED_DISPLAY_NAME,
+            [88, 101, 242],
+            person,
+        )
+    })
+}
+
+/// [`complete_enrolled_device`] for a device certified before it ever ran
+/// (an image the person's own machine wrote), which names the person as that
+/// machine knows them, rather than unnamed until their record arrives.
+///
+/// # Errors
+/// As [`complete_enrolled_device`].
+pub fn complete_enrolled_device_named(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    now_ns: u64,
+    display_name: &str,
+    avatar_color: [u8; 3],
+    photo: Option<tilo_identity_client::ProfilePhoto>,
+) -> Result<bool, io::Error> {
+    complete_enrolled(identity_dir, paths, now_ns, |person| {
+        crate::store::public_member_record_with_presentation(
+            if display_name.trim().is_empty() {
+                crate::store::UNNAMED_DISPLAY_NAME
+            } else {
+                display_name
+            },
+            avatar_color,
+            person,
+            photo,
+        )
+    })
+}
+
+fn complete_enrolled(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    now_ns: u64,
+    record: impl FnOnce([u8; 32]) -> io::Result<Vec<u8>>,
 ) -> Result<bool, io::Error> {
     if !persist::joined_device_is_ready(paths, now_ns)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
@@ -552,11 +624,7 @@ pub fn complete_enrolled_device(
     let record_id = public_record_id(&identity_id);
     let record_path = identity_dir.join(format!("{record_id}.json"));
     if !record_path.exists() {
-        let record = crate::store::public_member_record(
-            crate::store::UNNAMED_DISPLAY_NAME,
-            [88, 101, 242],
-            cert.user_public_key,
-        )?;
+        let record = record(cert.user_public_key)?;
         tilo_files::native::atomic::write_with_mode(&record_path, &record, 0o600)?;
     }
     if crate::store::resolve_active_identity(identity_dir).is_none() {
@@ -1451,6 +1519,67 @@ fn machine_label(root: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod one_cert_tests;
+
+#[cfg(all(test, unix))]
+mod recovery_words_tests {
+    use super::*;
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the test asserts what it restored before it returns"
+    )]
+    fn recovery_words_restore_the_person_on_a_headless_device()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tilo_device_identity::persist::read_device_cert;
+
+        let source = tempfile::tempdir()?;
+        let identity = source.path().join("identity");
+        let source_paths = IdentityPaths::under(source.path().join("device"));
+        let storage = IdentityStorage::Files;
+        let user = create_person(&identity, &source_paths, "Ada", "Original", storage)?;
+        let words = crate::store::recovery_words(identity.join(PRIMARY_IDENTITY_FILE))?;
+        let original = read_device_cert(&source_paths.device_cert)?;
+
+        let target = tempfile::tempdir()?;
+        let identity = target.path().join("identity");
+        let target_paths = IdentityPaths::under(target.path().join("device"));
+        let profile = restore_from_recovery_words(
+            &identity,
+            &target_paths,
+            &words,
+            Some("Headless"),
+            storage,
+        )?;
+        let cert = read_device_cert(&target_paths.device_cert)?;
+        assert_eq!(profile.user_public_key, user);
+        assert_eq!(cert.user_public_key, user);
+        assert_eq!(cert.device_label, "Headless");
+        assert_ne!(cert.device_public_key, original.device_public_key);
+        let now_ns = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos(),
+        )?;
+        verify_collaboration_identity(&identity, &target_paths, now_ns)?;
+
+        let repeated =
+            restore_from_recovery_words(&identity, &target_paths, &words, None, storage)?;
+        assert_eq!(repeated, profile);
+        assert_eq!(read_device_cert(&target_paths.device_cert)?, cert);
+        let wrong = restore_from_recovery_words(
+            source.path().join("identity").as_path(),
+            &source_paths,
+            "not a valid recovery key",
+            None,
+            storage,
+        )
+        .expect_err("invalid words");
+        assert!(crate::store::recovery_words_error(&wrong).is_some());
+        assert_eq!(read_device_cert(&source_paths.device_cert)?, original);
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -47,8 +47,6 @@ js-sys = "=0.3.85"
 # The certified peer over WebTransport, its live session and the member's client.
 tilo-session-client = { version = "0.1.0", path = "../../session/client", features = ["toolkit"] }
 tilo-session-actions = { version = "0.1.0", path = "../../session/session-actions" }
-# The device requester uses the same enrollment as the native CLI.
-tilo-enrollment = { version = "0.1.0", path = "../../collab/tilo-enrollment" }
 # The ticket a page's host serves it, and the approval the tab signs with its root.
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 # The identity layer's device side: certification transport, pairing, the sign-in proof.
@@ -60,11 +58,10 @@ tilo-workspace-keys = { version = "0.1.0", path = "../../collab/workspace-keys" 
 # The picture sources and layers a call of the page encodes and shows.
 tilo-live = { version = "0.1.0", path = "../../collab/tilo-live", features = ["live_session"] }
 tilo-server-protocol = { version = "0.1.0", path = "../../server/tilo-server-protocol" }
+# Also the 24 words that restore a person's root (`recovery_words`): the
+# identity store's one recovery format, so the page encodes and reads the
+# same phrase a computer does.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
-# The 24 words that restore a person's root: the identity store's one
-# recovery format, so the page encodes and reads the same phrase a computer
-# does.
-threshold-identity = { version = "0.1.0", path = "../../collab/threshold-identity" }
 ed25519-dalek.workspace = true
 hex.workspace = true
 # Request ids for the invitations the page asks its host to make.

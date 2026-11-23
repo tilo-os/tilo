@@ -407,10 +407,9 @@ There are three certificate formats: `tilo_user_identity::DeviceCert`
 `tilo-auth` sibling `Token` (`sibling/`, 2,085) that wraps the second. MLS
 credentials in `key-group` are a separate layer and stay.
 
-There are four device lists: `CertifiedFleet` (`tilo-user-identity`
+There are three device lists: `CertifiedFleet` (`tilo-user-identity`
 `fleet.rs`, a verifier), `DeviceFleetStore` (`tilo-identity` `device_fleet/`,
-on disk at `<identity_dir>/fleets/<id>.json`), the `fleet.json` that
-`tilo-enrollment` `install.rs` writes itself, and the
+on disk at `<identity_dir>/fleets/<id>.json`), and the
 per-workspace `WorkspaceDirectory` (`tilo-user-identity` `directory.rs`).
 Revocation has a defect: `tilo-server` `admin.rs` `persist_fleet_revocation`
 defaults to `$XDG_CONFIG_HOME/tilo/identities`, while every other reader
@@ -419,8 +418,9 @@ default a revocation never reaches the fleet.
 
 There are seven ways to add a device:
 
-1. `tilo-enrollment`: `join_with_token`, `pair_device`, approval and
-   transport (5,718).
+1. The imager: the person's root on the machine writing an image certifies
+   the image's new device key, and the key and certificate go where a
+   ticket's login keeps them (`imager` `handoff.rs`).
 2. `tilo-identity` `certification_ceremony` with `pairing_code`,
    `enrollment/` and `enrolled_transport` (about 5,300).
 3. The `tilo-enroll` and `tilo-approve` binaries in `tilo-server` (1,741).
@@ -477,9 +477,8 @@ There are seven ways to add a device:
 | `tilo-api` `Device` key file and `TILO_DEVICE_DIR` | ~120 |
 | `BootKeyCert` and the duplicate verification in `tilo-auth` `sibling/token.rs` | ~550 |
 | `certification_ceremony` beyond `pairing_code` | ~600 |
-| Enrolment logic in the `tilo-enroll` and `tilo-approve` binaries (thin CLIs over `tilo-enrollment`) | ~800 |
+| Enrolment logic in the `tilo-enroll` and `tilo-approve` binaries | ~800 |
 | `tilo-auth` `PeerRegistrar` enrolment (moves onto the enrolment transport) | ~400 |
-| Direct `fleet.json` writes in `tilo-enrollment` `install.rs` | ~300 |
 
 Owner: **One identity** session.
 
@@ -505,9 +504,8 @@ There are two recovery formats (the 24 words and `tilo-auth`'s modhex on
 disk). There are five sign-in paths: the greeter
 through `pam-tilo` to the `tilo-auth` daemon, `boot-signin`, `tilo-api`
 `sign_in.rs` with `oauth.rs` and `SignInProof`, the browser `sign-in.mjs`,
-and `tilo login`. `threshold-identity` (2,644) implements key generation
-across devices, but outside tests only its one-of-one and word paths are
-used.
+and `tilo login`. A person's root is one Ed25519 seed on the device that
+holds it; its 24 words are `tilo-user-identity`'s `recovery_words`.
 
 ### What survives
 
@@ -535,7 +533,6 @@ used.
 |---|---|
 | The old `$XDG_STATE_HOME/tilo/identity` probe, after one migration | ~20 |
 | The `tilo-auth` modhex recovery format | ~400 |
-| `threshold-identity` paths with no caller, until a product needs them | ~2,000 |
 | Overlapping layers inside `tilo-identity` `store/` | to be measured as they fold |
 
 Devices and identity together come to about 6–7k lines, and they leave one
@@ -1158,7 +1155,7 @@ session whose push comes out net positive stops and asks before pushing.
 
 | Piece | Left on main | On a branch now | Session |
 |---|---|---|---|
-| Devices, identity | `tilo-enrollment`, `threshold-identity`, nearby pairing and Settings' old add-a-device flow, the browser root, and the page's own copy of `device-key.mjs`'s reader | the build server signed in from the laptop's root; Settings adds a device with a ticket and nearby pairing goes (−2.4k); the tilo.sh page checks approve with `tilo device add` and the page's login-code path goes in the same push; `page.mjs` imports `device-key.mjs`. `tilo device add` and `tilo login` are daemon ticket actions, and first boot, onboarding and the imager carry no identity of their own since eb928484901 (−6.6k); the boot key is an ordinary device certificate since 3ec9b6ef0b1 | One identity |
+| Devices, identity | nearby pairing and Settings' old add-a-device flow, the browser root | the build server signed in from the laptop's root; Settings adds a device with a ticket and nearby pairing goes (−2.4k); the tilo.sh page checks approve with `tilo device add` and the page's login-code path goes in the same push; `page.mjs` imports `device-key.mjs`. `tilo device add` and `tilo login` are daemon ticket actions, and first boot, onboarding and the imager carry no identity of their own since eb928484901 (−6.6k); the boot key is an ordinary device certificate since 3ec9b6ef0b1; `threshold-identity` and `tilo-enrollment` go: a root is a plain key in the same stored record, certification moves into `tilo-server-client`, the imager certifies an image's device with the person's root and writes it where a ticket's login keeps it, Add a device shows a ticket where no web host keeps the workspace, and the page reads device keys through `device-key.mjs` (−8.8k) | One identity |
 | Sync | session document writes still arriving as envelopes until they move onto actions, the old layout's one-time move into the device store (goes once the company move has run), the file path's tail (the Files daemon's keys from the identity service; `kept_documents`; `runtime-fs` blobs and `content-device`, after apps read content through the broker), broker overlap, `settings-store` document layer, `app-state` `FsStore`, `tilo-server/1` | session document writes onto actions with the envelopes deleted; the file path's tail. One store per device since cb6fcf6f9fc (−44.0k); one file path since c4f20cecac1 (−15.1k); one tree writer since a60e81727f2 | One engine |
 | tilolang store | the redb pager outside resource-store; open, switch and scroll above their bars after the move (465, 108 and 43 ms against 289, 60 and 25); the host fields under `workspace.` (`workspace_field`, `Imp::WorkspaceMembers`), the host-declared `workspace` resource with `leases`, and `invoker.device` (6f60017184b) | the costs first, then the pager into resource-store; tilolang reads `workspace/members` as the ordinary published resource, and the host fields, the `workspace` resource, its `leases` and `invoker.device` are deleted; the store move landed in e39e9557706 (−49.7k) | tilolang onto the resource store |
 | App framework | Rust Chat (71k), Rust Tasks (13.5k), `apps/tilolang` (21k), 65 `*-model` crates, `tilo-view`, `tilo-app` `framework/` (64k) after the ports, the Rust shell, the toolkit's second action path, `PreparedIdentity` in the imager (an identity prepared on the install media) and the in-Tilo imager app; the installer stays: a polished program for Linux, Windows and macOS that writes hand-tailored images, installs straight to a disk, or on Linux installs just the desktop, running before Tilo exists and writing no identity; a capture before the wipe goes to a folder on the new encrypted disk, which `tilo migrate` reads after login | Chat deletion −145k on one branch, Tasks with Notes on the web −14k, shell context menu | Delete Rust Chat; Rust apps to tilolang; cleanup |

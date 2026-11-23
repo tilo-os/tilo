@@ -39,7 +39,7 @@ path = "src/lib.rs"
 [dependencies]
 
 # Ed25519 signing/verification. Same version + features used across
-# the collab crates (`collab-types`, `threshold-identity`) so the
+# the collab crates (`collab-types`) so the
 # `SigningKey`/`VerifyingKey` types are interchangeable.
 getrandom.workspace = true
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
@@ -77,6 +77,8 @@ tilo-automerge.workspace = true
 # Error plumbing (matches collab-types).
 thiserror.workspace = true
 zeroize.workspace = true
+# The checksum of a recovery phrase (`src/recovery_words.rs`).
+sha2.workspace = true
 
 # Dalek scrubs `SigningKey` on drop; this also scrubs the transient file,
 # stack, and serialization buffers used before/after that owned key exists.

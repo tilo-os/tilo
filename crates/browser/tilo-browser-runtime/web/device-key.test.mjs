@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {
-  openDeviceKey, idbStorage, DeviceKeyError, MAX_SLOTS, DEFAULT_AVATAR_COLOR,
+  openDeviceKey, idbStorage, certifiedDeviceKeys, rememberBrowserDevice, BROWSER_DEVICES,
+  DeviceKeyError, MAX_SLOTS, DEFAULT_AVATAR_COLOR,
   personRecord, rootOfPerson, readPerson, writePerson, deletePerson, PERSON_KEY,
 } from './device-key.mjs';
 import {fakeLocks} from './testing/fake-storage.mjs';
@@ -294,7 +295,6 @@ test('a new tab reuses a free slot that has a key before it makes another', asyn
 });
 
 test('a browser keeps each tab device certificate once, under one id', async () => {
-  const {rememberBrowserDevice, BROWSER_DEVICES} = await import('./device-key.mjs');
   const namespaces = memorySession();
   const cert = key => JSON.stringify({cert: {device_public_key: [key, ...new Array(31).fill(0)], device_label: 'Browser'}, hostCert: {}});
   rememberBrowserDevice(cert(1), namespaces);
@@ -312,7 +312,8 @@ test('a browser keeps each tab device certificate once, under one id', async () 
 
 /** As much of IndexedDB as `idbStorage` uses: databases by name, each at a version with its
  * object stores. A store is made only while its database is opened at a newer version, and a
- * transaction over a store the database does not have throws, as a browser's does. */
+ * transaction over a store the database does not have throws, as a browser's does. An upgrade
+ * that is aborted leaves no database, as a browser's does for one that did not exist. */
 function fakeDatabases(databases = new Map()) {
   const failure = (name, message) => Object.assign(new Error(message), {name});
   const answered = (tx, work) => {
@@ -346,6 +347,7 @@ function fakeDatabases(databases = new Map()) {
               get: key => answered(tx, () => rows.get(key)),
               put: (value, key) => answered(tx, () => { rows.set(key, value); }),
               delete: key => answered(tx, () => { rows.delete(key); }),
+              getAll: () => answered(tx, () => [...rows.values()]),
             })};
             return tx;
           },
@@ -353,8 +355,14 @@ function fakeDatabases(databases = new Map()) {
         if (version > database.version) {
           upgrading = true;
           database.version = version;
+          request.transaction = {abort() {
+            databases.delete(name);
+            request.error = failure('AbortError', 'The version change transaction was aborted');
+            request.onerror?.();
+          }};
           request.onupgradeneeded?.();
           upgrading = false;
+          if (request.error) return;
         }
         request.onsuccess?.();
       });
@@ -395,9 +403,23 @@ for (const [entered, store] of [['before the store had the name it has', 'custod
     const database = indexedDB.databases.get('tilo-device');
     assert.deepEqual([database.version, [...database.stores.keys()]], [1, [store]]);
     assert.equal(database.stores.get(store).get('identity').held, 'elsewhere');
+    // The page reads the certificate it kept for that key, with the key that signs for it.
+    const namespaces = memorySession();
+    const certificate = JSON.stringify({cert: {device_public_key: [...publicKey]}, hostCert: null});
+    rememberBrowserDevice(certificate, namespaces);
+    const keys = await certifiedDeviceKeys({indexedDB, namespaces});
+    assert.deepEqual(keys.map(key => key.certificate), [certificate], 'the text as it was issued');
+    assert.equal(keys[0].privateKey, database.stores.get(store).get('device-key:p').privateKey);
     await deviceKey.close();
   });
 }
+
+test('a browser that never had a device gets no database from the certified keys', async () => {
+  const namespaces = memorySession();
+  rememberBrowserDevice(JSON.stringify({cert: {device_public_key: new Array(32).fill(0)}}), namespaces);
+  const indexedDB = fakeDatabases();
+  assert.deepEqual([await certifiedDeviceKeys({indexedDB, namespaces}), indexedDB.databases.size], [[], 0]);
+});
 
 test('a browser that never entered keeps its device key in the store of today’s name', async () => {
   const indexedDB = fakeDatabases();
