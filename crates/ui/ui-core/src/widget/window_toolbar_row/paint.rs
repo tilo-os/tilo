@@ -4,16 +4,23 @@
 use super::part_change::{PartKey, Pose};
 use super::{
     Affine, Breadcrumb, ButtonFace, FieldFace, Icon, LOCATION_ICON_PX, LocationLabel, Part, Parts,
-    Point, Rect, Scene, SegmentedFace, TextRenderer, Theme, ToggleGroup, ToolbarRow,
-    VIEWS_SIZE, Widget, WindowToolbar, paint_icon_button, trailing_word,
+    Point, Rect, Scene, SegmentedFace, TextRenderer, Theme, ToggleGroup, ToolbarRow, VIEWS_SIZE,
+    Widget, WindowToolbar, paint_icon_button, trailing_word,
 };
 use crate::widget::DrawChild;
 
 impl ToolbarRow {
     pub(crate) fn paint_popups(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
-        Widget::draw_overlay(&mut self.menu, &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+        Widget::draw_overlay(
+            &mut self.menu,
+            &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
+        );
         if self.suggestions_open() {
             self.suggestions.paint(scene, transform, tr, theme);
         }
@@ -21,7 +28,11 @@ impl ToolbarRow {
     }
 
     pub(crate) fn paint(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         if self.measure_views(theme) {
             self.measured = true;
@@ -80,7 +91,7 @@ impl ToolbarRow {
                 Some(&mut words),
             );
             if let Some(field) = field {
-                DrawChild::draw_child(field, scene, transform, tr, theme,&env);
+                DrawChild::draw_child(field, scene, transform, tr, theme, &env);
             }
         });
         if let Some(trigger) = trigger {
@@ -565,7 +576,7 @@ pub(super) fn paint_location(
     {
         if text_rect.width() > 0.0 {
             crumbs.set_rect(Rect::new(text_rect.x0, rect.y0, text_rect.x1, rect.y1));
-            DrawChild::draw_child(crumbs, scene, transform, tr, theme,env);
+            DrawChild::draw_child(crumbs, scene, transform, tr, theme, env);
         }
         return None;
     }

@@ -2286,7 +2286,11 @@ impl Widget for Button {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (out_scene, out_transform, text_renderer, theme, mut env) = ctx.parts();
         self.observe_i18n_revision();
         let current_state = (
@@ -2327,7 +2331,16 @@ impl Widget for Button {
         // it applies none: a second layer would dim a disabled face twice.
         if !self.dirty && moment.settled && !self.face.is_empty() {
             self.face.append(out_scene, out_transform, self.rect);
-            crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(out_scene, out_transform, text_renderer, theme, env.clone()));
+            crate::widget::draw_over(
+                self,
+                &mut crate::draw::DrawCtx::new(
+                    out_scene,
+                    out_transform,
+                    text_renderer,
+                    theme,
+                    env.clone(),
+                ),
+            );
             return;
         }
         let enabled = self.effectively_enabled();
@@ -2350,7 +2363,16 @@ impl Widget for Button {
             );
             self.painted_hit = None;
             self.face.append(out_scene, out_transform, self.rect);
-            crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(out_scene, out_transform, text_renderer, theme, env.clone()));
+            crate::widget::draw_over(
+                self,
+                &mut crate::draw::DrawCtx::new(
+                    out_scene,
+                    out_transform,
+                    text_renderer,
+                    theme,
+                    env.clone(),
+                ),
+            );
             return;
         }
         let (label, hint) = self.content();
@@ -2375,7 +2397,16 @@ impl Widget for Button {
         }
         self.painted_hit = hit.map(|hit| Affine::translate(-self.rect.origin().to_vec2()) * hit);
         self.face.append(out_scene, out_transform, self.rect);
-        crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(out_scene, out_transform, text_renderer, theme, env.clone()));
+        crate::widget::draw_over(
+            self,
+            &mut crate::draw::DrawCtx::new(
+                out_scene,
+                out_transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
+        );
     }
 
     fn needs_redraw(&self) -> bool {

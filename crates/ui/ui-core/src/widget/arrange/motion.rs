@@ -8,8 +8,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
 
 use crate::collection_transition::RowMotions;
-use crate::motion::Feel;
 use crate::draw::DrawEnv;
+use crate::motion::Feel;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;

@@ -944,7 +944,11 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.motions.set_motion(theme.motion());
         let now = crate::motion::frame_now();
@@ -981,8 +985,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
             if env.should_cull(part.element.get_rect()) {
                 continue;
             }
-            part.element
-                .draw_child(scene, transform, text, theme, &env);
+            part.element.draw_child(scene, transform, text, theme, &env);
         }
     }
 

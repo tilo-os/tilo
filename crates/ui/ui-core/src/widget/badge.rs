@@ -642,7 +642,11 @@ impl Widget for Badge {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (out_scene, out_transform, text_renderer, theme, mut env) = ctx.parts();
         let now = crate::motion::frame_now();
         self.motion = Some(self.feel.over(theme.motion()));
@@ -770,7 +774,13 @@ mod tests {
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
         badge.rect = Rect::new(0.0, 0.0, 24.0, 16.0);
-        badge.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+        badge.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            presence.draw_env(),
+        ));
         scene
             .encoding()
             .draw_tags
@@ -819,10 +829,22 @@ mod tests {
         badge.apply_layout(&taffy, node, Point::ZERO);
         let presence = crate::presence::PresenceCtx::default();
         let mut first = Scene::new();
-        badge.draw(&mut crate::draw::DrawCtx::new(&mut first, Affine::IDENTITY, &mut text, &dark, presence.draw_env()));
+        badge.draw(&mut crate::draw::DrawCtx::new(
+            &mut first,
+            Affine::IDENTITY,
+            &mut text,
+            &dark,
+            presence.draw_env(),
+        ));
         badge.mark_drawn();
         let mut second = Scene::new();
-        badge.draw(&mut crate::draw::DrawCtx::new(&mut second, Affine::IDENTITY, &mut text, &light, presence.draw_env()));
+        badge.draw(&mut crate::draw::DrawCtx::new(
+            &mut second,
+            Affine::IDENTITY,
+            &mut text,
+            &light,
+            presence.draw_env(),
+        ));
         assert_ne!(
             first.encoding().draw_data,
             second.encoding().draw_data,
@@ -982,7 +1004,13 @@ mod tests {
 
     fn present(badge: &mut Badge, theme: &Theme) {
         badge.rect = Rect::new(0.0, 0.0, 24.0, 16.0);
-        badge.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), theme, PresenceCtx::default().draw_env()));
+        badge.draw(&mut crate::draw::DrawCtx::new(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            theme,
+            PresenceCtx::default().draw_env(),
+        ));
         badge.mark_drawn();
     }
 
