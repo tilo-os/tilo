@@ -26,7 +26,7 @@ pub enum ToConnector {
     Put {
         request: Request,
         account: String,
-        entry: Entry,
+        entry: Box<Entry>,
         /// Where its server keeps it now, empty for a new entry.
         href: String,
         /// The entry to take out first, where it moves from another calendar.

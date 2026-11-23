@@ -178,7 +178,7 @@ enum Step {
     Restore {
         account: String,
         record: String,
-        entry: Entry,
+        entry: Box<Entry>,
     },
 }
 
@@ -396,8 +396,7 @@ impl CalDavOrigin {
     }
 
     /// The person's own answer, written into the record that names them.
-    fn wrote_status(&mut self, host: &Host, now: &str, record: &str, status: &str) -> bool {
-        eprintln!("wrote_status {record} {status}");
+    fn wrote_status(&self, host: &Host, now: &str, record: &str, status: &str) -> bool {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
@@ -407,14 +406,13 @@ impl CalDavOrigin {
         };
         let mut fields = Vec::new();
         put(&t.attendee, &mut fields, "status", text(status));
-        matches!(
-            host.runtime().apply_origin(
+        host.runtime()
+            .apply_origin(
                 "caldav",
                 vec![OriginWrite::Set { target: at, fields }],
                 Some(now.to_owned()),
-            ),
-            Ok(_)
-        )
+            )
+            .is_ok()
     }
 
     /// Whether the request was a capability's, and what became of it was kept for it.
@@ -461,14 +459,13 @@ impl CalDavOrigin {
         let mut fields = Vec::new();
         put(&t.event, &mut fields, "key", text(&uid));
         put(&t.event, &mut fields, "href", text(href));
-        matches!(
-            host.runtime().apply_origin(
+        host.runtime()
+            .apply_origin(
                 "caldav",
                 vec![OriginWrite::Set { target: at, fields }],
                 Some(now.to_owned()),
-            ),
-            Ok(_)
-        )
+            )
+            .is_ok()
     }
 
     /// An entry the server took out: it is no longer on the server, and its record says so,
@@ -494,14 +491,13 @@ impl CalDavOrigin {
         };
         let mut fields = Vec::new();
         put(&t.event, &mut fields, "href", text(""));
-        matches!(
-            host.runtime().apply_origin(
+        host.runtime()
+            .apply_origin(
                 "caldav",
                 vec![OriginWrite::Set { target: at, fields }],
                 Some(now.to_owned()),
-            ),
-            Ok(_)
-        )
+            )
+            .is_ok()
     }
 
     /// The server refused a change, or was not reached: the entry's fields go back to what the
@@ -542,7 +538,7 @@ impl CalDavOrigin {
             self.unwritten.keep(Step::Restore {
                 account,
                 record: record.to_owned(),
-                entry: before.clone(),
+                entry: Box::new(before.clone()),
             });
         }
         taken.wrote()
@@ -670,13 +666,14 @@ impl CalDavOrigin {
                         return false;
                     };
                     let account = account.clone();
+                    let entry = entry.clone();
                     self.put_step(
                         host,
                         now,
                         &account,
                         vec![OriginWrite::Set {
                             target: at,
-                            fields: entry_fields(&t.event, entry, calendar.as_deref()),
+                            fields: entry_fields(&t.event, &entry, calendar.as_deref()),
                         }],
                     )
                 }
@@ -777,10 +774,6 @@ impl CalDavOrigin {
         };
         let name = read_text(host, &at, &t.calendar, "name");
         let color = read_text(host, &at, &t.calendar, "color");
-        eprintln!(
-            "pushed_calendar {record}: name {name:?} color {color:?} held {}/{}",
-            cal.name, cal.color
-        );
         if name == cal.name && color == cal.color {
             return false;
         }
@@ -907,7 +900,6 @@ impl CalDavOrigin {
             return master;
         };
         let mut entry = master;
-        let zone = entry.timezone.clone();
         let mut overrides: Vec<Occurrence> = Vec::new();
         for (other, ev) in &state.events {
             if ev.master.as_deref() != Some(record) {
@@ -920,7 +912,7 @@ impl CalDavOrigin {
             let Ok(edit) = read_entry(host, state, &at, &t.event) else {
                 continue;
             };
-            let (date, time) = wall_parts(&zone, &ev.original_start);
+            let (date, time) = wall_split(&ev.original_start);
             overrides.push(Occurrence {
                 date,
                 time,
@@ -968,8 +960,7 @@ impl CalDavOrigin {
         };
         let before = held
             .as_ref()
-            .map(|ev| ev.confirmed.clone())
-            .unwrap_or_else(|| entry.clone());
+            .map_or_else(|| entry.clone(), |ev| ev.confirmed.clone());
         let written = self
             .connector
             .put(account, entry.clone(), &href, also_remove.unwrap_or(""));
@@ -1108,25 +1099,40 @@ impl CalDavOrigin {
     }
 }
 
-/// The instant a day and a time of day are in `zone`, as the record holds one.
-fn instant_of(zone: &str, date: &str, time: &str) -> String {
-    let Ok(date) = jiff::civil::Date::strptime("%Y-%m-%d", date) else {
+/// The wall time a day and a time of day are (`2026-11-24T09:00:00`), as iCalendar writes one.
+fn wall_at(date: &str, time: &str) -> String {
+    if date.is_empty() {
         return String::new();
+    }
+    let time = if time.is_empty() { "00:00:00" } else { time };
+    format!("{date}T{time}")
+}
+
+/// The day a wall time is written on (`2026-11-24`).
+fn wall_day(wall: &str) -> String {
+    wall.get(0..10).unwrap_or_default().to_owned()
+}
+
+/// The day and time of day a wall time is written at.
+fn wall_split(wall: &str) -> (String, String) {
+    let date = wall_day(wall);
+    let time = wall
+        .split_once(['T', ' '])
+        .map(|(_, time)| time.to_owned())
+        .unwrap_or_default();
+    (date, time)
+}
+
+/// The last day the entry `entry` is on: for an all-day entry, its end is the day after it.
+fn end_day(entry: &Entry) -> String {
+    let end = wall_day(&entry.end);
+    if !entry.all_day {
+        return end;
+    }
+    let Ok(date) = jiff::civil::Date::strptime("%Y-%m-%d", &end) else {
+        return end;
     };
-    let time = if time.is_empty() {
-        jiff::civil::Time::MIN
-    } else {
-        jiff::civil::Time::strptime("%H:%M:%S", time).unwrap_or(jiff::civil::Time::MIN)
-    };
-    let wall = date.to_datetime(time);
-    let zoned = if zone.is_empty() || zone == "floating" {
-        wall.to_zoned(jiff::tz::TimeZone::UTC)
-    } else {
-        jiff::tz::TimeZone::get(zone).and_then(|timezone| wall.to_zoned(timezone))
-    };
-    zoned
-        .map(|zoned| zoned.timestamp().to_string())
-        .unwrap_or_default()
+    date.yesterday().map(|day| day.to_string()).unwrap_or(end)
 }
 
 /// What the record of one occurrence of `entry` says: the fields it changes, and the series it
@@ -1145,7 +1151,6 @@ fn override_fields(
             field == id && (name == "key" || name == "href" || name == "timezone")
         })
     });
-    let zone = entry.timezone.clone();
     let title = if occurrence.title.is_empty() {
         entry.title.clone()
     } else {
@@ -1173,7 +1178,8 @@ fn override_fields(
     put(ty, &mut fields, "location", text(&location));
     put(ty, &mut fields, "notes", text(&entry.notes));
     put(ty, &mut fields, "color", text(&entry.color));
-    put(ty, &mut fields, "day", text(&day_of(&zone, &start)));
+    put(ty, &mut fields, "day", text(&wall_day(&start)));
+    put(ty, &mut fields, "end_day", text(&end_day(entry)));
     put(ty, &mut fields, "original_start", text(original_start));
     put(
         ty,
@@ -1182,29 +1188,6 @@ fn override_fields(
         Value::Opt(Some(Box::new(Value::resource(master)))),
     );
     fields
-}
-
-/// The day and time of day the instant `instant` is in `zone`.
-fn wall_parts(zone: &str, instant: &str) -> (String, String) {
-    if instant.is_empty() {
-        return (String::new(), String::new());
-    }
-    let Ok(timestamp) = instant.parse::<jiff::Timestamp>() else {
-        return (String::new(), String::new());
-    };
-    let wall = if zone.is_empty() || zone == "floating" {
-        jiff::tz::TimeZone::UTC.to_datetime(timestamp)
-    } else {
-        jiff::tz::TimeZone::get(zone)
-            .map(|timezone| timezone.to_datetime(timestamp))
-            .unwrap_or_else(|_| jiff::tz::TimeZone::UTC.to_datetime(timestamp))
-    };
-    (wall.date().to_string(), wall.time().to_string())
-}
-
-/// The day the instant `instant` is in `zone`.
-fn day_of(zone: &str, instant: &str) -> String {
-    wall_parts(zone, instant).0
 }
 
 /// What one sync wrote, to be taken into the state once the workspace keeps it.
@@ -1229,6 +1212,10 @@ struct Written {
 }
 
 /// What a server said changed in `account`, written as one change of the origin.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the whole of one pull, written as one change of the origin"
+)]
 fn write_sync(
     host: &Host,
     now: &str,
@@ -1376,7 +1363,7 @@ fn write_sync(
             let mut insert_writes = Vec::new();
             let mut insert_slots: Vec<usize> = Vec::new();
             for entry in &inserts {
-                insert_slots.push(updates_writes.len() + insert_writes.len());
+                insert_slots.push(updates_writes.len().saturating_add(insert_writes.len()));
                 insert_writes.push(OriginWrite::Insert {
                     owner: root.clone(),
                     field: t.events_field.clone(),
@@ -1491,7 +1478,7 @@ fn write_sync(
                     .iter()
                     .filter(|occurrence| !occurrence.cancelled)
                 {
-                    let original = instant_of(&entry.timezone, &occurrence.date, &occurrence.time);
+                    let original = wall_at(&occurrence.date, &occurrence.time);
                     wanted.push(original.clone());
                     let calendar_record = calendar_record(&entry.calendar);
                     let fields = override_fields(
@@ -1541,14 +1528,14 @@ fn write_sync(
                     .iter()
                     .filter(|occurrence| !occurrence.cancelled)
                 {
-                    let original = instant_of(&entry.timezone, &occurrence.date, &occurrence.time);
+                    let original = wall_at(&occurrence.date, &occurrence.time);
                     if existing.iter().any(|(_, start)| start == &original) {
                         continue;
                     }
                     if let Some(Some(record)) = results.get(slot) {
                         made_overrides.push((occurrence.clone(), record.clone()));
                     }
-                    slot += 1;
+                    slot = slot.saturating_add(1);
                 }
                 written.overrides = made_overrides;
             }
@@ -1598,7 +1585,7 @@ fn write_sync(
             .collect();
         state.attendees.insert(record.clone(), people);
         for (occurrence, at) in written.overrides {
-            let original = instant_of(&written.entry.timezone, &occurrence.date, &occurrence.time);
+            let original = wall_at(&occurrence.date, &occurrence.time);
             state.events.insert(
                 at.id_string(),
                 Ev {
@@ -1703,6 +1690,14 @@ fn try_read_bool(
     })
 }
 
+fn try_read_int(host: &Host, at: &ResourceRef, ty: &OriginType, name: &str) -> Result<i64, String> {
+    Ok(match try_read(host, at, ty, name)? {
+        Some(Value::Int(i)) => i,
+        Some(Value::Text(text)) => text.parse().unwrap_or_default(),
+        _ => 0,
+    })
+}
+
 /// The resource the field `name` names, where it names one.
 fn try_read_ref(
     host: &Host,
@@ -1801,6 +1796,11 @@ fn read_entry(
         timezone: try_read_text(host, at, ty, "timezone")?,
         location: try_read_text(host, at, ty, "location")?,
         recurrence: try_read_text(host, at, ty, "recurrence")?,
+        recurrence_every: u32::try_from(try_read_int(host, at, ty, "recurrence_every")?)
+            .unwrap_or(1),
+        recurrence_until: try_read_text(host, at, ty, "recurrence_until")?,
+        recurrence_count: u32::try_from(try_read_int(host, at, ty, "recurrence_count")?)
+            .unwrap_or(0),
         exdates: try_texts(host, at, ty, "exdates")?,
         overrides: Vec::new(),
         organizer,
@@ -1808,6 +1808,7 @@ fn read_entry(
         categories: try_texts(host, at, ty, "categories")?,
         color: try_read_text(host, at, ty, "color")?,
         notes: try_read_text(host, at, ty, "notes")?,
+        remind: try_read_text(host, at, ty, "remind")?,
     })
 }
 
@@ -1827,6 +1828,34 @@ fn entry_fields(ty: &OriginType, entry: &Entry, calendar: Option<&str>) -> Vec<(
     put(
         ty,
         &mut fields,
+        "recurrence_every",
+        Value::Int(i64::from(entry.recurrence_every)),
+    );
+    put(
+        ty,
+        &mut fields,
+        "recurrence_until",
+        if entry.recurrence_until.is_empty() {
+            Value::Opt(None)
+        } else {
+            Value::Opt(Some(Box::new(text(&entry.recurrence_until))))
+        },
+    );
+    put(
+        ty,
+        &mut fields,
+        "recurrence_count",
+        if entry.recurrence_count == 0 {
+            Value::Opt(None)
+        } else {
+            Value::Opt(Some(Box::new(Value::Int(i64::from(
+                entry.recurrence_count,
+            )))))
+        },
+    );
+    put(
+        ty,
+        &mut fields,
         "exdates",
         Value::List(entry.exdates.iter().map(|date| text(date)).collect()),
     );
@@ -1837,12 +1866,10 @@ fn entry_fields(ty: &OriginType, entry: &Entry, calendar: Option<&str>) -> Vec<(
         Value::List(entry.categories.iter().map(|name| text(name)).collect()),
     );
     put(ty, &mut fields, "color", text(&entry.color));
-    put(
-        ty,
-        &mut fields,
-        "day",
-        text(&day_of(&entry.timezone, &entry.start)),
-    );
+    put(ty, &mut fields, "organizer", text(&entry.organizer));
+    put(ty, &mut fields, "remind", text(&entry.remind));
+    put(ty, &mut fields, "day", text(&wall_day(&entry.start)));
+    put(ty, &mut fields, "end_day", text(&end_day(entry)));
     if let Some(calendar) = calendar
         && let Some(at) = ResourceRef::parse_id(calendar, &ty.ty)
     {
@@ -2119,6 +2146,10 @@ impl Origin for CalDavOrigin {
         polled
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one capability after another, each asking its server or saying why it cannot"
+    )]
     fn deliver(&mut self, capability: &str, payload: &Json) -> Delivery {
         if capability == "caldav.check" {
             return self.check_now(payload.as_str().unwrap_or_default());

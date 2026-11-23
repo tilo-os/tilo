@@ -132,7 +132,7 @@ impl CalDavConnector for RemoteConnector {
         self.write(account, |request| ToConnector::Put {
             request,
             account: account.to_owned(),
-            entry,
+            entry: Box::new(entry),
             href: href.to_owned(),
             from: from.to_owned(),
         })

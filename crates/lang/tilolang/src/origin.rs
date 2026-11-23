@@ -625,6 +625,11 @@ pub const KINDS: &[OriginKind] = &[
                 "Bool",
                 "Whether this occurrence of a repeat is called off.",
             ),
+            field(
+                "remind",
+                "Time",
+                "When its reminder rings, an instant; 1970 for none. Its `VALARM`.",
+            ),
             people(
                 "calendar",
                 "Option<caldav.calendar>",
