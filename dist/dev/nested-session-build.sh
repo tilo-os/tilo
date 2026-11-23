@@ -121,13 +121,19 @@ build_host() {
     cargo build --locked --timings "${args[@]}" \
         -p tilo-app-package-cli --bin tilo-app-package \
         -p runtime-bundle --bin tilo-runtime-bundle \
-        -p ush --bin tilo-ush \
         -p tilo-control --bin tilo-control \
         -p tilo-quick-settings --bin tilo-quick-settings \
         -p tilo-fs --bin fs \
         -p projector-stand-in --bin projector-stand-in \
         -p fake-model-providers --bin fake-model-providers \
         -p nested-session-bus --bin nested-session-bus || return 1
+    # The supervisor reads the session's own system store, the one nested-session.sh
+    # installs the env-runtime into: a device's supervisor reads /usr/share/tilo-apps,
+    # and without `dev-overrides` this one would read that path on the developer's
+    # machine and open no shell. Its own build, as the trio above, so the plain
+    # feature name reaches the packages it shares.
+    cargo build --locked --timings "${args[@]}" \
+        -p ush --bin tilo-ush --features dev-overrides || return 1
     # The stand-in mail server a user story rehearses connecting a mail account against: the
     # example a tilo.sh stack starts as mail-stand-in, so a story in a shell can start it beside
     # the session without a stack (stories/shell/mail-password.py).

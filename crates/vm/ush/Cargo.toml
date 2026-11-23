@@ -22,6 +22,10 @@ test-host = []
 # `environment_terminals::quic`: a terminal stream carried over an iroh
 # connection, for the hosts that serve it.
 quic = ["dep:iroh", "dep:tokio"]
+# The developer environment overrides, so a development session reads the
+# system store it ships (`TILO_APPS_SYSTEM_DIR`) rather than the machine's, as
+# the session and the launcher already do. Never ship it.
+dev-overrides = ["package-store/dev-overrides"]
 
 [dependencies]
 getrandom.workspace = true
