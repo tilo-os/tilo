@@ -451,30 +451,11 @@ impl Draft {
 /// for. Keys are ordered, so the same arguments always digest the same.
 #[must_use]
 pub fn arguments_digest(arguments: &Map<String, Value>) -> [u8; 32] {
-    let canonical = canonical(&Value::Object(arguments.clone()));
-    *blake3::Hasher::new_derive_key("Tilo draft arguments v1")
-        .update(canonical.to_string().as_bytes())
-        .finalize()
-        .as_bytes()
-}
-
-fn canonical(value: &Value) -> Value {
-    match value {
-        Value::Object(object) => {
-            let sorted: std::collections::BTreeMap<&String, Value> = object
-                .iter()
-                .map(|(key, value)| (key, canonical(value)))
-                .collect();
-            Value::Object(
-                sorted
-                    .into_iter()
-                    .map(|(key, value)| (key.clone(), value))
-                    .collect(),
-            )
-        }
-        Value::Array(items) => Value::Array(items.iter().map(canonical).collect()),
-        other => other.clone(),
-    }
+    let mut hasher = blake3::Hasher::new_derive_key("Tilo draft arguments v1");
+    tilo_canonical_json::write_object_bytes(arguments, |chunk| {
+        hasher.update(chunk);
+    });
+    *hasher.finalize().as_bytes()
 }
 
 fn set_path(
