@@ -42,7 +42,7 @@ pub struct Args {
     /// never authority.
     pub workspace: Option<String>,
 }
-fn invalid(message: impl Into<String>) -> io::Error {
+pub(crate) fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
 }
 
@@ -146,76 +146,6 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
         standalone: standalone || explicit_profile,
         forward,
         workspace,
-    })
-}
-
-/// Where `--connect --device NAME [--workspace ID]` goes: `None` without a
-/// device, where `--workspace` asks this desktop's own server for the workspace.
-fn forward_of(
-    mode: &Mode,
-    device: Option<String>,
-    workspace: Option<String>,
-) -> io::Result<Option<tilo_mcp::devices::Forward>> {
-    if (device.is_some() || workspace.is_some()) && *mode != Mode::Connect {
-        return Err(invalid(
-            "--device and --workspace choose where --connect goes: use them with --connect",
-        ));
-    }
-    Ok(device.map(|device| tilo_mcp::devices::Forward { device, workspace }))
-}
-
-/// The device `--device` names, by its name or its endpoint id.
-fn device_named(argument: Option<OsString>) -> io::Result<String> {
-    argument
-        .and_then(|arg| arg.into_string().ok())
-        .map(|name| name.trim().to_owned())
-        .filter(|name| !name.is_empty() && name.len() <= 256)
-        .ok_or_else(|| invalid("--device requires a device's name or endpoint id"))
-}
-
-/// The workspace `--workspace` names, by its id.
-fn workspace_named(argument: Option<OsString>) -> io::Result<String> {
-    argument
-        .and_then(|arg| arg.into_string().ok())
-        .filter(|workspace| uuid::Uuid::parse_str(workspace).is_ok())
-        .ok_or_else(|| invalid("--workspace requires a workspace id"))
-}
-
-/// `--run-app APP_ID [--workspace WORKSPACE] -- EXECUTABLE ARGS...`, after `--run-app`:
-/// the rest of the command line is the app's.
-fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<Mode> {
-    let app_id = arguments
-        .next()
-        .and_then(|arg| arg.into_string().ok())
-        .ok_or_else(|| invalid("--run-app requires an application ID"))?;
-    if app_id.trim().is_empty() || app_id.len() > 4096 {
-        return Err(invalid("invalid application ID"));
-    }
-    let mut next = arguments.next();
-    let mut workspace = None;
-    if next.as_deref().and_then(std::ffi::OsStr::to_str) == Some("--workspace") {
-        workspace = Some(
-            arguments
-                .next()
-                .and_then(|arg| arg.into_string().ok())
-                .filter(|workspace| uuid::Uuid::parse_str(workspace).is_ok())
-                .ok_or_else(|| invalid("--workspace requires a workspace id"))?,
-        );
-        next = arguments.next();
-    }
-    if next.as_deref() != Some(std::ffi::OsStr::new("--")) {
-        return Err(invalid(
-            "--run-app APP_ID [--workspace WORKSPACE] requires -- EXECUTABLE ARGS...",
-        ));
-    }
-    let executable = arguments
-        .next()
-        .ok_or_else(|| invalid("missing app executable"))?;
-    Ok(Mode::RunApp {
-        app_id,
-        workspace,
-        executable,
-        args: arguments.collect(),
     })
 }
 
