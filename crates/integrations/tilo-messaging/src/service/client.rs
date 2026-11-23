@@ -21,7 +21,7 @@ use crate::{
 use tilo_contact_directory::routing::Route;
 
 use super::link::Events;
-use super::wire::{AppLink, Call, Event, GroupCall, Handoff, PROTOCOL, Reply, Snapshot};
+use super::wire::{AppLink, Call, Event, GroupCall, Handoff, PROTOCOL, Snapshot};
 
 const FIRST_STATE: Duration = Duration::from_secs(5);
 
@@ -169,9 +169,10 @@ impl Connection {
         Box::new(observer)
     }
 
-    fn ask(&self, call: Call) -> impl Future<Output = Option<Reply>> + Send + 'static {
-        let answer = self.link.call(call);
-        async move { answer.await.ok() }
+    /// Ask the service `call`; its answer as it came, for the caller to read the part it asked
+    /// for ([`answered`]).
+    fn ask(&self, call: Call) -> impl Future<Output = Option<serde_json::Value>> + Send + 'static {
+        self.link.call(call).value()
     }
 
     fn tell(&self, call: Call) {
@@ -192,14 +193,25 @@ pub fn write_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<(
     stream.flush()
 }
 
+/// What `reply` answers when it is the variant `variant` of [`Reply`](super::wire::Reply);
+/// `None` for any other.
+/// Each call reads only the variant it asked for, so an app compiles the reading of the replies
+/// it asks for, not of every reply the service makes.
+fn answered<T: serde::de::DeserializeOwned>(reply: serde_json::Value, variant: &str) -> Option<T> {
+    let serde_json::Value::Object(mut reply) = reply else {
+        return None;
+    };
+    serde_json::from_value(reply.remove(variant)?).ok()
+}
+
 macro_rules! answer {
     ($connection:expr, $call:expr, $variant:ident, $unavailable:expr) => {{
         let answer = $connection.ask($call);
         Box::pin(async move {
-            match answer.await {
-                Some(Reply::$variant(result)) => result,
-                _ => Err($unavailable),
-            }
+            answer
+                .await
+                .and_then(|reply| answered(reply, stringify!($variant)))
+                .unwrap_or(Err($unavailable))
         })
     }};
 }
@@ -441,5 +453,46 @@ impl SetupHost for Setup {
     }
     fn cancel(&self) {
         self.0.tell(Call::SetupCancel(self.1.clone()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::wire::Reply;
+    use super::*;
+    use crate::SendReceipt;
+
+    fn reply(reply: Reply) -> serde_json::Value {
+        serde_json::to_value(reply).unwrap()
+    }
+
+    /// The service's replies read as the calls that asked for them read them: by the variant's
+    /// name, which a renamed variant would break.
+    #[test]
+    fn each_call_reads_the_reply_it_asked_for() {
+        let sent: Option<Result<SendReceipt, SendError>> =
+            answered(reply(Reply::Sent(Err(SendError::Revoked))), "Sent");
+        assert!(matches!(sent, Some(Err(SendError::Revoked))));
+        let elsewhere: Option<Result<SendReceipt, SendError>> =
+            answered(reply(Reply::Refused), "Sent");
+        assert!(
+            elsewhere.is_none(),
+            "another reply is not the one asked for"
+        );
+        for (made, name) in [
+            (Reply::Review(Err(SendError::Revoked)), "Review"),
+            (Reply::Pairing(Err(SendError::Revoked)), "Pairing"),
+            (Reply::Reviewed(Err(SendError::Revoked)), "Reviewed"),
+            (Reply::Choices(Err(SendError::Revoked)), "Choices"),
+            (Reply::History(Err(HistoryError::Unavailable)), "History"),
+            (Reply::Groups(Err(SendError::Revoked)), "Groups"),
+            (Reply::Membership(Err(SendError::Revoked)), "Membership"),
+            (Reply::GroupReceipt(Err(SendError::Revoked)), "GroupReceipt"),
+            (Reply::GroupHistory(Err(SendError::Revoked)), "GroupHistory"),
+            (Reply::Linked(Err(SendError::Revoked)), "Linked"),
+        ] {
+            let read = reply(made);
+            assert!(read.get(name).is_some(), "{name} comes as {read}");
+        }
     }
 }

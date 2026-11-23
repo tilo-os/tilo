@@ -8,7 +8,9 @@
 //!
 //! A frame is read and written as a [`Value`] by code that is the same for every link, and each
 //! side turns into its own types only what it takes and sends: an app that only calls
-//! ([`Link::start_calling`]) never compiles the service's half of the protocol.
+//! ([`Link::start_calling`]) never compiles the service's half of the protocol, and a caller that
+//! reads an answer as the [`Value`] it came as ([`Answer::value`]) decodes only the part it asked
+//! for.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -44,9 +46,34 @@ pub trait Events<E>: Send + Sync {
     fn closed(&self) {}
 }
 
-enum Waiter<R> {
-    Async(tokio::sync::oneshot::Sender<R>),
-    Blocking(std::sync::mpsc::SyncSender<R>),
+enum Waiter {
+    Async(tokio::sync::oneshot::Sender<Value>),
+    Blocking(std::sync::mpsc::SyncSender<Value>),
+}
+
+/// The answer to a call, once the other side sent it.
+pub struct Answer<R> {
+    receiver: tokio::sync::oneshot::Receiver<Value>,
+    reply: std::marker::PhantomData<fn() -> R>,
+}
+
+impl<R> Answer<R> {
+    /// The answer as it came, `None` when the link closed first: for a caller that reads only
+    /// the part of the reply it asked for.
+    pub async fn value(self) -> Option<Value> {
+        self.receiver.await.ok()
+    }
+}
+
+impl<R: DeserializeOwned> Answer<R> {
+    /// The answer if it came. One that does not read as `R` is as if the link closed.
+    ///
+    /// # Errors
+    /// Nothing came yet, or nothing will.
+    pub fn try_recv(&mut self) -> Result<R, tokio::sync::oneshot::error::TryRecvError> {
+        let value = self.receiver.try_recv()?;
+        serde_json::from_value(value).map_err(|_| tokio::sync::oneshot::error::TryRecvError::Closed)
+    }
 }
 
 /// The writing half of a link, and whether it closed.
@@ -161,23 +188,85 @@ fn spawn_reading(
     Ok(())
 }
 
-/// What every link holds whatever its types: its writing half and the next call's id.
+/// What every link holds whatever its types: its writing half, the next call's id and the
+/// calls that wait for their answers.
 struct Shared {
     wire: Wire,
     next: AtomicU64,
+    pending: Mutex<HashMap<u64, Waiter>>,
+}
+
+impl Shared {
+    fn register(&self, waiter: Waiter) -> u64 {
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id, waiter);
+        id
+    }
+
+    fn forget(&self, id: u64) {
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
+    }
+
+    fn forget_all(&self) {
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+    }
+
+    /// Hand the reply `id` waits for to its caller.
+    fn answer(&self, id: u64, reply: Value) {
+        let waiter = self
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
+        match waiter {
+            Some(Waiter::Async(sender)) => drop(sender.send(reply)),
+            Some(Waiter::Blocking(sender)) => drop(sender.try_send(reply)),
+            None => {}
+        }
+    }
+
+    /// Write the call `call` and wait up to `timeout` for its answer.
+    fn call_blocking(&self, call: Option<Value>, timeout: Duration) -> Option<Value> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let id = self.register(Waiter::Blocking(sender));
+        if !call.is_some_and(|call| self.wire.write(&numbered("Call", id, "call", call))) {
+            self.forget(id);
+            return None;
+        }
+        let answer = receiver.recv_timeout(timeout).ok();
+        self.forget(id);
+        answer
+    }
+
+    /// Write the call `call`; its answer comes to what this returns.
+    fn call(&self, call: Option<Value>) -> tokio::sync::oneshot::Receiver<Value> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let id = self.register(Waiter::Async(sender));
+        if !call.is_some_and(|call| self.wire.write(&numbered("Call", id, "call", call))) {
+            self.forget(id);
+        }
+        receiver
+    }
 }
 
 pub struct Link<C, R, E> {
     shared: Arc<Shared>,
-    pending: Arc<Mutex<HashMap<u64, Waiter<R>>>>,
-    _frames: std::marker::PhantomData<fn(C, E)>,
+    _frames: std::marker::PhantomData<fn(C, R, E)>,
 }
 
 impl<C, R, E> Clone for Link<C, R, E> {
     fn clone(&self) -> Self {
         Self {
             shared: Arc::clone(&self.shared),
-            pending: Arc::clone(&self.pending),
             _frames: std::marker::PhantomData,
         }
     }
@@ -209,7 +298,7 @@ struct Serving<C, R, E> {
 impl<C, R, E> Inbound for Serving<C, R, E>
 where
     C: DeserializeOwned + Send + 'static,
-    R: DeserializeOwned + Send + 'static,
+    R: Send + 'static,
     E: DeserializeOwned + Send + 'static,
 {
     fn call(&self, id: u64, call: Value) -> bool {
@@ -227,7 +316,8 @@ where
     }
 
     fn reply(&self, id: u64, reply: Value) -> bool {
-        self.link.answer(id, reply)
+        self.link.shared.answer(id, reply);
+        true
     }
 
     fn event(&self, event: Value) -> bool {
@@ -239,7 +329,7 @@ where
     }
 
     fn closed(&self) {
-        self.link.forget_all();
+        self.link.shared.forget_all();
         self.handler.closed();
     }
 }
@@ -253,7 +343,7 @@ struct Calling<C, R, E> {
 impl<C, R, E> Inbound for Calling<C, R, E>
 where
     C: Send + 'static,
-    R: DeserializeOwned + Send + 'static,
+    R: Send + 'static,
     E: DeserializeOwned + Send + 'static,
 {
     fn call(&self, _: u64, _: Value) -> bool {
@@ -262,7 +352,8 @@ where
     }
 
     fn reply(&self, id: u64, reply: Value) -> bool {
-        self.link.answer(id, reply)
+        self.link.shared.answer(id, reply);
+        true
     }
 
     fn event(&self, event: Value) -> bool {
@@ -274,7 +365,7 @@ where
     }
 
     fn closed(&self) {
-        self.link.forget_all();
+        self.link.shared.forget_all();
         self.events.closed();
     }
 }
@@ -288,33 +379,10 @@ impl<C, R, E> Link<C, R, E> {
                     closed: AtomicBool::new(false),
                 },
                 next: AtomicU64::new(1),
+                pending: Mutex::default(),
             }),
-            pending: Arc::default(),
             _frames: std::marker::PhantomData,
         }
-    }
-
-    fn register(&self, waiter: Waiter<R>) -> u64 {
-        let id = self.shared.next.fetch_add(1, Ordering::Relaxed);
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, waiter);
-        id
-    }
-
-    fn forget(&self, id: u64) {
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id);
-    }
-
-    fn forget_all(&self) {
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
     }
 
     pub fn is_closed(&self) -> bool {
@@ -326,30 +394,10 @@ impl<C, R, E> Link<C, R, E> {
     }
 }
 
-impl<C, R: DeserializeOwned, E> Link<C, R, E> {
-    /// Hand the reply `id` waits for to its caller. Whether it read.
-    fn answer(&self, id: u64, reply: Value) -> bool {
-        let Ok(reply) = serde_json::from_value::<R>(reply) else {
-            return false;
-        };
-        let waiter = self
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id);
-        match waiter {
-            Some(Waiter::Async(sender)) => drop(sender.send(reply)),
-            Some(Waiter::Blocking(sender)) => drop(sender.try_send(reply)),
-            None => {}
-        }
-        true
-    }
-}
-
 impl<C, R, E> Link<C, R, E>
 where
     C: DeserializeOwned + Send + 'static,
-    R: DeserializeOwned + Send + 'static,
+    R: Send + 'static,
     E: DeserializeOwned + Send + 'static,
 {
     /// A link that answers the other side's calls with `handler`, and calls it.
@@ -377,7 +425,7 @@ where
 impl<C, R, E> Link<C, R, E>
 where
     C: Send + 'static,
-    R: DeserializeOwned + Send + 'static,
+    R: Send + 'static,
     E: DeserializeOwned + Send + 'static,
 {
     /// A link that only calls the other side, and takes its events with `events`.
@@ -403,32 +451,24 @@ where
 }
 
 impl<C: Serialize, R, E> Link<C, R, E> {
-    fn write_call(&self, id: u64, call: C) -> bool {
-        let Ok(call) = serde_json::to_value(call) else {
-            return false;
-        };
-        self.shared.wire.write(&numbered("Call", id, "call", call))
-    }
-
-    pub fn call(&self, call: C) -> tokio::sync::oneshot::Receiver<R> {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        let id = self.register(Waiter::Async(sender));
-        if !self.write_call(id, call) {
-            self.forget(id);
+    pub fn call(&self, call: C) -> Answer<R> {
+        Answer {
+            receiver: self.shared.call(serde_json::to_value(call).ok()),
+            reply: std::marker::PhantomData,
         }
-        receiver
     }
 
+    /// [`Self::call_blocking`], the answer as it came: for a caller that reads only the part of
+    /// the reply it asked for.
+    pub fn call_blocking_value(&self, call: C, timeout: Duration) -> Option<Value> {
+        self.shared
+            .call_blocking(serde_json::to_value(call).ok(), timeout)
+    }
+}
+
+impl<C: Serialize, R: DeserializeOwned, E> Link<C, R, E> {
     pub fn call_blocking(&self, call: C, timeout: Duration) -> Option<R> {
-        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-        let id = self.register(Waiter::Blocking(sender));
-        if !self.write_call(id, call) {
-            self.forget(id);
-            return None;
-        }
-        let answer = receiver.recv_timeout(timeout).ok();
-        self.forget(id);
-        answer
+        serde_json::from_value(self.call_blocking_value(call, timeout)?).ok()
     }
 }
 
