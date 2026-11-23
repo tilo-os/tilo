@@ -101,33 +101,7 @@ pub(super) async fn turns(
                     continue;
                 };
                 let team = sub_agents::is_team(agent, asked);
-                let around = if team {
-                    None
-                } else {
-                    asked
-                        .from
-                        .as_ref()
-                        .map(|from| asks::around(opened, from, AROUND))
-                };
-                let private = !team
-                    && keeper.as_ref().is_some_and(|keeper| {
-                        // What an event of the keeper's asked is shown in their Direct with the
-                        // agent, so it is as private as that conversation.
-                        let by_event = asked
-                            .from
-                            .as_ref()
-                            .and_then(crate::agents::events::event_named)
-                            .is_some();
-                        let by_keeper =
-                            matches!(&asked.who, Some(asks::Actor::Member(who)) if who == keeper);
-                        if by_event && by_keeper {
-                            asks::direct_with(opened, keeper, &asked.agent).is_some_and(|direct| {
-                                asks::alone_with(opened, &direct, keeper, &asked.agent)
-                            })
-                        } else {
-                            asks::private_to(opened, asked, keeper, &asked.agent)
-                        }
-                    });
+                let (around, private) = around_and_private(opened, asked, keeper.as_ref(), team);
                 read.push((agent.id.0.clone(), index, around, private));
             }
             Ok((all, read))
@@ -192,6 +166,39 @@ pub(super) async fn turns(
 }
 
 /// The turn `asked` gives `agent`, kept in `app`'s record; none for an ask nobody we know made.
+/// What is read around the ask `asked`, and whether it is its keeper's own. A team's ask is read
+/// as the workspace's roster says, with nothing around it. What an event of the keeper's asked is
+/// shown in their Direct with the agent, so it is as private as that conversation.
+fn around_and_private(
+    opened: &crate::tl_records::Opened,
+    asked: &Asked,
+    keeper: Option<&tilo_action_policy::MemberId>,
+    team: bool,
+) -> (Option<asks::Around>, bool) {
+    if team {
+        return (None, false);
+    }
+    let around = asked
+        .from
+        .as_ref()
+        .map(|from| asks::around(opened, from, AROUND));
+    let private = keeper.is_some_and(|keeper| {
+        let by_event = asked
+            .from
+            .as_ref()
+            .and_then(crate::agents::events::event_named)
+            .is_some();
+        let by_keeper = matches!(&asked.who, Some(asks::Actor::Member(who)) if who == keeper);
+        if by_event && by_keeper {
+            asks::direct_with(opened, keeper, &asked.agent)
+                .is_some_and(|direct| asks::alone_with(opened, &direct, keeper, &asked.agent))
+        } else {
+            asks::private_to(opened, asked, keeper, &asked.agent)
+        }
+    });
+    (around, private)
+}
+
 fn turn_of(
     app: &str,
     agent: &Agent,

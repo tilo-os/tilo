@@ -303,6 +303,22 @@ impl tilolang_tilo::resources::Port for Record {
     }
 }
 
+/// The heads `since` names, each parsed: the heads are this server's own, written as hashes it
+/// read, so one that does not parse is a broken store, and every change since nothing is the
+/// safe answer.
+fn heads_since(since: &[String]) -> Vec<automerge::ChangeHash> {
+    since
+        .iter()
+        .filter_map(|hex| {
+            tilo_failure::ignored!(
+                "a head that is no change hash reads every change since nothing",
+                hex.parse::<automerge::ChangeHash>()
+            )
+            .ok()
+        })
+        .collect()
+}
+
 /// An app's record opened on this thread: a host over it with its packages loaded.
 pub struct Opened {
     host: Host,
@@ -344,9 +360,8 @@ impl Opened {
     ) -> Result<Self, String> {
         // What the host's own authority decides invocations by: without an access it knows no
         // grants, and leaves every action to the caller.
-        let acting = access.clone();
         let host = Host::open(store, viewer, None, move || {
-            acting.as_ref().map(|access| (**access).clone())
+            access.as_ref().map(|access| (**access).clone())
         })
         .map_err(|error| error.to_string())?;
         for package in packages.0.iter() {
@@ -602,18 +617,7 @@ impl Opened {
         since: &[String],
     ) -> Vec<(DocumentEvent, Vec<String>)> {
         use tilolang_tilo::meta::MetaExt as _;
-        // The heads are this server's own, written as hashes it read: one that does not parse
-        // is a broken store, and reading every change since nothing is the safe answer.
-        let since: Vec<automerge::ChangeHash> = since
-            .iter()
-            .filter_map(|hex| {
-                tilo_failure::ignored!(
-                    "a head that is no change hash reads every change since nothing",
-                    hex.parse::<automerge::ChangeHash>()
-                )
-                .ok()
-            })
-            .collect();
+        let since = heads_since(since);
         let mut heads = since.clone();
         let package = self.host.package(&self.app);
         let store = self.host.store();
@@ -928,9 +932,13 @@ fn tree_item(host: &Host, item: &str, reader: &Actor, depth: usize) -> Result<Js
         let mut rows: Vec<Json> = Vec::new();
         let mut after: Option<String> = None;
         loop {
-            let mut ask = serde_json::json!({ "item": item, "field": name });
-            if let Some(after) = &after {
-                ask["after"] = Json::String(after.clone());
+            let mut ask = Json::Object(serde_json::Map::new());
+            if let Json::Object(ask) = &mut ask {
+                ask.insert("item".into(), Json::String(item.to_owned()));
+                ask.insert("field".into(), Json::String(name.clone()));
+                if let Some(after) = &after {
+                    ask.insert("after".into(), Json::String(after.clone()));
+                }
             }
             let answer = host.answer_read(&ask, reader)?;
             // A read of one collection of a resource answers the resource, that collection's
@@ -952,7 +960,7 @@ fn tree_item(host: &Host, item: &str, reader: &Actor, depth: usize) -> Result<Js
             let Some(child) = row.get("item").and_then(Json::as_str).map(str::to_owned) else {
                 continue;
             };
-            let whole = tree_item(host, &child, reader, depth - 1)?;
+            let whole = tree_item(host, &child, reader, depth.saturating_sub(1))?;
             if let (Json::Object(dst), Json::Object(src)) = (&mut *row, whole)
                 && let Some(fields) = src.get("fields")
             {

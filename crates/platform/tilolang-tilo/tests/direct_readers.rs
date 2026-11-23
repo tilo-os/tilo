@@ -111,7 +111,7 @@ fn call_as(r: &Replica, by: &Actor, action: &str, args: Vec<Value>) -> Value {
 }
 
 /// Commit everything the runtime committed, the asks its mentions made included.
-fn settle(r: &mut Replica) {
+fn settle(r: &Replica) {
     while r.commit() > 0 {}
 }
 
@@ -171,7 +171,7 @@ struct Workspace {
 }
 
 fn workspace() -> Workspace {
-    let mut ada = chat("ada", crate::fixtures::Workspace::new());
+    let ada = chat("ada", crate::fixtures::Workspace::new());
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     let general = call(
@@ -184,7 +184,7 @@ fn workspace() -> Workspace {
         "message_person",
         vec![all, Value::Actor(agent("scout"))],
     );
-    settle(&mut ada);
+    settle(&ada);
     call(
         &ada,
         "send",
@@ -199,7 +199,7 @@ fn workspace() -> Workspace {
             Value::none(),
         ],
     );
-    settle(&mut ada);
+    settle(&ada);
     let bo = chat("bo", ada.doc.fork());
     bo.commit();
     Workspace {
@@ -290,16 +290,14 @@ fn a_direct_conversation_is_read_by_its_people_and_a_channel_by_everyone() {
 
 #[test]
 fn bo_messaging_scout_opens_his_own_conversation_with_scout() {
-    let Workspace {
-        mut bo, with_scout, ..
-    } = workspace();
+    let Workspace { bo, with_scout, .. } = workspace();
     let all = Value::resource(&bo.host.root_of(APP).unwrap());
     let his = call(
         &bo,
         "message_person",
         vec![all.clone(), Value::Actor(agent("scout"))],
     );
-    settle(&mut bo);
+    settle(&bo);
     assert_ne!(
         target(&his).id_string(),
         target(&with_scout).id_string(),
@@ -337,9 +335,7 @@ fn asked(r: &Replica, agent: &Actor) -> Vec<bool> {
 #[test]
 fn an_agent_mentioned_in_a_conversation_it_is_not_in_is_asked_with_nothing_of_it() {
     let Workspace {
-        mut ada,
-        with_scout,
-        ..
+        ada, with_scout, ..
     } = workspace();
     let mut body = RichValue::from_text("Can ");
     body.push_reference("@Helper", &Reference::Member(MemberId::agent("helper")));
@@ -349,7 +345,7 @@ fn an_agent_mentioned_in_a_conversation_it_is_not_in_is_asked_with_nothing_of_it
         "send",
         vec![with_scout, Value::Rich(body), Value::none()],
     );
-    settle(&mut ada);
+    settle(&ada);
     assert_eq!(
         asked(&ada, &agent("helper")),
         [false],
@@ -365,10 +361,10 @@ fn an_agent_mentioned_in_a_conversation_it_is_not_in_is_asked_with_nothing_of_it
 fn two_devices_opening_the_same_conversation_apart_make_one() {
     // Ada presses Bo on her device and Bo presses Ada on his, neither online: one conversation
     // of the two of them once they meet.
-    let mut ada = chat("ada", crate::fixtures::Workspace::new());
+    let ada = chat("ada", crate::fixtures::Workspace::new());
     let root = ada.host.root_of(APP).unwrap();
     ada.commit();
-    let mut bo = chat("bo", ada.doc.fork());
+    let bo = chat("bo", ada.doc.fork());
     let all = Value::resource(&root);
     let on_ada = call(
         &ada,
@@ -380,8 +376,8 @@ fn two_devices_opening_the_same_conversation_apart_make_one() {
         "message_person",
         vec![all, Value::Actor(person("ada"))],
     );
-    settle(&mut ada);
-    settle(&mut bo);
+    settle(&ada);
+    settle(&bo);
     ada.sync_with(&bo);
     assert_eq!(target(&on_ada).id_string(), target(&on_bo).id_string());
     for r in [&ada, &bo] {
@@ -417,9 +413,9 @@ fn a_conversation_an_earlier_chat_kept_with_one_person_comes_in_with_both() {
         "the earlier Chat let every member read it"
     );
 
-    let mut now = chat("ada", before.doc.fork());
+    let now = chat("ada", before.doc.fork());
     assert!(now.host.migrate() >= 1, "its migration runs");
-    settle(&mut now);
+    settle(&now);
     assert_eq!(
         people(&now, &with_scout),
         [person("ada"), agent("scout")],
@@ -534,9 +530,9 @@ fn a_conversation_an_earlier_chat_kept_that_no_person_opened_is_its_one_person_s
     before.commit();
     let with_scout = target(&made);
 
-    let mut now = chat("ada", before.doc.fork());
+    let now = chat("ada", before.doc.fork());
     assert!(now.host.migrate() >= 1, "its migration runs");
-    settle(&mut now);
+    settle(&now);
     assert_eq!(
         people(&now, &with_scout),
         [agent("scout")],

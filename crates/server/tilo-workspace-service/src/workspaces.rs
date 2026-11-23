@@ -2313,6 +2313,49 @@ impl Workspaces {
     /// born only from a governor checkpoint. A write to a record the workspace has
     /// updates the governor's copy, written through to the workspace file soon
     /// after ([`Self::keep_soon`]).
+    /// Note the surface a change's op names when this host does not keep it: the change is
+    /// decided against the surface its op names, the one this host runs the app with or one the
+    /// workspace keeps for it ([`crate::surfaces`]), and what it lacks it asks the workspace's
+    /// members for, holding the change until one answers.
+    fn note_named_surface(&self, workspace: &str, app_id: &str, surface: Option<&[u8; 32]>) {
+        if let Some(surface) = surface
+            && crate::surfaces::kept(app_id, &hex::encode(surface)).is_none()
+        {
+            self.note_missing_surface(workspace, app_id, &hex::encode(surface));
+        }
+    }
+
+    /// The message `body` of `author` carries, or `None` when nothing of it is taken in here: a
+    /// notice this host's own device made itself, or one handed to the host's notice service.
+    ///
+    /// Every member's record write reaches the governor here, so this is where one that does not
+    /// decode is reported (the content classifier reads the same body before it leaves it to
+    /// this). The server's own device writes records through the workspace too: the actions it
+    /// runs for members (a visitor linking their Discord account) are committed as that device,
+    /// and the governor's copy, which the workspace's bots read, must take them in like any
+    /// member's. Its notices it made itself, so it has them already. A host told of its device's
+    /// channel service retains its own device's channel governance like any member's, for the
+    /// other key holders: the host keeps no channels to have it already.
+    ///
+    /// # Errors
+    /// The body does not decode, or the notice it carries is not taken in.
+    async fn carried_message(
+        &self,
+        workspace: &str,
+        author: [u8; 32],
+        body: &[u8],
+        carried: Carried,
+        own: [u8; 32],
+    ) -> Result<Option<neighbour_wire::NeighbourMsg>, String> {
+        let message = neighbour_wire::NeighbourMsg::decode(body)
+            .map_err(|error| format!("a member's write does not decode: {error}"))?;
+        if author == own && only_a_notice(&message) {
+            return Ok(None);
+        }
+        self.absorb_notice(workspace, author, message, carried)
+            .await
+    }
+
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the workspace stays locked until its decision is committed, published and answered"
@@ -2325,24 +2368,14 @@ impl Workspaces {
         carried: Carried,
     ) -> Result<(), String> {
         let host = &self.inner.host;
-        // Every member's record write reaches the governor here, so this is
-        // where one that does not decode is reported (the content classifier
-        // that reads the same body before it leaves it to this).
-        let message = neighbour_wire::NeighbourMsg::decode(body)
-            .map_err(|error| format!("a member's write does not decode: {error}"))?;
-        // The server's own device writes records through the workspace too: the
-        // actions it runs for members (a visitor linking their Discord
-        // account) are committed as that device, and the governor's copy,
-        // which the workspace's bots read, must take them in like any member's.
-        // Its notices it made itself, so it has them already.
-        // A host told of its device's channel service retains its own
-        // device's channel governance like any member's, for the other
-        // key holders: the host keeps no channels to have it already.
-        if author == host.cert.device_public_key && only_a_notice(&message) {
-            return Ok(());
-        }
         let Some(message) = self
-            .absorb_notice(workspace, author, message, carried)
+            .carried_message(
+                workspace,
+                author,
+                body,
+                carried,
+                host.cert.device_public_key,
+            )
             .await?
         else {
             return Ok(());
@@ -2357,15 +2390,7 @@ impl Workspaces {
             return Ok(());
         };
         let (app_id, document_id) = (app_id.clone(), document_id.clone());
-        // The change is decided against the surface its op names: the one this
-        // host runs the app with, or one the workspace keeps for it
-        // ([`crate::surfaces`]). What it lacks it asks the workspace's members
-        // for, and the change is held until one answers.
-        if let Some(surface) = envelope.surface
-            && crate::surfaces::kept(&app_id, &hex::encode(surface)).is_none()
-        {
-            self.note_missing_surface(workspace, &app_id, &hex::encode(surface));
-        }
+        self.note_named_surface(workspace, &app_id, envelope.surface.as_ref());
         let workspace = self
             .workspace(workspace)
             .await

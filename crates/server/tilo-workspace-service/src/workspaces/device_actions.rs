@@ -190,7 +190,7 @@ impl DeviceWork {
             let turn = Turn::Invocation {
                 id: invocation,
                 requester,
-                job,
+                job: job.clone(),
             };
             let claim = match crate::work::takes_turn(&workspaces, &workspace, &turn).await {
                 Ok(claim) => claim,
@@ -207,9 +207,6 @@ impl DeviceWork {
             let receipt = accepted.receipt();
             work.log.lock_recover().complete(&invocation, accepted);
             completer.complete(Ok(receipt));
-            let Turn::Invocation { job, .. } = turn else {
-                unreachable!("the turn taken here is the invocation made above");
-            };
             let output = match work.jobs() {
                 Some(jobs) => {
                     run_claimed(

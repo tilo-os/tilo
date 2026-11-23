@@ -135,7 +135,7 @@ impl Workspaces {
             }
             person_accounts::SET_SERVICES => {
                 let saying: SetServices = argument(request, "an account and its services")?;
-                let kept = self.set_services(signing, saying).await;
+                let kept = Box::pin(self.set_services(signing, saying)).await;
                 if kept.is_ok() {
                     self.person_settings_changed();
                 }

@@ -354,7 +354,7 @@ impl Workspaces {
         // What changes the accounts the workspace keeps is answered before
         // the rest: finding servers, adding an account, saying what it feeds
         // and removing it.
-        if let Some(answered) = self.person_mail_action(signing, request).await? {
+        if let Some(answered) = Box::pin(self.person_mail_action(signing, request)).await? {
             return Ok(answered);
         }
         match action {

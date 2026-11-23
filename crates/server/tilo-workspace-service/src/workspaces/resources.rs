@@ -1261,10 +1261,12 @@ impl Workspaces {
             .documents()
             .map(str::to_owned)
             .collect();
-        Ok(documents
+        let stored = documents
             .iter()
             .filter_map(|doc| governed.resources.document(doc))
-            .collect())
+            .collect();
+        drop(governed);
+        Ok(stored)
     }
 
     /// The sealed writes of each store document of `app` that `workspace` holds, oldest first,
@@ -1283,6 +1285,11 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
+        // The peer guard borrows `governed`, so each document is named before it is taken.
+        #[allow(
+            clippy::needless_collect,
+            reason = "the peer guard borrows the store the names are read from, so the names are taken first"
+        )]
         let documents: Vec<String> = governed
             .resources
             .store_mut()
@@ -1290,15 +1297,15 @@ impl Workspaces {
             .documents()
             .map(str::to_owned)
             .collect();
-        let peer = governed.peer();
-        Ok(documents
-            .into_iter()
-            .map(|document| {
-                let writes = peer.publication().sealed_history(app, &document);
-                (document, writes)
-            })
-            .filter(|(_, writes)| !writes.is_empty())
-            .collect())
+        let mut sealed = BTreeMap::new();
+        for document in documents {
+            let writes = governed.peer().publication().sealed_history(app, &document);
+            if !writes.is_empty() {
+                sealed.insert(document, writes);
+            }
+        }
+        drop(governed);
+        Ok(sealed)
     }
 
     /// Holds `query` open for the app `context` names, in its workspace: its first page, then

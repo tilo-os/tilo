@@ -441,7 +441,7 @@ pub fn to_chat(layout: &Guild, asked: &Guild, workspace: &WorkspaceChat) -> Vec<
                     at: *at,
                     category,
                 });
-                *at += 1;
+                *at = at.saturating_add(1);
             }
         }
     }

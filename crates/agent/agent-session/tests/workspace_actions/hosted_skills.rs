@@ -86,7 +86,7 @@ async fn skills_kept(
 
 /// The skill called `name` in Chat's record, as `who` opens it.
 fn skill_named(
-    opened: &mut tilo_workspace_service::tl_records::Opened,
+    opened: &tilo_workspace_service::tl_records::Opened,
     chat: &str,
     name: &str,
 ) -> Result<Value, String> {

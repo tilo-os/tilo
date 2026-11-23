@@ -129,7 +129,7 @@ impl Worker {
         reason = "the outcome becomes the receipt answered"
     )]
     pub(super) fn perform_package_record(
-        &mut self,
+        &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
@@ -194,7 +194,7 @@ impl Worker {
                         workspace_id,
                         route,
                         &descriptor,
-                        arguments.clone(),
+                        arguments,
                         carried::Carries::Nothing,
                     );
                     return Err(self.waits_for_person(request.invocation, about));

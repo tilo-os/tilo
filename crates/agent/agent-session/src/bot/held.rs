@@ -416,7 +416,7 @@ impl ApiMember for HeldDocuments {
                     .then_some(context)
             })
         };
-        let native = self.replicas.iter().find_map(|(route, replica)| {
+        self.replicas.iter().find_map(|(route, replica)| {
             // A step on a record held beside this one is recorded there,
             // and answered for the route it was invoked on.
             replica
@@ -427,8 +427,7 @@ impl ApiMember for HeldDocuments {
                     })
                 })
                 .map(|context| (route.clone(), context))
-        });
-        native
+        })
     }
 
     fn outbox(&self, route: &DocumentRoute, field: &str) -> Vec<OutboxRow> {
