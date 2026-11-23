@@ -669,7 +669,7 @@ view book_window(book: Book) {
             }
         }
         sidebar_actions: {
-            ui.MenuButton("File", icon: .file_plus, icon_only: true) {
+            ui.MenuButton("File", icon: .file_plus) {
                 ui.MenuItem("Import vCards…", icon: .file_plus) {
                     on choose: file.choose(
                         import_vcard(book),
@@ -697,22 +697,26 @@ view book_window(book: Book) {
                 } else {
                     // The cards and, beside them, the letters they stand under: a press brings
                     // the first card under its letter up, at the list's own motion.
-                    row(gap: .none) {
-                        // A press asks for the first card under its letter; the list brings it up,
-                        // and brings it up again when the person has scrolled away since.
-                        std.list(
-                            found,
-                            opened,
-                            ungrouped: .some("Other"),
-                            reveal: if revealing.is_empty() {
-                                .none
-                            } else { .some(revealing) },
-                        ) { (c, at) ->
-                            ui.ListItem(item: c, presence: at, group: first_letter(c.name)) {
-                                contact_row(c)
+                    // The list is the column's scroller: the stack takes the room the foot leaves,
+                    // the row spans it, and the rail stands beside the list.
+                    stack(fill, gap: .none) {
+                        row(fill, gap: .none) {
+                            // A press asks for the first card under its letter; the list brings it up,
+                            // and brings it up again when the person has scrolled away since.
+                            std.list(
+                                found,
+                                opened,
+                                ungrouped: .some("Other"),
+                                reveal: if revealing.is_empty() {
+                                    .none
+                                } else { .some(revealing) },
+                            ) { (c, at) ->
+                                ui.ListItem(item: c, presence: at, group: first_letter(c.name)) {
+                                    contact_row(c)
+                                }
                             }
+                            letter_rail(found, revealing)
                         }
-                        letter_rail(found, revealing)
                     }
                 }
             }

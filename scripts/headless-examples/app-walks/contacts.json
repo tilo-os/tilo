@@ -117,9 +117,7 @@
             ]
           },
           {
-            "wait_for": {
-              "title": "Ada Lovelace"
-            }
+            "wait_for": "Where they work"
           },
           {
             "press_any": [
