@@ -1,16 +1,18 @@
 # Handoff — Photos → tl Gallery (port + deletion)
 
 Worktree: `/srv/rcargo/t3-builder-home/work/tilo/.claude/worktrees/photos-port`
-Branch: `photos-port` → pushed as **`photos-port-wip`**. Head before commit: `af8a152fb02` (WIP commit contains everything below; the working tree was fully staged).
-`origin/main` moved to `f6768c336fb` while this was built (crates-into-groups lane). **Rebase onto main first** and re-check every Cargo path dep, `crates/dev/workspace-unify/Cargo.toml`, `Cargo.lock`, and the generated files; crate dirs moved.
+Branch: `photos-port` → pushed as **`photos-port-wip`** (tip `5f398f3f53466d602ad148aea91a27c86679ee09`).
+Rebased onto `origin/main` `30f4ef27e90` (crates-into-groups landed while this was built). Conflicts resolved: took main's `scripts/headless-examples/app-walk.py` and `app-walks/photos.json` (main has its own Photos walk and image-fixture support); kept the deletion; `t.toml` app-walk matrix = main's list + `photos`; `workspace-unify` moved to `tools/workspace-unify` (its photo lines removed); `apps/photos` fully deleted.
+`crates/dev/ui-graph/components.json` regenerated **on the rebased tree** with `t fix ui-graph` (154 components; Slideshow + the new props present). `crates/packaging/app-fleet/src/generated.rs` regenerated with `t fix app-surfaces` (full tl Photos surface: Photo/Album/Person/Library and every action). The commit hook wrote and staged the SDK types (`target/debug/tilo` generator). The catalogue hook's `component-catalogue-verified` marker is recorded for these sources.
+**Re-check after any further Rust/widget change:** rerun `t fix ui-graph` (the hook cannot run the generator locally), and `t fix app-surfaces` if the .tl surface changes.
 Net: ~80 files, **+2,325 / −31,872** (net −29.5k). Native manifests: 61 (the `app_manifests` gate of 40 is untouched).
 
 ## State of each piece
 - **ui-core**: `MediaGrid` virtualized (bands of cards on the shared `RowSource`/`VirtualList`; 10k test); `ImageViewer.zoom` prop (+ test); `Map` Web Mercator project/unproject, centre, `at` press, `MapPin` lat/long (+ round-trip/centre tests); new `Slideshow` component (frame-clock timed advance, index kept by the view). All compiled once (the `component-catalogue` example built). **Tests have not run** (named check was cancelled at wrap-up).
 - **`crates/dev/ui-graph/components.json`**: regenerated from that build (147 components, `Slideshow` added, new props/events). The `tilo-app-window` staleness test is the proof it is byte-exact — not yet run.
-- **tl app** (`apps/tl/photos`): written in full (below), **never parsed or checked**. No `app.ids`, no `locales/en-US.ftl`, no `de-DE.ftl`. First command for the next agent: `tolang check apps/tl/photos --write-ids --search apps/tl`, then generate `de-DE.ftl` with `.claude/scratch/gen_de.py` (strict; it lists any English value it lacks a German for), then `tolang fmt`.
+- **tl app** (`apps/tl/photos`): **checks clean** with the local checker (`target/debug/tilolang check apps/tl/photos` → exit 0, using `LD_LIBRARY_PATH=~/.local/lib/tilo-runtime`). `app.ids`, `locales/en-US.ftl` and `locales/de-DE.ftl` are written and staged. `tilolang fmt` ran via the hook's tilolang-fmt step. The local `tilolang` binary is from this tree (pre-rebase build) and embeds the new catalogue; rebuild it (`t cargo build -p tilolang-cli`) if widgets change again.
 - **Deletion**: staged, **held** for full parity (vision + platform capabilities). Inventory below.
-- **Walk**: `scripts/headless-examples/app-walks/photos.json` written (rust+tl, PNG fixtures as base64 written at walk time; no binary files committed). **Not run.** After the two sides exist: `t test app-walk/photos`, shots light+dark.
+- **Walk**: main now owns `scripts/headless-examples/app-walks/photos.json` (with image fixtures in `app-walk.py`); this branch takes main's version (mine was dropped in the rebase). **Not run.** After the port is wired: `t test app-walk/photos`, shots light+dark.
 
 ## Open checks (all cancelled/never run at wrap-up)
 - `t test test/tilo-ui test/tilo-app-window` (validates the ui-core tests + catalogue staleness) — was queued ~1h+ on a saturated fleet, cancelled.
