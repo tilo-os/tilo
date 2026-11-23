@@ -214,7 +214,10 @@ call from tilolang (`tasks.done(task)`, checked at compile time), `tilo ls`
 and `tilo do`, a few generic MCP tools, and SDK types generated from the
 published types. An action names the view that shows it, so every open view
 of the resource shows the change and who made it, and an agent can attach
-that view to its answer.
+that view to its answer. A view publishes each action's description once per
+resource type; a row publishes only its resource and what differs for it
+(whether the action's require passes, and why not), so a list of 10k rows
+stays cheap and every row is still reachable by its address.
 
 Our own code calls only over the device link (`tilo-actions/1` on iroh).
 That includes signing in: `tilo login <ticket>` connects straight to the
