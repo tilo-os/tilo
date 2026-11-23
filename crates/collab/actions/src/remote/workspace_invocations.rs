@@ -105,7 +105,7 @@ pub fn tree_rows(listed: &[Invocation]) -> Vec<super::CatalogueRow> {
     list.action = Some(list_action());
     [root, list]
         .into_iter()
-        .chain(listed.iter().map(|invocation| {
+        .chain(listed.iter().flat_map(|invocation| {
             let id = invocation
                 .id
                 .clone()
