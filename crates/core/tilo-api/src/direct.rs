@@ -1060,6 +1060,10 @@ mod tests {
                 None
             }
 
+            fn cancel(&self, _: &Caller, _: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+                Pending::ready(Err(ActionCallError::UnknownInvocation))
+            }
+
             fn changed(
                 &self,
                 _: &Caller,
@@ -1189,6 +1193,20 @@ mod tests {
         }
     }
 
+    /// The person's keys' record as `direct` reads it, once it differs from `after`.
+    async fn read_keys(direct: &Direct, after: Option<String>) -> serde_json::Value {
+        let mut arguments = serde_json::json!({"path": crate::account::KEYS_RECORD});
+        if let Some(after) = after {
+            arguments["after"] = after.into();
+        }
+        let request = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "tilo_read", "arguments": arguments}});
+        let answer = direct.mcp(request).await.unwrap();
+        let read = answer["result"]["structuredContent"].clone();
+        assert!(read["revision"].is_string(), "{answer}");
+        read
+    }
+
     /// A key the person revokes on one of their devices wakes whoever follows their keys' record
     /// on another: the revocation lands in the workspace both keep, and the follower reads the
     /// keys without it as it lands, long before its wait would have ended.
@@ -1234,20 +1252,6 @@ mod tests {
             .unwrap()
         };
         let (laptop, phone) = (on(31, "Ada's laptop"), on(32, "Ada's phone"));
-        let read = |direct: &Direct, after: Option<String>| {
-            let mut arguments = serde_json::json!({"path": crate::account::KEYS_RECORD});
-            if let Some(after) = after {
-                arguments["after"] = after.into();
-            }
-            let request = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                "params": {"name": "tilo_read", "arguments": arguments}});
-            async move {
-                let answer = direct.mcp(request).await.unwrap();
-                let read = answer["result"]["structuredContent"].clone();
-                assert!(read["revision"].is_string(), "{answer}");
-                read
-            }
-        };
         let names = |read: &serde_json::Value| -> Vec<String> {
             read["records"][0]["value"]["keys"]
                 .as_array()
@@ -1257,7 +1261,7 @@ mod tests {
                 .collect()
         };
 
-        let first = read(&phone, None).await;
+        let first = read_keys(&phone, None).await;
         assert!(
             names(&first).contains(&"visa-backend".to_owned()),
             "{first}"
@@ -1268,7 +1272,7 @@ mod tests {
             let phone = Arc::clone(&phone);
             async move {
                 let began = std::time::Instant::now();
-                let read = read(&phone, Some(revision)).await;
+                let read = read_keys(&phone, Some(revision)).await;
                 (read, began.elapsed())
             }
         });
