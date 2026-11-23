@@ -337,6 +337,68 @@ fn the_access_question_is_answered_on_the_portal_sheet() {
 }
 
 #[test]
+fn an_agent_answers_a_question_through_the_sheets_published_actions() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, questions) = asking(Vec::new());
+    // The sheet's answers are published while it is down, so an agent that finds a question
+    // waiting reads how to answer it before anything asks one.
+    for action in [
+        PortalEffect::CONFIRM.id,
+        PortalEffect::CANCEL.id,
+        PortalEffect::TYPE_SECRET.id,
+        PortalEffect::SUBMIT.id,
+    ] {
+        assert!(
+            publisher(&session, action).is_some(),
+            "the sheet publishes {action} before a question is up"
+        );
+    }
+
+    // Confirm: the highlighted answer is taken.
+    let asked = ask(
+        &questions,
+        Some("org.example.Recorder"),
+        "org.example.Recorder",
+        "portal.access",
+        remembered(),
+    );
+    pump(&mut session, |_| questions.pending().len() == 1);
+    press(&mut session, PortalEffect::CONFIRM.id, json!({}));
+    let answer = answered(&mut session, &questions, asked);
+    assert_eq!(
+        answer.choice,
+        Some(Lifetime::Once.choice()),
+        "the answer the sheet showed first was taken"
+    );
+
+    // Decline: the next question is refused through the same published action.
+    let asked = ask(
+        &questions,
+        Some("org.example.Recorder"),
+        "org.example.Recorder",
+        "portal.access",
+        remembered(),
+    );
+    pump(&mut session, |_| questions.pending().len() == 1);
+    press(&mut session, PortalEffect::CANCEL.id, json!({}));
+    declined(&mut session, &questions, asked);
+
+    // Typed text: a secret reaches the service only through the sheet's own published typing and
+    // the answer it submits.
+    let asked = ask(&questions, None, "Home", "network.secrets", wifi(false));
+    pump(&mut session, |_| questions.pending().len() == 1);
+    press(
+        &mut session,
+        PortalEffect::TYPE_SECRET.id,
+        json!({"field": 0, "value": "short horse"}),
+    );
+    press(&mut session, PortalEffect::SUBMIT.id, json!({}));
+    let answer = answered(&mut session, &questions, asked);
+    let typed: Vec<&str> = answer.values.iter().map(|value| value.as_str()).collect();
+    assert_eq!(typed, ["short horse"]);
+}
+
+#[test]
 fn the_question_of_an_app_that_may_not_remember_offers_no_always() {
     let _settled = ui::motion::testing::settled();
     let (mut session, questions) = asking(Vec::new());

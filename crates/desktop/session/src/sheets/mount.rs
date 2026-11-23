@@ -145,7 +145,10 @@ pub(crate) fn mount_sheets(
         who,
         options,
     );
-    let portal = mount_sheet(
+    // The session's question sheet: its answers stay published while it is down, so a person or
+    // an agent always finds how a question is answered, and the sheet answers whatever question is
+    // up when the press arrives.
+    let portal = mount_sheet_always(
         compositor,
         surfaces,
         tilo_sheets::portal::definition(),
@@ -289,6 +292,47 @@ fn mount_sheet<S: tilo_sheets::SheetState + 'static>(
     who: (&str, &str),
     options: &Options,
 ) -> Option<S> {
+    mount_sheet_by(
+        compositor,
+        surfaces,
+        definition,
+        state,
+        who,
+        options,
+        std::convert::identity,
+    )
+}
+
+/// A sheet that answers its actions while it is down too: its answers stay published, so a press
+/// that arrives while it is not shown still reaches the state it speaks through.
+fn mount_sheet_always<S: tilo_sheets::SheetState + 'static>(
+    compositor: &mut Compositor,
+    surfaces: &mut Surfaces,
+    definition: &'static ui::application::ApplicationDefinition,
+    state: S,
+    who: (&str, &str),
+    options: &Options,
+) -> Option<S> {
+    mount_sheet_by(
+        compositor,
+        surfaces,
+        definition,
+        state,
+        who,
+        options,
+        Sheet::always_serving,
+    )
+}
+
+fn mount_sheet_by<S: tilo_sheets::SheetState + 'static>(
+    compositor: &mut Compositor,
+    surfaces: &mut Surfaces,
+    definition: &'static ui::application::ApplicationDefinition,
+    state: S,
+    who: (&str, &str),
+    options: &Options,
+    role: impl FnOnce(Sheet<S>) -> Sheet<S>,
+) -> Option<S> {
     match Sheet::mount(
         definition,
         state,
@@ -297,6 +341,7 @@ fn mount_sheet<S: tilo_sheets::SheetState + 'static>(
         options.scale,
     ) {
         Ok(sheet) => {
+            let sheet = role(sheet);
             let state = sheet.state().clone();
             let sheet = sheet.layer();
             compositor.add_surface(sheet.clone());

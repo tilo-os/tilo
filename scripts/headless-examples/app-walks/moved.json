@@ -135,6 +135,10 @@
     "to": "so.tilo.session notifications.banners#open-banner",
     "test": "crates/desktop/session/src/notifications/tests.rs:1666"
   },
+  "so.tilo.session tilo.control#invoke": {
+    "to": "so.tilo.session portal-sheet.question#cancel",
+    "test": "crates/desktop/session/tests/questions.rs:340"
+  },
   "so.tilo.settings settings.mcp-server#apply": {
     "to": "the two switches it edited: see set-accept-own-devices and set-act-without-asking",
     "test": "crates/core/tilo-workspace-service/src/workspaces/actions/host/asking_tests.rs:437"
@@ -162,6 +166,10 @@
   "so.tilo.settings settings.mcp-server#undo": {
     "to": "the two switches it edited: see set-accept-own-devices and set-act-without-asking",
     "test": "crates/core/tilo-workspace-service/src/workspaces/actions/host/asking_tests.rs:437"
+  },
+  "so.tilo.terminal tilo.ui.control#activate": {
+    "to": "so.tilo.terminal terminal.session#restart",
+    "test": "apps/terminal/src/chrome_tests.rs:48"
   },
   "so.tilo.tube tube.library#open-creator": {
     "to": "so.tilo.tube tl.so.tilo.tube.Channel#open",
