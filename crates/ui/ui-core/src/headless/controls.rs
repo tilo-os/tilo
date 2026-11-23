@@ -282,7 +282,7 @@ impl FrameHarness {
             return false;
         };
         let address = tilo_actions::ActionAddress::new(owner, open);
-        self.invoke_action(&address, &serde_json::Map::new(), false, None)
+        self.invoke_action(&address, &serde_json::Map::new(), None)
             .is_ok()
     }
 
@@ -767,7 +767,6 @@ mod locus_tests {
                 .invoke_action(
                     &tilo_actions::ActionAddress::new("first", "edit"),
                     &serde_json::Map::new(),
-                    false,
                     None,
                 )
                 .unwrap();
@@ -859,7 +858,6 @@ mod locus_tests {
                     .invoke_action(
                         &tilo_actions::ActionAddress::new("first", "edit"),
                         &serde_json::Map::new(),
-                        false,
                         None,
                     )
                     .unwrap();

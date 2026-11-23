@@ -1,8 +1,8 @@
 //! Controls bound to another provider's actions ([`tilo_actions::ActionSpec::run_by`]): the component
 //! neither publishes nor runs them, and its host invokes them at that provider.
 
-/// An invocation of another provider's action a view bound its control to, resolved and confirmed here,
-/// for the host to invoke at that provider.
+/// An invocation of another provider's action a view bound its control to, resolved here, for the
+/// host to invoke at that provider: that provider asks the person where it waits for their yes.
 #[derive(Clone, Debug)]
 pub(crate) struct HostedInvocation {
     pub(crate) provider: String,
@@ -11,8 +11,8 @@ pub(crate) struct HostedInvocation {
     pub(crate) argument: tilo_actions::remote::InvokeArgument,
     /// Who invoked it here.
     pub(crate) actor: tilo_actions::Actor,
-    /// The person confirmed it here, where its value asks first.
-    pub(crate) confirmed: bool,
+    /// The person's yes to the ask its provider raised, when it comes back answered.
+    pub(crate) approval: Option<tilo_actions::remote::asked::Approval>,
 }
 
 impl HostedInvocation {
@@ -24,7 +24,7 @@ impl HostedInvocation {
         arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
         actor: &tilo_actions::Actor,
-        confirmed: bool,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
     ) -> Option<Self> {
         let run = spec.run_by_provider()?;
         let resource = run.resource.as_deref().unwrap_or(&address.resource);
@@ -55,7 +55,7 @@ impl HostedInvocation {
             address: tilo_actions::ActionAddress::new(resource, action),
             argument,
             actor: actor.clone(),
-            confirmed,
+            approval: approval.cloned(),
         })
     }
 }

@@ -190,17 +190,37 @@ impl crate::app_core::AppCore for App {
         match prepared.target {
             LocalResourceTarget::Component(target) => self.invoke_bound_target_with_broker(
                 &target,
-                &ResourceInvocation::new(&target.address.address, &actor)
-                    .argument(Some(&argument))
-                    .confirmed(prepared.confirmed),
+                &ResourceInvocation::new(&target.address.address, &actor).argument(Some(&argument)),
                 None,
             ),
             LocalResourceTarget::Outer => self.invoke_unbound_resource_action(
                 &ResourceInvocation::new(&prepared.invocation.address, &actor)
-                    .argument(Some(&argument))
-                    .confirmed(prepared.confirmed),
+                    .argument(Some(&argument)),
             ),
         }
+    }
+
+    fn ask_through_device(
+        &mut self,
+        target: &crate::bound_dispatch::local_target::LocalResourceTarget,
+        address: &tilo_actions::ActionAddress,
+        arguments: &crate::bound_dispatch::ControlContinuationArguments,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        use crate::bound_dispatch::local_target::LocalResourceTarget;
+        // The device knows the call by the address this window publishes it under: a component's
+        // own resource by its alias.
+        let published = match target {
+            LocalResourceTarget::Component(target) => tilo_actions::ActionAddress::new(
+                self.actions
+                    .bound_publication
+                    .alias(&target.binding, &address.resource)
+                    .map_err(crate::bound_dispatch::BoundActionError::into_api)?,
+                address.action.clone(),
+            ),
+            LocalResourceTarget::Outer => address.clone(),
+        };
+        let (argument, typed) = arguments.as_api_arguments();
+        self.invoke_via_broker(&published, typed, argument)
     }
 }
 

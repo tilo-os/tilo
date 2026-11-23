@@ -233,26 +233,11 @@ pub(crate) fn prepare_pending_command(
     root: &mut dyn Widget,
     surface: uuid::Uuid,
     token: &super::pending_controls::ContinuationToken,
-    confirmed: bool,
 ) -> Option<super::pending_controls::PreparedContinuation> {
     let mut prepared = None;
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, _| {
         if history.pending_control_surface_lifetime() == surface {
-            prepared = history.prepare_pending_control(token, confirmed);
-        }
-    });
-    prepared
-}
-pub(crate) fn prepare_pending_command_typed(
-    root: &mut dyn Widget,
-    surface: uuid::Uuid,
-    token: &super::pending_controls::ContinuationToken,
-    value: &str,
-) -> Option<super::pending_controls::PreparedContinuation> {
-    let mut prepared = None;
-    crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, _| {
-        if history.pending_control_surface_lifetime() == surface {
-            prepared = history.prepare_pending_control_typed(token, value);
+            prepared = history.prepare_pending_control(token);
         }
     });
     prepared
@@ -270,7 +255,6 @@ pub(crate) fn cancel_pending_command(
 }
 pub(crate) enum PendingCommandOutcome {
     Consumed,
-    NeedsConfirmation,
     Refused(String),
 }
 pub(crate) fn finish_pending_command(
@@ -285,9 +269,6 @@ pub(crate) fn finish_pending_command(
         }
         match outcome {
             PendingCommandOutcome::Consumed => history.pending_control_consumed(id),
-            PendingCommandOutcome::NeedsConfirmation => {
-                history.pending_control_needs_confirmation(id);
-            }
             PendingCommandOutcome::Refused(reason) => {
                 history.pending_control_refused(id, reason.clone());
             }
@@ -371,7 +352,6 @@ pub(crate) fn run_api_control(
         &intent.address,
         None,
         Some(&intent.arguments),
-        false,
     )?;
     history
         .invoke_api(&encoded)

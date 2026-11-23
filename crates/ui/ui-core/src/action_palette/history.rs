@@ -2,7 +2,6 @@
 //! review, so the person's question is answered rather than dropped.
 
 use super::{ActionPalette, PendingOperation};
-use tilo_actions::ConfirmationPolicy;
 
 impl ActionPalette {
     pub(crate) fn suspend_for_history(&mut self) {
@@ -17,10 +16,6 @@ impl ActionPalette {
                 .as_ref()
                 .is_some_and(|pending| pending.history_target.is_some())
             || self
-                .confirm
-                .as_ref()
-                .is_some_and(|confirm| confirm.pending.history_target.is_some())
-            || self
                 .arg
                 .as_ref()
                 .is_some_and(|arg| arg.history_target.is_some())
@@ -32,11 +27,6 @@ impl ActionPalette {
         self.pending_dispatch
             .as_ref()
             .and_then(|pending| pending.bound.clone())
-            .or_else(|| {
-                self.confirm
-                    .as_ref()
-                    .and_then(|confirm| confirm.pending.bound.clone())
-            })
             .or_else(|| self.arg.as_ref().and_then(|arg| arg.bound.clone()))
     }
 
@@ -44,11 +34,6 @@ impl ActionPalette {
         self.pending_dispatch
             .as_ref()
             .map(|pending| pending.address.clone())
-            .or_else(|| {
-                self.confirm
-                    .as_ref()
-                    .map(|state| state.pending.address.clone())
-            })
             .or_else(|| self.arg.as_ref().map(|state| state.address.clone()))
     }
 
@@ -56,11 +41,6 @@ impl ActionPalette {
         self.pending_dispatch
             .as_ref()
             .and_then(PendingOperation::control_invocation)
-            .or_else(|| {
-                self.confirm
-                    .as_ref()
-                    .and_then(|state| state.pending.control_invocation())
-            })
     }
 
     pub(crate) fn history_pending_continuation_arguments(
@@ -69,11 +49,6 @@ impl ActionPalette {
         self.pending_dispatch
             .as_ref()
             .and_then(PendingOperation::continuation_arguments)
-            .or_else(|| {
-                self.confirm
-                    .as_ref()
-                    .and_then(|state| state.pending.continuation_arguments())
-            })
     }
 
     pub(crate) fn history_exact_capture_request(
@@ -83,10 +58,7 @@ impl ActionPalette {
         tilo_actions::ControlInvocation,
         crate::bound_dispatch::ControlContinuationArguments,
     )> {
-        let pending = self
-            .pending_dispatch
-            .as_ref()
-            .or_else(|| self.confirm.as_ref().map(|state| &state.pending))?;
+        let pending = self.pending_dispatch.as_ref()?;
         if pending.history_seen.is_some() {
             return None;
         }
@@ -109,9 +81,6 @@ impl ActionPalette {
         if let Some(pending) = self.pending_dispatch.as_mut() {
             pending.history_identity = Some(identity);
             pending.history_seen = Some(observation);
-        } else if let Some(confirm) = self.confirm.as_mut() {
-            confirm.pending.history_identity = Some(identity);
-            confirm.pending.history_seen = Some(observation);
         }
     }
 
@@ -128,10 +97,6 @@ impl ActionPalette {
             pending.history_target = Some(target);
             pending.history_identity = identity;
             pending.history_seen = observation;
-        } else if let Some(confirm) = self.confirm.as_mut() {
-            confirm.pending.history_target = Some(target);
-            confirm.pending.history_identity = identity;
-            confirm.pending.history_seen = observation;
         } else if let Some(arg) = self.arg.as_mut() {
             arg.history_target = Some(target);
             arg.history_draft_identity = identity;
@@ -158,21 +123,9 @@ impl ActionPalette {
 
     pub(crate) fn resume_after_history(&mut self) {
         self.history_suspended = false;
-        let Some(mut pending) = self
-            .pending_dispatch
-            .take()
-            .or_else(|| self.confirm.take().map(|state| state.pending))
-        else {
-            return;
-        };
-        pending.confirmation_evidence = serde_json::json!({});
-        if matches!(pending.confirmation, ConfirmationPolicy::None) {
-            self.pending_dispatch = Some(pending);
+        if self.pending_dispatch.is_some() {
             self.history_review_required = true;
             self.open = true;
-            return;
         }
-        self.ask_confirmation(pending);
-        self.open = true;
     }
 }

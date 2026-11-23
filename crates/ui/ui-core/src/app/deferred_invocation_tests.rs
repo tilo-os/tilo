@@ -1,4 +1,4 @@
-// Included in the actual native/FrameHarness ordinary-confirmation fixtures.
+// Included in `control_fixture_tests` (the Fixture widget and its managed root live there).
 fn deferred_fixture() -> (
     Fixture,
     std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -52,130 +52,57 @@ fn deferred_fixture() -> (
 tilo_test_env::scenario! {
     fn deferred_actions_mint_only_at_their_handler;
 
-    phase deferred_native_and_driver_confirmation_mint_once_only_at_handler;
-    {
-        use std::sync::atomic::Ordering;
-        for native in [true, false] {
-            let (widget, calls, _) = deferred_fixture();
-            let log = widget.log.clone();
-            let mut host = Host::new(native, managed(Box::new(widget)));
-            for _ in 0..3 {
-                host.frame();
-            }
-            assert_eq!(
-                calls.load(Ordering::SeqCst),
-                0,
-                "construction/model/a11y must be inert"
-            );
-            for expected in 0..2 {
-                host.activate("Emit request");
-                for _ in 0..3 {
-                    host.frame();
-                }
-                assert_eq!(
-                    calls.load(Ordering::SeqCst),
-                    expected,
-                    "control and repeated confirmation preparation must be inert"
-                );
-                host.activate("Run fixture");
-                assert_eq!(
-                    calls.load(Ordering::SeqCst),
-                    expected + 1,
-                    "one admitted handler builds once"
-                );
-                assert_eq!(log.borrow()[expected], serde_json::json!(expected));
-            }
-        }
-    }
-
-    phase deferred_changed_draft_and_current_permission_refuse_without_building;
-    {
-        use std::sync::atomic::Ordering;
-        for native in [true, false] {
-            for change in ["draft", "permission"] {
-                let (widget, calls, domain) = deferred_fixture();
-                let log = widget.log.clone();
-                let mut host = Host::new(native, managed(Box::new(widget)));
-                host.activate("Emit request");
-                if change == "draft" {
-                    domain.store(1, Ordering::SeqCst);
-                } else {
-                    host.revoke();
-                }
-                host.activate("Run fixture");
-                assert_eq!(calls.load(Ordering::SeqCst), 0, "{native}:{change}");
-                assert!(log.borrow().is_empty());
-            }
-        }
-    }
-
-    phase deferred_history_retains_draft_without_mint_and_checks_on_resume;
-    {
-        use std::sync::atomic::Ordering;
-        for native in [true, false] {
-            for changed in [false, true] {
-                let (widget, calls, domain) = deferred_fixture();
-                let log = widget.log.clone();
-                let mut host = Host::new(native, managed(Box::new(widget)));
-                host.activate("Emit request");
-                host.activate("History");
-                if changed {
-                    domain.store(1, Ordering::SeqCst);
-                }
-                host.activate("History");
-                assert_eq!(calls.load(Ordering::SeqCst), 0);
-                host.activate("Run fixture");
-                assert_eq!(
-                    calls.load(Ordering::SeqCst),
-                    usize::from(!changed),
-                    "{native}:{changed}"
-                );
-                assert_eq!(log.borrow().len(), usize::from(!changed));
-            }
-        }
-    }
-
-    phase deferred_actual_component_close_refuses_before_mint;
-    {
-        use std::sync::atomic::Ordering;
-        for native in [true, false] {
-            let (widget, calls, _) = deferred_fixture();
-            let log = widget.log.clone();
-            let (root, guard) = owned(widget);
-            let mut host = Host::new(native, guard.managed(root));
-            host.activate("Emit request");
-            guard.close();
-            host.activate("Run fixture");
-            assert_eq!(calls.load(Ordering::SeqCst), 0);
-            assert!(log.borrow().is_empty());
-        }
-    }
-
-    phase deferred_semantic_tree_publishes_inert_address_and_uses_confirmation_api;
+    phase a_press_that_asks_builds_nothing_until_the_person_allows_it;
+    // The press is refused until the person answers: its handler builds nothing while it waits,
+    // and once only when the call comes back with their yes.
     {
         use std::sync::atomic::Ordering;
         let (widget, calls, _) = deferred_fixture();
         let log = widget.log.clone();
-        let mut host = Host::new(true, managed(Box::new(widget)));
-        let Host::Native(app) = &mut host else {
-            unreachable!()
-        };
-        let id = crate::a11y_tree::SemanticId("r:ordinary:fixture".into());
+        let mut driver = crate::headless::FrameHarness::from_managed_root_with_controlled_inputs(
+            State::new(),
+            managed(Box::new(widget)),
+            (900, 650),
+            crate::Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::MemberId::person("fixture"),
+        )
+        .unwrap();
         for _ in 0..3 {
-            app.refresh_semantic_tree();
-            assert!(
-                matches!(&app.semantic_tree().action(&id, "run").unwrap().kind,
-                crate::a11y_tree::SemanticActionKind::AppDeferred { address }
-                    if address == &tilo_actions::ActionAddress::new("ordinary:fixture", "run"))
-            );
+            driver.relayout();
         }
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert!(app.invoke_semantic_action(&id, "run", None).unwrap());
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        layout(app);
-        host.activate("Run fixture");
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "construction is inert");
+        driver
+            .perform_semantic_named("ordinary-emitter", None, &crate::a11y::Action::Activate)
+            .unwrap();
+        assert!(driver.asking().is_some(), "the press waits for the person");
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing is built while it waits");
+        assert!(driver.confirm_asked().is_some(), "the person allows it");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "it builds once");
         assert_eq!(&*log.borrow(), &[serde_json::json!(0)]);
+    }
+
+    phase a_declined_press_builds_nothing;
+    {
+        use std::sync::atomic::Ordering;
+        let (widget, calls, _) = deferred_fixture();
+        let log = widget.log.clone();
+        let mut driver = crate::headless::FrameHarness::from_managed_root_with_controlled_inputs(
+            State::new(),
+            managed(Box::new(widget)),
+            (900, 650),
+            crate::Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::MemberId::person("fixture"),
+        )
+        .unwrap();
+        driver
+            .perform_semantic_named("ordinary-emitter", None, &crate::a11y::Action::Activate)
+            .unwrap();
+        assert!(driver.decline_asked().is_some(), "the person declines");
+        assert!(driver.asking().is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(log.borrow().is_empty());
     }
 
     phase deferred_semantic_no_confirmation_reaches_final_owner_once;

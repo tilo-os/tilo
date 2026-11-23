@@ -1189,6 +1189,9 @@ impl AttachedView {
         // shows, which whoever next reads the view lays out.
         self.moved();
         let frame = &mut **self.frame.get_mut();
+        // What the caller already answered for the person stands in for the approve their ask
+        // would come back with.
+        let approval = confirmed.then(|| frame.approval());
         frame.start_bound_job_within(
             Some(invoker),
             Some(&ambient),
@@ -1197,7 +1200,7 @@ impl AttachedView {
                 address: address.clone(),
             },
             arguments,
-            confirmed,
+            approval.as_ref(),
         )
     }
 

@@ -134,13 +134,10 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
         // below. The platform's own operations are asked of the person
         // alone.
         if tilo_actions::kind_is_a_drawn_control(&descriptor.resource_kind) {
-            let pressed = app.harness().invoke_action_as(
-                &agent,
-                &address,
-                &arguments,
-                true,
-                phrase.as_deref(),
-            );
+            let approval = app.harness().approval_typing(phrase.as_deref());
+            let pressed =
+                app.harness()
+                    .invoke_action_as(&agent, &address, &arguments, Some(&approval));
             // Refused as the person's own; or withdrawn by what ran before it.
             let refused = match &pressed {
                 Err(tilo_actions::ApiError::Unavailable { code, .. }) => {
@@ -157,9 +154,10 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
             }
         } else if !tilo_actions::kind_mirrors_a_control(&descriptor.resource_kind) {
             let before = *shown.get_or_insert_with(|| dialogs(app));
+            let approval = app.harness().approval_typing(phrase.as_deref());
             if app
                 .harness()
-                .invoke_action_as(&agent, &address, &arguments, true, phrase.as_deref())
+                .invoke_action_as(&agent, &address, &arguments, Some(&approval))
                 .is_ok()
             {
                 ran = true;
@@ -174,21 +172,10 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
                 continue;
             }
         }
-        let mut answer = app
+        let approval = app.harness().approval_typing(phrase.as_deref());
+        let answer = app
             .harness()
-            .invoke_action(&address, &arguments, true, phrase.as_deref());
-        if matches!(answer, Err(tilo_actions::ApiError::ConfirmationRequired)) {
-            // The phrase may name what an earlier invocation renamed.
-            resources = app.harness().resources();
-            ran = false;
-            let Some(spec) = tilo_actions::api::resolve(&resources, &address) else {
-                continue;
-            };
-            let phrase = confirmation_phrase(spec, &arguments);
-            answer = app
-                .harness()
-                .invoke_action(&address, &arguments, true, phrase.as_deref());
-        }
+            .invoke_action(&address, &arguments, Some(&approval));
         match answer {
             // What it ran may have withdrawn rows the walk has yet to ask:
             // the tree is read again before it leaves one unasked.

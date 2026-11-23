@@ -23,11 +23,10 @@ pub(crate) use hosted::{HostedInvocation, published_here};
 
 mod deferred_intent;
 mod filter;
-pub(crate) use filter::{filter_resource, filter_shared};
-use filter::{inherit_filtered, insert_available_permitted};
-mod ordinary_confirmation;
 use deferred_intent::validate_deferred_arguments;
 pub(crate) use deferred_intent::{DeferredIntent, PreparedActionIntent};
+pub(crate) use filter::{filter_resource, filter_shared};
+use filter::{inherit_filtered, insert_available_permitted};
 
 mod control;
 #[cfg(not(target_arch = "wasm32"))]
@@ -35,9 +34,6 @@ pub(crate) use control::control_draft_identity;
 pub(crate) use control::{
     ControlContinuationArguments, ControlDeclaration, ControlIdentity, ControlObservation,
     control_declaration, control_observation, control_observation_with_arguments,
-};
-use control::{
-    ControlInputSurface, control_input_surface, resources_for_control_target, unique_control_spec,
 };
 
 use crate::permissions::{MemberId, PermissionContext, SharedPermissions};
@@ -1848,25 +1844,51 @@ pub(crate) fn discover_cached_bound_resources(
 }
 
 /// Action-scoped authority the bound dispatch shares: the action `action` on
-/// `resource` runs when allowed; where the workspace's grants ask first it
-/// runs once the person confirmed it (`confirmed`), and is
-/// [`tilo_actions::ApiError::ConfirmationRequired`] until then, so the window
-/// asks them, saying who decides. A plain quick control (a button's effect)
-/// gets no further than an action declaring its confirmation.
+/// `resource` runs when allowed, and is
+/// [`tilo_actions::ApiError::ConfirmationRequired`] where the workspace's grants
+/// leave it to the person: the window then sends it through the device's
+/// dispatch, which asks them. A plain quick control (a button's effect) gets
+/// no further than an action declaring its confirmation.
 pub(crate) fn admit_local_action(
     permissions: &PermissionContext,
     (app_id, resource, action): (&str, &ResourceSpec, &tilo_actions::ActionSpec),
     typed: Option<&serde_json::Map<String, serde_json::Value>>,
     argument: Option<&str>,
-    confirmed: bool,
 ) -> Result<(), tilo_actions::ApiError> {
     let answer = permissions.invocation_answer(app_id, resource, action, typed, argument);
-    crate::permissions::admit_in_window(answer, action, permissions.asker(), confirmed).map_err(
-        |refused| match permissions.shown_refusal(resource, action) {
+    crate::permissions::admit_in_window(answer, action, permissions.asker()).map_err(|refused| {
+        match permissions.shown_refusal(resource, action) {
             Some(held) if answer == crate::permissions::Answer::Deny => held,
             _ => refused,
-        },
-    )
+        }
+    })
+}
+
+/// Whether the person's own call of `spec` with these arguments waits for their yes, as the
+/// action's contract declares it ([`tilo_actions::ConfirmationPolicy`]):
+/// [`tilo_actions::ApiError::ConfirmationRequired`] when it does and `approval`, their approve of
+/// the asked record the call was kept as, is not there. The window then sends the call through the
+/// device's dispatch, where it is kept as that record and comes back approved once they allow it;
+/// what the phrase they typed must say is checked where it is admitted. Shift skips it for what
+/// Undo takes back ([`crate::widget::shift_skips_confirmation`]).
+pub(crate) fn press_asks(
+    spec: &tilo_actions::ActionSpec,
+    typed: Option<&serde_json::Map<String, serde_json::Value>>,
+    argument: Option<&str>,
+    approval: Option<&tilo_actions::remote::asked::Approval>,
+) -> Result<(), tilo_actions::ApiError> {
+    let confirmation = match typed {
+        Some(arguments) => spec.confirmation_for_json(arguments),
+        None => spec.confirmation_for_argument(argument),
+    };
+    if approval.is_some()
+        || matches!(confirmation, tilo_actions::ConfirmationPolicy::None)
+        || crate::widget::shift_skips_confirmation(spec.contract.can_be_undone())
+    {
+        Ok(())
+    } else {
+        Err(tilo_actions::ApiError::ConfirmationRequired)
+    }
 }
 
 /// Why an invocation the person made did not run, in words for them: what
@@ -1917,7 +1939,6 @@ fn internal_refusal(code: &str) -> Option<&'static str> {
         | "application_launch_broker_disconnected" => UNREACHABLE,
         "stale_pending_palette_action"
         | "stale_pending_control"
-        | "stale_ordinary_confirmation"
         | "stale_deferred_intent"
         | "stale_revision"
         | "published_invocation_revision_changed"
@@ -2233,7 +2254,6 @@ pub(crate) fn resolve_resource_invocation<'a>(
     address: &tilo_actions::ActionAddress,
     argument: Option<&str>,
     arguments: Option<&serde_json::Map<String, serde_json::Value>>,
-    confirmed: bool,
 ) -> Result<ResolvedResourceInvocation<'a>, tilo_actions::ApiError> {
     if arguments.is_some() && argument.is_some() {
         return Err(tilo_actions::ApiError::InvalidArguments(
@@ -2255,13 +2275,6 @@ pub(crate) fn resolve_resource_invocation<'a>(
         .iter()
         .find(|action| action.id == address.action)
         .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?;
-    let confirmation = match typed.as_ref() {
-        Some(arguments) => spec.confirmation_for_json(arguments),
-        None => spec.confirmation_for_argument(argument),
-    };
-    if !matches!(confirmation, tilo_actions::ConfirmationPolicy::None) && !confirmed {
-        return Err(tilo_actions::ApiError::ConfirmationRequired);
-    }
     Ok((typed, resource, spec))
 }
 
@@ -2284,45 +2297,9 @@ pub(crate) fn encode_resource_invocation(
     address: &tilo_actions::ActionAddress,
     argument: Option<&str>,
     arguments: Option<&serde_json::Map<String, serde_json::Value>>,
-    confirmed: bool,
 ) -> Result<tilo_actions::EncodedAction, tilo_actions::ApiError> {
-    let (arguments, _, _) =
-        resolve_resource_invocation(resources, address, argument, arguments, confirmed)?;
+    let (arguments, _, _) = resolve_resource_invocation(resources, address, argument, arguments)?;
     encode_resource_action(resources, address, arguments.as_ref(), None)
-}
-
-#[derive(Clone, PartialEq)]
-struct OrdinaryConfirmationSnapshot {
-    built_at: i64,
-    resource_id: String,
-    resource_kind: String,
-    action_id: String,
-    label: String,
-    description: Option<String>,
-    locus: tilo_actions::ExecutionLocus,
-    kind: tilo_actions::OperationKind,
-    operation_type: Option<String>,
-    contract: tilo_actions::ActionContract,
-    params: Vec<tilo_actions::ActionParam>,
-    input: ControlInputSurface,
-    intent: PreparedActionIntent,
-    continuation: Option<tilo_actions::ContinuationEvidence>,
-}
-
-#[derive(Clone)]
-pub(crate) struct OrdinaryConfirmation {
-    pub(crate) target: local_target::LocalResourceTarget,
-    pub(crate) address: tilo_actions::ActionAddress,
-    pub(crate) arguments: ControlContinuationArguments,
-    domain: crate::control_domain::WeakControlDomain,
-    snapshot: OrdinaryConfirmationSnapshot,
-    pub(crate) context: tilo_actions::ActionContext,
-    /// Why the person is asked when the action declares no confirmation of it: the workspace's grants
-    /// ask first ([`Self::asking_first`]).
-    asked: Option<String>,
-    /// Asked because the app asked for the person's pick to be confirmed
-    /// ([`Self::confirming`]).
-    confirming: bool,
 }
 
 /// The item resources the action in `envelope` created, each with its id and
@@ -2931,7 +2908,9 @@ pub(crate) struct ResourceActionRequest<'a> {
     pub(crate) argument: Option<&'a str>,
     pub(crate) arguments: Option<&'a serde_json::Map<String, serde_json::Value>>,
     pub(crate) actor: &'a tilo_actions::Actor,
-    pub(crate) confirmed: bool,
+    /// The person's approve of the asked record this call was kept as, when it is that call sent
+    /// again ([`press_asks`]).
+    pub(crate) approval: Option<&'a tilo_actions::remote::asked::Approval>,
     pub(crate) broker_admitted: bool,
     pub(crate) invocation: tilo_actions::InvocationId,
     pub(crate) source_invocation: Option<tilo_actions::InvocationId>,
@@ -2967,7 +2946,7 @@ fn perform_resource_action(
         argument,
         arguments,
         actor,
-        confirmed,
+        approval,
         broker_admitted,
         invocation,
         source_invocation,
@@ -3030,7 +3009,6 @@ fn perform_resource_action(
                         &target.address.address,
                         argument,
                         arguments,
-                        confirmed,
                     )?;
                     if let Some(hosted) = HostedInvocation::of(
                         spec,
@@ -3038,7 +3016,7 @@ fn perform_resource_action(
                         arguments.as_ref(),
                         argument,
                         actor,
-                        confirmed,
+                        approval,
                     ) {
                         return Err(BoundActionError::Hosted(hosted));
                     }
@@ -3052,17 +3030,24 @@ fn perform_resource_action(
                         arguments.as_ref(),
                         argument,
                     );
-                    // An invocation the broker delivers was admitted there; what this window was
-                    // told of its actions only shows its controls.
+                    // An invocation the workspace delivers was admitted there, the person's yes
+                    // included where it waited for one; what this window was told of its actions
+                    // only shows its controls.
                     if !broker_admitted {
+                        press_asks(spec, arguments.as_ref(), argument, approval)?;
                         let asker = binding.permissions.borrow().asker();
-                        crate::permissions::admit_in_window(answer, spec, asker, confirmed)
-                        .map_err(|refused| {
-                            match binding.permissions.borrow().shown_refusal(resource, spec) {
-                                Some(held) if answer == crate::permissions::Answer::Deny => held,
-                                _ => refused,
-                            }
-                        })?;
+                        match crate::permissions::admit_in_window(answer, spec, asker) {
+                            Err(tilo_actions::ApiError::ConfirmationRequired)
+                                if approval.is_some() => {}
+                            admitted => admitted.map_err(|refused| {
+                                match binding.permissions.borrow().shown_refusal(resource, spec) {
+                                    Some(held) if answer == crate::permissions::Answer::Deny => {
+                                        held
+                                    }
+                                    _ => refused,
+                                }
+                            })?,
+                        }
                     }
                     crate::invocation_scope::check_continuation(
                         spec,

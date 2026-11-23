@@ -1,4 +1,4 @@
-// Included in `ordinary_confirmation_tests` (the Fixture widget and its
+// Included in `control_fixture_tests` (the Fixture widget and its
 // managed root live there).
 //
 // An app window nobody draws still runs the passes a frame would run before

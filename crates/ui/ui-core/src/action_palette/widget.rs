@@ -1,8 +1,8 @@
 //! The palette as the widget tree sees it.
 
 use super::{
-    ActionPalette, Affine, ConfirmState, HashMap, ModelPath, NodeId, Point, Rect, Scene, Size,
-    Style, TaffyTree, TextRenderer, Theme, Widget, WindowEvent,
+    ActionPalette, HashMap, ModelPath, NodeId, Point, Rect, Size, Style, TaffyTree, Theme, Widget,
+    WindowEvent,
 };
 use crate::i18n::widget_text;
 use crate::widget::SearchField;
@@ -50,11 +50,6 @@ impl Widget for ActionPalette {
         self.is_presented()
             && (self.field.is_focused()
                 || self
-                    .confirm
-                    .as_ref()
-                    .and_then(ConfirmState::phrase_field)
-                    .is_some_and(|field| field.is_focused())
-                || self
                     .controls
                     .children()
                     .iter()
@@ -74,17 +69,10 @@ impl Widget for ActionPalette {
         }
         if focused {
             if !self.is_focused() {
-                self.focus_part(self.confirm.as_ref().map_or(0, ConfirmState::first_part));
+                self.focus_part(0);
             }
         } else {
             self.field.set_focused(false);
-            if let Some(field) = self
-                .confirm
-                .as_mut()
-                .and_then(ConfirmState::phrase_field_mut)
-            {
-                field.set_focus(false);
-            }
             for control in self.controls.children_mut() {
                 control.set_focus(false);
             }
@@ -224,9 +212,7 @@ impl Widget for ActionPalette {
             return None;
         }
         let mut children = Vec::new();
-        if self.confirm.is_none()
-            && let Some(field) = self.field.accessibility()
-        {
+        if let Some(field) = self.field.accessibility() {
             let target = self.target("field");
             let (name, description) = field_announcement(
                 &self.field,
@@ -241,17 +227,7 @@ impl Widget for ActionPalette {
                     .with_bounds(self.field.get_rect()),
             );
         }
-        if let Some(field) = self.confirm.as_ref().and_then(ConfirmState::phrase_field)
-            && let Some(node) = field.accessibility()
-        {
-            let target = self.target("field");
-            children.push(
-                node.with_hashed_key(&target)
-                    .with_action_target(target)
-                    .with_bounds(field.get_rect()),
-            );
-        }
-        if self.confirm.is_some() || self.history_review_required {
+        if self.history_review_required {
             for (button, part) in self
                 .controls
                 .children()
@@ -263,16 +239,7 @@ impl Widget for ActionPalette {
                     children.push(
                         node.with_hashed_key(&target)
                             .with_action_target(target)
-                            .with_bounds(
-                                self.confirmation_sheet
-                                    .layout()
-                                    .filter(|_| self.confirm.is_some())
-                                    .and_then(|layout| {
-                                        layout.actions.get(usize::from(part != "submit"))
-                                    })
-                                    .copied()
-                                    .unwrap_or_else(|| button.get_rect()),
-                            ),
+                            .with_bounds(button.get_rect()),
                     );
                 }
             }
@@ -283,22 +250,16 @@ impl Widget for ActionPalette {
         {
             children.push(results.with_hashed_key(self.target("results")));
         }
-        let confirm = self.confirm.as_ref();
-        let description = confirm.map_or("", |confirm| confirm.detail.as_str());
-        // The palette names the step it is on: the question it asks, or — while
-        // it collects the arguments of an action — that action, and itself
-        // otherwise.
-        let name = match confirm {
-            Some(confirm) => confirm.question.clone(),
-            None if self.in_argument_mode() => {
-                crate::i18n::widget_format("palette-argument-name", &[])
-            }
-            None => crate::i18n::widget_format("palette-name", &[]),
+        // The palette names the step it is on: while it collects the arguments of an action,
+        // that action, and itself otherwise.
+        let name = if self.in_argument_mode() {
+            crate::i18n::widget_format("palette-argument-name", &[])
+        } else {
+            crate::i18n::widget_format("palette-name", &[])
         };
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Dialog)
                 .with_name(name)
-                .with_description(description)
                 .with_state(
                     crate::a11y::AccessState::new()
                         .modal(true)
@@ -321,24 +282,10 @@ impl Widget for ActionPalette {
             return false;
         }
         if target == self.target("field") {
-            if self.confirm.is_none() {
-                if matches!(action, crate::a11y::Action::Focus) {
-                    self.focus_part(0);
-                }
-                return self.field.perform_action(action, &[], doc, path);
+            if matches!(action, crate::a11y::Action::Focus) {
+                self.focus_part(0);
             }
-            if self.confirm.as_ref().is_some_and(ConfirmState::typed) {
-                if matches!(action, crate::a11y::Action::Focus) {
-                    self.focus_part(0);
-                }
-                let handled = self
-                    .confirm
-                    .as_mut()
-                    .and_then(ConfirmState::phrase_field_mut)
-                    .is_some_and(|field| field.input_mut().perform_action(action, &[], doc, path));
-                self.sync_confirmation();
-                return handled;
-            }
+            return self.field.perform_action(action, &[], doc, path);
         }
         if !self.in_argument_mode() && !self.history_review_required {
             let handled = self
@@ -347,7 +294,7 @@ impl Widget for ActionPalette {
             self.poll_view_activation();
             return handled;
         }
-        if self.confirm.is_none() && !self.history_review_required {
+        if !self.history_review_required {
             return false;
         }
         for (index, part) in ["submit", "cancel"].into_iter().enumerate() {
@@ -365,5 +312,3 @@ impl Widget for ActionPalette {
         false
     }
 }
-
-impl ActionPalette {}

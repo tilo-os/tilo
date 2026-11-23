@@ -76,7 +76,6 @@ tilo_test_env::scenario! {
                     .invoke_action(
                         &tilo_actions::ActionAddress::new(resource.id.as_str(), "activate"),
                         &serde_json::Map::new(),
-                        false,
                         None,
                     )
                     .unwrap();
@@ -124,7 +123,6 @@ tilo_test_env::scenario! {
                 .invoke_action(
                     &tilo_actions::ActionAddress::new(resource.id.as_str(), "activate"),
                     &serde_json::Map::new(),
-                    false,
                     None,
                 )
                 .unwrap();

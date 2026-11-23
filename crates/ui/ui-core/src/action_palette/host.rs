@@ -823,7 +823,11 @@ impl ActionPalette {
 
     /// Paint the card over the host's rows: the field, the band its host paints into, and the list.
     pub(crate) fn draw_host(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // Theme typography is already scaled. Keep all legacy text paint and
         // metric calls in that same space, restoring the child renderer after.
@@ -847,7 +851,7 @@ impl ActionPalette {
         }
         self.sync_field_focus();
         self.field
-            .draw_child(scene, transform, text_renderer, theme,&env);
+            .draw_child(scene, transform, text_renderer, theme, &env);
         if self.shows_field_only() {
             text_renderer.set_text_scale(renderer_scale);
             return;
@@ -1080,7 +1084,6 @@ impl ActionPalette {
         self.results.set_focused(true);
         self.host_step = None;
         self.arg = None;
-        self.confirm = None;
         self.outcome = None;
         self.adjustment = None;
         self.submitted_argument = None;

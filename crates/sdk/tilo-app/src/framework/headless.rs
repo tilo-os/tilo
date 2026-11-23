@@ -1740,9 +1740,10 @@ impl<A: ResourceApp> HeadlessApp<A> {
             instance_id: self.instance,
             address: tilo_actions::ActionAddress::new(resource, id),
         };
-        let (invocation, started) = self
-            .harness()
-            .start_bound_job_for(None, &address, arguments, true)?;
+        let harness = self.harness();
+        let approval = harness.approval();
+        let (invocation, started) =
+            harness.start_bound_job_for(None, &address, arguments, Some(&approval))?;
         self.last_effect = Some(invocation);
         if started.completed().is_some() {
             return Err(tilo_actions::ApiError::Failed(format!(
@@ -1813,9 +1814,10 @@ impl<A: ResourceApp> HeadlessApp<A> {
                 }),
             None => Ok(output),
         };
-        let (invocation, started) = self
-            .harness()
-            .start_bound_job_for(invoker, &address, arguments, confirmed)?;
+        let harness = self.harness();
+        let approval = confirmed.then(|| harness.approval());
+        let (invocation, started) =
+            harness.start_bound_job_for(invoker, &address, arguments, approval.as_ref())?;
         self.last_effect = Some(invocation);
         let harness = self.harness();
         if let Some(output) = started.completed() {
@@ -2103,26 +2105,33 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.call_output_at(None, resource, id, arguments, false)
     }
 
-    /// What the host is asking the person to confirm right now — a
-    /// destructive verb or a removal that a button, a menu, the palette or
-    /// an immediate application submitted — and the question it asks.
-    /// `None` while nothing is asked.
+    /// What the person is asked right now — a press of theirs whose action waits for their yes,
+    /// from a button, a menu, the palette or an immediate application — and the action's name
+    /// its card shows. `None` while nothing is asked.
     pub fn asking(&mut self) -> Option<(tilo_actions::ActionAddress, String)> {
         self.settle();
         self.harness().asking()
     }
 
-    /// Confirm what the host asks, through its real dialog, as the person
-    /// does (Enter on its question), and settle: the
-    /// action applies. Answers the action confirmed; `None`, changing
-    /// nothing, when nothing was asked. A test of a delete from a menu
-    /// clicks the menu item, then calls this.
+    /// Allow what the person is asked, as they do on its card, and settle: the call comes back
+    /// with their yes and the action applies. Answers the action allowed; `None`, changing
+    /// nothing, when nothing was asked. A test of a delete from a menu clicks the menu item,
+    /// then calls this.
     pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
         // What the last event submitted reaches the host first.
         self.settle();
-        let confirmed = self.harness().confirm_asked();
+        let allowed = self.harness().confirm_asked();
         self.settle();
-        confirmed
+        allowed
+    }
+
+    /// Decline what the person is asked, as they do on its card, and settle: nothing of it runs.
+    /// Answers the action declined; `None` when nothing was asked.
+    pub fn decline_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
+        self.settle();
+        let declined = self.harness().decline_asked();
+        self.settle();
+        declined
     }
 
     /// [`Self::call`] after the caller explicitly confirmed this invocation.
@@ -2200,7 +2209,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         };
         let harness = self.harness();
         let started = if confirmed {
-            harness.invoke_bound_action_confirmed(&address, &arguments)?
+            harness.invoke_bound_action_approved(&address, &arguments)?
         } else {
             match ambient {
                 Some(ambient) => {
@@ -2228,7 +2237,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         };
         let harness = self.harness();
         if confirmed {
-            harness.invoke_bound_action_confirmed(&address, &arguments)?;
+            harness.invoke_bound_action_approved(&address, &arguments)?;
         } else {
             harness.invoke_bound_action(&address, &arguments)?;
         }

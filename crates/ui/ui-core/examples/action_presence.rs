@@ -48,7 +48,6 @@ fn capture(out: &Path, theme: Theme, viewport: (u32, u32)) -> CaptureResult<()> 
     frame.invoke_action(
         &tilo_actions::ActionAddress::new("first", "edit"),
         &serde_json::Map::new(),
-        false,
         None,
     )?;
     let interaction = tilo_actions::SemanticInteraction {

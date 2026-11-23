@@ -11,7 +11,7 @@ use super::{
     resolve_unbound_resource, validate_deferred_arguments,
 };
 
-pub(super) fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface {
+fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface {
     match spec.input() {
         tilo_actions::ActionInput::Immediate(_) => ControlInputSurface::Immediate,
         tilo_actions::ActionInput::Deferred { type_id } => ControlInputSurface::Deferred {
@@ -48,7 +48,7 @@ impl PartialEq for ControlObservation {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(super) enum ControlInputSurface {
+enum ControlInputSurface {
     Immediate,
     Deferred {
         type_id: String,
@@ -202,7 +202,7 @@ pub(crate) fn control_declaration(
     })
 }
 
-pub(super) fn resources_for_control_target(
+fn resources_for_control_target(
     root: &dyn Widget,
     doc: &AutoCommit,
     target: &local_target::LocalResourceTarget,
@@ -240,7 +240,7 @@ pub(super) fn resources_for_control_target(
     }
 }
 
-pub(super) fn unique_control_spec<'a>(
+fn unique_control_spec<'a>(
     resources: &'a [ResourceSpec],
     address: &tilo_actions::ActionAddress,
 ) -> Result<(&'a ResourceSpec, &'a tilo_actions::ActionSpec), tilo_actions::ApiError> {

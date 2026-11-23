@@ -320,7 +320,11 @@ impl Widget for Probe {
         Self::capture("apply");
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (_, _, _, _, mut env) = ctx.parts();
         Self::capture("draw");
     }
@@ -1019,7 +1023,8 @@ fn background_document_job_is_broker_admitted_before_its_canonical_edit() {
         .app
         .invoke_bound_target_with_broker(
             &target,
-            &ResourceInvocation::new(&target.address.address, &actor).confirmed(true),
+            &ResourceInvocation::new(&target.address.address, &actor)
+                .approval(Some(&crate::app_core::TEST_APPROVAL)),
             Some(&mut |request| requests.push(request)),
         )
         .unwrap();
@@ -1052,7 +1057,7 @@ fn background_document_job_is_broker_admitted_before_its_canonical_edit() {
         .invoke_bound_target_with_broker(
             &target,
             &ResourceInvocation::new(&target.address.address, &actor)
-                .confirmed(true)
+                .approval(Some(&crate::app_core::TEST_APPROVAL))
                 .broker_admitted(true)
                 .invocation(Some(request.invocation)),
             Some(&mut |request| requests.push(request)),
@@ -1089,7 +1094,10 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
         let error = fixture
             .app
-            .invoke_resource_action(ResourceInvocation::new(&address, &actor).confirmed(true))
+            .invoke_resource_action(
+                ResourceInvocation::new(&address, &actor)
+                    .approval(Some(&crate::app_core::TEST_APPROVAL)),
+            )
             .unwrap_err();
         assert_eq!(
             crate::bound_dispatch::api_error_code(&error),
@@ -1138,7 +1146,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
                     &tilo_actions::ActionAddress::new(&second, "follow-up"),
                     &actor,
                 )
-                .confirmed(true)
+                .approval(Some(&crate::app_core::TEST_APPROVAL))
                 .broker_admitted(true)
                 .evidence(Some(&serde_json::json!({"confirm": true})))
                 .invocation(Some(tilo_actions::InvocationId::new())),
@@ -1266,7 +1274,8 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
                 .app
                 .invoke_bound_target(
                     &target,
-                    &ResourceInvocation::new(&target.address.address, &actor).confirmed(true)
+                    &ResourceInvocation::new(&target.address.address, &actor)
+                        .approval(Some(&crate::app_core::TEST_APPROVAL))
                 )
                 .is_err()
         );
@@ -1351,7 +1360,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
                         &tilo_actions::ActionAddress::new(&alias, "follow-up"),
                         &actor,
                     )
-                    .confirmed(true)
+                    .approval(Some(&crate::app_core::TEST_APPROVAL))
                     .broker_admitted(true),
                 )
                 .is_err()
@@ -1596,7 +1605,7 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
                             "fixture-user",
                         )),
                     )
-                    .confirmed(true)
+                    .approval(Some(&crate::app_core::TEST_APPROVAL))
                     .invocation(Some(tilo_actions::InvocationId(uuid::Uuid::from_u128(91)))),
                 )
                 .unwrap();
@@ -1670,7 +1679,7 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
                             "fixture-user",
                         )),
                     )
-                    .confirmed(true)
+                    .approval(Some(&crate::app_core::TEST_APPROVAL))
                     .invocation(Some(tilo_actions::InvocationId(uuid::Uuid::from_u128(92)))),
                 )
                 .unwrap_err();
@@ -1744,7 +1753,7 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
                             "fixture-user",
                         )),
                     )
-                    .confirmed(true),
+                    .approval(Some(&crate::app_core::TEST_APPROVAL)),
                 )
                 .unwrap();
             assert_eq!(
@@ -1801,7 +1810,7 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
                     &target.address.address,
                     &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
                 )
-                .confirmed(true),
+                .approval(Some(&crate::app_core::TEST_APPROVAL)),
             );
         }));
         assert!(result.is_err());
@@ -2154,7 +2163,7 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
                     &target.address.address,
                     &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
                 )
-                .confirmed(true),
+                .approval(Some(&crate::app_core::TEST_APPROVAL)),
             )
             .unwrap();
         fixture.app.open_action_palette();
@@ -2210,7 +2219,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_observations() {
             .invoke_bound_target_with_broker(
                 &target,
                 &ResourceInvocation::new(&target.address.address, &actor)
-                    .confirmed(true)
+                    .approval(Some(&crate::app_core::TEST_APPROVAL))
                     .evidence(Some(&evidence)),
                 Some(&mut |request| requests.push(request)),
             )
@@ -2483,7 +2492,7 @@ fn assert_bound_broker_route_refused(
                 &target.address.address,
                 &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
             )
-            .confirmed(true),
+            .approval(Some(&crate::app_core::TEST_APPROVAL)),
             Some(&mut |_| sent = true),
         )
         .unwrap_err();
@@ -2520,7 +2529,7 @@ fn assert_bound_broker_route_refused(
                 &tilo_actions::ActionAddress::new("bound:probe", "view"),
                 &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
             )
-            .confirmed(true),
+            .approval(Some(&crate::app_core::TEST_APPROVAL)),
         )
         .unwrap();
 }
@@ -2932,7 +2941,7 @@ fn owner_takeover_follows_accepted_bound_actions_and_preserves_denials() {
             .invoke_bound_target(
                 &target,
                 &ResourceInvocation::new(&target.address.address, &actor)
-                    .confirmed(true)
+                    .approval(Some(&crate::app_core::TEST_APPROVAL))
                     .broker_admitted(true)
                     .invocation(Some(tilo_actions::InvocationId::new())),
             )
@@ -2951,7 +2960,7 @@ fn owner_takeover_follows_accepted_bound_actions_and_preserves_denials() {
     let accepted = fixture.app.invoke_bound_target(
         &target,
         &ResourceInvocation::new(&target.address.address, &actor)
-            .confirmed(true)
+            .approval(Some(&crate::app_core::TEST_APPROVAL))
             .broker_admitted(true)
             .invocation(Some(tilo_actions::InvocationId::new())),
     );

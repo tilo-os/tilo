@@ -135,7 +135,7 @@ impl FrameHarness {
         let mut local_pending = None;
         if let Some(palette) = &mut self.caller_palette.palette {
             if let Some(pending) = palette.take_operation() {
-                // Validate again after confirmation and before handing intent to
+                // Validate again before handing intent to
                 // the host. Revoked/replaced addresses never execute locally.
                 if pending.has_valid_input()
                     && tilo_actions::api::resolve(&resources, &pending.address).is_some()
@@ -217,7 +217,8 @@ impl FrameHarness {
                     &mut self.scene,
                     transform,
                     &mut self.text,
-                    &self.theme,&self.presence.draw_env(),
+                    &self.theme,
+                    &self.presence.draw_env(),
                 );
             }
         }
@@ -370,7 +371,8 @@ mod tests {
         assert_eq!(frame.state.doc.get_heads(), before);
     }
     #[test]
-    fn browser_ime_collects_typed_arguments_and_exact_confirmation_then_revocation_refuses() {
+    fn browser_ime_collects_typed_arguments_and_a_revoked_action_refuses() {
+        // What asks first is handed over as any intent: the person is asked when it runs.
         let mut frame = frame();
         let params = vec![tilo_actions::ActionParam::required(
             "rows",
@@ -381,7 +383,7 @@ mod tests {
             tilo_actions::ConfirmationPolicy::Phrase {
                 phrase: "INSERT".into(),
             },
-            params,
+            params.clone(),
         ));
         open(&mut frame);
         enter(&mut frame);
@@ -389,45 +391,25 @@ mod tests {
             "{\"rows\":2}".into(),
         )));
         enter(&mut frame);
-        assert!(frame.take_caller_operation().is_none());
-        frame.send_host_event(&crate::synthetic_input::key_input(
-            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
-            winit::event::ElementState::Pressed,
-        ));
-        frame.send_host_event(&WindowEvent::Ime(winit::event::Ime::Commit(
-            "INSERT".into(),
-        )));
-        enter(&mut frame);
-        assert!(frame.take_caller_operation().is_none());
-        frame.send_host_event(&crate::synthetic_input::key_input(
-            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
-            winit::event::ElementState::Pressed,
-        ));
-        frame.send_host_event(&crate::synthetic_input::key_input(
-            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
-            winit::event::ElementState::Pressed,
-        ));
-        enter(&mut frame);
         let intent = frame
             .take_caller_operation()
-            .expect("typed and confirmed intent");
+            .expect("the typed intent is handed over");
         assert_eq!(
             intent.wire_argument().as_deref(),
             Some("\u{1e}tilo-args:{\"rows\":2}")
         );
-        assert_eq!(
-            intent.confirmation_evidence(),
-            &serde_json::json!({"confirmation_phrase":"INSERT"})
-        );
-        frame.set_caller_actions(resources(tilo_actions::ConfirmationPolicy::Confirm, vec![]));
+        frame.set_caller_actions(resources(tilo_actions::ConfirmationPolicy::Confirm, params));
         open(&mut frame);
         enter(&mut frame);
         frame.set_caller_actions(vec![]);
         frame.send_host_event(&WindowEvent::Ime(winit::event::Ime::Commit(
-            "CONFIRM".into(),
+            "{\"rows\":3}".into(),
         )));
         enter(&mut frame);
-        assert!(frame.take_caller_operation().is_none());
+        assert!(
+            frame.take_caller_operation().is_none(),
+            "a revoked action is refused"
+        );
     }
     #[test]
     fn palette_pointer_uses_surface_dpr_without_changing_document_coordinates() {

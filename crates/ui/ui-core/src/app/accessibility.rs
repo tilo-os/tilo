@@ -1684,33 +1684,30 @@ impl App {
         let invocation = ResourceInvocation::new(&target.address.address, &actor).argument(arg);
         match self.invoke_bound_target(target, &invocation) {
             Ok(_) => Ok(true),
+            // The press waits for the person's yes: the device keeps it as its ask, and the
+            // window shows it.
             Err(tilo_actions::ApiError::ConfirmationRequired) => {
-                if let Some(value) = arg {
-                    let arguments = if let Some(json) =
-                        value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
-                    {
-                        crate::bound_dispatch::ControlContinuationArguments::Json(
+                let arguments = match arg {
+                    Some(value) => match value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX) {
+                        Some(json) => crate::bound_dispatch::ControlContinuationArguments::Json(
                             serde_json::from_str(json).map_err(|error| error.to_string())?,
-                        )
-                    } else {
-                        crate::bound_dispatch::ControlContinuationArguments::Text(value.to_owned())
-                    };
-                    return Ok(self.open_ordinary_confirmation(
-                        crate::bound_dispatch::local_target::LocalResourceTarget::Component(
-                            target.clone(),
                         ),
-                        target.address.address.clone(),
-                        arguments,
-                    ));
-                }
-                self.open_action_palette();
-                let activated = self
-                    .actions
-                    .action_palette
-                    .as_deref_mut()
-                    .is_some_and(|palette| palette.activate_bound(target));
-                self.capture_ordinary_palette_request();
-                Ok(activated)
+                        None => crate::bound_dispatch::ControlContinuationArguments::Text(
+                            value.to_owned(),
+                        ),
+                    },
+                    None => crate::bound_dispatch::ControlContinuationArguments::Immediate,
+                };
+                crate::app_core::AppCore::ask_through_device(
+                    self,
+                    &crate::bound_dispatch::local_target::LocalResourceTarget::Component(
+                        target.clone(),
+                    ),
+                    &target.address.address,
+                    &arguments,
+                )
+                .map(|_| true)
+                .map_err(|error| error.to_string())
             }
             Err(error) => Err(error.to_string()),
         }

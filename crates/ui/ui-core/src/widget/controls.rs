@@ -24,17 +24,13 @@ pub enum Origin {
     /// The app on its own, for nobody's gesture: a read receipt, keeping a record in step with what is
     /// shown.
     App,
-    /// A person's pick that the app asks them to confirm before it goes ahead (Delete in a message's
-    /// menu), though the action's contract asks nothing: the host asks as it asks for any confirmation,
-    /// with the same rule that Shift skips it for what Undo takes back.
-    PersonConfirming,
 }
 
 impl Origin {
     /// Whether a person asked for it, so a refusal is said over the window.
     #[must_use]
     pub fn is_persons(self) -> bool {
-        matches!(self, Self::Person | Self::PersonConfirming)
+        matches!(self, Self::Person)
     }
 }
 

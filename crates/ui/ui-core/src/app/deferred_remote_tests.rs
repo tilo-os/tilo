@@ -60,7 +60,7 @@ fn deferred_server_preferred_client_routes_address_without_minting() {
                 &tilo_actions::ActionAddress::new("test.counter", "create"),
                 &actor,
             )
-            .confirmed(true),
+            .approval(Some(&crate::app_core::TEST_APPROVAL)),
         )
         .unwrap();
     assert!(matches!(

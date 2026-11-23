@@ -614,19 +614,19 @@ impl SettingsResources {
     /// (the palette's dark mode runs the appearance field edit). The change
     /// is recorded with both, so its history tells them apart. A change
     /// whose published action asks first, for the value it carries (a later
-    /// lock), runs only once it is `confirmed`.
+    /// lock), runs only once the person allowed it: it comes back with their `approval`.
     pub fn invoke(
         &self,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmed: bool,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
         invoker: &ActionInvoker,
         invoked_by: Option<&InvokingAction>,
     ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError> {
         let resources = self.resources();
         let spec = tilo_actions::api::resolve(&resources, address)
             .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?;
-        if !confirmed
+        if approval.is_none()
             && spec.confirmation_for_json(arguments) != tilo_actions::ConfirmationPolicy::None
         {
             return Err(tilo_actions::ApiError::ConfirmationRequired);
@@ -680,7 +680,7 @@ impl SettingsResources {
             self.invoke(
                 invocation.address,
                 &arguments,
-                invocation.confirmed,
+                invocation.approval,
                 &ActionInvoker::member(person.clone()),
                 None,
             )

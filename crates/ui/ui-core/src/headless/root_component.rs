@@ -106,7 +106,6 @@ impl FrameHarness {
         self.focused = None;
         self.focus_before_trap = None;
         self.focus_trap_node = None;
-        self.ordinary_palette_return_focus = None;
         self.root_type = None;
         self.root = root;
         self.owner_wake_queue = Some(owner_queue);

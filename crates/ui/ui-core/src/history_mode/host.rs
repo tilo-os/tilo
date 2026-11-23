@@ -477,7 +477,14 @@ impl HistoryHost {
     ) -> bool {
         let mut own = self.painting.take().unwrap_or_default();
         own.reset();
-        crate::widget::DrawChild::draw_child(self, &mut own, transform, text, theme,&presence.draw_env());
+        crate::widget::DrawChild::draw_child(
+            self,
+            &mut own,
+            transform,
+            text,
+            theme,
+            &presence.draw_env(),
+        );
         scene.append(&own, None);
         let changed = self.painted.as_ref().map_or_else(
             || !own.encoding().draw_tags.is_empty(),
@@ -954,24 +961,8 @@ impl HistoryHost {
     pub(crate) fn prepare_pending_control(
         &mut self,
         token: &super::pending_controls::ContinuationToken,
-        confirmed: bool,
     ) -> Option<super::pending_controls::PreparedContinuation> {
-        self.pending_controls.prepare(token, confirmed)
-    }
-    pub(crate) fn prepare_pending_control_typed(
-        &mut self,
-        token: &super::pending_controls::ContinuationToken,
-        value: &str,
-    ) -> Option<super::pending_controls::PreparedContinuation> {
-        self.pending_controls
-            .prepare_typed_confirmation(token, value)
-    }
-    pub(crate) fn pending_control_needs_confirmation(
-        &mut self,
-        id: super::pending_controls::PendingControlId,
-    ) {
-        self.pending_controls.needs_confirmation(id);
-        self.toolbar_dirty = true;
+        self.pending_controls.prepare(token)
     }
     pub(crate) fn pending_control_refused(
         &mut self,
@@ -1786,9 +1777,6 @@ impl HistoryHost {
                     super::pending_controls::PendingControlStatus::Ready => {
                         Some("history-mode-continue")
                     }
-                    super::pending_controls::PendingControlStatus::NeedsConfirmation => {
-                        Some("history-mode-confirm")
-                    }
                     super::pending_controls::PendingControlStatus::Suspended
                     | super::pending_controls::PendingControlStatus::Consumed => None,
                     super::pending_controls::PendingControlStatus::Refused(ref reason) => {
@@ -1801,66 +1789,18 @@ impl HistoryHost {
                 {
                     let commands = self.pending_controls.commands();
                     let id = format!("history-pending-{}", review.id.value());
-                    if matches!(
-                        review.status,
-                        super::pending_controls::PendingControlStatus::NeedsConfirmation
-                    ) {
-                        // A click on Confirm confirms. Only an irreversible
-                        // action that names what it destroys (a drive, an
-                        // app) asks for that name typed, in a plain field:
-                        // never a search field, never a generic word.
-                        let entered = Rc::new(RefCell::new(String::new()));
-                        if let Ok(tilo_actions::ConfirmationPolicy::Phrase { phrase }) =
-                            &review.confirmation
-                        {
-                            let changed = entered.clone();
-                            row = row.push(Box::new(
-                                TextInput::local_with_language("und")
-                                    .with_spellcheck(false)
-                                    .with_autocorrect(false)
-                                    .with_id(&format!("{id}-phrase"))
-                                    .with_placeholder(I18nManager::format(
-                                        "history-mode-type-to-confirm",
-                                        &[("phrase", phrase.clone().into())],
-                                    ))
-                                    .on_change(move |value| {
-                                        changed.borrow_mut().replace_range(.., value)
-                                    }),
-                            ));
-                        } else if let Err(reason) = &review.confirmation {
-                            row = row.push(Box::new(Text::new(reason)));
-                        }
-                        let confirm_token = token.clone();
-                        let typed = entered;
-                        let callback = PendingControlCallback::new(move || {
-                            commands.borrow_mut().push_back(
-                                super::pending_controls::ContinuationCommand::Confirm(
-                                    confirm_token.clone(),
-                                    typed.borrow().clone(),
-                                ),
-                            );
-                            super::note_news();
-                        });
-                        #[cfg(test)]
-                        self.pending_control_callbacks
-                            .insert(id.clone(), callback.clone());
-                        row = row.push(Box::new(
-                            Button::new(&id, label).on_click(move || callback.invoke()),
-                        ));
-                    } else {
-                        let command =
-                            super::pending_controls::ContinuationCommand::Review(token.clone());
-                        let callback = PendingControlCallback::new(move || {
-                            commands.borrow_mut().push_back(command.clone());
-                            super::note_news();
-                        });
-                        #[cfg(test)]
-                        self.pending_control_callbacks
-                            .insert(id.clone(), callback.clone());
-                        row = row.push(Box::new(
-                            Button::new(&id, label).on_click(move || callback.invoke()),
-                        ));
-                    }
+                    let command =
+                        super::pending_controls::ContinuationCommand::Review(token.clone());
+                    let callback = PendingControlCallback::new(move || {
+                        commands.borrow_mut().push_back(command.clone());
+                        super::note_news();
+                    });
+                    #[cfg(test)]
+                    self.pending_control_callbacks
+                        .insert(id.clone(), callback.clone());
+                    row = row.push(Box::new(
+                        Button::new(&id, label).on_click(move || callback.invoke()),
+                    ));
                     let commands = self.pending_controls.commands();
                     let cancel_id = format!("history-pending-cancel-{}", review.id.value());
                     let callback = PendingControlCallback::new(move || {

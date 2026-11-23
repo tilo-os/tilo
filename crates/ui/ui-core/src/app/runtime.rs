@@ -351,8 +351,6 @@ pub(super) struct ActionRuntime {
     /// The window the palette was opened from, when the app hosts several
     /// (the shell's tiles): the palette centres on it, not on the screen.
     pub(super) palette_window: Option<vello::kurbo::Rect>,
-    /// Stable opener identity, never a node or pointer from the modal's old tree.
-    pub(super) ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
     /// Why invocations the person made this pass did not run, and the
     /// control each came from when one is on screen: said at that control,
     /// else in the window's bar, once the pass ends
@@ -496,7 +494,6 @@ impl ActionRuntime {
         Self {
             action_palette: None,
             palette_window: None,
-            ordinary_palette_return_focus: None,
             refusals: Vec::new(),
             control_notice: None,
             search_in_host: false,

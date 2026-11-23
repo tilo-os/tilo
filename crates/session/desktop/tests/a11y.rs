@@ -432,7 +432,6 @@ fn the_about_sheet_is_the_chromes_own_action() {
         .invoke_action(
             &tilo_actions::ActionAddress::new("desktop:chrome", "about"),
             &serde_json::Map::new(),
-            false,
             None,
         )
         .expect("the chrome publishes About");

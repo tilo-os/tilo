@@ -107,9 +107,7 @@ history-mode-pending-unnamed = An action waits until you leave History
 history-mode-pending-held = “{ $action }” was held while History was open
 history-mode-pending-held-unnamed = An action was held while History was open
 history-mode-continue = Continue
-history-mode-confirm = Allow
 history-mode-cancel = Cancel
-history-mode-type-to-confirm = Type “{ $phrase }” to confirm
 history-mode-owner-gone = This document is no longer open here
 history-mode-ownership-lost = History couldn't bring back what this action needed
 history-mode-control-owner-closed = The app that asked for this has closed
@@ -1236,7 +1234,6 @@ toast-reply-placeholder = Reply…
 ## Window furniture and widget chrome, named where a screen reader reads it
 floating-window-move-hint = Movable window. Hold Alt and use the arrow keys to move; hold Shift for larger steps.
 widget-dialog-close = Close
-widget-dialog-cancel = Cancel
 widget-dismiss = Dismiss
 widget-hand-to-agent = Hand to an agent
 widget-more = More

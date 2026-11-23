@@ -79,12 +79,8 @@ pub(crate) trait ControlCore: AppCore {
         context: Option<tilo_actions::ActionContext>,
     ) -> Started;
 
-    /// The confirmation `intent` needs from the local actor, or `None` when its action is unavailable
-    /// to them.
-    fn local_confirmation(
-        &self,
-        intent: &ControlInvocation,
-    ) -> Option<tilo_actions::ConfirmationPolicy>;
+    /// Whether the window offers `intent`'s action to the local actor.
+    fn locally_offered(&self, intent: &ControlInvocation) -> bool;
 
     /// A control bound to the window's History API (or its unsaved-changes Retry) runs there, never as
     /// an app action.
@@ -151,37 +147,6 @@ pub(crate) trait ControlCore: AppCore {
     /// The control intents this host's tree registered, by owner.
     fn control_domain(&self) -> &crate::control_domain::ControlDomain;
 
-    /// Put `request` to the person in the window's palette.
-    fn ask_in_palette(&mut self, request: crate::bound_dispatch::OrdinaryConfirmation) -> bool;
-
-    /// Ask the person before `address` goes ahead: as the API asked, or, `confirming`, as the app
-    /// asked for a pick of theirs ([`Origin::PersonConfirming`]).
-    fn ask_person(
-        &mut self,
-        target: LocalResourceTarget,
-        address: ActionAddress,
-        arguments: ControlContinuationArguments,
-        confirming: bool,
-    ) -> bool {
-        let tree = self.tree();
-        let request = crate::bound_dispatch::OrdinaryConfirmation::prepare(
-            tree.root,
-            &tree.state.doc,
-            target,
-            self.control_domain(),
-            address,
-            arguments,
-        );
-        match request {
-            Ok(request) if confirming => self.ask_in_palette(request.confirming()),
-            Ok(request) => self.ask_in_palette(request.asking_first()),
-            Err(error) => {
-                self.refuse_visibly(&error);
-                false
-            }
-        }
-    }
-
     /// Say that an invocation the person made did not run, and why, at the control they used.
     fn refuse_visibly(&mut self, error: &ApiError);
 
@@ -218,8 +183,9 @@ pub(crate) trait ControlCore: AppCore {
     fn invoke_chosen_address(&mut self, request: &ResourceInvocation<'_>) -> Started;
 
     /// Run what the person chose in the window's palette, once it collected what the action
-    /// asks for: a row History held back only as it was when held, one the palette confirmed at
-    /// the target it was confirmed for, and any other where the window publishes its address.
+    /// asks for: a row History kept back only as it was when kept, and any other where the window
+    /// publishes its address. One whose action waits for the person's yes goes through the
+    /// device's dispatch, which asks them ([`AppCore::ask_through_device`]).
     fn run_palette_operation(
         &mut self,
         pending: &crate::action_palette::PendingOperation,
@@ -228,43 +194,55 @@ pub(crate) trait ControlCore: AppCore {
         let actor = tilo_actions::Actor::Member(self.local_author().clone());
         let request = ResourceInvocation::new(&pending.address, &actor)
             .argument(argument.as_deref())
-            .confirmed(true)
-            .evidence(Some(pending.confirmation_evidence()))
             .ambient_context(Some(&pending.context));
-        // Confirmation was collected by the palette, but the request has not crossed the session
-        // broker yet: a document the host requires is submitted to that broker, not applied here.
-        if let Some(ordinary) = &pending.ordinary {
-            let tree = self.tree();
-            ordinary.validate(tree.root, &tree.state.doc, self.control_domain())?;
-        }
-        let target = match (&pending.history_target, &pending.ordinary) {
+        let (target, started) = match &pending.history_target {
             // History is a window's own, and the web build draws no window.
             #[cfg(not(target_arch = "wasm32"))]
-            (Some(target), _) => {
+            Some(target) => {
                 self.held_palette_row_unchanged(pending, target)?;
-                target
+                let started = match target {
+                    LocalResourceTarget::Component(target) => {
+                        self.invoke_bound_control(target, &request)
+                    }
+                    LocalResourceTarget::Outer => self.invoke_outer_control(&request),
+                };
+                (target.clone(), started)
             }
             #[cfg(target_arch = "wasm32")]
-            (Some(_), _) => {
+            Some(_) => {
                 return Err(ApiError::Unavailable {
                     code: "history_target_on_page".into(),
                     reason: "the web build holds no palette row back to History".into(),
                 });
             }
-            (None, Some(ordinary)) => &ordinary.target,
-            (None, None) => {
+            None => {
                 if let Some(ran) = self.history_address(&pending.address, argument.as_deref()) {
                     return ran;
                 }
-                return match &pending.bound {
-                    Some(target) => self.invoke_bound_control(target, &request),
-                    None => self.invoke_chosen_address(&request),
-                };
+                match &pending.bound {
+                    Some(target) => (
+                        LocalResourceTarget::Component(target.clone()),
+                        self.invoke_bound_control(target, &request),
+                    ),
+                    None => (
+                        LocalResourceTarget::Outer,
+                        self.invoke_chosen_address(&request),
+                    ),
+                }
             }
         };
-        match target {
-            LocalResourceTarget::Component(target) => self.invoke_bound_control(target, &request),
-            LocalResourceTarget::Outer => self.invoke_outer_control(&request),
+        match started {
+            Err(ApiError::ConfirmationRequired) => {
+                let arguments = pending.continuation_arguments().ok_or_else(|| {
+                    ApiError::InvalidArguments("The palette's arguments are incomplete".into())
+                })?;
+                let address = match &target {
+                    LocalResourceTarget::Component(bound) => bound.address.address.clone(),
+                    LocalResourceTarget::Outer => pending.address.clone(),
+                };
+                self.ask_through_device(&target, &address, &arguments)
+            }
+            started => started,
         }
     }
 
@@ -339,8 +317,7 @@ pub(crate) trait ControlCore: AppCore {
         Ok(())
     }
 
-    /// Run a control a History surface held back, as the person at this device, confirmed when they
-    /// already confirmed it.
+    /// Run a control a History surface kept back, as the person at this device.
     fn invoke_held_control(
         &mut self,
         prepared: crate::history_mode::pending_controls::PreparedContinuation,
@@ -350,18 +327,25 @@ pub(crate) trait ControlCore: AppCore {
         self.invoke_local_target(
             &prepared.target,
             &ResourceInvocation::new(&prepared.invocation.address, &actor)
-                .argument(Some(&argument))
-                .confirmed(prepared.confirmed),
+                .argument(Some(&argument)),
         )
     }
 
-    fn open_ordinary_confirmation(
+    /// The person's own press of `address` on `target` waits for their yes: send it through the
+    /// device's dispatch, which asks them over this window, and say why where it could not go.
+    fn press_through_device(
         &mut self,
-        target: LocalResourceTarget,
-        address: ActionAddress,
+        target: &LocalResourceTarget,
+        address: &ActionAddress,
         arguments: ControlContinuationArguments,
     ) -> bool {
-        self.ask_person(target, address, arguments, false)
+        match self.ask_through_device(target, address, &arguments) {
+            Ok(_) => true,
+            Err(error) => {
+                self.refuse_visibly(&error);
+                false
+            }
+        }
     }
 
     /// Deliver the control intents the tree queued: `registered` ones the control domain drained, then
@@ -482,7 +466,7 @@ pub(crate) trait ControlCore: AppCore {
             return true;
         }
         let acting = on_behalf_of.and_then(|id| self.acting_for_mut().get(&id).cloned());
-        let Some(confirmation) = self.local_confirmation(&intent) else {
+        if !self.locally_offered(&intent) {
             let error = ApiError::Unknown(intent.address.clone());
             tracing::warn!(
                 resource = %intent.address.resource,
@@ -497,34 +481,6 @@ pub(crate) trait ControlCore: AppCore {
             }
             self.outer_control_settled(&intent.address, on_behalf_of, &Err(error));
             return false;
-        };
-        let needs_confirmation = !matches!(confirmation, tilo_actions::ConfirmationPolicy::None);
-        if acting.is_some() && needs_confirmation {
-            // Nobody here asked for it: the person at the device is never
-            // prompted to confirm another invoker's edit.
-            tracing::warn!(resource = %intent.address.resource, action = %intent.address.action, "an effect's edit that needs confirmation is refused");
-            let error = ApiError::ConfirmationRequired;
-            self.refused_unsaid(&error);
-            self.outer_control_settled(&intent.address, on_behalf_of, &Err(error));
-            return false;
-        }
-        let confirming = acting.is_none() && origin == Origin::PersonConfirming;
-        if confirming || needs_confirmation {
-            // A bound control never manufactures confirmation. Hand the
-            // exact address to the standard palette flow, which owns the
-            // explicit confirm/phrase UI and only then enters the API.
-            crate::widget::controls::on_control_invocation_result(
-                self.host_root_mut(),
-                &intent.address,
-                &Err(ApiError::ConfirmationRequired),
-            );
-            self.ask_person(
-                LocalResourceTarget::Outer,
-                intent.address,
-                ControlContinuationArguments::Json(intent.arguments),
-                confirming,
-            );
-            return true;
         }
         if let (Some(acting), Some(running)) = (&acting, on_behalf_of)
             && self.broker_connected()
@@ -571,14 +527,14 @@ pub(crate) trait ControlCore: AppCore {
         self.outer_control_settled(&intent.address, on_behalf_of, &result);
         match result {
             Ok(_) => true,
-            Err(ApiError::ConfirmationRequired) if acting.is_none() => {
-                self.open_ordinary_confirmation(
-                    LocalResourceTarget::Outer,
-                    intent.address,
+            // The person's own press waits for their yes: the device asks them. Nobody here asked
+            // for an effect's edit, and the person at the device is never asked about it.
+            Err(ApiError::ConfirmationRequired) if acting.is_none() && says_refusal => self
+                .press_through_device(
+                    &LocalResourceTarget::Outer,
+                    &intent.address,
                     ControlContinuationArguments::Json(intent.arguments),
-                );
-                true
-            }
+                ),
             Err(error) => {
                 tracing::warn!(resource = %intent.address.resource, action = %intent.address.action, %error, ?origin, "action-bound control invocation refused");
                 if acting.is_none() && says_refusal {
@@ -616,14 +572,6 @@ pub(crate) trait ControlCore: AppCore {
         origin: Origin,
         waited: Option<crate::time::Instant>,
     ) -> bool {
-        if origin == Origin::PersonConfirming && on_behalf_of.is_none() {
-            return self.ask_person(
-                LocalResourceTarget::Component(target.clone()),
-                intent.address.clone(),
-                ControlContinuationArguments::Json(intent.arguments.clone()),
-                true,
-            );
-        }
         let argument = json_argument(&intent.arguments);
         let acting = on_behalf_of.and_then(|id| self.acting_for_mut().get(&id).cloned());
         if let (Some(acting), Some(running)) = (&acting, on_behalf_of)
@@ -682,16 +630,14 @@ pub(crate) trait ControlCore: AppCore {
         self.bound_control_settled(target, on_behalf_of, &result);
         match result {
             Ok(_) => true,
-            // Nobody here asked for it: the person at the device is never
-            // prompted to confirm another invoker's edit.
-            Err(ApiError::ConfirmationRequired) if acting.is_none() => {
-                self.open_ordinary_confirmation(
-                    LocalResourceTarget::Component(target.clone()),
-                    intent.address.clone(),
+            // The person's own press waits for their yes: the device asks them. Nobody here asked
+            // for an effect's edit, and the person at the device is never asked about it.
+            Err(ApiError::ConfirmationRequired) if acting.is_none() && origin.is_persons() => self
+                .press_through_device(
+                    &LocalResourceTarget::Component(target.clone()),
+                    &intent.address,
                     ControlContinuationArguments::Json(intent.arguments.clone()),
-                );
-                true
-            }
+                ),
             Err(error) => {
                 tracing::warn!(%error, ?origin, "bound control invocation refused");
                 // Only what the person asked for is refused over the window;

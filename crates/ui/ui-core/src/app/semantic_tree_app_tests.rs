@@ -1004,7 +1004,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         let admitted_invocation = tilo_actions::InvocationId::new();
         let scribe = tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe"));
         let request = ResourceInvocation::new(&address, &scribe)
-            .confirmed(true)
+            .approval(Some(&crate::app_core::TEST_APPROVAL))
             .broker_admitted(true)
             .invocation(Some(admitted_invocation))
             .ambient_context(Some(&ambient));
@@ -1229,7 +1229,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
 
         let scribe = tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe"));
         let request = ResourceInvocation::new(&address, &scribe)
-            .confirmed(true)
+            .approval(Some(&crate::app_core::TEST_APPROVAL))
             .broker_admitted(true)
             .invocation(Some(tilo_actions::InvocationId::new()));
         let admitted = app.invoke_resource_action(request);
@@ -1250,7 +1250,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
                     &tilo_actions::ActionAddress::new("test.counter", "inspect"),
                     &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
                 )
-                .confirmed(true)
+                .approval(Some(&crate::app_core::TEST_APPROVAL))
                 .broker_admitted(true)
                 .invocation(Some(invocation)),
             )

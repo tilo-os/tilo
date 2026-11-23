@@ -77,34 +77,20 @@ impl App {
                 .as_deref()
                 .and_then(|palette| palette.history_pending_continuation_arguments());
             let ownership = address.as_ref().map(|address| {
-                let original = self
+                let target = match self
                     .actions
                     .action_palette
                     .as_deref()
-                    .and_then(|p| p.ordinary_request());
-                if let Some(original) = original {
-                    original.validate_owner(&self.control_domain)?;
-                }
-                let target = if let Some(original) = original {
-                    original.target.clone()
-                } else {
-                    match self
-                        .actions
-                        .action_palette
-                        .as_deref()
-                        .and_then(|palette| palette.history_pending_bound_target())
-                    {
-                        Some(bound) => {
-                            crate::bound_dispatch::local_target::LocalResourceTarget::Component(
-                                bound,
-                            )
-                        }
-                        None => crate::bound_dispatch::local_target::select_local_target(
-                            self.root_widget.as_ref(),
-                            &self.state.doc,
-                            address,
-                        )?,
+                    .and_then(|palette| palette.history_pending_bound_target())
+                {
+                    Some(bound) => {
+                        crate::bound_dispatch::local_target::LocalResourceTarget::Component(bound)
                     }
+                    None => crate::bound_dispatch::local_target::select_local_target(
+                        self.root_widget.as_ref(),
+                        &self.state.doc,
+                        address,
+                    )?,
                 };
                 let observation = invocation.as_ref().zip(original_arguments.as_ref()).map(
                     |(invocation, original_arguments)| {
@@ -723,7 +709,7 @@ impl App {
         tilo_actions::api::resolve(&resources, address)?;
         Some((|| {
             let encoded = crate::bound_dispatch::encode_resource_invocation(
-                &resources, address, argument, None, false,
+                &resources, address, argument, None,
             )?;
             self.execute_history_encoded_local(&encoded)
                 .map_err(tilo_actions::ApiError::Failed)?;

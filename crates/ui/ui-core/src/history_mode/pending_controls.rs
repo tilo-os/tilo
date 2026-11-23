@@ -1,6 +1,7 @@
 //! Finite ownership for live controls that were queued before History opened. Retained invocations are
-//! inert data. A continuation token identifies one presentation of one item; it never carries authority
-//! or confirmation.
+//! inert data. A continuation token identifies one presentation of one item; it never carries authority.
+//! A kept-back control whose action waits for the person's yes goes, once continued, through the device's
+//! dispatch like any press of theirs, which asks them.
 
 use crate::bound_dispatch::{BoundActionTarget, local_target::LocalResourceTarget};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
@@ -20,7 +21,6 @@ impl PendingControlId {
 pub enum PendingControlStatus {
     Suspended,
     Ready,
-    NeedsConfirmation,
     Refused(String),
     Consumed,
 }
@@ -30,16 +30,9 @@ pub struct PendingControlReview {
     pub id: PendingControlId,
     pub invocation: ControlInvocation,
     pub status: PendingControlStatus,
-    pub confirmation: Result<tilo_actions::ConfirmationPolicy, String>,
     pub owner: String,
     /// The action's name as its declaration gives it, when the control still resolves to one.
     pub label: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ContinuationStage {
-    Review,
-    Confirm,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,7 +42,6 @@ pub struct ContinuationToken {
     item_id: PendingControlId,
     presentation_generation: u64,
     nonce: Uuid,
-    stage: ContinuationStage,
 }
 
 #[derive(Clone)]
@@ -103,7 +95,6 @@ struct PendingControl {
 #[derive(Clone)]
 pub(crate) enum ContinuationCommand {
     Review(ContinuationToken),
-    Confirm(ContinuationToken, String),
     Cancel(ContinuationToken),
 }
 
@@ -112,7 +103,6 @@ pub(crate) struct PreparedContinuation {
     pub(crate) invocation: ControlInvocation,
     pub(crate) target: LocalResourceTarget,
     pub(crate) observation: Result<crate::bound_dispatch::ControlObservation, String>,
-    pub(crate) confirmed: bool,
 }
 
 pub(crate) struct SuspendedLocalControls {
@@ -160,10 +150,7 @@ impl SuspendedLocalControls {
         self.advance_generation();
         self.suspended = true;
         for item in &mut self.items {
-            if matches!(
-                item.status,
-                PendingControlStatus::Ready | PendingControlStatus::NeedsConfirmation
-            ) {
+            if item.status == PendingControlStatus::Ready {
                 item.status = PendingControlStatus::Suspended;
             }
         }
@@ -264,11 +251,6 @@ impl SuspendedLocalControls {
                 } else {
                     item.status.clone()
                 },
-                confirmation: item
-                    .observation
-                    .as_ref()
-                    .map(|observation| observation.confirmation().clone())
-                    .map_err(Clone::clone),
                 owner: item.origin.description(),
                 label: item.label.clone().or_else(|| {
                     item.observation
@@ -286,13 +268,9 @@ impl SuspendedLocalControls {
             return None;
         }
         let item = self.items.iter_mut().find(|item| item.id == id)?;
-        let stage = match item.status {
-            PendingControlStatus::Ready => ContinuationStage::Review,
-            PendingControlStatus::NeedsConfirmation => ContinuationStage::Confirm,
-            PendingControlStatus::Suspended
-            | PendingControlStatus::Refused(_)
-            | PendingControlStatus::Consumed => return None,
-        };
+        if item.status != PendingControlStatus::Ready {
+            return None;
+        }
         let owner_lifetime = item.origin.lifetime_id();
         let nonce = Uuid::new_v4();
         item.outstanding_nonce = Some(nonce);
@@ -302,15 +280,13 @@ impl SuspendedLocalControls {
             item_id: id,
             presentation_generation: self.presentation_generation,
             nonce,
-            stage,
         })
     }
 
-    fn consume(&mut self, token: &ContinuationToken, stage: ContinuationStage) -> Option<usize> {
+    fn consume(&mut self, token: &ContinuationToken) -> Option<usize> {
         if self.suspended
             || token.surface_lifetime != self.surface_lifetime
             || token.presentation_generation != self.presentation_generation
-            || token.stage != stage
         {
             return None;
         }
@@ -328,16 +304,7 @@ impl SuspendedLocalControls {
         Some(index)
     }
 
-    pub(crate) fn prepare(
-        &mut self,
-        token: &ContinuationToken,
-        confirmed: bool,
-    ) -> Option<PreparedContinuation> {
-        let stage = if confirmed {
-            ContinuationStage::Confirm
-        } else {
-            ContinuationStage::Review
-        };
+    pub(crate) fn prepare(&mut self, token: &ContinuationToken) -> Option<PreparedContinuation> {
         if self
             .items
             .iter()
@@ -348,14 +315,9 @@ impl SuspendedLocalControls {
         {
             return None;
         }
-        let index = self.consume(token, stage)?;
+        let index = self.consume(token)?;
         let item = self.items.get(index)?;
-        let expected = if confirmed {
-            PendingControlStatus::NeedsConfirmation
-        } else {
-            PendingControlStatus::Ready
-        };
-        if item.status != expected {
+        if item.status != PendingControlStatus::Ready {
             return None;
         }
         Some(PreparedContinuation {
@@ -363,36 +325,7 @@ impl SuspendedLocalControls {
             invocation: item.invocation.clone(),
             target: item.origin.target(),
             observation: item.observation.clone(),
-            confirmed,
         })
-    }
-
-    pub(crate) fn prepare_typed_confirmation(
-        &mut self,
-        token: &ContinuationToken,
-        value: &str,
-    ) -> Option<PreparedContinuation> {
-        let item = self.items.iter().find(|item| item.id == token.item_id)?;
-        let policy = item.observation.as_ref().ok()?.confirmation();
-        // The click on Confirm is the confirmation; only a phrase naming
-        // what is destroyed must also be typed.
-        match policy {
-            tilo_actions::ConfirmationPolicy::None => return None,
-            tilo_actions::ConfirmationPolicy::Confirm => {}
-            tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
-                if value.trim() != phrase.trim() {
-                    return None;
-                }
-            }
-        }
-        self.prepare(token, true)
-    }
-
-    pub(crate) fn needs_confirmation(&mut self, id: PendingControlId) {
-        self.advance_generation();
-        if let Some(item) = self.items.iter_mut().find(|item| item.id == id) {
-            item.status = PendingControlStatus::NeedsConfirmation;
-        }
     }
 
     pub(crate) fn refused(&mut self, id: PendingControlId, reason: impl Into<String>) {
@@ -408,7 +341,7 @@ impl SuspendedLocalControls {
     }
 
     pub(crate) fn cancel(&mut self, token: &ContinuationToken) -> bool {
-        let Some(index) = self.consume(token, token.stage) else {
+        let Some(index) = self.consume(token) else {
             return false;
         };
         self.advance_generation();

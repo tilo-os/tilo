@@ -1585,17 +1585,16 @@ pub fn denied(action: &tilo_actions::ActionSpec) -> tilo_actions::ApiError {
 
 /// The shared admission ([`tilo_action_policy::admit`]) as a window's API
 /// takes it, the decision a broker takes for a caller: `asker` is who the
-/// invocation asks ([`PermissionContext::asker`]), and `confirmed` is their
-/// confirmation, or the broker having admitted it.
+/// invocation asks ([`PermissionContext::asker`]).
 ///
 /// # Errors
-/// Refused, or [`tilo_actions::ApiError::ConfirmationRequired`] until
-/// the person confirmed an ask.
+/// Refused, or [`tilo_actions::ApiError::ConfirmationRequired`] where the
+/// workspace's grants leave it to the person: the call then goes to the
+/// device's dispatch, which keeps it as its asked record until they answer.
 pub fn admit_in_window(
     answer: tilo_action_policy::Answer,
     action: &tilo_actions::ActionSpec,
     asker: tilo_action_policy::Asker,
-    confirmed: bool,
 ) -> Result<(), tilo_actions::ApiError> {
     let admitted = tilo_action_policy::admit(
         tilo_action_policy::Invoked {
@@ -1607,7 +1606,7 @@ pub fn admit_in_window(
     );
     match admitted {
         Err(_) => Err(denied(action)),
-        Ok(tilo_action_policy::Admission::AsksFirst) if !confirmed => {
+        Ok(tilo_action_policy::Admission::AsksFirst) => {
             Err(tilo_actions::ApiError::ConfirmationRequired)
         }
         Ok(_) => Ok(()),

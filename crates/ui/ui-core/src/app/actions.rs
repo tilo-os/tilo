@@ -734,7 +734,7 @@ impl App {
             return;
         }
         let address = tilo_actions::ActionAddress::new(resource, action);
-        // The broker performed admission and one-use confirmation checks.
+        // The workspace admitted it, the person's yes included where the call waited for it.
         // Required host workers separately recheck the original caller at
         // execution, using the exact host-local retained association.
         // The broker permanently reserves UUIDs across caller identities.
@@ -793,7 +793,6 @@ impl App {
         let result = self.invoke_resource_action(
             ResourceInvocation::new(&address, actor)
                 .argument(argument)
-                .confirmed(true)
                 .broker_admitted(true)
                 .invocation(Some(invocation))
                 .ambient_context(ambient_context),
@@ -911,15 +910,8 @@ impl App {
         resources: &'a [tilo_actions::ResourceSpec],
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
-        confirmed_by_broker: bool,
     ) -> Result<ResolvedResourceInvocation<'a>, tilo_actions::ApiError> {
-        crate::bound_dispatch::resolve_resource_invocation(
-            resources,
-            address,
-            argument,
-            None,
-            confirmed_by_broker,
-        )
+        crate::bound_dispatch::resolve_resource_invocation(resources, address, argument, None)
     }
 
     /// The canonical route the app's primary document currently syncs on.
@@ -962,7 +954,7 @@ impl App {
             .alias(binding, resource.id.as_str())
             .map_err(crate::bound_dispatch::BoundActionError::into_api)?;
         let address = tilo_actions::ActionAddress::new(alias, action);
-        self.invoke_via_broker(&address, Some(&serde_json::Map::new()), None, None)
+        self.invoke_via_broker(&address, Some(&serde_json::Map::new()), None)
     }
 
     /// Admit a locally initiated operation at the session broker before the
@@ -972,12 +964,11 @@ impl App {
     /// load-bearing for Effects: if the app crashes while doing external work,
     /// history retains an admitted/incomplete operation instead of losing the
     /// action entirely.
-    fn invoke_via_broker(
+    pub(super) fn invoke_via_broker(
         &mut self,
         address: &tilo_actions::ActionAddress,
         typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
-        confirmation_evidence: Option<&serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let mut made = None;
         let started = Self::dispatch_broker_request(
@@ -986,7 +977,6 @@ impl App {
             address,
             typed_arguments,
             argument,
-            confirmation_evidence,
             |request_id, request| made = Some((request_id, request)),
         )?;
         if let Some((request_id, request)) = made {
@@ -998,30 +988,12 @@ impl App {
         Ok(started)
     }
 
-    /// The confirmation an app's legacy evidence object expresses.
-    fn broker_confirmation(
-        evidence: Option<&serde_json::Value>,
-    ) -> Option<tilo_actions::remote::Confirmation> {
-        let evidence = evidence?;
-        if let Some(phrase) = evidence
-            .get("confirmation_phrase")
-            .and_then(serde_json::Value::as_str)
-        {
-            return Some(tilo_actions::remote::Confirmation::Phrase(
-                phrase.to_string(),
-            ));
-        }
-        (evidence.get("confirm").and_then(serde_json::Value::as_bool) == Some(true))
-            .then_some(tilo_actions::remote::Confirmation::Confirmed)
-    }
-
     fn dispatch_broker_request(
         next_request_id: &mut Option<u64>,
         connected: bool,
         address: &tilo_actions::ActionAddress,
         typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
-        confirmation_evidence: Option<&serde_json::Value>,
         send: impl FnOnce(u64, tilo_actions::remote::InvokeRequest),
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         if !connected {
@@ -1057,7 +1029,7 @@ impl App {
                 },
                 argument,
                 context: None,
-                confirmation: Self::broker_confirmation(confirmation_evidence),
+                confirmation: None,
                 revision: None,
                 wait_ms: None,
                 appearance: None,
@@ -1106,7 +1078,6 @@ impl App {
             actor,
             argument,
             broker_admitted,
-            confirmation_evidence,
             invocation,
             ambient_context,
             ..
@@ -1126,12 +1097,7 @@ impl App {
             && spec.locus == tilo_actions::ExecutionLocus::ServerPreferred
             && !broker_admitted
         {
-            return self.invoke_via_broker(
-                address,
-                broker_arguments,
-                broker_argument,
-                confirmation_evidence,
-            );
+            return self.invoke_via_broker(address, broker_arguments, broker_argument);
         }
         let source_invocation = broker_admitted.then_some(invocation).flatten();
         debug_assert!(
@@ -1151,12 +1117,7 @@ impl App {
             ));
         }
         if action.locus() == tilo_actions::ExecutionLocus::ServerPreferred && !broker_admitted {
-            return self.invoke_via_broker(
-                address,
-                broker_arguments,
-                broker_argument,
-                confirmation_evidence,
-            );
+            return self.invoke_via_broker(address, broker_arguments, broker_argument);
         }
         // Only admitted local document execution owns a new change boundary.
         // Encoding failures and broker routing must leave the caller's pending
@@ -1252,7 +1213,6 @@ impl App {
         resources: &[tilo_actions::ResourceSpec],
         arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
-        evidence: Option<&serde_json::Value>,
         broker_delivery: Option<&mut dyn FnMut(CollabRequest)>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.require_bound_broker_route(&target.binding)?;
@@ -1282,7 +1242,6 @@ impl App {
                 &address,
                 arguments,
                 argument,
-                evidence,
                 |request_id, request| {
                     broker_requests.insert(BrokerReply::Receipt(request.invocation), request_id);
                     send(CollabRequest::RemoteAction {
@@ -1291,7 +1250,7 @@ impl App {
                 },
             );
         }
-        self.invoke_via_broker(&address, arguments, argument, evidence)
+        self.invoke_via_broker(&address, arguments, argument)
     }
 
     /// The bound `target` names the action; `request.address` is not consulted.
@@ -1304,7 +1263,7 @@ impl App {
         let ResourceInvocation {
             actor,
             argument,
-            confirmation_satisfied: confirmed,
+            approval,
             broker_admitted,
             invocation,
             ambient_context: ambient,
@@ -1357,7 +1316,7 @@ impl App {
                 argument,
                 arguments: None,
                 actor,
-                confirmed,
+                approval,
                 broker_admitted,
                 invocation: id,
                 source_invocation: broker_admitted.then_some(invocation).flatten(),
@@ -1472,14 +1431,12 @@ impl App {
             &target.address.address,
             request.argument,
             None,
-            request.confirmation_satisfied,
         )?;
         self.route_bound_invocation_to_broker(
             target,
             snapshot.resources(),
             arguments.as_ref(),
             request.argument,
-            request.confirmation_evidence,
             broker_delivery,
         )
     }
@@ -1532,9 +1489,8 @@ impl App {
             address,
             actor,
             argument,
-            confirmation_satisfied,
+            approval,
             broker_admitted,
-            confirmation_evidence,
             invocation,
             ambient_context,
         } = *request;
@@ -1594,12 +1550,18 @@ impl App {
         if address.resource == crate::host_chrome::zoom::ZOOM_RESOURCE {
             resources.extend(self.zoom_resource());
         }
-        let (typed_arguments, resource, resolved) = Self::resolve_resource_invocation(
-            &resources,
-            address,
-            argument,
-            confirmation_satisfied,
-        )?;
+        let (typed_arguments, resource, resolved) =
+            Self::resolve_resource_invocation(&resources, address, argument)?;
+        // What the workspace delivers it admitted, the person's yes included where it waited for
+        // one; the person's own call of an action that asks first goes there to be asked.
+        if !broker_admitted {
+            crate::bound_dispatch::press_asks(
+                resolved,
+                typed_arguments.as_ref(),
+                argument,
+                approval,
+            )?;
+        }
         crate::invocation_scope::check_continuation(
             resolved,
             resolved.need_for(typed_arguments.as_ref(), argument).kind,
@@ -1607,13 +1569,16 @@ impl App {
         // The local presence's tree offers an action under the least it
         // needs; this invocation needs what its value asks.
         if actor.member_id() == Some(&self.collaboration.local_author) {
-            crate::bound_dispatch::admit_local_action(
+            match crate::bound_dispatch::admit_local_action(
                 &self.permission_ctx,
                 (&crate::collaboration::local_app_id(), resource, resolved),
                 typed_arguments.as_ref(),
                 argument,
-                confirmation_satisfied || broker_admitted,
-            )?;
+            ) {
+                Err(tilo_actions::ApiError::ConfirmationRequired)
+                    if broker_admitted || approval.is_some() => {}
+                admitted => admitted?,
+            }
         }
         let kind = resolved.kind;
         if resolved.contract.runs_on_invokers_device()
@@ -1646,19 +1611,13 @@ impl App {
             && !broker_admitted
             && self.collaboration.manager.is_connected()
         {
-            return self.invoke_via_broker(
-                address,
-                typed_arguments.as_ref(),
-                argument,
-                confirmation_evidence,
-            );
+            return self.invoke_via_broker(address, typed_arguments.as_ref(), argument);
         }
         if kind == tilo_actions::OperationKind::Document {
             let request = ResourceInvocation::new(address, actor)
                 .argument(argument)
-                .confirmed(confirmation_satisfied)
+                .approval(approval)
                 .broker_admitted(broker_admitted)
-                .evidence(confirmation_evidence)
                 .invocation(invocation)
                 .ambient_context(ambient_context);
             return self.invoke_document_resource_action(
@@ -2018,9 +1977,7 @@ impl App {
             },
             argument: hosted.argument,
             context: None,
-            confirmation: hosted
-                .confirmed
-                .then_some(tilo_actions::remote::Confirmation::Confirmed),
+            confirmation: None,
             revision: None,
             wait_ms: None,
             appearance: None,
@@ -2392,7 +2349,7 @@ impl App {
             .as_deref_mut()
             .is_some_and(|palette| palette.open_on(&request))
         {
-            self.capture_ordinary_palette_request();
+            self.rebuild_action_palette_admission();
         }
     }
 
@@ -2601,46 +2558,6 @@ impl App {
         self.layout.layout_dirty = true;
     }
 
-    fn capture_ordinary_palette_request(&mut self) {
-        let Some(pending) = self
-            .actions
-            .action_palette
-            .as_deref()
-            .and_then(|p| p.ordinary_capture_request())
-        else {
-            return;
-        };
-        let result = (|| {
-            let target = match pending.bound.clone() {
-                Some(target) => {
-                    crate::bound_dispatch::local_target::LocalResourceTarget::Component(target)
-                }
-                None => crate::bound_dispatch::local_target::select_local_target(
-                    self.root_widget.as_ref(),
-                    &self.state.doc,
-                    &pending.address,
-                )?,
-            };
-            let arguments = pending.continuation_arguments().ok_or_else(|| {
-                tilo_actions::ApiError::InvalidArguments("Invalid confirmation arguments".into())
-            })?;
-            crate::bound_dispatch::OrdinaryConfirmation::prepare(
-                self.root_widget.as_ref(),
-                &self.state.doc,
-                target,
-                &self.control_domain,
-                pending.address,
-                arguments,
-            )
-        })();
-        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
-            match result {
-                Ok(request) => palette.retain_ordinary(request),
-                Err(_) => palette.close(),
-            }
-        }
-    }
-
     /// Open search on the app's action `address`, asking for its
     /// arguments: the session's search inside a session, the window's own
     /// outside one. Whether it opened.
@@ -2663,9 +2580,7 @@ impl App {
             .action_palette
             .as_deref_mut()
             .is_some_and(|palette| palette.activate_address(&address.resource, &address.action));
-        if activated {
-            self.capture_ordinary_palette_request();
-        } else {
+        if !activated {
             self.close_action_palette();
         }
         activated
@@ -2685,34 +2600,6 @@ impl App {
         self.focused_node = None;
         self.layout.request_rebuild();
         self.actions.action_palette = None;
-        if self.actions.ordinary_palette_return_focus.is_some() {
-            self.rebuild_action_palette_admission();
-            // Admission still requires a measured structural rebuild. Keep the
-            // stable opener identity until that final tree has settled, rather
-            // than restoring a NodeId that the next rebuild invalidates.
-        }
-    }
-
-    #[cfg(feature = "native")]
-    pub(super) fn restore_ordinary_palette_focus(&mut self) {
-        if self.actions.action_palette.is_some() {
-            return;
-        }
-        let Some(focus) = self.actions.ordinary_palette_return_focus.take() else {
-            return;
-        };
-        if self.accessibility.focus_trap_active {
-            return;
-        }
-        // SAFETY: the layout solve has settled the exclusively owned tree and
-        // its current ownership map. Removed or ambiguous openers cannot match.
-        self.focused_node = unsafe {
-            focus.restore(
-                &self.layout.node_map,
-                &self.bindings,
-                Some(&self.focusable_order),
-            )
-        };
     }
 
     /// Run `f` on the root of the app component this window shows, inside
@@ -2732,42 +2619,6 @@ impl App {
 
     pub fn action_palette(&self) -> Option<&crate::action_palette::ActionPalette> {
         self.actions.action_palette.as_deref()
-    }
-
-    /// The action the host's confirmation is asking about, and the
-    /// question it asks, while it asks.
-    #[must_use]
-    pub fn asking(&self) -> Option<(tilo_actions::ActionAddress, String)> {
-        self.actions
-            .action_palette
-            .as_deref()
-            .and_then(crate::action_palette::ActionPalette::asking)
-            .map(|(address, expected)| (address.clone(), expected.to_owned()))
-    }
-
-    /// Confirm what the host asks through its own dialog, as the person
-    /// does: activate its button named for the verb (a destructive question
-    /// starts on Cancel, so Enter would not go ahead); what it confirmed is
-    /// applied. Answers the action confirmed; `None`, changing nothing, when
-    /// nothing is asked or the dialog refused the activation.
-    #[cfg(feature = "native")]
-    pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
-        let (address, _question) = self.asking()?;
-        self.refresh_action_palette_resources();
-        let palette = self.actions.action_palette.as_deref_mut()?;
-        let target = palette.confirming_target()?;
-        self.bindings.clear();
-        self.layout.node_map.clear();
-        self.focused_node = None;
-        let handled = palette.perform_semantic_action(
-            &target,
-            &crate::a11y::Action::Activate,
-            &mut crate::widget::Edits::lend(&mut self.state.doc),
-            &self.state.root,
-        );
-        self.finish_action_palette_input(handled);
-        self.dispatch_control_invocations();
-        handled.then_some(address)
     }
 
     #[cfg(feature = "native")]
@@ -2902,7 +2753,6 @@ impl App {
         // redraw's structural-change condition for the next layout solve.
         self.layout.request_rebuild();
         let root = self.state.root.clone();
-        self.capture_ordinary_palette_request();
         let exact_capture = self
             .actions
             .action_palette
@@ -3143,10 +2993,7 @@ impl crate::app_core::ControlCore for App {
         App::send_follow_up(self, running, address, arguments, context)
     }
 
-    fn local_confirmation(
-        &self,
-        intent: &tilo_actions::ControlInvocation,
-    ) -> Option<tilo_actions::ConfirmationPolicy> {
+    fn locally_offered(&self, intent: &tilo_actions::ControlInvocation) -> bool {
         let (key, generation) = self.ensure_local_resource_cache();
         let cache = self.actions.local_resource_cache.borrow();
         let resources = cache
@@ -3154,8 +3001,7 @@ impl crate::app_core::ControlCore for App {
             .filter(|cache| cache.key == key && cache.permission_generation == generation)
             .and_then(|cache| cache.resources.as_deref())
             .unwrap_or_default();
-        tilo_actions::api::resolve(resources, &intent.address)
-            .map(|resolved| resolved.confirmation_for_json(&intent.arguments))
+        tilo_actions::api::resolve(resources, &intent.address).is_some()
     }
 
     fn invoke_bound_control(
@@ -3214,38 +3060,6 @@ impl crate::app_core::ControlCore for App {
 
     fn control_domain(&self) -> &crate::control_domain::ControlDomain {
         &self.control_domain
-    }
-
-    fn ask_in_palette(&mut self, request: crate::bound_dispatch::OrdinaryConfirmation) -> bool {
-        if self.actions.action_palette.is_none() {
-            // Native semantic focus is authoritative even before the next
-            // retained render propagates the widget's focused flag.
-            self.actions.ordinary_palette_return_focus =
-                self.capture_focus_identity().or_else(|| {
-                    crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref())
-                });
-        }
-        // Read before the tree it is found in is discarded.
-        let anchor = self.tree().acting_control_rect();
-        self.open_action_palette();
-        self.bindings.clear();
-        self.layout.node_map.clear();
-        self.focused_node = None;
-        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
-            // The question stands at the control the person used.
-            palette.anchor_confirmation(anchor);
-            palette.activate_ordinary(request);
-        }
-        if self
-            .actions
-            .action_palette
-            .as_deref()
-            .is_some_and(crate::action_palette::ActionPalette::went_ahead)
-        {
-            return self.finish_action_palette_input(true);
-        }
-        self.rebuild_action_palette_admission();
-        true
     }
 
     /// Say that an invocation the person made did not run, and why, at the

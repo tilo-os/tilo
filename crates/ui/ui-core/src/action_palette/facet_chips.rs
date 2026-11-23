@@ -21,7 +21,7 @@ impl ActionPalette {
     ) {
         self.facet_chips.clear();
         self.facet_labels.clear();
-        if self.arg.is_some() || self.confirm.is_some() {
+        if self.arg.is_some() {
             return;
         }
         let gap = f64::from(theme.tokens.spacing.s2);

@@ -332,8 +332,7 @@ pub(crate) fn widget_inspection_json(widget: &dyn Widget) -> String {
 use inspection::{
     audit_inspection_node, collect_inspection, collect_named_targets, collect_targets,
     compare_bool, compare_contains, compare_optional_bool, compare_text, compare_text_selection,
-    effect_control_ids, find_semantic_target, inspection_has_semantics,
-    role_name,
+    effect_control_ids, find_semantic_target, inspection_has_semantics, role_name,
 };
 mod inspection_patch;
 pub use inspection_patch::{InspectionPatchStats, write_inspection_patch};
@@ -345,7 +344,6 @@ mod focus;
 pub use driver::{Outcome, Step, StepEntry, StepStatus, drive};
 mod invocation_results;
 mod nav_gesture;
-mod ordinary_palette;
 #[cfg(test)]
 mod palette_window_tests;
 mod profiling;
@@ -387,8 +385,17 @@ pub struct ProvidedInvocation<'a> {
     pub argument: &'a tilo_actions::remote::InvokeArgument,
     /// Who invoked it.
     pub actor: &'a tilo_actions::Actor,
-    /// The person confirmed it, where its value asks first.
-    pub confirmed: bool,
+    /// The person's yes, when the provider asked them and this is the call coming back.
+    pub approval: Option<&'a tilo_actions::remote::asked::Approval>,
+}
+
+/// A press of the person's that waits for their yes ([`FrameHarness::asking`]).
+struct AskedPress {
+    target: crate::bound_dispatch::local_target::LocalResourceTarget,
+    address: tilo_actions::ActionAddress,
+    arguments: crate::bound_dispatch::ControlContinuationArguments,
+    /// The action's name, as its card shows it.
+    name: String,
 }
 
 pub struct FrameHarness {
@@ -430,7 +437,10 @@ pub struct FrameHarness {
     /// The last refusal said in the window's bar, for one with no control
     /// on screen.
     window_refusal: Option<String>,
-    ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
+    /// The person's own press that waits for their yes, kept as the device keeps it in its asked
+    /// record ([`crate::app_core::AppCore::ask_through_device`]): what [`Self::confirm_asked`]
+    /// sends again approved, and [`Self::decline_asked`] drops.
+    asked: Option<AskedPress>,
     /// The window the open palette sits over, when the root lays several out (the shell's strip of
     /// app tiles).
     palette_window: Option<Rect>,
@@ -1290,40 +1300,84 @@ impl FrameHarness {
         token: &crate::history_mode::pending_controls::ContinuationToken,
     ) -> Option<crate::history_mode::pending_controls::PendingControlStatus> {
         self.invalidate_local();
-        self.continue_pending_history_control_checked(token, false)
+        self.continue_pending_history_control_checked(token)
     }
 
-    /// Continue after the caller explicitly confirmed this exact current item: the action the
-    /// host's confirmation asks about, and the question it asks while it asks.
+    /// The person's own press that waits for their yes, kept here as the device keeps it in its asked
+    /// record: its action, and the action's name the card shows.
     #[must_use]
     pub fn asking(&self) -> Option<(tilo_actions::ActionAddress, String)> {
-        self.action_palette
-            .as_deref()
-            .and_then(|palette| palette.asking())
-            .map(|(address, expected)| (address.clone(), expected.to_owned()))
+        self.asked
+            .as_ref()
+            .map(|asked| (asked.address.clone(), asked.name.clone()))
     }
 
-    /// Why the host asks, when the workspace's grants ask rather than the action itself, as the person
-    /// reads it in the confirmation.
-    #[must_use]
-    pub fn asking_why(&self) -> Option<&str> {
-        self.action_palette
-            .as_deref()
-            .and_then(|palette| palette.asking_why())
-    }
-
-    /// Answer the question the host asked, as the person does: activate the dialog's button named for
-    /// the verb (a destructive question starts on Cancel).
+    /// Allow the press that waits for the person's yes, as they do on its card: it is sent again
+    /// with their approve, as the device sends it, and runs. Answers the action it ran; `None`
+    /// when nothing waits.
     pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
         self.invalidate_local();
-        let (address, _question) = self.asking()?;
-        let target = self
-            .action_palette
-            .as_deref()
-            .and_then(|palette| palette.confirming_target())?;
-        self.perform_palette_action(&target, &crate::a11y::Action::Activate)
-            .ok()?;
-        Some(address)
+        let asked = self.asked.take()?;
+        let approval = self.approval();
+        let actor = tilo_actions::Actor::Member(self.author.clone());
+        let argument = match &asked.arguments {
+            crate::bound_dispatch::ControlContinuationArguments::Immediate => None,
+            crate::bound_dispatch::ControlContinuationArguments::Text(text) => Some(text.clone()),
+            crate::bound_dispatch::ControlContinuationArguments::Json(arguments) => {
+                Some(crate::app_core::json_argument(arguments))
+            }
+        };
+        let started = self.invoke_local_target(
+            &asked.target,
+            &crate::app_core::ResourceInvocation::new(&asked.address, &actor)
+                .argument(argument.as_deref())
+                .approval(Some(&approval)),
+        );
+        if let Err(error) = &started {
+            self.refuse_visibly(error);
+        }
+        self.relayout();
+        self.settle_owed();
+        Some(asked.address)
+    }
+
+    /// Decline the press that waits for the person's yes, as they do on its card: nothing of it
+    /// runs. Answers the action declined; `None` when nothing waits.
+    pub fn decline_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
+        self.invalidate_local();
+        let asked = self.asked.take()?;
+        self.relayout();
+        Some(asked.address)
+    }
+
+    /// A palette for this window.
+    pub(super) fn new_action_palette(&self) -> crate::action_palette::ActionPaletteBox {
+        crate::action_palette::make_action_palette(self.text.font_system.locale().to_owned())
+    }
+
+    /// The approve a call kept as its asked record comes back with once the person allowed it:
+    /// what this harness, standing in for the device, sends such a call again with.
+    #[must_use]
+    pub fn approval(&self) -> tilo_actions::remote::asked::Approval {
+        self.approval_typing(None)
+    }
+
+    /// [`Self::approval`] carrying what the person typed into the ask's one field (the phrase a
+    /// destructive action has them type).
+    #[must_use]
+    pub fn approval_typing(&self, typed: Option<&str>) -> tilo_actions::remote::asked::Approval {
+        let mut approval = tilo_actions::remote::asked::Approval::new(
+            tilo_actions::remote::asked::RecordRef {
+                workspace: crate::permissions::LOCAL_WORKSPACE.to_owned(),
+                record: format!("invocations/{}", tilo_actions::InvocationId::new().0),
+                device: None,
+            },
+            None,
+        );
+        approval
+            .typed
+            .extend(typed.map(|typed| zeroize::Zeroizing::new(typed.to_owned())));
+        approval
     }
 
     fn invalidate_unsupported_history_owner(&mut self) -> bool {
@@ -1464,7 +1518,7 @@ impl FrameHarness {
             action_palette: None,
             control_notice: None,
             window_refusal: None,
-            ordinary_palette_return_focus: None,
+            asked: None,
             palette_window: None,
             pointer: crate::app_core::PointerPlace::default(),
             cards: crate::shell_cards::ShellCards::default(),
@@ -1858,7 +1912,7 @@ impl FrameHarness {
             crate::bound_dispatch::history_action_resource(&snapshots, binding, request)?;
         let address = tilo_actions::ActionAddress::new(resource.id.as_str(), action);
         let author = tilo_actions::Actor::Member(self.author.clone());
-        self.invoke_address(&author, &address, &serde_json::Map::new(), false)
+        self.invoke_address(&author, &address, &serde_json::Map::new(), None)
     }
 
     /// Undo the last action as the live host does, through
@@ -3448,7 +3502,6 @@ impl FrameHarness {
                 self.root_lifetime,
             );
         }
-        self.capture_palette_history();
         if history_at_rest.is_none() {
             crate::history_mode::embedded::capture_entries(self.root.as_mut(), &self.state.doc);
         }
@@ -3977,21 +4030,6 @@ impl FrameHarness {
         if !history_resting || self.focus_trap_active {
             self.update_focus_trap(focus);
         }
-        if self.action_palette.is_none()
-            && let Some(saved) = self.ordinary_palette_return_focus.take()
-            && !self.focus_trap_active
-        {
-            let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
-                self.root.as_ref(),
-                &self.taffy,
-            );
-            let (allowed, _) = self
-                .tree()
-                .layout_map_focus_order(self.child_node, &restrictions);
-            // SAFETY: this final layout owns the freshly admitted tree.
-            self.focused = unsafe { saved.restore(&self.node_map, &self.bindings, Some(&allowed)) };
-        }
-
         // After layout (so a control built this pass is in `node_map`) and
         // before draw and any accessibility read — a shot must show the
         // enabled state the user would see. A quiet frame that kept its
@@ -4080,7 +4118,8 @@ impl FrameHarness {
                 &mut self.scene,
                 transform,
                 &mut self.text,
-                &self.theme,&self.presence.draw_env(),
+                &self.theme,
+                &self.presence.draw_env(),
             );
         }
         if self
@@ -4097,7 +4136,8 @@ impl FrameHarness {
                             &mut self.scene,
                             transform,
                             &mut self.text,
-                            &self.theme,&self.presence.draw_env(),
+                            &self.theme,
+                            &self.presence.draw_env(),
                         )
                     });
             }
@@ -4108,8 +4148,23 @@ impl FrameHarness {
             .is_none_or(|history| history.live_visible())
         {
             if paint {
-                self.root.draw_overlay(&mut crate::draw::DrawCtx::new(&mut self.scene, transform, &mut self.text, &self.theme, self.presence.draw_env()));
-                self.cards.draw(self.root.as_mut(), &mut crate::draw::DrawCtx::new(&mut self.scene, transform, &mut self.text, &self.theme, self.presence.draw_env()));
+                self.root.draw_overlay(&mut crate::draw::DrawCtx::new(
+                    &mut self.scene,
+                    transform,
+                    &mut self.text,
+                    &self.theme,
+                    self.presence.draw_env(),
+                ));
+                self.cards.draw(
+                    self.root.as_mut(),
+                    &mut crate::draw::DrawCtx::new(
+                        &mut self.scene,
+                        transform,
+                        &mut self.text,
+                        &self.theme,
+                        self.presence.draw_env(),
+                    ),
+                );
             }
             self.root.mark_drawn();
         }
@@ -4119,7 +4174,13 @@ impl FrameHarness {
         self.admission.ended(paint, self.scene_drawn);
         if let Some(history) = &mut self.history {
             if paint {
-                history.draw_overlay(&mut crate::draw::DrawCtx::new(&mut self.scene, transform, &mut self.text, &self.theme, self.presence.draw_env()));
+                history.draw_overlay(&mut crate::draw::DrawCtx::new(
+                    &mut self.scene,
+                    transform,
+                    &mut self.text,
+                    &self.theme,
+                    self.presence.draw_env(),
+                ));
             }
             history.mark_drawn();
         }
@@ -4149,7 +4210,8 @@ impl FrameHarness {
                     &mut self.scene,
                     transform,
                     &mut self.text,
-                    &self.theme,&self.presence.draw_env(),
+                    &self.theme,
+                    &self.presence.draw_env(),
                 );
             }
         }
@@ -5095,7 +5157,7 @@ impl FrameHarness {
         };
         if let Some(target) = semantic_target
             .as_deref()
-            .filter(|t| t.starts_with("ordinary-confirmation:"))
+            .filter(|t| t.starts_with("palette-answer:"))
         {
             return self.perform_palette_action(target, action);
         }
@@ -6732,7 +6794,7 @@ impl FrameHarness {
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invalidate_local();
         self.pump_component_wakes();
-        self.invoke_bound_action_for(address, arguments, false, None, None)
+        self.invoke_bound_action_for(address, arguments, None, None, None)
             .map_err(crate::bound_dispatch::BoundActionError::into_api)
     }
 
@@ -6749,23 +6811,24 @@ impl FrameHarness {
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invalidate_local();
         self.pump_component_wakes();
-        self.invoke_bound_action_for(address, arguments, false, Some(ambient), None)
+        self.invoke_bound_action_for(address, arguments, None, Some(ambient), None)
             .map_err(crate::bound_dispatch::BoundActionError::into_api)
     }
 
-    /// Invoke an action after the host caller explicitly confirmed this exact
-    /// request. Permission, live owner and action availability are still checked.
+    /// Invoke an action as the call sent again once the person approved the asked record it was kept
+    /// as ([`Self::approval`]). Permission, live owner and action availability are still checked.
     ///
     /// # Errors
     /// Refuses unavailable, denied, stale or ambiguous destinations and action failures.
-    pub fn invoke_bound_action_confirmed(
+    pub fn invoke_bound_action_approved(
         &mut self,
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invalidate_local();
         self.pump_component_wakes();
-        self.invoke_bound_action_for(address, arguments, true, None, None)
+        let approval = self.approval();
+        self.invoke_bound_action_for(address, arguments, Some(&approval), None, None)
             .map_err(crate::bound_dispatch::BoundActionError::into_api)
     }
 
@@ -6787,12 +6850,12 @@ impl FrameHarness {
         self.call_on_as(resource, action, arguments, false)
     }
 
-    /// [`Self::call_on`] after the caller confirmed this invocation, as the
-    /// host's confirmation prompt does for a destructive action.
+    /// [`Self::call_on`] as the call sent again once the person approved the asked record it was
+    /// kept as ([`Self::approval`]).
     ///
     /// # Errors
-    /// As [`Self::call_on`], except that no confirmation is required.
-    pub fn call_on_confirmed(
+    /// As [`Self::call_on`], except that it does not wait for the person's yes.
+    pub fn call_on_approved(
         &mut self,
         resource: &str,
         action: &str,
@@ -6807,12 +6870,12 @@ impl FrameHarness {
         resource: &str,
         action: &str,
         arguments: serde_json::Value,
-        confirmed: bool,
+        approved: bool,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let instance = self.component_instance_id().ok_or_else(|| {
             tilo_actions::ApiError::Failed("no application component is hosted".into())
         })?;
-        self.call_on_instance_as(instance, resource, action, arguments, confirmed)
+        self.call_on_instance_as(instance, resource, action, arguments, approved)
     }
 
     /// [`Self::call_on`] on the hosted component instance `instance`, such as one window of several.
@@ -6833,7 +6896,7 @@ impl FrameHarness {
         resource: &str,
         action: &str,
         arguments: serde_json::Value,
-        confirmed: bool,
+        approved: bool,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let _running = self.running();
         let serde_json::Value::Object(arguments) = arguments else {
@@ -6845,8 +6908,8 @@ impl FrameHarness {
             instance_id,
             address: tilo_actions::ActionAddress::new(resource, action),
         };
-        let started = if confirmed {
-            self.invoke_bound_action_confirmed(&address, &arguments)
+        let started = if approved {
+            self.invoke_bound_action_approved(&address, &arguments)
         } else {
             self.invoke_bound_action(&address, &arguments)
         }?;
@@ -6867,19 +6930,19 @@ impl FrameHarness {
         self.invoke_action(
             &tilo_actions::ActionAddress::new(resource, action),
             arguments,
-            false,
             None,
         )
     }
 
-    /// [`Self::invoke_bound_action`] (confirmed when `confirmed`) for an operation that may run as a
+    /// [`Self::invoke_bound_action`] (sent again with the person's approve, `approval`, where it waited
+    /// for their yes) for an operation that may run as a
     /// job: answers with the invocation whose progress and result [`Self::job_updates`] then report, as
     /// the frames poll it.
     pub fn start_bound_job(
         &mut self,
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmed: bool,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
     ) -> Result<
         (
             tilo_actions::InvocationId,
@@ -6888,7 +6951,7 @@ impl FrameHarness {
         tilo_actions::ApiError,
     > {
         self.invalidate_local();
-        self.start_bound_job_for(None, address, arguments, confirmed)
+        self.start_bound_job_for(None, address, arguments, approval)
     }
 
     /// [`Self::start_bound_job`] for `invoker` rather than the person at
@@ -6905,7 +6968,7 @@ impl FrameHarness {
         invoker: Option<tilo_actions::ActionInvoker>,
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmed: bool,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
     ) -> Result<
         (
             tilo_actions::InvocationId,
@@ -6914,7 +6977,7 @@ impl FrameHarness {
         tilo_actions::ApiError,
     > {
         self.invalidate_local();
-        self.start_bound_job_within(invoker, None, address, arguments, confirmed)
+        self.start_bound_job_within(invoker, None, address, arguments, approval)
     }
 
     /// [`Self::start_bound_job_for`] within `ambient`: the task the invoker is carrying out (an agent's
@@ -6927,7 +6990,7 @@ impl FrameHarness {
         ambient: Option<&tilo_actions::ActionContext>,
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmed: bool,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
     ) -> Result<
         (
             tilo_actions::InvocationId,
@@ -6965,7 +7028,7 @@ impl FrameHarness {
                 self.invoke_bound_action_for(
                     address,
                     arguments,
-                    confirmed,
+                    approval,
                     continuation.context.as_ref(),
                     Some((invocation, Some(&actor))),
                 )
@@ -6973,7 +7036,7 @@ impl FrameHarness {
             None => self.invoke_bound_action_for(
                 address,
                 arguments,
-                confirmed,
+                approval,
                 None,
                 Some((invocation, None)),
             ),
@@ -7187,7 +7250,7 @@ impl FrameHarness {
                 address: &hosted.address,
                 argument: &hosted.argument,
                 actor: &hosted.actor,
-                confirmed: hosted.confirmed,
+                approval: hosted.approval.as_ref(),
             })?;
             self.invalidate_local();
             return Ok(crate::widget::ResourceOperationStart::Completed(output));
@@ -7213,9 +7276,7 @@ impl FrameHarness {
                 },
                 argument: hosted.argument,
                 context: None,
-                confirmation: hosted
-                    .confirmed
-                    .then_some(tilo_actions::remote::Confirmation::Confirmed),
+                confirmation: None,
                 revision: None,
                 wait_ms: None,
                 appearance: None,
@@ -7230,7 +7291,7 @@ impl FrameHarness {
         &mut self,
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmed: bool,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
         ambient: Option<&tilo_actions::ActionContext>,
         delivered: Option<(tilo_actions::InvocationId, Option<&tilo_actions::Actor>)>,
     ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
@@ -7239,14 +7300,14 @@ impl FrameHarness {
         // view name) asks for it to be laid out before it reads the view: the frame a window
         // would run next is run here, and the operation reads the view as it then stands.
         let answered = crate::widget::resource_operation::laying_out_first(|| {
-            self.invoke_bound_action_resolved(address, arguments, confirmed, ambient, delivered)
+            self.invoke_bound_action_resolved(address, arguments, approval, ambient, delivered)
         });
         let answered = match answered {
             Err(crate::bound_dispatch::BoundActionError::Api(error))
                 if crate::widget::resource_operation::asks_to_lay_out_first(&error) =>
             {
                 self.relayout();
-                self.invoke_bound_action_resolved(address, arguments, confirmed, ambient, delivered)
+                self.invoke_bound_action_resolved(address, arguments, approval, ambient, delivered)
             }
             answered => answered,
         };
@@ -7261,7 +7322,7 @@ impl FrameHarness {
                 !crate::bound_dispatch::any_resource_pending(harness.root.as_ref(), &resource)
             });
             return self
-                .invoke_bound_action_resolved(address, arguments, confirmed, ambient, delivered);
+                .invoke_bound_action_resolved(address, arguments, approval, ambient, delivered);
         }
         answered
     }
@@ -7270,7 +7331,7 @@ impl FrameHarness {
         &mut self,
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmed: bool,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
         ambient: Option<&tilo_actions::ActionContext>,
         delivered: Option<(tilo_actions::InvocationId, Option<&tilo_actions::Actor>)>,
     ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
@@ -7322,7 +7383,7 @@ impl FrameHarness {
                 argument: None,
                 arguments: Some(arguments),
                 actor,
-                confirmed,
+                approval,
                 broker_admitted: false,
                 invocation,
                 // The id the host admitted the call under, when the operation adopted it.
@@ -7359,7 +7420,7 @@ impl FrameHarness {
     pub fn palette_shown(&self) -> bool {
         self.action_palette
             .as_deref()
-            .is_some_and(|palette| palette.is_presented() && palette.asking().is_none())
+            .is_some_and(|palette| palette.is_presented())
     }
 
     /// The rows the window search shows, as its list paints them: what each says, the line under it,
@@ -7370,14 +7431,6 @@ impl FrameHarness {
             .filter(|palette| palette.is_presented())
             .map(|palette| palette.result_hits())
             .unwrap_or_default()
-    }
-
-    /// The control the open confirmation sits beside, as a popover, while it asks about what the person
-    /// pressed there.
-    pub fn asking_at(&self) -> Option<Rect> {
-        self.action_palette
-            .as_deref()
-            .and_then(|palette| palette.confirmation_anchor())
     }
 
     fn finish_action_palette_input(&mut self) {
@@ -7452,56 +7505,9 @@ impl FrameHarness {
             Err("stale or unsupported palette target".into())
         }
     }
-    fn capture_palette_history(&mut self) {
-        if !self.history.as_ref().is_some_and(|h| h.captures_input()) {
-            return;
-        }
-        let Some(request) = self
-            .action_palette
-            .as_deref()
-            .filter(|p| !p.history_has_ownership())
-            .and_then(|p| p.ordinary_request())
-            .cloned()
-        else {
-            return;
-        };
-        let invocation = tilo_actions::ControlInvocation {
-            address: request.address.clone(),
-            arguments: match &request.arguments {
-                crate::bound_dispatch::ControlContinuationArguments::Json(json) => json.clone(),
-                _ => serde_json::Map::new(),
-            },
-        };
-        let observation = request
-            .validate_owner(&self.control_domain)
-            .and_then(|()| {
-                crate::bound_dispatch::control_observation_with_arguments(
-                    self.root.as_ref(),
-                    &self.state.doc,
-                    &request.target,
-                    &invocation,
-                    &request.arguments,
-                )
-            })
-            .map_err(|e| e.to_string());
-        let identity = Some(
-            observation
-                .as_ref()
-                .map(|w| w.identity().clone())
-                .map_err(Clone::clone),
-        );
-        self.discard_layout_tree();
-        self.focused = None;
-        if let Some(palette) = self.action_palette.as_deref_mut() {
-            palette.suspend_for_history();
-            palette.retain_history_ownership(request.target, identity, Some(observation));
-        }
-    }
-
     fn continue_pending_history_control_checked(
         &mut self,
         token: &crate::history_mode::pending_controls::ContinuationToken,
-        confirmed: bool,
     ) -> Option<crate::history_mode::pending_controls::PendingControlStatus> {
         if self.framework_input.get()
             || self
@@ -7511,11 +7517,8 @@ impl FrameHarness {
         {
             return None;
         }
-        let prepared = self
-            .history
-            .as_mut()?
-            .prepare_pending_control(token, confirmed)?;
-        self.settle_history_control(prepared, confirmed)
+        let prepared = self.history.as_mut()?.prepare_pending_control(token)?;
+        self.settle_history_control(prepared)
     }
 
     /// Whether a control's invocation is still waiting for its answer: the
@@ -8150,12 +8153,10 @@ impl FrameHarness {
         invocation: &Invocation,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
         let address = tilo_actions::ActionAddress::new(&invocation.resource, &invocation.action);
-        let result = self.invoke_action(
-            &address,
-            &invocation.args,
-            invocation.confirm,
-            invocation.confirmation_phrase.as_deref(),
-        );
+        // A step the person allowed comes back with their approve, carrying the phrase they typed.
+        let approval = (invocation.confirm || invocation.confirmation_phrase.is_some())
+            .then(|| self.approval_typing(invocation.confirmation_phrase.as_deref()));
+        let result = self.invoke_action(&address, &invocation.args, approval.as_ref());
         self.retain_invocation_outcome(&address, &result)?;
         match (result, invocation.expect_error.as_deref()) {
             (Ok(start), None) => Ok(start.completed()),
@@ -8226,12 +8227,11 @@ impl FrameHarness {
         &mut self,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        confirm: bool,
-        confirmation_phrase: Option<&str>,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invalidate_local();
         let author = tilo_actions::Actor::Member(self.author.clone());
-        self.invoke_action_as(&author, address, arguments, confirm, confirmation_phrase)
+        self.invoke_action_as(&author, address, arguments, approval)
     }
 
     /// [`Self::invoke_action`] for `actor`, which need not be the person at
@@ -8246,8 +8246,7 @@ impl FrameHarness {
         actor: &tilo_actions::Actor,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        confirm: bool,
-        confirmation_phrase: Option<&str>,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invalidate_local();
         self.pump_component_wakes();
@@ -8264,19 +8263,6 @@ impl FrameHarness {
                 reason: reason.clone(),
             });
         }
-        let confirmed = match &spec.confirmation_for_json(arguments) {
-            tilo_actions::ConfirmationPolicy::None => false,
-            tilo_actions::ConfirmationPolicy::Confirm if confirm => true,
-            tilo_actions::ConfirmationPolicy::Phrase { phrase }
-                if confirmation_phrase == Some(phrase.as_str()) =>
-            {
-                true
-            }
-            tilo_actions::ConfirmationPolicy::Confirm
-            | tilo_actions::ConfirmationPolicy::Phrase { .. } => {
-                return Err(tilo_actions::ApiError::ConfirmationRequired);
-            }
-        };
         let result = if crate::search::request::is_search_address(address) {
             let encoded = spec
                 .build_json(arguments)
@@ -8291,7 +8277,7 @@ impl FrameHarness {
         } else if controls::is_control_operation(spec) {
             self.invoke_control_action(address, arguments)
         } else {
-            self.invoke_address(actor, address, arguments, confirmed)
+            self.invoke_address(actor, address, arguments, approval)
         };
         self.host_tick();
         self.settle_owed();
@@ -8363,13 +8349,13 @@ impl FrameHarness {
         actor: &tilo_actions::Actor,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmed: bool,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let argument = crate::app_core::json_argument(arguments);
         self.invoke_chosen_address(
             &crate::app_core::ResourceInvocation::new(address, actor)
                 .argument(Some(&argument))
-                .confirmed(confirmed),
+                .approval(approval),
         )
     }
 
@@ -8773,6 +8759,47 @@ impl crate::app_core::AppCore for FrameHarness {
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invoke_held_control(prepared)
     }
+
+    /// No device serves a harness: the press is kept here as the device keeps it, until
+    /// [`Self::confirm_asked`] or [`Self::decline_asked`] answers it.
+    fn ask_through_device(
+        &mut self,
+        target: &crate::bound_dispatch::local_target::LocalResourceTarget,
+        address: &tilo_actions::ActionAddress,
+        arguments: &crate::bound_dispatch::ControlContinuationArguments,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        let name = match target {
+            crate::bound_dispatch::local_target::LocalResourceTarget::Component(bound) => {
+                crate::bound_dispatch::discover_bound_resources(
+                    self.root.as_ref(),
+                    &self.state.doc,
+                    Some(address),
+                )
+                .ok()
+                .and_then(|snapshots| {
+                    snapshots
+                        .iter()
+                        .filter(|snapshot| snapshot.binding.same_component(&bound.binding))
+                        .find_map(|snapshot| {
+                            tilo_actions::api::resolve(snapshot.resources(), address)
+                                .map(|spec| spec.label.clone())
+                        })
+                })
+            }
+            crate::bound_dispatch::local_target::LocalResourceTarget::Outer => {
+                tilo_actions::api::resolve(&self.outer_resources(address, true), address)
+                    .map(|spec| spec.label.clone())
+            }
+        }
+        .unwrap_or_default();
+        self.asked = Some(AskedPress {
+            target: target.clone(),
+            address: address.clone(),
+            arguments: arguments.clone(),
+            name,
+        });
+        Ok(crate::widget::ResourceOperationStart::Accepted)
+    }
 }
 
 impl crate::app_core::KeyCore for FrameHarness {
@@ -8886,13 +8913,9 @@ impl crate::app_core::ControlCore for FrameHarness {
         })
     }
 
-    fn local_confirmation(
-        &self,
-        intent: &tilo_actions::ControlInvocation,
-    ) -> Option<tilo_actions::ConfirmationPolicy> {
+    fn locally_offered(&self, intent: &tilo_actions::ControlInvocation) -> bool {
         let resources = self.outer_resources(&intent.address, true);
-        tilo_actions::api::resolve(&resources, &intent.address)
-            .map(|resolved| resolved.confirmation_for_json(&intent.arguments))
+        tilo_actions::api::resolve(&resources, &intent.address).is_some()
     }
 
     fn history_address(
@@ -8970,7 +8993,7 @@ impl crate::app_core::ControlCore for FrameHarness {
                 argument: request.argument,
                 arguments: None,
                 actor: request.actor,
-                confirmed: request.confirmation_satisfied,
+                approval: request.approval,
                 broker_admitted: request.broker_admitted,
                 invocation,
                 source_invocation: None,
@@ -8993,20 +9016,30 @@ impl crate::app_core::ControlCore for FrameHarness {
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let address = request.address;
         let argument = request.argument;
-        let confirmed = request.confirmation_satisfied;
         let invocation = request.invocation.unwrap_or_default();
         let resources =
             self.outer_resources(address, request.actor.member_id() == Some(&self.author));
         let (arguments, resource, spec) = crate::bound_dispatch::resolve_resource_invocation(
-            &resources, address, argument, None, confirmed,
+            &resources, address, argument, None,
         )?;
-        crate::bound_dispatch::admit_local_action(
+        if !request.broker_admitted {
+            crate::bound_dispatch::press_asks(
+                spec,
+                arguments.as_ref(),
+                argument,
+                request.approval,
+            )?;
+        }
+        match crate::bound_dispatch::admit_local_action(
             &self.permissions,
             (&crate::collaboration::local_app_id(), resource, spec),
             arguments.as_ref(),
             argument,
-            confirmed || request.broker_admitted,
-        )?;
+        ) {
+            Err(tilo_actions::ApiError::ConfirmationRequired)
+                if request.broker_admitted || request.approval.is_some() => {}
+            admitted => admitted?,
+        }
         crate::invocation_scope::check_continuation(
             spec,
             spec.need_for(arguments.as_ref(), argument).kind,
@@ -9056,16 +9089,6 @@ impl crate::app_core::ControlCore for FrameHarness {
 
     fn control_domain(&self) -> &crate::control_domain::ControlDomain {
         &self.control_domain
-    }
-
-    fn ask_in_palette(&mut self, request: crate::bound_dispatch::OrdinaryConfirmation) -> bool {
-        if self.action_palette.is_none() {
-            self.ordinary_palette_return_focus = self.capture_focus_identity().or_else(|| {
-                crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref())
-            });
-        }
-        self.present_ordinary(request);
-        true
     }
 
     /// Keep why an invocation the person made did not run, and say it at
@@ -12287,7 +12310,7 @@ mod a11y_driver_tests {
             })
             .expect("the keyed element inside the canvas is published");
         let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "activate");
-        d.invoke_action(&address, &serde_json::Map::new(), false, None)
+        d.invoke_action(&address, &serde_json::Map::new(), None)
             .unwrap();
         assert_eq!(*activated.borrow(), vec!["beta".to_string()]);
     }
@@ -12913,11 +12936,12 @@ mod history_input_frame_tests {
 }
 
 #[cfg(test)]
-mod ordinary_confirmation_owner_tests {
+mod asked_press_owner_tests {
+    /// A press allowed after the window's controls closed or were replaced runs nothing.
     #[test]
-    fn ordinary_confirmation_driver_closed_or_replaced_outer_domain_refuses() {
+    fn an_allowed_press_of_a_closed_or_replaced_outer_domain_refuses() {
         for replacement in [false, true] {
-            let (root, log, _) = crate::app::ordinary_confirmation_tests::fixture(
+            let (root, log, _) = crate::app::control_fixture_tests::fixture(
                 tilo_actions::ConfirmationPolicy::Confirm,
             );
             let mut driver = super::FrameHarness::from_managed_root_with_controlled_inputs(
@@ -12932,17 +12956,14 @@ mod ordinary_confirmation_owner_tests {
             driver
                 .perform_semantic_named("ordinary-emitter", None, &crate::a11y::Action::Activate)
                 .unwrap();
-            assert!(driver.asking().is_some(), "the host asks");
+            assert!(driver.asking().is_some(), "the person is asked");
             let old = driver.control_domain.clone();
             if replacement {
                 driver.control_domain = crate::ControlDomain::new();
             } else {
                 old.close();
             }
-            let submit = driver.a11y_node_named("Run fixture").unwrap();
-            driver
-                .perform_a11y_action(submit, &crate::a11y::Action::Activate)
-                .unwrap();
+            driver.confirm_asked();
             assert!(log.borrow().is_empty());
         }
     }

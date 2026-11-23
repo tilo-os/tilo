@@ -63,7 +63,6 @@ impl FrameHarness {
             address,
             argument,
             None,
-            false,
         )
         .map_err(|error| error.to_string())?;
         history.invoke_api(&encoded)

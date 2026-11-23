@@ -200,7 +200,7 @@ fn stage_with(
             address: tilo_actions::ActionAddress::new(app.kind, id),
         };
         harness
-            .invoke_bound_action_confirmed(&address, &arguments)
+            .invoke_bound_action_approved(&address, &arguments)
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
     }
     harness.relayout();

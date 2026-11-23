@@ -287,7 +287,7 @@ fn public_host_search_exposes_actual_indexed_evidence_stage() {
         &ui::search::SearchRequest::this_app().with_query("Synthetic CPU"),
     );
     app.harness()
-        .invoke_action(&open.address, &open.arguments, false, None)
+        .invoke_action(&open.address, &open.arguments, None)
         .unwrap();
     app.settle();
     assert!(

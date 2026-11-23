@@ -303,18 +303,26 @@ tilo_test_env::scenario! {
         );
 
         records
-            .invoke(&address, &edit(1), false, &invoker, None)
+            .invoke(&address, &edit(1), None, &invoker, None)
             .unwrap();
         assert_eq!(stored(), 1);
         assert_eq!(
-            records.invoke(&address, &edit(0), false, &invoker, None),
+            records.invoke(&address, &edit(0), None, &invoker, None),
             Err(tilo_app::tilo_actions::ApiError::ConfirmationRequired),
             "never locking runs only once confirmed"
         );
         assert_eq!(stored(), 1);
+        let approval = tilo_app::tilo_actions::remote::asked::Approval::new(
+            tilo_app::tilo_actions::remote::asked::RecordRef {
+                workspace: "local".into(),
+                record: "invocations/lock".into(),
+                device: None,
+            },
+            None,
+        );
         assert!(
             records
-                .invoke(&address, &edit(90), true, &invoker, None)
+                .invoke(&address, &edit(90), Some(&approval), &invoker, None)
                 .is_err(),
             "the model's check refuses"
         );

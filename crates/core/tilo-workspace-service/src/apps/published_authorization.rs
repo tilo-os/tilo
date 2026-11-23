@@ -162,7 +162,7 @@ mod tests {
                     .with_contract(contract.clone());
                     let answer = window.invocation_answer(WRITER, &resource, &spec, None, None);
                     let windowed =
-                        match collaboration::permissions::admit_in_window(answer, &spec, window.asker(), false) {
+                        match collaboration::permissions::admit_in_window(answer, &spec, window.asker()) {
                             Ok(()) => Answered::Runs,
                             Err(ApiError::ConfirmationRequired) => Answered::AsksFirst,
                             Err(_) => Answered::Refused,

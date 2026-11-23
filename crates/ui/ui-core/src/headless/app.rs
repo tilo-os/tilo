@@ -107,17 +107,19 @@ impl HeadlessApp {
         address: &ActionAddress,
         arguments: serde_json::Map<String, Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
-        self.frame.invoke_action(address, &arguments, false, None)
+        self.frame.invoke_action(address, &arguments, None)
     }
 
-    /// [`HeadlessApp::call`] after the person confirmed this exact request, as the host's confirmation
-    /// prompt does for an irreversible action.
+    /// [`HeadlessApp::call`] once the person allowed this exact request: it comes back with their
+    /// approve, as the device sends it again.
     pub fn call_confirmed(
         &mut self,
         address: &ActionAddress,
         arguments: serde_json::Map<String, Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
-        self.frame.invoke_action(address, &arguments, true, None)
+        let approval = self.frame.approval();
+        self.frame
+            .invoke_action(address, &arguments, Some(&approval))
     }
 
     /// Invoke the action `action` of the resource `resource` — the ids the app publishes — with

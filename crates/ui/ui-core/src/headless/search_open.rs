@@ -112,7 +112,7 @@ mod tests {
             .unwrap()
             .clone();
         assert!(matches!(
-            frame.invoke_action(&address, &bad, false, None),
+            frame.invoke_action(&address, &bad, None),
             Err(tilo_actions::ApiError::InvalidArguments(_))
         ));
         assert!(frame.action_palette.is_none());
@@ -120,7 +120,7 @@ mod tests {
         let request =
             SearchRequest::within(ScopeDecl::new("folder:inbox", "Inbox")).with_query("invoice");
         frame
-            .invoke_action(&address, &request.arguments(), false, None)
+            .invoke_action(&address, &request.arguments(), None)
             .unwrap();
         let palette = frame
             .action_palette
@@ -138,7 +138,7 @@ mod tests {
         );
         assert!(
             matches!(
-                frame.invoke_action(&address, &request.arguments(), false, None),
+                frame.invoke_action(&address, &request.arguments(), None),
                 Err(tilo_actions::ApiError::Failed(_))
             ),
             "a busy host must refuse instead of silently reporting success"

@@ -1,7 +1,7 @@
 //! A destructive verb of a document is undoable: from whatever path it
 //! comes it applies at once, nobody is asked, and Undo takes it back. Only
-//! what Undo cannot take back is confirmed, from a gesture and through the
-//! API alike (and in the palette's tests).
+//! what Undo cannot take back asks the person, from a gesture and through the
+//! API alike: the call is refused until they allow it, and comes back with their yes.
 
 use tilo_app::prelude::*;
 
@@ -140,8 +140,6 @@ enum Now {
     InvokedGesture,
     IrreversibleGesture,
     IrreversibleVerb,
-    Confirming,
-    IrreversibleConfirming,
 }
 
 thread_local! {
@@ -205,10 +203,6 @@ impl Widget for Remover {
             Now::Gesture => dispatch.submit_gesture(edits, Notes::REMOVE.with(first)),
             Now::IrreversibleGesture => dispatch.submit_gesture(edits, Notes::FORGET.with(())),
             Now::IrreversibleVerb => dispatch.submit_now(edits, Notes::FORGET.with(())),
-            Now::Confirming => dispatch.submit_confirming(edits, Notes::REMOVE.with(first)),
-            Now::IrreversibleConfirming => {
-                dispatch.submit_confirming(edits, Notes::FORGET.with(()))
-            }
             Now::InvokedGesture => {
                 let _agent = tilo_app::invocation_scope::InvokerScope::enter(
                     tilo_actions::ActionInvoker::agent("helper"),
@@ -376,64 +370,50 @@ fn hold_shift<A: ResourceApp>(app: &mut TestApp<A>, held: bool) {
     app.harness().set_modifiers(&names);
 }
 
-/// Pick the remover's choice `now` with Shift `held`, on a fresh window.
-fn choose(now: Now, held: bool) -> TestApp<RemoverApp> {
-    let mut app = TestApp::<RemoverApp>::new().unwrap();
+/// Press "forget", which Undo cannot take back, on a fresh window with one note.
+fn press_forget() -> TestApp<NotesApp> {
+    let mut app = TestApp::<NotesApp>::new().unwrap();
     app.invoke(Notes::ADD.with("Milk")).unwrap();
-    hold_shift(&mut app, held);
-    NOW.set(Some(now));
-    app.settle();
-    assert_eq!(
-        APPLIED.with(|applied| applied.borrow_mut().drain(..).collect::<Vec<_>>()),
-        [Ok(())],
-        "{now:?}"
-    );
+    let mut app = app.reopen().unwrap();
+    app.harness().click_named("forget").unwrap();
     app
 }
 
 tilo_test_env::scenario! {
-    fn a_confirming_choice_asks_unless_shift_is_held_and_undo_takes_it_back;
+    fn a_press_that_asks_runs_once_the_person_allows_it;
 
-    phase a_confirming_choice_without_shift_asks_and_undo_takes_it_back;
-    // A choice the app asks the person to confirm (Delete in a context menu)
-    // is asked about though Undo would take it back, in the action's own
-    // words; once they agree it applies, and Undo takes it back.
+    phase the_ask_stands_on_the_frame_after_the_press;
+    // The press is refused until the person answers, and its ask is kept on this device at
+    // once: the frame after the press shows it, with nothing synced in between.
     {
-        let mut app = choose(Now::Confirming, false);
-        assert!(app.asking().is_some(), "the person is asked first");
-        assert_eq!(
-            app.harness().asking_why(),
-            None,
-            "the action asks, not the workspace's grants"
+        let mut app = press_forget();
+        assert!(
+            app.harness().asking().is_some(),
+            "the ask is there on the next frame"
         );
-        assert_eq!(app.state().notes.len(), 1, "nothing is removed yet");
-        assert!(app.confirm_asked().is_some(), "the person agrees");
+        assert!(!app.harness().palette_shown(), "a press opens no search");
+        assert_eq!(app.state().notes.len(), 1, "nothing is forgotten yet");
+    }
+
+    phase allow_runs_the_press;
+    // Allowing it sends the same call again with their yes, and it runs.
+    {
+        let mut app = press_forget();
+        assert!(app.asking().is_some(), "the person is asked first");
+        assert!(app.confirm_asked().is_some(), "the person allows it");
         assert!(app.state().notes.is_empty(), "then it applies");
-        assert!(app.undo(), "Undo takes it back");
-        assert_eq!(app.state().notes.len(), 1);
+        assert_eq!(app.asking(), None, "answered once");
     }
 
-    phase a_confirming_choice_with_shift_applies_at_once_and_undo_takes_it_back;
-    // Holding Shift, the same choice applies at once, nobody is asked, and
-    // Undo takes it back.
+    phase decline_writes_nothing;
+    // Declining it runs nothing of it.
     {
-        let mut app = choose(Now::Confirming, true);
-        assert_eq!(app.asking(), None, "Shift skips the question");
-        assert!(app.state().notes.is_empty(), "removed at once");
-        assert!(app.undo(), "Undo takes it back");
-        assert_eq!(app.state().notes.len(), 1);
-        hold_shift(&mut app, false);
-    }
-
-    phase an_irreversible_confirming_choice_asks_shift_or_not;
-    // What Undo cannot take back is asked, Shift or not.
-    {
-        for held in [false, true] {
-            let mut app = choose(Now::IrreversibleConfirming, held);
-            assert!(app.asking().is_some(), "Shift {held}: the person is asked");
-            assert_eq!(app.state().notes.len(), 1, "Shift {held}: nothing is lost");
-            hold_shift(&mut app, false);
-        }
+        let mut app = press_forget();
+        assert!(app.asking().is_some(), "the person is asked first");
+        let before = app.state();
+        assert!(app.decline_asked().is_some(), "the person declines");
+        assert_eq!(app.asking(), None, "nothing waits any more");
+        assert_eq!(app.state(), before, "nothing was written");
     }
 }
 
@@ -489,30 +469,7 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn what_a_press_has_to_say_stands_at_the_control_pressed;
-
-    phase a_confirmation_stands_at_the_control_pressed;
-    // What has to be confirmed is asked at the control pressed, as a popover
-    // beside it: never as the window's search, which a click never opens.
-    {
-        let mut app = TestApp::<NotesApp>::new().unwrap();
-        app.invoke(Notes::ADD.with("Milk")).unwrap();
-        let mut app = app.reopen().unwrap();
-        let forget = app.harness().targets()["forget"];
-        app.harness().click_named("forget").unwrap();
-        app.settle();
-        assert!(app.asking().is_some(), "the person is asked first");
-        let anchor = app
-            .harness()
-            .asking_at()
-            .expect("the question has a control");
-        assert!(
-            anchor.contains(forget.center()),
-            "it stands at the pressed control: {anchor:?} for {forget:?}"
-        );
-        assert!(!app.harness().palette_shown(), "a click opens no search");
-        assert_eq!(app.state().notes.len(), 1, "nothing is forgotten yet");
-    }
+    fn a_refused_press_is_said_at_the_control_pressed;
 
     phase a_refused_press_is_said_at_the_control_and_opens_no_search;
     // A press the action refuses when it runs says why at the control

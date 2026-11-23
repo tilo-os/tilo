@@ -289,16 +289,16 @@ pub(crate) struct HostDocument<'a> {
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
 }
 
-/// One invocation a host hands an API: who asks, with what argument, under which confirmation,
-/// invocation and context.
+/// One invocation a host hands an API: who asks, with what argument, under which invocation and
+/// context; whether the workspace admitted it (the person's yes included, where it waited for one); and
+/// the person's approve of the asked record it was kept as, when it is that call sent again.
 #[derive(Clone, Copy)]
 pub(crate) struct ResourceInvocation<'a> {
     pub(crate) address: &'a tilo_actions::ActionAddress,
     pub(crate) actor: &'a tilo_actions::Actor,
     pub(crate) argument: Option<&'a str>,
-    pub(crate) confirmation_satisfied: bool,
+    pub(crate) approval: Option<&'a tilo_actions::remote::asked::Approval>,
     pub(crate) broker_admitted: bool,
-    pub(crate) confirmation_evidence: Option<&'a serde_json::Value>,
     pub(crate) invocation: Option<tilo_actions::InvocationId>,
     pub(crate) ambient_context: Option<&'a tilo_actions::ActionContext>,
 }
@@ -312,9 +312,8 @@ impl<'a> ResourceInvocation<'a> {
             address,
             actor,
             argument: None,
-            confirmation_satisfied: false,
+            approval: None,
             broker_admitted: false,
-            confirmation_evidence: None,
             invocation: None,
             ambient_context: None,
         }
@@ -325,18 +324,16 @@ impl<'a> ResourceInvocation<'a> {
         self
     }
 
-    pub(crate) fn confirmed(mut self, confirmed: bool) -> Self {
-        self.confirmation_satisfied = confirmed;
+    pub(crate) fn approval(
+        mut self,
+        approval: Option<&'a tilo_actions::remote::asked::Approval>,
+    ) -> Self {
+        self.approval = approval;
         self
     }
 
     pub(crate) fn broker_admitted(mut self, admitted: bool) -> Self {
         self.broker_admitted = admitted;
-        self
-    }
-
-    pub(crate) fn evidence(mut self, evidence: Option<&'a serde_json::Value>) -> Self {
-        self.confirmation_evidence = evidence;
         self
     }
 
@@ -388,6 +385,20 @@ pub(crate) struct HostRemount<'a> {
 /// How many times one remount carries out the in-place changes the widgets report: the changes
 /// widgets it built made as they were built, and theirs.
 const REMOUNT_PASSES: usize = 4;
+
+/// The approve a call the person allowed comes back with, as tests send it.
+#[cfg(test)]
+pub(crate) static TEST_APPROVAL: std::sync::LazyLock<tilo_actions::remote::asked::Approval> =
+    std::sync::LazyLock::new(|| {
+        tilo_actions::remote::asked::Approval::new(
+            tilo_actions::remote::asked::RecordRef {
+                workspace: crate::permissions::LOCAL_WORKSPACE.to_owned(),
+                record: "invocations/allowed".to_owned(),
+                device: None,
+            },
+            None,
+        )
+    });
 
 pub(crate) trait AppCore {
     /// The host's document and laid-out tree.
@@ -687,6 +698,20 @@ pub(crate) trait AppCore {
         prepared: PreparedContinuation,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>;
 
+    /// Send the person's own call of `address` on `target`, which waits for their yes, through the
+    /// device's one dispatch: there it is kept as its asked `tilo.invocations` record, pressed in
+    /// this window, whose card the shell stands over it, and it comes back to run once they allow
+    /// it. Nothing of it runs here before then.
+    ///
+    /// # Errors
+    /// Why it could not be sent: no workspace serves this window, or the target is gone.
+    fn ask_through_device(
+        &mut self,
+        target: &crate::bound_dispatch::local_target::LocalResourceTarget,
+        address: &tilo_actions::ActionAddress,
+        arguments: &crate::bound_dispatch::ControlContinuationArguments,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>;
+
     fn inspect_node<R>(
         &self,
         node: NodeId,
@@ -907,7 +932,8 @@ pub(crate) trait AppCore {
     }
 
     /// Run a control History held back while it was open, refused when its meaning or confirmation
-    /// policy changed since.
+    /// policy changed since. One whose action waits for the person's yes goes through the device's
+    /// dispatch, as their press does ([`Self::ask_through_device`]).
     fn dispatch_prepared_history_control(
         &mut self,
         prepared: PreparedContinuation,
@@ -932,24 +958,28 @@ pub(crate) trait AppCore {
                     .into(),
             });
         }
-        self.dispatch_current_history_control(prepared)
+        let target = prepared.target.clone();
+        let invocation = prepared.invocation.clone();
+        match self.dispatch_current_history_control(prepared) {
+            Err(tilo_actions::ApiError::ConfirmationRequired) => self.ask_through_device(
+                &target,
+                &invocation.address,
+                &crate::bound_dispatch::ControlContinuationArguments::Json(invocation.arguments),
+            ),
+            started => started,
+        }
     }
 
-    /// Run a control the registered History held back and record how it ended there: done, refused, or
-    /// (unless the person already confirmed) waiting for confirmation.
+    /// Run a control the registered History kept back and record how it ended there: done or
+    /// refused.
     fn settle_history_control(
         &mut self,
         prepared: PreparedContinuation,
-        confirmed: bool,
     ) -> Option<PendingControlStatus> {
         let id = prepared.id;
         let result = self.dispatch_prepared_history_control(prepared);
         let history = self.registered_history_mut()?;
         Some(match result {
-            Err(tilo_actions::ApiError::ConfirmationRequired) if !confirmed => {
-                history.pending_control_needs_confirmation(id);
-                PendingControlStatus::NeedsConfirmation
-            }
             Ok(_) => {
                 history.pending_control_consumed(id);
                 PendingControlStatus::Consumed
@@ -971,7 +1001,7 @@ pub(crate) trait AppCore {
     fn service_history_own_controls(&mut self) -> bool;
 
     /// Carry out what the registered History and the History surfaces embedded in the app asked of
-    /// their held-back controls: review, confirm or cancel each, while History still holds input.
+    /// their kept-back controls: continue or cancel each, while History still has input.
     fn service_pending_history_commands(&mut self) -> bool {
         let answered = self.service_history_own_controls();
         let commands = self
@@ -983,9 +1013,8 @@ pub(crate) trait AppCore {
             self.history_commands_arrived();
         }
         for command in commands {
-            let (token, confirmation) = match command {
-                ContinuationCommand::Review(token) => (token, None),
-                ContinuationCommand::Confirm(token, value) => (token, Some(value)),
+            let token = match command {
+                ContinuationCommand::Review(token) => token,
                 ContinuationCommand::Cancel(token) => {
                     if let Some(history) = self.registered_history_mut() {
                         history.cancel_pending_control(&token);
@@ -993,57 +1022,37 @@ pub(crate) trait AppCore {
                     continue;
                 }
             };
-            let Some(prepared) =
-                self.registered_history_mut()
-                    .and_then(|history| match confirmation.as_deref() {
-                        Some(value) => history.prepare_pending_control_typed(&token, value),
-                        None => history.prepare_pending_control(&token, false),
-                    })
+            let Some(prepared) = self
+                .registered_history_mut()
+                .and_then(|history| history.prepare_pending_control(&token))
             else {
                 continue;
             };
-            self.settle_history_control(prepared, confirmation.is_some());
+            self.settle_history_control(prepared);
         }
         self.service_embedded_history_commands(embedded);
         asked
     }
 
-    /// Serve what History surfaces embedded in the app asked of their held-back controls: review,
-    /// confirm or cancel each.
+    /// Serve what History surfaces embedded in the app asked of their kept-back controls: continue
+    /// or cancel each.
     fn service_embedded_history_commands(&mut self, embedded: Vec<PendingCommand>) {
         use crate::history_mode::embedded as surfaces;
         for pending in embedded {
-            let (token, confirmation) = match pending.command {
-                ContinuationCommand::Review(token) => (token, None),
-                ContinuationCommand::Confirm(token, value) => (token, Some(value)),
+            let token = match pending.command {
+                ContinuationCommand::Review(token) => token,
                 ContinuationCommand::Cancel(token) => {
                     surfaces::cancel_pending_command(self.host_root_mut(), pending.surface, &token);
                     continue;
                 }
             };
-            let prepared = match confirmation.as_deref() {
-                Some(value) => surfaces::prepare_pending_command_typed(
-                    self.host_root_mut(),
-                    pending.surface,
-                    &token,
-                    value,
-                ),
-                None => surfaces::prepare_pending_command(
-                    self.host_root_mut(),
-                    pending.surface,
-                    &token,
-                    false,
-                ),
-            };
-            let Some(prepared) = prepared else {
+            let Some(prepared) =
+                surfaces::prepare_pending_command(self.host_root_mut(), pending.surface, &token)
+            else {
                 continue;
             };
-            let confirmed = confirmation.is_some();
             let id = prepared.id;
             let outcome = match self.dispatch_prepared_history_control(prepared) {
-                Err(tilo_actions::ApiError::ConfirmationRequired) if !confirmed => {
-                    PendingCommandOutcome::NeedsConfirmation
-                }
                 Ok(_) => PendingCommandOutcome::Consumed,
                 Err(error) => PendingCommandOutcome::Refused(error.to_string()),
             };
