@@ -20,16 +20,17 @@
 //! rows a format holds is what its checks allow, so reading one the checks do
 //! not cover would admit rows this build would not have written.
 
+use serde::de::{MapAccess, SeqAccess, Visitor};
+use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 #[path = "invocation_journal/content_puts.rs"]
 mod content_puts;
 #[path = "invocation_journal/effect.rs"]
 mod effect;
-#[path = "invocation_journal/guarded.rs"]
-mod guarded;
 #[cfg(test)]
 pub(crate) use content_puts::CONTENT_PUTS_FILE;
 pub(crate) use content_puts::ContentHolds;
@@ -139,12 +140,11 @@ pub(crate) struct DurableInvocation {
     /// The admission intent. Its `request`, when it had one, is retained only
     /// as `request_digest`: ask [`Self::admitted_request_is`], never this map.
     pub(super) intent: serde_json::Value,
-    request_digest: Option<guarded::Digest>,
+    request_digest: Option<Digest>,
     pub wire_id: u64,
     pub update: InvocationUpdate,
     pub uncertain: bool,
     pub cancellation_requested: bool,
-    guarded: Option<guarded::State>,
     pub(crate) prepared_effect: Option<PreparedEffect>,
     pub(crate) admission: Option<crate::apps::action_evidence::AdmissionEvidence>,
     pub(crate) terminal: Option<crate::apps::action_evidence::TerminalReceipt>,
@@ -173,7 +173,7 @@ impl DurableInvocation {
 
 /// Splits an admission intent into what is retained verbatim and the digest
 /// of its `request`, the one member that carries the caller's arguments.
-fn retained_intent(mut intent: serde_json::Value) -> (serde_json::Value, Option<guarded::Digest>) {
+fn retained_intent(mut intent: serde_json::Value) -> (serde_json::Value, Option<Digest>) {
     let request = intent
         .as_object_mut()
         .and_then(|fields| fields.remove("request"));
@@ -187,7 +187,7 @@ pub(crate) fn admission_request_digest(request: &serde_json::Value) -> [u8; 32] 
 
 /// A digest of `request` that is equal exactly when the JSON values are:
 /// object members are hashed in key order, whatever order they arrived in.
-fn request_digest(request: &serde_json::Value) -> guarded::Digest {
+fn request_digest(request: &serde_json::Value) -> Digest {
     fn canonical(value: &serde_json::Value, out: &mut Vec<u8>) {
         match value {
             serde_json::Value::Object(fields) => {
@@ -221,7 +221,7 @@ fn request_digest(request: &serde_json::Value) -> guarded::Digest {
     canonical(request, &mut encoded);
     let mut hasher = blake3::Hasher::new_derive_key("tilo invocation journal request v1");
     hasher.update(&encoded);
-    guarded::Digest(*hasher.finalize().as_bytes())
+    Digest(*hasher.finalize().as_bytes())
 }
 
 /// The store version this build writes and the only one it reads.
@@ -363,7 +363,6 @@ impl Loaded {
         let (head, rest) = bytes
             .split_at_checked(values.byte_offset())
             .ok_or("invocation journal snapshot is corrupt or unsupported")?;
-        guarded::preflight(&mut &*head)?;
         let snapshot: Snapshot = serde_json::from_slice(head)
             .map_err(|_| "invocation journal snapshot is corrupt or unsupported")?;
         if snapshot.version != VERSION || snapshot.host.is_nil() {
@@ -403,7 +402,9 @@ impl Loaded {
                 loaded.torn = true;
                 break;
             };
-            guarded::preflight(&mut &*line)?;
+            if line.len() as u64 > InvocationJournal::MAX_ENTRY {
+                return Err("invocation journal entry exceeds storage limit".into());
+            }
             let entry: Entry = serde_json::from_slice(line)
                 .map_err(|_| "invocation journal entry is corrupt or unsupported")?;
             loaded.replay(entry)?;
@@ -609,6 +610,8 @@ pub(super) enum BarrierFailure {
 
 impl InvocationJournal {
     const MAX_BYTES: u64 = 256 * 1024 * 1024;
+    /// One appended entry: a record with its intent, update and prepared effect.
+    const MAX_ENTRY: u64 = 4 * 1024 * 1024;
     /// Entries may always grow to this before a compaction is due.
     const COMPACT_AFTER: u64 = 1024 * 1024;
 
@@ -635,7 +638,7 @@ impl InvocationJournal {
     fn open_with_barriers(
         root: &Path,
         parent_barrier: impl FnOnce(&Path) -> std::io::Result<()>,
-        guarded_barrier: impl FnOnce(&File, &File) -> std::io::Result<()>,
+        directory_barrier: impl FnOnce(&File, &File) -> std::io::Result<()>,
     ) -> Result<Self, String> {
         let created = match std::fs::DirBuilder::new().mode(0o700).create(root) {
             Ok(()) => true,
@@ -647,7 +650,7 @@ impl InvocationJournal {
         if !metadata.is_dir() || metadata.permissions().mode() & 0o777 != 0o700 {
             return Err("invocation journal requires a private directory".into());
         }
-        // Retain the directory actually opened for this snapshot's guarded
+        // Retain the directory actually opened for this snapshot's
         // reconciliation, rather than reopening its pathname after decoding.
         let directory = OpenOptions::new()
             .read(true)
@@ -755,16 +758,16 @@ impl InvocationJournal {
                     .snapshot
                     .records
                     .iter()
-                    .any(|record| record.guarded.is_some() || record.prepared_effect.is_some())
+                    .any(|record| record.prepared_effect.is_some())
             {
                 // The decoded file may be the result of a rename whose directory
                 // barrier failed. Reconcile the exact decoded file, not a freshly
-                // reopened name, before exposing even sanitized guarded status or
-                // appending entries a lost rename would orphan.
-                guarded_barrier(
+                // reopened name, before exposing a prepared effect or appending
+                // entries a lost rename would orphan.
+                directory_barrier(
                     observed_store
                         .as_ref()
-                        .ok_or("guarded snapshot unavailable")?,
+                        .ok_or("invocation journal snapshot unavailable")?,
                     &directory,
                 )
                 .map_err(|_| "invocation journal snapshot reconciliation failed")?;
@@ -927,7 +930,6 @@ impl InvocationJournal {
                 update,
                 uncertain: false,
                 cancellation_requested: false,
-                guarded: None,
                 prepared_effect: None,
                 admission,
                 terminal: None,
@@ -982,11 +984,6 @@ impl InvocationJournal {
         if record.update.is_terminal() || update.invocation() != key.invocation {
             return Err("invocation journal transition rejected".into());
         }
-        if record.guarded.is_some() && !guarded::allowed_failure(&update, uncertain) {
-            return Err(
-                "guarded invocation requires a sanitized failure or private terminal".into(),
-            );
-        }
         if let Some(prepared) = &record.prepared_effect
             && (update != prepared.update || uncertain)
         {
@@ -1022,9 +1019,6 @@ impl InvocationJournal {
         let (at, record) = self.document_mut(key)?;
         if record.update.is_terminal() {
             return Err("invocation is no longer running".into());
-        }
-        if record.guarded.is_some() {
-            return Err("guarded reads are noncancellable".into());
         }
         record.cancellation_requested = true;
         self.commit(at, Injected::default())
@@ -1136,7 +1130,6 @@ impl InvocationJournal {
         if let Some(record) = self.snapshot.records.get_mut(at)
             && let Some(admission) = &record.admission
             && record.terminal.is_none()
-            && record.guarded.is_none()
             && let Some(category) =
                 crate::apps::action_evidence::terminal_category(&record.update, record.uncertain)
         {
@@ -1321,6 +1314,293 @@ pub(super) fn durable_snapshot(root: &Path) -> serde_json::Value {
     let mut file = File::open(root.join("records.json")).expect("invocation journal store");
     let loaded = Loaded::read(&mut file).expect("decodable invocation journal store");
     serde_json::to_value(&loaded.snapshot).expect("invocation journal snapshot value")
+}
+
+/// The digest of an admission intent's request, kept in place of the request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Digest([u8; 32]);
+
+impl Serialize for Digest {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&hex::encode(self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for Digest {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Hex;
+        impl Visitor<'_> for Hex {
+            type Value = Digest;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("64 lowercase hex bytes")
+            }
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Digest, E> {
+                if s.len() != 64 {
+                    return Err(E::custom("invalid digest length"));
+                }
+                if !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+                    return Err(E::custom("noncanonical digest"));
+                }
+                let mut out = [0; 32];
+                hex::decode_to_slice(s, &mut out).map_err(|_| E::custom("noncanonical digest"))?;
+                Ok(Digest(out))
+            }
+        }
+        d.deserialize_str(Hex)
+    }
+}
+
+// Capture only update-level and public typed output/error duplicate fields.
+// Arbitrary JSON values retain serde_json's existing map semantics.
+pub(super) struct RawUpdate {
+    pub(super) value: serde_json::Value,
+    duplicate: Vec<String>,
+    error_duplicate: Vec<String>,
+    output_duplicate: Vec<String>,
+}
+struct Shallow {
+    value: serde_json::Value,
+    duplicate: Vec<String>,
+}
+impl<'de> Deserialize<'de> for Shallow {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Shallow;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("JSON value")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<Shallow, A::Error> {
+                let mut out = serde_json::Map::new();
+                let mut duplicate = vec![];
+                while let Some(k) = m.next_key::<String>()? {
+                    let v = m.next_value()?;
+                    if out.contains_key(&k) {
+                        duplicate.push(k.clone());
+                    }
+                    out.insert(k, v);
+                }
+                Ok(Shallow {
+                    value: serde_json::Value::Object(out),
+                    duplicate,
+                })
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut a: A) -> Result<Shallow, A::Error> {
+                let mut out = vec![];
+                while let Some(v) = a.next_element()? {
+                    out.push(v);
+                }
+                Ok(Shallow {
+                    value: serde_json::Value::Array(out),
+                    duplicate: vec![],
+                })
+            }
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Shallow, E> {
+                Ok(Shallow {
+                    value: s.into(),
+                    duplicate: vec![],
+                })
+            }
+            fn visit_string<E: serde::de::Error>(self, s: String) -> Result<Shallow, E> {
+                Ok(Shallow {
+                    value: s.into(),
+                    duplicate: vec![],
+                })
+            }
+            fn visit_bool<E: serde::de::Error>(self, b: bool) -> Result<Shallow, E> {
+                Ok(Shallow {
+                    value: b.into(),
+                    duplicate: vec![],
+                })
+            }
+            fn visit_u64<E: serde::de::Error>(self, n: u64) -> Result<Shallow, E> {
+                Ok(Shallow {
+                    value: n.into(),
+                    duplicate: vec![],
+                })
+            }
+            fn visit_i64<E: serde::de::Error>(self, n: i64) -> Result<Shallow, E> {
+                Ok(Shallow {
+                    value: n.into(),
+                    duplicate: vec![],
+                })
+            }
+            fn visit_f64<E: serde::de::Error>(self, n: f64) -> Result<Shallow, E> {
+                Ok(Shallow {
+                    value: serde_json::Number::from_f64(n)
+                        .map(serde_json::Value::Number)
+                        .unwrap_or_default(),
+                    duplicate: vec![],
+                })
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Shallow, E> {
+                Ok(Shallow {
+                    value: serde_json::Value::Null,
+                    duplicate: vec![],
+                })
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+impl<'de> Deserialize<'de> for RawUpdate {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = RawUpdate;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("invocation update object")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<RawUpdate, A::Error> {
+                let mut out = serde_json::Map::new();
+                let mut duplicate = vec![];
+                let mut error_duplicate = vec![];
+                let mut output_duplicate = vec![];
+                while let Some(k) = m.next_key::<String>()? {
+                    let v = if k == "error" || k == "output" {
+                        let v = m.next_value::<Shallow>()?;
+                        if k == "error" {
+                            error_duplicate = v.duplicate;
+                        } else {
+                            output_duplicate = v.duplicate;
+                        }
+                        v.value
+                    } else {
+                        m.next_value()?
+                    };
+                    if out.contains_key(&k) {
+                        duplicate.push(k.clone());
+                    }
+                    out.insert(k, v);
+                }
+                Ok(RawUpdate {
+                    value: serde_json::Value::Object(out),
+                    duplicate,
+                    error_duplicate,
+                    output_duplicate,
+                })
+            }
+        }
+        d.deserialize_map(V)
+    }
+}
+impl RawUpdate {
+    pub(super) fn check_duplicates(&self) -> Result<(), String> {
+        let state = self.value.get("state").and_then(serde_json::Value::as_str);
+        let fields: &[&str] = match state {
+            Some("accepted") => &["state", "invocation"],
+            Some("progress") => &[
+                "state",
+                "invocation",
+                "sequence",
+                "phase",
+                "completed",
+                "total",
+                "message",
+            ],
+            Some("item") => &["state", "invocation", "sequence", "value"],
+            Some("succeeded") => &["state", "invocation", "output"],
+            Some("failed") => &["state", "invocation", "error"],
+            Some("cancelled") => &["state", "invocation", "message"],
+            _ => &["state"],
+        };
+        if self
+            .duplicate
+            .iter()
+            .any(|key| fields.contains(&key.as_str()))
+            || (state == Some("failed")
+                && self
+                    .error_duplicate
+                    .iter()
+                    .any(|key| ["code", "message", "details", "retryable"].contains(&key.as_str())))
+            || (state == Some("succeeded")
+                && self
+                    .output_duplicate
+                    .iter()
+                    .any(|key| ["value", "resources"].contains(&key.as_str())))
+        {
+            return Err("duplicate invocation update field".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Row {
+    key: InvocationKey,
+    intent: serde_json::Value,
+    wire_id: u64,
+    update: RawUpdate,
+    uncertain: bool,
+    cancellation_requested: bool,
+    #[serde(default, deserialize_with = "prepared_present")]
+    prepared_effect: Option<PreparedEffect>,
+    #[serde(default, deserialize_with = "digest_present")]
+    request_digest: Option<Digest>,
+    #[serde(default)]
+    admission: Option<crate::apps::action_evidence::AdmissionEvidence>,
+    #[serde(default)]
+    terminal: Option<crate::apps::action_evidence::TerminalReceipt>,
+}
+// Like the other optional members, absent only through #[serde(default)].
+fn digest_present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Digest>, D::Error> {
+    Digest::deserialize(d).map(Some)
+}
+fn prepared_present<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<PreparedEffect>, D::Error> {
+    PreparedEffect::deserialize(d).map(Some)
+}
+impl<'de> Deserialize<'de> for DurableInvocation {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let row = Row::deserialize(d)?;
+        row.update.check_duplicates().map_err(D::Error::custom)?;
+        Ok(Self {
+            key: row.key,
+            intent: row.intent,
+            request_digest: row.request_digest,
+            wire_id: row.wire_id,
+            update: serde_json::from_value(row.update.value).map_err(D::Error::custom)?,
+            uncertain: row.uncertain,
+            cancellation_requested: row.cancellation_requested,
+            prepared_effect: row.prepared_effect,
+            admission: row.admission,
+            terminal: row.terminal,
+        })
+    }
+}
+impl Serialize for DurableInvocation {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut row = s.serialize_struct(
+            "DurableInvocation",
+            6_usize
+                .saturating_add(usize::from(self.prepared_effect.is_some()))
+                .saturating_add(usize::from(self.request_digest.is_some()))
+                .saturating_add(usize::from(self.admission.is_some()))
+                .saturating_add(usize::from(self.terminal.is_some())),
+        )?;
+        row.serialize_field("key", &self.key)?;
+        row.serialize_field("intent", &self.intent)?;
+        row.serialize_field("wire_id", &self.wire_id)?;
+        row.serialize_field("update", &self.update)?;
+        row.serialize_field("uncertain", &self.uncertain)?;
+        row.serialize_field("cancellation_requested", &self.cancellation_requested)?;
+        if let Some(prepared) = &self.prepared_effect {
+            row.serialize_field("prepared_effect", prepared)?;
+        }
+        if let Some(digest) = &self.request_digest {
+            row.serialize_field("request_digest", digest)?;
+        }
+        if let Some(admission) = &self.admission {
+            row.serialize_field("admission", admission)?;
+        }
+        if let Some(terminal) = &self.terminal {
+            row.serialize_field("terminal", terminal)?;
+        }
+        row.end()
+    }
 }
 
 fn private_file(file: &File) -> Result<(), String> {
@@ -1718,10 +1998,6 @@ mod tests {
         assert!(String::from_utf8_lossy(&child.stdout).contains("1 passed"));
     }
 }
-
-#[cfg(test)]
-#[path = "invocation_journal/guarded_decode_tests.rs"]
-mod guarded_decode_tests;
 
 #[cfg(test)]
 #[path = "invocation_journal/authenticated_local_tests.rs"]
