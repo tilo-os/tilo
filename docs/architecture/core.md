@@ -641,6 +641,12 @@ and screen share only, never documents, and stays as it is.
   extends this API; it gets no call of its own. The session's own engine
   (`EngineRecords`, `settings_sync`) goes, and settings are records read and
   written like any other.
+- **A checkpoint is a cache, never an authority**: a compaction names the
+  hashes of the writes it covers, and a key-holding reader reads it only after
+  checking that its content is the merge of those writes, each checked as an
+  ordinary write. A reader that cannot check it fetches the writes instead.
+  Holding the compact grant lets a member make a checkpoint, never make one
+  that says something the writes don't.
 - **Fixtures write like everyone else**: a test seed, a demo or a scenario
   writes through the seeded app's declared actions on the one dispatch, so the
   store's schema check applies to it unchanged. A seed gets no store command,
