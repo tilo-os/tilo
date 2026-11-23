@@ -1535,3 +1535,192 @@ async fn an_invalidated_property_reread_against_a_silent_daemon_does_not_block_l
     .await;
     task.abort();
 }
+
+/// Fake `net.hadess.PowerProfiles` whose property reads wait for `release`
+/// after recording that a read began, so tests can observe intermediate bridge
+/// state before a prime completes.
+struct GatedPowerProfiles {
+    active: String,
+    profiles: Vec<String>,
+    reads_started: Arc<std::sync::atomic::AtomicUsize>,
+    release: tokio::sync::watch::Receiver<bool>,
+}
+
+#[zbus::interface(name = "net.hadess.PowerProfiles")]
+impl GatedPowerProfiles {
+    #[zbus(property)]
+    async fn active_profile(&self) -> String {
+        self.reads_started.fetch_add(1, Ordering::SeqCst);
+        let mut release = self.release.clone();
+        let _ = release.wait_for(|&open| open).await;
+        self.active.clone()
+    }
+
+    #[zbus(property)]
+    async fn profiles(&self) -> Vec<std::collections::HashMap<String, zbus::zvariant::OwnedValue>> {
+        self.reads_started.fetch_add(1, Ordering::SeqCst);
+        let mut release = self.release.clone();
+        let _ = release.wait_for(|&open| open).await;
+        profile_entries(&self.profiles)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replacing_the_power_profiles_owner_clears_bridge_before_reading_the_new_daemon() {
+    let bus = tilo_test_env::PrivateBus::start();
+    let _base = serve_base_daemons_on_bus(bus.address()).await;
+
+    let daemon1 = Builder::address(bus.address())
+        .expect("addr")
+        .serve_at(
+            PROFILES_PATH,
+            FakePowerProfiles {
+                active: "power-saver".into(),
+                profiles: vec!["balanced".into(), "power-saver".into()],
+            },
+        )
+        .expect("daemon1")
+        .build()
+        .await
+        .expect("daemon1 conn");
+    let reply1 = daemon1
+        .request_name_with_flags(
+            "net.hadess.PowerProfiles",
+            zbus::fdo::RequestNameFlags::AllowReplacement | zbus::fdo::RequestNameFlags::DoNotQueue,
+        )
+        .await
+        .expect("daemon1 claims bus name allowing replacement");
+    assert_eq!(reply1, zbus::fdo::RequestNameReply::PrimaryOwner);
+
+    let reads_started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (release_tx, release_rx) = tokio::sync::watch::channel(false);
+    let daemon2 = Builder::address(bus.address())
+        .expect("addr")
+        .serve_at(
+            PROFILES_PATH,
+            GatedPowerProfiles {
+                active: "performance".into(),
+                profiles: vec![
+                    "performance".into(),
+                    "balanced".into(),
+                    "power-saver".into(),
+                ],
+                reads_started: Arc::clone(&reads_started),
+                release: release_rx,
+            },
+        )
+        .expect("daemon2")
+        .build()
+        .await
+        .expect("daemon2 conn");
+
+    let observer = Builder::address(bus.address())
+        .expect("addr")
+        .build()
+        .await
+        .expect("observer");
+    let mut owner_stream = zbus::fdo::DBusProxy::builder(&observer)
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
+        .expect("dbus proxy")
+        .receive_name_owner_changed_with_args(&[(0, "net.hadess.PowerProfiles")])
+        .await
+        .expect("owner stream");
+
+    let (bridge, _registry, _wakeups, _state_home, task) =
+        spawn_service_on_bus(bus.address()).await;
+
+    eventually("startup primes first owner", || {
+        bridge.profiles_snapshot()
+            == (
+                vec!["balanced".to_owned(), "power-saver".to_owned()],
+                Some("power-saver".to_owned()),
+            )
+    })
+    .await;
+
+    let observed_snapshots = Arc::new(Mutex::new(Vec::new()));
+    bridge.on_profiles_change(Arc::new({
+        let bridge = bridge.clone();
+        let observed = Arc::clone(&observed_snapshots);
+        move || {
+            observed
+                .lock()
+                .expect("snapshots")
+                .push(bridge.profiles_snapshot());
+        }
+    }));
+
+    let reply2 = daemon2
+        .request_name_with_flags(
+            "net.hadess.PowerProfiles",
+            zbus::fdo::RequestNameFlags::ReplaceExisting | zbus::fdo::RequestNameFlags::DoNotQueue,
+        )
+        .await
+        .expect("daemon2 replaces existing owner");
+    assert_eq!(reply2, zbus::fdo::RequestNameReply::PrimaryOwner);
+
+    let transition =
+        tilo_test_env::within("direct NameOwnerChanged transition", owner_stream.next())
+            .await
+            .expect("owner transition signal");
+    let args = transition.args().expect("NameOwnerChanged args");
+    assert_eq!(
+        args.old_owner().as_ref(),
+        daemon1.unique_name().map(std::ops::Deref::deref),
+        "the previous owner must still hold the name when replaced"
+    );
+    assert_eq!(
+        args.new_owner().as_ref(),
+        daemon2.unique_name().map(std::ops::Deref::deref),
+        "the new owner must take the name directly without the name becoming free"
+    );
+
+    eventually("replacement prime starts against second owner", || {
+        reads_started.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+
+    assert_eq!(
+        bridge.profiles_snapshot(),
+        (Vec::new(), None),
+        "replacing the bus owner must clear the previous owner's profiles before reading the new owner"
+    );
+    assert_eq!(
+        bridge.active_profile(),
+        None,
+        "replacing the bus owner must clear the previous owner's active profile"
+    );
+
+    let _ = release_tx.send(true);
+    eventually("second owner's profile state lands in bridge", || {
+        bridge.profiles_snapshot()
+            == (
+                vec![
+                    "performance".to_owned(),
+                    "balanced".to_owned(),
+                    "power-saver".to_owned(),
+                ],
+                Some("performance".to_owned()),
+            )
+    })
+    .await;
+
+    assert_eq!(
+        *observed_snapshots.lock().expect("snapshots"),
+        vec![
+            (Vec::new(), None),
+            (
+                vec![
+                    "performance".to_owned(),
+                    "balanced".to_owned(),
+                    "power-saver".to_owned(),
+                ],
+                Some("performance".to_owned()),
+            ),
+        ],
+        "bridge listeners must see the cleared state before the replacement owner's state"
+    );
+    task.abort();
+}
