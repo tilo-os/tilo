@@ -2163,6 +2163,18 @@ impl RuntimeActionProvider {
         admission
             .check(self.workspaces.copies())
             .map_err(io::Error::other)?;
+        // The workspace's record of its agents names the computer's agent as it first arrives:
+        // the same write that certifies the key it acts under keeps it there, active and acting
+        // for its person, so the Agents tab and the workspace's roster read it by the id every
+        // run of it shares.
+        let record = Arc::clone(&self.workspaces);
+        let (named, listed) = (workspace.to_owned(), agent.clone());
+        block_on_owned(async move {
+            let Some(id) = WorkspaceId::parse(&named) else {
+                return;
+            };
+            tilo_workspace_service::agents::workspace_agent(record.copies(), id, &listed).await;
+        });
         let run = Self {
             broker: self.broker.clone(),
             workspace: self.workspace.clone(),
