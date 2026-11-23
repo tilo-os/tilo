@@ -258,7 +258,35 @@ wheel and the sdist uploads only the sdist. Dispatch it on the tag:
 t dispatch publish-sdks --ref tag:v0.4.0 --publish
 ```
 
-### The two registry credentials
+### The builder crates and tilolang
+
+The same tag publishes what people build Tilo apps with, at the same version:
+
+- **Crates on crates.io**: the toolkit (`tilo-ui`), the app SDK (`tilo-app`), tilolang's
+  compiler, runtime and lexer (`tilolang`, `tilolang-runtime`, `tilolang-lex`), its command
+  (`tilolang-cli`, which installs the `tilolang` program with `cargo install tilolang-cli`) and
+  browser build (`tilolang-web`), and every workspace crate and fork they build on. The set is
+  computed from those roots by `tools/sdk/publish_check.py`; a crate joins it by being marked
+  `publish = true` once everything it builds on is publishable. `python3 tools/sdk/publish_check.py
+  --report-only` says what each crate is waiting for. t's `publish-crates-dry-run` packages
+  every ready crate on `main`, checks each package against crates.io's 10 MiB limit and builds
+  each from its package alone; `publish-crates` publishes them on the tag, skipping a crate
+  already on crates.io at that version.
+- **`tilolang` on npm**: tilolang-web's page module, its WebAssembly and the fonts its windows
+  set text in (`tools/ci/publish/tilolang-npm.sh`; t's `tilolang-npm`,
+  `publish-npm-tilolang-dry-run`, `publish-npm-tilolang`).
+- **The `tilolang` program**: built, signed and published with the `tilo` command (t's
+  `cli-{arch}`, `cli-release`, `sign-cli`, `publish-cli`), installed with
+  `curl -fsSL https://tilolang.dev/install | sh`.
+
+A step that stopped is dispatched again on the tag:
+
+```sh
+t dispatch publish-crates --ref tag:v0.4.0 --publish
+t dispatch publish-npm-tilolang --ref tag:v0.4.0 --publish
+```
+
+### The registry credentials
 
 Neither registry can be published to by trusted publishing from here. PyPI's trusted publishing
 takes an OpenID Connect identity from GitHub Actions or GitLab CI, and knows neither Forgejo's
@@ -268,14 +296,15 @@ restriction, so these packages carry no provenance from this CI.
 | Secret | Registry | What the value is |
 | --- | --- | --- |
 | `PYPI_TOKEN` | PyPI | An API token that may upload `tilo-sdk` |
-| `NPM_TOKEN` | npm | A token npm takes with read and write on `tilo-sdk` that publishes without a second factor: an automation token is the kind made for that, and a granular one only if it carries the same exemption |
+| `NPM_TOKEN` | npm | A token npm takes with read and write on `tilo-sdk` and `tilolang` that publishes without a second factor: an automation token is the kind made for that, and a granular one only if it carries the same exemption |
+| `CARGO_REGISTRY_TOKEN` | crates.io | An API token with the `publish-new` and `publish-update` scopes: the first release creates every crate's name, later ones update them |
 
 The first upload of `tilo-sdk` to PyPI is the special case: a project-scoped token can only be
 made for a project that exists, and a pending publisher only works through trusted publishing, so
 the first release needs an account-scoped token. Narrow it to `tilo-sdk` once the project is up.
 The npm token's package list grows with the native packages below.
 
-Both live in the t server's config, never in this repository: the `t-config` secret in the infra
+All of them live in the t server's config, never in this repository: the `t-config` secret in the infra
 repository, file `clusters/prod/apps/t-staging-aws/config.sops.yaml`, in the `config.toml` key of
 its `stringData`, as `[[secret]]` entries:
 
@@ -288,6 +317,12 @@ repos = ["tilo"]
 
 [[secret]]
 name = "PYPI_TOKEN"
+value = "…"
+refs = ["tag:v*"]
+repos = ["tilo"]
+
+[[secret]]
+name = "CARGO_REGISTRY_TOKEN"
 value = "…"
 refs = ["tag:v*"]
 repos = ["tilo"]

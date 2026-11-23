@@ -1,25 +1,48 @@
 # Release pipeline
 
-Tilo releases six independent component families. A release tag for one family
+Tilo releases these component families independently. A release tag for one family
 does not fan out into unrelated builds:
 
 | Component | Publication trigger | Expensive work | Published output |
 |---|---|---|---|
-| Server, Lounge, web entry, `tilo` command | A `vX.Y.Z` tag (t's `tag:vX.Y.Z` checks), or a dispatch of one of them on that tag | The frozen RPM set of each architecture that has a build node, the images, the musl builds of the command | Images under `sha-<commit>`, the version and `latest`; the CLI archives; the published `set-<fingerprint>-<arch>` RPM snapshots |
+| Server, Lounge, web entry, `tilo` and `tilolang` commands | A `vX.Y.Z` tag (t's `tag:vX.Y.Z` checks), or a dispatch of one of them on that tag | The frozen RPM set of each architecture that has a build node, the images, the musl builds of both commands | Images under `sha-<commit>`, the version and `latest`; the CLI archives (`tilo-<os>-<arch>.tar.gz` and `tilolang-<os>-<arch>.tar.gz` under one signed SHA256SUMS); the published `set-<fingerprint>-<arch>` RPM snapshots |
 | Apps | A dispatch of t's app release checks (`apps-build-{arch}`, `sign-apps-{arch}`, `app-reproducible-{arch}`, `app-release-smoke-{arch}`) | Both native architectures: the compile, the signed package, and the render/engine smoke | Signed, reproducible tapps and immutable collection bundles built on t; registry publication is a separate step |
 | Desktop session | A dispatch of `desktop-package-{arch}`; `publish-desktop-payload` publishes the OS payload | Both native architectures' host-package jobs, run serially per architecture | Install-tested Debian, RPM, Arch and Nix packages; the immutable OS payload under `publish-desktop-payload` |
 | OS | `tools/ci/publish/os-release.sh` dispatched on a `vX.Y.Z` tag | Release image, sealed-image boot, boot signing, independent rebuild | Signed generation image, SBOM, provenance and freshness |
 | Server OS | A dispatch on a `vX.Y.Z` tag (t's `publish-host`) | The server's programs, the package-snapshot base, the sealed image booted in a VM under Secure Boot | The signed server image, its UKI signed for Secure Boot, in `registry.tilo.so/tilo/tilo-host` under `sha-<commit>`, `gen<N>`, `<version>` and `latest` |
 | Tilo Installer | Relevant protected `main` pushes build the native packages; `imager-vX.Y.Z` for releases, with t's installer media checks dispatched on the published OS release | Six native host-package jobs; `medium/imager-{arch}` builds and packages the live installer medium with its internal bundle, `medium/cycle-{arch}` proves the graphical install, `medium/internal-cycle-x86_64` the USB-free round trip, `medium/whpx-aarch64` and `target-policy/imager-{arch}` the Windows on ARM medium and the TPM boot bundle | Signed Linux/Windows and signed/notarized macOS downloads; immutable source-revision prereleases on main |
 | Python and TypeScript SDKs | A `vX.Y.Z` tag (t's `publish-sdks`, `on = ["tag:v…"]`) | The two packages built and read back, and their suites, which the publish needs | `tilo-sdk` on PyPI and `tilo-sdk` on npm, at the tag's version; re-running the tag's step skips what is already published |
+| Builder crates | A `vX.Y.Z` tag (t's `publish-crates`) | Every ready crate packaged, size-checked and built from its package alone (`publish-crates-dry-run`, which the publish needs) | The toolkit, the app SDK and tilolang (`tilo-ui`, `tilo-app`, `tilolang`, `tilolang-runtime`, `tilolang-lex`, `tilolang-cli`, `tilolang-web`) and every crate they build on, forks included, on crates.io at the tag's version; re-running skips what is already published |
+| tilolang on npm | A `vX.Y.Z` tag (t's `publish-npm-tilolang`) | tilolang-web's browser build (`tilolang-npm`), packed and read back | `tilolang` on npm at the tag's version: the page module, its WebAssembly and its startup fonts |
 
-The SDKs are the one family with no build artifact of their own: the tag's version is written
-into a copy of each manifest at publish time, and `main` builds the same packages with a
-stand-in version and no credentials. Their native halves (platform wheels of `tilo-sdk`, and
+The SDKs, the builder crates and the npm `tilolang` carry no version in the tree: the tag's is
+written into a copy of each manifest at publish time, and `main` builds the same packages with a
+stand-in version (0.0.0) and no credentials. Their native halves (platform wheels of `tilo-sdk`, and
 the `tilo-sdk-native` packages) are designed in
 [Publishing the SDKs](publishing.md#native-packages) and publish as a step beside this one when
-those crates land. The two registry tokens are stored secrets, not identity tokens: neither
-PyPI nor npm's provenance accepts Forgejo's identity.
+those crates land. The registry tokens (`NPM_TOKEN`, `PYPI_TOKEN`, `CARGO_REGISTRY_TOKEN`) are
+stored secrets, not identity tokens: neither PyPI, npm's provenance nor crates.io's trusted
+publishing accepts Forgejo's or t's identity.
+
+The builder crates are a computed set, never a list: `tools/sdk/publish_check.py` takes the
+closure of its roots, and each crate in it is *ready* (marked `publish = true`, nothing in its
+way, everything it builds on ready), *waiting* (marked, but built on a patched crate whose fork
+is not published yet, or on a crate that is not ready), *pending* (`publish = false`) or
+*blocked* (marked, but its own manifest is not publishable: a missing description, a path
+dependency without a version). The dry run on `main` fails on a blocked crate, on a name
+crates.io holds for another project, on a package over crates.io's 10 MiB and on a package that
+does not build from its own files; waiting and pending crates are reported and wait. Every ready
+crate is published at the tag's version, and every dependency between them asks for exactly that
+version, so a project that uses two of them always gets one release of both. crates.io limits
+how fast new names are taken, so the first release of many crates stops partway; dispatching
+`publish-crates` on the tag again carries on from where it stopped.
+
+The `tilolang` command is built with `tilo` (`cli-{arch}`, `cli-macos-cross-{arch}`), summed and
+signed with it, and published beside it in the same release directory, so
+`https://tilo.sh/releases/<version>/` holds both. `dist/install/tilolang.sh`, served at
+`https://tilolang.dev/install`, installs it from there; it is `dist/install/tilo.sh` with its
+own values, written by `dist/install/installers.py`, so both installers check the same sums and
+signature the same way.
 
 Continuous app packaging is a dispatch of t's app release checks: `apps-build-{arch}`
 compiles the default collection, `sign-apps-{arch}` signs it, `app-reproducible-{arch}`
