@@ -49,6 +49,18 @@ mod agent_terminal;
 mod agent_turns;
 #[path = "agent_windows.rs"]
 mod agent_windows;
+#[path = "api_admin.rs"]
+mod api_admin;
+#[path = "api_hosted.rs"]
+mod api_hosted;
+#[path = "api_key.rs"]
+mod api_key;
+#[path = "api_model_asks.rs"]
+mod api_model_asks;
+#[path = "api_records.rs"]
+mod api_records;
+#[path = "api_workspaces.rs"]
+mod api_workspaces;
 #[path = "chat.rs"]
 mod chat;
 #[path = "customer_workspaces.rs"]
