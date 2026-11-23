@@ -480,15 +480,47 @@ view notifications_pane() {
     }
     ui.Section("Quiet hours") {
         let focus = n.focus
+        setting(
+            "Quiet hours",
+            "Hold banners and sounds between the hours below",
+            ui.Toggle(bind: n.focus.enabled),
+        )
         if focus.enabled {
             ui.Text(
-                "Banners stay quiet between {focus.start_minute} and {focus.end_minute} minutes past midnight.",
+                "Quiet between {quiet_clock(focus.start_minute)} and {quiet_clock(focus.end_minute)}, {quiet_days(focus.weekdays)}.",
                 role: .caption,
                 secondary: true,
             )
-        } else {
-            ui.Text("Banners arrive at any hour.", role: .caption, secondary: true)
+            setting(
+                "Priority apps still come through",
+                "An app or a person marked as priority reaches you anyway",
+                ui.Toggle(bind: n.focus.allow_priority),
+            )
         }
+    }
+}
+
+/// The time of day `minutes` after midnight, as a clock reads it: `22:05`.
+fn quiet_clock(minutes: Int) -> Text {
+    let at = minutes % 1440
+    "{two_digits(at / 60)}:{two_digits(at % 60)}"
+}
+
+/// `n` with a leading zero below ten, as a clock's hour and minute read.
+fn two_digits(n: Int) -> Text {
+    if n < 10 { "0{n}" } else { "{n}" }
+}
+
+/// The days quiet hours keep, from the bitmask Monday as bit zero: zero is every day.
+fn quiet_days(days: Int) -> Text {
+    if days == 0 {
+        "every day"
+    } else if days == 31 {
+        "on weekdays"
+    } else if days == 96 {
+        "at the weekend"
+    } else {
+        "on some days"
     }
 }
 
