@@ -1338,18 +1338,12 @@ impl Workspaces {
             let mut kept = self.listings_of(&wanted).await;
             let mut listed: Vec<WorkspaceListing> = Vec::new();
             for workspace in &own {
-                if !wanted.contains(workspace)
-                    || !self
-                        .own()
-                        .is_some_and(|own| labelled(&own.labels_of(workspace), labels))
-                {
+                if !wanted.contains(workspace) || !labelled(&self.labels_of(workspace), labels) {
                     continue;
                 }
                 if let Some(mut one) = kept.remove(workspace) {
                     one.role = Some(OWNER_ROLE.to_owned());
-                    if let Some(own) = self.own() {
-                        one.labels = own.labels_of(workspace);
-                    }
+                    one.labels = self.labels_of(workspace);
                     one.unattended = self.listed_unattended(workspace);
                     listed.push(one);
                 }
@@ -1385,10 +1379,7 @@ impl Workspaces {
             }
             let mut one = WorkspaceListing {
                 role: Some(OWNER_ROLE.to_owned()),
-                labels: self
-                    .own()
-                    .map(|own| own.labels_of(&summary.workspace))
-                    .unwrap_or_default(),
+                labels: self.labels_of(&summary.workspace),
                 unattended: self.listed_unattended(&summary.workspace),
                 ..listing(&summary)
             };
@@ -1459,7 +1450,7 @@ impl Workspaces {
             && let Some(existing) = own
                 .of(&person)
                 .into_iter()
-                .find(|workspace| own.labels_of(workspace) == *labels)
+                .find(|workspace| self.labels_of(workspace) == *labels)
         {
             let summary = self
                 .summary(&existing)
@@ -1547,10 +1538,12 @@ impl Workspaces {
                 .map_err(ActionCallError::refused)?;
             own.record(&person, &summary.workspace)
                 .map_err(ActionCallError::refused)?;
+            self.keep_membership(&summary.workspace, OWNER_ROLE)
+                .map_err(ActionCallError::refused)?;
             summary
         };
         if let Some(labels) = labels {
-            own.label(&summary.workspace, labels)
+            self.label(&summary.workspace, labels)
                 .map_err(ActionCallError::refused)?;
         }
         drop(making);
@@ -1638,8 +1631,8 @@ impl Workspaces {
         if let Some(own) = self.own()
             && own.is_of(&person, &summary.workspace)
         {
-            workspace.labels = own.labels_of(&summary.workspace);
-            workspace.unattended = own.runs_unattended(&summary.workspace);
+            workspace.labels = self.labels_of(&summary.workspace);
+            workspace.unattended = self.listed_unattended(&summary.workspace);
         }
         answer(&CreatedWorkspace {
             workspace,

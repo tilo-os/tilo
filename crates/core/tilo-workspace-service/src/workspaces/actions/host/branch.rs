@@ -106,7 +106,7 @@ impl Workspaces {
             made
         };
         if let Some(labels) = labels {
-            own.label(&summary.workspace, labels)
+            self.label(&summary.workspace, labels)
                 .map_err(ActionCallError::refused)?;
         }
         drop(making);

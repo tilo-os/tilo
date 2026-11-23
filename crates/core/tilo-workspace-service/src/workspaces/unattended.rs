@@ -108,7 +108,7 @@ impl Workspaces {
         one_workspace
             && certificate.user_public_key == *user
             && own.owner_of(&workspace) == Some(*user)
-            && own.runs_unattended(&workspace)
+            && self.membership_unattended(&workspace)
     }
 
     /// The UUID of the workspace `workspace_id` carries, and the certificate
@@ -133,15 +133,16 @@ impl Workspaces {
     /// Whether the own workspace `workspace` (its UUID) runs commands
     /// unattended: what its listing says to its owner.
     pub(super) fn listed_unattended(&self, workspace: &str) -> bool {
-        self.own().is_some_and(|own| own.runs_unattended(workspace))
+        self.membership_unattended(workspace)
     }
 
     /// A branch `branch` of `source` holds what its source holds: running
     /// commands unattended too, when the source does.
     pub(super) fn branch_unattended(&self, source: &str, branch: &str) -> Result<(), String> {
-        match self.own() {
-            Some(own) if own.runs_unattended(source) => own.set_unattended(branch, true),
-            _ => Ok(()),
+        if self.listed_unattended(source) {
+            self.set_unattended(branch, true)
+        } else {
+            Ok(())
         }
     }
 
@@ -208,8 +209,8 @@ impl Workspaces {
             return Err(refused(AdminRefusal::NotYourOwn.to_reason()));
         }
         let answer = |on: bool| json!({"workspace": workspace, "unattended": on});
-        if !on || own.runs_unattended(&workspace) {
-            own.set_unattended(&workspace, on)
+        if !on || self.listed_unattended(&workspace) {
+            self.set_unattended(&workspace, on)
                 .map_err(ActionCallError::refused)?;
             return Ok(answer(on));
         }
@@ -219,7 +220,7 @@ impl Workspaces {
             .unwrap_or_else(|| workspace.clone());
         self.ask_person(person, question(caller, certificate, &name))
             .await?;
-        own.set_unattended(&workspace, true)
+        self.set_unattended(&workspace, true)
             .map_err(ActionCallError::refused)?;
         tracing::info!(%workspace, "a workspace runs commands unattended");
         Ok(answer(true))

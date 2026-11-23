@@ -19,13 +19,13 @@
 //! `own-workspaces.json`, so asking again after a restart answers the same
 //! ones, and a person's listing is found by their ids rather than by reading
 //! every workspace this host governs. What each owner labelled theirs with
-//! (`customer_id` → `cus_8121`, [`WorkspaceLabels`]) is kept beside it, in
-//! `own-workspace-labels.json`: the host's, for the owner's programs to find
-//! a workspace by, and in no workspace, so nobody invited in reads them.
-//! Which own workspaces their owner let run commands unattended
-//! ([`Workspaces::runs_unattended`]) is kept the same way, in
-//! `own-workspace-unattended.json`: no record of the workspace holds it, so no
-//! key working in it can turn it on for itself.
+//! (`customer_id` → `cus_8121`, [`WorkspaceLabels`]), and whether they let it
+//! run commands unattended ([`Workspaces::runs_unattended`]), is their
+//! membership of it ([`Membership`]): a record of the owner's own workspace,
+//! so nobody invited in reads the labels, and no key working in the workspace
+//! turns running unattended on for itself.
+//!
+//! [`Membership`]: super::person_workspace::membership::Membership
 //!
 //! [`ServiceOperation::CreateOwnWorkspace`]: crate::service_authority::ServiceOperation::CreateOwnWorkspace
 
@@ -40,19 +40,16 @@ use tilo_actions::remote::server_account::{
 use tilo_lock::MutexRecover as _;
 
 use super::Workspaces;
+use super::person_workspace::{
+    self,
+    membership::{self, Membership},
+};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::workspaces::WorkspaceLabels;
 
 /// The file beside the workspaces' records that says whose each own
 /// workspace is.
 pub(super) const INDEX: &str = "own-workspaces.json";
-/// The file beside it that keeps what each own workspace's owner labelled
-/// it with, by the workspace's UUID.
-const LABELS: &str = "own-workspace-labels.json";
-/// The file beside it that names the own workspaces whose owner let keys
-/// reaching that workspace alone run commands in its machine unasked, by
-/// UUID.
-const UNATTENDED: &str = "own-workspace-unattended.json";
 /// How long a workspace's measured size is trusted before it is measured
 /// again: walking its files on every write would cost more than the write.
 const MEASURED_FOR: Duration = Duration::from_secs(30);
@@ -96,15 +93,6 @@ pub(super) struct OwnWorkspaces {
     /// other way, so a change to a workspace finds its person without
     /// looking through every person's workspaces.
     owners: std::sync::Mutex<HashMap<String, String>>,
-    /// What each own workspace (its UUID) is labelled with, for those that
-    /// are: written to [`LABELS`] under the lock, before it is answered.
-    labels: std::sync::Mutex<BTreeMap<String, WorkspaceLabels>>,
-    labels_path: PathBuf,
-    /// The own workspaces (their UUIDs) whose owner let keys reaching that
-    /// workspace alone run commands in its machine without asking them each
-    /// time: written to [`UNATTENDED`] under the lock, before it is answered.
-    unattended: std::sync::Mutex<std::collections::BTreeSet<String>>,
-    unattended_path: PathBuf,
     /// The plan each person is on here, by their hex root, when the host's
     /// account knows theirs: what they may keep rather than what the offer
     /// gives everyone.
@@ -142,31 +130,11 @@ impl OwnWorkspaces {
             Err(error) => return Err(error.to_string()),
         };
         let owners = owners_of(&by_person);
-        let labels_path = dir.join(LABELS);
-        let labels = match std::fs::read(&labels_path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|error| format!("{}: {error}", labels_path.display()))?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-            Err(error) => return Err(error.to_string()),
-        };
-        let unattended_path = dir.join(UNATTENDED);
-        let unattended = match std::fs::read(&unattended_path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|error| format!("{}: {error}", unattended_path.display()))?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                std::collections::BTreeSet::new()
-            }
-            Err(error) => return Err(error.to_string()),
-        };
         Ok(Self {
             offer,
             path,
             by_person: std::sync::Mutex::new(by_person),
             owners: std::sync::Mutex::new(owners),
-            labels: std::sync::Mutex::new(labels),
-            labels_path,
-            unattended: std::sync::Mutex::new(unattended),
-            unattended_path,
             plans: std::sync::Mutex::default(),
             measured: std::sync::Mutex::default(),
             making: std::sync::Mutex::default(),
@@ -264,68 +232,9 @@ impl OwnWorkspaces {
         Ok(())
     }
 
-    /// What `workspace`'s owner labelled it with: none for one they did not.
-    pub(super) fn labels_of(&self, workspace: &str) -> WorkspaceLabels {
-        self.labels
-            .lock_recover()
-            .get(workspace)
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    /// Label `workspace` with `labels`, in place of what it was labelled with
-    /// before (none takes them all off), durably.
-    pub(super) fn label(&self, workspace: &str, labels: WorkspaceLabels) -> Result<(), String> {
-        let mut kept = self.labels.lock_recover();
-        let mut next = kept.clone();
-        if labels.is_empty() {
-            next.remove(workspace);
-        } else {
-            next.insert(workspace.to_owned(), labels);
-        }
-        if next == *kept {
-            return Ok(());
-        }
-        let bytes = serde_json::to_vec(&next).map_err(|error| error.to_string())?;
-        tilo_files::native::atomic::write(&self.labels_path, &bytes)
-            .map_err(|error| error.to_string())?;
-        *kept = next;
-        drop(kept);
-        Ok(())
-    }
-
-    /// Whether `workspace`'s owner let keys reaching it alone run commands in
-    /// its machine without asking them each time. Off for every workspace
-    /// until its owner turns it on.
-    pub(super) fn runs_unattended(&self, workspace: &str) -> bool {
-        self.unattended.lock_recover().contains(workspace)
-    }
-
-    /// Turn [`Self::runs_unattended`] for `workspace` on or off, durably.
-    pub(super) fn set_unattended(&self, workspace: &str, on: bool) -> Result<(), String> {
-        let mut kept = self.unattended.lock_recover();
-        if kept.contains(workspace) == on {
-            return Ok(());
-        }
-        let mut next = kept.clone();
-        if on {
-            next.insert(workspace.to_owned());
-        } else {
-            next.remove(workspace);
-        }
-        let bytes = serde_json::to_vec(&next).map_err(|error| error.to_string())?;
-        tilo_files::native::atomic::write(&self.unattended_path, &bytes)
-            .map_err(|error| error.to_string())?;
-        *kept = next;
-        drop(kept);
-        Ok(())
-    }
-
     /// Forget `workspace`, deleted: it is nobody's any more, and what it
     /// took no longer counts against its person. Durably.
     pub(super) fn forget(&self, workspace: &str) -> Result<(), String> {
-        self.label(workspace, WorkspaceLabels::new())?;
-        self.set_unattended(workspace, false)?;
         let mut index = self.by_person.lock_recover();
         let mut next = index.clone();
         for mine in next.values_mut() {
@@ -721,20 +630,94 @@ impl Workspaces {
         self.own().is_some()
     }
 
-    /// What `workspace`'s owner labelled it with, as this host keeps it: none for one they did
-    /// not label.
+    /// What `workspace`'s owner labelled it with, as their membership of it says: none for one
+    /// they did not label.
     #[must_use]
     pub fn labels_of(&self, workspace: &str) -> WorkspaceLabels {
-        self.own()
-            .map(|own| own.labels_of(workspace))
+        self.membership(workspace)
+            .map(|membership| membership.labels)
             .unwrap_or_default()
     }
 
     /// Whether `workspace`'s owner let keys reaching it alone run commands in its machine
-    /// without asking them each time.
+    /// without asking them each time, as their membership of it says.
     #[must_use]
     pub fn runs_unattended(&self, workspace: &str) -> bool {
-        self.own().is_some_and(|own| own.runs_unattended(workspace))
+        self.membership_unattended(workspace)
+    }
+
+    /// [`Self::runs_unattended`].
+    pub(super) fn membership_unattended(&self, workspace: &str) -> bool {
+        self.membership(workspace)
+            .is_some_and(|membership| membership.unattended)
+    }
+
+    /// Where the owner of `workspace`, an own workspace here, keeps their membership of it: their
+    /// own workspace, and the record there.
+    fn membership_at(&self, workspace: &str) -> Option<(String, String)> {
+        let person = self.own()?.owner_of(workspace)?;
+        Some((
+            tilo_server_protocol::servers::person_workspace_id(&person),
+            membership::record(workspace),
+        ))
+    }
+
+    /// The owner's membership of `workspace`, when it is an own workspace here and this host
+    /// holds the owner's workspace.
+    fn membership(&self, workspace: &str) -> Option<Membership> {
+        let (person, record) = self.membership_at(workspace)?;
+        let workspaces = self.clone();
+        crate::device_documents::on_its_own(async move {
+            person_workspace::read_on::<Membership>(
+                &workspaces,
+                &person,
+                (membership::APP, &record),
+            )
+            .await
+        })
+        .ok()
+    }
+
+    /// Apply `action` to the owner's membership of `workspace`, an own workspace here.
+    fn change_membership(
+        &self,
+        workspace: &str,
+        action: tilo_resource::Invoke<Membership>,
+    ) -> Result<(), String> {
+        let (person, record) = self
+            .membership_at(workspace)
+            .ok_or("the workspace is nobody's own here")?;
+        let workspaces = self.clone();
+        crate::device_documents::on_its_own(async move {
+            person_workspace::apply_on(&workspaces, &person, (membership::APP, &record), action)
+                .await
+        })
+    }
+
+    /// Keep that `workspace`'s owner holds `role` in it, made now.
+    pub(super) fn keep_membership(&self, workspace: &str, role: &str) -> Result<(), String> {
+        let now = i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX);
+        self.change_membership(
+            workspace,
+            Membership::KEEP_ROLE.with((role.to_owned(), now)),
+        )
+    }
+
+    /// Label `workspace` with `labels`, in place of what it was labelled with before (none takes
+    /// them all off).
+    pub(super) fn label(&self, workspace: &str, labels: WorkspaceLabels) -> Result<(), String> {
+        let labels = serde_json::to_string(&labels).map_err(|error| error.to_string())?;
+        self.change_membership(workspace, Membership::RELABEL.with(labels))
+    }
+
+    /// Turn [`Self::runs_unattended`] for `workspace` on or off.
+    pub(super) fn set_unattended(&self, workspace: &str, on: bool) -> Result<(), String> {
+        self.change_membership(workspace, Membership::RUN_UNATTENDED.with(on))
+    }
+
+    /// `workspace` was deleted: its owner's membership of it keeps nothing.
+    pub(super) fn forget_membership(&self, workspace: &str) -> Result<(), String> {
+        self.change_membership(workspace, Membership::FORGET.with(()))
     }
 
     /// Record `workspace`, which this host keeps for its own person, as one of `person`'s own: a
@@ -755,7 +738,11 @@ impl Workspaces {
         if !self.inner.workspaces.lock().await.contains_key(workspace) {
             return false;
         }
-        own.record(person, workspace).is_ok()
+        let claimed = own.record(person, workspace).is_ok();
+        if claimed && let Err(error) = self.keep_membership(workspace, "owner") {
+            tracing::warn!(%workspace, %error, "a claimed workspace's owner's membership of it is not kept");
+        }
+        claimed
     }
 
     /// Whether `workspace` is one of `person`'s own here.
@@ -905,28 +892,6 @@ mod tests {
         let again = OwnWorkspaces::open(dir.path(), offer).unwrap();
         assert_eq!(again.of(&[3; 32]), Vec::<String>::new());
         assert_eq!(again.owner_of("w-4"), None);
-    }
-
-    #[test]
-    fn running_unattended_is_off_until_turned_on_and_survives_a_restart_until_deleted() {
-        let dir = tempfile::tempdir().unwrap();
-        let offer = OwnWorkspaceOffer::free("tilo.test");
-        let own = OwnWorkspaces::open(dir.path(), offer.clone()).unwrap();
-        own.record(&[3; 32], "w-3").unwrap();
-        own.record(&[3; 32], "w-4").unwrap();
-        assert!(!own.runs_unattended("w-3"), "off by default");
-        own.set_unattended("w-3", true).unwrap();
-        own.set_unattended("w-4", true).unwrap();
-        own.set_unattended("w-4", false).unwrap();
-        let again = OwnWorkspaces::open(dir.path(), offer.clone()).unwrap();
-        assert!(again.runs_unattended("w-3"));
-        assert!(!again.runs_unattended("w-4"), "turned off again");
-        again.forget("w-3").unwrap();
-        let after = OwnWorkspaces::open(dir.path(), offer).unwrap();
-        assert!(
-            !after.runs_unattended("w-3"),
-            "a deleted workspace keeps nothing"
-        );
     }
 
     #[test]

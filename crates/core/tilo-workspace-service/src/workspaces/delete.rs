@@ -154,6 +154,11 @@ impl Workspaces {
     /// deleted: who owns it and what it took, who it listed, and its files. Its
     /// entry went with its governance.
     async fn forget_deleted(&self, workspace: &str, workspace_id: WorkspaceId) {
+        if self.own().and_then(|own| own.owner_of(workspace)).is_some()
+            && let Err(error) = self.forget_membership(workspace)
+        {
+            tracing::warn!(%workspace, %error, "a deleted workspace's membership stays in its owner's workspace");
+        }
         if let Some(own) = self.own()
             && let Err(error) = own.forget(workspace)
         {
