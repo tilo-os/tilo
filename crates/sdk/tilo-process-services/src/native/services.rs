@@ -19,6 +19,7 @@
 //! variables, XDG paths and accessibility flags into a
 //! [`crate::process::ProcessEnvironment`].
 
+#[cfg(not(target_os = "android"))]
 use std::sync::Arc;
 
 #[cfg(not(target_os = "android"))]
