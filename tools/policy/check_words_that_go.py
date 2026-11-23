@@ -231,11 +231,59 @@ def judged_sources(root: Path, staged) -> list[tuple[Path, str]]:
 
 def in_head(root: Path, names: set[str]) -> set[str]:
     """Which of `names` the tree before this commit already holds."""
-    found = set()
-    for name in names:
-        if git(root, "grep", "-l", "-F", "-w", "-e", name, "HEAD", "--", empty=(1,)).strip():
-            found.add(name)
-    return found
+    names = {name for name in names if name}
+    if not names:
+        return set()
+    # One `git grep` for the lot (`-h`: the lines, not their files), so a commit
+    # that touches many files still answers in one process.
+    lines = git(
+        root,
+        "grep",
+        "-h",
+        "-F",
+        "-w",
+        *[argument for name in sorted(names) for argument in ("-e", name)],
+        "HEAD",
+        "--",
+        *[f"*{suffix}" for suffix in LANGUAGES],
+        *[f":(exclude){top}/**" for top in sorted(SKIPPED_TOPS)],
+        *[f":(exclude)**/{part}/**" for part in sorted(SKIPPED_PARTS)],
+        empty=(1,),
+    ).decode("utf-8", errors="replace")
+    held = set()
+    for line in lines.splitlines():
+        held.update(IDENT.findall(line))
+    return names & held
+
+
+def head_texts(root: Path, relatives: list[Path]) -> dict[Path, str]:
+    """The text each of `relatives` held in the tree before this commit."""
+    wanted = [relative for relative in relatives if "\n" not in relative.as_posix()]
+    if not wanted:
+        return {}
+    # One `git cat-file` for the lot: a commit of many files costs one process.
+    output = git(
+        root,
+        "cat-file",
+        "--batch",
+        input=b"".join(b"HEAD:" + os.fsencode(relative.as_posix()) + b"\n" for relative in wanted),
+        empty=(128,),
+    )
+    texts = {}
+    offset = 0
+    for relative in wanted:
+        end = output.index(b"\n", offset)
+        header = output[offset:end].split()
+        offset = end + 1
+        if len(header) != 3:
+            continue
+        _oid, kind, size = header
+        if kind != b"blob":
+            continue
+        length = int(size)
+        texts[relative] = output[offset : offset + length].decode("utf-8", errors="replace")
+        offset += length + 1
+    return texts
 
 
 def staged_problems(root: Path, rows: list[dict]) -> list[str]:
@@ -244,15 +292,12 @@ def staged_problems(root: Path, rows: list[dict]) -> list[str]:
     literals = sorted({text for row in rows for text in row.get("text", [])})
     added: Counter[str] = Counter()
     added_texts: Counter[str] = Counter()
-    for relative, text in judged_sources(root, staged):
+    sources = judged_sources(root, staged)
+    before_texts = head_texts(root, [relative for relative, _ in sources])
+    for relative, text in sources:
         language = LANGUAGES[relative.suffix]
         body, named = code(text, language)
-        try:
-            before = git(root, "show", f"HEAD:{relative.as_posix()}", empty=(128,)).decode(
-                "utf-8", errors="replace"
-            )
-        except (OSError, subprocess.CalledProcessError):
-            before = ""
+        before = before_texts.get(relative, "")
         if before:
             before_body, before_named = code(before, language)
         else:

@@ -128,7 +128,7 @@ class LocalMailServer:
         self.password = password
         self.password_file = self.dir / "password"
         self.certificate = self.dir / "certificate.pem"
-        self.log = self.dir / "stand-in.log"
+        self.log = self.dir / "double.log"
         self.proc: subprocess.Popen | None = None
         self.hosts = Path("/etc/hosts")
         self.hosts_before: bytes | None = None
