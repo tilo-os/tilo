@@ -86,10 +86,6 @@ impl ServedWorkspace {
 /// Canonical payload for the signed Iroh address of a workspace's device.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each is a separate claim the holder signs about itself"
-)]
 pub struct WorkspaceDeviceHintV1 {
     /// Frozen payload version.
     pub version: u32,
