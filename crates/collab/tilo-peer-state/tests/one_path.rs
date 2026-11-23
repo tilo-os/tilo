@@ -1,7 +1,7 @@
 //! The one path a device's writes take: admitted into its own replica, kept as
 //! a frame until a link carries it, and durable across a restart.
 
-use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::signer::DeviceSigner;
 use ed25519_dalek::SigningKey;
 use std::sync::Arc;
@@ -474,4 +474,265 @@ async fn two_devices_offline_role_changes_converge() {
     let held = grants(&owner_a);
     assert!(held.contains(&"fixture:grant-x".to_owned()), "{held:?}");
     assert!(held.contains(&"fixture:grant-y".to_owned()), "{held:?}");
+}
+
+/// The keys one device opens a sealed record's history with, and seals its
+/// checkpoints under.
+struct FixtureKeys {
+    keys: key_group::ContentKeys,
+    workspace: tilo_desktop_model::WorkspaceId,
+}
+
+impl FixtureKeys {
+    fn open(
+        write: &collab_types::SignedOp,
+        keys: &key_group::ContentKeys,
+    ) -> Result<Vec<u8>, String> {
+        let ciphertext =
+            collab_types::sealed_ciphertext(write).map_err(|error| error.to_string())?;
+        keys.open_content(
+            write.artifact,
+            &write.encryption.ok_or("not sealed")?,
+            &ciphertext,
+        )
+        .map(|bytes| bytes.to_vec())
+        .map_err(|error| error.to_string())
+    }
+}
+
+impl tilo_peer_state::owner::SealedHistoryKeys for FixtureKeys {
+    fn open(
+        &self,
+        _: tilo_desktop_model::WorkspaceId,
+        write: &collab_types::SignedOp,
+    ) -> Result<Vec<u8>, String> {
+        FixtureKeys::open(write, &self.keys)
+    }
+
+    fn seal_checkpoint(
+        &self,
+        _: tilo_desktop_model::WorkspaceId,
+        app: &str,
+        record: &str,
+        _named: Option<&str>,
+        snapshot: &[u8],
+    ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
+        self.keys
+            .seal_content(
+                collab_types::document_artifact_id(app, &self.workspace.to_string(), record),
+                collab_types::ContentRetention::of_frame(snapshot),
+                snapshot,
+            )
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// The record's plaintext as `owner` holds it, opened with `keys`.
+fn opened(
+    owner: &NativeWorkspaceOwner,
+    workspace: tilo_desktop_model::WorkspaceId,
+    keys: &key_group::ContentKeys,
+) -> AutoCommit {
+    let bytes = owner
+        .with_current(workspace, |view| {
+            let mut opener = |write: &collab_types::SignedOp| FixtureKeys::open(write, keys);
+            let held = view
+                .peer()
+                .publication()
+                .opened_document(APP, RECORD, &mut opener)
+                .unwrap()
+                .expect("the record is held");
+            Ok(held.document)
+        })
+        .unwrap();
+    AutoCommit::load(&bytes).unwrap()
+}
+
+/// One sealed change setting `key` on `document`, written by `device` as its person.
+fn sealed_change(
+    owner: &NativeWorkspaceOwner,
+    workspace: tilo_desktop_model::WorkspaceId,
+    device: &SigningKey,
+    document: &mut AutoCommit,
+    key: &str,
+) -> Vec<u8> {
+    let invoker = owner
+        .with_current(workspace, |view| {
+            Ok(testing::invoker_of(
+                view.peer(),
+                device.verifying_key().to_bytes(),
+            ))
+        })
+        .unwrap();
+    let before = document.get_heads();
+    document.put(automerge::ROOT, key, key).unwrap();
+    document.commit_edit_as("fixture", "topic", invoker);
+    document.save_after(&before)
+}
+
+/// Write `changes` sealed under `keys` as `device`, founding the record where `founding`.
+async fn sealed_write(
+    owner: &NativeWorkspaceOwner,
+    workspace: tilo_desktop_model::WorkspaceId,
+    device: &SigningKey,
+    keys: &key_group::ContentKeys,
+    changes: &[u8],
+    founding: bool,
+) {
+    owner
+        .write_local(
+            workspace,
+            device.verifying_key().to_bytes(),
+            Arc::new(device.clone()) as Arc<dyn DeviceSigner>,
+            LocalWrite {
+                app: APP,
+                document: RECORD,
+                readers: None,
+                changes,
+                founding,
+                snapshot: founding,
+                sealed: Some(keys),
+                now: tilo_clock::wall(),
+            },
+        )
+        .await
+        .expect("the device writes its sealed record");
+}
+
+/// Carry every frame `from` keeps to `to`, as a link does.
+fn carry(
+    from: &NativeWorkspaceOwner,
+    to: &NativeWorkspaceOwner,
+    workspace: tilo_desktop_model::WorkspaceId,
+    author: [u8; 32],
+) {
+    for frame in from.frames(workspace) {
+        let message = NeighbourMsg::decode(&frame).unwrap();
+        to.receive(
+            workspace,
+            TransportOrigin::ServerDelta(author),
+            message,
+            tilo_clock::wall(),
+        )
+        .unwrap();
+        from.sent(workspace, &frame).unwrap();
+    }
+}
+
+/// What a device reads of the record under `keys`: the keys its plaintext holds
+/// and how many writes its history still opens.
+fn read(
+    owner: &NativeWorkspaceOwner,
+    workspace: tilo_desktop_model::WorkspaceId,
+    keys: &key_group::ContentKeys,
+) -> (std::collections::BTreeSet<String>, usize) {
+    let document = opened(owner, workspace, keys);
+    let typed: std::collections::BTreeSet<String> = document
+        .keys(automerge::ROOT)
+        .filter(|key| key.starts_with('a') || key.starts_with('b'))
+        .collect();
+    let history = owner
+        .with_current(workspace, |view| {
+            let mut opener = |write: &collab_types::SignedOp| FixtureKeys::open(write, keys);
+            let opened = view
+                .peer()
+                .publication()
+                .opened_history(APP, RECORD, &mut opener)
+                .expect("the record is held");
+            Ok(opened.writes.len())
+        })
+        .unwrap();
+    (typed, history)
+}
+
+/// Two devices hold one sealed record: one compacts past its bound while offline
+/// and the other writes meanwhile; on reconnecting both hold every write and the
+/// range the compaction folded is retired on both.
+#[tokio::test]
+async fn two_devices_converge_on_a_sealed_record_one_compacted_offline() {
+    // Past this crate's bound of sealed writes per record.
+    const OFFLINE: usize = 300;
+    let directory = tempfile::tempdir().unwrap();
+    let (owner_a, fixture, a_key, b_key) = held(directory.path());
+    let workspace = fixture.workspace_id();
+    let owner_b = open_file(&directory.path().join("b.json")).unwrap();
+    let group = key_group::KeyGroup::create(
+        workspace,
+        key_group::MemberKey::generate("fixture").unwrap(),
+    )
+    .unwrap();
+    let content = group.content_keys().unwrap();
+    for owner in [&owner_a, &owner_b] {
+        owner.keep_sealed_histories(Arc::new(FixtureKeys {
+            keys: content.clone(),
+            workspace,
+        }));
+    }
+    // A founds the record sealed, and B takes its history.
+    sealed_write(
+        &owner_a,
+        workspace,
+        &a_key,
+        &content,
+        &note("founded"),
+        true,
+    )
+    .await;
+    carry(
+        &owner_a,
+        &owner_b,
+        workspace,
+        a_key.verifying_key().to_bytes(),
+    );
+    // Offline, A writes past the bound and compacts what it wrote.
+    let mut away = opened(&owner_a, workspace, &content);
+    for step in 0..OFFLINE {
+        let changes = sealed_change(&owner_a, workspace, &a_key, &mut away, &format!("a{step}"));
+        sealed_write(&owner_a, workspace, &a_key, &content, &changes, false).await;
+    }
+    // Meanwhile B writes on the history it holds.
+    let mut here = opened(&owner_b, workspace, &content);
+    let b_change = sealed_change(&owner_b, workspace, &b_key, &mut here, "b0");
+    sealed_write(&owner_b, workspace, &b_key, &content, &b_change, false).await;
+    // A compacted what it wrote while away.
+    assert!(
+        owner_a.frames(workspace).iter().any(|frame| {
+            matches!(
+                NeighbourMsg::decode(frame),
+                Ok(NeighbourMsg::AppDocument { envelope, .. })
+                    if envelope.kind == collab_types::OpKind::Compaction
+            )
+        }),
+        "the device that went away compacted its history"
+    );
+    // They reconnect: each carries what it wrote to the other.
+    carry(
+        &owner_a,
+        &owner_b,
+        workspace,
+        a_key.verifying_key().to_bytes(),
+    );
+    carry(
+        &owner_b,
+        &owner_a,
+        workspace,
+        b_key.verifying_key().to_bytes(),
+    );
+    // Both read every write, and the range the compaction folded is retired on both.
+    let mut every: std::collections::BTreeSet<String> =
+        (0..OFFLINE).map(|step| format!("a{step}")).collect();
+    every.insert("b0".to_owned());
+    for owner in [&owner_a, &owner_b] {
+        let (typed, history) = read(owner, workspace, &content);
+        for key in &every {
+            assert!(
+                typed.contains(key),
+                "{key} is held by both devices: {typed:?}"
+            );
+        }
+        assert!(
+            history < OFFLINE,
+            "the compacted range is retired on both: {history}"
+        );
+    }
 }
