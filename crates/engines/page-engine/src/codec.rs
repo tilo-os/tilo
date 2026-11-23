@@ -243,10 +243,13 @@ pub fn decode(request: &str) -> Result<Ask, String> {
                 _ => None,
             },
         }),
-        "answer_held_request" => Ask::Command(WebViewCommand::AnswerHeldRequest {
+        "answer_held_request" => Ask::Command(WebViewCommand::AnswerDeparture {
             id: integer(&value, "id").unwrap_or_default(),
-            allow: flag(&value, "allow"),
-            by: tilo_webview::AnsweredBy::Person,
+            leaving: if flag(&value, "allow") {
+                tilo_webview::Leaving::Allowed
+            } else {
+                tilo_webview::Leaving::Kept
+            },
         }),
         "answer_permission" => Ask::Command(WebViewCommand::PermissionDecision {
             id: integer(&value, "id").unwrap_or_default(),

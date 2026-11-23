@@ -879,13 +879,13 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ExtensionOpenSidePanel { .. }
             | WebViewCommand::ExtensionSidePanelPage { .. }
             | WebViewCommand::ExtensionCommandKey { .. }
-            | WebViewCommand::DownloadDecision { .. }
+            | WebViewCommand::AnswerDownload { .. }
             | WebViewCommand::Find { .. }
             | WebViewCommand::ContextMenuAction { .. }
             | WebViewCommand::AnswerPageDialog { .. }
             | WebViewCommand::AnswerFileChooser { .. }
             | WebViewCommand::AnswerHttpAuth { .. }
-            | WebViewCommand::AnswerHeldRequest { .. }
+            | WebViewCommand::AnswerDeparture { .. }
             | WebViewCommand::StopFinding
             | WebViewCommand::SetZoomLevel(_)
             | WebViewCommand::ReportDocumentSize(_)

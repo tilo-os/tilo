@@ -1213,71 +1213,30 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase an_answer_to_what_a_window_held_says_who_answered;
-    // The engine sets down in the tab's record who answered what a window held,
-    // and only the window knows: the answer carries it. The person's answer
-    // says nothing more than it always did, so a host that knows no answerer
-    // reads it as before.
+    phase an_answer_to_what_a_window_kept_from_leaving_says_how_it_ends;
+    // Who answered is the asked record's; the engine is told only whether it leaves.
     {
-        use crate::{AnsweredBy, PageActor};
-        let rev = || AnsweredBy::Actor(PageActor::listed("agent:rev").expect("a named actor"));
+        use crate::Leaving;
         assert_eq!(
-            encode_command(WebViewCommand::AnswerHeldRequest {
+            encode_command(WebViewCommand::AnswerDeparture {
                 id: 3,
-                allow: true,
-                by: AnsweredBy::Person,
+                leaving: Leaving::Allowed,
             }),
-            Some(json!({"op":"hold_answer","id":3,"allow":true}))
+            Some(json!({"op":"departure_answer","id":3,"allow":true}))
         );
         assert_eq!(
-            encode_command(WebViewCommand::AnswerHeldRequest {
+            encode_command(WebViewCommand::AnswerDeparture {
                 id: 3,
-                allow: false,
-                by: rev(),
+                leaving: Leaving::TurnedAway,
             }),
-            Some(json!({"op":"hold_answer","id":3,"allow":false,"actor":"agent:rev"}))
+            Some(json!({"op":"departure_answer","id":3,"allow":false,"reason":"full"}))
         );
         assert_eq!(
-            encode_command(WebViewCommand::AnswerHeldRequest {
-                id: 3,
-                allow: false,
-                by: AnsweredBy::Nobody,
-            }),
-            Some(json!({"op":"hold_answer","id":3,"allow":false,"reason":"expired"}))
-        );
-        let turned_away = WebViewCommand::AnswerHeldRequest {
-            id: 3,
-            allow: false,
-            by: AnsweredBy::TooMany,
-        };
-        assert_eq!(
-            encode_command(turned_away),
-            Some(json!({"op":"hold_answer","id":3,"allow":false,"reason":"full"}))
-        );
-        // A download a window held is answered by the download's own decision.
-        assert_eq!(
-            encode_command(WebViewCommand::DownloadDecision {
+            encode_command(WebViewCommand::AnswerDownload {
                 id: 9,
-                allow: true,
-                by: AnsweredBy::Person,
+                leaving: Leaving::Kept,
             }),
-            Some(json!({"op":"download_decision","id":9,"allow":true}))
-        );
-        assert_eq!(
-            encode_command(WebViewCommand::DownloadDecision {
-                id: 9,
-                allow: false,
-                by: rev(),
-            }),
-            Some(json!({"op":"download_decision","id":9,"allow":false,"actor":"agent:rev"}))
-        );
-        assert_eq!(
-            encode_command(WebViewCommand::DownloadDecision {
-                id: 9,
-                allow: false,
-                by: AnsweredBy::Nobody,
-            }),
-            Some(json!({"op":"download_decision","id":9,"allow":false,"reason":"expired"}))
+            Some(json!({"op":"download_answer","id":9,"allow":false}))
         );
     }
 }

@@ -60,9 +60,8 @@ struct HoldNote {
   std::string action;
   // Whether it says that a hold began.
   bool began=false;
-  // Who ended it, as the app says: the name the tab keeps that actor's
-  // actions under, and nobody's for the person at the window and for a hold
-  // nobody answered. A hold that begins is the running action's actor's.
+  // The running action's actor, for a hold that begins; empty for one that
+  // ends, whose answer the asked record keeps.
   std::string actor;
   std::string method,origin,file;
   // The page it was held on, when that is no longer the page the tab shows.
@@ -126,7 +125,7 @@ class Departures final : public std::enable_shared_from_this<Departures> {
     const int64_t wait=std::clamp(departure.wait_ms,kMinHoldWaitMs,kMaxHoldWaitMs);
     held_[id]=std::move(departure);
     CefPostDelayedTask(TID_UI,base::BindOnce([](std::weak_ptr<Departures> self,int id) {
-      if(auto departures=self.lock()) departures->Answer(id,false,{},"expired");
+      if(auto departures=self.lock()) departures->Answer(id,false,"expired");
     },weak_from_this(),id),wait);
     return id;
   }
@@ -146,16 +145,15 @@ class Departures final : public std::enable_shared_from_this<Departures> {
   }
   // The app answered `id`: let it leave exactly once when `allow`, and drop
   // it otherwise. An id that is not held is a command that came too late.
-  // `actor` is who answered, as the app says, and `reason` why nobody did:
-  // `expired` when it was dropped at a deadline, the app's or the engine's
-  // own, and `full` when the app turned it away at once. The tab's record
-  // says which. An app that says neither answers as the person at the window.
-  void Answer(int id,bool allow,const std::string& actor={},const std::string& reason={}) {
+  // `reason` is why it did not leave without an answer: `expired` at the
+  // engine's deadline, and `full` when the app turned it away at once. The
+  // tab's record says which.
+  void Answer(int id,bool allow,const std::string& reason={}) {
     auto found=held_.find(id);
     if(found==held_.end()) return;
     Departure departure=std::move(found->second);
     held_.erase(found);
-    Note(departure,HoldEnding(allow,reason),false,actor);
+    Note(departure,HoldEnding(allow,reason),false,{});
     Closed(departure.tab,id);
     // Not allowed: a paused load is cancelled, and a navigation never started.
     if(!allow) { if(departure.load) departure.load->Cancel(); return; }

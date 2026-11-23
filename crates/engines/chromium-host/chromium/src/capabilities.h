@@ -111,15 +111,14 @@ class Downloads final : public CefDownloadHandler {
     // answered; an offer of any other window ends after a minute.
     const int64_t hold_wait=hold_wait_ms_?hold_wait_ms_(owner):0;
     if(hold_wait>0) {transfers_[id].held=true;TellHold(transfers_[id],"download",true,{});}
-    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Downloads> self,int id,bool held){self->DownloadDecision(id,false,{},held?"expired":"");},CefRefPtr<Downloads>(this),id,hold_wait>0),hold_wait>0?hold_wait:60000);
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Downloads> self,int id,bool held){self->DownloadDecision(id,false,held?"expired":"");},CefRefPtr<Downloads>(this),id,hold_wait>0),hold_wait>0?hold_wait:60000);
     return true;
   }
-  // `actor` is who answered, as the app says, and `reason` why nobody did
-  // (`expired`, `full`): of a download a window held for the person, the
-  // tab's record says which.
-  void DownloadDecision(int id,bool allow,const std::string& actor={},const std::string& reason={}) {
+  // `reason` is why it was not saved without an answer (`expired`, `full`): of a
+  // download a window held for the person, the tab's record says which.
+  void DownloadDecision(int id,bool allow,const std::string& reason={}) {
     auto it=transfers_.find(id);if(it==transfers_.end() || it->second.approved) return;
-    if(it->second.held) {it->second.held=false;TellHold(it->second,HoldEnding(allow,reason),false,actor);}
+    if(it->second.held) {it->second.held=false;TellHold(it->second,HoldEnding(allow,reason),false,{});}
     if(!allow) { CancelDownload(id);return; }
     std::error_code ec;std::filesystem::create_directories(downloads_,ec);
     // A download must never fill the disk; refuse it before writing a byte.

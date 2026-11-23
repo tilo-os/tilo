@@ -814,8 +814,8 @@ may act and passes the name of the invoker it admitted.
   among `others`.
 - **What a window held is in the record.** A tab told `hold_departures` holds
   what its page is about to send until the app answers: a form submission or
-  a request with data (`held`, answered by `hold_answer`) and a download
-  (`download_prompt`, answered by `download_decision`). The record says so in
+  a request with data (`held`, answered by `departure_answer`) and a download
+  (`download_prompt`, answered by `download_answer`). The record says so in
   two entries no action made, both with `how: "hold"` and `ok: true`. The
   first is set down when it is held: its `action` is what waits (`submit`,
   `request`, `download`), its `actor` that of the operating action running
@@ -824,19 +824,15 @@ may act and passes the name of the invoker it admitted.
   (`POST https://visa.example`), or of a download the file's name (at most
   120 bytes) and the origin. The second is set down when it ends, with the
   same `to_url` and `message`: its `action` is `allow`, `keep`, `drop`,
-  `too_many` or `gone`. The
-  host cannot know who answered, so `hold_answer` and `download_decision` may
-  say: `actor`, a name as a page action carries one, and `reason`, which is
-  `expired` when nobody answered and the app dropped it at its own deadline,
-  and `full` when the app turned it away at once as one more than it asks the
-  person about. A refusal is set down as `drop` for the first and as
-  `too_many` for the second. No hold waits for good: one no app answers
-  within three minutes, or within the `wait_ms` (1000 to 600000) the app
-  names with `hold_departures`, the host drops itself as one nobody answered
-  (`drop`, then `held_closed`), and a held download it discards the same
-  way. An answer that says
-  neither is the person's at the window, `allow` or `keep` with an empty
-  `actor`, which is how an app that knows of neither field is read. Neither
+  `too_many` or `gone`. Who answered is the person's answer to the
+  asked record the app raised, kept there and not here: the ending entry's
+  `actor` is empty. `departure_answer` and `download_answer` may say
+  `reason` `full` when the app turned it away at once as one more than it
+  asks the person about, set down as `too_many`. No hold waits for good:
+  one no app answers within three minutes, or within the `wait_ms` (1000 to
+  600000) the app names with `hold_departures`, the host drops itself as one
+  nobody answered (`drop`, then `held_closed`), and a held download it
+  discards the same way. Neither
   entry carries a request's body, a field's value or a secret. Each takes the
   next `seq` when it is set down, after the action that is running, and is
   told by `page_record` as direct input is. When the tab's main frame shows

@@ -91,7 +91,7 @@ pub mod page;
 pub mod text_input;
 pub use file_chooser::{FileChooser, FileChooserMode};
 pub use hold::{
-    AnsweredBy, HeldKind, HeldRequest, MAX_HELD_CAPTURE, MAX_HELD_METHOD, MAX_HELD_ORIGIN,
+    HeldKind, HeldRequest, Leaving, MAX_HELD_CAPTURE, MAX_HELD_METHOD, MAX_HELD_ORIGIN,
 };
 pub use http_auth::{HttpAuthChallenge, HttpAuthCredentials};
 pub use page::{
@@ -800,15 +800,9 @@ pub enum WebViewCommand {
         asker: String,
         credentials: Option<HttpAuthCredentials>,
     },
-    /// Answer the request `id` an agent's window held ([`WebViewEvent::HeldRequest`]):
-    /// let it leave exactly once, or keep the page as it is and drop it.
-    /// `by` is who answered: the engine sets it down in the tab's record beside how the hold
-    /// ended, since it cannot know.
-    AnswerHeldRequest {
-        id: u32,
-        allow: bool,
-        by: AnsweredBy,
-    },
+    /// Answer the request `id` an agent's window kept from leaving
+    /// ([`WebViewEvent::HeldRequest`]): let it leave exactly once, or keep the page as it is.
+    AnswerDeparture { id: u32, leaving: Leaving },
     SetZoomLevel(f64),
     /// Report the document's size and scroll as [`WebViewEvent::DocumentSize`] whenever
     /// they change, or stop. An engine that cannot measure never reports.
@@ -984,15 +978,8 @@ pub enum WebViewCommand {
         key: KeyInput,
         modifiers: KeyModifiers,
     },
-    /// Save the download `id` the page offered, or discard it. `by` is who
-    /// answered: of a download an agent's window held for the person, the
-    /// engine sets it down in the tab's record as it does for
-    /// [`Self::AnswerHeldRequest`].
-    DownloadDecision {
-        id: u32,
-        allow: bool,
-        by: AnsweredBy,
-    },
+    /// Save the download `id` the page offered, or discard it.
+    AnswerDownload { id: u32, leaving: Leaving },
     CancelNativeDownload {
         id: u32,
     },
@@ -1405,7 +1392,7 @@ pub trait WebViewEngine: Send + Sync {
     /// Hold what the page is about to send, as a window an agent operates does: every
     /// form submission, every navigation or request with a method of its own, every
     /// download and every payment waits for the person's answer
-    /// ([`WebViewEvent::HeldRequest`], [`WebViewCommand::AnswerHeldRequest`]). A person's
+    /// ([`WebViewEvent::HeldRequest`], [`WebViewCommand::AnswerDeparture`]). A person's
     /// own window never holds, and an engine that cannot hold sends nothing.
     fn hold_departures(&self) {
         if let Some(engine) = self.wrapped() {

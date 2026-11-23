@@ -281,7 +281,7 @@ const PROFILE_OPS: &[&str] = &[
     "clear_data",
     "clear_on_exit",
     "site_exceptions",
-    "download_decision",
+    "download_answer",
     "download_cancel",
     "download_retry",
     "download_cancel_all",

@@ -2507,16 +2507,12 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
       found->second->browser_->GetHost()->StartDownload(d->GetString("url"));
     return;
   }
-  // Who answered what a window held for the person, as the app says: an
-  // actor by the name its page actions carry, and the reason when nobody
-  // did, `expired` when the app dropped it at its own deadline and `full`
-  // when it turned it away at once. An app that says neither answers as the
-  // person at the window. The tab's record keeps it.
-  const auto answerer=[&]{return d->GetType("actor")==VTYPE_STRING?d->GetString("actor").ToString():std::string();};
+  // The app's answer to a download the page offered, or to a request a window kept from
+  // leaving: it leaves now, or not at all. `reason` is `full` for one the app turned away at
+  // once, because as many as it asks the person about already wait; the tab's record says so.
   const auto reason=[&]{return d->GetType("reason")==VTYPE_STRING?d->GetString("reason").ToString():std::string();};
-  if(op=="download_decision") { downloads->DownloadDecision(d->GetInt("id"),d->GetBool("allow"),answerer(),reason());return; }
-  // The app answered a request the page held: it leaves now, or not at all.
-  if(op=="hold_answer") { if(departures) departures->Answer(d->GetInt("id"),d->GetBool("allow"),answerer(),reason()); return; }
+  if(op=="download_answer") { downloads->DownloadDecision(d->GetInt("id"),d->GetBool("allow"),reason());return; }
+  if(op=="departure_answer") { if(departures) departures->Answer(d->GetInt("id"),d->GetBool("allow"),reason()); return; }
   if(op=="download_cancel") { downloads->CancelDownload(d->GetInt("id"));return; }
   if(op=="download_cancel_all") {downloads->CancelAll();return;}
   if(op=="download_retry") {auto found=clients.find(id);if(found!=clients.end() && found->second->accepts_downloads())downloads->Retry(d->GetInt("id"),found->second->browser_);return;}
@@ -2810,12 +2806,10 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     return (scheme=="https" || scheme=="http") && !CefString(&parts.host).empty();
   }
   if(op=="clear_on_exit") return type("enabled",VTYPE_BOOL);
-  // Who answered what a window held, when the app says: an actor by the name
-  // a page action carries, and why.
-  auto answered=[&]{return (!d->HasKey("actor") || (type("actor",VTYPE_STRING) && !d->GetString("actor").empty() && d->GetString("actor").length()<=64)) &&
-    (!d->HasKey("reason") || (type("reason",VTYPE_STRING) && d->GetString("reason").length()<=32));};
+  // Why the app turned something away at once, when it did: `full`.
+  auto turned_away=[&]{return !d->HasKey("reason") || (type("reason",VTYPE_STRING) && d->GetString("reason")=="full");};
   if(op=="permission_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
-  if(op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL) && answered();
+  if(op=="download_answer") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL) && turned_away();
   if(op=="js_dialogs") return type("enabled",VTYPE_BOOL);
   if(op=="file_choosers") return type("enabled",VTYPE_BOOL);
   if(op=="file_chooser_reply") {
@@ -2837,7 +2831,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     return std::all_of(keys.begin(),keys.end(),[](const CefString& key){return key=="op" || key=="tab" || key=="wait_ms";}) &&
       (!d->HasKey("wait_ms") || (type("wait_ms",VTYPE_INT) && d->GetInt("wait_ms")>=tilo::kMinHoldWaitMs && d->GetInt("wait_ms")<=tilo::kMaxHoldWaitMs));
   }
-  if(op=="hold_answer") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL) && answered();
+  if(op=="departure_answer") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL) && turned_away();
   if(op=="http_auth") return type("enabled",VTYPE_BOOL);
   // The answer to a sign-in: the asker it was shown, and both credentials or
   // neither, which cancels.

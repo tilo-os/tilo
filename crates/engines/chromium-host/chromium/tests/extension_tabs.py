@@ -2163,7 +2163,7 @@ class ExtensionTabs(unittest.TestCase):
         self.assertEqual(started, {'value': prompt['id']})
         self.assertEqual((prompt['name'], prompt['url']), ('kept.bin', address))
         download = prompt['id']
-        host.send(op='download_decision', id=download, allow=True)
+        host.send(op='download_answer', id=download, allow=True)
         first(lambda e: e['event'] == 'download' and e['id'] == download and e['received'] >= 65536)
 
         # Paused and resumed by the extension, which finds it as it is.
@@ -2207,7 +2207,7 @@ class ExtensionTabs(unittest.TestCase):
         refused = first(lambda e: e['event'] == 'download_prompt')
         self.assertEqual(started, {'value': refused['id']})
         self.assertEqual(refused['name'], 'served.bin')
-        host.send(op='download_decision', id=refused['id'], allow=False)
+        host.send(op='download_answer', id=refused['id'], allow=False)
         first(lambda e: e['event'] == 'download' and e['id'] == refused['id'] and e['state'] == 'cancelled')
         item = worker(f"chrome.downloads.search({{id: {refused['id']}}})")['value']
         self.assertEqual([(i['state'], i['error']) for i in item], [('interrupted', 'USER_CANCELED')])
@@ -2215,7 +2215,7 @@ class ExtensionTabs(unittest.TestCase):
 
         started = worker(f"chrome.downloads.download({{url: '{self.url}/download/cancelled'}})")
         cancelled = first(lambda e: e['event'] == 'download_prompt')
-        host.send(op='download_decision', id=cancelled['id'], allow=True)
+        host.send(op='download_answer', id=cancelled['id'], allow=True)
         first(lambda e: e['event'] == 'download' and e['id'] == cancelled['id'] and e['received'] > 0)
         self.assertEqual(worker(f"chrome.downloads.cancel({cancelled['id']})"), {'value': None})
         first(lambda e: e['event'] == 'download' and e['id'] == cancelled['id'] and e['state'] == 'cancelled')
@@ -2226,7 +2226,7 @@ class ExtensionTabs(unittest.TestCase):
         exported = first(lambda e: e['event'] == 'download_prompt')
         self.assertEqual(started, {'value': exported['id']})
         self.assertEqual(exported['name'], 'export.csv')
-        host.send(op='download_decision', id=exported['id'], allow=True)
+        host.send(op='download_answer', id=exported['id'], allow=True)
         saved = first(lambda e: e['event'] == 'download' and e['id'] == exported['id'] and e['state'] != 'progress')
         self.assertEqual(saved['state'], 'complete', saved)
         self.assertEqual(Path(saved['path']).read_bytes(), b'name,count\nkept,1\n')
@@ -2243,14 +2243,14 @@ class ExtensionTabs(unittest.TestCase):
         named = {p['id']: p['name'] for p in prompts}
         self.assertEqual([named[i] for i in pair['value']], ['first.bin', 'second.bin'])
         for p in prompts:
-            host.send(op='download_decision', id=p['id'], allow=False)
+            host.send(op='download_answer', id=p['id'], allow=False)
 
         # A file one of its pages made, from the page's own address for it.
         self.panel(host, 2, f'chrome-extension://{ids["downloader"]}/export.html')
         exported = first(lambda e: e['event'] == 'download_prompt')
         self.assertEqual(self.title(host, 2, 'exported:'), f'exported:{exported["id"]}')
         self.assertEqual(exported['name'], 'settings.csv')
-        host.send(op='download_decision', id=exported['id'], allow=True)
+        host.send(op='download_answer', id=exported['id'], allow=True)
         saved = first(lambda e: e['event'] == 'download' and e['id'] == exported['id'] and e['state'] != 'progress')
         self.assertEqual(saved['state'], 'complete', saved)
         self.assertEqual(Path(saved['path']).read_bytes(), b'setting,on\n')
