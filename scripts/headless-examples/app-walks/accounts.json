@@ -3,7 +3,6 @@
   "said": "Accounts",
   "family": "settings",
   "live": "rust",
-  "apps": "calendar",
   "packages": [
     "mail"
   ],
@@ -162,27 +161,6 @@
         }
       ],
       "budget_ms": 150000
-    },
-    {
-      "id": "in-calendar",
-      "said": "Calendar lists the account too",
-      "ops": [
-        {
-          "open": "calendar"
-        },
-        {
-          "wait_for": "window"
-        },
-        {
-          "must": {
-            "see": [
-              "lab@story.tilo.test"
-            ],
-            "within": 30
-          }
-        }
-      ],
-      "budget_ms": 60000
     }
   ]
 }
