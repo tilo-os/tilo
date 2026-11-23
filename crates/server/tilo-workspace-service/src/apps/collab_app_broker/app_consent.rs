@@ -148,13 +148,7 @@ impl AppBrokerState {
         }
         let contract = &action.contract;
         // What the call would run with, field by field, so the person sees what it changes.
-        let draft = match &request.argument {
-            tilo_actions::remote::InvokeArgument::Json(arguments) => {
-                Some(tilo_actions::Draft::render(&action, arguments))
-            }
-            _ => None,
-        }
-        .filter(|draft| !draft.fields.is_empty());
+        let draft = super::rendered_draft(&action, &request.argument);
         Ok(Some((
             AppActionConsentRequest {
                 handle: format!("{APP_ACTION_ASK}{}", request.invocation.0),
@@ -163,14 +157,10 @@ impl AppBrokerState {
                 app_id: app_id.to_string(),
                 agent_session: None,
                 target_app,
-                resource: action.address.resource.clone(),
-                action: action.address.action.clone(),
                 resource_label: action.resource_label.clone(),
                 action_label: action.action_label.clone(),
+                kind: contract.kind,
                 risk: contract.risk,
-                needs_confirmation: contract.advertised_confirmation()
-                    != tilo_actions::ConfirmationPolicy::None
-                    || contract.risk.requires_confirmation(),
                 confirming: false,
                 moderation: None,
                 scope: None,

@@ -538,11 +538,6 @@ agent-ask-sign-in = Anmelden
 agent-ask-notice-app = Agenten
 agent-ask-answer = Antworten
 agent-ask-pick = Wähle eine Antwort.
-agent-question-more-label = Außerdem offen
-agent-question-more = { $count ->
-    [one] 1 weitere Frage
-   *[other] { $count } weitere Fragen
-}
 
 ## Die Fragen des Zusammenarbeitsnetzes: ein Agent auf dem Rechner eines
 ## Arbeitsbereichs fragt seine Person um Erlaubnis für eine Aktion, und ein
@@ -559,7 +554,8 @@ network-agent-question-final = Es lässt sich nicht rückgängig machen.
 network-agent-question-unknown = Es könnte etwas tun, das sich nicht rückgängig machen lässt.
 network-agent-question-risk = Dabei könnte es { $risk }.
 network-agent-question-allow = Einmal erlauben
-app-question-title = { $app } möchte { $target } ändern
+app-question-title-read = { $app } möchte { $target } lesen
+app-question-title-change = { $app } möchte { $target } ändern
 step-question-title = { $agent } möchte: { $action }
 step-question-detail = Auf { $resource }. Erlaube nur, worum du es gebeten hast.
 step-question-allow-agent = { $agent } immer erlauben

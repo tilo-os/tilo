@@ -191,6 +191,19 @@ pub(crate) fn app_node(workspace: &tilo_desktop_model::Workspace, app: &str) -> 
     workspace.node().app(app)
 }
 
+/// What an invocation of `descriptor` would run with, as the person reviews it: the draft the
+/// sheet shows them, `None` when it takes no field.
+fn rendered_draft(
+    descriptor: &tilo_actions::ActionDescriptor,
+    argument: &tilo_actions::remote::InvokeArgument,
+) -> Option<tilo_actions::Draft> {
+    let tilo_actions::remote::InvokeArgument::Json(arguments) = argument else {
+        return None;
+    };
+    Some(tilo_actions::Draft::render(descriptor, arguments))
+        .filter(|draft| !draft.fields.is_empty())
+}
+
 /// One inert operation published by a live application connection: the one
 /// exported-action shape `runtime-collab` decodes off the wire, typed.
 /// The broker's actor, its published actions and their admission: every host's.

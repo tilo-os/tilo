@@ -312,7 +312,7 @@ impl AppBrokerState {
             Err(refused) => return Pending::ready(Err(refused)),
         };
         if question.actor.direct()
-            && !requires_store_approval(&question.request.target_app, &question.request.action)
+            && !requires_store_approval(&question.request.target_app, &question.binding.action)
         {
             // Other direct actions keep confirming on the caller's screen.
             return Pending::ready(Err(ActionCallError::confirmation_required()));
@@ -445,23 +445,16 @@ impl AppBrokerState {
                         .as_ref()
                         .is_some_and(|descriptor| &descriptor.address == address)
             });
-        let (answer, app_id, labels, risk, draft) = if let Some(row) = offered {
+        let (answer, app_id, labels, kind, risk, draft) = if let Some(row) = offered {
             let Some(descriptor) = row.action else {
                 return Ok(None);
             };
-            // The invocation as the person reviews it, field by field: the
-            // draft a run's question shows them, rendered the same way.
-            let draft = match &request.argument {
-                tilo_actions::remote::InvokeArgument::Json(arguments) => {
-                    Some(tilo_actions::Draft::render(&descriptor, arguments))
-                }
-                _ => None,
-            }
-            .filter(|draft| !draft.fields.is_empty());
+            let draft = super::rendered_draft(&descriptor, &request.argument);
             (
                 session_answer(caller, workspace, person, (&row.app_id, &descriptor)),
                 row.app_id,
                 (descriptor.resource_label, descriptor.action_label),
+                Some(descriptor.contract.kind),
                 descriptor.contract.risk,
                 draft,
             )
@@ -475,6 +468,7 @@ impl AppBrokerState {
                 None,
                 directory.app_id,
                 (address.resource.clone(), address.action.clone()),
+                None,
                 tilo_actions::RiskLevel::Low,
                 None,
             )
@@ -495,8 +489,11 @@ impl AppBrokerState {
                     action,
                     argument.as_deref(),
                 )?;
-                Some((surface.route.clone(), shown))
+                Some((surface.route.clone(), shown, action.contract.kind))
             });
+        let kind = kind
+            .or_else(|| shown.as_ref().map(|&(_, _, kind)| kind))
+            .unwrap_or(tilo_actions::ActionKind::Undoable);
         // Only the Store's typed external actions use this disclosure. A broken
         // payload or unavailable identity must not fall back to a generic prompt.
         let moderation = if requires_store_approval(&app_id, &address.action) {
@@ -512,12 +509,10 @@ impl AppBrokerState {
                 app_id: asker_id(caller),
                 agent_session: None,
                 target_app: app_id,
-                resource: address.resource.clone(),
-                action: address.action.clone(),
                 resource_label: labels.0,
                 action_label: labels.1,
+                kind,
                 risk,
-                needs_confirmation: true,
                 confirming: true,
                 moderation,
                 scope: answer
@@ -529,7 +524,7 @@ impl AppBrokerState {
             binding,
             answer,
             actor,
-            shown,
+            shown: shown.map(|(route, shown, _)| (route, shown)),
         }))
     }
 

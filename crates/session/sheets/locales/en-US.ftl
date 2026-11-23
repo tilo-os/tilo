@@ -538,11 +538,6 @@ agent-ask-sign-in = Sign in
 agent-ask-notice-app = Agents
 agent-ask-answer = Answer
 agent-ask-pick = Pick an answer.
-agent-question-more-label = Also waiting
-agent-question-more = { $count ->
-    [one] 1 more question
-   *[other] { $count } more questions
-}
 
 ## The collaboration network's own questions: an agent on a workspace host
 ## asks its person to allow one action, and a device asks its sibling for the
@@ -559,7 +554,8 @@ network-agent-question-final = It can’t be undone.
 network-agent-question-unknown = It may do something that can’t be undone.
 network-agent-question-risk = It could { $risk }.
 network-agent-question-allow = Allow once
-app-question-title = { $app } wants to change { $target }
+app-question-title-read = { $app } wants to read { $target }
+app-question-title-change = { $app } wants to change { $target }
 step-question-title = { $agent } asks to: { $action }
 step-question-detail = On { $resource }. Allow only what you asked it to do.
 step-question-allow-agent = Always allow { $agent }

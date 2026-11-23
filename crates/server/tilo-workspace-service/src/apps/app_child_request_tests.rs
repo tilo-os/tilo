@@ -354,10 +354,9 @@ async fn a_child_reaches_no_further_than_what_it_continues() {
                 answer = &mut asking => panic!("ran unasked: {answer:?}"),
                 sheet = sheets.recv() => sheet.unwrap(),
             };
-            assert_eq!(
-                (question.target_app.as_str(), question.action.as_str()),
-                (NOTES, "create-page")
-            );
+            assert_eq!(question.target_app, NOTES);
+            assert!(question.handle.starts_with("confirm:"), "{question:?}");
+            assert_eq!(question.action_label, "create-page");
             assert!(
                 notes.try_recv().is_err(),
                 "nothing runs while the person decides"
@@ -590,10 +589,10 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
                 answer = &mut asking => panic!("ran unasked: {answer:?}"),
                 sheet = sheets.recv() => sheet.unwrap(),
             };
-            assert!(question.handle.starts_with("app-action:"), "{question:?}");
+            assert_eq!(question.target_app, NOTES);
             assert_eq!(
-                (question.target_app.as_str(), question.action.as_str()),
-                (NOTES, "clear-done")
+                question.handle,
+                format!("app-action:{}", clear.invocation.0)
             );
             assert!(
                 notes.try_recv().is_err(),
@@ -650,16 +649,17 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
                 env.membership.write().workspaces[0].revoke_grant(&granted[0].id),
                 "the grant is revoked"
             );
-            let asking = app_asks(
-                &app,
-                call(NOTES_PEER, "notes.notebook", "create-page", None),
-            );
+            let again = call(NOTES_PEER, "notes.notebook", "create-page", None);
+            let asking = app_asks(&app, again.clone());
             tokio::pin!(asking);
             let (question, answer) = tokio::select! {
                 answer = &mut asking => panic!("ran after the revoke: {answer:?}"),
                 sheet = sheets.recv() => sheet.unwrap(),
             };
-            assert_eq!(question.action, "create-page");
+            assert_eq!(
+                question.handle,
+                format!("app-action:{}", again.invocation.0)
+            );
             answer
                 .send(crate::apps::app_actions::AppActionAnswer::DENY)
                 .unwrap();
