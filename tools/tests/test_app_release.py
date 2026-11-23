@@ -95,7 +95,7 @@ class AppReleaseTests(unittest.TestCase):
                 ),
                 sorted(
                     name for name, app in catalog.items()
-                    if app["kind"] == "native" or name in ("tl-notes", "tl-tube")
+                    if app["kind"] == "native" or name in ("tl-notes", "tl-tube", "tl-photos")
                 ),
             )
             # YouTube is the package that retired the native Tube, under the id it had.
