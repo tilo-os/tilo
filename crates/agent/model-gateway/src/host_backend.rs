@@ -66,13 +66,11 @@ pub fn public_endpoint(endpoint: &str) -> bool {
     if url.scheme() != "https" {
         return false;
     }
-    if url.domain().is_some() {
-        return EndpointLocation::of_endpoint(endpoint) == Some(EndpointLocation::Hosted);
+    if let Some(address) = tilo_net::address::written_out(&url) {
+        return tilo_net::address::is_public(address);
     }
-    url.host_str()
-        .map(|host| host.trim_start_matches('[').trim_end_matches(']'))
-        .and_then(|host| host.parse::<std::net::IpAddr>().ok())
-        .is_some_and(tilo_net::proxy::host::is_public)
+    url.domain().is_some()
+        && EndpointLocation::of_endpoint(endpoint) == Some(EndpointLocation::Hosted)
 }
 
 /// Resolves a provider's name, and refuses it when any address it resolves
