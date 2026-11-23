@@ -196,7 +196,9 @@ store-progress-getting = Getting { $name }…
 # Said while a package operation runs: the Store offers no Stop, because the
 # package manager finishes it from another process. So the page says what
 # stopping would mean and what the person can do instead.
-store-progress-continues = This can't be stopped here. Leave it running, or close this window: it finishes either way.
+store-progress-cancel = Cancel
+store-progress-cancelling = Cancelling…
+store-cancel-refused = Could not cancel it: { $reason }
 # The same, in the job's row, for a person looking at the Jobs surface rather
 # than the page that started the operation.
 store-job-continues = This can't be stopped here. It finishes even if you close the window.

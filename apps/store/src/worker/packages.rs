@@ -19,7 +19,7 @@ use ui::tilo_actions::remote::{
     WORKSPACE_APPS, WORKSPACE_GOVERNANCE_PROVIDER, WatchScope, workspace_app,
     workspace_governance_child,
 };
-use ui::{Arrival, ChangedCall, FollowedRead, InvocationCall, RemoteActions};
+use ui::{Arrival, CancellationCall, ChangedCall, FollowedRead, InvocationCall, RemoteActions};
 
 /// The provider a device's package cache answers under.
 const PACKAGES_PROVIDER: &str = "so.tilo.packages";
@@ -57,6 +57,8 @@ pub struct Started {
     pub change: Change,
     pub app: String,
     pub call: InvocationCall,
+    /// The invocation the workspace runs, which a person may ask to cancel.
+    pub invocation: ui::tilo_actions::InvocationId,
 }
 
 /// The workspace's apps and this device's packages, over the session's action API.
@@ -349,12 +351,23 @@ impl AppPackages {
                 InvokeArgument::Json(serde_json::Map::new())
             }
         };
-        let call = self.actions.invoke(target, argument, None);
+        let invocation = ui::tilo_actions::InvocationId::new();
+        let call = self
+            .actions
+            .invoke_with_id(invocation, target, argument, None);
         Ok(Started {
             change,
             app: app.to_owned(),
             call,
+            invocation,
         })
+    }
+
+    /// Ask the workspace to cancel `started`, if it still runs: the call that says whether the
+    /// provider keeps the request; `None` when the change already ended.
+    #[must_use]
+    pub fn cancel(&self, started: &Started) -> Option<CancellationCall> {
+        self.actions.cancel(started.invocation)
     }
 
     /// Ask again what earlier reads could not answer: on a refresh.

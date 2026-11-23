@@ -1804,6 +1804,11 @@ impl StoreState {
             }
             StoreEffect::Refresh => return Ok(Job::admitted(Request::Refresh, Finish::Status)),
             StoreEffect::UpdateAll => return self.admit_update_all(),
+            StoreEffect::CancelChange => {
+                if let Some(worker) = self.worker.as_ref() {
+                    worker.request(Request::Cancel);
+                }
+            }
             StoreEffect::SetSearch { query } => {
                 if query.chars().count() > 512 {
                     return Err("search query is too long".into());
@@ -5659,19 +5664,18 @@ mod tests {
         }
     }
 
-    /// An operation has no Stop the Store could honour, so the app's own page
-    /// says what stopping would mean and what the person can do instead
-    /// (`APP-store-01`).
+    /// A running app's page offers to cancel the change it started: the workspace cancels the
+    /// invocation this window asked for.
     #[test]
-    fn a_running_apps_page_says_what_stopping_would_mean() {
+    fn a_running_apps_page_offers_to_cancel_it() {
         let mut app = seeded_app();
         app.focus_detail("id.chess");
         app.active_operation = Some(("id.chess".into(), ActionKind::FlatpakInstall));
         let frame = frame_composition(app.compose(&Theme::dark()), 900.0);
         let page = frame.inspection_json().unwrap();
         assert!(
-            page.contains(&CATALOG.t("store-progress-continues")),
-            "the page says why there is no Stop: {page}"
+            page.contains(&CATALOG.t("store-progress-cancel")),
+            "the page offers to cancel the change: {page}"
         );
     }
 

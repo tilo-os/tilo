@@ -69,6 +69,8 @@ pub enum Request {
     /// case instead of the rare, heavy one.
     Act(Box<StoreItem>, ActionKind),
     UpdateAll(Vec<StoreItem>),
+    /// Stop the change this window started: the workspace cancels it.
+    Cancel,
     ExternalModeration(ui::registry::ExternalModerationOperation),
     RefreshModeration {
         registry_name: String,
@@ -344,6 +346,8 @@ struct State {
 /// One change on its way to the workspace, and the caller waiting for it.
 struct Running {
     started: packages::Started,
+    /// The person's ask that the workspace cancel it, until the provider answers.
+    cancel: Option<ui::CancellationCall>,
     done: Option<Done>,
 }
 
@@ -604,6 +608,10 @@ fn advance_packages(state: &mut State, snapshots: &Snapshots) -> bool {
     let advanced = state.packages.advance();
     let mut changed = advanced.changed;
     let mut error = None;
+    if let Some(reason) = refused_cancellation(state) {
+        state.operation_notice = Some(reason);
+        changed = true;
+    }
     if let Some(code) = advanced.error {
         let reason = match code {
             "the_packages" => CATALOG.t("store-packages-unavailable"),
@@ -648,6 +656,28 @@ fn advance_packages(state: &mut State, snapshots: &Snapshots) -> bool {
         return publish(snapshots, state, &status, error);
     }
     true
+}
+
+/// Answer the person's last ask to cancel the running change: `None` while it is unanswered or
+/// the provider kept it; why the provider did not, said once, when it refused.
+fn refused_cancellation(state: &mut State) -> Option<String> {
+    let running = state.running.as_mut()?;
+    let ended = running.cancel.as_ref()?.get();
+    match ended {
+        ui::Arrival::Ready(Ok(())) => {
+            // Kept: the change ends as the workspace cancels it, and the wait for it says so.
+            running.cancel = None;
+            None
+        }
+        ui::Arrival::Ready(Err(error)) | ui::Arrival::Failed(error) => {
+            running.cancel = None;
+            Some(CATALOG.t_args(
+                "store-cancel-refused",
+                &[("reason", ui::i18n::ArgValue::Text(error.to_string()))],
+            ))
+        }
+        ui::Arrival::Pending { .. } => None,
+    }
 }
 
 /// Put what the workspace runs and what this device holds into each catalogue row.
@@ -995,6 +1025,19 @@ fn handle(
             (alive, Some(Err(error)))
         }
         Request::BrowseRemote(id) => browse_remote(&id, state, snapshots),
+        Request::Cancel => {
+            if let Some(running) = state.running.as_mut()
+                && let Some(call) = state.packages.cancel(&running.started)
+            {
+                running.cancel = Some(call);
+                state.operation_notice = Some(CATALOG.t("store-progress-cancelling"));
+            }
+            let status = state
+                .operation_notice
+                .clone()
+                .unwrap_or_else(|| CATALOG.t("store-catalogue-refreshed"));
+            (publish(snapshots, state, &status, None), None)
+        }
         Request::Detail(id) => (detail(&id, state, snapshots), None),
         Request::RuntimeDetails { runtime, registry } => {
             let opened = runtime_details(&runtime, registry.as_deref(), &mut *state);
@@ -1323,6 +1366,7 @@ fn activate_tree_change(
     state.operation_notice = Some(progress.clone());
     state.running = Some(Running {
         started,
+        cancel: None,
         done: done.take(),
     });
     (publish(snapshots, state, &progress, None), None)

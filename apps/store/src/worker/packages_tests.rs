@@ -37,6 +37,10 @@ struct Fake {
     refuse: Mutex<bool>,
     /// Answer the next change as cancelled.
     cancel: Mutex<bool>,
+    /// Hold every change as running, so a test can cancel it over the wire.
+    hold: Mutex<bool>,
+    /// The invocations held running, and whether each was asked to cancel.
+    held: Mutex<Vec<(InvocationId, bool)>>,
     /// The package files handed to the workspace, by their BLAKE3.
     files: Mutex<BTreeMap<String, Vec<u8>>>,
     /// The arguments of every install the workspace took.
@@ -64,6 +68,8 @@ impl Fake {
             changes: Mutex::default(),
             refuse: Mutex::default(),
             cancel: Mutex::default(),
+            hold: Mutex::default(),
+            held: Mutex::default(),
             files: Mutex::default(),
             installs: Mutex::default(),
             offer: Mutex::new(serde_json::Value::Null),
@@ -231,6 +237,21 @@ impl Fake {
 
     fn cancels(&self) {
         *self.cancel.lock().expect("cancel") = true;
+    }
+
+    /// Hold every change as running, so a test can ask to cancel it.
+    fn holds(&self) {
+        *self.hold.lock().expect("hold") = true;
+    }
+
+    /// How many held invocations the Store asked the workspace to cancel.
+    fn cancel_asks(&self) -> usize {
+        self.held
+            .lock()
+            .expect("held")
+            .iter()
+            .filter(|(_, cancelled)| *cancelled)
+            .count()
     }
 
     /// A row changed: its readers read again, and the tree's watchers hear it.
@@ -479,6 +500,13 @@ impl ActionProvider for Fake {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
+        if *self.hold.lock().expect("hold") {
+            self.held.lock().expect("held").push((invocation, false));
+            return Pending::ready(Ok(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Accepted,
+            }));
+        }
         let status = match self.change(&request) {
             Ok(InvocationUpdate::Succeeded { output, .. }) => ReceiptStatus::Completed { output },
             Ok(InvocationUpdate::Cancelled { .. }) => ReceiptStatus::Cancelled { message: None },
@@ -495,11 +523,33 @@ impl ActionProvider for Fake {
         Pending::ready(Ok(InvocationReceipt { invocation, status }))
     }
 
-    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-        None
+    fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        let cancelled = self
+            .held
+            .lock()
+            .expect("held")
+            .iter()
+            .find(|(held, _)| held == id)
+            .map(|(_, cancelled)| *cancelled)?;
+        Some(InvocationState::new(
+            *id,
+            if cancelled {
+                InvocationUpdate::Cancelled {
+                    invocation: *id,
+                    message: None,
+                }
+            } else {
+                InvocationUpdate::Accepted { invocation: *id }
+            },
+        ))
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+    fn cancel(&self, _caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        let mut held = self.held.lock().expect("held");
+        if let Some((_, cancelled)) = held.iter_mut().find(|(held, _)| held == id) {
+            *cancelled = true;
+            return Pending::ready(Ok(()));
+        }
         Pending::ready(Err(ActionCallError::NotCancellable {
             reason: "a change to the workspace's apps runs to its end".into(),
         }))
@@ -924,6 +974,55 @@ tilo_test_env::scenario! {
         let ended = answered.recv_timeout(Duration::from_secs(5)).unwrap().unwrap_err();
         assert!(ended.to_lowercase().contains("cancelled"), "{ended}");
         assert!(!fake.running("so.tilo.notes"));
+        assert!(state.running.is_none(), "nothing keeps running");
+    }
+
+    phase a_get_the_person_cancels_ends_without_an_install;
+    {
+        let fake = Fake::start();
+        let _entered = RemoteActions::enter(
+            Arc::clone(&fake) as Arc<dyn ActionProvider + Send + Sync>,
+            Caller::local_person("ada").in_workspace(WORKSPACE),
+        );
+        fake.holds();
+        let app = item("so.tilo.notes", "Notes", "1.0.0");
+        let mut state = state_with(vec![app.clone()]);
+        settle(&mut state, |state| state.packages.installed() == &Installed::default());
+        let (snapshots, _received) = snapshots();
+        let (done, answered) = mpsc::channel();
+        handle(
+            super::Request::Act(Box::new(app.clone()), ActionKind::Get),
+            &mut state,
+            &snapshots,
+            &mut Some(done),
+        );
+        super::advance_packages(&mut state, &snapshots);
+        assert!(state.running.is_some(), "the change is on its way");
+        assert!(
+            answered.try_recv().is_err(),
+            "a change the workspace still runs has not ended"
+        );
+        handle(super::Request::Cancel, &mut state, &snapshots, &mut None);
+        assert_eq!(
+            fake.cancel_asks(),
+            1,
+            "the cancel went to the workspace, not only this window"
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let ended = loop {
+            super::advance_packages(&mut state, &snapshots);
+            if let Ok(outcome) = answered.try_recv() {
+                break outcome.unwrap_err();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the cancelled change did not end"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(ended.to_lowercase().contains("cancelled"), "{ended}");
+        assert!(!fake.running("so.tilo.notes"), "a cancelled Get installs nothing");
+        assert!(state.packages.installed().workspace.is_empty());
         assert!(state.running.is_none(), "nothing keeps running");
     }
 }

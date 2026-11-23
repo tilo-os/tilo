@@ -829,7 +829,11 @@ impl StoreState {
                 })
             });
         }
-        let this_action_runs = primary.progress.is_some();
+        // The change this window started, which it may ask the workspace to cancel: one this
+        // device is only fetching for a change another device made has nothing here to stop.
+        let this_action_runs = self.active_operation.as_ref().is_some_and(|(id, running)| {
+            id == &item.id && *running == item.action_kind(self.flatpak_available)
+        });
         let mut row = Row::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_align_items(taffy::AlignItems::Center)
@@ -871,22 +875,19 @@ impl StoreState {
             row = row.push(Box::new(button));
         }
         if this_action_runs {
-            // No Stop stands beside it: the package manager runs this to the
-            // end in its own process and holds the only handle to it, so the
-            // page says what stopping would mean and what the person can do
-            // instead, rather than offering a control that would lie.
-            return Box::new(
-                Column::new()
-                    .with_intrinsic_height()
-                    .with_no_padding()
-                    .with_rhythm(ui::tokens::Rhythm::Related)
-                    .push(Box::new(row))
-                    .push(Box::new(
-                        Text::new(&CATALOG.t("store-progress-continues"))
-                            .with_role(TextRole::Caption)
-                            .dimmed(),
-                    )),
-            );
+            // The change runs on the workspace, which the person may ask to stop: the button
+            // cancels the invocation this window started.
+            if let Some(binding) = bindings::effect(&StoreEffect::CancelChange) {
+                row = row.push(Box::new(
+                    Button::new(
+                        &format!("store.app.{}.cancel", item.id),
+                        &CATALOG.t("store-progress-cancel"),
+                    )
+                    .control_size(ControlSize::Large)
+                    .on_action(binding),
+                ));
+            }
+            return Box::new(row);
         }
         Box::new(row)
     }

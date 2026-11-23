@@ -109,6 +109,12 @@ pub enum StoreEffect {
     #[effect(kind = "outside")]
     #[effect(job)]
     UpdateAll,
+    /// Stop the change this window started: the workspace cancels the invocation and this
+    /// device stops waiting for it.
+    #[effect(kind = "outside")]
+    #[effect(idempotent)]
+    #[effect(label = "store-progress-cancel")]
+    CancelChange,
     #[effect(screen)]
     SetSearch {
         #[param("App name, publisher, category, or description")]
