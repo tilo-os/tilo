@@ -53,12 +53,12 @@ class CaptureBuildPhases(unittest.TestCase):
             self.assertEqual(bins.count('tilo-runtime-account-capability'), 1)
             self.assertEqual(bins.count('tilo-home-export'), 1)
             self.assertNotIn('imager', bins)
-            self.assertEqual(bins.count('word-processor'), int(with_writer))
+            self.assertEqual(bins.count('word-processor'), 0)
             self.assertEqual(bins.count('file-explorer'), int(with_writer))
             self.assertEqual(bins.count('browser'), int(with_writer))
             allowed = {'tilo-home-export', 'tilo-runtime-account-capability'}
             if with_writer:
-                allowed.update(('file-explorer', 'word-processor', 'browser'))
+                allowed.update(('file-explorer', 'browser'))
             self.assertTrue(all(binary in allowed
                                 or binary.endswith('-check') for binary in bins))
             self.assertIn('imager/capture-worker-applications', features)
@@ -73,7 +73,7 @@ class CaptureBuildPhases(unittest.TestCase):
     def test_build_only_keeps_unified_graph_without_native_execution(self):
         self._assert_build_only(False)
 
-    def test_writer_uses_the_same_actual_unified_worker_sdk_graph(self):
+    def test_the_capture_carries_its_apps_in_the_same_unified_worker_sdk_graph(self):
         self._assert_build_only(True)
 
     def test_assembly_requires_explicit_operator_authority_before_native_execution(self):
