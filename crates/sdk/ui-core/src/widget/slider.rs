@@ -171,11 +171,6 @@ pub struct Slider {
     /// drawn; the track is the rest.
     value_area: f64,
     touch: SliderTouch,
-    /// How loud what the slider sets is right now (`0..=1` of full scale),
-    /// read each frame: an output volume shows what plays inside its own
-    /// track ([`Self::with_level`]).
-    level: Option<std::rc::Rc<dyn Fn() -> Option<f32>>>,
-    level_drawn: Option<f32>,
     /// Where the thumb is drawn, as a share of the range: on the value,
     /// except while it glides to where the track was pressed.
     thumb: crate::motion::Thumb,
@@ -198,15 +193,10 @@ pub struct Slider {
     drawing: Option<Painted>,
 }
 
-/// What a slider's paint depends on besides its place, the theme and its
-/// live level: the value and the drawn thumb (as bits), hovered, dragging,
-/// focused and enabled.
+/// What a slider's paint depends on besides its place and the theme: the
+/// value and the drawn thumb (as bits), hovered, dragging, focused and
+/// enabled.
 type Painted = (u64, u64, bool, bool, bool, bool);
-
-/// How far toward the filled ink the fill up to the thumb stands while a
-/// live level is drawn inside it: a step softer than the level.
-const LEVEL_SOFT_FILL: f32 = 0.45;
-const LEVEL_STEP: f32 = 0.002;
 
 impl Slider {
     /// How fast the value follows the pointer while Shift is held during a
@@ -250,8 +240,6 @@ impl Slider {
             reads_out: false,
             readout_drawn: false,
             readout_reach: (0.0, vello::kurbo::Insets::ZERO),
-            level: None,
-            level_drawn: None,
             thumb: crate::motion::Thumb::default(),
             thumb_placed: false,
             glide_from: None,
@@ -318,21 +306,6 @@ impl Slider {
             }
             None => self.thumb.track(to),
         }
-    }
-
-    /// Show, inside the track, how loud what this slider sets is right now: `read` gives the
-    /// live level (`0..=1` of full scale), or `None` while nothing is measured.
-    #[must_use]
-    pub fn with_level(mut self, read: impl Fn() -> Option<f32> + 'static) -> Self {
-        self.level = Some(std::rc::Rc::new(read));
-        self
-    }
-
-    fn live_level(&self) -> Option<f32> {
-        self.level
-            .as_ref()
-            .and_then(|read| read())
-            .map(|level| level.clamp(0.0, 1.0))
     }
 
     /// Create a normalized slider bound to typed process-local state.
@@ -764,7 +737,6 @@ impl Slider {
 pub struct SliderFace {
     rect: Rect,
     value: f64,
-    level: Option<f64>,
     hovered: bool,
     dragging: bool,
     focused: bool,
@@ -777,19 +749,11 @@ impl SliderFace {
         Self {
             rect,
             value: value.clamp(0.0, 1.0),
-            level: None,
             hovered: false,
             dragging: false,
             focused: false,
             disabled: false,
         }
-    }
-    /// Show `level` (`0..=1` of the track's full scale) inside the filled
-    /// track: see [`Slider::with_level`].
-    #[must_use]
-    pub fn level(mut self, level: Option<f32>) -> Self {
-        self.level = level.map(|level| f64::from(level.clamp(0.0, 1.0)));
-        self
     }
     #[must_use]
     pub fn hovered(mut self, v: bool) -> Self {
@@ -899,39 +863,13 @@ impl Slider {
             track_rect.x0 + face.value * track_rect.width(),
             track_rect.y1,
         );
-        match face.level {
-            Some(level) => {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    crate::tokens::colors::mix8(unfilled, filled, LEVEL_SOFT_FILL),
-                    None,
-                    &RoundedRect::from_rect(active, track_radius),
-                );
-                let playing = Rect::new(
-                    track_rect.x0,
-                    track_rect.y0,
-                    track_rect.x0 + level.min(face.value) * track_rect.width(),
-                    track_rect.y1,
-                );
-                if playing.width() > 0.0 {
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        filled,
-                        None,
-                        &RoundedRect::from_rect(playing, track_radius),
-                    );
-                }
-            }
-            None => scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                filled,
-                None,
-                &RoundedRect::from_rect(active, track_radius),
-            ),
-        }
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            filled,
+            None,
+            &RoundedRect::from_rect(active, track_radius),
+        );
 
         let knob_radius = face.knob_radius();
         let knob_center = Point::new(active.x1, face.rect.center().y);
@@ -1090,11 +1028,6 @@ impl Widget for Slider {
     /// thumb on its way, its state.
     fn needs_redraw(&self) -> bool {
         self.painted != Some(self.painted_now())
-            || self.level.is_some()
-                && match (self.live_level(), self.level_drawn) {
-                    (Some(now), Some(drawn)) => (now - drawn).abs() > LEVEL_STEP,
-                    (now, drawn) => now.is_some() != drawn.is_some(),
-                }
     }
 
     /// A slider the frame left out (scrolled out of its view) shows nothing that could be stale:
@@ -1104,7 +1037,6 @@ impl Widget for Slider {
             self.painted = Some(drawing);
         } else {
             self.painted = Some(self.painted_now());
-            self.level_drawn = self.live_level();
         }
     }
 
@@ -1241,7 +1173,6 @@ impl Widget for Slider {
         } else {
             self.value_area = 0.0;
         }
-        self.level_drawn = self.live_level();
         self.motion = Some(theme.motion());
         // The thumb is on the value, unless it glides there from a press: a
         // key, an assistive action or a sync puts it there at once.
@@ -1257,7 +1188,6 @@ impl Widget for Slider {
             transform,
             theme,
             &SliderFace::new(self.track_rect(), self.thumb.get(now))
-                .level(self.level_drawn)
                 .hovered(self.is_hovered)
                 .dragging(self.is_dragging)
                 .focused(self.is_focused)

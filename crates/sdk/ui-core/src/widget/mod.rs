@@ -2520,6 +2520,8 @@ pub mod icon;
 pub use icon::{IconProps, IconSize, IconWidget};
 pub mod signal_meter;
 pub use signal_meter::{SIGNAL_BARS, SignalLevel, SignalMeter, SignalMeterFace, SignalMeterProps};
+pub mod level_meter;
+pub use level_meter::{LevelMeter, LevelMeterFace, LevelMeterProps, MeterState};
 pub mod drawing;
 pub use drawing::{Drawing, DrawingProps, Ink, Meaning, Shape, Weight};
 pub mod chart;

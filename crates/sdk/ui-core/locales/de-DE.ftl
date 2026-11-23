@@ -1052,6 +1052,12 @@ signal-meter-fair = Mittleres Signal
 signal-meter-good = Gutes Signal
 signal-meter-strong = Starkes Signal
 
+# The microphone level meter: its spoken name, and the state where there is no
+# microphone to read.
+level-meter-name = Mikrofonpegel
+level-meter-no-microphone = Kein Mikrofon
+level-meter-no-output = Kein Audioausgang
+
 reaction-strip-add = Reaktion hinzufügen
 reaction-strip-react = Reaktion { $emoji } hinzufügen
 reaction-strip-unreact = Reaktion { $emoji } entfernen
