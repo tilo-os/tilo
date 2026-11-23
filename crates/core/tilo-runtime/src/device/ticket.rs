@@ -267,7 +267,17 @@ fn descriptor(
         kind: OperationKind::Effect,
         contract: ActionContract {
             kind: ActionKind::Outside,
-            ..ActionContract::default()
+            // Taking a key back is for good: the dispatch asks the person once, as an asked
+            // invocation, whoever asks for it.
+            ..if action == REVOKE {
+                ActionContract {
+                    risk: tilo_actions::RiskLevel::Privileged,
+                    confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                    ..ActionContract::default()
+                }
+            } else {
+                ActionContract::default()
+            }
         },
         input: InputSpec::None,
         params: params.to_vec(),

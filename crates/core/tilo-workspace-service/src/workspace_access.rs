@@ -306,7 +306,7 @@ impl ServerTrust<'_> {
             || !self
                 .blocked
                 .read()
-                .is_ok_and(|keys| !keys.revokes(&peer.device_public_key))
+                .is_ok_and(|keys| !keys.revokes(&peer.cert))
         {
             return Err(DenyReason::Revoked);
         }

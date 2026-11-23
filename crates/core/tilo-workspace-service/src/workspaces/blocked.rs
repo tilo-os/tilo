@@ -152,10 +152,15 @@ impl BlockedKeys {
         self.devices.contains(device) || self.users.contains(user)
     }
 
-    /// Whether the record of the person's devices marks `device` revoked.
+    /// Whether the record of the person's keys marks `cert` revoked: its own key, or the grant
+    /// key that minted it, since a minted key is that grant narrowed and never outlives it.
     #[must_use]
-    pub(crate) fn revokes(&self, device: &[u8; 32]) -> bool {
-        self.revoked.contains(device)
+    pub(crate) fn revokes(&self, cert: &tilo_user_identity::DeviceCert) -> bool {
+        self.revoked.contains(&cert.device_public_key)
+            || cert.issuer.as_ref().is_some_and(|issuer| {
+                issuer.capabilities.agent.is_some()
+                    && self.revoked.contains(&issuer.device_public_key)
+            })
     }
 }
 

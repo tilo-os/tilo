@@ -234,7 +234,7 @@ impl Workspaces {
             ));
         }
         if self.revocations().refuses(device)
-            || self.blocked_keys().revokes(&device.device_public_key)
+            || self.blocked_keys().revokes(device)
         {
             return Err(CollaborationError::new("device revoked"));
         }

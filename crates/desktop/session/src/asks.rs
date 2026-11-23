@@ -333,6 +333,8 @@ impl Shared {
 
     /// Take the agent grant `grant`, its key in hex, back as every key of the person's is: their
     /// root revokes it and the record of their keys marks it.
+    /// It goes through the one dispatch as the person, to the provider of their keys, the way
+    /// `tilo device revoke` does: the action asks them once before it runs.
     fn revoke_agent_grant(&self, grant: String) {
         use tilo_actions::remote::device_tickets;
         let tilo_actions::remote::InvokeArgument::Json(arguments) =
@@ -340,14 +342,14 @@ impl Shared {
         else {
             unreachable!("a revocation is asked with an object");
         };
-        let revoked = self.published.invoke(
-            &ActionAddress::new(device_tickets::RESOURCE, device_tickets::REVOKE),
-            &arguments,
-            &mut tilo_session_core::surfaces::Look::none(),
-        );
-        if let Err(error) = revoked {
-            self.answer_failed(&t("action-failed-that-agent"), &error);
-        }
+        self.invoke_app_action(LaunchpadAppAction {
+            // The app the person's keys are published under.
+            app_id: "so.tilo.settings".to_owned(),
+            display_name: t("action-failed-that-agent"),
+            resource: device_tickets::RESOURCE.to_owned(),
+            action: device_tickets::REVOKE.to_owned(),
+            arguments,
+        });
     }
 
     /// Carry out what a person's card asked of the agent session it shows: a session this device
