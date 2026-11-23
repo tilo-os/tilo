@@ -739,7 +739,7 @@ fn published_before_own_removal(
 /// the member's own record they were, opens with every one of them read as this build writes
 /// it, so each is carried and served; its files hold them so from then on.
 #[test]
-fn publications_an_earlier_build_kept_open_in_todays_layout() {
+fn changes_an_earlier_build_kept_to_send_open_in_todays_layout() {
     use neighbour_wire::NeighbourMsg;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
