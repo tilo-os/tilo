@@ -732,10 +732,7 @@ struct Attempt {
 /// Publishes the attempt's tree itself under the requested name, then removes its now empty
 /// container. Existing names are never overwritten.
 fn publish_root(attempt: &Attempt, cancel: &AtomicBool) -> io::Result<()> {
-    use std::os::{
-        fd::{AsFd, AsRawFd},
-        unix::ffi::OsStrExt,
-    };
+    use std::os::fd::{AsFd, AsRawFd};
     check_cancel(cancel)?;
     attempt.home.validate_destination()?;
     attempt.container.validate_destination()?;
