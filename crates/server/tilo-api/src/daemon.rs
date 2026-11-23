@@ -85,7 +85,7 @@ pub fn this_computer() -> Result<DaemonPlace, String> {
 /// # Errors
 /// The login is damaged, or the daemon's sockets' directory is not this account's.
 pub fn device_api() -> anyhow::Result<Option<PathBuf>> {
-    if !tilo_device_identity::login::serves_a_device(crate::client::device_keys())? {
+    if tilo_device_identity::login::served_device_key(&crate::client::device_keys()).is_none() {
         return Ok(None);
     }
     let place = this_computer().map_err(|why| anyhow::anyhow!(why))?;

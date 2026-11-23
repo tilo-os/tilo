@@ -227,26 +227,6 @@ pub fn served_cert(keys: &IdentityPaths) -> Option<DeviceCert> {
         .map(|(_, cert)| cert)
 }
 
-/// Whether this computer's daemon serves a device here, so its API answers every program of
-/// the account as that device: a certificate names its device key. `keys` are this computer's device key and certificates.
-///
-/// The device is read from a certificate, never from the device key: a program that reads the
-/// key makes itself undumpable, and the daemon admits a caller by reading its namespaces, which
-/// a non-dumpable process hides from it.
-///
-/// # Errors
-/// This computer's device directory cannot be named.
-#[cfg(unix)]
-pub fn serves_a_device(keys: IdentityPaths) -> Result<bool> {
-    Ok(serves_a_device_in(&Place::here(keys)?))
-}
-
-/// [`serves_a_device`] for the device directory `place` names.
-#[cfg(unix)]
-fn serves_a_device_in(place: &Place) -> bool {
-    served_device_key(place.keys()).is_some()
-}
-
 /// The device key this computer's daemon serves as, from a certificate of it in `keys`
 /// ([`served_cert`]), so the secret is not read. A computer whose device certificate went (one in
 /// an encoding no build reads) has its key certified for its person beside it, and every one of
@@ -297,8 +277,6 @@ mod tests {
 
                 let root =
                     tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-                let login_dir = root.path().join("login");
-                std::fs::create_dir(&login_dir).unwrap();
                 let keys = IdentityPaths::under(root.path().join("identity"));
                 keys.ensure_directories().unwrap();
 
@@ -322,9 +300,8 @@ mod tests {
                     "this computer keeps no device key here, so naming its daemon must not need one"
                 );
 
-                let place = Place::at(login_dir, keys);
                 assert!(
-                    serves_a_device_in(&place),
+                    served_device_key(&keys).is_some(),
                     "a certified device is one its daemon serves"
                 );
                 assert_eq!(
@@ -336,12 +313,11 @@ mod tests {
         );
     }
 
-    /// A computer that made its own identity and never logged in keeps no login, so its state
-    /// directory may not even exist: its daemon is still found, from the device's certificate.
+    /// A computer that made its own identity and never logged in is found served from its own
+    /// device certificate.
     #[test]
-    fn a_device_that_never_logged_in_finds_its_daemon_without_a_login_directory() {
+    fn a_device_that_never_logged_in_is_served_from_its_own_certificate() {
         let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-        let login_dir = root.path().join("state/tilo/device");
         let keys = IdentityPaths::under(root.path().join("identity"));
         keys.ensure_directories().unwrap();
         let root_key = SigningKey::from_bytes(&[9; 32]);
@@ -357,10 +333,8 @@ mod tests {
         };
         tilo_user_identity::sign_device_cert(&mut cert, &root_key).unwrap();
         write_device_cert(&keys.device_cert, &cert).unwrap();
-        assert!(!login_dir.exists(), "this computer never logged in");
-
         assert!(
-            serves_a_device_in(&Place::at(login_dir, keys)),
+            served_device_key(&keys).is_some(),
             "a device of its own is served by its daemon"
         );
     }
