@@ -958,10 +958,10 @@ impl Widget for Toggle {
         self.hold.is_some()
     }
 
+    /// A switch the frame left out (scrolled out of its view) shows nothing that could be stale:
+    /// it rests as it stands, and is drawn whole once it comes back into view.
     fn mark_drawn(&mut self) {
-        if let Some(drawing) = self.drawing.take() {
-            self.painted = Some(drawing);
-        }
+        self.painted = Some(self.drawing.take().unwrap_or_else(|| self.painted_now()));
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

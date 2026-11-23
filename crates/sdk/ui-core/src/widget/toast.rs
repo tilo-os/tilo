@@ -1877,6 +1877,17 @@ impl crate::widget::Widget for NoticeLayer {
         self.drawn.get() != Some((self.notice.borrow().since(), self.hovered, self.pressed))
     }
 
+    /// A toast the frame left out (scrolled out of its view) shows nothing that could be stale:
+    /// it rests as it stands, and is drawn whole once it comes back into view.
+    fn mark_drawn(&mut self) {
+        self.drawn.set(Some((
+            self.notice.borrow().since(),
+            self.hovered,
+            self.pressed,
+        )));
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn needs_animation_frame(&self) -> bool {
         let span = self.notice.borrow().span();
         span.is_some_and(|span| {

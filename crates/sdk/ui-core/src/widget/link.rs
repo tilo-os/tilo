@@ -359,8 +359,11 @@ impl Widget for Link {
         self.dirty || (self.is_hovered, self.is_pressed, self.is_focused) != self.last_state
     }
 
+    /// A link the frame left out (scrolled out of its view) shows nothing that could be stale:
+    /// it rests as it stands, and is drawn whole once it comes back into view.
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        self.last_state = (self.is_hovered, self.is_pressed, self.is_focused);
     }
 
     fn is_layout_dirty(&self) -> bool {

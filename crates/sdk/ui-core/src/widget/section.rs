@@ -673,8 +673,10 @@ impl Widget for Chevron {
         self.presented != Some(self.expanded.get())
     }
 
+    /// A chevron the frame left out (scrolled out of its view) shows nothing that could be stale:
+    /// it rests as it stands, and is drawn whole once it comes back into view.
     fn mark_drawn(&mut self) {
-        self.presented = self.painted;
+        self.presented = Some(self.painted.take().unwrap_or_else(|| self.expanded.get()));
     }
 
     fn is_layout_dirty(&self) -> bool {

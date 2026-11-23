@@ -368,6 +368,9 @@ pub struct ToggleGroup {
     thumb: crate::motion::MotionValue<Rect>,
     thumb_for: usize,
     last_thumb: Option<Rect>,
+    /// Whether this frame drew the group, for [`Widget::mark_drawn`]: one that left it out of
+    /// view drew none of it.
+    drew: bool,
     folded: bool,
     menu: crate::widget::ContextMenu,
     viewport: Option<Rect>,
@@ -438,6 +441,7 @@ impl ToggleGroup {
             thumb: crate::motion::MotionValue::new(Rect::ZERO),
             thumb_for: NONE_CHOSEN,
             last_thumb: None,
+            drew: false,
             folded: false,
             menu: Self::fold_menu(),
             interaction: crate::interaction::InteractionEnvironment::default(),
@@ -2256,6 +2260,7 @@ impl Widget for ToggleGroup {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
+        self.drew = true;
         if self.segments.is_empty() || self.segment_rects.len() != self.segments.len() {
             return;
         }
@@ -2369,8 +2374,18 @@ impl Widget for ToggleGroup {
             || self.hovered != self.last_hovered
     }
 
+    /// A group the frame left out (scrolled out of its view) rests as it stands: it shows nothing
+    /// that could be stale, and its kept paint is of an earlier state, so the draw that brings it
+    /// back into view paints it anew.
     fn mark_drawn(&mut self) {
         self.cache_dirty = false;
+        if !std::mem::take(&mut self.drew) {
+            self.last_selected = self.selected;
+            self.last_focused = self.focus_visible();
+            self.last_hovered = self.hovered;
+            self.last_thumb = None;
+            self.painted = crate::widget::CachedPaint::default();
+        }
     }
 
     fn is_layout_dirty(&self) -> bool {

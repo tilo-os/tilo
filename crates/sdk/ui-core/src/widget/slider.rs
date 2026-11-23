@@ -1097,9 +1097,14 @@ impl Widget for Slider {
                 }
     }
 
+    /// A slider the frame left out (scrolled out of its view) shows nothing that could be stale:
+    /// it rests as it stands, and is drawn whole once it comes back into view.
     fn mark_drawn(&mut self) {
         if let Some(drawing) = self.drawing.take() {
             self.painted = Some(drawing);
+        } else {
+            self.painted = Some(self.painted_now());
+            self.level_drawn = self.live_level();
         }
     }
 

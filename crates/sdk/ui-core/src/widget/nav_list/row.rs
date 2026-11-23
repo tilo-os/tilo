@@ -749,6 +749,13 @@ impl Widget for NavRow {
         self.drawn.get() != Some(self.look(&self.paint.borrow()))
     }
 
+    /// A row the frame left out (scrolled out of its list's view) shows nothing that could be
+    /// stale: it rests as it stands, and is drawn whole once it comes back into view.
+    fn mark_drawn(&mut self) {
+        self.drawn.set(Some(self.look(&self.paint.borrow())));
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn needs_animation_frame(&self) -> bool {
         self.paint
             .borrow()

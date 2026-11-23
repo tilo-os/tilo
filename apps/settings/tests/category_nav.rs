@@ -166,3 +166,27 @@ fn a_press_on_a_category_in_the_page_selects_it() {
         "the pressed category is the chosen one"
     );
 }
+
+/// A window shorter than its page leaves the controls below the fold out of each frame. Once
+/// the page is drawn the window asks for no more frames, however long it stays open: an idle
+/// Settings window costs the device nothing.
+#[test]
+fn the_opening_page_comes_to_rest_in_a_window_shorter_than_it() {
+    let mut app = window((1238, 940));
+    let mut frames = 0;
+    while app.frame_if_owed() {
+        frames += 1;
+        assert!(
+            frames < 60,
+            "the idle opening page still asks for frames after {frames}: {:?}",
+            app.harness().frame_schedule()
+        );
+        app.idle();
+    }
+    app.idle();
+    let schedule = app.harness().frame_schedule();
+    assert!(
+        !schedule.needs_redraw && !schedule.needs_animation_frame,
+        "the idle opening page asks for a frame: {schedule:?}"
+    );
+}

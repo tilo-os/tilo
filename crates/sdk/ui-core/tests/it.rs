@@ -36,6 +36,8 @@ mod container_update_forwarding;
 mod control_label_stays_inside_its_control;
 #[path = "control_row_alignment.rs"]
 mod control_row_alignment;
+#[path = "controls_out_of_view_rest.rs"]
+mod controls_out_of_view_rest;
 #[cfg(unix)]
 #[path = "cross_process_presence_pump.rs"]
 mod cross_process_presence_pump;

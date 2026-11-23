@@ -393,8 +393,11 @@ impl Widget for UndoButton {
         self.dirty || self.paint_state() != self.last_paint_state
     }
 
+    /// A button the frame left out (scrolled out of its view) shows nothing that could be stale:
+    /// it rests as it stands, and is drawn whole once it comes back into view.
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        self.last_paint_state = self.paint_state();
         crate::widget::Widget::mark_children_drawn(self);
     }
 

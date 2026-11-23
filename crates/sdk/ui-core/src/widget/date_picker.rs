@@ -679,8 +679,10 @@ impl Widget for DatePicker {
         self.disc_moving()
     }
 
+    /// A picker the frame left out (scrolled out of its view) shows nothing that could be stale:
+    /// it rests as it stands, and is drawn whole once it comes back into view.
     fn mark_drawn(&mut self) {
-        self.presented.clone_from(&self.painted);
+        self.presented = Some(self.painted.take().unwrap_or_else(|| self.face()));
     }
 
     fn name(&self) -> &'static str {
