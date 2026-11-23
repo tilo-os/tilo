@@ -943,6 +943,21 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
         }
     }
 
+    /// The surface the app `app_id` publishes, as the workspace's catalogue carries it on the
+    /// row the app's provider publishes: for an app that is no installed application, such as
+    /// the workspace's own actions. `None` when no row names one.
+    pub async fn surface_of(&self, app_id: &str) -> Option<String> {
+        let page = self
+            .ask(CatalogueQuery {
+                app_id: Some(app_id.to_owned()),
+                max_results: 8,
+                ..CatalogueQuery::default()
+            })
+            .await
+            .ok()?;
+        page.rows.into_iter().find_map(|row| row.surface)
+    }
+
     /// The apps installed for this workspace, with their labels and whether
     /// this caller may open them. The workspace answers them by their kind,
     /// whole, wherever they fall among its other rows (governance, shortcuts),

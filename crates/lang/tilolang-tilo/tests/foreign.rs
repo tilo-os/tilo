@@ -583,6 +583,23 @@ fn a_kind_an_app_names_as_the_language_names_a_type_is_the_apps_where_its_verb_t
     );
 }
 
+/// A workspace's own actions are an app a program `use`s, read from the surface its service
+/// publishes: a call of one type-checks with no workspace running.
+#[test]
+fn a_workspace_action_checks_without_a_workspace_running() {
+    const INVITER: &str = r#"app test.inviter "Inviter"
+
+use tilo.workspace as ws
+
+action invite_editor() {
+    ws.invite(role: "editor")
+}
+"#;
+    let metas = tilolang_tilo::platform_apps::platform_packages().unwrap();
+    tilolang::compile_package(INVITER, &IdsLock::new(), &metas)
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+}
+
 // The workspace's contact directory is a root of Contacts' package a view
 // reads as `contacts.directory`: the reading the session publishes
 // (`contacts:tilo.contacts.identities`), and its `confirm-endpoint` the verb

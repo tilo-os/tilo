@@ -42,6 +42,26 @@ fn every_package_in_apps_tl_checks_clean() {
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
+/// A workspace's own actions are an app a package `use`s, read from the surface its service
+/// publishes: `check` compiles a call of one with no workspace running.
+#[test]
+fn a_workspace_action_checks_without_a_workspace_running() {
+    let scratch = tempfile::tempdir().unwrap();
+    let dir = scratch.path().join("inviter");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(
+        dir.join("app.tl"),
+        "app test.inviter \"Inviter\"\n\nuse tilo.workspace as ws\n\n\
+         action invite_editor() {\n    ws.invite(role: \"editor\")\n}\n",
+    )
+    .unwrap();
+    // The ids lock and the source catalogue are written first, as a new package's are.
+    let (written, said) = check(&dir, true);
+    assert!(written, "{said}");
+    let (passed, said) = check(&dir, false);
+    assert!(passed, "{said}");
+}
+
 /// A message leaves the catalogue when its declaration leaves the source, so writing the catalogue
 /// has to prune it: what `--write-ids` writes is what a check calls current, and the id of what
 /// went is retired, never reused.

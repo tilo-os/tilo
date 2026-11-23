@@ -172,9 +172,47 @@ where
                 surface: surface.to_owned(),
             });
         }
+        // The workspace's own actions: its root row carries the surface a program compiles
+        // against, so the workspace is reached from itself and no app has to ship one.
+        if let Some(surface) = self.workspace_surface(workspace) {
+            apps.push(App::Surface {
+                app: tilo_action_policy::agent_answers::WORKSPACE_APP.to_owned(),
+                title: "Workspace".to_owned(),
+                surface,
+            });
+        }
         Catalogue {
             apps,
             ..Catalogue::default()
         }
+    }
+}
+
+impl<H> WorkspaceCatalogue<H>
+where
+    H: tilo_actions::remote::ActionProvider + Send + Sync,
+{
+    /// The surface the workspace publishes for its own actions, from the row they are
+    /// catalogued under: what a program using them compiles against.
+    fn workspace_surface(&self, workspace: &str) -> Option<String> {
+        let app = tilo_action_policy::agent_answers::WORKSPACE_APP;
+        let query = tilo_actions::remote::CatalogueQuery {
+            provider: Some(app.to_owned()),
+            app_id: Some(app.to_owned()),
+            max_results: 8,
+            ..tilo_actions::remote::CatalogueQuery::default()
+        };
+        let Ok(Some(Ok(page))) = self
+            .host
+            .query(&self.caller, query)
+            .wait_timeout(tilo_session_actions::REPLY_DEADLINE)
+        else {
+            tracing::debug!(
+                %workspace,
+                "a task reads no workspace surface: the workspace did not answer"
+            );
+            return None;
+        };
+        page.rows.into_iter().find_map(|row| row.surface)
     }
 }

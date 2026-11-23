@@ -288,8 +288,9 @@ fn part_roots(
 }
 
 /// The packages a tilolang package may `use` that are no tilolang package directory: the
-/// platform's ([`crate::platform_apps::platform_packages`]: the device, Settings) and the native
-/// apps among `search` ([`native_apps`]). What `tilolang check`, `build`, `describe` and
+/// platform's ([`crate::platform_apps::platform_packages`]: each app in its one table, read from
+/// the committed surface beside it or beside the service that publishes its resources) and the
+/// native apps among `search` ([`native_apps`]). What `tilolang check`, `build`, `describe` and
 /// `layout-check` compile against; a native app the platform already provides is the platform's.
 pub fn published_packages(search: &[PathBuf]) -> Result<Vec<PackageMeta>, String> {
     let mut out = crate::platform_apps::platform_packages()?;

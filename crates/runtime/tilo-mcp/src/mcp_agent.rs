@@ -1065,6 +1065,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         {
             return Some(kept.into_bytes());
         }
+        // The workspace publishes its own actions: its catalogue root carries the surface, and
+        // no installed application names it.
+        if let Some(surface) = self.tree.surface_of(app_id).await
+            && let Ok((_, kept)) = collab_types::surface::SurfaceFile::kept(surface.as_bytes())
+        {
+            return Some(kept.into_bytes());
+        }
         self.host.installed_surface(app_id).await.flatten()
     }
 
