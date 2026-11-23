@@ -9,26 +9,19 @@
 //!
 //! The plan itself is the machine's entry in the person's Servers workspace
 //! (`tilo_workspace_service::workspaces::servers`): this crate only writes the
-//! document, and where it goes is the session's to say. [`mint`] makes the
-//! single-use enrollment token the medium carries; the plan names the token by
-//! its nonce and expiry only, so the document travels through the person's
-//! devices, a log or an action's answer without exposing the token. The token
-//! itself goes to a file only its account can read ([`store_token`]), the one
-//! file this crate keeps.
+//! document, and where it goes is the session's to say. The medium carries the
+//! single-use ticket the device that made the plan serves for it; the plan names
+//! it by a nonce and expiry only ([`token`]), so the document travels through
+//! the person's devices, a log or an action's answer without exposing it. The
+//! ticket itself goes to a file only its account can read ([`store_token`]), the
+//! one file this crate keeps.
 
 use std::path::{Path, PathBuf};
 
 use install_profile_model::plan::{self, DiskRule, Holding, Network, Plan, Token};
-use tilo_device_identity::IdentityPaths;
-use tilo_device_identity::persist::{load_device_key, read_device_cert, read_public_key};
-use tilo_user_identity::{
-    DeviceCapabilities, Dial, encode_enrollment_token, enrollment_endpoint, mint_enrollment_token,
-};
+use tilo_device_identity::login::PLANNED_TICKET_LIFETIME_NS;
 
 pub use install_profile_model::plan::{Commands, commands, installer_image};
-
-/// How long a machine's token stays valid: a medium may sit on a shelf a day.
-pub const TOKEN_LIFETIME_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 
 /// Where the person's devices serve the installer, unless something names
 /// another site.
@@ -124,81 +117,23 @@ pub fn new_id() -> String {
     hex::encode(rand::random::<[u8; 16]>())
 }
 
-/// The single-use token a plan goes with, minted by this device: the encoded
-/// token for the file the medium carries, and the nonce and expiry the plan
-/// keeps.
+/// What a plan names its ticket by: a nonce and the expiry of the ticket this device's daemon
+/// serves for it ([`PLANNED_TICKET_LIFETIME_NS`]). The ticket itself is the daemon's to issue,
+/// once the plan exists.
 ///
 /// # Errors
 ///
-/// This computer holds no identity or device key, has no certificate that may
-/// admit a device, or cannot say what time it is.
-pub fn mint(system: &IdentityPaths) -> Result<(String, Token), String> {
-    let user = read_public_key(&system.user_pubkey)
-        .map_err(|_| "this computer holds no identity; start `tilo login` first".to_owned())?;
-    let device = load_device_key(system)
-        .map_err(|_| "this computer holds no device key; start `tilo login` first".to_owned())?;
-    let cert = read_device_cert(&system.device_cert_for_user(&user))
-        .or_else(|_| read_device_cert(&system.device_cert))
-        .map_err(|_| "this computer holds no certificate for its device".to_owned())?;
-    if !cert.capabilities.can_admit_devices {
-        return Err(
-            "this device may not admit another device; plan it from one of your own devices"
-                .to_owned(),
-        );
-    }
+/// This computer cannot say what time it is.
+pub fn token() -> Result<Token, String> {
     let now_ns = tilo_clock::try_unix_now_ns()
         .ok_or_else(|| "this computer cannot say what time it is".to_owned())?;
     let expires_at_ns = now_ns
-        .checked_add(TOKEN_LIFETIME_NS)
-        .ok_or_else(|| "the token's expiry is out of range".to_owned())?;
-    let nonce = rand::random::<[u8; 16]>();
-    let token = mint_enrollment_token(
-        user,
-        DeviceCapabilities::member(),
-        now_ns,
+        .checked_add(PLANNED_TICKET_LIFETIME_NS)
+        .ok_or_else(|| "the ticket's expiry is out of range".to_owned())?;
+    Ok(Token {
+        nonce: hex::encode(rand::random::<[u8; 16]>()),
         expires_at_ns,
-        nonce,
-        dial_peers(system),
-        &device,
-    )
-    .map_err(|error| format!("cannot mint the machine's token: {error}"))?;
-    let encoded = encode_enrollment_token(&token)
-        .map_err(|error| format!("cannot encode the machine's token: {error}"))?;
-    Ok((
-        encoded,
-        Token {
-            nonce: hex::encode(nonce),
-            expires_at_ns,
-        },
-    ))
-}
-
-/// The devices that answer this plan's enrollment, as a token names them:
-/// this device's enrollment endpoint ([`enrollment_endpoint`]), which its
-/// session serves while it is up, and the relay that reaches it. A session's
-/// own endpoint answers devices, not enrollments, so a token never names that.
-/// Only a device that may admit another answers one, and the person's servers
-/// may not, so the device that made the plan is the one named.
-#[must_use]
-pub fn dial_peers(system: &IdentityPaths) -> Vec<Dial> {
-    load_device_key(system)
-        .map(|device| Dial {
-            endpoint: enrollment_endpoint(&device.verifying_key().to_bytes()),
-            relay_url: own_relay(),
-        })
-        .into_iter()
-        .collect()
-}
-
-/// The relay this device's endpoints are reached through, empty when it is
-/// reached on its own network only.
-fn own_relay() -> String {
-    tilo_endpoint_reachability::relays()
-        .relays
-        .urls::<Vec<_>>()
-        .first()
-        .map(ToString::to_string)
-        .unwrap_or_default()
+    })
 }
 
 /// Write the encoded `token` for the plan `plan_id` where this computer keeps
@@ -371,55 +306,5 @@ mod tests {
         .unwrap();
         assert_eq!(stored, token_file);
         assert_eq!(std::fs::read_to_string(&token_file).unwrap(), "token-bytes");
-    }
-
-    /// The token names devices' enrollment endpoints, never a session's own
-    /// endpoint: a machine dials what answers enrollments.
-    #[test]
-    fn a_token_names_the_enrollment_endpoint_of_the_device_that_made_it() {
-        use tilo_device_identity::persist::{
-            write_device_cert, write_public_key, write_signing_key,
-        };
-        let root = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(root.path());
-        paths.ensure_directories().unwrap();
-        let user = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
-        write_public_key(&paths.user_pubkey, &user.verifying_key().to_bytes()).unwrap();
-        write_signing_key(&paths.device_privkey, &device).unwrap();
-        let mut cert = tilo_user_identity::DeviceCert {
-            user_public_key: user.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "laptop".into(),
-            capabilities: DeviceCapabilities::primary(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &user).unwrap();
-        write_device_cert(&paths.device_cert, &cert).unwrap();
-        write_device_cert(
-            &paths.device_cert_for_user(&user.verifying_key().to_bytes()),
-            &cert,
-        )
-        .unwrap();
-
-        let (encoded, _) = mint(&paths).unwrap();
-        let token = tilo_user_identity::decode_enrollment_token(&encoded).unwrap();
-        assert!(
-            token.dial.iter().any(
-                |dial| dial.endpoint == enrollment_endpoint(&device.verifying_key().to_bytes())
-            ),
-            "the token names the device's enrollment endpoint: {:?}",
-            token.dial
-        );
-        assert!(
-            token
-                .dial
-                .iter()
-                .all(|dial| dial.endpoint != device.verifying_key().to_bytes()),
-            "and not the session's own endpoint"
-        );
     }
 }

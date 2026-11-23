@@ -15,7 +15,8 @@ use serde_json::{Value, json};
 use tilo_actions::remote::{ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
-    CERTIFY, CertifyInput, Entry, ISSUE, LOG_IN, PROVIDER, RESOURCE, SCOPE, Ticket,
+    CERTIFY, CertifyInput, Entry, ISSUE, LOG_IN, PROVIDER, RESOURCE, SCOPE, TICKET_LIFETIME_NS,
+    Ticket,
 };
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, NoActions};
 use tilo_peer_state::new_device::ServedTicket;
@@ -281,6 +282,7 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
             admission: None,
         }),
         RevocationList::new(),
+        TICKET_LIFETIME_NS,
     );
     let service = ActionService::new(laptop_key.clone(), Arc::new(NoActions));
     service.admit_uncertified(SCOPE, Arc::new(waiting.clone()));

@@ -1140,6 +1140,26 @@ pub async fn apply_on(
     super::person_workspace::apply_on(workspaces, workspace, SERVERS, action).await
 }
 
+/// Take the machine whose device key is `device` in as the one the plan `plan` describes: the
+/// plan's entry becomes the machine's, under its key, as when it begins its install. What the
+/// device that served the machine's ticket does once the person's root certified it.
+///
+/// # Errors
+/// No machine is planned under `plan`, or the document refused the change or could not be
+/// written.
+pub async fn admit_planned(
+    workspaces: &Workspaces,
+    plan: &str,
+    device: &[u8; 32],
+) -> Result<(), String> {
+    let nonce = read(workspaces).await?.waiting_plan(plan)?.plan.token.nonce;
+    apply(
+        workspaces,
+        Servers::BEGIN_INSTALL.with((hex::encode(device), nonce, "[]".to_owned(), String::new())),
+    )
+    .await
+}
+
 /// The Servers workspace's [`SERVERS`] document as this device reads it.
 ///
 /// # Errors

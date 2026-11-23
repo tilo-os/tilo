@@ -311,6 +311,7 @@ pub fn issuing_for_test(
             tilo_user_identity::DeviceCapabilities::member(),
             approver,
             tilo_user_identity::RevocationList::new(),
+            tilo_device_identity::login::TICKET_LIFETIME_NS,
         )),
     );
     iroh::protocol::Router::builder(endpoint.clone())

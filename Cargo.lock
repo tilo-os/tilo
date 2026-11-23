@@ -8089,7 +8089,6 @@ dependencies = [
 name = "install-plan"
 version = "0.1.0"
 dependencies = [
- "ed25519-dalek 3.0.0",
  "hex",
  "install-profile-model",
  "rand 0.10.3",
@@ -8097,9 +8096,7 @@ dependencies = [
  "tempfile",
  "tilo-clock",
  "tilo-device-identity",
- "tilo-endpoint-reachability",
  "tilo-files",
- "tilo-user-identity",
  "workspace-hack",
 ]
 

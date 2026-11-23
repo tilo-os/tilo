@@ -27,13 +27,13 @@ use tilo_actions::{
 };
 use tilo_device_identity::login::{
     APPROVE, Approval, Approved, Approver, Asked, Declined, Device, Direction, Entry, ISSUE,
-    LOG_IN, PENDING, PROVIDER, Place, REPORTED, RESOURCE, Report, SCOPE, TICKET_LIFETIME_NS,
-    Ticket,
+    LOG_IN, PENDING, PLANNED_TICKET_LIFETIME_NS, PROVIDER, Place, REPORTED, RESOURCE, Report,
+    SCOPE, TICKET_LIFETIME_NS, Ticket,
 };
 use tilo_enrollment::root::PersonSigner;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ActionService, NoActions};
-use tilo_peer_state::new_device::ServedTicket;
+use tilo_peer_state::new_device::{ServedTicket, ServedTickets};
 use tilo_session_client::device::Device as Entered;
 use tilo_user_identity::{DeviceCert, RevocationList, StatementSigner};
 
@@ -387,7 +387,7 @@ pub(super) async fn plan_entry(
     plan: &str,
     cert: &DeviceCert,
 ) -> Result<(), String> {
-    use tilo_workspace_service::workspaces::servers::{self, Servers};
+    use tilo_workspace_service::workspaces::servers;
 
     if let Some(device) = session {
         let shown = device
@@ -416,22 +416,7 @@ pub(super) async fn plan_entry(
             .map(drop)
             .map_err(|error| format!("{error}"));
     }
-    let nonce = servers::read(workspaces)
-        .await?
-        .waiting_plan(plan)?
-        .plan
-        .token
-        .nonce;
-    servers::apply(
-        workspaces,
-        Servers::BEGIN_INSTALL.with((
-            hex::encode(cert.device_public_key),
-            nonce,
-            "[]".to_owned(),
-            String::new(),
-        )),
-    )
-    .await
+    servers::admit_planned(workspaces, plan, &cert.device_public_key).await
 }
 
 /// What this computer's daemon answers the device actions with: its endpoint, the device it is,
@@ -453,8 +438,12 @@ struct Inner {
     workspaces: Option<Arc<ServiceWorkspaces>>,
     place: Place,
     service: ActionService,
-    /// The ticket the service answers for now, while it waits for its computer.
-    outstanding: std::sync::Mutex<Option<ServedTicket>>,
+    /// The ticket `tilo device add` printed last, while it waits for its computer, and whether
+    /// it is a planned machine's: a later one replaces it unless it is.
+    outstanding: std::sync::Mutex<Option<(ServedTicket, bool)>>,
+    /// Every ticket the service answers a computer's certify call for now: planned machines'
+    /// beside the one printed last.
+    served: ServedTickets,
     /// Each invocation of a device action, and where it is.
     calls: std::sync::Mutex<HashMap<InvocationId, InvocationState>>,
     runtime: tokio::runtime::Handle,
@@ -487,6 +476,7 @@ impl Tickets {
             place,
             service,
             outstanding: std::sync::Mutex::new(None),
+            served: ServedTickets::default(),
             calls: std::sync::Mutex::new(HashMap::new()),
             runtime: tokio::runtime::Handle::current(),
         }))
@@ -576,7 +566,11 @@ impl Tickets {
     }
 
     fn outstanding(&self) -> Option<ServedTicket> {
-        self.0.outstanding.lock_recover().clone()
+        self.0
+            .outstanding
+            .lock_recover()
+            .as_ref()
+            .map(|(served, _)| served.clone())
     }
 
     /// The certificate this daemon's workspace session proves: the service's own, which its
@@ -628,6 +622,7 @@ impl Tickets {
             );
         }
         let enter = self.entry(here)?;
+        let planned = plan.is_some();
         let role = match plan {
             Some(plan) => Some(Role::Plan(plan)),
             None if as_server => Some(Role::Server),
@@ -663,12 +658,27 @@ impl Tickets {
                 admission,
             }),
             RevocationList::new(),
+            // A planned machine's medium may sit on a shelf before the machine installs from it.
+            if planned {
+                PLANNED_TICKET_LIFETIME_NS
+            } else {
+                TICKET_LIFETIME_NS
+            },
         );
-        // The one uncertified call the router now answers is this ticket's certify.
+        // The one uncertified call the router answers is a served ticket's certify. A ticket
+        // printed now replaces the one printed before, but never a planned machine's.
+        let replaced = self
+            .0
+            .outstanding
+            .lock_recover()
+            .replace((served.clone(), planned));
+        if let Some((replaced, false)) = replaced {
+            self.0.served.withdraw(&replaced);
+        }
+        self.0.served.serve(served);
         self.0
             .service
-            .admit_uncertified(SCOPE, Arc::new(served.clone()));
-        *self.0.outstanding.lock_recover() = Some(served);
+            .admit_uncertified(SCOPE, Arc::new(self.0.served.clone()));
         Ok(json!({"ticket": ticket.encode()}))
     }
 

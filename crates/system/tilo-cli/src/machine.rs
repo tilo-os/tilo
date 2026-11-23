@@ -23,7 +23,7 @@ use anyhow::{Result, bail};
 use clap::Subcommand;
 use install_profile_model::plan::{self, DiskRule, Holding, Network, Plan};
 use tilo_actions::ActionAddress;
-use tilo_actions::remote::machines;
+use tilo_actions::remote::{device_tickets, machines};
 use tilo_control::front::{self, Spelling};
 
 use crate::identity;
@@ -55,7 +55,8 @@ pub enum MachineCmd {
         tilo machine add --name cupboard --disk serial:WD-ABC123 --unlock passphrase\n  \
         tilo machine add --os os --name spare-laptop --disk largest\n\n\
         Not a server: `--os os` installs Tilo OS onto the machine. You have to carry\n\
-        the token file to the medium yourself; the plan keeps no token.")]
+        the ticket file to the medium yourself; the plan keeps no ticket. This computer\n\
+        serves the ticket for a day: it has to be on while the machine installs.")]
 pub struct AddArgs {
     /// The OS it installs: `server` (Tilo Server) or `os` (Tilo OS).
     #[arg(long, default_value = "server")]
@@ -94,7 +95,7 @@ pub struct AddArgs {
     /// A server holds no workspace: leave hosting answered, not open.
     #[arg(long)]
     no_workspaces: bool,
-    /// Where the minted token is written, and what the installer commands
+    /// Where the machine's ticket is written, and what the installer commands
     /// name; defaults under this computer's identity.
     #[arg(long, value_name = "FILE")]
     token_file: Option<PathBuf>,
@@ -105,7 +106,7 @@ pub struct AddArgs {
 
 pub fn serve(cmd: MachineCmd) -> Result<std::process::ExitCode> {
     match cmd {
-        MachineCmd::Add(add) => plan_and_mint(&add),
+        MachineCmd::Add(add) => plan_and_ticket(&add),
         MachineCmd::List => ask(
             machines::LIST,
             "List the machines you planned",
@@ -205,11 +206,10 @@ fn choices(add: &AddArgs) -> Result<install_plan::Choices> {
     })
 }
 
-fn plan_and_mint(add: &AddArgs) -> Result<std::process::ExitCode> {
+fn plan_and_ticket(add: &AddArgs) -> Result<std::process::ExitCode> {
     let choices = choices(add)?;
     let dir = identity::dir()?;
-    let paths = identity::paths();
-    let (token, named) = install_plan::mint(&paths).map_err(anyhow::Error::msg)?;
+    let named = install_plan::token().map_err(anyhow::Error::msg)?;
     let id = install_plan::new_id();
     let plan = choices.plan(&id, named).map_err(anyhow::Error::msg)?;
     let token_file = add
@@ -226,8 +226,29 @@ fn plan_and_mint(add: &AddArgs) -> Result<std::process::ExitCode> {
     if code != std::process::ExitCode::SUCCESS {
         return Ok(code);
     }
-    install_plan::store_token(&dir, &id, &token, Some(&token_file)).map_err(anyhow::Error::msg)?;
+    // The machine logs in with a ticket the session that holds the plan serves for it, and its
+    // certification takes the plan's entry, which exists by now, into its own.
+    let ticket = planned_ticket(&id)?;
+    install_plan::store_token(&dir, &id, &ticket, Some(&token_file)).map_err(anyhow::Error::msg)?;
     Ok(code)
+}
+
+/// The ticket the machine `plan` describes logs in with, served by the session that holds the
+/// person's Servers workspace for as long as the plan lasts.
+fn planned_ticket(plan: &str) -> Result<String> {
+    let answer = front::call_target(
+        &crate::desktop::sockets(),
+        device_tickets::target(device_tickets::ISSUE),
+        "Add a planned machine",
+        &serde_json::json!({ "plan": plan }),
+        &Spelling::tilo(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    answer
+        .pointer("/result/ticket")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("the session answered no ticket for the plan"))
 }
 
 /// The plan as a person names it.
