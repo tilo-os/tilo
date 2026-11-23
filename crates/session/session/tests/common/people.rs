@@ -1447,11 +1447,11 @@ impl Device {
             .open(logs.join("session.log"))
             .expect("a log for the session");
         let _ = writeln!(log, "\n--- this device's session starts ---");
-        let mut command = Command::new(
-            self.session
-                .as_deref()
-                .unwrap_or_else(|| Path::new(env!("CARGO_BIN_EXE_tilo-session"))),
-        );
+        let program = self
+            .session
+            .clone()
+            .unwrap_or_else(|| tilo_test_env::package_binary!("tilo-session"));
+        let mut command = Command::new(&program);
         command
             .args([
                 "--backend",
@@ -1539,7 +1539,15 @@ impl Device {
             std::fs::write(&path, invitation).expect("the invitation is written");
             command.env("TILO_SHELL_JOIN_INVITATION_FILE", path);
         }
-        let mut child = command.spawn_locked().expect("the session starts");
+        let mut child = command.spawn_locked().unwrap_or_else(|error| {
+            panic!(
+                "the session at {} starts: {error} (the program is there: {}; the directory it \
+                 is in is there: {})",
+                program.display(),
+                program.is_file(),
+                program.parent().is_some_and(Path::is_dir),
+            )
+        });
         let mut out = BufReader::new(child.stdout.take().expect("the session's output"));
         // What the session prints once it listens, the last thing it prints.
         let listening = format!("TILO_TEST_CONTROL={}", control.display());
