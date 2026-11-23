@@ -16,6 +16,7 @@
 //! - **Only its own trees.** A connection is one window of one app; its patches name nodes by
 //!   key paths in the trees it sent, and a path that names no node is refused when applied.
 
+use tilo_actions::ActionAddress;
 use tilo_ui_graph::component::{Catalogue, Description, Type, companion};
 
 use super::{Binding, Event, Node, Patch, ResourceRef, RowChange, ToApp, ToUi, Value, Words};
@@ -744,23 +745,8 @@ impl<'a> Validator<'a> {
                 self.key(field)?;
                 self.string(text)?;
             }
-            ToApp::Invoke { address, argument } => {
-                self.key(&address.resource)?;
-                self.key(&address.action)?;
-                if let Some(argument) = argument {
-                    self.string(argument)?;
-                }
-            }
-            ToApp::Serving { call, invoker } => {
-                if call.len() > self.limits.string_bytes as usize {
-                    return Err(Refused::invalid(
-                        "a signed call is over the limit of a string",
-                    ));
-                }
-                if let Some(invoker) = invoker {
-                    self.string(invoker)?;
-                }
-            }
+            ToApp::Invoke { address, argument } => self.invoke(address, argument.as_deref())?,
+            ToApp::Serving { call, invoker } => self.serving(call, invoker.as_deref())?,
             ToApp::Back
             | ToApp::Answer(_)
             | ToApp::Undo
@@ -772,6 +758,23 @@ impl<'a> Validator<'a> {
             | ToApp::FormCancel { .. } => {}
         }
         Ok(())
+    }
+
+    /// Check an action the host asks an app to run.
+    fn invoke(&self, address: &ActionAddress, argument: Option<&str>) -> Result<(), Refused> {
+        self.key(&address.resource)?;
+        self.key(&address.action)?;
+        argument.map_or(Ok(()), |argument| self.string(argument))
+    }
+
+    /// Check a signed call the host serves for its invoker.
+    fn serving(&self, call: &[u8], invoker: Option<&str>) -> Result<(), Refused> {
+        if call.len() > self.limits.string_bytes as usize {
+            return Err(Refused::invalid(
+                "a signed call is over the limit of a string",
+            ));
+        }
+        invoker.map_or(Ok(()), |invoker| self.string(invoker))
     }
 }
 
