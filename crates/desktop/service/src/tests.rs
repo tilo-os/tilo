@@ -356,3 +356,111 @@ fn a_services_row_status_reaches_its_published_tree() {
         "a row's status never reaches the resource above it"
     );
 }
+
+/// A service that counts how often it is listed, and reports a change on its next poll once
+/// told to.
+struct Counted {
+    id: &'static str,
+    listed: Arc<std::sync::atomic::AtomicUsize>,
+    moves: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Service for Counted {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        self.listed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        vec![ResourceSpec::new(self.id, "test.counted", self.id)]
+    }
+
+    fn read(&self, _resource: &str) -> Option<Value> {
+        None
+    }
+
+    fn invoke(
+        &mut self,
+        _resource: &str,
+        _action: &str,
+        _arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        Ok(Started::Done(tilo_actions::ActionOutput::default()))
+    }
+
+    fn poll(&mut self) -> bool {
+        self.moves.swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// A reading that lands on one service moves the catalogue's revision and lists that service
+/// again, and no other: the session reads the catalogue whenever its revision moves, and one busy
+/// service must not cost every other service's list each time.
+#[test]
+fn a_reading_lists_again_only_the_service_it_landed_on() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let (busy, still) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let moves = Arc::new(AtomicBool::new(false));
+    let mut services = Services::default();
+    services.add(Box::new(Counted {
+        id: "busy",
+        listed: Arc::clone(&busy),
+        moves: Arc::clone(&moves),
+    }));
+    services.add(Box::new(Counted {
+        id: "still",
+        listed: Arc::clone(&still),
+        moves: Arc::new(AtomicBool::new(false)),
+    }));
+    // What is published, by the resources' ids and labels.
+    let published = |services: &Services| -> Vec<(String, String)> {
+        services
+            .resources()
+            .into_iter()
+            .map(|resource| (resource.id.0, resource.label))
+            .collect()
+    };
+    let first = published(&services);
+    assert_eq!(
+        (busy.load(Ordering::Relaxed), still.load(Ordering::Relaxed)),
+        (1, 1),
+        "the first read lists each service once"
+    );
+
+    let before = services.revision();
+    assert!(!services.poll(), "nothing landed");
+    assert_eq!(
+        services.revision(),
+        before,
+        "a poll that took nothing in moves nothing"
+    );
+    assert_eq!(published(&services), first, "what is published stands");
+    assert_eq!(
+        still.load(Ordering::Relaxed),
+        1,
+        "an unmoved catalogue is read from what was listed"
+    );
+
+    moves.store(true, Ordering::Relaxed);
+    assert!(services.poll(), "the busy service took a reading in");
+    assert_ne!(
+        services.revision(),
+        before,
+        "a reading moves the catalogue's revision"
+    );
+    assert_eq!(
+        published(&services),
+        first,
+        "the same resources are published"
+    );
+    assert_eq!(
+        (busy.load(Ordering::Relaxed), still.load(Ordering::Relaxed)),
+        (2, 1),
+        "only the service the reading landed on is listed again"
+    );
+
+    services.settle();
+    let _ = services.resources();
+    assert_eq!(
+        (busy.load(Ordering::Relaxed), still.load(Ordering::Relaxed)),
+        (3, 2),
+        "a settle, which may change every service, lists each again"
+    );
+}

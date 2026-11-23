@@ -398,6 +398,10 @@ pub struct Services {
     /// [`Self::moved_among`] last asked: what a service that cannot say
     /// which of its readings moved is read again for.
     stirred: Vec<bool>,
+    /// Per service, what it publishes as last listed, its rows' statuses applied: `None` once it
+    /// may have changed. A reading that lands on one service lists that one again and no other,
+    /// so a catalogue of many services costs one service's list per change, not all of theirs.
+    listed: std::cell::RefCell<Vec<Option<Vec<ResourceSpec>>>>,
 }
 
 impl Services {
@@ -430,8 +434,9 @@ impl Services {
     pub fn add(&mut self, service: Box<dyn Service>) {
         self.started.push(service);
         self.stirred.push(true);
+        self.listed.get_mut().push(None);
         self.catalogue = self.catalogue.wrapping_add(1);
-        self.changed();
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// The resources that are published at all, as a number that moves only
@@ -619,7 +624,7 @@ impl Services {
             *stirred = true;
         }
         if started.is_ok() {
-            self.changed();
+            self.moved(index);
         }
         started
     }
@@ -630,8 +635,18 @@ impl Services {
         self.revision
     }
 
-    const fn changed(&mut self) {
+    /// What every service publishes may have changed.
+    fn changed(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+        self.listed.get_mut().fill(None);
+    }
+
+    /// What the service at `index` publishes may have changed, and no other's.
+    fn moved(&mut self, index: usize) {
+        self.revision = self.revision.wrapping_add(1);
+        if let Some(listed) = self.listed.get_mut().get_mut(index) {
+            *listed = None;
+        }
     }
 
     /// Whether it hosts none.
@@ -643,11 +658,16 @@ impl Services {
     /// Everything the services publish now.
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
+        let mut listed = self.listed.borrow_mut();
+        listed.resize(self.started.len(), None);
         let mut all = Vec::new();
-        for service in &self.started {
-            let mut resources = service.resources();
-            tilo_actions::apply_row_statuses(&mut resources, |row| service.row_status(row));
-            all.extend(resources);
+        for (service, kept) in self.started.iter().zip(listed.iter_mut()) {
+            let resources = kept.get_or_insert_with(|| {
+                let mut resources = service.resources();
+                tilo_actions::apply_row_statuses(&mut resources, |row| service.row_status(row));
+                resources
+            });
+            all.extend(resources.iter().cloned());
         }
         all
     }
@@ -773,20 +793,30 @@ impl Services {
         if let Some(stirred) = self.stirred.get_mut(index) {
             *stirred = true;
         }
-        self.changed();
+        self.moved(index);
         Some(started)
     }
 
     /// Take in what landed on every service. Whether a reading changed.
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
-        for (service, stirred) in self.started.iter_mut().zip(&mut self.stirred) {
+        let listed = self.listed.get_mut();
+        listed.resize(self.started.len(), None);
+        for ((service, stirred), kept) in self
+            .started
+            .iter_mut()
+            .zip(&mut self.stirred)
+            .zip(listed.iter_mut())
+        {
             let moved = service.poll();
+            if moved {
+                *kept = None;
+            }
             *stirred |= moved;
             changed |= moved;
         }
         if changed {
-            self.changed();
+            self.revision = self.revision.wrapping_add(1);
         }
         changed
     }
