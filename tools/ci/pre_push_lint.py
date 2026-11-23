@@ -70,6 +70,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -649,6 +650,21 @@ def rustfmt_available() -> bool:
     return shutil.which("rustfmt") is not None
 
 
+def landing_env(root: Path) -> dict[str, str]:
+    """The environment the lint's t runs get: the push hook's own session, a person's.
+
+    A push lint lands work, so t ranks it as the person at a terminal whoever pushes. Run in an
+    agent's session it stood behind main's whole CI backlog, and pushes waited for it for an hour
+    while main moved on under them. t ranks a `human:` session as people's; each checkout gets one
+    of its own, so pushes from several checkouts share people's cores fairly and a retry keeps the
+    session, and the builds t kept for it, of the last attempt.
+    """
+    env = dict(os.environ)
+    checkout = re.sub(r"[^A-Za-z0-9_.-]+", "_", root.resolve().name)
+    env["T_SESSION"] = f"human:push.{socket.gethostname()}.{checkout}"
+    return env
+
+
 def run_together(root: Path, runs: list[Lint],
                  keep: Path | None = None) -> tuple[list[tuple[Lint, int, str]], float]:
     """Start every run at once and collect them, so the wall time is the slowest one.
@@ -662,7 +678,8 @@ def run_together(root: Path, runs: list[Lint],
         # A file, not a pipe: a run whose output outgrows the pipe buffer must
         # not wait on a reader that is still waiting on another run.
         log = tempfile.TemporaryFile(mode="w+")
-        process = subprocess.Popen(run.command, cwd=root, stdout=log, stderr=subprocess.STDOUT, text=True)
+        process = subprocess.Popen(run.command, cwd=root, stdout=log, stderr=subprocess.STDOUT, text=True,
+                                   env=landing_env(root))
         running.append((run, process, log))
     finished: dict[int, float] = {}
     while len(finished) < len(running):
