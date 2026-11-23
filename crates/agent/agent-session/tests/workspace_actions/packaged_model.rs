@@ -621,7 +621,22 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
     // The person's own device lists the question and answers it, as the shell's asking view does.
     let ada = enrol(&root, "Ada's browser", DeviceCapabilities::member());
     let mut person = Browser::open_at(&server, &ada, &server_device, &created.workspace).await;
-    let question = person.asked_about(asking_request.invocation).await;
+    let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+    let question = loop {
+        if let Some(question) = person
+            .asks()
+            .await
+            .into_iter()
+            .find(|question| question.name == "delete-area")
+        {
+            break question;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the person was asked about the packaged action"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     assert!(question.destructive, "{question:?}");
     assert_eq!(question.name, "delete-area", "{question:?}");
     person

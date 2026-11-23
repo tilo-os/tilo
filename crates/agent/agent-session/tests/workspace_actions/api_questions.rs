@@ -149,6 +149,10 @@ async fn the_call_waits_for_its_person_and_their_answer_runs_it_once() {
     };
     assert_eq!(who.name, "Jane Doe’s agent", "{asked:?}");
     assert_eq!(asked.workspace_name, "Applicant: Jane Doe", "{asked:?}");
+    assert_eq!(
+        asked.record.workspace, with.workspace,
+        "the asked record is kept in the workspace its call acts in: {asked:?}"
+    );
     assert_eq!(asked.name, "Remove from library", "{asked:?}");
     assert_eq!(
         asked.on.as_deref(),

@@ -257,21 +257,25 @@ impl OwnAgent {
             }
         };
         // The person's laptop answers what the host asks them about the agent.
-        let asked = (serves == Serves::AppsAsking).then(|| {
+        let asked = if serves == Serves::AppsAsking {
             let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
-            crate::harness::hosted::Laptop::new(
-                ["Claude Code".to_owned()],
-                crate::harness::hosted::Unlisted::Deny,
+            Some(
+                crate::harness::hosted::Laptop::new(
+                    ["Claude Code".to_owned()],
+                    crate::harness::hosted::Unlisted::Deny,
+                )
+                .spawn(
+                    running.server(),
+                    &host,
+                    root.clone(),
+                    &laptop,
+                    &crate::support::WORKSPACE,
+                )
+                .await,
             )
-            .spawn(
-                running.server(),
-                &host,
-                root.clone(),
-                &laptop,
-                &crate::support::WORKSPACE,
-            )
-            .await
-        });
+        } else {
+            None
+        };
         Self {
             person: hex::encode(root.verifying_key().to_bytes()),
             root,
