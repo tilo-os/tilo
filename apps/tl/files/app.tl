@@ -284,6 +284,16 @@ action open_entry(f: Files, e: Entry) uses files, time {
     }
 }
 
+/// A press on an entry: a folder opens as a person presses it once, and a file is read into the
+/// inspector beside the list.
+action touch_entry(f: Files, e: Entry) uses files, time {
+    if e.folder {
+        go(f, e.path)
+    } else {
+        inspect(f, e)
+    }
+}
+
 /// Notes that the file `path` was opened, so it stands under Recent.
 action note_recent(f: Files, name: Text, path: Text) uses time {
     if f.recent.any(r -> r.path == path) {
@@ -565,12 +575,6 @@ fn size_of(n: Int) -> Text {
     }
 }
 
-/// The sort key of one entry as text, so a folder orders the way the person asked whatever it
-/// holds.
-fn by_name(e: Entry) -> Text {
-    e.name.lower()
-}
-
 /// The entries of `l` the person may see, named `found` where they searched, in the order the
 /// window sorts them: folders above files.
 fn shown(l: Listing, s: Session, found: Text) -> List<Entry> {
@@ -599,9 +603,9 @@ fn ordered(entries: List<Entry>, sort: SortBy, ascending: Bool) -> List<Entry> {
             entries.sort_by(e -> extension(e.name), desc)
         }
     } else if ascending {
-        entries.sort_by(by_name)
+        entries.sort_by(e -> e.name.lower())
     } else {
-        entries.sort_by(by_name, desc)
+        entries.sort_by(e -> e.name.lower(), desc)
     }
 }
 
@@ -663,7 +667,7 @@ view files(f: Files) {
     state chosen: List<Text> = []
     if let s = f.sessions.first() {
         let listing = place_listing(s)
-        let visible = if let l = listing { shown(l, s, found) } else { [] }
+        let visible: List<Entry> = if let l = listing { shown(l, s, found) } else { [] }
         ui.NavShell(
             content_kind: if s.grid { .grid } else { .list },
             title: name_of(s.here),
@@ -909,7 +913,7 @@ view entry_list(f: Files, s: Session, entries: List<Entry>, chosen: List<Text>, 
     ui.VirtualList(name: "Files", multi_select: true, in_column: true) {
         on selected(items): set(chosen, items.map(e -> e.path))
         on activate(e): open_entry(f, e)
-        on select(e): set(chosen, [e.path]).then(inspect(f, e))
+        on select(e): set(chosen, [e.path]).then(touch_entry(f, e))
         for e in entries {
             ui.ListItem(item: e, keys: ["Ctrl+C", "Ctrl+X", "Delete"]) {
                 on shortcut(k): key_on(f, chosen, e.path, k)
