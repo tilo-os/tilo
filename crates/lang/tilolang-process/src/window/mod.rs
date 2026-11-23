@@ -23,6 +23,7 @@ pub mod app;
 pub mod hosted;
 pub mod i18n;
 pub mod resource;
+pub mod shown_on_page;
 pub mod updates;
 
 use std::sync::{Arc, OnceLock};
