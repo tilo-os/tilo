@@ -1,0 +1,24 @@
+# Books (tilolang): the shelf, the reading settings and a reading face chosen.
+# Starting empty, a shelf has no book to seed without a file chooser; the
+# settings are the app's own actions and view state.
+
+[[situation]]
+name = "library"
+title = "The library"
+
+[[situation]]
+name = "reading-settings"
+title = "Reading settings"
+
+[[situation.steps]]
+perform = { target = "ToggleGroup", semantic_target = "segment:1", action = "activate" }
+
+[[situation]]
+name = "serif-font"
+title = "A reading font chosen"
+
+[[situation.steps]]
+perform = { target = "ToggleGroup", semantic_target = "segment:1", action = "activate" }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "set_face", args = { face = "Literata" } }
