@@ -1442,19 +1442,36 @@ class Walk:
     def op_restart_app(self, value) -> dict:
         """Quit the app `value` (a directory name or its id, `true` for this
         walk's own app) and open it again through the desktop's launcher: the
-        cold start a person meets when an app crashes, which must still show
-        what they made."""
+        cold start a person meets when an app stops and they open it again,
+        which must still show what they made. Closing its window ends it as a
+        person's quit does; an app still running without one is forced to end,
+        as a hung app is."""
         ident = self.v["id"] if value is True else (
             value if "." in value else real_apps.app_id(value))
         began = time.monotonic()
         window = next((w for w in self.session.windows() if w.get("app_id") == ident), None)
         if window is not None:
-            self.session.invoke(SHELL, SHELL_RESOURCE, "force-quit-app",
+            self.session.invoke(SHELL, SHELL_RESOURCE, "close-tab",
                                 {"tab": str(window["tab"])})
-            until_value(f"the window of {ident} to go",
-                        lambda: all(w.get("app_id") != ident for w in self.session.windows()), 60)
+            until_value(f"the window of {ident} to close",
+                        lambda: all(w.get("app_id") != ident for w in self.session.windows()), 30)
+        # An app exits with its last window; one that stays is ended the way a
+        # person ends an app that will not.
+        try:
+            until_value(f"{ident} to end", lambda: not self.session.processes(ident), 15)
+            forced = False
+        except Failed:
+            forced = True
+            if window is not None:
+                self.session.invoke(SHELL, SHELL_RESOURCE, "force-quit-app",
+                                    {"tab": str(window["tab"])})
+                until_value(f"{ident} to end", lambda: not self.session.processes(ident), 30)
         self.session.launch(ident, 120)
-        return {"restarted": ident, "took_ms": round((time.monotonic() - began) * 1000)}
+        until_value(f"the window of {ident}",
+                    lambda: next((w for w in self.session.windows()
+                                  if w.get("app_id") == ident), None), 60)
+        return {"restarted": ident, "forced": forced,
+                "took_ms": round((time.monotonic() - began) * 1000)}
 
     def op_window_frames(self, value) -> dict:
         """How many frames the window of `value` (a directory name or id, `true`
@@ -1576,9 +1593,8 @@ class Walk:
             raise Failed(problem)
         return {"read": invoked, "is": {path: pick(each, self.variant)
                                         for path, each in (value.get("is") or {}).items()},
-                **({"contains": value["contains"]} if "contains" in value else {}),
-                # What it answered, for a step recording a shape a walk is written to.
-                "answered": json.dumps(answer, ensure_ascii=False)[:4000]}
+                "answered": json.dumps(answer, ensure_ascii=False)[:4000],
+                **({"contains": value["contains"]} if "contains" in value else {})}
 
     def op_do_app(self, value) -> dict:
         """Run an action the app publishes, found by the app and the operation
