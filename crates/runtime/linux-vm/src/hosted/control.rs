@@ -60,6 +60,7 @@ pub struct OpenApp {
     pub launch: tilo_actions::remote::linux_apps::AppLaunch,
 }
 
+/// New variants go last: the encoding names a variant by its place.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Request {
     /// Wake the VM (starting it on first use) with `shares` mounted.
@@ -84,12 +85,6 @@ pub enum Request {
         account: String,
         from_ms: u64,
         to_ms: u64,
-    },
-    /// Which host runs this VM: no host answers it, as the device that takes a workspace's
-    /// Linux turn is the one with room. Kept so the variants after it keep their encoding.
-    /// New variants go last: the encoding names a variant by its place.
-    Place {
-        vm: VmRequest,
     },
     OpenBrowser {
         browser: OpenBrowser,
@@ -193,10 +188,6 @@ pub enum Reply {
     Error(String),
     /// The VM waits for room, in words for whoever ran it; ask again.
     Busy(String),
-    /// No host answers it any more; kept so the variants after it keep their encoding.
-    Placed {
-        host: String,
-    },
     /// A workspace's browser session is up, joined to the workspace. `opened_ms`: what opening
     /// took, when this request opened it; `provider`: the token the window it holds publishes
     /// under.
@@ -393,10 +384,6 @@ mod tests {
                 b"\x04\x01a\x01\xac\x02".to_vec(),
             ),
             (
-                Request::Place { vm: vm.clone() },
-                bytes(&[b"\x05", vm_bytes]),
-            ),
-            (
                 Request::OpenBrowser {
                     browser: OpenBrowser {
                         workspace: "ws".into(),
@@ -406,13 +393,13 @@ mod tests {
                         material: "m".into(),
                     },
                 },
-                b"\x06\x02ws\x01a\x00\x01\x02/s\x01m".to_vec(),
+                b"\x05\x02ws\x01a\x00\x01\x02/s\x01m".to_vec(),
             ),
             (
                 Request::StopBrowser {
                     workspace: "ws".into(),
                 },
-                b"\x07\x02ws".to_vec(),
+                b"\x06\x02ws".to_vec(),
             ),
             (
                 Request::OpenApp {
@@ -424,27 +411,27 @@ mod tests {
                         launch: tilo_actions::remote::linux_apps::AppLaunch::new("xterm").unwrap(),
                     },
                 },
-                b"\x08\x02ws\x01a\x00\x01m\x05xterm".to_vec(),
+                b"\x07\x02ws\x01a\x00\x01m\x05xterm".to_vec(),
             ),
             (
                 Request::StopApps {
                     workspace: "ws".into(),
                 },
-                b"\x09\x02ws".to_vec(),
+                b"\x08\x02ws".to_vec(),
             ),
             (
                 Request::Branch {
                     vm,
                     from: "src".into(),
                 },
-                bytes(&[b"\x0a", vm_bytes, b"\x03src"]),
+                bytes(&[b"\x09", vm_bytes, b"\x03src"]),
             ),
             (
                 Request::Delete {
                     workspace: "ws".into(),
                     environment: "default".into(),
                 },
-                bytes(&[b"\x0b", named]),
+                bytes(&[b"\x0a", named]),
             ),
         ]
     }
@@ -459,7 +446,7 @@ mod tests {
                     environment: "default".into(),
                     to: "/m".into(),
                 },
-                bytes(&[b"\x0c", named, b"\x02/m"]),
+                bytes(&[b"\x0b", named, b"\x02/m"]),
             ),
             (
                 Request::ReplicateVm {
@@ -467,14 +454,14 @@ mod tests {
                     environment: "default".into(),
                     to: "/m".into(),
                 },
-                bytes(&[b"\x0d", named, b"\x02/m"]),
+                bytes(&[b"\x0c", named, b"\x02/m"]),
             ),
-            (Request::Drain, b"\x0e".to_vec()),
+            (Request::Drain, b"\x0d".to_vec()),
         ]
     }
 
-    /// A server and ush built before a request was added still speak to this host: every
-    /// request they send means here what it meant to them, byte for byte.
+    /// Every request is pinned byte for byte: a change to one is a change to the protocol the
+    /// host and its clients (ush, the member, the CLI), all shipped in one image, speak.
     #[test]
     fn every_request_keeps_its_encoding() {
         let named: &[u8] = b"\x02ws\x07default";

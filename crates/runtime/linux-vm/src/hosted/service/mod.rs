@@ -1490,7 +1490,6 @@ impl Service {
                 self.stop_apps(&workspace);
                 Reply::Done
             }
-            Request::Place { .. } => Reply::Error("a host runs VMs; it places none".to_owned()),
             Request::Branch { vm, from } => self.answer_branch(&vm, &from),
             Request::Delete {
                 workspace,

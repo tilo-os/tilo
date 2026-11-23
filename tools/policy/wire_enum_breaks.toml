@@ -679,3 +679,13 @@ reason = "the search request and answer went: a workspace's search is the `tilo.
 file = "crates/collab/action-policy/src/workspace.rs"
 enum = "Change"
 reason = "`SetMemberRoles`, a whole-set role assignment no build ever wrote, went. It was added after the stored governance this tree still reads was written, so that governance numbers its variants without it and reads as it was written again; only frames written in the few days between its addition and its removal shift, and those are development data"
+
+[[break]]
+file = "crates/runtime/linux-vm/src/hosted/control.rs"
+enum = "Request"
+reason = "the hosted-VM control protocol is one request and one reply per connection on the host's local socket, never kept; the host and its every client (ush, the member, the CLI) ship in one image, so no bytes written by another build are read"
+
+[[break]]
+file = "crates/runtime/linux-vm/src/hosted/control.rs"
+enum = "Reply"
+reason = "the host's answer on the same local connection, never kept, between ends shipped in one image"

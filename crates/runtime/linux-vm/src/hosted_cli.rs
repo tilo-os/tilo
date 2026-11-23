@@ -588,10 +588,6 @@ fn ask(flags: &Flags, request: &Request) -> Result<ExitCode, String> {
             );
             Ok(ExitCode::SUCCESS)
         }
-        Reply::Placed { host } => {
-            println!("{host}");
-            Ok(ExitCode::SUCCESS)
-        }
         Reply::Moved { vm, bytes } => {
             println!("{vm}: {bytes} bytes moved");
             Ok(ExitCode::SUCCESS)
