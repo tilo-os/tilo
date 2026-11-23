@@ -214,7 +214,7 @@ impl DesktopChrome {
     fn step_tab(&self, steps: isize) {
         let next = self.handle.read(|tree| {
             let workspace = tree.active_workspace()?;
-            let strip_id = tree.active_strip.get(&workspace.id()).copied()?;
+            let strip_id = tree.active_strip_for(workspace)?;
             let strip = workspace.strips.iter().find(|strip| strip.id == strip_id)?;
             let focused = tree.active_group_for(strip.id)?;
             let group = strip

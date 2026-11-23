@@ -165,15 +165,11 @@ pub fn focused_tab(tree: &Layout) -> Option<TabId> {
 
 fn front_tab(tree: &Layout) -> Option<&tilo_desktop_model::Tab> {
     let workspace = tree.active_workspace()?;
-    tree.active_strip
-        .get(&workspace.id())
-        .and_then(|id| workspace.strips.iter().find(|strip| strip.id == *id))
-        .or_else(|| workspace.strips.first())
-        .and_then(|strip| {
-            tree.active_group_for(strip.id)
-                .and_then(|id| strip.window_groups.iter().find(|group| group.id == id))
-                .or_else(|| strip.window_groups.first())
-        })
+    let strip_id = tree.active_strip_for(workspace)?;
+    let strip = workspace.strips.iter().find(|strip| strip.id == strip_id)?;
+    tree.active_group_for(strip.id)
+        .and_then(|id| strip.window_groups.iter().find(|group| group.id == id))
+        .or_else(|| strip.window_groups.first())
         .and_then(|group| group.tabs.iter().find(|tab| tab.id == group.active_tab))
 }
 

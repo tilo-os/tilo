@@ -374,9 +374,9 @@ pub(super) fn window_rows(
         // it, or the shell's own word for a workspace nobody has named yet. Never the id it is
         // numbered by.
         let workspace_name = tilo_session_core::desktop::names::workspace(&workspace.name);
-        let active_strip = tree.active_strip.get(&workspace.id());
+        let active_strip = tree.active_strip_for(workspace);
         for strip in &workspace.strips {
-            let strip_active = workspace_active && active_strip == Some(&strip.id);
+            let strip_active = workspace_active && active_strip == Some(strip.id);
             // The window the strip focuses, read through the strip's own rule: a pointer left on a
             // group carried to another strip names no window here.
             let active_group = tree

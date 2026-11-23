@@ -63,7 +63,7 @@ pub use testing::{NoticeTiles, PermissiveRules};
 #[must_use]
 pub fn shell_is_empty(tree: &Layout) -> bool {
     tree.active_workspace().is_some_and(|workspace| {
-        tilo_session_core::desktop::navigation::active_strip(tree, workspace)
+        tree.active_strip_for(workspace)
             .and_then(|id| workspace.strips.iter().find(|strip| strip.id == id))
             .is_none_or(|strip| strip.window_groups.is_empty())
     })

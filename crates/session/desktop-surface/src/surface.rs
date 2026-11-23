@@ -1517,7 +1517,7 @@ impl DesktopSurface {
             }
             return;
         };
-        let strip_id = navigation::active_strip(tree, workspace);
+        let strip_id = tree.active_strip_for(workspace);
         if let Some(strip_id) = strip_id
             && !self.rows.contains_key(&strip_id)
             && let Some(strip) = workspace.strips.iter().find(|s| s.id == strip_id)

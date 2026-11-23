@@ -98,6 +98,8 @@ impl PersonView {
     #[must_use]
     pub fn of(tree: &Layout, id: WorkspaceId) -> Self {
         let mut view = Self {
+            // Raw record: an unrecorded active_strip must stay `None` in a `PersonView` snapshot
+            // rather than pinning the view to the first strip.
             front_strip: tree.active_strip.get(&id).copied(),
             ..Self::default()
         };
@@ -204,6 +206,7 @@ impl PersonView {
         changed |= self.place_own(workspace);
         if let Some(strip) = self.front_strip
             && workspace.strips.iter().any(|held| held.id == strip)
+            // Raw record: compare against the stored entry so applying reports whether the map changed.
             && tree.active_strip.get(&id) != Some(&strip)
         {
             tree.active_strip.insert(id, strip);

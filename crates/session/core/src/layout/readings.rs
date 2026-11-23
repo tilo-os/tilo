@@ -271,18 +271,14 @@ pub(super) fn reading_of(
             // rows of the one in front, so the reading says which that is.
             current: workspace.id() == tree.active,
         });
-        let front = tree
-            .active_strip
-            .get(&workspace.id())
-            .and_then(|id| workspace.strips.iter().position(|row| row.id == *id))
-            .unwrap_or(0);
+        let front = tree.active_strip_for(workspace);
         for (at, row) in workspace.strips.iter().enumerate() {
             reading.rows.push(RowReading {
                 key: row.id.0.to_string(),
                 workspace: workspace.id().to_string(),
                 name: crate::desktop::names::strip_named(&row.name, at),
                 shell: SHELL.to_owned(),
-                current: at == front,
+                current: Some(row.id) == front,
             });
             for group in &row.window_groups {
                 let canvas = workspace.layout.place_of(group.id);

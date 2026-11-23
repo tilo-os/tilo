@@ -521,6 +521,8 @@ impl Layout {
         let workspace_id = workspace.id();
         workspace.strips.remove(strip_idx);
         let fallback = workspace.strips.first().map(|strip| strip.id);
+        // Raw record: `strip_id` was just removed from `workspace.strips`, so `active_strip_for`
+        // would already filter it out.
         if self.active_strip.get(&workspace_id) == Some(&strip_id) {
             match fallback {
                 Some(first) => {

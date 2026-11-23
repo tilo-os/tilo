@@ -170,9 +170,8 @@ impl SwitcherModel {
             })
             .collect();
         let focused = desktop
-            .active_strip
-            .get(&workspace.id())
-            .and_then(|id| strips.iter().position(|strip| strip.id == *id))
+            .active_strip_for(workspace)
+            .and_then(|id| strips.iter().position(|strip| strip.id == id))
             .unwrap_or(0);
         Self {
             strips,

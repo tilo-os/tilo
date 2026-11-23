@@ -701,3 +701,149 @@ fn the_strips_ribbon_names_each_strip_where_it_stands() {
         targets.keys().collect::<Vec<_>>()
     );
 }
+
+fn shortcut_tree_with_strip_record(record: Option<StripId>) -> Layout {
+    let work_id = WorkspaceId::from_u128(1);
+    let mut tree = layout_tree();
+    let second_tab = Tab {
+        id: 21,
+        title: "Notes 2".into(),
+        tile: TileContent::LocalApp {
+            app_id: "so.tilo.notes".into(),
+            label: "Notes 2".into(),
+            note: String::new(),
+        },
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    };
+    let mail_tab = Tab {
+        id: 22,
+        title: "Mail".into(),
+        tile: TileContent::LocalApp {
+            app_id: "so.tilo.mail".into(),
+            label: "Mail".into(),
+            note: String::new(),
+        },
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    };
+    tree.workspaces[0].strips[0].window_groups[0]
+        .tabs
+        .push(second_tab);
+    tree.workspaces[0].strips[0]
+        .window_groups
+        .push(WindowGroup {
+            id: 4,
+            active_tab: mail_tab.id,
+            tabs: vec![mail_tab],
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+    tree.workspaces[0]
+        .strips
+        .push(Strip::new(StripId(5), "Side"));
+    match record {
+        None => {
+            tree.active_strip.remove(&work_id);
+        }
+        Some(stale) => {
+            tree.active_strip.insert(work_id, stale);
+        }
+    }
+    tree
+}
+
+fn chrome_and_shell(tree: &Layout) -> (ui::headless::FrameHarness, DesktopChrome, DesktopHandle) {
+    let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
+    let mut shell =
+        ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
+    shell.relayout();
+    let chrome = DesktopChrome::new(
+        handle.clone(),
+        "g".into(),
+        Rc::new(PermissiveRules::new(handle.clone())),
+        TopBarChrome::from_tree(tree),
+        AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
+        false,
+    );
+    (shell, chrome, handle)
+}
+
+#[test]
+fn missing_or_stale_active_strip_falls_back_for_window_and_tab_shortcuts() {
+    en();
+    let work_id = WorkspaceId::from_u128(1);
+
+    for record in [None, Some(StripId(99))] {
+        let tree = shortcut_tree_with_strip_record(record);
+
+        // Window focus stepping and jump-to-nth-window fall back to the first surviving strip.
+        let (mut shell, mut chrome, handle) = chrome_and_shell(&tree);
+        assert_eq!(
+            handle.read(|t| t.active_strip.get(&work_id).copied()),
+            record
+        );
+        assert_eq!(
+            chrome.window_tab(Some(1), None),
+            Some(22),
+            "record={record:?}: stepping focus right falls back to the first surviving strip"
+        );
+        assert_eq!(
+            chrome.window_tab(None, Some(1)),
+            Some(22),
+            "record={record:?}: jumping to the nth window falls back to the first surviving strip"
+        );
+        assert!(chrome.shortcut(ui::shortcut_table::ShortcutAction::FocusNextWindow));
+        shell.relayout();
+        assert_eq!(
+            handle.read(|t| t.active_group_for(StripId(2))),
+            Some(4),
+            "record={record:?}: FocusNextWindow moves focus to the second window on the fallback strip"
+        );
+
+        // Jump-to-nth-window shortcut falls back to the first surviving strip.
+        let (mut shell, mut chrome, handle) = chrome_and_shell(&tree);
+        assert_eq!(
+            handle.read(|t| t.active_strip.get(&work_id).copied()),
+            record
+        );
+        assert!(chrome.shortcut(ui::shortcut_table::ShortcutAction::FocusGroup2));
+        shell.relayout();
+        assert_eq!(
+            handle.read(|t| t.active_group_for(StripId(2))),
+            Some(4),
+            "record={record:?}: FocusGroup2 moves focus to the second window on the fallback strip"
+        );
+
+        // Tab cycling falls back to the first surviving strip.
+        let (mut shell, mut chrome, handle) = chrome_and_shell(&tree);
+        assert_eq!(
+            handle.read(|t| t.active_strip.get(&work_id).copied()),
+            record
+        );
+        assert!(chrome.shortcut(ui::shortcut_table::ShortcutAction::NextTab));
+        shell.relayout();
+        assert_eq!(
+            handle.read(|t| t.workspaces[0].strips[0].window_groups[0].active_tab),
+            21,
+            "record={record:?}: NextTab cycles tabs on the fallback strip"
+        );
+
+        // Strip stepping falls back to index 0 (the first surviving strip) and advances to Side.
+        let (mut shell, mut chrome, handle) = chrome_and_shell(&tree);
+        assert_eq!(
+            handle.read(|t| t.active_strip.get(&work_id).copied()),
+            record
+        );
+        assert!(chrome.shortcut(ui::shortcut_table::ShortcutAction::NextStrip));
+        shell.relayout();
+        assert_eq!(
+            handle.read(|t| t.active_strip_for(&t.workspaces[0])),
+            Some(StripId(5)),
+            "record={record:?}: NextStrip steps from the fallback strip to the next strip"
+        );
+    }
+}

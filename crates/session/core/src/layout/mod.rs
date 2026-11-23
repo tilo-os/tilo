@@ -880,11 +880,7 @@ impl Layout {
                     .active_workspace()
                     .ok_or("the layout has no workspace in front")?,
             };
-            let row = tree
-                .active_strip
-                .get(&workspace.id())
-                .copied()
-                .or_else(|| workspace.strips.first().map(|row| row.id));
+            let row = tree.active_strip_for(workspace);
             (workspace.id(), row)
         };
         drop(tree);

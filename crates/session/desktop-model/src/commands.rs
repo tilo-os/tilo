@@ -1019,8 +1019,9 @@ pub fn apply_to_workspace(
     }
     if let DesktopCommand::RemoveStrip { strip } = command {
         let removed = StripId(*strip);
-        // A removed strip shown goes to the workspace's first, as the
-        // native shell's removal does; it keeps no focused window.
+        // A removed strip shown goes to the workspace's first, as the native shell's removal does;
+        // it keeps no focused window. Reads the raw record because `removed` was already removed
+        // from `workspace.strips` above, so `active_strip_for` would already filter it out.
         if tree.active_strip.get(&active) == Some(&removed)
             && let Some(first) = first
         {

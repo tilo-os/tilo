@@ -121,13 +121,7 @@ impl<'a> OpenContext<'a> {
     /// The active workspace's focus in `tree`: its active strip (else its
     /// first) and that strip's selected group.
     pub fn focused(tree: &Layout, intent: OpenIntent, viewport: Option<&'a StripViewport>) -> Self {
-        let strip = tree.active_workspace().and_then(|ws| {
-            tree.active_strip
-                .get(&ws.id())
-                .filter(|id| ws.strips.iter().any(|s| s.id == **id))
-                .or_else(|| ws.strips.first().map(|s| &s.id))
-                .copied()
-        });
+        let strip = tree.active_strip_id();
         Self {
             intent,
             strip,

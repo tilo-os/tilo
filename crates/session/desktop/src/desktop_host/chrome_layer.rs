@@ -1584,7 +1584,7 @@ impl DesktopChrome {
     fn window_tab(&self, step: Option<isize>, nth: Option<usize>) -> Option<u64> {
         self.handle.read(|tree| {
             let workspace = tree.active_workspace()?;
-            let strip_id = tree.active_strip.get(&workspace.id()).copied()?;
+            let strip_id = tree.active_strip_for(workspace)?;
             let strip = workspace.strips.iter().find(|s| s.id == strip_id)?;
             let index = match (step, nth) {
                 (_, Some(nth)) => nth,
@@ -1607,9 +1607,8 @@ impl DesktopChrome {
         let next = self.handle.read(|tree| {
             let workspace = tree.active_workspace()?;
             let current = tree
-                .active_strip
-                .get(&workspace.id())
-                .and_then(|id| workspace.strips.iter().position(|s| s.id == *id))
+                .active_strip_for(workspace)
+                .and_then(|id| workspace.strips.iter().position(|s| s.id == id))
                 .unwrap_or(0);
             let strip = workspace.strips.get(pick(current)?)?;
             Some((workspace.id().to_string(), strip.id.0.to_string()))

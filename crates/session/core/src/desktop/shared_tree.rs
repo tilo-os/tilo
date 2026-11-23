@@ -97,6 +97,8 @@ pub fn receive(local: &Layout, incoming: Layout, local_tabs: &[TabId]) -> Layout
         incoming.active = local.active;
     }
     for workspace in &incoming.workspaces {
+        // Raw record from the previous local tree: carry it onto the incoming tree only when the
+        // incoming workspace still holds that strip, leaving `incoming` unset otherwise.
         if let Some(strip) = local.active_strip.get(&workspace.id())
             && workspace.strips.iter().any(|s| s.id == *strip)
         {

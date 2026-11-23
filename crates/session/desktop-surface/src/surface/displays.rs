@@ -25,7 +25,7 @@ use ui::winit::event::WindowEvent;
 use ui::{TextRenderer, Theme};
 
 use super::{DesktopHandle, DesktopSurface, Shared};
-use tilo_session_core::desktop::navigation::{self, Admitted, RouteIds};
+use tilo_session_core::desktop::navigation::{Admitted, RouteIds};
 
 /// Where stepping focus along a strip spread over several displays goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -298,7 +298,7 @@ impl Shared {
             tree.show_strip_on(display, own);
         }
         let target = tree.active_workspace().and_then(|workspace| {
-            let strip_id = navigation::active_strip(tree, workspace)?;
+            let strip_id = tree.active_strip_for(workspace)?;
             let strip = workspace.strips.iter().find(|s| s.id == strip_id)?;
             let group = pick
                 .filter(|g| tree.outputs.display_of(*g) == Some(display))
@@ -344,7 +344,7 @@ impl Shared {
         let Some(workspace) = tree.active_workspace() else {
             return false;
         };
-        let Some(strip_id) = navigation::active_strip(tree, workspace) else {
+        let Some(strip_id) = tree.active_strip_for(workspace) else {
             return false;
         };
         let Some(strip) = workspace.strips.iter().find(|s| s.id == strip_id) else {
@@ -590,10 +590,7 @@ impl DesktopHandle {
         if !tree.is_partitioned() || steps == 0 {
             return false;
         }
-        let Some(strip) = tree
-            .active_workspace()
-            .and_then(|workspace| navigation::active_strip(tree, workspace))
-        else {
+        let Some(strip) = tree.active_strip_id() else {
             return false;
         };
         let Some(group) = tree.active_group_for(strip) else {

@@ -7,7 +7,7 @@
 //! `desktop_navigation.rs`) onto `tilo-desktop-model`.
 use crate::desktop::i18n::t;
 use serde::{Deserialize, Serialize};
-use tilo_desktop_model::{GroupId, Layout, StripId, TabId, WindowGroup, Workspace, WorkspaceId};
+use tilo_desktop_model::{GroupId, Layout, StripId, TabId, WindowGroup, WorkspaceId};
 use tilo_resource::Effect;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1536,11 +1536,6 @@ pub fn locate(tree: &Layout, ids: RouteIds) -> Option<&WindowGroup> {
         .filter(|g| g.tabs.iter().any(|t| t.id == ids.tab))
 }
 
-/// The strip a workspace shows: its recorded active strip, else its first.
-pub fn active_strip(tree: &Layout, workspace: &Workspace) -> Option<StripId> {
-    tree.active_strip_for(workspace)
-}
-
 /// The focused window of the active workspace.
 pub fn active_route(tree: &Layout) -> Option<RouteIds> {
     let workspace = tree.active_workspace()?;
@@ -1802,7 +1797,7 @@ impl Presentation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_desktop_model::{Strip, Tab, TileContent, WindowWidth};
+    use tilo_desktop_model::{Strip, Tab, TileContent, WindowWidth, Workspace};
 
     fn tree() -> Layout {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(u128::MAX), "Office");

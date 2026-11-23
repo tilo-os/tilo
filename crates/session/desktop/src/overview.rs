@@ -446,7 +446,7 @@ fn overview_strips(
     now: u64,
 ) -> Vec<OverviewStrip> {
     let people = workspace_people(ws, tree, host, now);
-    let active_strip = tree.active_strip.get(&ws.id()).copied();
+    let active_strip = tree.active_strip_for(ws);
     ws.strips
         .iter()
         .enumerate()
@@ -1226,5 +1226,64 @@ mod workspace_tests {
         spatial_projection_preserves_strip_group_and_tab_nesting();
         a_members_focus_is_attached_to_the_tab_not_the_workspace_header();
         a_window_titled_with_its_apps_slug_reads_as_the_app();
+    }
+
+    #[test]
+    fn missing_or_stale_active_strip_marks_the_first_surviving_strip_as_current() {
+        let mut w = ws("Work");
+        let first_strip = StripId(fresh_id());
+        let second_strip = StripId(fresh_id());
+        let group_id = fresh_id();
+        let tab_id = fresh_id();
+        w.strips = vec![
+            Strip {
+                id: first_strip,
+                name: "Main".to_string(),
+                window_groups: vec![WindowGroup {
+                    id: group_id,
+                    tabs: vec![Tab {
+                        id: tab_id,
+                        title: "Notes".to_string(),
+                        tile: TileContent::LocalApp {
+                            app_id: "so.tilo.notes".to_string(),
+                            label: "Notes".to_string(),
+                            note: String::new(),
+                        },
+                        app_title: None,
+                        view: String::new(),
+                        pinned: false,
+                    }],
+                    active_tab: tab_id,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                    focus_history: Vec::new(),
+                }],
+            },
+            Strip::new(second_strip, "Side"),
+        ];
+        let mut tree = tree_with(vec![w]);
+        let workspace_id = tree.active;
+        tree.set_active_group(first_strip, group_id);
+
+        for record in [None, Some(StripId(99_999))] {
+            match record {
+                None => {
+                    tree.active_strip.remove(&workspace_id);
+                }
+                Some(stale) => {
+                    tree.active_strip.insert(workspace_id, stale);
+                }
+            }
+            let card = &workspace_cards(&tree)[0];
+            assert!(
+                card.strips[0].is_current,
+                "record={record:?}: missing or stale active_strip marks the first surviving strip current"
+            );
+            assert!(
+                card.strips[0].groups[0].is_current,
+                "record={record:?}: the fallback strip's active group is marked current"
+            );
+            assert!(!card.strips[1].is_current);
+        }
     }
 }
