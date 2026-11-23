@@ -472,9 +472,10 @@ async fn a_device_is_named_in_the_record_and_two_never_read_alike() {
 
 /// A browser keeps one key per open tab. A page asking for the record names
 /// its browser's tab keys: each its person's root certified for a device of
-/// theirs joins the record and is kept as that browser's; another root's key,
-/// an agent's grant and an agent asking are not taken in; and each page naming
-/// them replaces what the browser named before.
+/// theirs joins the record and is kept as that browser's; another root's key
+/// and an agent's grant are no tab of it; an agent asking is kept as an
+/// agent's key, naming no browser; and each page naming them replaces what the
+/// browser named before.
 #[tokio::test]
 async fn a_pages_browser_names_its_tab_devices_and_the_record_groups_them() {
     let dir = tempfile::tempdir().unwrap();
@@ -574,6 +575,11 @@ async fn a_pages_browser_names_its_tab_devices_and_the_record_groups_them() {
             .iter()
             .all(|listed| listed.cert.device_public_key != other.device_public_key),
         "an agent names no browser of the person's"
+    );
+    assert_eq!(
+        recorded_device(workspaces, &agent).await.kind,
+        crate::workspaces::person_workspace::devices::KeyKind::Agent,
+        "the agent that asked is among the person's keys, as an agent's"
     );
     server.shutdown().await;
 }

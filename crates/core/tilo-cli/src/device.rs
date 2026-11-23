@@ -348,7 +348,8 @@ pub fn key() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `tilo device ls`: the person's devices.
+/// `tilo device ls`: every key the person's root certified, each with what it is (`device`,
+/// `agent` or `script`); `tilo device revoke` takes any of them back.
 ///
 /// # Errors
 /// This computer's daemon does not run, or answered no list.
@@ -362,6 +363,7 @@ pub fn list(json: bool) -> Result<ExitCode> {
                 json!({
                     "device": device.key_hex,
                     "label": device.label,
+                    "kind": device.kind.as_str(),
                     "agent": device.agent,
                     "online": device.online,
                     "revoked": device.revoked,
@@ -389,7 +391,11 @@ pub fn list(json: bool) -> Result<ExitCode> {
             format!("  ({})", notes.join(", "))
         };
         let short = device.key_hex.get(..12).unwrap_or(&device.key_hex);
-        println!("{short}  {}{notes}", device.label);
+        println!(
+            "{short}  {:<6}  {}{notes}",
+            device.kind.as_str(),
+            device.label
+        );
     }
     Ok(ExitCode::SUCCESS)
 }

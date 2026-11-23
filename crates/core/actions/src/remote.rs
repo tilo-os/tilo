@@ -525,8 +525,8 @@ pub mod device_tickets {
         pub current: bool,
         /// Whether its trust was revoked.
         pub revoked: bool,
-        /// What the key is: a device of the person's, or a key acting for
-        /// them.
+        /// What the key is: a device of the person's, an agent's grant or a
+        /// script's key.
         #[serde(default)]
         pub kind: KeyKind,
         /// The browser profile it is a tab of, by the profile's id: a
@@ -565,18 +565,32 @@ pub mod device_tickets {
         /// One of their devices.
         #[default]
         Device,
-        /// A key acting for them: an agent's grant, a script's key.
+        /// An agent's grant: a key an agent signs with for them.
         Agent,
+        /// A key they made for their own script or backend.
+        Script,
     }
 
     impl KeyKind {
         /// What the key `capabilities` certify is.
         #[must_use]
         pub fn of(agent: bool, server_key: bool) -> Self {
-            if agent || server_key {
+            if server_key {
+                Self::Script
+            } else if agent {
                 Self::Agent
             } else {
                 Self::Device
+            }
+        }
+
+        /// The word a list shows it by, as it is serialized: `device`, `agent` or `script`.
+        #[must_use]
+        pub const fn as_str(self) -> &'static str {
+            match self {
+                Self::Device => "device",
+                Self::Agent => "agent",
+                Self::Script => "script",
             }
         }
     }

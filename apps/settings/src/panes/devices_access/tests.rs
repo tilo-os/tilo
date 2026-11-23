@@ -4,9 +4,11 @@
 use super::*;
 
 use ui::prelude::TestApp;
+use ui::tilo_actions::remote::mcp_server::Reach;
 use ui::tilo_actions::remote::{
-    ActionCallError, Caller, Completer, InvocationReceipt, InvokeRequest, ResourceAddress,
-    ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake, device_tickets,
+    ActionCallError, Caller, Completer, Confirmation, InvocationReceipt, InvokeRequest,
+    ResourceAddress, ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake,
+    device_tickets,
 };
 
 use crate::resource::SettingsShell;
@@ -697,10 +699,7 @@ tilo_test_env::scenario! {
             granted_ms: 0,
             last_ms: None,
             sessions: Vec::new(),
-            device: "laptop".into(),
-            expires_ms: None,
             browser_pages: true,
-            script_key: false,
         });
         let model = AccessModel::shown(sample);
         let agents = model.agents();
@@ -713,9 +712,11 @@ tilo_test_env::scenario! {
         assert!(agents[1].grant.is_some(), "the API's grant joins its key");
         assert_eq!(
             agents[2].removal(),
-            DevicesAccessEffect::RevokeAgent {
-                grant: "bb".repeat(32)
-            }
+            DevicesAccessEffect::RevokeDevice {
+                device: "bb".repeat(32),
+                reason: "retired".into(),
+            },
+            "an agent's key is taken back as every key of the person's is"
         );
         assert_eq!(plain(&agent_may(&agents[2])), "Only in Launch plan");
     }
@@ -759,8 +760,8 @@ tilo_test_env::scenario! {
         .expect("the script's key is published");
         assert_eq!(
             verbs(&nightly),
-            ["revoke-agent", "stop-session"],
-            "remove, and stop its open session"
+            ["rename-device", "revoke-device", "stop-session"],
+            "name it, take it back as any key, and stop its open session"
         );
         assert_eq!(
             asks(offered(&nightly, "stop-session")),

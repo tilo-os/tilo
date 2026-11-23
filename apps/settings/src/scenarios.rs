@@ -448,6 +448,20 @@ pub(crate) fn access_fixture(
                 expires_ms: Some(NOW + 21 * DAY),
                 ..device(5, "Claude Code on laptop")
             },
+            DeviceView {
+                kind: KeyKind::Agent,
+                issued_ms: Some(NOW - 2 * DAY),
+                expires_ms: Some(NOW + 28 * DAY),
+                last_active_ms: Some(NOW - DAY),
+                workspace: Some("Launch plan".into()),
+                ..device(0xbb, "ChatGPT")
+            },
+            DeviceView {
+                kind: KeyKind::Script,
+                issued_ms: Some(NOW - 30 * DAY),
+                last_active_ms: Some(NOW - 7 * 60 * MINUTE),
+                ..device(0xcc, "Nightly export")
+            },
         ],
         api: Server {
             endpoint: "https://mcp.tilo.sh".into(),
@@ -462,10 +476,7 @@ pub(crate) fn access_fixture(
                     granted_ms: NOW - 2 * DAY,
                     last_ms: Some(NOW - DAY),
                     sessions: Vec::new(),
-                    device: String::new(),
-                    expires_ms: Some(NOW + 28 * DAY),
                     browser_pages: false,
-                    script_key: false,
                 },
                 Grant {
                     id: "cc".repeat(32),
@@ -477,10 +488,7 @@ pub(crate) fn access_fixture(
                         name: "Nightly export #12".into(),
                         started_ms: NOW - 2 * MINUTE,
                     }],
-                    device: "build-server".into(),
-                    expires_ms: None,
                     browser_pages: false,
-                    script_key: true,
                 },
             ],
             workspaces: Vec::new(),

@@ -18,8 +18,9 @@ pub fn valid_device_label(label: &str) -> bool {
         })
 }
 
-/// The record of the person's devices in their own workspace: each device's certificate, the
-/// name the person gave it, the agent it runs and whether their root took it back.
+/// The record of the person's keys in their own workspace: each key's certificate, what it is
+/// (a device, an agent's grant, a script's key), the name the person gave it, the agent it runs
+/// and whether their root took it back.
 pub const DEVICES: (&str, &str) = ("so.tilo.devices", "devices");
 
 /// The record of which browser each tab key is a tab of, in the person's own workspace.
@@ -146,14 +147,15 @@ pub fn fleet(
                     .get("revoked")
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false),
-                kind: if agent.is_some() {
-                    KeyKind::Agent
-                } else {
-                    KeyKind::of(
-                        cert.capabilities.agent.is_some(),
-                        cert.capabilities.server_key,
-                    )
-                },
+                kind: device
+                    .get("kind")
+                    .and_then(|kind| serde_json::from_value::<KeyKind>(kind.clone()).ok())
+                    .unwrap_or_else(|| {
+                        KeyKind::of(
+                            cert.capabilities.agent.is_some(),
+                            cert.capabilities.server_key,
+                        )
+                    }),
                 browser: records
                     .tab_groups
                     .get(format!("tab:{key}"))

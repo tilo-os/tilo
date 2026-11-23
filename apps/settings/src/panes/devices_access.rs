@@ -6,8 +6,8 @@ use std::rc::Rc;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, ViewCx};
 use ui::icons::Icon;
-use ui::tilo_actions::remote::mcp_server::{self, Grant, Reach, Server};
-use ui::tilo_actions::remote::{Confirmation, InvokeArgument, session_actions};
+use ui::tilo_actions::remote::mcp_server::{self, Grant, Server};
+use ui::tilo_actions::remote::{InvokeArgument, session_actions};
 use ui::tilo_resource::{self, Effect as _};
 use ui::widget::{
     Button, ButtonRole, Column, Container, DisclosureGroup, DisclosureRow, Element, ListRow, Row,
@@ -51,13 +51,6 @@ pub enum DevicesAccessEffect {
         browser: String,
         #[param("retired, lost, stolen or compromised", choices = REVOKE_REASONS)]
         reason: String,
-    },
-    /// Take an agent's grant back: its sessions end now and it gets in no more.
-    #[effect(kind = "outside")]
-    #[effect(job, row, destructive)]
-    RevokeAgent {
-        #[param("The grant's id, as the MCP server lists it")]
-        grant: String,
     },
     /// End an agent's open session, keeping its grant so it can come back.
     #[effect(kind = "outside")]
@@ -120,7 +113,7 @@ impl DevicesAccessEffect {
     const fn takes_back(&self) -> bool {
         matches!(
             self,
-            Self::RevokeDevice { .. } | Self::RevokeBrowser { .. } | Self::RevokeAgent { .. }
+            Self::RevokeDevice { .. } | Self::RevokeBrowser { .. }
         )
     }
 }
@@ -296,78 +289,52 @@ impl BrowserEntry<'_> {
 
 const GENERIC_BROWSER: &str = "Browser";
 
+/// A key acting for the person, as the record of their keys holds it (an agent's grant, a
+/// script's key, a computer an agent works on), with the MCP server's grant of it where the agent
+/// is connected there.
 struct AgentEntry<'a> {
-    key: Option<&'a DeviceView>,
+    key: &'a DeviceView,
     grant: Option<&'a Grant>,
 }
 
 impl AgentEntry<'_> {
     fn id(&self) -> String {
-        match (self.key, self.grant) {
-            (Some(key), _) => hex::encode(key.key),
-            (None, Some(grant)) => grant.id.clone(),
-            (None, None) => String::new(),
-        }
+        hex::encode(self.key.key)
     }
 
     fn label(&self) -> String {
-        if let Some(key) = self.key.filter(|key| !key.label.is_empty()) {
-            return key.label.clone();
-        }
-        match self.grant {
-            Some(grant) if grant.script_key && !grant.agent.is_empty() => grant.agent.clone(),
-            Some(grant) if !grant.device.is_empty() && !grant.agent.is_empty() => t_args(
-                "settings-access-agent-on",
-                &[
-                    ("agent", grant.agent.clone().into()),
-                    ("device", grant.device.clone().into()),
-                ],
-            ),
-            Some(grant) => app_of(grant),
-            None => t("settings-access-unnamed-agent"),
-        }
+        self.key.label.clone()
     }
 
     fn active_now(&self) -> bool {
-        self.key.is_some_and(|key| key.online)
-            || self.grant.is_some_and(|grant| !grant.sessions.is_empty())
+        self.key.online || self.grant.is_some_and(|grant| !grant.sessions.is_empty())
     }
 
     fn last_active(&self) -> Option<i64> {
-        let key = self.key.and_then(|key| key.last_active_ms);
         let grant = self.grant.and_then(|grant| grant.last_ms);
-        key.max(grant)
+        self.key.last_active_ms.max(grant)
     }
 
     fn connected(&self) -> Option<i64> {
         self.key
-            .and_then(|key| key.issued_ms)
+            .issued_ms
             .or_else(|| self.grant.map(|grant| grant.granted_ms))
     }
 
     fn expires(&self) -> Option<i64> {
-        self.key
-            .and_then(|key| key.expires_ms)
-            .or_else(|| self.grant.and_then(|grant| grant.expires_ms))
+        self.key.expires_ms
     }
 
     fn workspace(&self) -> Option<String> {
-        if let Some(key) = self.key {
-            return key.workspace.clone();
-        }
-        match self.grant.map(|grant| &grant.reach) {
-            Some(Reach::Workspace { name, .. }) => Some(name.clone()),
-            Some(Reach::Account) | None => None,
-        }
+        self.key.workspace.clone()
     }
 
+    /// Taking it back, the one way every key of the person's is: its root revokes it, and the
+    /// record marks it.
     fn removal(&self) -> DevicesAccessEffect {
-        match self.key {
-            Some(key) => DevicesAccessEffect::RevokeDevice {
-                device: hex::encode(key.key),
-                reason: REMOVED.to_owned(),
-            },
-            None => DevicesAccessEffect::RevokeAgent { grant: self.id() },
+        DevicesAccessEffect::RevokeDevice {
+            device: self.id(),
+            reason: REMOVED.to_owned(),
         }
     }
 }
@@ -528,17 +495,6 @@ impl AccessModel {
                     leaving: Some(tabs),
                 });
                 return Ok(());
-            }
-            DevicesAccessEffect::RevokeAgent { grant } => {
-                self.grant(grant)?;
-                leaving = Some(self.leave(vec![grant.clone()]));
-                remote.invoke(
-                    mcp_server::target(mcp_server::REVOKE),
-                    mcp_server::argument(&mcp_server::GrantRef {
-                        grant: grant.clone(),
-                    }),
-                    Some(Confirmation::Confirmed),
-                )
             }
             DevicesAccessEffect::StopSession { grant, session } => {
                 self.grant(grant)?;
@@ -770,24 +726,12 @@ impl AccessModel {
         let mut agents: Vec<AgentEntry<'_>> = self
             .devices
             .iter()
-            .filter(|key| (key.kind == KeyKind::Agent || key.agent.is_some()) && !key.revoked)
+            .filter(|key| (key.kind != KeyKind::Device || key.agent.is_some()) && !key.revoked)
             .map(|key| AgentEntry {
-                key: Some(key),
+                key,
                 grant: grant_of(key),
             })
             .collect();
-        for grant in &self.api.grants {
-            let listed = self
-                .devices
-                .iter()
-                .any(|key| hex::encode(key.key) == grant.id);
-            if !listed {
-                agents.push(AgentEntry {
-                    key: None,
-                    grant: Some(grant),
-                });
-            }
-        }
         agents.sort_by_key(|agent| {
             (
                 !agent.active_now(),
@@ -912,16 +856,6 @@ impl PageState {
     /// Whether the ask is open for the device `key`.
     fn naming(&self, key: &str) -> bool {
         self.naming.get().as_deref() == Some(key)
-    }
-}
-
-fn app_of(grant: &Grant) -> String {
-    if grant.script_key {
-        t("settings-access-script-key")
-    } else if grant.agent.is_empty() {
-        t("settings-access-unnamed-agent")
-    } else {
-        grant.agent.clone()
     }
 }
 
@@ -1342,15 +1276,10 @@ fn agent_row(agent: &AgentEntry<'_>, draft: &str) -> LiveRow {
     );
     // A computer an agent works on is a device of the person's too: they name
     // it here, where two of them enrolled under one name.
-    if let Some(key) = agent.key {
-        bindings = bindings.bind(
-            DevicesAccessEffect::RENAME_DEVICE,
-            [
-                ("device", hex::encode(key.key).into()),
-                ("name", draft.to_owned().into()),
-            ],
-        );
-    }
+    bindings = bindings.bind(
+        DevicesAccessEffect::RENAME_DEVICE,
+        [("device", id.clone().into()), ("name", draft.to_owned().into())],
+    );
     if let Some(grant) = agent.grant.filter(|grant| !grant.sessions.is_empty()) {
         bindings = bindings.spec(stop_session(&id, &grant.sessions));
     }
@@ -1429,10 +1358,8 @@ fn agent_item(
             ));
         }
     }
-    let keys: Vec<&DeviceView> = agent.key.into_iter().collect();
-    if let Some(device) = agent.key {
-        extra.push(rename_control(cx, state, &id, device, &live));
-    }
+    let keys = vec![agent.key];
+    extra.push(rename_control(cx, state, &id, agent.key, &live));
     entry_row(
         state,
         &id,

@@ -304,12 +304,13 @@ impl Workspaces {
         PersonalList { workspaces }
     }
 
-    /// Add `device`, one of its person's own devices that asked for their
-    /// record, to it: a browser's root certifies the browser itself, in the
-    /// tab, so its certificate reaches no host but on the browser's own
-    /// session. An agent's grant and a stand-in are no device of theirs.
+    /// Add `device`, a key of its person's that asked for their record, to
+    /// it: a browser's root certifies the browser itself, in the tab, and the
+    /// person's Tilo on the web certifies a script's key, so neither
+    /// certificate reaches a host but with the key itself. A stand-in is no key
+    /// of theirs.
     pub(super) async fn note_own_device(&self, device: &DeviceCert) {
-        if device.capabilities.agent.is_some() || device.capabilities.stand_in {
+        if device.capabilities.stand_in {
             return;
         }
         self.keep_issued_device(device, "").await;
@@ -529,18 +530,21 @@ impl Workspaces {
     }
 
     /// Keep `name` as the agent `cert`'s key runs in its person's record,
-    /// where the record holds the key and says otherwise.
+    /// keeping the key there first where the record does not hold it yet.
     async fn keep_agent(&self, cert: &DeviceCert, name: &str) {
+        if cert.capabilities.stand_in {
+            return;
+        }
         let person = cert.user_public_key;
         let key = hex::encode(cert.device_public_key);
         let devices = self.devices_of(&person).await;
-        let Some(known) = devices
+        let known = devices
             .devices
-            .get(&tilo_resource::Id::from_raw(key.clone()))
-        else {
-            return;
-        };
-        if known.agent.as_deref() == Some(name.trim()) {
+            .get(&tilo_resource::Id::from_raw(key.clone()));
+        if known.is_none() {
+            self.keep_issued_device(cert, "").await;
+        }
+        if known.and_then(|known| known.agent.as_deref()) == Some(name.trim()) {
             return;
         }
         let action = Devices::KEEP_AGENT.with((key, name.to_owned()));

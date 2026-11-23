@@ -1,6 +1,10 @@
 //! The person's devices as their own workspace keeps them: what each says of
 //! itself that lasts, under its key, and the Wi-Fi passphrases they share.
 //!
+//! Every key the person's root certifies is an entry: a device, an agent's
+//! grant, a script's key, each marked with what it is ([`KeyKind`]). The record
+//! answers who a key is; what it may do stays in each workspace's grants.
+//!
 //! Each entry holds the device's certificate, the name the person gave it, the
 //! agent it runs and whether their root took it back: what every list of their
 //! devices reads, on any device of theirs, with whether it is online now from
@@ -37,12 +41,40 @@ pub struct Devices {
     pub wifi: Collection<Network>,
 }
 
-/// What one device says of itself that lasts.
+/// What a key the person's root certified is.
+#[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyKind {
+    /// One of their devices.
+    #[default]
+    Device,
+    /// An agent's grant: a key an agent signs with for them.
+    Agent,
+    /// A key the person made for their own script or backend.
+    Script,
+}
+
+impl KeyKind {
+    /// What `cert` certifies.
+    #[must_use]
+    pub fn of(cert: &DeviceCert) -> Self {
+        if cert.capabilities.server_key {
+            Self::Script
+        } else if cert.capabilities.agent.is_some() {
+            Self::Agent
+        } else {
+            Self::Device
+        }
+    }
+}
+
+/// What one key says of itself that lasts.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Device {
     /// Its certificate, postcard in hex, which the person's root signed: a
     /// reader shows only a device whose certificate holds.
     pub certificate: String,
+    /// What the key is, as its certificate says.
+    pub kind: KeyKind,
     /// The name the person gave it ([`Devices::name_device`]): what their
     /// lists read it by instead of the label it was certified with, so two
     /// computers enrolled under one name read apart.
@@ -99,7 +131,8 @@ pub struct Listed {
 }
 
 impl Devices {
-    /// The action that keeps `cert`, which the person's root signed, among their devices.
+    /// The action that keeps `cert`, which the person's root signed, among their keys: a device,
+    /// an agent's grant or a script's key alike.
     ///
     /// # Errors
     /// The certificate does not encode.
@@ -151,13 +184,18 @@ impl Devices {
         let device = Id::from_raw(device);
         validate_key(device.as_str())?;
         validate_hex(&certificate)?;
+        let kind = kind_of(&certificate);
         match self.devices.get_mut(&device) {
-            Some(kept) => kept.certificate = certificate,
+            Some(kept) => {
+                kept.certificate = certificate;
+                kept.kind = kind;
+            }
             None => {
                 self.devices.push(
                     device,
                     Device {
                         certificate,
+                        kind,
                         ..Device::default()
                     },
                 );
@@ -258,6 +296,7 @@ impl Devices {
                 self.devices.push(
                     device,
                     Device {
+                        kind: kind_of(&certificate),
                         certificate,
                         facts: std::iter::once((name, value)).collect(),
                         ..Device::default()
@@ -283,6 +322,27 @@ impl Devices {
         }
         Ok(())
     }
+}
+
+/// Keep `cert`, a key the person's root certified on this device, in the record of their own
+/// workspace `workspaces` holds: the one way a device, an agent's grant and a script's key alike
+/// become an entry every device of theirs lists, and revokes by its mark.
+///
+/// # Errors
+/// The certificate does not encode, this device holds no copy of the person's workspace, or the
+/// record refused it.
+pub async fn keep(workspaces: &super::Workspaces, cert: &DeviceCert) -> Result<(), String> {
+    super::apply(workspaces, DEVICES, Devices::keeping(cert)?).await
+}
+
+/// What the certificate `certificate` (postcard in hex) certifies: a device when it does not read.
+fn kind_of(certificate: &str) -> KeyKind {
+    Device {
+        certificate: certificate.to_owned(),
+        ..Device::default()
+    }
+    .cert()
+    .map_or(KeyKind::Device, |cert| KeyKind::of(&cert))
 }
 
 /// `key` as 32 bytes in lowercase hex.

@@ -160,13 +160,7 @@ impl McpServer {
                     },
                     None => Reach::Account,
                 },
-                device: agent.cert.device_label.clone(),
-                expires_ms: agent
-                    .cert
-                    .expires_at_ns
-                    .map(|ns| i64::try_from(ns / 1_000_000).unwrap_or(i64::MAX)),
                 browser_pages: agent.cert.capabilities.browser_pages,
-                script_key: agent.cert.capabilities.server_key,
                 granted_ms: agent.granted_ms,
                 last_ms: Some(agent.last_ms),
                 sessions: agent
@@ -303,10 +297,7 @@ mod tests {
                 name: id
             }
         );
-        assert_eq!(agent.device, "Framework 16");
-        assert_eq!(agent.expires_ms, Some(9_000));
         assert!(agent.browser_pages);
-        assert!(!agent.script_key);
         assert_eq!(agent.sessions.len(), 1);
         let script = read
             .grants
@@ -314,7 +305,6 @@ mod tests {
             .find(|grant| grant.id == hex::encode([3u8; 32]))
             .expect("the script's key");
         assert_eq!(script.reach, Reach::Account);
-        assert!(script.script_key);
         assert!(!script.browser_pages);
     }
 }

@@ -474,14 +474,7 @@ impl TicketServer {
         let Some(workspaces) = self.0.issuer.servers() else {
             return;
         };
-        let kept = match person_workspace::devices::Devices::keeping(cert) {
-            Ok(action) => {
-                person_workspace::apply(&workspaces, person_workspace::devices::DEVICES, action)
-                    .await
-            }
-            Err(error) => Err(error),
-        };
-        if let Err(error) = kept {
+        if let Err(error) = person_workspace::devices::keep(&workspaces, cert).await {
             tracing::warn!(%error, "the added computer is listed once it enters");
         }
     }

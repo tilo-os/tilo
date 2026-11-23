@@ -7,6 +7,10 @@
 //! ([`tilo_user_identity::AgentScope::Agent`]). Whoever reads a change it made reads it as the
 //! agent's, for its person, and a revocation the person signs ends it as it ends a device.
 //!
+//! Each key is an entry of the record of the person's keys in their own workspace, kept the one
+//! way every key their root certifies is ([`devices::keep`]): their device lists show it, marked
+//! as an agent's, and revoke it as they revoke a device.
+//!
 //! The key is derived, not kept: the person's root signs a statement naming the workspace and the
 //! agent, and the key is made from that signature. A device holding the root makes the same key
 //! every time, so nothing secret is written down, and a device without the root runs no turn of
@@ -24,6 +28,9 @@ use tilo_actions::remote::{
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{AgentScope, DeviceCert};
+
+use crate::workspaces::Workspaces;
+use crate::workspaces::person_workspace::devices;
 
 /// What the device's agents sign with: the key of each agent of each workspace, certified.
 pub trait AgentKeys: Send + Sync {
@@ -56,6 +63,11 @@ pub trait AgentKeys: Send + Sync {
     /// The certificate of `key`, a key [`Self::grant`] gave, and the key itself: what signs, as
     /// the agent, the invocations a connection carries to another device.
     fn made(&self, key: &[u8; 32]) -> Option<(DeviceCert, SigningKey)>;
+
+    /// Keep every key [`Self::grant`] gives from now on in the record of the person's keys that
+    /// `record` holds, on the runtime this is called on. The first record stands; nothing by
+    /// default.
+    fn keep_in(&self, _record: &Workspaces) {}
 
     /// Sign `shortcut` as saved in `workspace` by `agent`, with the agent key `key`, a key
     /// [`Self::grant`] gave: what the agent saves acts as the agent.
@@ -121,6 +133,7 @@ impl crate::workspaces::Workspaces {
         }
         let keys = FleetAgentKeys::from_env()
             .map_err(|error| format!("this device's identity store is not open: {error}"))?;
+        keys.keep_in(self);
         let key = keys.grant(id, agent, &kept.name, *root)?;
         keys.sign_shortcut(id, &key, agent, shortcut)
     }
@@ -141,6 +154,8 @@ pub struct FleetAgentKeys {
     fleets: tilo_identity::device_fleet::DeviceFleetStore,
     /// The keys made so far, by their public key, with their certificates.
     made: Mutex<HashMap<[u8; 32], (DeviceCert, SigningKey)>>,
+    /// Where each key made is kept among the person's keys, and the runtime that writes it.
+    record: OnceLock<(Workspaces, tokio::runtime::Handle)>,
 }
 
 impl FleetAgentKeys {
@@ -160,7 +175,22 @@ impl FleetAgentKeys {
         Self {
             fleets,
             made: Mutex::default(),
+            record: OnceLock::new(),
         }
+    }
+
+    /// Keep `cert` among its person's keys, where a record is known: once for each key this
+    /// process makes, and again for each certificate that renews it.
+    fn keep(&self, cert: &DeviceCert) {
+        let Some((workspaces, runtime)) = self.record.get() else {
+            return;
+        };
+        let (workspaces, cert) = (workspaces.clone(), cert.clone());
+        runtime.spawn(async move {
+            if let Err(error) = devices::keep(&workspaces, &cert).await {
+                tracing::warn!(%error, "an agent's key is not among its person's keys");
+            }
+        });
     }
 
     /// The key of `agent` in `workspace`, made from `identity`'s root.
@@ -215,6 +245,7 @@ impl AgentKeys for FleetAgentKeys {
             })
             .max_by_key(|cert| cert.expires_at_ns)
             .cloned();
+        let fresh = lasting.is_none();
         let cert = match lasting {
             Some(cert) => cert,
             None => self
@@ -231,7 +262,14 @@ impl AgentKeys for FleetAgentKeys {
                     format!("the person's root did not certify the agent's key: {error}")
                 })?,
         };
-        self.made.lock_recover().insert(public, (cert, key));
+        let first = self
+            .made
+            .lock_recover()
+            .insert(public, (cert.clone(), key))
+            .is_none();
+        if fresh || first {
+            self.keep(&cert);
+        }
         Ok(public)
     }
 
@@ -262,6 +300,13 @@ impl AgentKeys for FleetAgentKeys {
 
     fn made(&self, key: &[u8; 32]) -> Option<(DeviceCert, SigningKey)> {
         self.made.lock_recover().get(key).cloned()
+    }
+
+    fn keep_in(&self, record: &Workspaces) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let _ = self.record.set((record.clone(), runtime));
     }
 }
 

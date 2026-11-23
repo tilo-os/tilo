@@ -633,13 +633,15 @@ pub async fn run_on_device(workspaces: Workspaces, actions: Arc<dyn ActionProvid
     // their app is open: what an agent's reply and its tools write through.
     crate::tl_records::provided::register(&workspaces);
     // Each agent signs its calls with a key of its own, made here from its person's root.
-    let keys = match agent_keys::FleetAgentKeys::from_env() {
-        Ok(keys) => Arc::new(keys),
+    let keys = match agent_keys::this_device() {
+        Ok(keys) => keys,
         Err(error) => {
-            tracing::warn!("this device runs no agents: its identity store is not open ({error})");
+            tracing::warn!("this device runs no agents: {error}");
             return;
         }
     };
+    // Every key an agent is given here is kept among its person's keys in their own workspace.
+    keys.keep_in(&workspaces);
     tracing::info!(
         "this device runs its workspaces' agents, each on the model its workspace linked"
     );

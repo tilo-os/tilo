@@ -491,7 +491,7 @@ enum DeviceCmd {
         #[arg(long)]
         server: bool,
     },
-    /// Your devices, as your workspaces know them.
+    /// Every key your root certified: your devices, agents' grants and scripts' keys.
     Ls {
         /// As JSON.
         #[arg(long)]

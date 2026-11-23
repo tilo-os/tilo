@@ -79,7 +79,7 @@ impl TicketServer {
                 .into_iter()
                 .find(|known| known.device_public_key == device)
         {
-            person_workspace::apply(&workspaces, DEVICES, Devices::keeping(&known)?).await?;
+            person_workspace::devices::keep(&workspaces, &known).await?;
         }
         let listed = held(&workspaces, &person, &key)
             .await
