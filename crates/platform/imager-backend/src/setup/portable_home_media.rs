@@ -10,10 +10,10 @@ use super::{
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, OpenOptions, OpenOptionsExt};
 use std::{
-    ffi::CString,
+    ffi::OsStr,
     fs::File,
     io::{self, Read, Write},
-    os::fd::AsRawFd,
+    os::fd::{AsFd, AsRawFd},
     path::Path,
     sync::{
         Arc,
@@ -1145,21 +1145,12 @@ impl Temporary {
     fn publish(&mut self, filename: &str) -> io::Result<()> {
         self.validate()?;
         durable::sync_file(&self.file)?;
-        let from = CString::new(self.name.as_bytes()).map_err(io::Error::other)?;
-        let to = CString::new(filename.as_bytes()).map_err(io::Error::other)?;
-        // SAFETY: live same granted directory fd and terminated single names.
-        if unsafe {
-            libc::renameat2(
-                self.parent.file.as_raw_fd(),
-                from.as_ptr(),
-                self.parent.file.as_raw_fd(),
-                to.as_ptr(),
-                libc::RENAME_NOREPLACE,
-            )
-        } != 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        host_fs::rename_noreplace_at(
+            self.parent.file.as_fd(),
+            OsStr::new(&self.name),
+            self.parent.file.as_fd(),
+            OsStr::new(filename),
+        )?;
         self.name = filename.into();
         durable::sync_directory(&self.parent.file)?;
         // Successful publication transfers cleanup authority to the caller.
