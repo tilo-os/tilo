@@ -357,10 +357,21 @@ fn sort_entries(entries: &mut [(&str, &Value)]) {
     entries.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
 }
 
-/// Returns a bitmask with bit `8 * k + 7` set for the first lane `k` (in
-/// little-endian byte order) containing a byte requiring JSON escaping
-/// (`0x00..=0x1f`, `b'"'`, or `b'\\'`), or `0` when all eight bytes pass
-/// through unchanged.
+#[inline]
+const fn needs_escape(byte: u8) -> bool {
+    byte < 0x20 || byte == b'"' || byte == b'\\'
+}
+
+/// Returns a bitmask whose lowest set bit is at `8 * k + 7` for the first lane
+/// `k` (in little-endian byte order) holding a byte that requires JSON escaping
+/// (`0x00..=0x1f`, `b'"'`, or `b'\\'`), or `0` when all eight bytes pass through
+/// unchanged.
+///
+/// Only the lowest set bit is exact: a borrow from a matching lane can also set
+/// the high bit of a later lane (for example, `1f 20 61 61 61 61 61 61` gives
+/// `0x8080`, marking the space). That is enough for `find_escape`, because no
+/// lane below the first match borrows and `find_escape` inspects only
+/// `mask.trailing_zeros() >> 3`.
 #[inline]
 const fn escape_mask_word(word: u64) -> u64 {
     const LO: u64 = 0x0101_0101_0101_0101;
@@ -392,7 +403,7 @@ fn find_escape(bytes: &[u8]) -> Option<usize> {
         offset = offset.saturating_add(8);
     }
     for &byte in chunks.remainder() {
-        if byte < 0x20 || byte == b'"' || byte == b'\\' {
+        if needs_escape(byte) {
             return Some(offset);
         }
         offset = offset.saturating_add(1);
@@ -402,33 +413,42 @@ fn find_escape(bytes: &[u8]) -> Option<usize> {
 
 fn write_escaped_str<S: Sink>(sink: &mut S, value: &str) {
     sink.write_ascii_byte(b'"');
-    let mut rest = value;
-    while let Some(pos) = find_escape(rest.as_bytes()) {
-        if pos > 0
-            && let Some(run) = rest.get(..pos)
-        {
-            sink.write_str(run);
-        }
-        let escaped = match rest.as_bytes().get(pos).copied() {
-            Some(b'"') => "\\\"",
-            Some(b'\\') => "\\\\",
-            Some(byte) => CONTROL_ESCAPES
+    let bytes = value.as_bytes();
+    let mut start = 0usize;
+    while let Some(tail) = bytes.get(start..) {
+        let Some(&first) = tail.first() else {
+            break;
+        };
+        let byte = if needs_escape(first) {
+            start = start.saturating_add(1);
+            first
+        } else if let Some(found) = find_escape(tail) {
+            let Some(&escaped_byte) = tail.get(found) else {
+                break;
+            };
+            let end = start.saturating_add(found);
+            if let Some(run) = value.get(start..end) {
+                sink.write_str(run);
+            }
+            start = end.saturating_add(1);
+            escaped_byte
+        } else {
+            break;
+        };
+        let escaped = match byte {
+            b'"' => "\\\"",
+            b'\\' => "\\\\",
+            _ => CONTROL_ESCAPES
                 .get(usize::from(byte))
                 .copied()
                 .unwrap_or(""),
-            None => break,
         };
         sink.write_str(escaped);
-        let next = pos.saturating_add(1);
-        if let Some(tail) = rest.get(next..) {
-            rest = tail;
-        } else {
-            rest = "";
-            break;
-        }
     }
-    if !rest.is_empty() {
-        sink.write_str(rest);
+    if let Some(tail) = value.get(start..)
+        && !tail.is_empty()
+    {
+        sink.write_str(tail);
     }
     sink.write_ascii_byte(b'"');
 }
@@ -684,7 +704,7 @@ mod tests {
 
     #[test]
     fn streaming_sink_batches_8kib_chunks_across_boundaries() {
-        // 64 KiB of 80-byte newline-terminated lines, matching the Order 3 workload.
+        // 64 KiB of 80-byte newline-terminated lines.
         let line = format!("{}\n", "a".repeat(79));
         let mut text = String::with_capacity(65_536);
         for _ in 0..819 {
@@ -757,5 +777,83 @@ mod tests {
         // High-bit bytes mixed with every safe ASCII byte never trigger false positives.
         let all_safe: Vec<u8> = (0u8..=0xff).filter(|&b| !needs_escape(b)).collect();
         assert_eq!(super::find_escape(&all_safe), None);
+    }
+
+    #[test]
+    fn string_escaping_matches_serde_json_in_every_lane() {
+        fn check(text: &str) {
+            let value = Value::String(text.to_owned());
+            let want = serde_json::to_string(text).unwrap();
+            assert_eq!(to_string(&value), want, "bytes {:02x?}", text.as_bytes());
+            let mut streamed = Vec::new();
+            write_bytes(&value, |chunk| streamed.extend_from_slice(chunk));
+            assert_eq!(streamed, want.as_bytes(), "bytes {:02x?}", text.as_bytes());
+        }
+        let mut text = String::new();
+        // Every ASCII byte at every offset of the first three words, among each filler.
+        let fillers = [
+            "a",
+            " ",
+            "!",
+            "#",
+            "[",
+            "]",
+            "\u{7f}",
+            "\u{80}",
+            "\u{e9}",
+            "\u{20ac}",
+            "\u{1f600}",
+        ];
+        for filler in fillers {
+            for len in [7usize, 8, 9, 15, 16, 17, 24] {
+                for pos in 0..len {
+                    for byte in 0u8..=0x7f {
+                        text.clear();
+                        for at in 0..len {
+                            if at == pos {
+                                text.push(char::from(byte));
+                            } else {
+                                text.push_str(filler);
+                            }
+                        }
+                        check(&text);
+                    }
+                }
+            }
+        }
+        // Two boundary bytes in one word: the borrow from one lane into the next.
+        let edge = [0x00u8, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x5b, 0x5c, 0x5d, 0x7f];
+        for first_at in 0..8usize {
+            for second_at in first_at + 1..8 {
+                for first in edge {
+                    for second in edge {
+                        text.clear();
+                        for at in 0..8 {
+                            text.push(char::from(if at == first_at {
+                                first
+                            } else if at == second_at {
+                                second
+                            } else {
+                                b'a'
+                            }));
+                        }
+                        check(&text);
+                    }
+                }
+            }
+        }
+        // Every lead and continuation byte of UTF-8 in every lane.
+        let wide = (0x80u32..=0x7ff)
+            .chain((0x800..=0xffff).step_by(0x400))
+            .chain([0x1_0000, 0x4_0000, 0x8_0000, 0xc_0000, 0x10_0000, 0x10_ffff]);
+        for ch in wide.filter_map(char::from_u32) {
+            for lead in 0..8usize {
+                text.clear();
+                text.push_str(&"a".repeat(lead));
+                text.push(ch);
+                text.push_str("aaaaaaaa");
+                check(&text);
+            }
+        }
     }
 }
