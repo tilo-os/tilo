@@ -2,9 +2,11 @@
 //! into the workspace through its apps' ordinary actions, followed while it runs, and taken back.
 //!
 //! The sources are the ones the readers of this crate open, listed in one table
-//! ([`registry::SOURCES`]): folders on this computer, its browsers and Thunderbird, a mail account,
-//! Google Drive, `OneDrive`, Dropbox, iCloud Drive, Nextcloud and `WebDAV`, and Outline, Linear and
-//! Forgejo. Each is one [`Source`]: how it is connected, what it holds ([`Review`]), and how what
+//! ([`registry::SOURCES`]): folders on this computer, its home's settings and hidden files, the
+//! folders Windows keeps, the accounts it is signed in to, its Flatpak apps, its browsers and
+//! Thunderbird, a mail account, Google Drive, `OneDrive`, Dropbox, iCloud Drive, Nextcloud and
+//! `WebDAV`, and Outline, Linear and Forgejo. An old computer is migrated from by running these on
+//! it, Tilo's installer among the programs that do, before anything is installed over it. Each is one [`Source`]: how it is connected, what it holds ([`Review`]), and how what
 //! the person chose lands ([`Lander`]). The steps are the same for each, so an agent can show the
 //! person what a source holds before anything moves:
 //!
@@ -29,14 +31,18 @@
 //! [`Asking::stopping`]). Keys and passwords never pass through the agent: a
 //! service's key is typed by the person ([`Cx::secret`]) and kept in this computer's vault.
 
+pub mod accounts;
 pub mod browsers;
 pub mod clouds;
 pub mod files;
+pub mod flatpaks;
 pub mod registry;
 pub mod services;
+pub mod settings;
 pub mod state;
 pub mod text;
 pub mod thunderbird;
+pub mod windows;
 pub mod writer;
 
 #[cfg(test)]
@@ -211,6 +217,10 @@ pub fn source_of(engine: Engine) -> &'static dyn Source {
         Engine::Service => &services::Services,
         Engine::Thunderbird => &thunderbird::Thunderbird,
         Engine::Browsers => &browsers::Browsers,
+        Engine::Accounts => &accounts::SignedIn,
+        Engine::Settings => &settings::Settings,
+        Engine::Windows => &windows::Windows,
+        Engine::Flatpaks => &flatpaks::Flatpaks,
     }
 }
 

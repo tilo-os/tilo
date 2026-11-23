@@ -18,6 +18,14 @@ pub enum Engine {
     Cloud,
     /// Browser profiles on this computer: bookmarks, history and saved passwords.
     Browsers,
+    /// Accounts this computer is signed in to, connected as the workspace's accounts.
+    Accounts,
+    /// The settings and hidden files of this computer's home, copied into the workspace's files.
+    Settings,
+    /// The folders Windows names outside the home, copied into the workspace's files.
+    Windows,
+    /// The Flatpak apps on this computer, installed again through the Store.
+    Flatpaks,
 }
 
 /// One source.
@@ -73,6 +81,38 @@ pub const SOURCES: &[Row] = &[
             "browser/browser.browsing-history",
             "passwords/passwords.vault",
         ],
+    },
+    Row {
+        key: "settings",
+        aliases: &["dotfiles", "hidden"],
+        title: "Settings and hidden files in this computer's home (.config, .ssh, app data, …)",
+        engine: Engine::Settings,
+        connect: None,
+        resources: FILES,
+    },
+    Row {
+        key: "windows",
+        aliases: &["outlook", "steam"],
+        title: "Folders Windows keeps: OneDrive's, Outlook archives, Steam game saves, moved Documents",
+        engine: Engine::Windows,
+        connect: None,
+        resources: FILES,
+    },
+    Row {
+        key: "accounts",
+        aliases: &["signed-in", "rclone", "gnome-online-accounts"],
+        title: "Accounts this computer is signed in to: GNOME Online Accounts, the Nextcloud app, rclone, Tilo, OneDrive",
+        engine: Engine::Accounts,
+        connect: None,
+        resources: &[],
+    },
+    Row {
+        key: "flatpaks",
+        aliases: &["flatpak", "apps"],
+        title: "Flatpak apps on this computer, installed again from Flathub",
+        engine: Engine::Flatpaks,
+        connect: None,
+        resources: &["store"],
     },
     Row {
         key: "thunderbird",

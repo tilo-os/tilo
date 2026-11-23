@@ -1,7 +1,7 @@
 [package]
 name = "tilo-migrate"
 version = "0.1.0"
-description = "The one migration engine: every source a person brings things from (folders, browsers, Thunderbird, mail, cloud drives, Outline, Linear, Forgejo), reviewed, chosen and brought into the workspace through its apps' own actions"
+description = "The one migration engine: every source a person brings things from (folders, home settings, Windows folders, signed-in accounts, Flatpak apps, browsers, Thunderbird, mail, cloud drives, Outline, Linear, Forgejo), reviewed, chosen and brought into the workspace through its apps' own actions"
 edition = "2024"
 publish = false
 license.workspace = true
