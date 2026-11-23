@@ -1552,19 +1552,17 @@ scenario "a team's channels" -> TextChannel {
     let mia = person("Mia")
     let leo = person("Leo")
     let ada = person("Ada")
-    let general = new_channel(conversations, "general")
-    general.topic = "Anything, really"
-    new_channel(conversations, "random")
-    let team = new_category(conversations, "Team")
-    let design = add_channel(team, "design")
-    design.topic = "Reviews and critique"
-    add_channel(team, "release")
-    add_channel(team, "planning")
-    add_voice_channel(team, "Standup")
-    let social = new_category(conversations, "Social")
-    add_channel(social, "weekend")
-    add_channel(social, "books")
-    new_voice_channel(conversations, "Lounge")
+    let general = invoke(new_channel(conversations, "general", topic: "Anything, really"))
+    invoke(new_channel(conversations, "random"))
+    let team = invoke(new_category(conversations, "Team"))
+    let design = invoke(add_channel(team, "design", topic: "Reviews and critique"))
+    invoke(add_channel(team, "release"))
+    invoke(add_channel(team, "planning"))
+    invoke(add_voice_channel(team, "Standup"))
+    let social = invoke(new_category(conversations, "Social"))
+    invoke(add_channel(social, "weekend"))
+    invoke(add_channel(social, "books"))
+    invoke(new_voice_channel(conversations, "Lounge"))
     invoke(
         send(design, RichText("The new onboarding build is on the test machines.")),
         by: mia,
@@ -1616,15 +1614,15 @@ scenario "a team's channels" -> TextChannel {
         by: leo,
         at: 2026-06-29T08:30Z,
     )
-    let dm = message_person(conversations, leo)
+    let dm = invoke(message_person(conversations, leo))
     invoke(
         send(dm, RichText("Are we still on for the walk on Saturday?")),
         by: leo,
         at: 2026-06-30T09:02Z,
     )
     // The conversation with yourself: your notes, which the sidebar labels as yours.
-    let notes = message_person(conversations, invoker)
-    send(notes, RichText("Ask Leo about the walk on Saturday."))
+    let notes = invoke(message_person(conversations, invoker))
+    invoke(send(notes, RichText("Ask Leo about the walk on Saturday.")))
     design
 }
 
