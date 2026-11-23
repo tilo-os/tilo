@@ -1,11 +1,10 @@
-//! A shell of five app windows, driven in process through the frame path both
+//! A shell of three app windows, driven in process through the frame path both
 //! hosts run: what one keystroke into one of them costs, and what each
 //! window's app did about it.
 //!
-//! The five are windows the browser's launch demo opens — Sheets, Writer,
-//! Calendar, Calculator and Slides — one window each on one strip, as they
-//! stand after a person opened them one by one and went back to typing in
-//! their document.
+//! The three are windows the browser's launch demo opens — Sheets, Writer
+//! and Slides — one window each on one strip, as they stand after a person
+//! opened them one by one and went back to typing in their document.
 
 #![allow(
     clippy::unwrap_used,
@@ -43,10 +42,9 @@ pub type DemoApp = (
 );
 
 /// The apps the demo opens, in the order it opens them.
-pub const DEMO: [DemoApp; 5] = [
+pub const DEMO: [DemoApp; 3] = [
     ("word_processor", "Writer", word_processor::definition),
     ("sheets", "Sheets", sheets::definition),
-    ("calendar", "Calendar", calendar::definition),
     ("slides", "Slides", slides::definition),
 ];
 
@@ -124,7 +122,7 @@ pub struct Demo {
 }
 
 impl Demo {
-    /// The shell, its six apps mounted and drawn.
+    /// The shell, its three apps mounted and drawn.
     pub fn open() -> Self {
         let cache = ui::portable_storage::PortableStorage::new("profile", "device").unwrap();
         let mut owners = ResourceOwners::portable(cache.clone());

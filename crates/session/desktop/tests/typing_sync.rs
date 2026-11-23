@@ -1,7 +1,7 @@
-//! What a keystroke costs a shell with five apps open.
+//! What a keystroke costs a shell with three apps open.
 //!
-//! Four of those windows have nothing of their own going on while a person
-//! types in the fifth. The frame the key asks for reaches every one of them,
+//! Two of those windows have nothing of their own going on while a person
+//! types in the third. The frame the key asks for reaches every one of them,
 //! and each proves from what its last sync read that nothing it reads moved
 //! ([`ui::component_inputs`]): only the window typed into syncs. A window
 //! something did reach — a change to its record from elsewhere — syncs again
@@ -25,9 +25,9 @@ const WARMUP: usize = 8;
 const KEYS: usize = 20;
 
 #[test]
-fn a_key_on_a_shell_of_five_builds_what_each_window_binds_once() {
+fn a_key_on_a_shell_of_three_builds_what_each_window_binds_once() {
     let mut shell = Demo::open();
-    assert_eq!(shell.apps_open(), 5, "the demo's five apps are open");
+    assert_eq!(shell.apps_open(), 3, "the demo's three apps are open");
     shell.rest();
     shell.focus_the_editor();
     let before = shell.typed_heads();
@@ -53,7 +53,7 @@ fn a_key_on_a_shell_of_five_builds_what_each_window_binds_once() {
     // Said on every run: what a key costs the thread that runs it is the
     // number a person feels.
     println!(
-        "typing into the document, five apps open: cpu per key p50 {:.2} ms, max {:.2} ms, \
+        "typing into the document, three apps open: cpu per key p50 {:.2} ms, max {:.2} ms, \
          {:.2} window syncs, {:.2} action passes, {:.2} declaration builds and \
          {:.2} layout rebuilds per key",
         cpu[cpu.len() / 2] as f64 / 1000.0,
@@ -64,7 +64,7 @@ fn a_key_on_a_shell_of_five_builds_what_each_window_binds_once() {
         rebuilds as f64 / costs.len() as f64,
     );
     // Each pass builds them once, and the document's publication of what the
-    // key changed once more; a window of the other four would add its own.
+    // key changed once more; a window of the other two would add its own.
     assert!(
         declarations <= passes + costs.len(),
         "{declarations} declaration builds over {passes} passes and {} keys: a pass \
@@ -72,7 +72,7 @@ fn a_key_on_a_shell_of_five_builds_what_each_window_binds_once() {
          shows",
         costs.len()
     );
-    // The document syncs for the key; a window of the other four syncing would
+    // The document syncs for the key; a window of the other two syncing would
     // be a second.
     assert!(
         syncs <= costs.len(),
@@ -98,20 +98,20 @@ fn an_idle_shell_syncs_no_window_and_a_change_from_elsewhere_syncs_the_one_it_re
         0,
         "nothing reached any window: none syncs"
     );
-    // Another member's edit reaches the calendar's record.
-    shell.change_elsewhere("calendar");
+    // Another member's edit reaches the sheets' record.
+    shell.change_elsewhere("sheets");
     let reached = shell.syncs_during(|shell| {
         shell.idle();
         shell.idle();
     });
     assert!(
         (1..=2).contains(&reached),
-        "the calendar takes up the change to its record, and only the calendar \
+        "the sheets take up the change to their record, and only the sheets \
          ({reached} syncs)"
     );
     assert_eq!(
         shell.syncs_during(Demo::idle),
         0,
-        "once it showed the change, the calendar rests again"
+        "once it showed the change, the sheets rest again"
     );
 }
