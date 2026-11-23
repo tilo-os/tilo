@@ -356,7 +356,7 @@ impl NativeWorkspaceOwner {
                         }
                         Err(error) => return Err(WriteRefusal::Refused(error.to_string())),
                     }
-                    let bytes = postcard::to_stdvec(&message_of(workspace, write))
+                    let bytes = postcard::to_stdvec(&message_of(workspace, &write))
                         .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
                     if !record.frames.iter().any(|frame| frame.bytes == bytes) {
                         record.frames.push(stored::FrameToSend { bytes });

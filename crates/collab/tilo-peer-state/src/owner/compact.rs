@@ -40,7 +40,7 @@ impl NativeWorkspaceOwner {
         let due = self.with_current(workspace, |view| {
             Ok(view.peer.publication().sealed_to_compact())
         })?;
-        let mut compacted = 0;
+        let mut compacted = 0usize;
         for (app, record) in due {
             compacted = compacted.saturating_add(
                 self.compact_route(workspace, (&app, &record), keys.as_ref(), signer, now)
