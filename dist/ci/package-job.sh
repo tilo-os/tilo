@@ -23,7 +23,9 @@ while IFS='|' read -r -u 3 distro image revision; do
   [[ -n $distro ]] || continue
   if ((${#selected[@]})); then
     keep=0
-    for want in "${selected[@]}"; do [[ $distro == "$want" ]] && keep=1; done
+    for want in "${selected[@]}"; do
+      if [[ $distro == "$want" ]]; then keep=1; fi
+    done
     ((keep)) || continue
   fi
   targets+=("$distro|$image|$revision")
@@ -39,7 +41,7 @@ fi
 # each container).
 needs_app_store=0
 for target in "${targets[@]}"; do
-  [[ $target == fedora-44\|* ]] && needs_app_store=1
+  if [[ $target == fedora-44\|* ]]; then needs_app_store=1; fi
 done
 require_registry_owner() {
   local owner=${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}
