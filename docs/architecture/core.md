@@ -292,7 +292,12 @@ within it and the caller's grants. No caller key leaves the caller's device, and
 there is no second signing scheme. An action's code that calls another action,
 another app's or a native provider's, makes a child call bounded by its own
 caller's grants, and a refusal comes back to that code as a result, never
-only to a log. It streams its progress and output
+only to a log. A child call is pending until it answers, and the calling run is suspended
+in its journal meanwhile, holding no connection or thread. A call that needs a
+person's yes is pending the same way: its invocation stays open in its record
+until the person answers, and the answer resumes the run with the result, or
+with a refusal on no, checked against the grants as they stand then. There is
+no second way of asking. It streams its progress and output
 back to the caller as it goes, and ends in a result or a legible error the
 caller sees, and the caller can cancel it. What it writes goes into resources,
 so every view shows it, and work that outlives its device is carried on by
