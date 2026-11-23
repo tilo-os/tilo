@@ -75,6 +75,8 @@ mod clock;
 pub(crate) use clock::system_time;
 mod listing;
 mod memberships;
+/// The operator's kill switch, held while a host offers one.
+pub mod mode;
 mod opened_records;
 mod own;
 mod ownership;
@@ -1010,6 +1012,9 @@ struct WorkspacesInner {
     /// Whether this server is about to restart and hands its work to the
     /// other holders: it takes and renews no lease ([`Workspaces::drain`]).
     draining: std::sync::atomic::AtomicBool,
+    /// The mode the host runs under, when its operator offers a kill switch: what its entry
+    /// admits follows it ([`Workspaces::hold_mode`]).
+    mode: std::sync::RwLock<Option<Arc<mode::HostMode>>>,
     dir: PathBuf,
     /// The workspaces governed here, each under its id spelled out: the one
     /// id a workspace has, which its channels carry too ([`Workspaces::held`]).
@@ -1376,6 +1381,7 @@ impl Workspaces {
                 #[cfg(any(test, feature = "test-support"))]
                 cursors_per_answer: std::sync::atomic::AtomicUsize::new(0),
                 draining: std::sync::atomic::AtomicBool::new(false),
+                mode: std::sync::RwLock::new(None),
                 store,
                 direct,
                 records,
@@ -1530,6 +1536,27 @@ impl Workspaces {
         self.inner
             .draining
             .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Hold the operator's kill switch: from now on the entry admits nobody new while the mode
+    /// pauses joins ([`mode::Mode::allows_joins`]), and the people already in work on.
+    pub fn hold_mode(&self, held: Arc<mode::HostMode>) {
+        *self
+            .inner
+            .mode
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(held);
+    }
+
+    /// The mode the host admits under now: what its operator set, or normal while it set none.
+    pub(crate) fn mode(&self) -> mode::Mode {
+        let held = self
+            .inner
+            .mode
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        held.map_or_else(mode::Mode::default, |held| held.current())
     }
 
     /// The certificate this host serves its workspaces with: its own, or the

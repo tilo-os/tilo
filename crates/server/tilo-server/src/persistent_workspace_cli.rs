@@ -1365,11 +1365,14 @@ pub(crate) async fn run(
         .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
     let state = args.state.clone();
     std::fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
+    // The operator's kill switch: the mode file in the state directory wins over the environment,
+    // and the entry reads it on every admission, so pausing the host takes no restart.
+    let mode = tilo_workspace_service::workspaces::mode::HostMode::from_env(state.clone());
     // The deployment's own routes answer from the start: its health check says
     // the host is starting while it opens its workspaces, which can take a
     // minute, and that it serves once people can get in.
     let management = match persistent.http {
-        Some(listen) => Some(http::listen(listen).await?),
+        Some(listen) => Some(http::listen(listen, Arc::clone(&mode)).await?),
         None => None,
     };
     let listen = args.web.web.context("a workspace needs --web")?;
@@ -1811,6 +1814,9 @@ pub(crate) async fn run(
     let mut invitations = wait_list
         .as_ref()
         .and_then(|page| page.invitations(&context.workspaces));
+    // The workspace's entry admits under the same switch `/mode` reports, from the moment it
+    // serves.
+    context.workspaces.hold_mode(mode);
     let result = tokio::select! {
         result = serve_operator(&context, &mut operator, invitations.as_mut(), owner_socket.as_ref()) => result,
         result = &mut shutdown => result,
