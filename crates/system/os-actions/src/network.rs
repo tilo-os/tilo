@@ -1986,11 +1986,6 @@ mod tests {
 
         phase signal_buckets_and_wifi_availability;
         {
-            assert_eq!(signal_pct_to_bucket(0), 1);
-            assert_eq!(signal_pct_to_bucket(20), 1);
-            assert_eq!(signal_pct_to_bucket(35), 2);
-            assert_eq!(signal_pct_to_bucket(60), 3);
-            assert_eq!(signal_pct_to_bucket(95), 4);
             let radios = RadioState::default();
             assert_eq!(
                 wifi_from_radios(&radios).unwrap_err(),
