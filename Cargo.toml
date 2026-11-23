@@ -37,7 +37,6 @@ exclude = [
     "vendor/cosmic-text",
     "vendor/taffy",
     "vendor/alacritty_terminal",
-    "vendor/twilight-http-ratelimiting",
     "vendor/iroh",
     "vendor/iroh-relay",
     "vendor/netwatch",
@@ -1695,9 +1694,6 @@ taffy = { path = "vendor/taffy" }
 # Erasing above the cursor clears the first line too. See
 # vendor/alacritty_terminal/PROVENANCE.md.
 alacritty_terminal = { path = "vendor/alacritty_terminal" }
-# A bucket's reset during a call no longer panics the limiter. See
-# vendor/twilight-http-ratelimiting/PROVENANCE.md.
-twilight-http-ratelimiting = { path = "vendor/twilight-http-ratelimiting" }
 # zbus's blocking API runs on a runtime of its own with a worker thread per
 # host CPU; one worker, as its message says. See vendor/zbus/PROVENANCE.md.
 zbus = { path = "vendor/zbus" }

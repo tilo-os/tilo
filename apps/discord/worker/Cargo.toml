@@ -36,7 +36,7 @@ tokio = { workspace = true, features = ["io-std", "io-util", "macros", "net", "r
 tokio-rustls.workspace = true
 # Discord's REST rate limits: buckets per route and major parameter, and the
 # global limit. Transport-free, so calls stay on tilo-net and its egress rule.
-twilight-http-ratelimiting = "0.17.1"
+twilight-http-ratelimiting = "0.18.0"
 tokio-websockets = { version = "0.13.3", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector"] }
 url.workspace = true
 zeroize.workspace = true

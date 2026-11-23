@@ -1460,7 +1460,7 @@ doc = false
 "try-lock-0_2_5" = { package = "try-lock", version = "^0.2.5", default-features = false, features = [] }
 "ttf-parser-0_25_1" = { package = "ttf-parser", version = "^0.25.1", default-features = false, features = ["apple-layout", "core_maths", "default", "glyph-names", "gvar-alloc", "no-std-float", "opentype-layout", "std", "variable-fonts"] }
 "tungstenite-0_28_0" = { package = "tungstenite", version = "^0.28.0", default-features = false, features = ["__rustls-tls", "data-encoding", "handshake", "http", "httparse", "rustls", "rustls-pki-types", "sha1"] }
-"twilight-http-ratelimiting-0_17_1" = { package = "twilight-http-ratelimiting", path = "../../../vendor/twilight-http-ratelimiting", default-features = false, features = [] }
+"twilight-http-ratelimiting-0_18_0" = { package = "twilight-http-ratelimiting", version = "^0.18.0", default-features = false, features = [] }
 "two-face-0_4_5" = { package = "two-face", version = "^0.4.5", default-features = false, features = ["syntect-fancy"] }
 "twox-hash-2_1_4" = { package = "twox-hash", version = "^2.1.4", default-features = false, features = ["xxhash64"] }
 "type-map-0_5_1" = { package = "type-map", version = "^0.5.1", default-features = false, features = [] }
@@ -4124,7 +4124,7 @@ doc = false
 "try-lock-0_2_5" = { package = "try-lock", version = "^0.2.5", default-features = false, features = [] }
 "ttf-parser-0_25_1" = { package = "ttf-parser", version = "^0.25.1", default-features = false, features = ["apple-layout", "core_maths", "default", "glyph-names", "gvar-alloc", "no-std-float", "opentype-layout", "std", "variable-fonts"] }
 "tungstenite-0_28_0" = { package = "tungstenite", version = "^0.28.0", default-features = false, features = ["__rustls-tls", "data-encoding", "handshake", "http", "httparse", "rustls", "rustls-pki-types", "sha1"] }
-"twilight-http-ratelimiting-0_17_1" = { package = "twilight-http-ratelimiting", path = "../../../vendor/twilight-http-ratelimiting", default-features = false, features = [] }
+"twilight-http-ratelimiting-0_18_0" = { package = "twilight-http-ratelimiting", version = "^0.18.0", default-features = false, features = [] }
 "two-face-0_4_5" = { package = "two-face", version = "^0.4.5", default-features = false, features = ["syntect-fancy"] }
 "twox-hash-2_1_4" = { package = "twox-hash", version = "^2.1.4", default-features = false, features = ["xxhash64"] }
 "type-map-0_5_1" = { package = "type-map", version = "^0.5.1", default-features = false, features = [] }
