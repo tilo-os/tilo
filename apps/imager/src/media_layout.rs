@@ -4,7 +4,7 @@ use imager_backend::media_layout::gpt;
 pub use imager_backend::media_layout::{
     DATA_PARTITION_NAME, DATA_PARTITION_TYPE, MediaPartitionBinding, binding, provision,
 };
-#[cfg(any(test, feature = "installation"))]
+#[cfg(feature = "installation")]
 use std::fs::File;
 #[cfg(feature = "installation")]
 use std::io;
