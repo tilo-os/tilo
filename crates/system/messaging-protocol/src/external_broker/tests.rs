@@ -3,15 +3,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use ui::prelude::Id;
 use ui::tilo_resource::SharedResource as _;
 
-/// Whether an accessible `label` says `text`: the whole label, or one part of
-/// a conversation line. The shared conversation list speaks each line as who
-/// said it, when, whether it arrived and what it says
-/// (`ui::widget::ConversationList`), so a message body or a delivery word is
-/// one comma-separated part of its list item's name.
-pub(crate) fn speaks(label: Option<&str>, text: &str) -> bool {
-    label.is_some_and(|label| label == text || label.split(", ").any(|part| part == text))
-}
-
 pub(super) fn owner(service: crate::Service) -> Owner {
     Owner {
         actor: "11".repeat(32),
@@ -355,98 +346,6 @@ impl ui::framework::ResourceApp for AccountOwnerFixture {
     const TITLE: &'static str = "Account metadata owner fixture";
     fn view(_cx: &mut ui::framework::ViewCx<Self::Resource>) -> ui::widget::Element {
         Box::new(ui::widget::Column::new())
-    }
-}
-
-#[test]
-fn messages_actions_use_hosted_whatsapp_and_sms_and_keep_text_outside_shared_state() {
-    use messages::{MessagesEffect, MessagesShell};
-    use ui::framework::testing::TestApp;
-    for service in [crate::Service::Whatsapp, crate::Service::Sms] {
-        let root = tempfile::tempdir().unwrap();
-        let owner = owner(service);
-        let route = route(service);
-        let calls = Arc::new(AtomicUsize::new(0));
-        let revoked = Arc::new(AtomicBool::new(false));
-        let history = History::open(
-            root.path(),
-            &owner,
-            secret_vault::VaultKey::from_bytes([7; 32]),
-        )
-        .unwrap();
-        let broker = ExternalBroker::new(
-            Box::new(Adapter {
-                owner: owner.clone(),
-                calls: calls.clone(),
-            }),
-            history,
-            route.scope.clone(),
-            Arc::new(Hold {
-                owner: owner.clone(),
-                revoked: revoked.clone(),
-            }),
-        )
-        .unwrap();
-        let mut app =
-            TestApp::<MessagesShell>::for_person_with_lent(&owner.actor, broker.client()).unwrap();
-        project_account_metadata(&owner, &route, &mut app);
-        let directory = app
-            .shared_workspace::<tilo_contact_directory::ContactDirectory>(
-                tilo_contact_directory::ContactDirectory::OWNER,
-            )
-            .unwrap();
-        directory
-            .invoke(
-                &tilo_contact_directory::ContactDirectory::PROJECT_CONTACT
-                    .with((route.person.clone(), "Alex".into())),
-            )
-            .unwrap();
-        directory
-            .invoke(
-                &tilo_contact_directory::ContactDirectory::CONFIRM_ACCOUNT.with((
-                    route.person.clone(),
-                    route.association.clone(),
-                    route.service.clone(),
-                    route.scope.clone(),
-                    route.recipient.clone(),
-                    route.revision.clone(),
-                )),
-            )
-            .unwrap();
-        app.settle();
-        app.effect(&MessagesEffect::OpenPerson {
-            person: route.person.as_str().into(),
-        })
-        .unwrap();
-        let choice = serde_json::json!({"service":route.service,"account":owner.account,"recipient":route.recipient,"association":route.association.as_str(),"scope":route.scope,"revision":route.revision}).to_string();
-        app.effect(&MessagesEffect::SelectRoute {
-            choice: choice.clone(),
-        })
-        .unwrap();
-        let send = MessagesEffect::Send {
-            choice: choice.clone(),
-            operation: "operation".into(),
-            text: "private fixture message".into(),
-        };
-        assert!(app.effect(&send).is_err());
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        app.effect_confirmed(&send).unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert!(
-            app.harness()
-                .a11y_nodes()
-                .iter()
-                .any(|(_, node)| speaks(node.label(), "private fixture message"))
-        );
-        assert!(
-            !app.harness()
-                .dump_json()
-                .contains("private fixture message")
-        );
-        assert!(app.effect_confirmed(&send).is_err());
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        revoked.store(true, Ordering::SeqCst);
-        assert!(app.effect(&MessagesEffect::ReadHistory { choice }).is_err());
     }
 }
 

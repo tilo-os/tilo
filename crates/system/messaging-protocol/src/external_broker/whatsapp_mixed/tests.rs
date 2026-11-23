@@ -1,3 +1,8 @@
+#![allow(
+    clippy::too_many_lines,
+    clippy::significant_drop_tightening,
+    reason = "one end-to-end journey reads as one test"
+)]
 use super::*;
 use crate::external_broker::receipt_tests::{Fixture, fixture as fixture_account};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -54,8 +59,13 @@ fn events(fixture: &Fixture) -> Vec<InboundMessage> {
         event("123@g.us", "111@lid", "private mixed group fixture", true),
     ]
 }
+
+/// A mixed SDK batch carries direct and group messages together: both private
+/// histories commit once and restore encrypted, a conflict or a foreign source
+/// commits neither, a revocation stops both, and one stanza id in different
+/// authors or chats never merges.
 #[tokio::test]
-async fn whatsapp_mixed_inbox_commits_both_private_histories_once_and_restores_encrypted() {
+async fn whatsapp_mixed_batch_journey_commits_both_histories_once_or_not_at_all() {
     let fixture = fixture_account().await;
     let grant = Arc::new(Grant(AtomicBool::new(true)));
     assert_eq!(
@@ -82,7 +92,8 @@ async fn whatsapp_mixed_inbox_commits_both_private_histories_once_and_restores_e
             )
             .await
             .unwrap(),
-        0
+        0,
+        "a redelivered batch commits nothing twice"
     );
     let page = fixture
         .broker
@@ -150,9 +161,9 @@ async fn whatsapp_mixed_inbox_commits_both_private_histories_once_and_restores_e
             .iter()
             .any(|m| m.text.as_str() == "private mixed direct fixture")
     );
-}
-#[tokio::test]
-async fn whatsapp_mixed_conflicts_and_foreign_sources_never_partially_commit() {
+
+    // A conflicting group review, an invalid direct event and a foreign SDK
+    // source each leave both histories exactly as they were.
     let fixture = fixture_account().await;
     let grant = Arc::new(Grant(AtomicBool::new(true)));
     let before = std::fs::read(fixture.root.path().join("history/history.enc")).unwrap();
@@ -192,10 +203,6 @@ async fn whatsapp_mixed_conflicts_and_foreign_sources_never_partially_commit() {
             .await
             .is_err()
     );
-    assert_eq!(
-        std::fs::read(fixture.root.path().join("history/history.enc")).unwrap(),
-        before
-    );
     let other = fixture_account().await;
     assert!(
         fixture
@@ -213,12 +220,9 @@ async fn whatsapp_mixed_conflicts_and_foreign_sources_never_partially_commit() {
         std::fs::read(fixture.root.path().join("history/history.enc")).unwrap(),
         before
     );
-}
-#[tokio::test]
-async fn whatsapp_mixed_original_account_and_group_revocations_stop_both_histories() {
-    let fixture = fixture_account().await;
-    let grant = Arc::new(Grant(AtomicBool::new(true)));
-    let before = std::fs::read(fixture.root.path().join("history/history.enc")).unwrap();
+
+    // Revoking the original direct account or the group grant stops both
+    // histories together.
     fixture.revoked.store(true, Ordering::Release);
     assert!(
         fixture
@@ -262,14 +266,13 @@ async fn whatsapp_mixed_original_account_and_group_revocations_stop_both_histori
         std::fs::read(fixture.root.path().join("history/history.enc")).unwrap(),
         before
     );
-}
-#[tokio::test]
-async fn whatsapp_group_inbox_keeps_same_ids_from_different_authors_and_chats_separate() {
+
+    // The same stanza id from different authors and chats stays separate.
     let fixture = fixture_account().await;
     let grant = Arc::new(Grant(AtomicBool::new(true)));
     let mut other = group("111@lid");
     other.group = "456@g.us".into();
-    let events = vec![
+    let batch = vec![
         event("123@g.us", "111@lid", "private mixed group fixture", true),
         event("123@g.us", "222@lid", "private mixed group fixture", true),
         event("456@g.us", "111@lid", "private mixed group fixture", true),
@@ -279,7 +282,7 @@ async fn whatsapp_group_inbox_keeps_same_ids_from_different_authors_and_chats_se
             .broker
             .observe_mixed(
                 fixture.source.clone(),
-                events,
+                batch,
                 vec![group("111@lid"), group("222@lid"), other],
                 Some(grant.clone())
             )

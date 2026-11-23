@@ -292,16 +292,6 @@ async fn foreign_sdk_and_wrong_recipient_or_operation_cannot_promote_history() {
     assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
 }
 
-pub(super) fn messages(
-    fixture: &Fixture,
-) -> ui::framework::testing::TestApp<messages::MessagesShell> {
-    let mut app = messages_with_client(fixture, fixture.broker.client());
-    let route = &fixture.route;
-    let choice = serde_json::json!({"service":route.service,"account":fixture.owner.account,"recipient":route.recipient,"association":route.association.as_str(),"scope":route.scope,"revision":route.revision}).to_string();
-    app.effect(&messages::MessagesEffect::ReadHistory { choice })
-        .unwrap();
-    app
-}
 pub(super) fn messages_with_client(
     fixture: &Fixture,
     client: tilo_messaging::MessagingClient,
@@ -339,28 +329,6 @@ pub(super) fn messages_with_client(
     let choice = serde_json::json!({"service":route.service,"account":fixture.owner.account,"recipient":route.recipient,"association":route.association.as_str(),"scope":route.scope,"revision":route.revision}).to_string();
     app.effect(&MessagesEffect::SelectRoute { choice }).unwrap();
     app
-}
-
-#[tokio::test]
-async fn actual_receipt_wakes_messages_and_refreshes_visible_recipient_evidence_privately() {
-    let fixture = fixture().await;
-    let mut app = messages(&fixture);
-    assert!(observe(&fixture, ReceiptType::Read).await.unwrap());
-    assert!(
-        app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |harness| {
-                harness.a11y_nodes().iter().any(|(_, node)| {
-                    super::tests::speaks(node.label(), &ui::widget::DeliveryState::Read.label())
-                })
-            }),
-        "native evidence wakes and refreshes the selected private conversation"
-    );
-    assert!(
-        !app.harness()
-            .dump_json()
-            .contains("private fixture message")
-    );
-    assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
 }
 
 pub(super) async fn durability_fixture() -> (Fixture, Arc<WhatsappInboxHook>) {

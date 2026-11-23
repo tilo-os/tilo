@@ -20129,7 +20129,6 @@ name = "tilo-messaging-protocol"
 version = "0.1.0"
 dependencies = [
  "accounts",
- "buffa-build",
  "futures-util",
  "jiff",
  "messages",
