@@ -16,6 +16,10 @@ pub struct PackageRow {
     pub version: String,
     /// The signed package root, hex.
     pub root: String,
+    /// The publisher key that signed the package, hex; empty for a row written before the cache
+    /// recorded it, which matches no offer.
+    #[serde(default)]
+    pub publisher: String,
     /// Where it stands.
     pub state: RowState,
     /// What its installed, signed manifest says to show a person about it: it describes the app
@@ -160,6 +164,7 @@ pub fn rows(
                     app: installed.id,
                     version: installed.version,
                     root: installed.package_id_hex,
+                    publisher: installed.publisher_key_hex,
                     state: RowState::Installed,
                 },
             )
@@ -218,6 +223,7 @@ bin = "bin/mail"
             app: "so.tilo.mail".into(),
             version: "0.4.0".into(),
             root: "ab".repeat(32),
+            publisher: "cd".repeat(32),
             state: RowState::Installed,
             about: Some(about),
             size_bytes: 2_400_000,

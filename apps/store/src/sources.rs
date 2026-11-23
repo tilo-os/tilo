@@ -870,6 +870,7 @@ pub(crate) mod tests {
                 app: id.to_owned(),
                 version: version.to_owned(),
                 root: "ab".repeat(32),
+                publisher: "cd".repeat(32),
                 state: package_actions::RowState::Installed,
                 about: None,
                 size_bytes: 0,

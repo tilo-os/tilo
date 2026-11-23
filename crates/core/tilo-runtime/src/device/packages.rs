@@ -96,6 +96,7 @@ impl Rows {
                 app: release.app.clone(),
                 version: release.version.clone(),
                 root: release.package.clone(),
+                publisher: release.publisher.clone(),
                 state: RowState::Fetching { bytes, total },
                 about: None,
                 size_bytes: 0,

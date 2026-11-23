@@ -867,6 +867,9 @@ fn runtime_item(offer: app_cli::CatalogueApp, installed: &packages::Installed) -
             row.installed()
                 && row.version == offer.version
                 && row.root.eq_ignore_ascii_case(&offer.tapp_root_hash_hex)
+                && row
+                    .publisher
+                    .eq_ignore_ascii_case(&offer.publisher_pubkey_hex)
         })
         .map_or(crate::model::InstalledState::Not, |row| {
             crate::model::InstalledState::Installed {

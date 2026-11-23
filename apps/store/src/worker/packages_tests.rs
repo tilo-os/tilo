@@ -143,6 +143,7 @@ impl Fake {
                 app: app.to_owned(),
                 version: version.to_owned(),
                 root: "ab".repeat(32),
+                publisher: "cd".repeat(32),
                 state: RowState::Installed,
                 about: None,
                 size_bytes: 0,
@@ -211,6 +212,7 @@ impl Fake {
                         app: field("package_id"),
                         version: field("version"),
                         root: field("tapp_root_hash_hex"),
+                        publisher: field("publisher_pubkey_hex"),
                         state: RowState::Installed,
                         about: None,
                         size_bytes: 0,
@@ -349,6 +351,7 @@ impl Fake {
                     app,
                     version,
                     root: "ab".repeat(32),
+                    publisher: "cd".repeat(32),
                     state: RowState::Fetching {
                         bytes: 0,
                         total: Some(4_000),
@@ -1050,9 +1053,13 @@ tilo_test_env::scenario! {
         assert!(fake.installs().is_empty(), "a runtime is no app of the workspace");
     }
 
-    phase a_runtime_review_marks_only_the_exact_installed_root_installed;
+    phase a_runtime_review_marks_only_the_exact_installed_root_and_publisher_installed;
     {
-        for (root, installed) in [("11".repeat(32), true), ("33".repeat(32), false)] {
+        for (root, publisher, installed) in [
+            ("11".repeat(32), "22".repeat(32), true),
+            ("33".repeat(32), "22".repeat(32), false),
+            ("11".repeat(32), "44".repeat(32), false),
+        ] {
             let fake = Fake::start();
             let _entered = RemoteActions::enter(
                 Arc::clone(&fake) as Arc<dyn ActionProvider + Send + Sync>,
@@ -1066,6 +1073,7 @@ tilo_test_env::scenario! {
                     app: "so.tilo.runtime.chromium".into(),
                     version: "4.0.0".into(),
                     root,
+                    publisher,
                     state: RowState::Installed,
                     about: None,
                     size_bytes: 0,
