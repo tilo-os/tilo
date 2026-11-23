@@ -20,6 +20,7 @@ use ui::permissions::{MemberId, SharedPermissions};
 use ui::portable_storage::{PortableStorage, StorageKey};
 use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
 
+use super::ViewReadPolicy;
 use super::proto::PageAction;
 use super::proto::{
     CONTENT_BATCH_BYTES, FRAMING, MAX_CONTENT_ITEM_BYTES, Mode, PROTOCOL_VERSION, ProbeReport,
@@ -27,7 +28,6 @@ use super::proto::{
 };
 use super::region::Region;
 use crate::apps::{AppCatalogue, Replica, ReplicaActor, Seed};
-use crate::workspace_actions::ViewReadPolicy;
 
 /// Serve as a worker on the socket that is this process's stdin.
 /// Returns the exit code.

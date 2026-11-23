@@ -3,9 +3,17 @@ use super::readings::Governance;
 use super::{GovernedWorkspace, StatePeer, SystemTime, Workspaces};
 use tilo_action_policy::MemberAccess;
 use tilo_actions::remote::Caller;
-use tilo_agent_session::workspace_actions::{ViewDocument, ViewReadPolicy};
+use tilo_agent_session::worker::ViewReadPolicy;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
+
+/// An existing verified source snapshot, for view discovery only.
+pub struct ViewDocument {
+    /// Replayed snapshot; never returned in the public metadata response.
+    pub bytes: Vec<u8>,
+    /// Content revision for catalogue freshness.
+    pub revision: String,
+}
 
 const MAX_VIEW_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 

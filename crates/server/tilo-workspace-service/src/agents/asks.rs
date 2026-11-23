@@ -37,9 +37,8 @@ use serde_json::{Map, Value, json};
 use tilo_actions::remote::person_asking::{
     ActionTarget, AgentName, Asked, AskedBy, Waiting, WaitingAnswer, Words,
 };
-use tilo_actions::remote::{Caller, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage};
+use tilo_actions::remote::{Caller, InvokeRequest, ReceiptStatus, RemoteActionMessage};
 use tilo_actions::{InvocationId, InvocationUpdate};
-use tilo_agent_session::workspace_actions::{AskedInTurn, AsksInConversation, WorkspaceActions};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_resource::Resource as _;
@@ -172,59 +171,6 @@ struct KeptAction {
     draft: tilo_actions::Draft,
 }
 
-/// The agents' runtime, as the action service asks it to put a turn's
-/// question into the conversation.
-pub(super) struct InConversation {
-    workspaces: Workspaces,
-    actions: WorkspaceActions,
-    runtime: tokio::runtime::Handle,
-}
-
-impl AsksInConversation for InConversation {
-    fn ask(
-        &self,
-        workspace_id: WorkspaceId,
-        caller: &Caller,
-        asked: AskedInTurn,
-    ) -> Option<Pending<Result<(), String>>> {
-        // An agent of this server's own, working inside a turn for the person who asked:
-        // nothing else is a turn of this server's.
-        let acting = caller.acting();
-        if acting.app().is_some() || !acting.is_agent() || caller.roster_created_at().is_none() {
-            return None;
-        }
-        let turn = caller.turn()?.clone();
-        let person = *caller.turn_person()?;
-        let agent = acting.agent_id()?.to_owned();
-        let workspace = caller.workspace()?.to_owned();
-        if WorkspaceId::parse(&workspace) != Some(workspace_id) {
-            return None;
-        }
-        let (completer, answer) = tilo_actions::remote::pending();
-        let workspaces = self.workspaces.clone();
-        let holder = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
-        let caller = caller.clone();
-        self.runtime.spawn(async move {
-            let asking = Asking {
-                workspace,
-                person,
-                agent,
-                turn,
-            };
-            completer.complete(put(&workspaces, &holder, &caller, asking, asked).await);
-        });
-        Some(answer)
-    }
-}
-
-/// Who asks, where.
-struct Asking {
-    workspace: String,
-    person: [u8; 32],
-    agent: String,
-    turn: tilo_action_policy::turn::Turn,
-}
-
 /// The conversation a turn's question goes to: the one the turn is in, or
 /// for a turn an issue caused the person's own conversation with the agent.
 pub(super) fn conversation_id_of(conversation: &str, person: &str, agent: &str) -> String {
@@ -323,73 +269,7 @@ async fn post(
     .map(drop)
 }
 
-/// Keep what `asking` asked for and put the question to its person in the
-/// conversation the turn is in, as the turn's own caller.
-async fn put(
-    workspaces: &Workspaces,
-    holder: &WorkspaceActionProvider,
-    caller: &Caller,
-    asking: Asking,
-    asked: AskedInTurn,
-) -> Result<(), String> {
-    let Asking {
-        workspace,
-        person,
-        agent,
-        turn,
-    } = asking;
-    let place = workspaces
-        .summary(&workspace)
-        .await
-        .map(|summary| summary.name)
-        .unwrap_or_default();
-    let conversation_id = conversation_id_of(&turn.conversation, &hex::encode(person), &agent);
-    let asked_in = AskedIn {
-        conversation: turn.conversation,
-        cause: turn.message,
-        session: caller
-            .agent_session()
-            .map(|session| session.id)
-            .unwrap_or_default(),
-    };
-    let action = KeptAction {
-        request: asked.request,
-        draft: asked.draft,
-    };
-    let new = NewAsk {
-        workspace,
-        name: caller.agent_name().unwrap_or(&agent).to_owned(),
-        agent,
-        carrier: ACTION.to_owned(),
-        kept: serde_json::to_value(&action).map_err(|error| error.to_string())?,
-        always: asked.asked,
-        words: Words {
-            place,
-            ..asked.words
-        },
-        asked_in: serde_json::to_value(&asked_in).map_err(|error| error.to_string())?,
-    };
-    // Asked the same again while its person has not answered: the one
-    // question stands.
-    let Some(kept) = workspaces.keep_ask(&person, new)? else {
-        return Ok(());
-    };
-    let posted = post(
-        holder,
-        caller,
-        &conversation_id,
-        &words_of(&kept.words),
-        &kept,
-    )
-    .await;
-    if posted.is_err() {
-        // Nothing waits for an answer: it is asked again when it is needed.
-        workspaces.forget_ask(&kept);
-    }
-    posted
-}
-
-/// The question this server put about a kept ask, where the workspace's chat
+/// The question this server put about an ask, where the workspace's chat
 /// holds it.
 pub(super) struct FoundQuestion {
     /// The part of the chat's messages that holds the question.
@@ -668,8 +548,8 @@ fn allowed(
     let invocation = request.invocation;
     actions.sign_for(workspace_id, caller, &mut request)?;
     let answered = actions
-        .serve_allowed(workspace_id, caller, request)
-        .ok_or("the server's workspace actions are not running")?
+        .serve(caller, RemoteActionMessage::Invoke(request))
+        .ok_or("the device's dispatch does not answer actions")?
         .wait_timeout(WRITE_WAIT)
         .map_err(|_| "the server did not take the action in time".to_owned())?
         .ok_or("the server dropped the action")?;
@@ -708,23 +588,6 @@ fn allowed(
 }
 
 impl Agents {
-    /// Put what an agent's turn asks its person to them in the conversation
-    /// from now on: this runtime gives itself to the action service.
-    pub(super) fn ask_in_conversations(&self) {
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        // A device's broker puts what asks first to the person itself.
-        let Some(actions) = self.actions.host() else {
-            return;
-        };
-        actions.ask_in_conversations(Arc::new(InConversation {
-            workspaces: self.workspaces.clone(),
-            actions: actions.clone(),
-            runtime,
-        }));
-    }
-
     /// Carry the answers to asks put under the word `carrier` out through `by`.
     pub fn carries(&self, carrier: &str, by: Arc<dyn Carries>) {
         self.carriers.lock_recover().insert(carrier.to_owned(), by);

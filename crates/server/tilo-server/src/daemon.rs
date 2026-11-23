@@ -172,9 +172,6 @@ pub struct Server {
     /// The packet relay this host runs for the pages it serves, when it runs
     /// one ([`ServerConfig::packet_relay`]).
     iroh_packet_relay: Option<iroh_relay::server::Server>,
-    /// The shells whose terminal streams this host's devices dial it for, once they run.
-    #[cfg(feature = "agents")]
-    terminal_shells: crate::agents::TerminalShells,
 }
 
 /// ALPN handlers to register on a router, each with its ALPN.
@@ -815,8 +812,6 @@ impl Server {
                 key_service: None,
                 _asks_people: asks_people,
                 iroh_packet_relay: None,
-                #[cfg(feature = "agents")]
-                terminal_shells,
             },
             protocols,
         ))
@@ -830,12 +825,6 @@ impl Server {
         self.live_origin
             .as_ref()
             .map(crate::web::live::LiveOrigin::origin)
-    }
-
-    /// The shells whose terminal streams this host serves, once they run.
-    #[cfg(feature = "agents")]
-    pub(crate) const fn terminal_shells(&self) -> &crate::agents::TerminalShells {
-        &self.terminal_shells
     }
 
     /// Whether this server currently counts `device` as subscribed to

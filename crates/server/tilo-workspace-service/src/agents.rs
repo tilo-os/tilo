@@ -239,9 +239,9 @@ impl OwnAnswers {
 
 impl WorkspaceActionProvider {
     #[must_use]
-    pub fn new(actions: impl Into<EngineActions>, workspace: WorkspaceId) -> Self {
+    pub fn new(actions: EngineActions, workspace: WorkspaceId) -> Self {
         Self {
-            actions: actions.into(),
+            actions,
             workspace,
             events: None,
             own: Vec::new(),
@@ -250,13 +250,6 @@ impl WorkspaceActionProvider {
             answered: OwnAnswers::default(),
             purpose: None,
         }
-    }
-
-    /// Another's write landed in `route` of this workspace, as this server just read it in the
-    /// workspace's store: the next request made through this service acts on it
-    /// ([`EngineActions::landed`]).
-    pub fn landed(&self, route: DocumentRoute) {
-        self.actions.landed(self.workspace, route);
     }
 
     /// What `caller` is offered of the workspace's records, its events and
@@ -399,15 +392,12 @@ impl WorkspaceActionProvider {
                 },
             }));
         }
-        let answer = self
-            .actions
-            .serve(self.workspace, caller, message)
-            .unwrap_or_else(|| {
-                Pending::ready(RemoteActionMessage::CatalogueResponse {
-                    correlation: 0,
-                    result: Err(unavailable()),
-                })
-            });
+        let answer = self.actions.serve(caller, message).unwrap_or_else(|| {
+            Pending::ready(RemoteActionMessage::CatalogueResponse {
+                correlation: 0,
+                result: Err(unavailable()),
+            })
+        });
         match asking {
             Some(asking) => asking.answered(answer),
             None => answer,
@@ -534,7 +524,6 @@ impl ActionProvider for WorkspaceActionProvider {
         // would come at once for ever.
         self.actions
             .serve(
-                self.workspace,
                 caller,
                 RemoteActionMessage::ChangedRequest {
                     correlation: 0,
@@ -908,16 +897,11 @@ impl ServerAgents {
     #[must_use]
     pub fn with_sessions(
         workspaces: Workspaces,
-        actions: impl Into<EngineActions>,
+        actions: EngineActions,
         devices: Arc<dyn SessionDevices>,
         sessions: tilo_agent_session::AgentSessions,
     ) -> Self {
-        Self::build(
-            workspaces,
-            actions.into(),
-            None,
-            Roster::Hosted(devices, sessions),
-        )
+        Self::build(workspaces, actions, None, Roster::Hosted(devices, sessions))
     }
 
     /// The agents a person's own device runs for the workspaces it holds: their turns' calls go
@@ -930,7 +914,7 @@ impl ServerAgents {
     ) -> Self {
         Self::build(
             workspaces,
-            EngineActions::Device(actions, Arc::clone(&keys)),
+            EngineActions::new(actions, Arc::clone(&keys)),
             None,
             Roster::Device(keys),
         )
@@ -964,8 +948,6 @@ impl ServerAgents {
             connections::WORD,
             connections::answers(&agents.workspaces, &agents.roster),
         );
-        // What a turn asks its person is put to them in its conversation.
-        agents.ask_in_conversations();
         agents.carry_sends();
         agents
     }

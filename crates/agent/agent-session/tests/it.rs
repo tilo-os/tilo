@@ -32,8 +32,6 @@
 
 #[path = "common/mod.rs"]
 mod common;
-#[path = "harness/mod.rs"]
-mod harness;
 #[path = "../../../session/client/tests/support/mod.rs"]
 mod support;
 
@@ -68,5 +66,3 @@ mod render_video;
 mod replicas;
 #[path = "worker_isolation.rs"]
 mod worker_isolation;
-#[path = "workspace_actions.rs"]
-mod workspace_actions;

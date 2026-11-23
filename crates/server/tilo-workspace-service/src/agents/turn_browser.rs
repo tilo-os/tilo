@@ -186,19 +186,79 @@ mod tests {
     use super::*;
     use tilo_actions::ActionAddress;
     use tilo_actions::remote::{
-        APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, InvokeArgument, workspace_provider,
+        APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionProvider, InvokeArgument,
+        Pending, workspace_provider,
     };
-    use tilo_agent_session::AppCatalogue;
-    use tilo_agent_session::workspace_actions::WorkspaceActions;
 
     /// The workspace the turn works in, and another one.
     const HERE: &str = "5f0c1c4e-6f0b-4c53-9d0a-0d1f6a1e2b01";
     const ELSEWHERE: &str = "5f0c1c4e-6f0b-4c53-9d0a-0d1f6a1e2b02";
 
+    /// A dispatch no call reaches: what a turn's open is refused with comes before it.
+    struct Unreached;
+
+    impl ActionProvider for Unreached {
+        fn query(
+            &self,
+            _caller: &Caller,
+            _query: tilo_actions::remote::CatalogueQuery,
+        ) -> Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>> {
+            unreachable!("a refused open asks the dispatch nothing")
+        }
+
+        fn invoke(
+            &self,
+            _caller: &Caller,
+            _request: InvokeRequest,
+        ) -> Pending<Result<tilo_actions::remote::InvocationReceipt, ActionCallError>> {
+            unreachable!("a refused open asks the dispatch nothing")
+        }
+
+        fn observe(
+            &self,
+            _caller: &Caller,
+            _id: &InvocationId,
+        ) -> Option<tilo_actions::remote::InvocationState> {
+            None
+        }
+
+        fn cancel(
+            &self,
+            _caller: &Caller,
+            _id: &InvocationId,
+        ) -> Pending<Result<(), ActionCallError>> {
+            unreachable!("a refused open asks the dispatch nothing")
+        }
+    }
+
+    /// No agent key is ever asked for here.
+    struct NoKeys;
+
+    impl crate::agents::agent_keys::AgentKeys for NoKeys {
+        fn grant(
+            &self,
+            _workspace: WorkspaceId,
+            _agent: &str,
+            _name: &str,
+            _person: [u8; 32],
+        ) -> Result<[u8; 32], String> {
+            Err("no agent keys here".into())
+        }
+
+        fn sign(
+            &self,
+            _workspace: WorkspaceId,
+            _key: &[u8; 32],
+            _request: &mut InvokeRequest,
+        ) -> Result<(), String> {
+            Err("no agent keys here".into())
+        }
+    }
+
     /// A turn's open of Browser in the workspace `HERE`, on a server that places no windows.
     fn on_a_server_with_no_machine() -> Arc<TurnBrowser> {
         let workspace_id = WorkspaceId::parse(HERE).expect("a workspace id");
-        let actions = WorkspaceActions::new(Arc::new(AppCatalogue::native));
+        let actions = crate::agents::EngineActions::new(Arc::new(Unreached), Arc::new(NoKeys));
         Arc::new(TurnBrowser {
             browsers: None,
             service: WorkspaceActionProvider::new(actions, workspace_id),

@@ -26,8 +26,6 @@
 //! on. Its delegation's expiry needs no governor at all: members check it on
 //! every change.
 
-use tilo_actions::remote::Caller;
-use tilo_agent_session::workspace_actions::ViewReadPolicy;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::delegation::Delegation;
 use tilo_user_identity::DeviceCert;
@@ -218,111 +216,6 @@ impl Workspaces {
                 .then_some((peer.cert, delegation))
             });
         matching.next().filter(|_| matching.next().is_none())
-    }
-
-    /// Current authority of the exact roster device serving this turn. The
-    /// live session supplies its certificate and root-signed delegation.
-    pub async fn roster_action_policy(
-        &self,
-        workspace: WorkspaceId,
-        caller: &Caller,
-        session: (&DeviceCert, &Delegation),
-        inside: Option<(&str, &str)>,
-    ) -> Option<ViewReadPolicy> {
-        let agent = caller.approved_agent()?;
-        let acts_for = caller.user_public_key()?;
-        let created_at = caller.roster_created_at()?;
-        let entry = self
-            .hosted_roster_agent(workspace, agent, acts_for, None)
-            .await?;
-        if entry.created_at != created_at {
-            return None;
-        }
-        // Read without the workspace's lock, which is held across a commit's
-        // writes: every call an agent makes reads this before it saves.
-        let reading = self.reading(workspace).await?;
-        self.roster_policy_for(
-            (&reading.replica.lock(), workspace, &reading.workspace),
-            &entry,
-            caller,
-            session,
-            inside,
-        )
-    }
-
-    pub(super) async fn roster_policy_in(
-        &self,
-        governed: &GovernedWorkspace,
-        caller: &Caller,
-        session: (&DeviceCert, &Delegation),
-        inside: Option<(&str, &str)>,
-    ) -> Option<ViewReadPolicy> {
-        use tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents};
-
-        let agent = caller.approved_agent()?;
-        let acts_for = caller.user_public_key()?;
-        let workspace = governed.workspace_id();
-        if caller.workspace() != Some(governed.workspace()) || governed.member.is_some() {
-            return None;
-        }
-        let list = collab_types::workspace_document_id(KIND);
-        let bytes = governed.readable_document(OWNER, &list).await.ok()??;
-        let agents = super::actions::agents::read_resource_bytes::<WorkspaceAgents>(&bytes).ok()?;
-        let entry = roster_entry(&agents, agent, acts_for)?;
-        if caller.roster_created_at() != Some(entry.created_at) {
-            return None;
-        }
-        let peer = governed.peer();
-        let now_ns = tilo_clock::unix_now_ns();
-        super::hosted_use::person_device_in(&peer, acts_for, |device| {
-            self.inner.host.environments.of(device, now_ns).is_some()
-        })?;
-        self.roster_policy_for(
-            (&peer, workspace, governed.workspace()),
-            entry,
-            caller,
-            session,
-            inside,
-        )
-    }
-
-    fn roster_policy_for(
-        &self,
-        (peer, workspace, name): (&super::StatePeer, WorkspaceId, &str),
-        entry: &tilo_workspace_agent::Agent,
-        caller: &Caller,
-        session: (&DeviceCert, &Delegation),
-        inside: Option<(&str, &str)>,
-    ) -> Option<ViewReadPolicy> {
-        let agent = caller.approved_agent()?;
-        let acts_for = caller.user_public_key()?;
-        let (cert, delegation) = self.approved_agent(peer, workspace, agent, acts_for)?;
-        if caller.device_public_key() != Some(&cert.device_public_key)
-            || session != (&cert, &delegation)
-        {
-            return None;
-        }
-        let now = tilo_clock::wall();
-        if let Some((app, document)) = inside {
-            if !delegation.permits_app(app) {
-                return None;
-            }
-            peer.check_document_read(cert.device_public_key, app, document, now)
-                .ok()?;
-        }
-        let access = peer.permissions(cert.device_public_key, now).ok()?;
-        let sandbox = peer.governance().governed_sandbox().ok()?;
-        let agent_bound = entry.turn_rules(name);
-        Some(ViewReadPolicy {
-            workspace: name.to_owned(),
-            access,
-            sandbox,
-            unix_time: now
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                .ok()?
-                .as_secs(),
-            agent_bound,
-        })
     }
 
     /// Bring agent `device`'s place in every workspace this server governs in line

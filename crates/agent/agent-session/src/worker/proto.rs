@@ -82,7 +82,7 @@ impl Mode {
 pub(crate) type Slot = u64;
 
 /// The supervisor's requests, each sent as `(Slot, Mode, Region, Request)`: the
-/// slot it is for, what that slot does, and the region of the person whose views it
+/// slot it is for, what that slot does, and the region its views
 /// renders ([`super::region`]). Each reply comes back as
 /// `(Slot, Reply)`, a slot's in the order it was asked; [`Request::Close`] is
 /// not answered.

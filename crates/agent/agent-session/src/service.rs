@@ -84,8 +84,7 @@ struct Shared {
     /// Each workspace's content store: the host's one store, which its
     /// workspace actions use too.
     content: Arc<WorkspaceStores>,
-    /// The agents' sessions here, which sign a change an action made for each
-    /// ([`crate::workspace_actions`]).
+    /// The agents' sessions here, which sign a change an action made for each.
     agent_sessions: crate::grants::AgentSessions,
     /// The wall clock the keep thread judges grants by.
     clock: HostClock,

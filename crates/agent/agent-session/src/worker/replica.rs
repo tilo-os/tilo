@@ -75,32 +75,6 @@ pub struct ConfinedReplica {
     /// operation: the same names the person's page is told.
     naming: Option<Members>,
     inner: Mutex<Inner>,
-    /// The operation last handed to a thread of its own because its worker took longer than its
-    /// caller waits ([`Self::invoke_handed`]), until the caller takes its answer.
-    handed: Mutex<Option<Handed>>,
-}
-
-/// What an operation came to: its output, or why it gave none.
-pub(crate) type Invoked = Result<ActionOutput, ApiError>;
-
-/// An operation going on, or answered, on a thread of its own for the request it is part of.
-struct Handed {
-    /// The request it is part of, which takes its answer when it is applied again.
-    request: tilo_actions::InvocationId,
-    answer: std::sync::mpsc::Receiver<Invoked>,
-    /// The action as the resource published it before the operation ran: a request applied
-    /// again resolves the action from it, though the operation changed what the resource is
-    /// part of so that the item the action named is gone (a delete).
-    descriptor: Option<ActionDescriptor>,
-}
-
-/// One operation to hand to a thread of its own, as [`ConfinedReplica::invoke_in`] takes it.
-pub(crate) struct Operation {
-    pub(crate) context: Option<tilo_actions::ActionContext>,
-    pub(crate) appearance: Option<tilo_actions::Appearance>,
-    pub(crate) address: ActionAddress,
-    pub(crate) arguments: serde_json::Map<String, serde_json::Value>,
-    pub(crate) confirm: bool,
 }
 
 struct Inner {
@@ -316,7 +290,6 @@ impl ConfinedReplica {
             content: None,
             members: None,
             naming: None,
-            handed: Mutex::new(None),
             inner: Mutex::new(Inner {
                 process: Some(process),
                 revivals: 0,
@@ -940,7 +913,7 @@ impl ConfinedReplica {
     pub fn resource_views(
         &self,
         wanted: &tilo_actions::remote::ViewResourceQuery,
-        policy: &crate::workspace_actions::ViewReadPolicy,
+        policy: &super::ViewReadPolicy,
     ) -> Result<Vec<ActionDescriptor>, AppError> {
         let request = Request::Views {
             wanted: serde_json::to_string(wanted)
@@ -986,114 +959,6 @@ impl ConfinedReplica {
         appearance: Option<&tilo_actions::Appearance>,
     ) -> Result<ActionOutput, ApiError> {
         self.invoke_within(None, None, appearance, address, arguments, confirm)
-    }
-
-    /// [`Self::invoke_appearing`] within `context`, what the caller said of
-    /// the invocation (the run it is part of), which History keeps.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::invoke`].
-    pub(crate) fn invoke_in(
-        &self,
-        context: Option<&tilo_actions::ActionContext>,
-        appearance: Option<&tilo_actions::Appearance>,
-        address: &ActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-        confirm: bool,
-    ) -> Result<ActionOutput, ApiError> {
-        self.invoke_within(None, context, appearance, address, arguments, confirm)
-    }
-
-    /// [`Self::invoke_in`] for `request`, on a thread of its own: answered here when the worker
-    /// answers within `grace`, and otherwise `None` while it goes on, after which `answered` is
-    /// called once it has. The request applied again asks for the same operation and takes its
-    /// answer then, instead of running it twice.
-    ///
-    /// Each thread serving workspaces asks the workers of every workspace it serves, so a
-    /// worker that takes long to answer (a large import, an app's long effect, a worker that
-    /// hangs) would otherwise hold every other workspace of that thread behind it. Another
-    /// request asked of this document meanwhile waits for the one going on, as it would have.
-    ///
-    /// `descriptor` is the action as the resource published it before the operation ran
-    /// ([`Self::handed_descriptor`]).
-    pub(crate) fn invoke_handed(
-        self: &std::sync::Arc<Self>,
-        request: tilo_actions::InvocationId,
-        grace: std::time::Duration,
-        answered: impl FnOnce() + Send + 'static,
-        descriptor: Option<ActionDescriptor>,
-        operation: impl FnOnce() -> Operation,
-    ) -> Option<Invoked> {
-        let mut handed = self.handed.lock_recover();
-        if let Some(running) = handed.take() {
-            match running.answer.try_recv() {
-                Ok(answer) if running.request == request => return Some(answer),
-                Ok(_) => {
-                    tracing::warn!(app = %self.app_id,
-                        "app worker: an operation's answer was not taken by its request");
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    *handed = Some(running);
-                    return None;
-                }
-                // The thread ended without an answer: the operation is asked again below.
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
-            }
-        }
-        let Operation {
-            context,
-            appearance,
-            address,
-            arguments,
-            confirm,
-        } = operation();
-        let (send, answer) = std::sync::mpsc::channel();
-        let replica = std::sync::Arc::clone(self);
-        let spawned = std::thread::Builder::new()
-            .name("app-call".into())
-            .spawn(move || {
-                let output = replica.invoke_in(
-                    context.as_ref(),
-                    appearance.as_ref(),
-                    &address,
-                    &arguments,
-                    confirm,
-                );
-                if send.send(output).is_ok() {
-                    answered();
-                }
-            });
-        if let Err(error) = spawned {
-            return Some(Err(ApiError::Unavailable {
-                code: "app_worker".into(),
-                reason: format!("no thread was started for the operation: {error}"),
-            }));
-        }
-        if let Ok(output) = answer.recv_timeout(grace) {
-            return Some(output);
-        }
-        *handed = Some(Handed {
-            request,
-            answer,
-            descriptor,
-        });
-        None
-    }
-
-    /// The action `request` handed off to a thread of its own ([`Self::invoke_handed`]), as the
-    /// resource published it before the operation ran: what a request applied again resolves the
-    /// action from, though the operation removed what it named (a delete).
-    #[must_use]
-    pub(crate) fn handed_descriptor(
-        &self,
-        request: tilo_actions::InvocationId,
-    ) -> Option<ActionDescriptor> {
-        self.handed
-            .lock_recover()
-            .as_ref()
-            .filter(|running| running.request == request)
-            .and_then(|running| running.descriptor.clone())
     }
 
     /// [`Self::invoke`] as `invoker` within `context`:
@@ -1173,8 +1038,6 @@ impl ConfinedReplica {
             members: self.members_for(invoker),
             given: given.clone(),
         };
-        #[cfg(feature = "test-support")]
-        crate::workspace_actions::slowed::wait(&self.workspace, &self.app_id);
         let mut reply = self.call(&mut inner, &request);
         if let Some(content) = &self.content {
             let wanted = self.gather(&mut inner, content);

@@ -19,10 +19,6 @@ pub(crate) mod live;
 mod page;
 mod page_errors;
 mod profiles;
-// The question sheet a page draws over its app: the same words a native
-// session's sheet asks it.
-#[cfg(feature = "agents")]
-pub(crate) mod question_sheet;
 mod stand_in;
 #[cfg(test)]
 mod tests;

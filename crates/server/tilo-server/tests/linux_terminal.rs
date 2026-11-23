@@ -23,9 +23,7 @@ use std::time::{Duration, Instant};
 use iroh::endpoint::Connection;
 use iroh::{Endpoint, EndpointAddr};
 use tilo_actions::remote::environment_commands::Person;
-use tilo_agent_session::workspace_actions::{
-    Opened, Opening, Recorder, ShellRan, WorkspaceShell as _,
-};
+use tilo_agent_session::shell::{Opened, Opening, Recorder, ShellRan, WorkspaceShell as _};
 use tilo_server::agents::TerminalShells;
 use tilo_server::agents::{HostShells, ShellsAt};
 use tilo_server::machine_agents::MachineAgentsServer;

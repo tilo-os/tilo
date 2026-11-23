@@ -31,7 +31,6 @@ use tilo_resource_store::{Admit, Received, Refusal, Store};
 use super::{GovernedWorkspace, Workspaces};
 
 #[cfg(feature = "agents")]
-mod packaged;
 
 /// Where a workspace's store keeps its documents, under the workspace's directory.
 const STORE: &str = "store";

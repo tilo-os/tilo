@@ -9,10 +9,10 @@
 //! actions, as whoever asked for it, and reads what its person did there
 //! from the document.
 
+use crate::agents::EngineActions;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::workspace_initiative::ProposedTask;
-use tilo_agent_session::workspace_actions::WorkspaceActions;
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::proposals::InTracker;
@@ -117,7 +117,7 @@ pub(super) fn in_tracker(issues: &[Filed], address: &str) -> InTracker {
 /// The tracker's actions, taken for one caller in one workspace.
 pub(super) struct Tracker {
     pub workspaces: Workspaces,
-    pub actions: WorkspaceActions,
+    pub actions: EngineActions,
     pub workspace_id: WorkspaceId,
     pub workspace: String,
     pub caller: Caller,

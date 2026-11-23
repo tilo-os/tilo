@@ -948,9 +948,5 @@ mod app_push;
 #[path = "governed_workspaces/member_files.rs"]
 mod member_files;
 
-#[cfg(feature = "agents")]
-#[path = "governed_workspaces/key_place.rs"]
-mod key_place;
-
 #[path = "governed_workspaces/record_content.rs"]
 mod record_content;
