@@ -13,7 +13,7 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     io::{self, Read, Write},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
 };
 use zeroize::Zeroizing;
@@ -26,15 +26,7 @@ fn failure() -> io::Error {
     io::Error::other("Browser data could not be authenticated or activated")
 }
 fn path(values: &BTreeMap<String, OsString>, key: &str) -> io::Result<PathBuf> {
-    let path = PathBuf::from(values.get(key).ok_or_else(failure)?);
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
-    {
-        return Err(failure());
-    }
-    Ok(path)
+    super::helper_arguments::path(values, key, failure)
 }
 fn private(path: &Path) -> io::Result<Arc<PinnedDirectory>> {
     let pin = PinnedDirectory::open_absolute(path)?;
