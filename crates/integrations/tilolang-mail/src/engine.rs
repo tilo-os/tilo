@@ -40,6 +40,67 @@ fn kept_mail_root() -> Option<PathBuf> {
     )
 }
 
+/// What kind of trouble `reason` says: `no-password` for an account the engine signed in to
+/// without one, `withheld` where the session kept the password back (`refused`), `signed-out`
+/// for a login the server refused, and `unreachable` otherwise (a server that could not be
+/// reached; one the device cannot reach for want of a network arrives as an unsent send, which
+/// the origin says as `offline`).
+#[must_use]
+pub fn trouble_kind(reason: &str, withheld: bool) -> &'static str {
+    if reason == mail_engine::engine::NO_PASSWORD {
+        if withheld { "withheld" } else { "no-password" }
+    } else if is_sign_in_refused(reason) {
+        "signed-out"
+    } else {
+        "unreachable"
+    }
+}
+
+/// Whether the server's words are a sign-in it refused, in the words the engine gives a person
+/// ("IMAP server rejected the saved credential") or a protocol's own.
+fn is_sign_in_refused(reason: &str) -> bool {
+    let lower = reason.to_ascii_lowercase();
+    lower.contains("rejected the saved credential")
+        || lower.contains("authentication failed")
+        || lower.contains("authenticationfailed")
+        || lower.contains("invalid credentials")
+        || lower.contains("login failed")
+        || lower.contains("535")
+}
+
+/// The message an `Outgoing` is, as the engine holds a draft to send or keep.
+fn drafted(account: &str, message: Outgoing) -> Draft {
+    let mut draft = Draft {
+        to: message.to,
+        cc: message.cc,
+        bcc: message.bcc,
+        subject: message.subject,
+        body: message.body,
+        ..Draft::default()
+    };
+    if !message.from.is_empty() {
+        draft.sender = Some(mail_engine::model::DraftSender {
+            account: account.to_owned(),
+            email: message.from,
+        });
+    }
+    if !message.html_body.is_empty() {
+        draft.html_body = Some(message.html_body);
+    }
+    if !message.in_reply_to.is_empty() {
+        draft.wire.in_reply_to = Some(message.in_reply_to);
+    }
+    draft.wire.references = message
+        .references
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    if !message.calendar_ics.is_empty() {
+        draft.calendar_ics = Some(message.calendar_ics);
+    }
+    draft
+}
+
 /// A message of the engine as the connector shows it.
 /// A message of the engine as the connector shows it, the files it carries kept in `content`:
 /// a file whose bytes the message did not bring, or that no store keeps, is named with no content.
@@ -516,6 +577,14 @@ impl MailConnector for EngineConnector {
         self.request(EngineRequest::search(config, text.to_owned()))
     }
 
+    fn save_draft(&mut self, account: &str, draft: Outgoing) -> Option<Request> {
+        let config = self.config(account)?;
+        self.request(EngineRequest::save_draft(
+            config,
+            Box::new(drafted(account, draft)),
+        ))
+    }
+
     fn send(&mut self, account: &str, message: Outgoing) -> Result<Request, Unmade> {
         let config = self.config(account).ok_or(Unmade::NoAccount)?;
         let files = files_of(self.content.as_ref(), &message.files).map_err(Unmade::Missing)?;
@@ -615,13 +684,15 @@ impl EngineConnector {
                 },
                 EngineRequestKind::StoreFlag
                 | EngineRequestKind::Move
-                | EngineRequestKind::Purge => Event::Refused {
+                | EngineRequestKind::Purge
+                | EngineRequestKind::SaveDraft => Event::Refused {
                     request,
                     reason: WHY.to_owned(),
                 },
                 _ => Event::Unreachable {
                     account,
                     reason: WHY.to_owned(),
+                    kind: "unreachable".to_owned(),
                 },
             });
         }
@@ -688,6 +759,7 @@ impl EngineConnector {
             flags,
             removed,
             more: synced.has_older,
+            reset: synced.reset,
         }));
     }
 
@@ -730,6 +802,11 @@ impl EngineConnector {
                     .remove(&request_id)
                     .map(|(_, account, _)| account)
                     .unwrap_or_default();
+                let withheld = (self.source)()
+                    .into_iter()
+                    .find(|signed| signed.config.email == account)
+                    .is_some_and(|signed| signed.refused.is_some());
+                let trouble = trouble_kind(&message, withheld);
                 let message = self.in_words(&account, message);
                 match kind {
                     EngineRequestKind::Send if context == mail_engine::engine::SMTP_UNREACHED => {
@@ -741,13 +818,15 @@ impl EngineConnector {
                     EngineRequestKind::Send
                     | EngineRequestKind::StoreFlag
                     | EngineRequestKind::Move
-                    | EngineRequestKind::Purge => out.push(Event::Refused {
+                    | EngineRequestKind::Purge
+                    | EngineRequestKind::SaveDraft => out.push(Event::Refused {
                         request: request_id,
                         reason: message,
                     }),
                     _ => out.push(Event::Unreachable {
                         account,
                         reason: message,
+                        kind: trouble.to_owned(),
                     }),
                 }
             }

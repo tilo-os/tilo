@@ -44,6 +44,11 @@ pub enum ToConnector {
         account: String,
         key: String,
     },
+    SaveDraft {
+        request: Request,
+        account: String,
+        draft: Outgoing,
+    },
     Search {
         request: Request,
         account: String,

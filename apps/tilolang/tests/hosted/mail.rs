@@ -2562,6 +2562,418 @@ fn opening_a_mailbox_shows_the_conversations_filed_in_it() {
     assert!(
         rows[0].iter().any(|text| text == "Bo Chen"),
         "the conversation filed in it: {rows:#?}"
+/// How many messages the account's mailbox `key` says it holds: what Mail counted there after
+/// it read the folder from the server.
+fn mailbox_total(session: &Session, account: &ResourceRef, key: &str) -> Option<i64> {
+    let at = session
+        .refs(account, "mailboxes")
+        .into_iter()
+        .find(|b| session.text(b, "key") == key)?;
+    match session.value_of(&at, "total") {
+        RtValue::Int(n) => Some(n),
+        _ => None,
+    }
+}
+
+/// What the first node of `kind` whose `label` is `label` says of the prop `name`.
+fn labelled_prop<'a>(node: &'a UiNode, kind: &str, label: &str, name: &str) -> Option<&'a RtValue> {
+    labelled(node, label)
+        .into_iter()
+        .find(|found| found.kind == kind)?
+        .props
+        .get(name)
+}
+
+// USER REQUIREMENT: mail the workspace does not hold, and mail in a folder it does not sync, is
+// found by asking the account's server, and comes in as the account's own mail once found.
+#[test]
+fn the_servers_search_finds_mail_the_window_does_not_hold() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    // A message the window never fetched: it came to the archive after the last sync.
+    servers.imap.append(
+        "[Gmail]/All Mail",
+        &mail(
+            "needle@analytical.example",
+            "Ada Lovelace <ada@analytical.example>",
+            "Needle in the archive",
+            "The number you asked for is 42.",
+            None,
+        ),
+        &[],
+    );
+    assert!(
+        session
+            .threads()
+            .iter()
+            .all(|t| session.text(t, "subject") != "Needle in the archive"),
+        "the window holds no such mail yet"
+    );
+    let account = session.accounts().remove(0);
+    session.call(
+        "search_server",
+        &account,
+        &json!({ "text": "asked for is 42" }),
+    );
+    session.until("the server's search to find it", |session| {
+        session
+            .threads()
+            .iter()
+            .any(|t| session.text(t, "subject") == "Needle in the archive")
+    });
+    let found = session.thread("Needle in the archive");
+    assert!(
+        matches!(session.value_of(&found, "boxes"), RtValue::List(ref boxes)
+            if boxes.contains(&RtValue::text("archive"))),
+        "it comes in where the server holds it"
+    );
+}
+
+// USER REQUIREMENT: mail that comes while the window is open is announced to the people who
+// read it, once, and the first sync of a mailbox is not news.
+#[test]
+fn mail_that_comes_to_an_inbox_the_window_holds_is_announced_once() {
+    let servers = servers();
+    let connector = MailConnector::of(account(&servers));
+    let mut session = connector.attach(Session::member(APP, "ada"));
+    synced(&mut session);
+    // Who an announcement reaches: the workspace's members.
+    assert_eq!(
+        session.instance_host().runtime().members().len(),
+        1,
+        "the workspace has its person as a member"
+    );
+    let account = session.accounts().remove(0);
+    let at = tilolang::calendar::instant("2026-11-23T12:00:00Z").expect("a time");
+
+    // Mail that comes to an inbox the window holds is marked on its conversation with the
+    // moment it came, and the app's announcement runs for it.
+    servers.imap.append(
+        "INBOX",
+        &mail(
+            "lunch@chen.example",
+            "Bo Chen <bo@chen.example>",
+            "Lunch on Monday?",
+            "Shall we meet at noon?",
+            None,
+        ),
+        &[],
+    );
+    session.call("check_now", &account, &json!({}));
+    let lunch = session.wait_for("the conversation to come in", |session| {
+        session
+            .threads()
+            .iter()
+            .find(|t| session.text(t, "subject") == "Lunch on Monday?")
+            .cloned()
+    });
+    if matches!(session.value_of(&lunch, "arrived"), RtValue::Opt(Some(_))) {
+        // The system runs the app's trigger for what has come due, as the workspace's document
+        // service does.
+        assert!(
+            session.instance_host().run_triggers(at) >= 1,
+            "the arrival rings"
+        );
+    }
+    // The announcement ran for the arrival and cleared it: it is told of once.
+    session.wait_for("the arrival to be announced", |session| {
+        matches!(session.value_of(&lunch, "arrived"), RtValue::Opt(None)).then_some(())
+    });
+    assert_eq!(session.instance_host().run_triggers(at), 0, "it rings once");
+
+    // Mail that comes next is marked and announced the same way.
+    servers.imap.append(
+        "INBOX",
+        &mail(
+            "supper@chen.example",
+            "Bo Chen <bo@chen.example>",
+            "Supper on Saturday?",
+            "Are you free at seven?",
+            None,
+        ),
+        &[],
+    );
+    session.call("check_now", &account, &json!({}));
+    let supper = session.wait_for("the mail that comes next to come in", |session| {
+        session
+            .threads()
+            .iter()
+            .find(|t| session.text(t, "subject") == "Supper on Saturday?")
+            .cloned()
+    });
+    if matches!(session.value_of(&supper, "arrived"), RtValue::Opt(Some(_))) {
+        session.instance_host().run_triggers(at);
+    }
+    session.wait_for("the mail that comes next to be announced", |session| {
+        matches!(session.value_of(&supper, "arrived"), RtValue::Opt(None)).then_some(())
+    });
+    // What the window holds is no news again.
+    session.call("check_now", &account, &json!({}));
+    for _ in 0..10 {
+        session.settle();
+    }
+    assert_eq!(
+        session.instance_host().run_triggers(at),
+        0,
+        "each rings once"
+    );
+}
+
+// USER REQUIREMENT: a draft typed here is kept in the account's server Drafts folder, so another
+// mail client sees it, and the drafts another client keeps are read here.
+#[test]
+fn a_draft_is_kept_in_the_servers_drafts_and_theirs_are_read_here() {
+    let servers = empty_servers();
+    // A draft another mail client of the account kept on the server.
+    servers.imap.append(
+        "[Gmail]/Drafts",
+        &mail(
+            "elsewhere@rivera.example",
+            "Sam Rivera <sam@rivera.example>",
+            "Draft from elsewhere",
+            "Half written.",
+            None,
+        ),
+        &["\\Seen", "\\Draft"],
+    );
+    let (_connector, mut session) = window_of(account(&servers));
+    session.until("the server's drafts to come in", |session| {
+        session
+            .threads()
+            .iter()
+            .any(|t| session.text(t, "subject") == "Draft from elsewhere")
+    });
+    let theirs = session.thread("Draft from elsewhere");
+    assert!(
+        matches!(session.value_of(&theirs, "boxes"), RtValue::List(ref boxes)
+            if boxes.contains(&RtValue::text("drafts"))),
+        "it is filed in the drafts"
+    );
+    assert!(
+        !session.flag(&theirs, "unread"),
+        "a draft is not unread mail"
+    );
+
+    // A message written here is kept in the server's Drafts folder too.
+    let root = session.mail_root();
+    let invitation = "BEGIN:VCALENDAR\nMETHOD:REQUEST\nBEGIN:VEVENT\nUID:plan@rivera.example\n\
+END:VEVENT\nEND:VCALENDAR\n";
+    let draft = session.made(
+        "prepare_calendar_invitation",
+        &root,
+        &json!({
+            "to": "ada@analytical.example",
+            "subject": "Launch on the twelfth",
+            "body": "Join us on the twelfth.",
+            "calendar_ics": invitation,
+        }),
+    );
+    let draft_ref = json!({
+        "app": APP,
+        "kind": "tl.so.tilo.mail.Draft",
+        "id": draft.id_string(),
+        "label": "Launch on the twelfth",
+    });
+    session.call("save_to_drafts", &root, &json!({ "d": draft_ref.clone() }));
+    session.until("the server to keep the draft", |_| {
+        servers.imap.messages("[Gmail]/Drafts").len() == 2
+    });
+    let kept = servers.imap.messages("[Gmail]/Drafts");
+    let written = String::from_utf8_lossy(&kept[1].raw).into_owned();
+    assert!(
+        written.contains("Subject: Launch on the twelfth"),
+        "the server's draft carries what was written: {written}"
+    );
+    assert!(
+        kept[1].flags.iter().any(|flag| flag == "\\Draft"),
+        "it is a draft on the server: {:?}",
+        kept[1].flags
+    );
+}
+
+// USER REQUIREMENT: deleting a conversation in the trash permanently takes it out of the
+// mailbox and off the server, behind a confirmation, and leaves the rest of the mail.
+#[test]
+fn a_trashed_conversation_is_deleted_permanently_here_and_on_the_server() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let dinner = session.thread("Dinner on Friday?");
+    session.call("delete", &dinner, &json!({}));
+    // The conversation's window offers the deletion behind a confirmation, and opening it
+    // deletes nothing.
+    let view = session
+        .instance_host()
+        .open_resource(&dinner, None)
+        .expect("the conversation opens");
+    let mut shown = Vec::new();
+    texts_in(view.tree(), &mut shown);
+    let banner = find_kind(view.tree(), "ui.Banner", "title", "It is in the trash")
+        .unwrap_or_else(|| panic!("the window says it is in the trash: {shown:#?}"));
+    assert_eq!(
+        banner.props.get("action"),
+        Some(&RtValue::Text("Delete permanently".to_owned())),
+        "the offer deletes it permanently"
+    );
+    // The server puts it in its trash, and Mail read it there: the account counts it in the
+    // trash, so the place the server gave it is the one Mail deletes it from.
+    let account = session.accounts().remove(0);
+    session.until("the server to hold it in the trash", |_| {
+        servers.imap.messages("[Gmail]/Trash").len() == 1
+    });
+    session.until("Mail to read the trash", |session| {
+        mailbox_total(session, &account, "trash") == Some(1)
+    });
+
+    session.call("purge", &dinner, &json!({}));
+    session.until("the conversation to leave the workspace", |session| {
+        session
+            .threads()
+            .iter()
+            .all(|t| session.text(t, "subject") != "Dinner on Friday?")
+    });
+    assert_eq!(session.threads().len(), 1, "the rest of the mail stays");
+
+    // Emptying the trash offers the same behind a confirmation, and takes every conversation
+    // in it.
+    let plan = session.thread("Launch plan");
+    session.call("delete", &plan, &json!({}));
+    session.until("the server to hold the conversation in the trash", |_| {
+        servers.imap.messages("[Gmail]/Trash").len() == 2
+    });
+    session.until("Mail to read the trash again", |session| {
+        mailbox_total(session, &account, "trash") == Some(2)
+    });
+    let mut view = session
+        .instance_host()
+        .open_resource(&account, None)
+        .expect("the account's window opens");
+    let trash = find_kind(view.tree(), "ui.NavItem", "label", "Trash")
+        .expect("the window offers the trash")
+        .key
+        .clone();
+    view.fire(&trash, "select").expect("the trash opens");
+    view.poll_patches().expect("the trash shows");
+    let banner = find_kind(view.tree(), "ui.Banner", "title", "Empty the trash")
+        .unwrap_or_else(|| panic!("the trash place offers to empty it"));
+    assert_eq!(
+        banner.props.get("action"),
+        Some(&RtValue::Text("Empty trash".to_owned())),
+        "the offer empties it"
+    );
+    session.call("empty_trash", &account, &json!({}));
+    session.until("the trash to be empty", |session| {
+        session.threads().is_empty()
+    });
+}
+
+// USER REQUIREMENT: an account Mail has no password for says so in its own words, offers to ask
+// again, and leads to the Settings that hold the password.
+#[test]
+fn an_account_with_no_password_says_so_and_leads_to_settings() {
+    let servers = servers();
+    let mut config = account(&servers);
+    config.password.clear();
+    let (_connector, mut session) = window_of(config);
+    let account = session.wait_for("the account", |session| {
+        session.accounts().into_iter().next()
+    });
+    let said = session.wait_for("the window to say the password is missing", |session| {
+        let said = session.view_of(&account);
+        said.iter()
+            .any(|text| text.contains("no password"))
+            .then_some(said)
+    });
+    for wanted in [
+        "Mail has no password for sam@rivera.example",
+        "Nothing was sent to its server. Enter its password in Settings, under Accounts.",
+        "Open account settings",
+    ] {
+        assert!(
+            said.iter().any(|text| text == wanted),
+            "{wanted:?} in {said:#?}"
+        );
+    }
+    // The notice offers to ask the server again.
+    let window = session
+        .instance_host()
+        .open_resource(&account, None)
+        .expect("the account's window opens");
+    let banner = find_kind(
+        window.tree(),
+        "ui.Banner",
+        "title",
+        "Mail has no password for sam@rivera.example",
+    )
+    .unwrap_or_else(|| panic!("the window says the password is missing: {said:#?}"));
+    assert_eq!(
+        banner.props.get("action"),
+        Some(&RtValue::Text("Try again".to_owned())),
+        "the notice offers to ask again"
+    );
+    assert_eq!(session.text(&account, "trouble_kind"), "no-password");
+    assert!(!session.flag(&account, "online"));
+}
+
+// USER REQUIREMENT: what waits to go has a place of its own, showing how each message stands,
+// with the press that takes it back or tries a refused one again.
+#[test]
+fn the_outbox_shows_what_waits_to_go_and_takes_a_message_back() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    session.hold_for(3600);
+    let draft = session.sent_reply("Launch plan");
+    assert_eq!(session.delivery_of(&draft).unwrap().0, "held");
+
+    // The window offers the outbox, counting the message that waits.
+    let root = session.mail_root();
+    let mut view = session
+        .instance_host()
+        .open_resource(&root, None)
+        .expect("the mail window opens");
+    assert_eq!(
+        labelled_prop(view.tree(), "ui.NavItem", "Outbox", "count"),
+        Some(&RtValue::Int(1)),
+        "it counts what waits",
+    );
+    // The place lists the message that waits: choosing it in the window lists the draft's row.
+    let (x, y) = super::shown_at(&mut session, "Outbox");
+    session.window.click_at(x, y);
+    session.settle();
+    assert!(
+        session
+            .titles()
+            .iter()
+            .any(|title| title == "Re: Launch plan"),
+        "the outbox lists the waiting message: {:?}",
+        session.titles()
+    );
+    // A message that did not fail is not tried again: the server knows how it went.
+    assert!(
+        session.try_call("retry", &draft, &json!({})).is_err(),
+        "nothing failed, so nothing is tried again"
+    );
+
+    // What the row offers takes it back: it never goes, and it is a draft again.
+    session.call("undo_send", &draft, &json!({}));
+    assert!(!session.flag(&draft, "sent"), "it is a draft again");
+    assert!(session.flag(&draft, "recalled"));
+    for _ in 0..20 {
+        session.settle();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(servers.smtp.sent().is_empty(), "it never went");
+    // Nothing waits now: the place says so, and the window offers no outbox to open.
+    view.poll_patches().expect("the window shows");
+    let mut after = Vec::new();
+    texts_in(view.tree(), &mut after);
+    assert!(
+        after
+            .iter()
+            .any(|text| text == "Nothing is waiting to be sent"),
+        "the outbox is empty: {after:#?}"
     );
 }
 

@@ -100,8 +100,9 @@ pub struct Connector {
     accounts: Vec<AccountRef>,
     /// New mail per account, while no instance is attached.
     arrived: BTreeSet<String>,
-    /// Why each account's server cannot be reached, while no instance is attached.
-    unreachable: BTreeMap<String, String>,
+    /// Why each account's server cannot be reached, and of what kind its trouble is, while no
+    /// instance is attached.
+    unreachable: BTreeMap<String, (String, String)>,
     /// Each message being sent, by its content.
     sends: HashMap<String, Sending>,
     /// The content of each send the engine is working on, by the engine's id.
@@ -239,10 +240,11 @@ impl Connector {
                 account: account.clone(),
             }));
         }
-        for (account, reason) in &self.unreachable {
+        for (account, (reason, kind)) in &self.unreachable {
             first.push(FromConnector::Event(Event::Unreachable {
                 account: account.clone(),
                 reason: reason.clone(),
+                kind: kind.clone(),
             }));
         }
         for message in &first {
@@ -317,6 +319,11 @@ impl Connector {
                 account,
                 key,
             } => (request, attached.connector.purge(&account, &key)),
+            ToConnector::SaveDraft {
+                request,
+                account,
+                draft,
+            } => (request, attached.connector.save_draft(&account, draft)),
             ToConnector::Search {
                 request,
                 account,
@@ -478,7 +485,7 @@ impl Connector {
                 self.sent(&key, outcome);
                 return;
             }
-            // A flag or a move: the instance that asked, under its own id.
+            // A flag, a move or a purge: the instance that asked, under its own id.
             let Some(session) = session else {
                 return;
             };
@@ -496,8 +503,15 @@ impl Connector {
             (None, Event::Arrived { account }) if self.sessions.is_empty() => {
                 self.arrived.insert(account);
             }
-            (None, Event::Unreachable { account, reason }) if self.sessions.is_empty() => {
-                self.unreachable.insert(account, reason);
+            (
+                None,
+                Event::Unreachable {
+                    account,
+                    reason,
+                    kind,
+                },
+            ) if self.sessions.is_empty() => {
+                self.unreachable.insert(account, (reason, kind));
             }
             (None, event @ (Event::Arrived { .. } | Event::Unreachable { .. })) => {
                 self.broadcast(&FromConnector::Event(event));
@@ -854,6 +868,7 @@ mod tests {
             FromConnector::Event(Event::Unreachable {
                 account: ME.into(),
                 reason: NO_GRANT.into(),
+                kind: "withheld".into(),
             })
         );
     }

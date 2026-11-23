@@ -571,6 +571,18 @@ impl Session {
         Self::brokered_as(&route, spec, window)
     }
 
+    /// `person` at a harness window of `app` in a workspace whose members it knows, alone in it:
+    /// what an app tells them reaches them as a notice, on every device of theirs.
+    fn member(app: &str, person: &str) -> Self {
+        use ui::permissions::policy::{MemberAccess, WorkspacePolicy};
+        let route = RouteSpec::app(app, uuid::Uuid::new_v4());
+        let policy = WorkspacePolicy::new(route.cluster_id.to_string(), person);
+        let spec = Spec::new(app, route.cluster_id.to_string(), 1, person)
+            .in_language("en-US")
+            .access(MemberAccess::person(policy, person));
+        Self::brokered_as(&route, spec, Window::in_harness)
+    }
+
     /// The action the window's Ask bar asks the person about, when it is up.
     fn ask_bar(&mut self) -> Option<String> {
         let view = self.hosted().view()?;

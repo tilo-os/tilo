@@ -138,6 +138,14 @@ impl MailConnector for RemoteConnector {
         })
     }
 
+    fn save_draft(&mut self, account: &str, draft: Outgoing) -> Option<Request> {
+        self.ask(account, |request| ToConnector::SaveDraft {
+            request,
+            account: account.to_owned(),
+            draft,
+        })
+    }
+
     fn search(&mut self, account: &str, text: &str) -> Option<Request> {
         self.ask(account, |request| ToConnector::Search {
             request,
@@ -185,6 +193,7 @@ impl MailConnector for RemoteConnector {
                         out.push(Event::Unreachable {
                             account: account.id.clone(),
                             reason: reason.clone(),
+                            kind: "offline".to_owned(),
                         });
                     }
                     self.gone = Some(reason);

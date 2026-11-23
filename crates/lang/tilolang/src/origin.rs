@@ -75,6 +75,18 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
          holds: (the account's key, the mailbox's key). They come in as the server's changes do.",
     ),
     (
+        "imap.search",
+        "Searches a mail account's server for the text: (the account's key, the text). What it \
+         finds comes in as the account's mail, so what the workspace does not hold is read here \
+         from then on.",
+    ),
+    (
+        "imap.save_draft",
+        "Keeps a draft in a mail account's Drafts folder on its server: (the account's key, to, \
+         cc, subject, body, the Message-ID it answers, the References it continues, the calendar \
+         invitation or nothing), so another mail client of the account sees it.",
+    ),
+    (
         "imap.purge",
         "Deletes messages of a mail account from its server for good, its trash emptied of them: \
          (the account's key, the keys of its messages). A message the account no longer holds is \

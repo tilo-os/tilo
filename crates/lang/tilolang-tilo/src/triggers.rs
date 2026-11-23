@@ -160,20 +160,32 @@ fn run(host: &Host, schedule: &Schedule, now: i64) -> (usize, bool) {
                     .turn_done(&address, &inputs, answer_json(&answer));
                 schedule.done.borrow_mut().insert(run);
             }
-            other => tracing::warn!(
-                app = due.app,
-                trigger = due.name,
-                ?other,
-                "a trigger did not run"
-            ),
+            other => {
+                // The instant is the run's whether it was carried out or not: a run that failed
+                // leaves its document as it is and is not made again for the same instant, which
+                // would run it on every frame and never rest. The next instant the document
+                // names rings again.
+                schedule.done.borrow_mut().insert(run);
+                tracing::warn!(
+                    app = due.app,
+                    trigger = due.name,
+                    ?other,
+                    "a trigger did not run"
+                );
+            }
         }
     }
     (ran, waiting)
 }
 
-/// The next instant strictly after `now` at which a trigger of `host`'s packages has something
-/// to run: the start of the next period an `every` trigger covers, or the time a document's field
-/// names while that is still to come. `None` when no trigger will come due again.
+/// The next instant at which a trigger of `host`'s packages has something to run: the start of
+/// the next period an `every` trigger covers, or the time a document's field names while that is
+/// still to come; `now` itself where something is due already. `None` when no trigger will come
+/// due again.
+///
+/// A due trigger is part of the answer because this and [`run_due`] share one schedule: a window
+/// asks when it must wake before the frame that runs what is due, and an instant already come
+/// must not read as "never", or the run is skipped until the next change.
 ///
 /// The time a document's field names is the first of the type's when the index keeps its column,
 /// so a trigger over a large collection costs the pages up to its next instant, not the
@@ -198,8 +210,14 @@ pub fn next(host: &Host, now: i64) -> Option<i64> {
                     })
                 }
                 TriggerWhenMeta::Every(_) => None,
-                TriggerWhenMeta::At(field) => later(host, &trigger.ty, field, now)
-                    .and_then(|doc| time_of(host, &doc, field).filter(|at| *at > now)),
+                TriggerWhenMeta::At(field) => {
+                    if due_at(host, trigger, field, now) {
+                        Some(now)
+                    } else {
+                        later(host, &trigger.ty, field, now)
+                            .and_then(|doc| time_of(host, &doc, field).filter(|at| *at > now))
+                    }
+                }
             };
             if let Some(at) = at {
                 next = Some(next.map_or(at, |held| held.min(at)));
@@ -207,6 +225,17 @@ pub fn next(host: &Host, now: i64) -> Option<i64> {
         }
     }
     next
+}
+
+/// Whether a document of the trigger's type has its time in `field` come at `now` and the
+/// trigger last ran at another instant: what [`due`] runs in its next pass.
+fn due_at(host: &Host, trigger: &TriggerMeta, field: &str, now: i64) -> bool {
+    come(host, &trigger.ty, field, now).into_iter().any(|doc| {
+        time_of(host, &doc, field).is_some_and(|at| {
+            let mark = at.to_string();
+            host.store().triggered(&doc, &trigger.id).as_deref() != Some(mark.as_str())
+        })
+    })
 }
 
 /// The first document of the type `ty` whose time in `field` is after `now`, as the index keeps it.

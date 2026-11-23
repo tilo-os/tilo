@@ -228,7 +228,7 @@ d-2tq2zegc = Anhänge
 
 d-lidkonvr-filter-drafts = Entwürfe
 
-d-lidkonvr-filter-sent = Gesendet
+d-lidkonvr-filter-outbox = Postausgang
 
 d-su4h67i5 = Mail
     .doc = Die Mail der Person: die Konten, die die Einstellungen des Arbeitsbereichs halten, was sie gerade schreibt und die Labels, die sie ihren Unterhaltungen gegeben hat.

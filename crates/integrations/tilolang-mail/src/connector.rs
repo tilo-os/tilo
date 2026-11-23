@@ -82,6 +82,10 @@ pub struct Changes {
     /// says nothing of them.
     #[serde(default)]
     pub more: Option<bool>,
+    /// The folder starting over: what it holds replaces what was held of it, so its messages are
+    /// not news, and a person is not told of them.
+    #[serde(default)]
+    pub reset: bool,
 }
 
 /// A message to send.
@@ -140,10 +144,13 @@ pub enum Event {
         request: Request,
         reason: String,
     },
-    /// The account's server could not be reached: why.
+    /// The account's server could not be reached: why, and of what kind the trouble is, so the
+    /// window can say what helps: `signed-out`, `no-password`, `withheld`, `offline`, or
+    /// `unreachable` for anything else.
     Unreachable {
         account: String,
         reason: String,
+        kind: String,
     },
     /// New mail, or another client's change, arrived in a watched inbox.
     Arrived {
@@ -177,6 +184,8 @@ pub trait MailConnector {
     fn move_to(&mut self, account: &str, key: &str, mailbox: &str) -> Option<Request>;
     /// Delete a message from its server for good: its trash emptied of it.
     fn purge(&mut self, account: &str, key: &str) -> Option<Request>;
+    /// Keep `draft` in the account's server Drafts folder, as another mail client would see it.
+    fn save_draft(&mut self, account: &str, draft: Outgoing) -> Option<Request>;
     /// Search the account's server.
     fn search(&mut self, account: &str, text: &str) -> Option<Request>;
     /// Send a message from the account.
