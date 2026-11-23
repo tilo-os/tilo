@@ -19970,6 +19970,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-app",
+ "tilo-formats",
  "workspace-hack",
 ]
 
@@ -22358,6 +22359,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-sheet"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "iana-time-zone",
+ "ironcalc_base",
+ "jiff",
+ "serde",
+ "serde_json",
+ "tilo-doc",
+ "tilo-doc-codecs",
+ "tilo-formats",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-sheets"
 version = "0.1.0"
 dependencies = [
@@ -23798,6 +23815,7 @@ dependencies = [
  "tilo-recurrence",
  "tilo-reference",
  "tilo-resource",
+ "tilo-sheet",
  "tilo-test-env",
  "tilo-wasm-host",
  "tilolang",

@@ -2606,6 +2606,27 @@ impl Checker<'_> {
     /// `File`'s methods: `File.of_text(name, text)`, `File.of_bytes(name, bytes)`, `File.at(name,
     /// address)` and `File.zip(name, files)`.
     fn file_type_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        if name.name == "of_sheets" {
+            let [named, workbook, format] = args else {
+                self.err(
+                    "E022",
+                    span,
+                    "`File.of_sheets` takes the file's name, the workbook as text and the format: `File.of_sheets(\"Budget.xlsx\", workbook, \"xlsx\")`",
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            };
+            let named = self.expr_as(&named.value, &Ty::Text);
+            let workbook = self.expr_as(&workbook.value, &Ty::Text);
+            let format = self.expr_as(&format.value, &Ty::Text);
+            return Ex::host(
+                Imp::SheetOfFile,
+                vec![named, workbook, format],
+                Ty::Result(Box::new(Ty::File), Box::new(Ty::Text)),
+            );
+        }
         let (held, imp, what, of) = match name.name.as_str() {
             "of_text" => (Ty::Text, Imp::FileOfText, "the text it holds", "text"),
             "of_bytes" => (Ty::Bytes, Imp::FileOfBytes, "the bytes it holds", "bytes"),
@@ -2626,7 +2647,7 @@ impl Checker<'_> {
                     "E027",
                     name.span,
                     format!(
-                        "`File` has `of_text`, `of_bytes`, `at` and `zip`, not `{other}`: a file is made of what an action holds, as `File.of_text(\"Notes.md\", text)`"
+                        "`File` has `of_text`, `of_bytes`, `of_sheets`, `at` and `zip`, not `{other}`: a file is made of what an action holds, as `File.of_text(\"Notes.md\", text)`"
                     ),
                 );
                 for a in args {
@@ -2747,6 +2768,21 @@ impl Checker<'_> {
                 Ex::host(Imp::FilePart, vec![r, part], Ty::Text)
             }
             (Ty::File, "size") if args.is_empty() => Ex::host(Imp::FileSize, vec![r], Ty::Int),
+            // A spreadsheet file's sheets, as the text `json.decode<List<T>>` reads: each
+            // sheet's name, whether its tab is hidden, and its cells by A1 with the input,
+            // format and bold each held.
+            (Ty::File, "sheets") if args.is_empty() => Ex::host(
+                Imp::SheetFile,
+                vec![r],
+                Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
+            ),
+            // The workbook a text describes (the JSON `File.of_sheets` writes), evaluated: each
+            // of its sheets with the extent a window shows and what each cell shows there.
+            (Ty::Text, "sheet_values") if args.is_empty() => Ex::host(
+                Imp::SheetValues,
+                vec![r],
+                Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
+            ),
             (Ty::File, "text") if args.is_empty() => Ex::host(
                 Imp::FileText,
                 vec![r],

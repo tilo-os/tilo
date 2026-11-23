@@ -1,0 +1,849 @@
+//! The spreadsheet's data model: A1 addresses, cell values and per-cell formats. Nothing here
+//! touches the document or the renderer; cells are `(col, row)` internally and A1 at the edges.
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use tilo_formats::{Currency, DateStyle};
+use tilo_formats::TimeStyle;
+
+/// Zero-based column index. `0` is column `A`.
+pub type Col = u32;
+/// Zero-based row index. `0` is row `1`.
+pub type Row = u32;
+
+pub type Addr = (Col, Row);
+
+/// One inserted or deleted row or column, the unit every structural action replays in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GridEdit {
+    InsertRow(Row),
+    DeleteRow(Row),
+    /// A blank column inserted left of this one.
+    InsertColumn(Col),
+    DeleteColumn(Col),
+}
+
+impl GridEdit {
+    pub fn map_addr(self, (col, row): Addr) -> Option<Addr> {
+        match self {
+            Self::InsertRow(at) => Some((col, insert_shift(row, at))),
+            Self::DeleteRow(at) => Some((col, delete_shift(row, at)?)),
+            Self::InsertColumn(at) => Some((insert_shift(col, at), row)),
+            Self::DeleteColumn(at) => Some((delete_shift(col, at)?, row)),
+        }
+    }
+
+    /// Where the rectangle with corners `a` and `b` lands.
+    pub fn map_range(self, a: Addr, b: Addr) -> Option<(Addr, Addr)> {
+        match self {
+            Self::InsertRow(_) | Self::InsertColumn(_) => {
+                Some((self.map_addr(a)?, self.map_addr(b)?))
+            }
+            Self::DeleteRow(at) => {
+                let (ra, rb) = delete_span(a.1, b.1, at)?;
+                Some(((a.0, ra), (b.0, rb)))
+            }
+            Self::DeleteColumn(at) => {
+                let (ca, cb) = delete_span(a.0, b.0, at)?;
+                Some(((ca, a.1), (cb, b.1)))
+            }
+        }
+    }
+}
+
+fn insert_shift(line: u32, at: u32) -> u32 {
+    if line >= at {
+        line.saturating_add(1)
+    } else {
+        line
+    }
+}
+
+fn delete_shift(line: u32, at: u32) -> Option<u32> {
+    match line.cmp(&at) {
+        std::cmp::Ordering::Equal => None,
+        std::cmp::Ordering::Greater => Some(line.saturating_sub(1)),
+        std::cmp::Ordering::Less => Some(line),
+    }
+}
+
+/// A span's two ends through deleting line `at`.
+fn delete_span(a: u32, b: u32, at: u32) -> Option<(u32, u32)> {
+    let (lo, hi) = (a.min(b), a.max(b));
+    if lo == at && hi == at {
+        return None;
+    }
+    // A deleted first line is replaced by the next one sliding up into it.
+    let new_lo = if lo > at { lo.saturating_sub(1) } else { lo };
+    let new_hi = if hi >= at { hi.saturating_sub(1) } else { hi };
+    Some(if a <= b {
+        (new_lo, new_hi)
+    } else {
+        (new_hi, new_lo)
+    })
+}
+
+/// A column index as letters (`0 -> "A"`, `26 -> "AA"`), the same the codecs write.
+pub fn col_to_letters(col: Col) -> String {
+    tilo_doc::sheet::a1::index_to_col(col.saturating_add(1))
+}
+
+/// Column letters, case-insensitive, as a zero-based index; more than three letters is no column.
+pub fn letters_to_col(s: &str) -> Option<Col> {
+    tilo_doc::sheet::a1::col_to_index(s)?.checked_sub(1)
+}
+
+/// An address as an A1 string.
+pub fn addr_to_a1(col: Col, row: Row) -> String {
+    // Rows read one-based on screen; the last row saturates rather than wrapping to 1.
+    format!("{}{}", col_to_letters(col), row.saturating_add(1))
+}
+
+/// An A1 reference as a zero-based `(col, row)`, absolute markers allowed.
+pub fn a1_to_addr(s: &str) -> Option<Addr> {
+    let s = s.trim();
+    let after_col_anchor = s.strip_prefix('$').unwrap_or(s);
+    // ASCII letters are one byte each, so the count is the byte offset.
+    let letters_len = after_col_anchor
+        .bytes()
+        .take_while(u8::is_ascii_alphabetic)
+        .count();
+    let (letters, rest) = after_col_anchor.split_at_checked(letters_len)?;
+    if letters.is_empty() {
+        return None;
+    }
+    let digits = rest.strip_prefix('$').unwrap_or(rest);
+    // Anything left that is not a digit means this was never an A1 reference.
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let col = letters_to_col(letters)?;
+    let row: Row = digits.parse().ok()?;
+    // Rows are one-based on screen, so there is no row 0.
+    Some((col, row.checked_sub(1)?))
+}
+
+/// An evaluation error as a kind rather than a free string, so `IFNA`/`IFERROR` branch on the
+/// cause and the cell always shows the canonical Excel code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormulaError {
+    /// Division by zero, `#DIV/0!`.
+    Div0,
+    /// Unknown function or name, `#NAME?`.
+    Name,
+    /// A broken cell reference, `#REF!`.
+    Ref,
+    /// A wrong argument type, `#VALUE!`.
+    Value,
+    /// A value not available, such as a lookup miss, `#N/A`.
+    Na,
+    /// A numeric argument or result out of range, `#NUM!`.
+    Num,
+    /// A circular reference, `#CYCLE!`.
+    Cycle,
+    /// A formula that does not parse, `#ERROR!`.
+    Error,
+    /// An array that would overwrite cells holding input, `#SPILL!`.
+    Spill,
+    /// A calculation with no result, such as an empty array, `#CALC!`.
+    Calc,
+    /// Ranges that do not meet, `#NULL!`.
+    Null,
+    /// A function the engine knows but does not evaluate, `#N/IMPL!`.
+    NotImplemented,
+}
+
+impl FormulaError {
+    pub fn text(self) -> &'static str {
+        match self {
+            FormulaError::Div0 => "#DIV/0!",
+            FormulaError::Name => "#NAME?",
+            FormulaError::Ref => "#REF!",
+            FormulaError::Value => "#VALUE!",
+            FormulaError::Na => "#N/A",
+            FormulaError::Num => "#NUM!",
+            FormulaError::Cycle => "#CYCLE!",
+            FormulaError::Error => "#ERROR!",
+            FormulaError::Spill => "#SPILL!",
+            FormulaError::Calc => "#CALC!",
+            FormulaError::Null => "#NULL!",
+            FormulaError::NotImplemented => "#N/IMPL!",
+        }
+    }
+}
+
+impl std::fmt::Display for FormulaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.text())
+    }
+}
+
+/// A resolved cell value. Raw input is a separate string that becomes one once evaluated.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CellValue {
+    Empty,
+    Number(f64),
+    Text(String),
+    Bool(bool),
+    /// A spreadsheet error, shown as its canonical Excel code.
+    Error(FormulaError),
+}
+
+impl CellValue {
+    /// A number for arithmetic: text that parses, booleans as 1/0, empty as 0; otherwise `None`.
+    pub fn as_number(&self) -> Option<f64> {
+        match self {
+            CellValue::Number(n) => Some(*n),
+            CellValue::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+            CellValue::Empty => Some(0.0),
+            CellValue::Text(t) => parse_number(t.trim()),
+            CellValue::Error(_) => None,
+        }
+    }
+
+    pub fn is_error(&self) -> bool {
+        matches!(self, CellValue::Error(_))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        matches!(self, CellValue::Empty)
+    }
+
+    /// Plain text with no format applied.
+    pub fn to_plain_string(&self) -> String {
+        match self {
+            CellValue::Empty => String::new(),
+            CellValue::Number(n) => format_number_general(*n),
+            CellValue::Text(t) => t.clone(),
+            CellValue::Bool(b) => {
+                if *b {
+                    "TRUE".into()
+                } else {
+                    "FALSE".into()
+                }
+            }
+            CellValue::Error(e) => e.text().to_string(),
+        }
+    }
+
+    /// Whether this value renders right-aligned.
+    pub fn is_numeric(&self) -> bool {
+        matches!(self, CellValue::Number(_) | CellValue::Bool(_))
+    }
+}
+
+/// A cell's display format; the raw input and the value are format-agnostic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CellFormat {
+    /// Integers plain, fractions with a few significant digits.
+    #[default]
+    General,
+    /// Two decimals with thousands separators.
+    Number,
+    /// Currency, in its own symbol and placement.
+    Currency(Currency),
+    /// A percentage; the stored number is multiplied by 100.
+    Percent,
+    /// A date, from an Excel serial (days since 1899-12-30).
+    Date(DateStyle),
+    /// A clock time, from an Excel serial's fraction.
+    Time(TimeStyle),
+    /// `TRUE` or `FALSE`.
+    Boolean,
+    /// Text, even for numeric content.
+    Text,
+}
+
+impl CellFormat {
+    /// The stable string the document stores: `currency:USD`, `date:ISO`, `time:H24`.
+    pub fn as_str(self) -> String {
+        match self {
+            CellFormat::General => "general".into(),
+            CellFormat::Number => "number".into(),
+            CellFormat::Currency(c) => format!("currency:{}", c.code()),
+            CellFormat::Percent => "percent".into(),
+            CellFormat::Date(s) => format!("date:{}", date_style_code(s)),
+            CellFormat::Time(s) => format!("time:{}", time_style_code(s)),
+            CellFormat::Boolean => "boolean".into(),
+            CellFormat::Text => "text".into(),
+        }
+    }
+
+    /// A format from its stored string. An unknown subtype falls back to USD, ISO or 24h, never
+    /// the reader's locale, so everyone sees the same category.
+    #[allow(
+        clippy::should_implement_trait,
+        reason = "parsing cannot fail (an unknown code reads as `General`); `FromStr` would hand every caller a `Result` to unwrap for no gain"
+    )]
+    pub fn from_str(s: &str) -> CellFormat {
+        let (head, sub) = match s.split_once(':') {
+            Some((h, t)) => (h, Some(t)),
+            None => (s, None),
+        };
+        match head {
+            "number" => CellFormat::Number,
+            "currency" => {
+                CellFormat::Currency(sub.and_then(Currency::from_code).unwrap_or(Currency::USD))
+            }
+            "percent" => CellFormat::Percent,
+            "date" => {
+                CellFormat::Date(sub.and_then(date_style_from_code).unwrap_or(DateStyle::Iso))
+            }
+            "time" => {
+                CellFormat::Time(sub.and_then(time_style_from_code).unwrap_or(TimeStyle::H24))
+            }
+            "boolean" => CellFormat::Boolean,
+            "text" => CellFormat::Text,
+            _ => CellFormat::General,
+        }
+    }
+
+    /// The category's label, with the currency code for money.
+    pub fn label(self) -> String {
+        match self {
+            CellFormat::General => "General".into(),
+            CellFormat::Number => "Number".into(),
+            CellFormat::Currency(c) => format!("Currency ({})", c.code()),
+            CellFormat::Percent => "Percent".into(),
+            CellFormat::Date(_) => "Date".into(),
+            CellFormat::Time(_) => "Time".into(),
+            CellFormat::Boolean => "Boolean".into(),
+            CellFormat::Text => "Text".into(),
+        }
+    }
+
+    /// The bare category, which the matching toolbar chip highlights.
+    pub fn category(self) -> FormatCategory {
+        match self {
+            CellFormat::General => FormatCategory::General,
+            CellFormat::Number => FormatCategory::Number,
+            CellFormat::Currency(_) => FormatCategory::Currency,
+            CellFormat::Percent => FormatCategory::Percent,
+            CellFormat::Date(_) => FormatCategory::Date,
+            CellFormat::Time(_) => FormatCategory::Time,
+            CellFormat::Boolean => FormatCategory::Boolean,
+            CellFormat::Text => FormatCategory::Text,
+        }
+    }
+}
+
+/// A subtype-agnostic category, for highlighting and propagation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormatCategory {
+    General,
+    Number,
+    Currency,
+    Percent,
+    Date,
+    Time,
+    Boolean,
+    Text,
+}
+
+fn date_style_code(s: DateStyle) -> &'static str {
+    match s {
+        DateStyle::Language => "Language",
+        DateStyle::Iso => "ISO",
+        DateStyle::Us => "US",
+        DateStyle::Eu => "EU",
+        DateStyle::Long => "Long",
+    }
+}
+fn date_style_from_code(s: &str) -> Option<DateStyle> {
+    Some(match s {
+        "Language" => DateStyle::Language,
+        "ISO" => DateStyle::Iso,
+        "US" => DateStyle::Us,
+        "EU" => DateStyle::Eu,
+        "Long" => DateStyle::Long,
+        _ => return None,
+    })
+}
+fn time_style_code(s: TimeStyle) -> &'static str {
+    match s {
+        TimeStyle::Language => "Language",
+        TimeStyle::H24 => "H24",
+        TimeStyle::H12 => "H12",
+    }
+}
+fn time_style_from_code(s: &str) -> Option<TimeStyle> {
+    Some(match s {
+        "Language" => TimeStyle::Language,
+        "H24" => TimeStyle::H24,
+        "H12" => TimeStyle::H12,
+        _ => return None,
+    })
+}
+
+/// A value rendered through a format, as the cell shows it.
+pub fn format_value(value: &CellValue, fmt: CellFormat, words: &dyn tilo_formats::Words) -> String {
+    match value {
+        CellValue::Empty => String::new(),
+        CellValue::Error(e) => e.text().to_string(),
+        CellValue::Text(t) => t.clone(),
+        CellValue::Bool(b) => {
+            if *b {
+                "TRUE".into()
+            } else {
+                "FALSE".into()
+            }
+        }
+        CellValue::Number(n) => match fmt {
+            CellFormat::General | CellFormat::Text => format_number_general(*n),
+            CellFormat::Number => format_thousands(*n, 2),
+            CellFormat::Currency(c) => format_currency(*n, c),
+            CellFormat::Percent => format!("{:.2}%", *n * 100.0),
+            CellFormat::Date(s) => serial_to_date(*n, s, words),
+            CellFormat::Time(s) => serial_to_time(*n, s, words),
+            CellFormat::Boolean => {
+                if *n == 0.0 {
+                    "FALSE".into()
+                } else {
+                    "TRUE".into()
+                }
+            }
+        },
+    }
+}
+
+/// Text as a number, finite ones only: `inf`, `NaN` and `1e400` are text a person typed.
+pub fn parse_number(s: &str) -> Option<f64> {
+    s.parse::<f64>().ok().filter(|n| n.is_finite())
+}
+
+/// General rendering: integers without a decimal point, fractions with trailing zeros
+/// trimmed, extreme magnitudes compact.
+pub fn format_number_general(n: f64) -> String {
+    if n == 0.0 {
+        return "0".to_string();
+    }
+    if !n.is_finite() {
+        return if n.is_nan() {
+            "#NUM!".into()
+        } else if n > 0.0 {
+            "∞".into()
+        } else {
+            "-∞".into()
+        };
+    }
+    if n.fract() == 0.0 && n.abs() < 1e15 {
+        // An integer inside the exactly-representable range prints without a decimal point.
+        return format!("{n:.0}");
+    }
+    let s = format!("{n:.10}");
+    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+    trimmed.to_string()
+}
+
+/// Fixed decimals with grouped thousands; a negative gets a leading `-`.
+pub fn format_thousands(n: f64, decimals: usize) -> String {
+    let neg = n < 0.0;
+    let (int_grouped, frac) = grouped_parts(n.abs(), decimals, ',');
+    let mut out = String::new();
+    if neg {
+        out.push('-');
+    }
+    out.push_str(&int_grouped);
+    if let Some(f) = frac {
+        out.push('.');
+        out.push_str(&f);
+    }
+    out
+}
+
+/// An amount in its currency: symbol, decimals and placement. Grouping is Anglo throughout.
+pub fn format_currency(n: f64, c: Currency) -> String {
+    let neg = n < 0.0;
+    // The euro convention groups with '.' and separates decimals with ','.
+    let (group_sep, dec_sep) = match c {
+        Currency::EUR => ('.', ','),
+        _ => (',', '.'),
+    };
+    let (int_grouped, frac) = grouped_parts(n.abs(), c.decimals(), group_sep);
+    let mut amount = String::new();
+    amount.push_str(&int_grouped);
+    if let Some(f) = frac {
+        amount.push(dec_sep);
+        amount.push_str(&f);
+    }
+    let mut out = String::new();
+    if neg {
+        out.push('-');
+    }
+    if c.symbol_leads() {
+        out.push_str(c.symbol());
+        out.push_str(&amount);
+    } else {
+        out.push_str(&amount);
+        out.push(' ');
+        out.push_str(c.symbol());
+    }
+    out
+}
+
+/// A number split into a grouped integer part and `decimals` digits, rounded half away from
+/// zero as spreadsheets do.
+fn grouped_parts(abs: f64, decimals: usize, group_sep: char) -> (String, Option<String>) {
+    // Past 17 digits more decimals say nothing, and the bound keeps the exponent in `i32`.
+    let decimals = decimals.min(17);
+    let exponent = i32::try_from(decimals).unwrap_or(17);
+    // Round half away from zero, so JPY 1234.5 becomes 1235.
+    let factor = 10f64.powi(exponent);
+    let rounded = (abs * factor + 0.5).floor() / factor;
+    let s = format!("{rounded:.decimals$}");
+    let (int_part, frac_part) = match s.split_once('.') {
+        Some((i, f)) => (i.to_string(), Some(f.to_string())),
+        None => (s, None),
+    };
+    let mut grouped = String::new();
+    let len = int_part.chars().count();
+    for (idx, ch) in int_part.chars().enumerate() {
+        let remaining = len.saturating_sub(idx);
+        if idx > 0 && remaining.is_multiple_of(3) {
+            grouped.push(group_sep);
+        }
+        grouped.push(ch);
+    }
+    (grouped, frac_part)
+}
+
+/// Days since the Unix epoch for an Excel serial. The serial is bounded to roughly -9000..13000
+/// first, so the calendar arithmetic stays far from `i64`'s edges; a non-finite serial
+/// reads as the epoch.
+fn serial_to_unix_days(serial: f64) -> i64 {
+    // Excel's epoch, 1899-12-30, is Unix day -25569.
+    const EXCEL_EPOCH_UNIX_DAY: i64 = -25569;
+    let bounded = serial.floor().clamp(-4_000_000.0, 4_000_000.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "bounded to ±4e6 on the line above, so the truncation is exact; a NaN serial converts to 0 and reads as the Excel epoch"
+    )]
+    let days = bounded as i64;
+    days.saturating_add(EXCEL_EPOCH_UNIX_DAY)
+}
+
+/// A serial date in `style`; `words` say a language's own convention.
+pub fn serial_to_date(serial: f64, style: DateStyle, words: &dyn tilo_formats::Words) -> String {
+    let (y, m, d) = civil_from_days(serial_to_unix_days(serial));
+    match style {
+        DateStyle::Language => i16::try_from(y)
+            .ok()
+            .zip(i8::try_from(m).ok().zip(i8::try_from(d).ok()))
+            .and_then(|(year, (m, d))| jiff::civil::Date::new(year, m, d).ok())
+            .map_or_else(
+                || format!("{y:04}-{m:02}-{d:02}"),
+                |day| tilo_formats::language_date(day, words),
+            ),
+        DateStyle::Iso => format!("{y:04}-{m:02}-{d:02}"),
+        DateStyle::Us => format!("{m:02}/{d:02}/{y:04}"),
+        DateStyle::Eu => format!("{d:02}/{m:02}/{y:04}"),
+        DateStyle::Long => format!("{:02} {} {:04}", d, month_abbrev(m), y),
+    }
+}
+
+/// A serial's fraction as a clock time.
+pub fn serial_to_time(serial: f64, style: TimeStyle, words: &dyn tilo_formats::Words) -> String {
+    let frac = serial.fract().abs();
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "`frac` is a fractional part in [0, 1), so the product is at most 86400 and the truncation is exact"
+    )]
+    let total_secs = (frac * 86400.0).round() as i64;
+    let h = (total_secs / 3600) % 24;
+    let mi = (total_secs % 3600) / 60;
+    // A cell that follows the language reads each person's own clock.
+    match style.resolved(words) {
+        TimeStyle::Language | TimeStyle::H24 => tilo_formats::machine!(
+            "a cell's own number format, the same for every member",
+            format!("{h:02}:{mi:02}")
+        ),
+        TimeStyle::H12 => {
+            let suffix = if h < 12 { "AM" } else { "PM" };
+            let h12 = match h % 12 {
+                0 => 12,
+                x => x,
+            };
+            format!("{h12}:{mi:02} {suffix}")
+        }
+    }
+}
+
+/// The words a cell's format is said in: the workbook's language, which every member reads the
+/// same way. A cell's "follow the language" format is the document's, not the reader's, so two
+/// members read one value alike.
+pub struct LanguageWords {
+    german: bool,
+}
+
+impl LanguageWords {
+    /// The words of `language` (`en`, `de`; anything else reads as English).
+    #[must_use]
+    pub fn of(language: &str) -> Self {
+        Self {
+            german: language.to_ascii_lowercase().starts_with("de"),
+        }
+    }
+}
+
+impl tilo_formats::Words for LanguageWords {
+    fn word(&self, key: &str, args: &[(&str, tilo_formats::Word)]) -> String {
+        let arg = |name: &str| {
+            args.iter().find(|(key, _)| *key == name).map_or_else(String::new, |(_, value)| {
+                match value {
+                    tilo_formats::Word::Text(text) => text.clone(),
+                    tilo_formats::Word::Number(number) => number.to_string(),
+                }
+            })
+        };
+        match key {
+            "format-clock-hours" => {
+                if self.german {
+                    "24".into()
+                } else {
+                    "12".into()
+                }
+            }
+            "format-date-language" => {
+                if self.german {
+                    format!("{}.{}.{}", arg("day2"), arg("month2"), arg("year"))
+                } else {
+                    format!("{} {}, {}", arg("month"), arg("day"), arg("year"))
+                }
+            }
+            "format-month-short" => {
+                let months: [String; 12] = MONTHS.map(str::to_owned);
+                let index = arg("month").parse::<usize>().unwrap_or(1).clamp(1, 12);
+                months.get(index - 1).cloned().unwrap_or_default()
+            }
+            _ => String::new(),
+        }
+    }
+}
+
+/// The month names a cell's long date writes, the same for every member.
+const MONTHS: [&str; 12] = tilo_formats::machine!(
+    "a cell's own date format, the same for every member",
+    [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ]
+);
+
+fn month_abbrev(m: u32) -> &'static str {
+    const M: [&str; 12] = tilo_formats::machine!(
+        "a cell's own date format, the same for every member",
+        [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ]
+    );
+    let idx = m.clamp(1, 12).saturating_sub(1);
+    usize::try_from(idx)
+        .ok()
+        .and_then(|i| M.get(i))
+        .copied()
+        .unwrap_or("Jan")
+}
+
+/// A calendar date as an Excel serial.
+pub fn date_to_serial(y: i64, m: u32, d: u32) -> f64 {
+    let days = days_from_civil(y, m, d).saturating_add(25569);
+    // A day count outside `i32` is millions of years from any date; narrowing keeps the widening
+    // to f64 exact.
+    let days = i32::try_from(days).unwrap_or(if days < 0 { i32::MIN } else { i32::MAX });
+    f64::from(days)
+}
+
+/// An Excel serial's `(year, month, day)`.
+pub fn serial_to_ymd(serial: f64) -> (i64, u32, u32) {
+    civil_from_days(serial_to_unix_days(serial))
+}
+
+/// The weekday of a serial, Excel's way: `1` is Sunday, `7` Saturday.
+pub fn weekday_from_serial(serial: f64) -> u32 {
+    let days = serial_to_unix_days(serial); // days since 1970-01-01 (a Thursday)
+    // Sunday 0 to Saturday 6, shifted to Excel's 1-based Sunday first.
+    let dow = days.saturating_add(4).rem_euclid(7);
+    u32::try_from(dow).unwrap_or(0).saturating_add(1)
+}
+
+/// `days_from_civil` inverted, bounded to the range a serial date can mean.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z.clamp(-4_000_000, 4_000_000);
+    let Ok(day) = jiff::civil::Date::from_unix_epoch_day(i32::try_from(z).unwrap_or(0)) else {
+        return (1970, 1, 1);
+    };
+    (i64::from(day.year()), day.month().unsigned_abs().into(), day.day().unsigned_abs().into())
+}
+
+/// Days since the Unix epoch for a civil date, with the year bounded first.
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = y.clamp(-10_000_000, 10_000_000);
+    let year = i16::try_from(y).unwrap_or(1970);
+    let month = i8::try_from(m).unwrap_or(1);
+    let day = i8::try_from(d).unwrap_or(1);
+    jiff::civil::Date::new(year, month, day)
+        .map(|date| i64::from(date.to_unix_epoch_day()))
+        .unwrap_or(0)
+}
+
+impl Serialize for CellFormat {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for CellFormat {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let code = String::deserialize(deserializer)?;
+        Self::parse_code(&code)
+            .ok_or_else(|| serde::de::Error::custom(format!("no format `{code}`")))
+    }
+}
+
+impl CellFormat {
+    /// The format a code names; a category alone takes its default style. `None` for anything else.
+    #[must_use]
+    pub fn parse_code(code: &str) -> Option<Self> {
+        let parsed = Self::from_str(code);
+        let head = code.split(':').next().unwrap_or_default();
+        (parsed != Self::General || head == "general").then_some(parsed)
+    }
+}
+
+/// Words an engine test reads a cell's language formats in: English's own conventions.
+#[cfg(test)]
+pub(crate) struct TestWords;
+
+#[cfg(test)]
+impl tilo_formats::Words for TestWords {
+    fn word(&self, key: &str, args: &[(&str, tilo_formats::Word)]) -> String {
+        let arg = |name: &str| {
+            args.iter().find(|(key, _)| *key == name).map_or_else(String::new, |(_, value)| {
+                match value {
+                    tilo_formats::Word::Text(text) => text.clone(),
+                    tilo_formats::Word::Number(number) => number.to_string(),
+                }
+            })
+        };
+        match key {
+            "format-clock-hours" => "12".into(),
+            "format-date-language" => format!("{} {}, {}", arg("month"), arg("day"), arg("year")),
+            other => other.to_owned(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[allow(
+        clippy::approx_constant,
+        reason = "3.14 is the value under test, not an approximation of PI"
+    )]
+    fn cell_addresses_and_number_formatting() {
+        {
+            assert_eq!(col_to_letters(0), "A");
+            assert_eq!(col_to_letters(25), "Z");
+            assert_eq!(col_to_letters(26), "AA");
+            assert_eq!(col_to_letters(701), "ZZ");
+            assert_eq!(letters_to_col("A"), Some(0));
+            assert_eq!(letters_to_col("Z"), Some(25));
+            assert_eq!(letters_to_col("AA"), Some(26));
+            assert_eq!(letters_to_col("ZZ"), Some(701));
+            assert_eq!(letters_to_col("XFD"), Some(16_383));
+            assert_eq!(letters_to_col("ABCD"), None);
+        }
+
+        {
+            assert_eq!(a1_to_addr("A1"), Some((0, 0)));
+            assert_eq!(a1_to_addr("$A$1"), Some((0, 0)));
+            assert_eq!(a1_to_addr("B3"), Some((1, 2)));
+            assert_eq!(a1_to_addr("AA10"), Some((26, 9)));
+            assert_eq!(a1_to_addr("A0"), None);
+            assert_eq!(a1_to_addr("1A"), None);
+            assert_eq!(a1_to_addr(""), None);
+        }
+
+        {
+            assert_eq!(format_thousands(1234.5, 2), "1,234.50");
+            assert_eq!(format_thousands(-1200.0, 2), "-1,200.00");
+            assert_eq!(format_thousands(12.0, 0), "12");
+        }
+
+        {
+            assert_eq!(format_number_general(42.0), "42");
+            assert_eq!(format_number_general(3.14), "3.14");
+            assert_eq!(format_number_general(0.5), "0.5");
+        }
+    }
+
+    #[test]
+    fn currency_date_and_time_formats_render_and_round_trip() {
+        {
+            assert_eq!(format_currency(1234.5, Currency::USD), "$1,234.50");
+            assert_eq!(format_currency(-1200.0, Currency::USD), "-$1,200.00");
+            assert_eq!(format_currency(1234.5, Currency::EUR), "1.234,50 \u{20AC}");
+            assert_eq!(format_currency(99.9, Currency::GBP), "\u{00A3}99.90");
+            assert_eq!(format_currency(1234.5, Currency::JPY), "\u{00A5}1,235");
+            assert_eq!(format_currency(50.0, Currency::CHF), "50.00 CHF");
+        }
+
+        {
+            for c in Currency::ALL {
+                let fmt = CellFormat::Currency(c);
+                let s = fmt.as_str();
+                assert_eq!(CellFormat::from_str(&s), fmt, "round trip {s}");
+            }
+            assert_eq!(
+                CellFormat::from_str("currency"),
+                CellFormat::Currency(Currency::USD)
+            );
+        }
+
+        {
+            let serial = date_to_serial(2023, 3, 15);
+            assert_eq!(serial_to_date(serial, DateStyle::Iso, &TestWords), "2023-03-15");
+            assert_eq!(serial_to_date(serial, DateStyle::Us, &TestWords), "03/15/2023");
+            assert_eq!(serial_to_date(serial, DateStyle::Eu, &TestWords), "15/03/2023");
+            assert_eq!(serial_to_date(serial, DateStyle::Long, &TestWords), "15 Mar 2023");
+            for style in DateStyle::ALL {
+                assert_eq!(date_style_from_code(date_style_code(style)), Some(style));
+            }
+        }
+
+        {
+            let s = serial_to_date(45000.0, DateStyle::Iso, &TestWords);
+            assert!(s.starts_with("2023-"), "got {s}");
+            let serial = date_to_serial(2023, 3, 15);
+            let back = serial_to_date(serial, DateStyle::Iso, &TestWords);
+            assert_eq!(back, "2023-03-15");
+        }
+
+        {
+            assert_eq!(serial_to_time(0.5, TimeStyle::H24, &TestWords), "12:00");
+            assert_eq!(serial_to_time(0.5, TimeStyle::H12, &TestWords), "12:00 PM");
+            let serial = (14.0 * 3600.0 + 5.0 * 60.0) / 86400.0;
+            assert_eq!(serial_to_time(serial, TimeStyle::H24, &TestWords), "14:05");
+            assert_eq!(serial_to_time(serial, TimeStyle::H12, &TestWords), "2:05 PM");
+            for style in TimeStyle::ALL {
+                assert_eq!(time_style_from_code(time_style_code(style)), Some(style));
+            }
+        }
+
+        {
+            let cases = [
+                CellFormat::General,
+                CellFormat::Number,
+                CellFormat::Percent,
+                CellFormat::Boolean,
+                CellFormat::Text,
+                CellFormat::Currency(Currency::EUR),
+                CellFormat::Date(DateStyle::Eu),
+                CellFormat::Time(TimeStyle::H12),
+            ];
+            for f in cases {
+                assert_eq!(CellFormat::from_str(&f.as_str()), f);
+            }
+        }
+    }
+}

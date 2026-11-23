@@ -1375,6 +1375,9 @@ fn toolkit_enums() -> Vec<EnumDescription> {
         crate::widget::radar_chart::axes_description(),
         crate::widget::radar_chart::radar_series_description(),
         crate::widget::funnel_chart::stages_description(),
+        crate::widget::sheet_component::sheet_cell_description(),
+        crate::widget::sheet_component::sheet_peer_description(),
+        crate::widget::sheet_component::sheet_size_description(),
     ]
 }
 

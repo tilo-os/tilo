@@ -32,6 +32,8 @@ tilo-doc-codecs = { path = "../../engines/tilo-doc-codecs", default-features = f
     "markdown",
 ] }
 bounded-zip = { path = "../../engines/bounded-zip" }
+# Spreadsheet files and their values, for the sheet bindings: an engine with no toolkit.
+tilo-sheet = { path = "../../doc/tilo-sheet" }
 # The zone a wall-clock time is read in, and how a wall time that falls in a change of clocks
 # resolves, so a time of day survives one on every device.
 tilo-recurrence = { path = "../../engines/tilo-recurrence" }

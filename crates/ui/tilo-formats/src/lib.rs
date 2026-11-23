@@ -8,6 +8,7 @@
 
 mod bytes;
 mod clock;
+mod currency;
 mod dates;
 mod region;
 mod shown;
@@ -19,6 +20,7 @@ pub use bytes::{
     ByteFormat, ByteRounding, ByteUnit, ByteUnits, binary_bytes, decimal_bytes, format_bytes,
 };
 pub use clock::TimeStyle;
+pub use currency::Currency;
 pub use dates::{
     date, day_done, day_fact, day_heading, day_heading_short, day_range, day_range_numeric,
     days_between, duration, language_date, list_date, moment_fact, month_day, month_day_time,

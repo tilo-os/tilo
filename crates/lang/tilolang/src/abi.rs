@@ -392,6 +392,13 @@ imports! {
     // A file's preview, no larger than the size asked, from the device's preview cache (an
     // `Option` of the new file).
     FileThumbnail = "file_thumbnail" ([H, I64] -> [H]);
+    // A spreadsheet file read as the sheets it holds, and a workbook written as a file of a
+    // format: `.sheets()`, `File.of_sheets(name, workbook, format)`.
+    SheetFile = "sheet_file" ([H] -> [H]);
+    SheetOfFile = "sheet_of_file" ([H, H, H] -> [H]);
+    // A workbook described as text (the JSON a cell's action builds) evaluated: what each of its
+    // cells shows, in the workbook's own formats.
+    SheetValues = "sheet_values" ([H] -> [H]);
     ActChoose = "act_choose" ([H, H] -> [H]);
     ActChooseFolder = "act_choose_folder" ([H, H] -> [H]);
     ActSave = "act_save" ([H, H] -> [H]);

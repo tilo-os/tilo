@@ -2401,6 +2401,10 @@ pub use swipe_row::SwipeRow;
 mod pacer;
 pub use pacer::Pacer;
 pub mod data_table;
+pub mod sheet;
+pub(crate) mod sheet_component;
+pub use sheet::{Peer, Sheet, SheetCell, SheetSize};
+pub use sheet_component::SheetProps;
 mod data_table_component;
 pub use data_table_component::{
     DataTableCellProps, DataTableColumnProps, DataTableProps, DataTableRowProps, DescribedTable,

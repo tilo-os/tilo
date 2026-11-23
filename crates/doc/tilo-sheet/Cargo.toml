@@ -1,0 +1,36 @@
+[package]
+name = "tilo-sheet"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "A spreadsheet's engine: the cells as typed, the values formulas compute, the formats they show in, smart fill, and the .xlsx/.ods/.csv interchange, with no toolkit."
+
+[lib]
+name = "tilo_sheet"
+path = "src/lib.rs"
+
+[dependencies]
+# The canonical spreadsheet model and its A1 references, which the codecs read and write.
+tilo-doc = { version = "0.1.0", path = "../tilo-doc" }
+# The package codecs for `.xlsx` and `.ods`, and the bounded archive reader an import uses.
+tilo-doc-codecs = { version = "0.1.0", path = "../tilo-doc-codecs", default-features = false, features = [
+    "xlsx",
+    "ods",
+] }
+# The person's date, time and currency formats, which a cell shows its value in.
+tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }
+# The formula engine: Excel-compatible functions over a workbook built from the cells.
+ironcalc_base.workspace = true
+# The local IANA zone name, which ironcalc_base needs for TODAY() and NOW().
+iana-time-zone.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

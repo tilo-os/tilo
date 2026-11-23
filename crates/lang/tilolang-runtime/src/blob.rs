@@ -351,6 +351,10 @@ impl Core {
                 };
                 self.result(answer.map(Value::text))
             }
+            Imp::SheetFile => {
+                let file = self.file_arg(a.h(0)?)?;
+                self.result(self.sheet_import(&file).map(Value::text))
+            }
             Imp::FileFiles => {
                 let file = self.file_arg(a.h(0)?)?;
                 let answer = match self.blobs.borrow().as_ref() {
@@ -414,6 +418,14 @@ impl Core {
                 }
             },
             Imp::FileAt => Held::At(self.text(a.h(1)?)?),
+            Imp::SheetOfFile => {
+                let workbook = self.text(a.h(1)?)?;
+                let format = self.text(a.h(2)?)?;
+                match self.sheet_export(&workbook, &format) {
+                    Ok(bytes) => Held::Bytes(bytes),
+                    Err(why) => return trap(why),
+                }
+            }
             Imp::FileZip => match self.val_whole(a.h(1)?)? {
                 Value::List(items) => Held::Files(files_of_list(&items)?),
                 other => {
