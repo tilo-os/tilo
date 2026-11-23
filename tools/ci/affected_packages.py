@@ -1154,15 +1154,6 @@ def test_build_jobs(runner: str, arch: str) -> int:
     return max(1, min(class_jobs, TEST_SHARD_MEMORY_BYTES // TEST_JOB_BYTES[arch]))
 
 
-def android_apps(packages: dict[str, dict]) -> set[str]:
-    """Apps that opt into the Android host by declaring an `<app>-android` example."""
-    return {
-        name for name, package in packages.items()
-        if any(target.get("name") == f"{name}-android" and "example" in target.get("kind", ())
-               for target in package.get("targets", ()))
-    }
-
-
 def browser_crates(packages: dict[str, dict]) -> set[str]:
     """Crates that build for the browser: they depend on `wasm-bindgen`."""
     return {
@@ -1457,7 +1448,6 @@ def make_plan(
     vendored = vendored_test_crates(changes, run_all=force_full) if not pin_only else []
     if only is not None:
         vendored = [crate for crate in vendored if crate in set(only.get("vendored", ()))]
-    android =sorted(android_apps(packages) & selected)
     wasm = sorted(browser_crates(packages) & selected)
     return {
         "full": full,
@@ -1470,10 +1460,6 @@ def make_plan(
         # Vendored crates whose own tests t's `vendored` check runs.
         "vendored_required": bool(vendored),
         "vendored": vendored,
-        # Selected apps with an Android host example; t's `android` check
-        # type-checks them for the Android targets.
-        "android_required": bool(android),
-        "android": android,
         # Selected browser crates; t's `wasm` check type-checks them for
         # wasm32-unknown-unknown, a target no other job builds.
         "wasm_required": bool(wasm),
@@ -1533,8 +1519,6 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"vendored_crates={' '.join(plan['vendored'])}\n")
         handle.write(f"pins_required={'true' if plan['pins_required'] else 'false'}\n")
         handle.write(f"pins={' '.join(plan['pins'])}\n")
-        handle.write(f"android_required={'true' if plan['android_required'] else 'false'}\n")
-        handle.write(f"android_packages={' '.join(f'-p {name}' for name in plan['android'])}\n")
         handle.write(f"wasm_required={'true' if plan['wasm_required'] else 'false'}\n")
         handle.write(f"wasm_packages={' '.join(f'-p {name}' for name in plan['wasm'])}\n")
         handle.write(f"selected_count={plan['selected_count']}\n")

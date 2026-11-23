@@ -40,12 +40,10 @@ pub mod android;
 #[cfg(any(all(target_os = "android", feature = "native"), test))]
 mod android_env;
 
-/// Export the Android entry point for this binary's `main`.
+/// Export the Android entry point, which runs `$entry`: `ui::dev_reload_entry!` names the app's
+/// `framework::run`.
 #[macro_export]
 macro_rules! android_main {
-    () => {
-        $crate::android_main!(main);
-    };
     ($entry:expr) => {
         #[cfg(target_os = "android")]
         #[unsafe(no_mangle)]

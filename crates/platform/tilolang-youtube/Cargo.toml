@@ -45,3 +45,8 @@ workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
+
+# rustypipe runs YouTube's player script in QuickJS, and rquickjs ships no pre-generated bindings
+# for Android: they are generated from its headers there, against the NDK's sysroot.
+[target.'cfg(target_os = "android")'.dependencies]
+rquickjs-sys = { version = "0.9", features = ["bindgen"] }

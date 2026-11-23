@@ -41,6 +41,4 @@ pub mod zoom;
 pub use app::CalculatorApp;
 pub use resource::{Calculator, CalculatorShell};
 
-pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::built_in_definition!(CalculatorShell)
-}
+ui::dev_reload_entry!(CalculatorShell);

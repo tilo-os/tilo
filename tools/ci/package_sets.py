@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """The workspace's package sets that CI lints and builds.
 
-  package_sets.py android   apps with an `<app>-android` example
   package_sets.py browser   crates that build for the browser (wasm-bindgen)
   package_sets.py wasm      those, and the crates the page runtime builds for the
                             browser through them
@@ -26,15 +25,6 @@ VENDORED_TEST_CRATES: dict[str, tuple[str, ...]] = {
     "vendor/automerge": ("vendor/automerge/", "vendor/automerge-test/"),
     "vendor/vello_encoding": ("vendor/vello_encoding/",),
 }
-
-
-def android_apps(packages: dict[str, dict]) -> set[str]:
-    """Apps that opt into the Android host by declaring an `<app>-android` example."""
-    return {
-        name for name, package in packages.items()
-        if any(target.get("name") == f"{name}-android" and "example" in target.get("kind", ())
-               for target in package.get("targets", ()))
-    }
 
 
 def browser_crates(packages: dict[str, dict]) -> set[str]:
@@ -171,7 +161,7 @@ def per_arch(packages: dict[str, dict]) -> set[str]:
     return found
 
 
-SETS = {"android": android_apps, "browser": browser_crates, "wasm": wasm_crates, "per-arch": per_arch}
+SETS = {"browser": browser_crates, "wasm": wasm_crates, "per-arch": per_arch}
 
 
 def main(argv: list[str]) -> int:

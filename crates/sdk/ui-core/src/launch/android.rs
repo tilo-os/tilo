@@ -1,5 +1,6 @@
-//! The Android entry point. [`crate::android_main!`] in an app's `main.rs` exports `android_main`,
-//! which android-activity calls on its own thread once `TiloActivity` has created the native activity.
+//! The Android entry point. [`crate::android_main!`], through an app library's
+//! `dev_reload_entry!`, exports `android_main`, which android-activity calls on its own thread once
+//! `TiloActivity` has created the native activity.
 
 use std::ffi::{CString, c_void};
 use std::io::{BufRead, BufReader};
@@ -16,7 +17,7 @@ pub fn app() -> Option<&'static AndroidApp> {
     APP.get()
 }
 
-/// Run the app's `main` for the activity android-activity handed to `android_main`.
+/// Run the app's entry for the activity android-activity handed to `android_main`.
 #[doc(hidden)]
 pub fn run_main<T: std::process::Termination>(app: AndroidApp, main: fn() -> T) {
     forward_stdio_to_logcat();

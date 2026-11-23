@@ -16,7 +16,7 @@ import android.view.WindowInsets;
  *
  * <p>The app itself is Rust: {@link NativeActivity} loads the library named by the
  * {@code android.app.lib_name} meta-data and enters the {@code android_main} that
- * {@code ui::android_main!()} exports, which runs the app's ordinary {@code main}. This class
+ * the app library's {@code ui::dev_reload_entry!} exports, which runs the app. This class
  * adds only what a native activity cannot do from Rust.
  *
  * <h2>Calling Rust from Java</h2>

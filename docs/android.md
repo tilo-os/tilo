@@ -65,7 +65,9 @@ The build uses no Gradle. It needs:
 - NDK r29, from `$ANDROID_NDK_HOME` or the SDK's `ndk/`, and the Rust targets
   `aarch64-linux-android` and `x86_64-linux-android`. The CLI points Cargo at
   the NDK's clang unless `CARGO_TARGET_*_LINUX_ANDROID_LINKER` is already set,
-  as it is in the builder image;
+  as it is in the builder image. A crate that generates its bindings at build
+  time (rquickjs, for QuickJS) reads the NDK's headers with libclang, given the
+  NDK's sysroot through `BINDGEN_EXTRA_CLANG_ARGS_<triple>`;
 - a JDK 17 or newer (`javac`, `keytool`, `jarsigner`) and `zip`/`unzip`;
 - optionally bundletool, for the `.aab`. Without it `package` makes the APK
   only and says so; `--no-bundle` skips the bundle on purpose.
@@ -87,9 +89,6 @@ the SDK licences without prompting, for CI. It cannot install a JDK or the zip
 tools, so it prints the command above for whichever are missing, first and
 again at the end, and stops early without `unzip` when it must unpack the
 command-line tools.
-
-`crates/sdk/ui-core/android/build-apk.sh <app> [--abi ABI]... [--release]`
-remains as a thin wrapper over the same commands for apps in this checkout.
 
 ## From `tilo-app.toml` to the APK
 
@@ -144,35 +143,6 @@ exports `android_main`, which runs `ui::framework::run::<App>()` through
 (`cargo rustc --lib --crate-type cdylib`), so the app's `Cargo.toml` needs
 nothing Android-specific.
 
-An app without that library, such as Calculator and Notes, opts in the older
-way instead:
-
-1. `ui::android_main!();` in its `main.rs`. It expands to nothing off Android.
-2. A `src/android.rs` that includes that `main.rs` as a module:
-
-   ```rust
-   #[path = "main.rs"]
-   mod app;
-   ```
-
-3. A `cdylib` example named `<app>-android` behind an `android` feature in its
-   `Cargo.toml`:
-
-   ```toml
-   [[example]]
-   name = "calculator-android"
-   path = "src/android.rs"
-   crate-type = ["cdylib"]
-   required-features = ["android"]
-
-   [features]
-   android = []
-   ```
-
-When an app declares that example the CLI builds it with `--features
-android`; otherwise it builds the library. The CI job below selects every
-affected app that declares the example.
-
 Everything the toolkit writes to stdout and stderr, including `tracing` and
 panics, goes to logcat under the tag `tilo`, which `run` streams.
 
@@ -180,10 +150,10 @@ panics, goes to logcat under the tag `tilo`, which `run` streams.
 
 **Entry.** `TiloActivity` extends `NativeActivity`, which loads the library
 named in the manifest's `android.app.lib_name` and starts `android_main` on
-its own thread. `android_main!` makes that call `ui::launch::android::run_main`,
-which prepares the process the way a desktop launcher would and then calls
-the app's ordinary `main`, so the app takes the same `ui::launch::run` path
-and winit event loop as on Linux. Preparing the process means:
+its own thread. `dev_reload_entry!` makes that call `ui::launch::android::run_main`,
+which prepares the process the way a desktop launcher would and then runs
+the app, so it takes the same `ui::launch::run` path and winit event loop as
+on Linux. Preparing the process means:
 
 - stdout and stderr are piped into logcat;
 - `HOME`, `TMPDIR` and the XDG base directories point into the app's private
@@ -306,7 +276,7 @@ Useful probes:
   but `adb shell input text` still types into the focused field.
 
 Nothing in CI runs on a device. t's `android` check runs
-`cargo clippy -D warnings` on every selected app's `<app>-android` example for
+`cargo clippy -D warnings` on Calculator's library and the tilolang runtime for
 `aarch64-linux-android` and `x86_64-linux-android` (tools/ci/clippy-android.sh),
 and type-checks the device daemon (`tilo-runtime`) for both, since the Tilo app
 runs it in its own process. It is a type check, not an APK build.

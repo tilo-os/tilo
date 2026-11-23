@@ -185,7 +185,9 @@ ENV ANDROID_NDK_HOME=/opt/android-ndk \
     AR_aarch64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar \
     CC_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang \
     CXX_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang++ \
-    AR_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+    AR_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar \
+    BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--sysroot=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot \
+    BINDGEN_EXTRA_CLANG_ARGS_x86_64_linux_android=--sysroot=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot
 
 # Windows, cross-compiled from Linux: Rust's MSVC
 # targets and cargo-xwin, which drives clang-cl and lld-link (already here

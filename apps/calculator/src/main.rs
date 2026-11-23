@@ -6,6 +6,4 @@
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-ui::android_main!();
-
 ui::main!(calculator::CalculatorShell);

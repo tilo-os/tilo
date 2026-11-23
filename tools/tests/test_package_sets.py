@@ -14,15 +14,6 @@ from ci import package_features, package_sets  # noqa: E402
 
 
 class PackageSetsTests(unittest.TestCase):
-    def test_android_apps_declare_an_android_example(self):
-        packages = {
-            "notes": {"targets": [{"name": "notes", "kind": ["lib"]},
-                                  {"name": "notes-android", "kind": ["example"]}]},
-            "clock": {"targets": [{"name": "clock-android", "kind": ["bin"]}]},
-            "files": {"targets": [{"name": "notes-android", "kind": ["example"]}]},
-        }
-        self.assertEqual(package_sets.android_apps(packages), {"notes"})
-
     def test_browser_crates_depend_on_wasm_bindgen_for_their_library(self):
         packages = {
             "web": {"dependencies": [{"name": "wasm-bindgen", "kind": None}]},
@@ -175,7 +166,7 @@ class PackageSetsTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(ROOT / "tools/ci/package_sets.py"), "desktop"],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)
-        self.assertIn("usage: package_sets.py android|browser", result.stderr)
+        self.assertIn("usage: package_sets.py browser", result.stderr)
 
     def test_the_families_t_lints_name_the_sets_derived_here(self):
         # A crate that starts building for the page, or a package that starts shipping without

@@ -5,8 +5,8 @@
 //! The Java layer, and the font catalog the renderer loads, come from the SDK
 //! checkout the app builds against (`crates/sdk/ui-core/android`); the
 //! manifest is generated here from `tilo-app.toml`. The Rust library is the
-//! app's `<package>-android` example when it declares one, else its library
-//! built as a `cdylib`, whose `ui::dev_reload_entry!` defines `android_main`.
+//! app's library built as a `cdylib`, whose `ui::dev_reload_entry!` defines
+//! `android_main`.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -176,6 +176,7 @@ impl Toolchain {
         ];
         let mut env: Vec<(String, OsString)> = wanted
             .into_iter()
+            .chain(bindgen_sysroot(triple, &bin))
             .filter(|(key, _)| std::env::var_os(key).is_none())
             .collect();
         if let Some(ndk) = &self.ndk {
@@ -217,6 +218,18 @@ impl Toolchain {
 pub enum Bundletool {
     Jar(PathBuf),
     Program(PathBuf),
+}
+
+/// Headers a crate generates its bindings from at build time (rquickjs, for `QuickJS`) are read
+/// with libclang, which knows no Android sysroot of its own: the NDK's, beside its `bin`.
+fn bindgen_sysroot(triple: &str, bin: &Path) -> Option<(String, OsString)> {
+    let sysroot = bin.parent()?.join("sysroot");
+    let mut arg = OsString::from("--sysroot=");
+    arg.push(sysroot);
+    Some((
+        format!("BINDGEN_EXTRA_CLANG_ARGS_{}", triple.replace('-', "_")),
+        arg,
+    ))
 }
 
 fn bundletool_jar_path(sdk: &Path) -> PathBuf {
@@ -1069,34 +1082,14 @@ pub fn android_manifest(app: &AndroidMetadata, lib_name: &str, debuggable: bool)
     )
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LibraryTarget {
-    /// A `cdylib` example named `<package>-android`, built with the
-    /// `android` feature (Calculator and Notes).
-    Example(String),
-    /// The package library, built as a `cdylib`; `ui::dev_reload_entry!`
-    /// defines its `android_main`.
-    Lib,
-}
-
-pub fn library_target(app_dir: &Path, package: &str) -> Result<LibraryTarget> {
+/// Check that the app at `app_dir` has an Android entry: `ui::dev_reload_entry!` at the root of
+/// its library, which defines the `android_main` the activity enters.
+pub fn check_library_entry(app_dir: &Path) -> Result<()> {
     let manifest_path = app_dir.join("Cargo.toml");
     let manifest: toml::Table = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("reading {}", manifest_path.display()))?
         .parse()
         .with_context(|| format!("parsing {}", manifest_path.display()))?;
-    let example = format!("{package}-android");
-    let declares_example = manifest
-        .get("example")
-        .and_then(toml::Value::as_array)
-        .is_some_and(|examples| {
-            examples.iter().any(|entry| {
-                entry.get("name").and_then(toml::Value::as_str) == Some(example.as_str())
-            })
-        });
-    if declares_example {
-        return Ok(LibraryTarget::Example(example));
-    }
     let lib_path = manifest
         .get("lib")
         .and_then(|lib| lib.get("path"))
@@ -1104,11 +1097,11 @@ pub fn library_target(app_dir: &Path, package: &str) -> Result<LibraryTarget> {
         .unwrap_or("src/lib.rs");
     let lib = std::fs::read_to_string(app_dir.join(lib_path)).unwrap_or_default();
     if lib.contains("dev_reload_entry!") {
-        return Ok(LibraryTarget::Lib);
+        return Ok(());
     }
     bail!(
-        "{} has no Android entry: call `ui::dev_reload_entry!(App);` at the root of its library \
-         (as `tilo-app new` does), or declare a `{example}` cdylib example (docs/android.md)",
+        "{} has no Android entry: call `ui::dev_reload_entry!(App);` at the root of its library, \
+         as `tilo-app new` does (docs/android.md)",
         app_dir.display()
     )
 }
@@ -1117,28 +1110,16 @@ pub fn library_target(app_dir: &Path, package: &str) -> Result<LibraryTarget> {
 #[must_use]
 pub fn library_cargo_args(
     manifest: &Path,
-    target: &LibraryTarget,
     triple: &str,
     profile: &str,
     features: &[String],
     no_default_features: bool,
 ) -> Vec<OsString> {
-    let mut features = features.to_vec();
-    let mut args: Vec<OsString> = match target {
-        LibraryTarget::Example(example) => {
-            if !features.iter().any(|feature| feature == "android") {
-                features.push("android".to_owned());
-            }
-            vec!["build".into(), "--example".into(), example.into()]
-        }
-        LibraryTarget::Lib => vec![
-            "rustc".into(),
-            "--lib".into(),
-            "--crate-type".into(),
-            "cdylib".into(),
-        ],
-    };
-    args.extend([
+    let mut args: Vec<OsString> = vec![
+        "rustc".into(),
+        "--lib".into(),
+        "--crate-type".into(),
+        "cdylib".into(),
         "--manifest-path".into(),
         manifest.as_os_str().to_os_string(),
         "--target".into(),
@@ -1146,7 +1127,7 @@ pub fn library_cargo_args(
         "--profile".into(),
         profile.into(),
         "--message-format=json-render-diagnostics".into(),
-    ]);
+    ];
     if no_default_features {
         args.push("--no-default-features".into());
     }
@@ -1489,7 +1470,7 @@ pub fn build(start: &Path, request: &BuildRequest) -> Result<AndroidBuild> {
     let manifest = tilo_app_package::Manifest::from_toml_str(&manifest_source)
         .with_context(|| format!("parsing {}", spec.manifest_path.display()))?;
     let metadata = AndroidMetadata::from_manifest(&spec.cargo_package, &manifest)?;
-    let library = library_target(&app_dir, &spec.cargo_package)?;
+    check_library_entry(&app_dir)?;
     super::validate_profile_name(&request.profile)?;
 
     let tools = Toolchain::discover();
@@ -1508,7 +1489,6 @@ pub fn build(start: &Path, request: &BuildRequest) -> Result<AndroidBuild> {
         &tools,
         &library_cargo_args(
             &app_dir.join("Cargo.toml"),
-            &library,
             &triple,
             &request.profile,
             &request.features,
@@ -2538,9 +2518,9 @@ pub fn dev_on_device(start: &Path, dev: &crate::DevRequest, request: &DeviceRequ
 pub fn clippy(start: &Path, arch: PackageArch) -> Result<()> {
     let app_dir = super::resolve_app_dir(start)?;
     let package = super::cargo_package_name(&app_dir.join("Cargo.toml"))?;
-    let target = library_target(&app_dir, &package)?;
+    check_library_entry(&app_dir)?;
     let triple = PackagePlatform::Android.triple(arch);
-    let mut args: Vec<OsString> = vec![
+    let args: Vec<OsString> = vec![
         "clippy".into(),
         "--manifest-path".into(),
         app_dir.join("Cargo.toml").into_os_string(),
@@ -2548,19 +2528,12 @@ pub fn clippy(start: &Path, arch: PackageArch) -> Result<()> {
         package.into(),
         "--target".into(),
         triple.clone().into(),
+        "--lib".into(),
+        "--no-deps".into(),
+        "--".into(),
+        "-D".into(),
+        "warnings".into(),
     ];
-    match target {
-        LibraryTarget::Example(example) => {
-            args.extend([
-                "--example".into(),
-                example.into(),
-                "--features".into(),
-                "android".into(),
-            ]);
-        }
-        LibraryTarget::Lib => args.push("--lib".into()),
-    }
-    args.extend(["--no-deps", "--", "-D", "warnings"].map(OsString::from));
     let tools = Toolchain::discover();
     run(Command::new(cargo_program())
         .args(&args)
@@ -2631,25 +2604,16 @@ type = "gui"
     tilo_test_env::scenario! {
         fn the_android_library_is_built_as_a_cdylib_for_each_abi;
 
-        phase the_library_is_the_android_example_or_the_entry_library;
+        phase the_library_is_the_entry_library;
         {
             let dir = tempfile::tempdir().unwrap();
             let app = dir.path();
             std::fs::create_dir_all(app.join("src")).unwrap();
             std::fs::write(app.join("Cargo.toml"), "[package]\nname = \"calc\"\n").unwrap();
             std::fs::write(app.join("src/lib.rs"), "pub struct App;\n").unwrap();
-            assert!(library_target(app, "calc").is_err());
+            assert!(check_library_entry(app).is_err());
             std::fs::write(app.join("src/lib.rs"), "ui::dev_reload_entry!(App);\n").unwrap();
-            assert_eq!(library_target(app, "calc").unwrap(), LibraryTarget::Lib);
-            std::fs::write(
-                app.join("Cargo.toml"),
-                "[package]\nname = \"calc\"\n\n[[example]]\nname = \"calc-android\"\npath = \"src/android.rs\"\ncrate-type = [\"cdylib\"]\n",
-            )
-            .unwrap();
-            assert_eq!(
-                library_target(app, "calc").unwrap(),
-                LibraryTarget::Example("calc-android".to_owned())
-            );
+            check_library_entry(app).unwrap();
         }
 
         phase the_library_command_builds_a_cdylib_for_the_triple;
@@ -2657,7 +2621,6 @@ type = "gui"
             let manifest = Path::new("/app/Cargo.toml");
             let lib = library_cargo_args(
                 manifest,
-                &LibraryTarget::Lib,
                 "aarch64-linux-android",
                 "dev",
                 &[],
@@ -2675,25 +2638,19 @@ type = "gui"
             assert!(lib.windows(2).any(|pair| pair == ["--profile", "dev"]));
             assert!(!lib.iter().any(|arg| arg == "--features"));
 
-            let example = library_cargo_args(
+            let release = library_cargo_args(
                 manifest,
-                &LibraryTarget::Example("calc-android".to_owned()),
                 "x86_64-linux-android",
                 "release",
                 &["extra".to_owned()],
                 true,
             );
-            let example: Vec<_> = example
+            let release: Vec<_> = release
                 .iter()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect();
-            assert_eq!(&example[..3], ["build", "--example", "calc-android"]);
-            assert!(
-                example
-                    .windows(2)
-                    .any(|pair| pair == ["--features", "extra,android"])
-            );
-            assert!(example.iter().any(|arg| arg == "--no-default-features"));
+            assert!(release.windows(2).any(|pair| pair == ["--features", "extra"]));
+            assert!(release.iter().any(|arg| arg == "--no-default-features"));
         }
 
         phase the_artifact_stream_names_the_shared_library;
