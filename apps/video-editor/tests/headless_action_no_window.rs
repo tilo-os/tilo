@@ -70,7 +70,7 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
         DocumentCheckout::new(app.record().clone(), definition.resource_type.clone()),
         app.read_document(|doc| doc.clone().save()),
         &ui::tilo_resource::MemberId::person("headless-driver"),
-        PermissionContext::permissive(),
+        PermissionContext::owner(),
         false,
     )
     .expect("the view holds the project");

@@ -450,7 +450,6 @@ fn configure_service_options(
             || options.trusted_identities_host_path.is_some()
             || options.retained_files_host_path.is_some()
             || options.browser_continuity_host_path.is_some()
-            || options.action_authority_host_path.is_some()
         {
             return Err(LaunchError::InvalidServiceLaunch(
                 "Retained I/O options differ".into(),
@@ -478,7 +477,6 @@ fn configure_service_options(
             || options.trusted_identities_host_path.is_some()
             || options.retained_files_host_path.is_some()
             || options.browser_continuity_host_path.is_some()
-            || options.action_authority_host_path.is_some()
         {
             return Err(LaunchError::InvalidServiceLaunch(
                 "Target projection options differ".into(),

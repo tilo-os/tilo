@@ -746,21 +746,7 @@ impl Workspace {
     pub fn launch_grants(&self) -> collab_types::caps::LaunchGrants {
         collab_types::caps::LaunchGrants {
             sandbox: self.sandbox.clone(),
-            ..collab_types::caps::LaunchGrants::default()
         }
-    }
-
-    /// Whether what `app`'s window changes in this workspace is told to that
-    /// window as the person's own change: `person` may change the workspace
-    /// through `app` at `now`. `None` when `person` has no place in the
-    /// workspace, so nothing is told to the window.
-    #[must_use]
-    pub fn app_writes_at(&self, person: &str, app: &str, now: u64) -> Option<bool> {
-        self.role_of(person)?;
-        Some(
-            self.answer_at(person, &self.node().app(app), ActionKind::Undoable, now)
-                == Answer::Allow,
-        )
     }
 
     /// The grants naming a person on one node below the workspace — the share list

@@ -118,6 +118,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         | CollabRequest::CloseWorkspaceControl { .. }
         | CollabRequest::CloseResources { .. }
         | CollabRequest::ClearContinuation
+        | CollabRequest::DecideShownActions
         | CollabRequest::RequestDocumentSnapshot => {}
         CollabRequest::LaunchInstalledApplication {
             app_id,
@@ -153,7 +154,6 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         }
         CollabRequest::ResourceCommand { command, .. } => meter.bytes(command),
         CollabRequest::OpenResources { query, .. } => meter.bytes(query),
-        CollabRequest::DecideShownActions { actions } => serialized_bytes(actions, &mut meter),
         CollabRequest::ReportHandoff { message } => {
             meter.bytes(message);
         }

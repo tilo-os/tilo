@@ -87,12 +87,19 @@ impl App {
             .map(|(descriptors, state)| (state, descriptors));
         let (delta, state) = crate::collaboration::SurfacePublication::next(prior, &descriptors);
         // A surface the transport did not take is retried on the next frame.
+        let reset = prior.is_none();
         if delta.is_empty()
             || self
                 .collaboration
                 .manager
                 .send(CollabRequest::PublishActionSurface { delta })
         {
+            // A surface the host did not have before: its verdicts follow it from now on.
+            if reset {
+                self.collaboration
+                    .manager
+                    .send(CollabRequest::DecideShownActions);
+            }
             self.actions.last_published_actions = Some(descriptors);
             self.actions.published_surface = Some(state);
             return true;

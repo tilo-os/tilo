@@ -240,14 +240,10 @@ impl From<Vec<CapOverride>> for FsAuthority {
     }
 }
 
-/// What a launch hands an app: whether the person launching it may change the
-/// workspace through it, and the app's sandbox capabilities.
+/// What a launch hands an app: its sandbox capabilities.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LaunchGrants {
-    /// Whether the app may change the workspace: its person may.
-    #[serde(default)]
-    pub author: bool,
     #[serde(default)]
     pub sandbox: Vec<CapOverride>,
 }
@@ -259,7 +255,6 @@ impl LaunchGrants {
     #[must_use]
     pub fn for_app(&self, app: &str) -> Self {
         Self {
-            author: self.author,
             sandbox: self
                 .sandbox
                 .iter()
@@ -272,7 +267,7 @@ impl LaunchGrants {
     /// Nothing to hand over.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        !self.author && self.sandbox.is_empty()
+        self.sandbox.is_empty()
     }
 }
 

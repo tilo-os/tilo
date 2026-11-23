@@ -68,7 +68,7 @@ fn mount_store(env: &Environment, manager: collaboration::CollaborationManager) 
             device_id: "device".into(),
             instance_id: 1,
             permissions: collaboration::permissions::SharedPermissions::new(
-                collaboration::permissions::PermissionContext::permissive(),
+                collaboration::permissions::PermissionContext::owner(),
             ),
             author: collaboration::permissions::MemberId::person(person_id_for_root(
                 env.cert.user_public_key,

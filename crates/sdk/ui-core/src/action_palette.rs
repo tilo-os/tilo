@@ -1441,7 +1441,7 @@ impl ActionPalette {
             return binding
                 .permissions
                 .borrow()
-                .check(&crate::permissions::PermissionScope::app(
+                .allows(&crate::permissions::ShownAction::of_app(
                     &binding.app_id,
                     crate::permissions::ActionKind::Read,
                 ));

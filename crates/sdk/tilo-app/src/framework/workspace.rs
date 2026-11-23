@@ -19,7 +19,7 @@ use tilo_resource::{Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::arriving::{Arriving, Source};
 use ui_core::history_mode::HistoryOwner;
-use ui_core::permissions::{LivePermissions, PermissionScope, TreePath};
+use ui_core::permissions::{LivePermissions, ShownAction};
 use ui_core::resource::StoredResource;
 use ui_core::resource::workspace::WorkspaceResources;
 use ui_core::wake::WakeHandle;
@@ -505,46 +505,37 @@ impl<P: Resource> WorkspaceResource<P> {
         &self.shared.me
     }
 
-    /// Whether the caller may read this record. A member's own record follows its
-    /// authenticated owner; shared records follow the workspace's policy.
+    /// Whether the caller may read this record: unless the host refuses reading it. A member's
+    /// own record is read only through a host; whatever else the host has not decided is read
+    /// as far as its keys reach.
     #[must_use]
     pub fn may_read(&self) -> bool {
-        if self.shared.permissions.is_none()
-            && tilo_actions::policy::roles::has_member_reader(self.shared.owner, P::KIND)
-        {
-            return false;
+        match &self.shared.permissions {
+            Some(permissions) => !matches!(
+                permissions.verdict(&ShownAction::new(
+                    None,
+                    self.shared.owner,
+                    (P::KIND, self.id().route(), ""),
+                    &tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Read),
+                )),
+                Some(ui_core::permissions::ActionVerdict::Refused(_))
+            ),
+            None => !tilo_actions::policy::roles::has_member_reader(self.shared.owner, P::KIND),
         }
-        let node = tilo_actions::resource_node(
-            &TreePath::root(),
-            self.shared.owner,
-            P::KIND,
-            self.id().route(),
-        );
-        self.answer(&node, tilo_actions::ActionKind::Read) == tilo_actions::policy::Answer::Allow
     }
 
-    fn answer(
-        &self,
-        node: &TreePath,
-        kind: tilo_actions::ActionKind,
-    ) -> tilo_actions::policy::Answer {
-        use tilo_actions::policy::Answer;
-        let invoker = ui_core::invocation_scope::current_invoker();
-        let Some(permissions) = &self.shared.permissions else {
-            return if invoker.is_none() {
-                Answer::Allow
-            } else {
-                Answer::Deny
-            };
-        };
-        let current = permissions.current();
-        let current = if let Some(invoker) = invoker {
-            let access = current.access().invoked_by(&invoker.acting);
-            current.with_access(access)
-        } else {
-            current
-        };
-        current.answer(node, kind)
+    /// Whether the dispatch's verdict lets the window's person take the action `action` of
+    /// this record at what `need` says. A window that knows of no dispatch (a test host) lets
+    /// the record decide.
+    fn allows(&self, action: &str, need: &tilo_actions::ActionNeed) -> bool {
+        self.shared.permissions.as_ref().is_none_or(|permissions| {
+            permissions.allows(&ShownAction::new(
+                None,
+                self.shared.owner,
+                (P::KIND, self.id().route(), action),
+                need,
+            ))
+        })
     }
 
     fn independently_sealed(&self) -> bool {
@@ -555,30 +546,20 @@ impl<P: Resource> WorkspaceResource<P> {
             || roles::is_workspace_moderation(app, route)
     }
 
-    /// Whether the workspace's grants let the person invoke the verb `verb` of
-    /// the record, as its owner publishes it. A window that knows nothing
-    /// of the workspace's grants (a test host) lets the record decide.
+    /// Whether the device's dispatch lets the person invoke the verb `verb` of the record, as
+    /// its owner publishes it.
     pub fn may(&self, verb: &str) -> bool {
         let Some(declared) = P::declarations().into_iter().find(|decl| decl.id == verb) else {
             return self.shared.permissions.is_none() && !self.independently_sealed();
         };
-        let node = tilo_actions::action_node(
-            &TreePath::root(),
-            self.shared.owner,
-            P::KIND,
-            self.id().route(),
-            declared.field,
+        self.allows(
             verb,
-        );
-        if self.independently_sealed() {
-            return self.answer(&node, declared.kind) == tilo_actions::policy::Answer::Allow;
-        }
-        self.shared.permissions.as_ref().is_none_or(|permissions| {
-            permissions.check(&PermissionScope::Action {
-                node,
+            &tilo_actions::ActionNeed {
                 kind: declared.kind,
-            })
-        })
+                field: declared.field.map(str::to_owned),
+                privileged: false,
+            },
+        )
     }
 
     /// Apply the action `invoke` names: decided by the workspace's grants on the
@@ -749,8 +730,8 @@ impl<P: Resource> WorkspaceResource<P> {
         result
     }
 
-    /// Refuse `action` unless the workspace's grants let the window's person do it: a verb as
-    /// [`Self::may`] decides it, a field edit at the field it changes. What a caller from
+    /// Refuse `action` unless the device's dispatch lets the window's person do it: a verb as
+    /// [`Self::may`] reads it, a field edit at the field it changes. What a caller from
     /// outside asks for passes here before it is applied.
     fn admitted(&self, action: &P::Action) -> Result<(), ActionError> {
         let refused = || {
@@ -767,24 +748,7 @@ impl<P: Resource> WorkspaceResource<P> {
             };
         }
         let need = tilo_resource::need_of::<P>(action);
-        let node = tilo_actions::resource_node(
-            &TreePath::root(),
-            self.shared.owner,
-            P::KIND,
-            self.id().route(),
-        )
-        .field(need.field.as_deref().unwrap_or_default())
-        .action(tilo_resource::FIELD_EDIT);
-        let allowed = if self.independently_sealed() {
-            self.answer(&node, need.kind) == tilo_actions::policy::Answer::Allow
-        } else {
-            self.shared.permissions.as_ref().is_none_or(|permissions| {
-                permissions.check(&PermissionScope::Action {
-                    node,
-                    kind: need.kind,
-                })
-            })
-        };
+        let allowed = self.allows(tilo_resource::FIELD_EDIT, &need);
         if allowed { Ok(()) } else { Err(refused()) }
     }
 

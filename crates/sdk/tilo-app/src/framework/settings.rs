@@ -212,16 +212,15 @@ impl Hosted {
                 .person
                 .map(|records| super::person::PersonState::new(records, app_id, app_title, wake)),
             device: self.device,
-            records: self.records.map(|(store, me, permissions)| {
-                super::chain::WorkspaceResources {
+            records: self
+                .records
+                .map(|(store, me, _)| super::chain::WorkspaceResources {
                     store,
                     me,
-                    permissions,
                     app_id,
                     app_title,
                     device_queue: None,
-                }
-            }),
+                }),
         }
     }
 }

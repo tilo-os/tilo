@@ -57,7 +57,7 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
             &crate::permissions::MemberId::person("restricted"),
         ));
         assert!(!app.root_widget.children()[0].is_enabled());
-        app.set_permission_ctx(PermissionContext::permissive());
+        app.set_permission_ctx(PermissionContext::owner());
         assert!(app.root_widget.children()[0].is_enabled());
         assert_eq!(
             counts[0].get(),

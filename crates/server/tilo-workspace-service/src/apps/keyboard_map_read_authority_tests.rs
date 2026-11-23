@@ -118,7 +118,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_appr
             };
             let actor = person_id_for_root(env.cert.user_public_key);
             let permissions = collaboration::permissions::SharedPermissions::new(
-                collaboration::permissions::PermissionContext::permissive(),
+                collaboration::permissions::PermissionContext::owner(),
             );
             let context = ProcessContext::prepare(
                 definition,

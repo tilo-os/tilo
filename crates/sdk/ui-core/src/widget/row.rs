@@ -142,10 +142,7 @@ impl Widget for Row {
         cx.children();
     }
 
-    crate::provides!(
-        dyn crate::permissions::capability::PermissionGuarded,
-        dyn crate::presence::capability::PublishesPresence
-    );
+    crate::provides!(dyn crate::presence::capability::PublishesPresence);
 
     flow_widget_methods!();
 

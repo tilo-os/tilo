@@ -1,7 +1,7 @@
 use super::*;
 use tilo_actions::policy::{Acting, Actor, MemberAccess, MemberId, Role, WorkspacePolicy};
 use tilo_resource::Model;
-use ui_core::permissions::PermissionContext;
+use ui_core::permissions::{PermissionContext, SharedPermissions};
 use ui_core::resource::ResourceOwners;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -29,10 +29,8 @@ fn a_known_reader_can_read_their_record_at_any_role() {
         let records =
             WorkspaceResources::in_workspace(owners.clone(), WORKSPACE.to_owned(), author.clone());
         let actor = Acting::from(Actor::Member(author));
-        let permissions = LivePermissions::fixed(PermissionContext::new(
-            actor.clone(),
-            Vec::new(),
-            MemberAccess::new(policy.clone(), actor),
+        let permissions = LivePermissions::shared(SharedPermissions::new(
+            PermissionContext::from_access(MemberAccess::new(policy.clone(), actor)),
         ));
         WorkspaceResource::<History>::open_at(
             &records,

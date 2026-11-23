@@ -1,4 +1,3 @@
-use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -18,7 +17,6 @@ pub struct Stack {
     children: Vec<Box<dyn Widget>>,
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
-    permission_scope: Option<PermissionScope>,
 }
 
 impl Default for Stack {
@@ -33,7 +31,6 @@ impl Stack {
             children: Vec::new(),
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
-            permission_scope: None,
         }
     }
 
@@ -48,12 +45,6 @@ impl Stack {
         self.presence_path = path;
         self
     }
-
-    #[must_use]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
-        self
-    }
 }
 
 impl Widget for Stack {
@@ -61,10 +52,7 @@ impl Widget for Stack {
         cx.children();
     }
 
-    crate::provides!(
-        dyn crate::permissions::capability::PermissionGuarded,
-        dyn crate::presence::capability::PublishesPresence
-    );
+    crate::provides!(dyn crate::presence::capability::PublishesPresence);
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
@@ -135,9 +123,7 @@ impl Widget for Stack {
             );
         }
 
-        crate::widget::draw_permission_scrim_and_peer_focus(
-            self, scene, transform, theme, presence,
-        );
+        crate::widget::draw_peer_focus(self, scene, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -155,14 +141,12 @@ impl Widget for Stack {
 
     /// What its children changed.
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
-        if self.permission_scope.is_some() || !self.presence_path.is_empty() {
-            if self.needs_redraw() || self.needs_animation_frame() {
-                regions.push(self.rect);
-            }
-        } else {
+        if self.presence_path.is_empty() {
             for child in &self.children {
                 child.collect_damage(regions);
             }
+        } else if self.needs_redraw() || self.needs_animation_frame() {
+            regions.push(self.rect);
         }
     }
 
@@ -223,11 +207,5 @@ impl Widget for Stack {
 impl crate::presence::capability::PublishesPresence for Stack {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
-    }
-}
-
-impl crate::permissions::capability::PermissionGuarded for Stack {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 }

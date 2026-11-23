@@ -125,7 +125,7 @@ fn copy_for(app: &TestApp<BoardApp>, member: &str) -> AttachedView {
         DocumentCheckout::new(app.record().clone(), definition.resource_type.clone()),
         app.read_document(|doc| doc.clone().save()),
         &MemberId::person(member),
-        PermissionContext::permissive(),
+        PermissionContext::owner(),
         false,
     )
     .unwrap()

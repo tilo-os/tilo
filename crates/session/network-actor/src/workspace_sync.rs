@@ -166,23 +166,11 @@ pub fn state(ws: WorkspaceId) -> Option<WorkspaceSyncState> {
 }
 
 /// What an app window in the workspace `name`, on workspace topic `ws`, is
-/// told, with whether the app may write the workspace now (`writable`). A
-/// workspace with no host still tells an app that answer, as one synced as
-/// far as it goes.
-pub fn told(
-    ws: WorkspaceId,
-    name: &str,
-    writable: Option<bool>,
-) -> Option<ui::workspace_sync::WorkspaceSync> {
-    let state = match (state(ws), writable) {
-        (Some(state), _) => state,
-        (None, Some(_)) => WorkspaceSyncState::Synced,
-        (None, None) => return None,
-    };
+/// told; `None` for a workspace with no host.
+pub fn told(ws: WorkspaceId, name: &str) -> Option<ui::workspace_sync::WorkspaceSync> {
     Some(ui::workspace_sync::WorkspaceSync {
-        state,
+        state: state(ws)?,
         workspace: name.to_owned(),
-        writable,
         unsynced_writes: unsynced_writes(ws),
         cannot_keep_writes: cannot_keep_writes(ws),
     })
@@ -196,14 +184,9 @@ mod tests {
     fn a_workspace_is_connecting_until_its_first_sync_and_says_who_has_to_update() {
         const WS: WorkspaceId = WorkspaceId::from_u128(0x5eed_0001);
         assert_eq!(
-            told(WS, "Lounge", None),
+            told(WS, "Lounge"),
             None,
             "a workspace with no host is told nothing"
-        );
-        assert_eq!(
-            told(WS, "Lounge", Some(true)).map(|told| (told.state, told.writable)),
-            Some((WorkspaceSyncState::Synced, Some(true))),
-            "but whether its app may write it"
         );
         connecting(WS);
         assert_eq!(state(WS), Some(WorkspaceSyncState::Connecting));
@@ -240,11 +223,10 @@ mod tests {
         );
         synced(WS);
         assert_eq!(
-            told(WS, "Lounge", Some(false)),
+            told(WS, "Lounge"),
             Some(ui::workspace_sync::WorkspaceSync {
                 state: WorkspaceSyncState::Synced,
                 workspace: "Lounge".into(),
-                writable: Some(false),
                 unsynced_writes: 0,
                 cannot_keep_writes: false,
             })
@@ -255,14 +237,11 @@ mod tests {
         assert!(unsynced(WS, 2));
         assert!(!unsynced(WS, 2), "said once");
         assert_eq!(
-            told(WS, "Lounge", None).map(|told| (told.state, told.unsynced_writes)),
+            told(WS, "Lounge").map(|told| (told.state, told.unsynced_writes)),
             Some((WorkspaceSyncState::Synced, 2))
         );
         assert!(unsynced(WS, 0));
-        assert_eq!(
-            told(WS, "Lounge", None).map(|told| told.unsynced_writes),
-            Some(0)
-        );
+        assert_eq!(told(WS, "Lounge").map(|told| told.unsynced_writes), Some(0));
         // Dialling again later, or a host gone to another version, does not
         // take back what the workspace holds.
         connecting(WS);

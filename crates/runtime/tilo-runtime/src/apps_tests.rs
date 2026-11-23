@@ -166,7 +166,6 @@ struct Granted(Vec<CapOverride>);
 impl LaunchGrantsSource for Granted {
     fn launch_grants(&self, _workspace: &str) -> collab_types::caps::LaunchGrants {
         collab_types::caps::LaunchGrants {
-            author: false,
             sandbox: self.0.clone(),
         }
     }

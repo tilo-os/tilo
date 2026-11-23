@@ -1,6 +1,6 @@
 use super::*;
 use chat::projection::ChatProjection as _;
-use collaboration::permissions::{Acting, KindSet, MemberId, Role, policy};
+use collaboration::permissions::{MemberId, PermissionContext, Role};
 use ed25519_dalek::{Signer, SigningKey};
 use std::{cell::RefCell, path::Path, process::Command};
 use tilo_feedback::{Composer, Consent, DeliveryState, MemoryStore, Outbox};
@@ -28,42 +28,7 @@ fn enrollment() -> Enrollment {
             .in_workspace(WORKSPACE),
         reporter: Caller::authenticated([12; 32], reporter.verifying_key().to_bytes())
             .in_workspace(WORKSPACE),
-        permissions: PermissionContext::member_of(
-            WORKSPACE,
-            &collaboration::permissions::MemberId::person(hex::encode([12; 32])),
-            Role::Owner,
-        )
-        .at_unix_time(0),
     }
-}
-
-/// `person`, holding no role in the workspace.
-fn no_member(person: &str) -> PermissionContext {
-    PermissionContext::new(
-        Acting::person(person),
-        vec![],
-        collaboration::permissions::MemberAccess::person(
-            policy::WorkspacePolicy::unowned(WORKSPACE, &policy::Grantee::role(Role::Owner)),
-            person,
-        ),
-    )
-}
-
-/// A grant to the reporter of `kinds` on submitting feedback, answered `answer`.
-fn submit_grant(kinds: KindSet, answer: Answer) -> policy::Grant {
-    policy::Grant::new(
-        "feedback-submit",
-        policy::Grantee::person(hex::encode([12; 32])),
-        TreePath::workspace(WORKSPACE).join(&chat_action(
-            "channels",
-            "feedback",
-            Some(destination::SUBMIT_FIELD),
-            "submit-feedback",
-        )),
-        kinds,
-        answer,
-        policy::Grantee::person(hex::encode([11; 32])),
-    )
 }
 
 /// The feedback contract names what Chat itself publishes: its package and
@@ -142,7 +107,6 @@ fn startup(current: Enrollment) -> Startup {
 }
 
 fn canonical(profile: &Path) -> (ResourceStore, FrameHarness) {
-    let admitted = enrollment();
     let mut owners = ResourceOwners::new(profile.to_owned());
     let records = owners.open(chat::definition().app_id(), WORKSPACE).unwrap();
     let checkout = DocumentCheckout::package_primary(chat::definition().resource_type.clone());
@@ -184,7 +148,13 @@ fn canonical(profile: &Path) -> (ResourceStore, FrameHarness) {
             views,
             device_id: "device".into(),
             instance_id: 7,
-            permissions: collaboration::permissions::SharedPermissions::new(admitted.permissions),
+            permissions: collaboration::permissions::SharedPermissions::new(
+                PermissionContext::member_of(
+                    WORKSPACE,
+                    &MemberId::person(hex::encode([12; 32])),
+                    Role::Owner,
+                ),
+            ),
             author: MemberId::person(hex::encode([12; 32])),
             action_context: tilo_actions::ActionContext::default(),
         },
@@ -413,12 +383,6 @@ fn canonical_owner_refuses_pending_edits_wrong_owner_and_wrong_reporter() {
         SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes(),
     )
     .in_workspace(WORKSPACE);
-    wrong_reporter.permissions = PermissionContext::member_of(
-        WORKSPACE,
-        &collaboration::permissions::MemberId::person(hex::encode([15; 32])),
-        Role::Owner,
-    )
-    .at_unix_time(0);
     assert!(matches!(
         service.receipt(&report, &wrong_reporter),
         Err(Error::ReceiptMismatch)
@@ -432,68 +396,6 @@ fn canonical_owner_refuses_pending_edits_wrong_owner_and_wrong_reporter() {
         service.receipt(&report, &enrollment()),
         Err(Error::NotDurable)
     ));
-}
-
-#[test]
-fn signing_callback_cannot_acknowledge_after_policy_clock_becomes_unavailable() {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-    struct RetiringClockSigner {
-        signer: FixtureSigner,
-        available: Arc<AtomicBool>,
-    }
-    impl ReceiptSigner for RetiringClockSigner {
-        fn owner(&self) -> &Caller {
-            self.signer.owner()
-        }
-        fn sign(&mut self, request: &ReceiptSigningRequest) -> Result<Vec<u8>, Error> {
-            let signature = self.signer.sign(request)?;
-            self.available.store(false, Ordering::SeqCst);
-            Ok(signature)
-        }
-    }
-    let root = tempfile::tempdir().unwrap();
-    let (records, mut frame) = canonical(root.path());
-    let report = submission();
-    submit(&mut frame, &report);
-    records.try_flush().unwrap();
-    let available = Arc::new(AtomicBool::new(true));
-    let sampled = available.clone();
-    let mut admission = enrollment();
-    admission.permissions = admission
-        .permissions
-        .with_policy_time_sampler(Arc::new(move || {
-            if sampled.load(Ordering::SeqCst) {
-                Ok(0)
-            } else {
-                Err("retained owner policy clock unavailable".into())
-            }
-        }));
-    let mut service = CanonicalDestination::new(
-        admission.owner.clone(),
-        admission.destination.clone(),
-        CanonicalRecord {
-            records,
-            record: DocumentId::package_primary(),
-            project: chat::feedback::canonical_feedback_projection,
-            content: None,
-        },
-        Box::new(RetiringClockSigner {
-            signer: FixtureSigner {
-                owner: admission.owner.clone(),
-                key: SigningKey::from_bytes(&[41; 32]),
-            },
-            available: available.clone(),
-        }),
-    )
-    .unwrap();
-    assert!(matches!(
-        service.receipt(&report, &admission),
-        Err(Error::Invalid("feedback policy time unavailable"))
-    ));
-    assert!(!available.load(Ordering::SeqCst));
 }
 
 #[test]
@@ -708,7 +610,7 @@ fn unsigned_wrong_owner_and_wrong_destination_acknowledgments_are_refused() {
     let setup = Startup::new(
         enrollment(),
         Box::new(session(
-            current.clone(),
+            current,
             received.clone(),
             Rc::new(RefCell::new(vec![])),
         )),
@@ -717,15 +619,6 @@ fn unsigned_wrong_owner_and_wrong_destination_acknowledgments_are_refused() {
     .unwrap();
     let mut host = Host::open(Rc::new(MemoryStore::new()), setup).unwrap();
     host.receipt(&report).unwrap().unwrap();
-    current.borrow_mut().permissions = PermissionContext::member_of(
-        WORKSPACE,
-        &collaboration::permissions::MemberId::person(hex::encode([12; 32])),
-        Role::Viewer,
-    )
-    .at_unix_time(0);
-    // Read-only admission can confirm a previous durable report, never resend it.
-    host.receipt(&report).unwrap().unwrap();
-    assert!(host.send(&report).is_err());
     let mut unsigned = valid.clone();
     unsigned.signature.clear();
     *received.borrow_mut() = Some(unsigned);
@@ -733,7 +626,7 @@ fn unsigned_wrong_owner_and_wrong_destination_acknowledgments_are_refused() {
     let mut wrong_owner = valid.clone();
     wrong_owner.signature = SigningKey::from_bytes(&[99; 32])
         .sign(
-            digest(&enrollment().authorize().unwrap(), &wrong_owner.receipt)
+            digest(&enrollment().pin().unwrap(), &wrong_owner.receipt)
                 .unwrap()
                 .as_bytes(),
         )
@@ -750,40 +643,14 @@ fn unsigned_wrong_owner_and_wrong_destination_acknowledgments_are_refused() {
 tilo_test_env::scenario! {
     fn the_reporter_side_refuses_what_admission_and_receipts_do_not_cover;
 
-    phase startup_admits_a_commenter_and_refuses_a_viewer_a_stranger_and_a_denied_grant;
+    phase startup_refuses_a_destination_in_another_workspace;
     //
     // The ownership a desktop installs over a startup is that desktop's own
     // (`tilo_desktop::feedback::install`): this crate only opens the host.
     {
-        let mut missing = enrollment();
-        missing.permissions = no_member(&hex::encode([12; 32]));
-        assert!(missing.authorize().is_err());
-        // Filing feedback is commenting: a commenter files, a viewer cannot.
-        let mut commenter = enrollment();
-        commenter.permissions =
-            PermissionContext::member_of(WORKSPACE, &collaboration::permissions::MemberId::person(hex::encode([12; 32])), Role::Commenter)
-                .at_unix_time(0);
-        assert!(commenter.authorize().is_ok());
-        let mut viewer = enrollment();
-        viewer.permissions =
-            PermissionContext::member_of(WORKSPACE, &collaboration::permissions::MemberId::person(hex::encode([12; 32])), Role::Viewer)
-                .at_unix_time(0);
-        assert!(viewer.authorize().is_err());
         let mut other = enrollment();
         other.destination.workspace = "other".into();
-        assert!(other.authorize().is_err());
-        // A workspace's owner holds everything; a member's grants can be refused.
-        let mut blocked = enrollment();
-        blocked.permissions =
-            PermissionContext::member_of(WORKSPACE, &collaboration::permissions::MemberId::person(hex::encode([12; 32])), Role::Editor)
-                .with_grant(submit_grant(KindSet::ALL, Answer::Deny))
-                .at_unix_time(0);
-        let mut editor = blocked.clone();
-        editor.permissions =
-            PermissionContext::member_of(WORKSPACE, &collaboration::permissions::MemberId::person(hex::encode([12; 32])), Role::Editor)
-                .at_unix_time(0);
-        assert!(editor.authorize().is_ok());
-        assert!(blocked.authorize().is_err());
+        assert!(other.pin().is_err());
     }
 
     phase changed_reporter_before_dispatch_cannot_enqueue_under_another_identity;
@@ -806,8 +673,6 @@ tilo_test_env::scenario! {
             SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes(),
         )
         .in_workspace(WORKSPACE);
-        current.borrow_mut().permissions =
-            PermissionContext::member_of(WORKSPACE, &collaboration::permissions::MemberId::person(hex::encode([15; 32])), Role::Owner);
         assert!(matches!(
             transport.enqueue(&submission()),
             Err(Error::ReceiptMismatch)
@@ -830,49 +695,20 @@ tilo_test_env::scenario! {
         ));
     }
 
-    phase expired_snapshot_grants_and_failed_host_clocks_cannot_authorize_send;
-    {
-        let now = tilo_clock::try_unix_now().unwrap();
-        assert!(now > 0, "execution clock must be observable");
-        let mut expired = enrollment();
-        expired.permissions =
-            PermissionContext::member_of(WORKSPACE, &collaboration::permissions::MemberId::person(hex::encode([12; 32])), Role::Viewer)
-                .with_grant(
-                    submit_grant(KindSet::of(ActionKind::Undoable), Answer::Allow)
-                        .with_lifetime(policy::Lifetime::Until(now.saturating_mul(1000))),
-                )
-                .at_unix_time(now.saturating_sub(1));
-        assert!(expired.authorize().is_err());
-        let mut unavailable = enrollment();
-        unavailable.permissions =
-            unavailable
-                .permissions
-                .with_policy_time_sampler(std::sync::Arc::new(|| {
-                    Err("retained host clock unavailable".into())
-                }));
-        assert!(unavailable.authorize().is_err());
-        assert!(unavailable.authorize_receipt(&submission()).is_err());
-    }
-
-    phase persisted_owner_pin_and_current_role_survive_reconnect_without_reauthorization;
+    phase persisted_owner_pin_survives_reconnect_and_refuses_another_owner;
     {
         let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
-        let current = Rc::new(RefCell::new(enrollment()));
         let setup = Startup::new(
             enrollment(),
             Box::new(session(
-                current.clone(),
+                Rc::new(RefCell::new(enrollment())),
                 Rc::new(RefCell::new(None)),
                 Rc::new(RefCell::new(vec![])),
             )),
             Box::new(NoCapture),
         )
         .unwrap();
-        let mut host = Host::open(store.clone(), setup).unwrap();
-        current.borrow_mut().permissions =
-            PermissionContext::member_of(WORKSPACE, &collaboration::permissions::MemberId::person(hex::encode([12; 32])), Role::Viewer);
-        assert!(host.send(&submission()).is_err());
-        drop(host);
+        drop(Host::open(store.clone(), setup).unwrap());
         let mut changed = enrollment();
         changed.owner = Caller::authenticated(
             [11; 32],

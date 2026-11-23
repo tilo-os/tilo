@@ -364,7 +364,6 @@ fn taking_a_seat_waits_for_the_table_to_arrive() {
         Some(ui::workspace_sync::WorkspaceSync {
             state,
             workspace: "Lounge".into(),
-            writable: None,
             unsynced_writes: 0,
             cannot_keep_writes: false,
         })

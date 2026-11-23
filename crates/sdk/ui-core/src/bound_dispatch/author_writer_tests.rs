@@ -289,7 +289,7 @@ pub(super) fn mount(
         local_person: MemberId::person(author),
         records: records.clone(),
         checkout: checkout.clone(),
-        permissions: crate::permissions::SharedPermissions::new(PermissionContext::permissive()),
+        permissions: crate::permissions::SharedPermissions::new(PermissionContext::owner()),
         author: MemberId::person(author),
         operation_context: std::rc::Rc::default(),
         writes_as_author,

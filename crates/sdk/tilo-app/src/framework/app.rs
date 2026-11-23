@@ -12,8 +12,8 @@ use ui_core::application::{
 };
 use ui_core::i18n::EmbeddedCatalog;
 use ui_core::launch::LaunchError;
+use ui_core::permissions::LivePermissions;
 use ui_core::permissions::MemberId;
-use ui_core::permissions::{ActionKind, LivePermissions, PermissionScope};
 use ui_core::resource::{DocumentId, ResourceType};
 use ui_core::storage::AppStorage;
 use ui_core::widget::{Element, IconDescriptor};
@@ -627,8 +627,6 @@ fn application_definition(
         title: app.title().into(),
         icon: icon(app),
         resource_type: ResourceType::new(app.kind),
-        required: vec![],
-        optional: vec![],
         opens,
         workspace_resource,
         opens_before_resource: workspace_resource && app.opens_before_resource,
@@ -811,33 +809,9 @@ pub(crate) enum Editing {
     ReadOnly(Box<Run>),
 }
 
-/// The permission that makes the record `run` opened editable: writing the
-/// app's records of the workspace, or, for a record of a kind each person keeps
-/// their own of, writing that record, which the workspace grants its person.
-fn write_scope(app: &AppHooks, run: &Run) -> PermissionScope {
-    let own_kind = tilo_actions::policy::roles::has_member_reader(app.id(), app.kind);
-    match run
-        .launched
-        .record
-        .as_ref()
-        .map(ui_core::resource::DocumentId::route)
-    {
-        Some(record) if own_kind => PermissionScope::Action {
-            node: ui_core::permissions::TreePath::root()
-                .app(app.id())
-                .kind(app.kind)
-                .resource(record),
-            kind: ActionKind::Undoable,
-        },
-        _ => PermissionScope::app(app.id(), ActionKind::Undoable),
-    }
-}
-
 /// What a root is built with besides its resource type: who edits it and
 /// how, what it was built for, and where its settings are kept.
 struct RootShell {
-    /// The permission that makes the app's resource editable.
-    scope: PermissionScope,
     permissions: Option<LivePermissions>,
     read_only: bool,
     me: Option<MemberId>,
@@ -860,16 +834,10 @@ impl RootShell {
             } => (Some(permissions), false, Some(me), *run),
             Editing::ReadOnly(run) => (None, true, None, *run),
         };
-        let scope = write_scope(app, &run);
-        let read_only = read_only
-            || permissions
-                .as_ref()
-                .is_some_and(|permissions| !permissions.check(&scope));
         let run = run.for_member(me.as_ref());
         let storage =
             super::settings::ViewStorage::new(storage, hosted.attach(app.id(), app.title()));
         Self {
-            scope,
             permissions,
             read_only,
             me,
@@ -920,7 +888,6 @@ pub(crate) fn build_root<A: ResourceApp>(
     let runs_effects = shell.runs_effects();
     let runs_invoked_effects = shell.runs_invoked_effects();
     let RootShell {
-        scope,
         permissions,
         read_only,
         me,
@@ -1004,7 +971,7 @@ pub(crate) fn build_root<A: ResourceApp>(
         content,
         share,
     )
-    .following(permissions, scope)
+    .following(permissions)
     .with_presentation((app.local_operations)())
     .opening_links(open_link);
     // A window shown over other apps' content paints no ground of its own:

@@ -1,11 +1,12 @@
 //! The actions a window shows, and what the device's daemon says of each for the person at the
 //! window.
 //!
-//! A window decides no permission itself. It names the actions of the records it shows to its
-//! host; the host decides each with the ordinary check in the workspace holding the record (the
-//! window's own, or another: a person's profile record is held in their own workspace wherever it
-//! is shown), and answers again whenever those grants change. The verdicts only say how the window
-//! shows its controls; running an action is admitted by the host when it is called.
+//! A window decides no permission itself. The host decides every action the window publishes with
+//! the ordinary check in the workspace holding the record (the window's own, or another: a
+//! person's profile record is kept in the person's workspace wherever it is shown), and the
+//! workspace's own actions the window offers (inviting, its settings), and sends each verdict that
+//! changes as the window publishes others or grants change. A control shows its action's verdict,
+//! and a press runs as its verdict admits it.
 
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +52,61 @@ impl ShownAction {
             field: need.field.clone(),
             privileged: need.privileged,
         }
+    }
+
+    /// The workspace's own action `action` (inviting someone, changing its settings), which
+    /// needs `kind`: what a window offering it shows as the workspace decides it.
+    #[must_use]
+    pub fn of_workspace(action: &str, kind: tilo_actions::ActionKind) -> Self {
+        Self {
+            workspace: None,
+            app: String::new(),
+            kind: tilo_actions::policy::roles::WORKSPACE_KIND.to_owned(),
+            resource: String::new(),
+            action: action.to_owned(),
+            kind_needed: kind,
+            field: None,
+            privileged: false,
+        }
+    }
+
+    /// Any action of `kind` on the records of the app `app`: whether the window may change what
+    /// the app keeps at all, or read it.
+    #[must_use]
+    pub fn of_app(app: &str, kind: tilo_actions::ActionKind) -> Self {
+        Self {
+            workspace: None,
+            app: app.to_owned(),
+            kind: String::new(),
+            resource: String::new(),
+            action: String::new(),
+            kind_needed: kind,
+            field: None,
+            privileged: false,
+        }
+    }
+
+    /// Where the action is decided below the workspace `workspace` names: the action's own node,
+    /// or for [`Self::of_app`] the app's, and for [`Self::of_workspace`] the workspace's.
+    #[must_use]
+    pub fn node(
+        &self,
+        workspace: &tilo_actions::policy::TreePath,
+    ) -> tilo_actions::policy::TreePath {
+        if self.app.is_empty() {
+            return workspace.clone().kind(&self.kind).action(&self.action);
+        }
+        if self.kind.is_empty() {
+            return workspace.clone().app(&self.app);
+        }
+        tilo_actions::action_node(
+            workspace,
+            &self.app,
+            &self.kind,
+            &self.resource,
+            self.field.as_deref(),
+            &self.action,
+        )
     }
 
     /// What running the action needs.

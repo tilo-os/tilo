@@ -265,20 +265,21 @@ impl JoinedChannel {
         Ok(service.open(&context, query))
     }
 
-    /// What this host says of the `actions` the window shows, as the person this channel was
-    /// admitted for would run them: now, and again on each change.
+    /// What this host says of every action the window on this channel publishes, as the person
+    /// this channel was admitted for would run them: all of them now, then each that changes.
     pub(super) fn shown_actions(
         &self,
-        actions: Vec<runtime_collab::shown_actions::ShownAction>,
     ) -> Result<super::wire::Feed<Vec<runtime_collab::shown_actions::ActionDecision>>, BrokerError>
     {
         let route = self.route();
         let current = self
             .state
             .revalidate_admission(&route, &self.verified_identity)?;
-        Ok(self
-            .state
-            .subscribe_shown_actions(current.broker_actor(), route.cluster_id, actions))
+        Ok(self.state.subscribe_shown_actions(
+            current.broker_actor(),
+            (self.peer_id, route.app_id),
+            route.cluster_id,
+        ))
     }
 
     pub(super) fn realtime_context(

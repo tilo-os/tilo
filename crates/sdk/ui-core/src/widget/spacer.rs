@@ -1,4 +1,3 @@
-use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -32,7 +31,6 @@ pub struct Spacer {
     extent: Extent,
     id: Option<String>,
     presence_path: Vec<PathSegment>,
-    permission_scope: Option<PermissionScope>,
 }
 
 impl Default for Spacer {
@@ -49,7 +47,6 @@ impl Spacer {
             extent: Extent::Flexible,
             id: None,
             presence_path: Vec::new(),
-            permission_scope: None,
         }
     }
 
@@ -85,12 +82,6 @@ impl Spacer {
         self.presence_path = path;
         self
     }
-
-    #[must_use]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
-        self
-    }
 }
 
 impl Widget for Spacer {
@@ -98,10 +89,7 @@ impl Widget for Spacer {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("div");
     }
-    crate::provides!(
-        dyn crate::permissions::capability::PermissionGuarded,
-        dyn crate::presence::capability::PublishesPresence
-    );
+    crate::provides!(dyn crate::presence::capability::PublishesPresence);
 
     fn build_layout(
         &mut self,
@@ -139,14 +127,12 @@ impl Widget for Spacer {
     fn draw(
         &mut self,
         scene: &mut Scene,
-        transform: Affine,
+        _transform: Affine,
         _text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        crate::widget::draw_permission_scrim_and_peer_focus(
-            self, scene, transform, theme, presence,
-        );
+        crate::widget::draw_peer_focus(self, scene, theme, presence);
     }
 
     fn name(&self) -> &'static str {
@@ -177,12 +163,6 @@ impl Widget for Spacer {
 impl crate::presence::capability::PublishesPresence for Spacer {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
-    }
-}
-
-impl crate::permissions::capability::PermissionGuarded for Spacer {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 }
 

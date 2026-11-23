@@ -806,9 +806,7 @@ impl Widget for Checkbox {
                 &style,
             );
         }
-        crate::widget::draw_permission_scrim_and_peer_focus(
-            self, scene, transform, theme, presence,
-        );
+        crate::widget::draw_peer_focus(self, scene, theme, presence);
     }
 
     fn name(&self) -> &'static str {

@@ -19,8 +19,8 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionDescriptor, ApiError, ExecutionLocus, InvocationId};
 use tilo_app_launch::{
-    Answer, Authority, Cause, HeldLink, Instance, Kind, Launch, Links, PlanContext, Planned,
-    Routed, SessionEnvironment, Shown, Spawner, StartAlone, Workspace,
+    Answer, Cause, HeldLink, Instance, Kind, Launch, Links, PlanContext, Planned, Routed,
+    SessionEnvironment, Shown, Spawner, StartAlone, Workspace,
 };
 use tilo_broker_core::services::LaunchPlace;
 use tilo_desktop_search::LaunchPlace as OpenPlace;
@@ -151,11 +151,8 @@ struct State {
     /// The person at this device, by the id the workspaces' governance names them by: whose
     /// authority each app it starts is handed.
     person: String,
-    /// What the person's authority in a workspace is published as, for each app this session starts
-    /// there, and this session's hold on it.
-    authority: Authority,
-    /// The shell's revision the published authority was last brought up to: nothing is republished
-    /// while the shell has not moved.
+    /// The shell's revision the tilolang hosts' access was last brought up to: nothing is told
+    /// again while the shell has not moved.
     authority_at: Option<u64>,
     /// The GPU the compositor renders on, for an app to render on the same.
     render_node: Option<PathBuf>,
@@ -367,7 +364,6 @@ impl Apps {
                 launcher,
                 identity: None,
                 person: String::new(),
-                authority: Authority::new(),
                 authority_at: None,
                 render_node: None,
                 windows_display: Arc::default(),
@@ -750,7 +746,7 @@ impl Apps {
         };
         // What the person may do in the app, as a launched app of it reads it: the instance's
         // views offer and refuse by it.
-        let access = tilo_app_launch::authority::access(&self.workspace_named(workspace), app);
+        let access = self.workspace_named(workspace).member_access();
         Ok(AppConnections {
             person,
             identity,
@@ -846,7 +842,6 @@ impl Apps {
             workspace,
             launcher: Some(launcher),
             identity: state.identity.clone(),
-            authority: Some(&state.authority),
             // A connector draws nothing, so the plan leaves out the session's display and render
             // node whatever it is given.
             render_node: None,
@@ -1048,9 +1043,9 @@ impl Apps {
         }
     }
 
-    /// Bring what the person's authority in a workspace is published as up to the policy the shell
-    /// holds now, so a part given or taken back reaches the apps they already run. The shell's
-    /// revision says whether anything may have changed.
+    /// Tell the tilolang hosts what the person may do in each workspace they run instances of, as
+    /// the policy the shell holds now says, so a part given or taken back reaches the windows
+    /// already open. The shell's revision says whether anything may have changed.
     fn follow_policy(&self) {
         let Some(desktop) = self.desktop.borrow().clone() else {
             return;
@@ -1058,33 +1053,29 @@ impl Apps {
         let revision = desktop.with_policy(|policy| policy.handle().revision());
         let processes = {
             let state = self.state.borrow();
-            let hosted = state
+            let Some(processes) = state
                 .processes
-                .as_ref()
-                .is_some_and(|processes| !processes.instances().is_empty());
-            if (state.authority.is_empty() && !hosted) || state.authority_at == Some(revision) {
+                .clone()
+                .filter(|processes| !processes.instances().is_empty())
+            else {
+                return;
+            };
+            if state.authority_at == Some(revision) {
                 return;
             }
-            state.processes.clone()
+            processes
         };
         self.state.borrow_mut().authority_at = Some(revision);
-        let mut named = self.state.borrow().authority.workspaces();
-        if let Some(processes) = &processes {
-            named.extend(processes.instances().into_iter().map(|(id, ..)| id));
-            named.sort();
-            named.dedup();
-        }
+        let mut named: Vec<String> = processes
+            .instances()
+            .into_iter()
+            .map(|(id, ..)| id)
+            .collect();
+        named.sort();
+        named.dedup();
         for id in named {
             let workspace = self.workspace_named(&id);
-            if let Err(error) = self.state.borrow().authority.refresh(&workspace) {
-                tracing::warn!(%id, %error, "the person's authority there was not published");
-            }
-            // The windows whose instances a tilolang host runs are told on its link.
-            if let Some(processes) = &processes {
-                processes.policy_changed(&workspace.id, |app| {
-                    tilo_app_launch::authority::access(&workspace, app)
-                });
-            }
+            processes.policy_changed(&workspace.id, |_| workspace.member_access());
         }
     }
 
@@ -2027,7 +2018,6 @@ impl Apps {
             workspace,
             launcher: state.launcher.clone(),
             identity: state.identity.clone(),
-            authority: Some(&state.authority),
             render_node: state.render_node.clone(),
             new_window,
             continuity_instance: instance,

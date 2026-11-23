@@ -3,9 +3,7 @@
 use std::rc::Rc;
 
 use collab_types::document::DocumentId;
-use collaboration::permissions::{
-    Acting, ActionKind, Answer, MemberAccess, PermissionContext, TreePath,
-};
+use collaboration::permissions::MemberAccess;
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::Caller;
@@ -21,12 +19,13 @@ const DOMAIN: &[u8] = b"tilo-feedback-canonical-receipt-v1\0";
 
 /// Current enrollment, sampled by the existing authenticated transport.
 /// This is intentionally not deserializable from a request or launch config.
+/// Whether the reporter may publish to the destination is the destination's
+/// dispatch to decide; the enrollment pins only who reports to whom.
 #[derive(Clone)]
 pub struct Enrollment {
     pub destination: Destination,
     pub owner: Caller,
     pub reporter: Caller,
-    pub permissions: PermissionContext,
 }
 
 impl Enrollment {
@@ -37,7 +36,7 @@ impl Enrollment {
     /// # Errors
     ///
     /// [`Error::ReceiptMismatch`] for any other identity, and the decoding
-    /// error of a malformed member access or sandbox.
+    /// error of a malformed member access.
     pub fn admitted(
         answer: &FeedbackAnswer,
         destination: &FeedbackDestination,
@@ -69,12 +68,6 @@ impl Enrollment {
             },
             owner: caller(owner),
             reporter: caller(reporter),
-            permissions: PermissionContext::new(
-                Acting::person(access.person_id().unwrap_or_default()),
-                serde_json::from_value(admission.sandbox.clone())?,
-                access,
-            )
-            .at_unix_time(admission.unix_time),
         })
     }
 
@@ -117,69 +110,6 @@ impl Enrollment {
             reporter: identity(&self.reporter)?,
         })
     }
-
-    fn admitted_pin(&self) -> Result<(Pin, PermissionContext), Error> {
-        let pin = self.pin()?;
-        let permissions = self
-            .permissions
-            .at_current_time()
-            .map_err(|_| Error::Invalid("feedback policy time unavailable"))?;
-        if self.permissions.role().is_none()
-            || self
-                .permissions
-                .user()
-                .as_person()
-                .and_then(tilo_actions::policy::PersonId::root)
-                != Some(pin.reporter.user)
-        {
-            return Err(Error::Invalid("reporter admission required"));
-        }
-        Ok((pin, permissions))
-    }
-
-    fn authorize_startup(&self) -> Result<Pin, Error> {
-        let (pin, permissions) = self.admitted_pin()?;
-        let submit = chat_action(
-            destination::CHANNELS,
-            &self.destination.channel,
-            Some(destination::SUBMIT_FIELD),
-            destination::SUBMIT,
-        );
-        if permissions.answer(&submit, ActionKind::Read) != Answer::Allow {
-            return Err(Error::Invalid("feedback destination not authorized"));
-        }
-        Ok(pin)
-    }
-
-    fn authorize(&self) -> Result<Pin, Error> {
-        let pin = self.authorize_startup()?;
-        let (_, permissions) = self.admitted_pin()?;
-        // Publishing the report edits the channel: reading it is not enough.
-        let submit = chat_action(
-            destination::CHANNELS,
-            &self.destination.channel,
-            Some(destination::SUBMIT_FIELD),
-            destination::SUBMIT,
-        );
-        if permissions.answer(&submit, ActionKind::Undoable) != Answer::Allow {
-            return Err(Error::Invalid("feedback destination not authorized"));
-        }
-        Ok(pin)
-    }
-
-    fn authorize_receipt(&self, submission: &Submission) -> Result<Pin, Error> {
-        let (pin, permissions) = self.admitted_pin()?;
-        let read = chat_action(
-            destination::REPORTS,
-            &submission.id,
-            None,
-            destination::READ_RECEIPT,
-        );
-        if permissions.answer(&read, ActionKind::Read) != Answer::Allow {
-            return Err(Error::Invalid("feedback receipt not authorized"));
-        }
-        Ok(pin)
-    }
 }
 
 /// A certified person's user and device public keys.
@@ -201,19 +131,6 @@ fn chat_item(field: &str, id: &str) -> String {
     destination::item(field, id)
 }
 
-/// The node of `action` on the destination's item `id` in `field`, below
-/// the field `under` it writes, if any.
-fn chat_action(field: &str, id: &str, under: Option<&str>, action: &str) -> TreePath {
-    tilo_actions::action_node(
-        &TreePath::root(),
-        destination::PACKAGE,
-        &format!("{}.{field}", destination::RESOURCE_KIND),
-        &chat_item(field, id),
-        under,
-        action,
-    )
-}
-
 /// Wire acknowledgment signed only after the canonical owner's current save.
 /// Deserializing this value does not authenticate it; Host verifies its signature.
 #[derive(Clone, Serialize)]
@@ -233,7 +150,7 @@ impl SignedReceipt {
         submission: &Submission,
         enrollment: &Enrollment,
     ) -> Result<Receipt, Error> {
-        let pin = enrollment.authorize_receipt(submission)?;
+        let pin = enrollment.pin()?;
         self.verify_pin(submission, &pin)
     }
 
@@ -386,7 +303,7 @@ impl SessionTransport {
 impl Transport for SessionTransport {
     fn enrollment(&mut self) -> Result<Enrollment, Error> {
         let enrollment = (self.enrollment)()?;
-        let pin = enrollment.authorize_startup()?;
+        let pin = enrollment.pin()?;
         if self.pin.as_ref().is_some_and(|retained| *retained != pin) {
             return Err(Error::ReceiptMismatch);
         }
@@ -395,7 +312,6 @@ impl Transport for SessionTransport {
     }
     fn enqueue(&mut self, submission: &Submission) -> Result<(), Error> {
         let enrollment = self.enrollment()?;
-        enrollment.authorize()?;
         if enrollment.destination != submission.destination {
             return Err(Error::ReceiptMismatch);
         }
@@ -531,7 +447,7 @@ impl CanonicalDestination {
         enrollment: &Enrollment,
     ) -> Result<SignedReceipt, Error> {
         submission.validate()?;
-        let pin = enrollment.authorize_receipt(submission)?;
+        let pin = enrollment.pin()?;
         // Saved report metadata does not prove ownership of referenced content:
         // the owner must keep the screenshot's verified bytes itself.
         self.proof_content(submission)?;
@@ -561,7 +477,7 @@ impl CanonicalDestination {
                 &Signature::from_slice(&signature).map_err(|_| Error::ReceiptMismatch)?,
             )
             .map_err(|_| Error::ReceiptMismatch)?;
-        if self.signer.owner() != &self.owner || enrollment.authorize_receipt(submission)? != pin {
+        if self.signer.owner() != &self.owner || enrollment.pin()? != pin {
             return Err(Error::ReceiptMismatch);
         }
         // Signing-service callbacks cannot turn an old Saved state into an ack.
@@ -681,8 +597,8 @@ impl Startup {
         mut transport: Box<dyn Transport>,
         capture: Box<dyn Capture>,
     ) -> Result<Self, Error> {
-        let pin = enrollment.authorize_startup()?;
-        if transport.enrollment()?.authorize_startup()? != pin {
+        let pin = enrollment.pin()?;
+        if transport.enrollment()?.pin()? != pin {
             return Err(Error::ReceiptMismatch);
         }
         Ok(Self {
@@ -720,8 +636,8 @@ struct Host {
 impl Host {
     fn open(store: Rc<dyn DurableStore>, mut startup: Startup) -> Result<Self, Error> {
         use durable_store::WriteOp;
-        let pin = startup.enrollment.authorize_startup()?;
-        if startup.transport.enrollment()?.authorize_startup()? != pin {
+        let pin = startup.enrollment.pin()?;
+        if startup.transport.enrollment()?.pin()? != pin {
             return Err(Error::ReceiptMismatch);
         }
         let namespace = blake3::hash(&serde_json::to_vec(&pin.destination)?);
@@ -763,13 +679,10 @@ impl Host {
             return Err(Error::NotDurable);
         }
         let enrollment = self.transport.enrollment()?;
-        let current = if receipt {
-            enrollment.authorize_receipt(submission.ok_or(Error::ReceiptMismatch)?)?
-        } else if submission.is_some() {
-            enrollment.authorize()?
-        } else {
-            enrollment.authorize_startup()?
-        };
+        if receipt && submission.is_none() {
+            return Err(Error::ReceiptMismatch);
+        }
+        let current = enrollment.pin()?;
         if current != self.pin
             || submission.is_some_and(|submission| submission.destination != self.pin.destination)
         {

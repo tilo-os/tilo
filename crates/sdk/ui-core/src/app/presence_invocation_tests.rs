@@ -408,8 +408,6 @@ tilo_test_env::scenario! {
             title: "Two views".into(),
             icon: crate::widget::IconDescriptor::Glyph("T"),
             resource_type: crate::resource::ResourceType::new("two-views"),
-            required: vec![],
-            optional: vec![],
             opens: &[],
             workspace_resource: false,
             opens_before_resource: false,
@@ -424,7 +422,7 @@ tilo_test_env::scenario! {
                 device_id: "D".into(),
                 instance_id: 1,
                 permissions: crate::permissions::SharedPermissions::new(
-                    crate::permissions::PermissionContext::permissive(),
+                    crate::permissions::PermissionContext::owner(),
                 ),
                 author: crate::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),

@@ -683,19 +683,14 @@ impl ChannelHandle {
         ))
     }
 
-    /// Hold open what the host says of the `actions` a window shows: all of them now, then all
-    /// again whenever grants change one, until the stream is dropped.
+    /// Keep open what the host says of the actions this window publishes: every verdict now,
+    /// then each that changes, until the stream is dropped.
     ///
     /// # Errors
     ///
     /// Returns [`NotAvailable`] when the host refuses or the connection fails.
-    pub async fn shown_actions(
-        &self,
-        actions: Vec<crate::shown_actions::ShownAction>,
-    ) -> Result<ActionVerdictFeed, NotAvailable> {
-        Ok(ActionVerdictFeed(
-            self.feed(Topic::ShownActions(actions)).await?,
-        ))
+    pub async fn shown_actions(&self) -> Result<ActionVerdictFeed, NotAvailable> {
+        Ok(ActionVerdictFeed(self.feed(Topic::ShownActions).await?))
     }
 
     /// Submit one bounded Nearby Send control command. File contents stay on
@@ -1474,12 +1469,12 @@ impl ResourcePages {
     }
 }
 
-/// What the host says of the actions a [`ChannelHandle::shown_actions`] names; dropping it ends
-/// the subscription.
+/// What the host says of the actions the window publishes ([`ChannelHandle::shown_actions`]);
+/// dropping it ends the subscription.
 pub struct ActionVerdictFeed(Feed);
 
 impl ActionVerdictFeed {
-    /// The decisions as they are next.
+    /// The verdicts that changed next: every one, the first time.
     pub async fn read(&self) -> Result<Vec<crate::shown_actions::ActionDecision>, NotAvailable> {
         match self.0.event().await? {
             Event::ShownActions(decisions) => Ok(decisions),

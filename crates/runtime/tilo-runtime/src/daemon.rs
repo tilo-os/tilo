@@ -1047,17 +1047,6 @@ pub fn run_app(
             == Some(std::ffi::OsStr::new(app_id));
     let mut command = Command::new(executable);
     command.args(args);
-    // This process is introducing the local runtime workspace. A launcher that
-    // already named a workspace keeps its participation, including fail-closed
-    // viewer. A personal attach has no workspace yet, and the person who owns this
-    // runtime may edit their own app.
-    // A joined workspace's role is the one its governor admitted.
-    if workspace.is_none()
-        && std::env::var_os("TILO_WORKSPACE_ID").is_none()
-        && std::env::var_os("TILO_PARTICIPATION").is_none()
-    {
-        command.env("TILO_PARTICIPATION", "author");
-    }
     let connections = host::Connections::prepare(
         &mut command,
         app_id,

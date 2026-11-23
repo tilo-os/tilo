@@ -13,31 +13,6 @@ use collab_types::caps::{
     Access, CapDecision, CapOverride, Effect, LaunchGrants, ResourceRef, Scope, decide_app,
 };
 
-/// How an app may take part in the space it is launched into.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Participation {
-    /// No workspace-scoped capability names this app either way, so nothing is inferred — the default,
-    /// deliberately: guessing here would decide who may author in a workspace, not this module's call.
-    #[default]
-    Unscoped,
-    /// May see the space; may not change it.
-    ReadOnly,
-    /// May change the space.
-    Author,
-}
-
-impl Participation {
-    /// The value of `TILO_PARTICIPATION` inside the sandbox, if the mode is one worth telling the app
-    /// about.
-    pub fn env_value(self) -> Option<&'static str> {
-        match self {
-            Participation::ReadOnly => Some("read-only"),
-            Participation::Author => Some("author"),
-            Participation::Unscoped => None,
-        }
-    }
-}
-
 /// The resolved, host-side consequence of an app's capabilities.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CapabilityPlan {
@@ -51,8 +26,6 @@ pub struct CapabilityPlan {
     pub allow_network: bool,
     /// The host patterns the network capabilities named.
     pub net_hosts: Vec<String>,
-    /// Whether the app may originate changes in the space.
-    pub participation: Participation,
     /// Private stores a granted path would otherwise expose, at the path the grant shows them in the
     /// sandbox.
     pub masked_dirs: Vec<PathBuf>,
@@ -69,7 +42,6 @@ impl CapabilityPlan {
             devices: Vec::new(),
             allow_network: false,
             net_hosts: Vec::new(),
-            participation: Participation::Unscoped,
             masked_dirs: Vec::new(),
             pinned_dirs: Vec::new(),
         }
@@ -843,7 +815,6 @@ mod tests {
                     Access::Read,
                 )];
                 let grants = LaunchGrants {
-                    author: true,
                     sandbox: caps,
                 };
                 let path = write_capability_file(dir.path(), "so.tilo.books", &grants)
@@ -993,12 +964,10 @@ mod tests {
             }
         }
 
-        phase a_launch_file_tells_the_app_whether_it_may_change_the_workspace;
-        // A launch file tells the app whether it may change the workspace; it
-        // reads its own caps and nothing of another app's.
+        phase a_launch_file_hands_an_app_only_its_own_caps;
+        // A launch file hands the app its own caps and nothing of another app's.
         {
             let grants = LaunchGrants {
-                author: true,
                 sandbox: vec![fs_grant(
                     "so.tilo.viewer",
                     "/var/workspace/shared",
@@ -1006,7 +975,6 @@ mod tests {
                 )],
             };
             let viewer = grants.for_app("so.tilo.viewer");
-            assert!(viewer.author);
             assert_eq!(viewer.sandbox.len(), 1);
             assert!(grants.for_app("so.tilo.editor").sandbox.is_empty());
         }
@@ -1069,7 +1037,6 @@ mod tests {
                     let root = tempfile::tempdir().unwrap();
                     let dir = root.path().join("caps");
                     let first = LaunchGrants {
-                        author: true,
                         sandbox: vec![fs_grant(
                             "so.tilo.books",
                             "/var/workspace/first",
@@ -1077,7 +1044,6 @@ mod tests {
                         )],
                     };
                     let second = LaunchGrants {
-                        author: false,
                         sandbox: vec![fs_grant(
                             "so.tilo.books",
                             "/var/workspace/second",

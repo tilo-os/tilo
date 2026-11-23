@@ -348,18 +348,6 @@ pub fn push_retained_files_bind(argv: &mut Vec<String>, host_path: &Path) {
     ]);
 }
 
-/// Only the selected app/person policy directory is visible to the child.
-pub const SANDBOX_ACTION_AUTHORITY_DIR: &str = "/run/tilo/action-authority";
-
-pub fn push_action_authority_bind(argv: &mut Vec<String>, host_path: &Path) {
-    push_bind(
-        argv,
-        "--ro-bind",
-        host_path.parent().unwrap_or(host_path),
-        Path::new(SANDBOX_ACTION_AUTHORITY_DIR),
-    );
-}
-
 /// Build the bwrap argv from a manifest plus the launcher's resolved inputs: `runtime_root`,
 /// `service_binds` (fds reach the child by inheritance, not argv), and `dbus_bind`.
 pub fn build_bwrap_argv(
@@ -705,13 +693,6 @@ pub fn build_bwrap_argv_for_entry(
                 argv.push("1".to_string());
             }
         }
-    }
-
-    // Participation: tell the app which shape it is in.
-    if let Some(mode) = capabilities.participation.env_value() {
-        argv.push("--setenv".to_string());
-        argv.push("TILO_PARTICIPATION".to_string());
-        argv.push(mode.to_string());
     }
 
     // Service sockets reach the app as inherited descriptors: dup2'd onto `child_fd` in `pre_exec`,

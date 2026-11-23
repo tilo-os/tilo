@@ -1908,7 +1908,7 @@ fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner(
     use crate::permissions::{MemberId, PermissionContext};
     use crate::state::{State, owned_restore::OwnedRestoreError};
 
-    let authority = PermissionContext::permissive();
+    let authority = PermissionContext::owner();
     let mut state = State::new();
     let profile = state.doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
     let ancestors = nested_map_chain_ids(&mut state.doc, &profile, 255);

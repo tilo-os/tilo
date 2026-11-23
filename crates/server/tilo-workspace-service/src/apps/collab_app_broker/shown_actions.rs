@@ -1,11 +1,12 @@
-//! What this host says of the actions a window shows, for the person at the window.
+//! What this host says of the actions a window publishes, for the person at the window.
 //!
-//! The window decides no permission itself. It names the actions of the records it shows
-//! ([`runtime_collab::shown_actions::ShownAction`]); the broker decides each with the actor's
-//! ordinary answer in the workspace holding the record (the window's, or another: a person's
-//! profile record is held in their own workspace), and decides again on every policy change,
-//! sending the decisions when they differ. They say how the window shows its controls; an
-//! invocation is admitted on its own when it is called.
+//! The window decides no permission itself. Every action of the surface it publishes is decided
+//! here with the actor's ordinary answer in the workspace holding the record (the window's, or
+//! another: a person's profile record is kept in the person's workspace), and decided again when the
+//! window publishes another surface or grants change. The window hears every verdict once and
+//! then only those that changed; its controls show them, and a press runs as its verdict admits it.
+
+use std::collections::HashMap;
 
 use runtime_collab::shown_actions::{ActionDecision, ActionVerdict, ShownAction};
 use tokio::sync::mpsc;
@@ -17,25 +18,77 @@ pub(super) use tilo_broker_core::shown::NOT_HERE;
 /// What a person reads when the holding workspace could not be read just now.
 const UNREADABLE: &str = "This can't be checked right now. Try again.";
 
-/// One window's shown actions, decided again on each policy change.
+/// One window's verdicts, decided again when its surface or the grants change.
 pub(super) struct ShownSubscription {
     actor: BrokerActor,
+    /// The connection publishing the window's surface.
+    peer: u64,
+    /// The app the window is.
+    app: String,
     /// The window's workspace, which holds every record not naming another.
     home: String,
-    actions: Vec<ShownAction>,
-    last: Vec<ActionDecision>,
+    /// The verdicts last sent.
+    last: HashMap<ShownAction, ActionVerdict>,
     tx: mpsc::UnboundedSender<Vec<ActionDecision>>,
 }
 
 impl AppBrokerState {
+    /// The actions of the surface the connection `peer` publishes, as the app `app` publishes
+    /// them: each at what it needs, and a field edit that is offered to whoever may react also at
+    /// what any other edit of the record needs.
+    fn published_actions(&self, peer: u64, app: &str) -> Vec<ShownAction> {
+        let Ok(tables) = self.surface_tables.lock() else {
+            return Vec::new();
+        };
+        let Some(table) = tables.get(&peer) else {
+            return Vec::new();
+        };
+        let mut shown = Vec::new();
+        for published in table.actions() {
+            let workspace = table.workspace_of(&published.resource);
+            let need = published.contract.need();
+            let key = (
+                published.resource_kind.as_str(),
+                published.resource.as_str(),
+                published.action.as_str(),
+            );
+            let field_edit = published
+                .contract
+                .tags
+                .iter()
+                .any(|tag| tag == tilo_action_policy::edits::FIELD_EDIT_TAG);
+            if need.field.is_some() && field_edit {
+                let edit = tilo_actions::ActionNeed {
+                    field: None,
+                    ..need.clone()
+                };
+                shown.push(ShownAction::new(workspace, app, key, &edit));
+            }
+            shown.push(ShownAction::new(workspace, app, key, &need));
+        }
+        // Whether the window may change what its app keeps at all, or read it.
+        for kind in tilo_actions::ActionKind::ALL {
+            shown.push(ShownAction::of_app(app, kind));
+        }
+        // What the workspace itself offers through any window: inviting someone, its settings.
+        let governance = tilo_action_policy::roles::GOVERNANCE_KIND;
+        for action in [
+            tilo_action_policy::roles::governance::INVITE,
+            tilo_action_policy::roles::governance::SETTINGS,
+        ] {
+            shown.push(ShownAction::of_workspace(action, governance));
+        }
+        shown
+    }
+
     /// What this host says of `actor` running each of `actions`, shown in a window open in
     /// `home`, now.
-    pub(super) fn decide_shown_actions(
+    fn decide_shown_actions(
         &self,
         actor: &BrokerActor,
         home: &str,
-        actions: &[ShownAction],
-    ) -> Vec<ActionDecision> {
+        actions: Vec<ShownAction>,
+    ) -> HashMap<ShownAction, ActionVerdict> {
         let now = self
             .policy_now_ns()
             .map(|ns| ns / 1_000_000_000)
@@ -44,13 +97,13 @@ impl AppBrokerState {
             })
             .ok();
         actions
-            .iter()
-            .map(|action| ActionDecision {
-                action: action.clone(),
-                verdict: now.map_or_else(
+            .into_iter()
+            .map(|action| {
+                let verdict = now.map_or_else(
                     || ActionVerdict::Refused(UNREADABLE.into()),
-                    |now| self.shown_verdict(actor, home, action, now),
-                ),
+                    |now| self.shown_verdict(actor, home, &action, now),
+                );
+                (action, verdict)
             })
             .collect()
     }
@@ -85,21 +138,23 @@ impl AppBrokerState {
             .map(str::to_owned)
     }
 
-    /// The decisions of `actions`, shown in a window open in `home`, for `actor` now, then each
-    /// time a policy change makes them differ, for as long as the feed is held.
+    /// The verdicts of every action the connection `peer` (a window of the app `app` open in
+    /// `home`) publishes, for `actor`: all of them now, then those that change, for as long as
+    /// the feed is kept.
     pub(super) fn subscribe_shown_actions(
         &self,
         actor: BrokerActor,
+        (peer, app): (u64, String),
         home: String,
-        actions: Vec<ShownAction>,
     ) -> Feed<Vec<ActionDecision>> {
         let (tx, rx) = mpsc::unbounded_channel();
-        let last = self.decide_shown_actions(&actor, &home, &actions);
-        let _ = tx.send(last.clone());
+        let last = self.decide_shown_actions(&actor, &home, self.published_actions(peer, &app));
+        let _ = tx.send(decisions(&last));
         let subscription = ShownSubscription {
             actor,
+            peer,
+            app,
             home,
-            actions,
             last,
             tx,
         };
@@ -110,24 +165,53 @@ impl AppBrokerState {
         Feed::new(rx)
     }
 
-    /// Decide every window's shown actions again, as a policy change may have changed them, and
-    /// send those that differ. A window that let go of its feed is forgotten.
+    /// Decide every window's actions again, as a policy change may have changed them.
     pub(super) fn refresh_shown_actions(&self) {
+        self.refresh_shown_actions_where(|_| true);
+    }
+
+    /// Decide the actions of the window on the connection `peer` again: it published others.
+    pub(super) fn refresh_shown_actions_of(&self, peer: u64) {
+        self.refresh_shown_actions_where(|subscription| subscription.peer == peer);
+    }
+
+    /// Decide again the actions of the windows `which` picks, and send each the verdicts that
+    /// changed. A window that let go of its feed is forgotten.
+    fn refresh_shown_actions_where(&self, which: impl Fn(&ShownSubscription) -> bool) {
         let mut shown = match self.shown_actions.lock() {
             Ok(shown) => shown,
             Err(poisoned) => poisoned.into_inner(),
         };
         shown.retain(|subscription| !subscription.tx.is_closed());
-        for subscription in shown.iter_mut() {
+        for subscription in shown.iter_mut().filter(|subscription| which(subscription)) {
             let now = self.decide_shown_actions(
                 &subscription.actor,
                 &subscription.home,
-                &subscription.actions,
+                self.published_actions(subscription.peer, &subscription.app),
             );
-            if now != subscription.last {
-                subscription.last.clone_from(&now);
-                let _ = subscription.tx.send(now);
+            let changed: Vec<ActionDecision> = now
+                .iter()
+                .filter(|(action, verdict)| subscription.last.get(*action) != Some(*verdict))
+                .map(|(action, verdict)| ActionDecision {
+                    action: action.clone(),
+                    verdict: verdict.clone(),
+                })
+                .collect();
+            subscription.last = now;
+            if !changed.is_empty() {
+                let _ = subscription.tx.send(changed);
             }
         }
     }
+}
+
+/// `verdicts` as the decisions a window reads.
+fn decisions(verdicts: &HashMap<ShownAction, ActionVerdict>) -> Vec<ActionDecision> {
+    verdicts
+        .iter()
+        .map(|(action, verdict)| ActionDecision {
+            action: action.clone(),
+            verdict: verdict.clone(),
+        })
+        .collect()
 }

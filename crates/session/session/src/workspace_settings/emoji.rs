@@ -240,17 +240,12 @@ impl Emoji {
             return open.record.clone();
         }
         drop(held);
-        let context = PermissionContext::from_access(MemberAccess::person(
-            workspace.policy.clone(),
-            person.clone(),
-        ))
-        .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
         let records = self.records.in_workspace(&workspace_id, author.clone());
         let record = WorkspaceResource::<Record>::open(
             &records,
             OWNER,
             SETTINGS_APP,
-            Some(LivePermissions::fixed(context)),
+            None,
             Some(self.wake.handle()),
         );
         *self.open.borrow_mut() = Some(Open {

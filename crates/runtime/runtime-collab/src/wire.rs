@@ -416,9 +416,10 @@ pub enum Topic {
     /// A query of the app's resources held open (`tilo_resource_store::Query`,
     /// JSON): its first page, then each page a change makes different.
     Resources(Vec<u8>),
-    /// What the host says of these actions a window shows, as the person at this endpoint would
-    /// run them: all of them, then all again whenever one changes.
-    ShownActions(Vec<crate::shown_actions::ShownAction>),
+    /// What the host says of every action the window on this endpoint publishes, as the person
+    /// at it would run them: all of them first, then those whose verdict changes, as the window
+    /// publishes others or grants change.
+    ShownActions,
 }
 
 /// The host's answer to a call that succeeded.
@@ -526,7 +527,8 @@ pub enum Event {
     /// A page of a query held open ([`Topic::Resources`]), as
     /// `tilo_resource_store::Page` JSON.
     Resources(Vec<u8>),
-    /// What the host says of the actions a [`Topic::ShownActions`] names.
+    /// What the host says of the actions the window publishes ([`Topic::ShownActions`]): every
+    /// verdict first, then each that changed.
     ShownActions(Vec<crate::shown_actions::ActionDecision>),
 }
 

@@ -301,9 +301,8 @@ mod tests {
                 .any(|request| matches!(request, CollabRequest::Document { .. })),
             "the stamp goes out over the document's own route"
         );
-        assert_eq!(
-            app.permission_ctx.role(),
-            Some(crate::permissions::Role::Viewer),
+        assert!(
+            app.permission_ctx.is_read_only(),
             "the window that moved on no longer edits"
         );
         app.observe_primary_retirement();
@@ -341,10 +340,7 @@ mod tests {
                 successor: successor()
             }]
         );
-        assert_eq!(
-            app.permission_ctx.role(),
-            Some(crate::permissions::Role::Viewer)
-        );
+        assert!(app.permission_ctx.is_read_only());
     }
 }
 

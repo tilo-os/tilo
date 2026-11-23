@@ -1,4 +1,3 @@
-use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -142,7 +141,6 @@ pub struct Slider {
     fine_from: Option<(f64, f64)>,
     action: Option<ActionEmitter<f64>>,
     presence_path: Vec<PathSegment>,
-    permission_scope: Option<PermissionScope>,
     /// When `false` the slider is disabled: skipped by focus, rejects
     /// input (no drag, no value change, no hover feedback) and renders
     /// dimmed. Default `true`.
@@ -236,7 +234,6 @@ impl Slider {
             fine_from: None,
             action: None,
             presence_path: Vec::new(),
-            permission_scope: None,
             enabled: true,
             last_cursor: Point::ZERO,
             id_override: None,
@@ -535,12 +532,6 @@ impl Slider {
     #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
         self.id_override = Some(id.to_string());
-        self
-    }
-
-    #[must_use]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
         self
     }
 
@@ -1080,7 +1071,6 @@ impl Widget for Slider {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::permissions::capability::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence,
         dyn crate::resources::PublishesResources,
         dyn crate::widget::ResourceOperations
@@ -1258,9 +1248,7 @@ impl Widget for Slider {
                 .focused(self.is_focused)
                 .disabled(!self.effectively_enabled()),
         );
-        crate::widget::draw_permission_scrim_and_peer_focus(
-            self, scene, transform, theme, presence,
-        );
+        crate::widget::draw_peer_focus(self, scene, theme, presence);
     }
 
     fn draw_overlay(
@@ -1468,12 +1456,6 @@ impl Widget for Slider {
 impl crate::presence::capability::PublishesPresence for Slider {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
-    }
-}
-
-impl crate::permissions::capability::PermissionGuarded for Slider {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 }
 

@@ -1124,10 +1124,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             part.semantics = Some(SplitHandle::accessibility(&self.handle));
         }
     }
-    crate::provides!(
-        dyn crate::permissions::capability::PermissionGuarded,
-        dyn crate::presence::capability::PublishesPresence
-    );
+    crate::provides!(dyn crate::presence::capability::PublishesPresence);
 
     /// Forward the per-frame update pass to both panes, so a pane that
     /// polls a model (a data table, a pending image) keeps updating.
@@ -1457,11 +1454,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
 }
 
 impl<L: Widget + 'static, R: Widget + 'static> crate::presence::capability::PublishesPresence
-    for ResizableSplit<L, R>
-{
-}
-
-impl<L: Widget + 'static, R: Widget + 'static> crate::permissions::capability::PermissionGuarded
     for ResizableSplit<L, R>
 {
 }

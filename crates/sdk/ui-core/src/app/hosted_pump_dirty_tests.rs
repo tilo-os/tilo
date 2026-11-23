@@ -414,36 +414,6 @@ tilo_test_env::scenario! {
         assert_eq!(counter(&app), 1);
     }
 
-    phase hosted_pump_policy_change_and_expiry_refresh;
-    {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicU64, Ordering},
-        };
-        let mut fixture = HostedPumpFixture::new(1);
-        let time = Arc::new(AtomicU64::new(100));
-        let sample = time.clone();
-        fixture.app.permission_ctx = crate::permissions::PermissionContext::granted(
-            &crate::permissions::MemberId::person("fixture-user"),
-            &crate::permissions::TreePath::root(),
-            crate::permissions::policy::KindSet::ALL,
-            Some(110),
-        )
-        .with_policy_time_sampler(Arc::new(move || Ok(sample.load(Ordering::Acquire))));
-        let generation = fixture.app.actions.resource_generation.get();
-        assert!(fixture.pump().synced, "a replaced policy refreshes");
-        assert_ne!(fixture.app.actions.resource_generation.get(), generation);
-        fixture.assert_idle();
-        time.store(105, Ordering::Release);
-        fixture.assert_idle();
-        time.store(110, Ordering::Release);
-        assert!(
-            fixture.pump().synced,
-            "capability expiry is a policy change"
-        );
-        fixture.assert_idle();
-    }
-
     phase hosted_pump_host_owner_permission_replacement_refreshes;
     {
         use crate::application::{
@@ -467,15 +437,13 @@ tilo_test_env::scenario! {
             title: "Directory".into(),
             icon: crate::widget::IconDescriptor::Glyph("D"),
             resource_type: crate::resource::ResourceType::new("directory"),
-            required: vec![],
-            optional: vec![],
             opens: &[],
             workspace_resource: false,
             opens_before_resource: false,
             create: owned_declared_directory_factory,
         };
         let permissions = crate::permissions::SharedPermissions::new(
-            crate::permissions::PermissionContext::permissive(),
+            crate::permissions::PermissionContext::owner(),
         );
         let context = ProcessContext::prepare(
             &definition,
@@ -558,8 +526,6 @@ tilo_test_env::scenario! {
             title: "Directory".into(),
             icon: crate::widget::IconDescriptor::Glyph("D"),
             resource_type: crate::resource::ResourceType::new("directory"),
-            required: vec![],
-            optional: vec![],
             opens: &[],
             workspace_resource: false,
             opens_before_resource: false,
@@ -573,7 +539,7 @@ tilo_test_env::scenario! {
                 device_id: "D".into(),
                 instance_id: 83,
                 permissions: crate::permissions::SharedPermissions::new(
-                    crate::permissions::PermissionContext::permissive(),
+                    crate::permissions::PermissionContext::owner(),
                 ),
                 author: crate::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),
@@ -631,40 +597,6 @@ tilo_test_env::scenario! {
         assert_ne!(fixture.app.actions.resource_generation.get(), generation);
         assert!(!fixture.sent.borrow().is_empty());
     }
-
-    phase hosted_pump_action_authority_revoke_refreshes_without_forced_sync;
-    {
-        use crate::permissions::{PermissionContext, Role};
-        use std::sync::{Arc, Mutex};
-        let current = Arc::new(Mutex::new(Some(Role::Owner)));
-        let sample = current.clone();
-        let mut fixture = HostedPumpFixture::new(1);
-        fixture.app.permission_ctx =
-            crate::permissions::PermissionContext::member(&crate::permissions::MemberId::person("fixture-user"), Role::Editor)
-                .with_action_authority(
-                    "test.directory".into(),
-                    Arc::new(move || {
-                        Ok(match *sample.lock().unwrap() {
-                            Some(role) => PermissionContext::member(&crate::permissions::MemberId::person("fixture-user"), role),
-                            None => PermissionContext::stranger(&crate::permissions::MemberId::person("fixture-user")),
-                        })
-                    }),
-                );
-        assert!(fixture.pump().synced);
-        fixture.assert_idle();
-        *current.lock().unwrap() = None;
-        let generation = fixture.app.actions.resource_generation.get();
-        assert!(
-            fixture.pump().synced,
-            "ordinary worker observes revoked owner authority"
-        );
-        assert_ne!(fixture.app.actions.resource_generation.get(), generation);
-        fixture.assert_idle();
-    }
-}
-
-tilo_test_env::scenario! {
-    fn directory_rpcs_keep_the_cursor_they_did_not_deliver;
 
     phase hosted_directory_rpc_wake_preserves_no_change_cursor_and_rejects_model_change;
     // The broker uses an event-only wake for pull-directory requests. Route the

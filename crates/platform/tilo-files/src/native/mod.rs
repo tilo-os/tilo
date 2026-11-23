@@ -29,7 +29,6 @@ pub mod bounded;
 pub mod checked;
 #[cfg(unix)]
 pub mod guardian;
-pub mod held;
 pub mod identity;
 pub mod lock;
 pub mod mapped;

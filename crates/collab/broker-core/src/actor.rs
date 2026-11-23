@@ -470,7 +470,7 @@ impl BrokerActor {
         Ok((asks, spent))
     }
 
-    fn verdict_in(
+    pub(crate) fn verdict_in(
         &self,
         workspace: &Workspace,
         node: &TreePath,

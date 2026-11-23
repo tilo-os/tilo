@@ -1,5 +1,5 @@
-//! The permission filter over published resources: what the member may invoke stays, the rest is
-//! withheld.
+//! What a window's controls show of its published resources: what its host's verdicts refuse is
+//! withheld, the rest stays.
 
 use super::{CallbackBinding, ResourceSpec, SharedResource, same_offer};
 
@@ -10,7 +10,7 @@ pub(crate) fn filter_resource(
     binding
         .permissions
         .borrow()
-        .permitted_resource(&binding.app_id, resource)
+        .shown_resource(&binding.app_id, resource)
 }
 
 /// [`filter_resource`] of a shared tree, for the permission context `token` names: a subtree whose
@@ -68,11 +68,10 @@ fn filter_shared_node(
     let _phase = tilo_resource::profiling::Phase::start("ui.filtered_resource");
     let head = resource.head();
     let permissions = binding.permissions.borrow();
-    let decider = permissions.action_decider(&binding.app_id);
     let every_action = head
         .actions
         .iter()
-        .all(|action| decider.permits(&head.kind, head.id.as_str(), action));
+        .all(|action| permissions.shows(&binding.app_id, head, action));
     let children = filter_shared_children(binding, token, resource.children());
     if every_action
         && matches!(children, Filtered::Same)
@@ -86,9 +85,7 @@ fn filter_shared_node(
         Filtered::Pruned => SharedChildren::default(),
     };
     let mut head = head.clone();
-    head.retain_actions(|action| {
-        decider.permits(&resource.head().kind, resource.head().id.as_str(), action)
-    });
+    head.retain_actions(|action| permissions.shows(&binding.app_id, resource.head(), action));
     if head.actions.is_empty() && children.is_empty() {
         Filtered::Pruned
     } else {
@@ -139,19 +136,18 @@ pub(super) fn insert_available_permitted(
     allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
 ) {
     let permissions = binding.permissions.borrow();
-    let decider = permissions.action_decider(&binding.app_id);
-    insert_available(&decider, resources, allowed);
+    insert_available((&permissions, &binding.app_id), resources, allowed);
 }
 
 fn insert_available(
-    decider: &crate::permissions::ActionDecider<'_>,
+    (permissions, app_id): (&crate::permissions::PermissionContext, &str),
     resources: &[ResourceSpec],
     allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
 ) {
     for resource in resources {
         for action in &resource.actions {
             if action.contract.availability.is_available()
-                && decider.permits(&resource.kind, resource.id.as_str(), action)
+                && permissions.shows(app_id, resource, action)
             {
                 allowed.insert(tilo_actions::ActionAddress::new(
                     resource.id.as_str(),
@@ -159,6 +155,6 @@ fn insert_available(
                 ));
             }
         }
-        insert_available(decider, &resource.children, allowed);
+        insert_available((permissions, app_id), &resource.children, allowed);
     }
 }

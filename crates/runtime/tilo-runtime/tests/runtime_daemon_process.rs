@@ -291,9 +291,8 @@ fn run_app_preserves_arguments_cwd_and_connected_descriptors() -> Result<()> {
     let profile = DaemonProfile::new()?;
     let output = host(profile.path())
         .env_remove("TILO_WORKSPACE_ID")
-        .env_remove("TILO_PARTICIPATION")
         .current_dir("/tmp")
-        .args(["--run-app", "dev.tilo.argv", "--", "/bin/sh", "-c", "printf '%s\\n' \"$PWD\" \"$1\" \"$2\" \"$3\" \"$TILO_PACKAGE_ID\" \"$TILO_PARTICIPATION\" \"$TILO_SVC_COLLAB_FD\" \"$TILO_SVC_IDENTITY_FD\"", "sentinel", "two words", "--strange=✓", "--apps"])
+        .args(["--run-app", "dev.tilo.argv", "--", "/bin/sh", "-c", "printf '%s\\n' \"$PWD\" \"$1\" \"$2\" \"$3\" \"$TILO_PACKAGE_ID\" \"$TILO_SVC_COLLAB_FD\" \"$TILO_SVC_IDENTITY_FD\"", "sentinel", "two words", "--strange=✓", "--apps"])
         .output_locked()?;
     ensure!(
         output.status.success(),
@@ -307,10 +306,10 @@ fn run_app_preserves_arguments_cwd_and_connected_descriptors() -> Result<()> {
         "the app's working directory is not the launcher's: {text}"
     );
     ensure!(
-        text.contains("\ntwo words\n--strange=✓\n--apps\ndev.tilo.argv\nauthor\n"),
+        text.contains("\ntwo words\n--strange=✓\n--apps\ndev.tilo.argv\n"),
         "{text}"
     );
-    ensure!(text.lines().count() == 8, "{text}");
+    ensure!(text.lines().count() == 7, "{text}");
     Ok(())
 }
 #[test]

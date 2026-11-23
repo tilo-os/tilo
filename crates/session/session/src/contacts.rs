@@ -129,14 +129,11 @@ impl Contacts {
                     return None;
                 }
             }
-            let permissions =
-                PermissionContext::from_access(MemberAccess::person(policy, self.person.clone()))
-                    .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
             opened.record = WorkspaceResource::<ContactDirectory>::open(
                 &opened.records,
                 ContactDirectory::OWNER,
                 SESSION_APP,
-                Some(LivePermissions::fixed(permissions)),
+                None,
                 Some(self.wake.handle()),
             );
         }

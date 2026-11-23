@@ -406,10 +406,7 @@ impl Default for DesktopBackdrop {
 }
 
 impl Widget for DesktopBackdrop {
-    ui::provides!(
-        dyn ui::permissions::capability::PermissionGuarded,
-        dyn ui::presence::capability::PublishesPresence
-    );
+    ui::provides!(dyn ui::presence::capability::PublishesPresence);
 
     /// The wallpaper it draws, as a picture of it, and what it was given to show over it.
     fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
@@ -568,8 +565,6 @@ impl Widget for DesktopBackdrop {
 }
 
 impl ui::presence::capability::PublishesPresence for DesktopBackdrop {}
-
-impl ui::permissions::capability::PermissionGuarded for DesktopBackdrop {}
 
 #[cfg(test)]
 mod tests {

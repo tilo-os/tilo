@@ -63,10 +63,7 @@ fn a_workspace_launch_opens_the_workspaces_default_record() {
     let host = temp.path().join("workspace");
     launch(
         &host,
-        &[
-            ("TILO_WORKSPACE_ID", "095789bd-bf1b-4215-9d78-78129060e306"),
-            ("TILO_PARTICIPATION", "author"),
-        ],
+        &[("TILO_WORKSPACE_ID", "095789bd-bf1b-4215-9d78-78129060e306")],
     );
     let dirs = record_dirs(&host);
     let workspace_default = ui::resource::DocumentId::workspace_default().storage_key();

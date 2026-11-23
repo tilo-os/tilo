@@ -29,14 +29,9 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase widget_metadata_reports_id_ime_content_cursor_and_scrim;
+    phase widget_metadata_reports_id_ime_content_and_cursor;
     {
         let _settled = crate::motion::testing::settled();
-        {
-            let expected = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            assert_eq!(TextInput::PERMISSION_DENIED_OVERLAY, expected);
-        }
-
         {
             let ti = TextInput::new(Vec::new());
             assert_eq!(Widget::test_id(&ti), Some("text_input"));

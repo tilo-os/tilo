@@ -159,7 +159,7 @@ mod owner_commit_tests {
                 device_id: "device".into(),
                 instance_id: 1,
                 permissions: collaboration::permissions::SharedPermissions::new(
-                    collaboration::permissions::PermissionContext::permissive(),
+                    collaboration::permissions::PermissionContext::owner(),
                 ),
                 author: collaboration::permissions::MemberId::person("worker"),
                 action_context: tilo_actions::ActionContext::default(),
@@ -1146,7 +1146,7 @@ mod owner_commit_tests {
                 device_id: "device".into(),
                 instance_id: 1,
                 permissions: collaboration::permissions::SharedPermissions::new(
-                    collaboration::permissions::PermissionContext::permissive(),
+                    collaboration::permissions::PermissionContext::owner(),
                 ),
                 author: collaboration::permissions::MemberId::person(actor.clone()),
                 action_context: tilo_actions::ActionContext::default(),

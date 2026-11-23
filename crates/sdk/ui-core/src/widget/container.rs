@@ -1,4 +1,3 @@
-use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -36,7 +35,6 @@ pub struct Container {
     focus_trap: bool,
     fill_height: bool,
     presence_path: Vec<PathSegment>,
-    permission_scope: Option<PermissionScope>,
     no_padding: bool,
     padding_override: Option<f32>,
     /// `Some(px)` switches the taffy width to `length(px)` and disables
@@ -84,7 +82,6 @@ impl Container {
             focus_trap: false,
             fill_height: false,
             presence_path: Vec::new(),
-            permission_scope: None,
             no_padding: false,
             padding_override: None,
             fixed_width: None,
@@ -397,12 +394,6 @@ impl Container {
         self.presence_path = path;
         self
     }
-
-    #[must_use]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
-        self
-    }
 }
 
 impl Widget for Container {
@@ -412,7 +403,6 @@ impl Widget for Container {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::permissions::capability::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
 
@@ -588,9 +578,7 @@ impl Widget for Container {
         let shifts = self.ghosts.shift(None, usize::from(self.child.is_some()));
         self.ghosts.draw(scene, transform, shifts.as_deref());
 
-        crate::widget::draw_permission_scrim_and_peer_focus(
-            self, scene, transform, theme, presence,
-        );
+        crate::widget::draw_peer_focus(self, scene, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -690,10 +678,7 @@ impl Widget for Container {
         // Bound containers paint their own hover and press surface. Preserve
         // its conservative bounds; a passive layout wrapper only carries
         // damage from its child, including any scrollbar animation.
-        if self.activation.is_bound()
-            || self.permission_scope.is_some()
-            || !self.presence_path.is_empty()
-        {
+        if self.activation.is_bound() || !self.presence_path.is_empty() {
             if self.needs_redraw() || self.needs_animation_frame() {
                 regions.push(self.rect);
             }
@@ -755,12 +740,6 @@ crate::widget::activation::activation_controls!(Container, activation);
 impl crate::presence::capability::PublishesPresence for Container {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
-    }
-}
-
-impl crate::permissions::capability::PermissionGuarded for Container {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 }
 

@@ -88,7 +88,7 @@ impl ChatApp {
         if self.is_me(&author) || !bannable(&author) {
             return;
         }
-        let request = ban_request(self.perms.workspace(), author.id());
+        let request = ban_request(&self.perms.workspace(), author.id());
         self.moderation.refused = None;
         self.moderation.pending.push(request.invocation);
         self.moderation

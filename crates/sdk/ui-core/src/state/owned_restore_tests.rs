@@ -90,7 +90,7 @@ tilo_test_env::scenario! {
     phase owned_restore_legacy_one_stamp_exact_span_and_undo;
     {
         let (mut state, plan) = fixture();
-        let authority = PermissionContext::permissive();
+        let authority = PermissionContext::owner();
         let before = state.doc.base_heads();
         let count = state.doc.get_changes(&[]).len();
         let revision = state.history_revision();
@@ -129,7 +129,7 @@ tilo_test_env::scenario! {
 
     phase owned_restore_legacy_refuses_pending_and_logically_unfinished_edits;
     {
-        let authority = PermissionContext::permissive();
+        let authority = PermissionContext::owner();
         let (mut state, plan) = fixture();
         state.doc.put(ROOT, "body", "pending").unwrap();
         let before = snapshot(&state);
@@ -165,7 +165,7 @@ tilo_test_env::scenario! {
 
     phase owned_restore_legacy_stale_and_capacity_leave_everything_untouched;
     {
-        let authority = PermissionContext::permissive();
+        let authority = PermissionContext::owner();
         let (mut state, plan) = fixture();
         state.doc.put(ROOT, "body", "new").unwrap();
         state.commit_action(None, None);
@@ -193,7 +193,7 @@ tilo_test_env::scenario! {
 
     phase owned_restore_legacy_noop_and_errors_preserve_redo;
     {
-        let authority = PermissionContext::permissive();
+        let authority = PermissionContext::owner();
         let (mut state, plan) = fixture();
         state.doc.put(ROOT, "body", "later").unwrap();
         state.commit_action(None, None);
@@ -227,7 +227,7 @@ tilo_test_env::scenario! {
 
     phase owned_restore_legacy_unwind_rolls_back_only_owned_writes;
     {
-        let authority = PermissionContext::permissive();
+        let authority = PermissionContext::owner();
         let (mut state, plan) = fixture();
         state.doc.update_diff_cursor();
         let before = snapshot(&state);
@@ -299,7 +299,7 @@ fn owned_restore_mixed_overlay_and_undo_preserve_live_remote_operational_state()
     state.load_incremental(&remote.save()).unwrap();
     let reviewed = state.doc.base_heads();
     let plan = prepare_content_restore(&state.doc, &MIXED, &reviewed, &target).unwrap();
-    let authority = PermissionContext::permissive();
+    let authority = PermissionContext::owner();
     state
         .restore_prepared_owned(&admission(&authority), &plan)
         .unwrap();

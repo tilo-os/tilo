@@ -29,7 +29,6 @@
 #[doc(hidden)]
 pub use tilo_net::status as network_status;
 
-pub mod action_authority;
 pub mod background;
 pub mod capture;
 pub mod clipboard;

@@ -1045,22 +1045,6 @@ mod pointer_broadcast_tests;
 #[path = "rebuild_focus_tests.rs"]
 mod rebuild_focus_tests;
 
-/// Mutating events should route through this so denied interactions
-/// short-circuit before the widget ever observes them.
-pub fn dispatch_guarded_event<W: crate::widget::Widget + ?Sized>(
-    ctx: &crate::permissions::PermissionContext,
-    widget: &W,
-    dispatch: impl FnOnce(),
-) -> bool {
-    if let Some(scope) = crate::permissions::capability::permission_scope(widget)
-        && !ctx.check(&scope)
-    {
-        return false;
-    }
-    dispatch();
-    true
-}
-
 /// The focus-narration path (`set_focused_node`) is private, so these tests
 /// drive it through the public `init_layout` (autofocus) + the a11y action
 /// dispatch / setter API.

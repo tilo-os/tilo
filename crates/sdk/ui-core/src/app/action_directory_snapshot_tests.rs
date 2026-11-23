@@ -1231,7 +1231,7 @@ tilo_test_env::scenario! {
             assert_eq!(calls.get(), 1);
             publish_declared_directory(&mut app);
             let restricted = app.action_directory_revision();
-            app.set_permission_ctx(PermissionContext::permissive());
+            app.set_permission_ctx(PermissionContext::owner());
             assert_ne!(app.action_directory_revision(), restricted);
             assert!(
                 app.action_directory_page(directory_query("", "", 8, 8192, 8))

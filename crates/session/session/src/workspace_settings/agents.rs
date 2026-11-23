@@ -67,17 +67,11 @@ impl Host for crate::engine_records::EngineRecords {
         workspace: &Workspace,
         person: &UserId,
     ) -> (WorkspaceResources, Option<LivePermissions>) {
-        use ui::permissions::PermissionContext;
-        let context = PermissionContext::from_access(tilo_action_policy::MemberAccess::person(
-            workspace.policy.clone(),
-            person.clone(),
-        ))
-        .with_policy_time_sampler(std::sync::Arc::new(|| Ok(tilo_clock::unix_now())));
         let records = self.in_workspace(
             &workspace.id().to_string(),
             ui::permissions::MemberId::person(person.clone()),
         );
-        (records, Some(LivePermissions::fixed(context)))
+        (records, None)
     }
 
     fn manages(&self, workspace: &Workspace, person: &UserId) -> bool {

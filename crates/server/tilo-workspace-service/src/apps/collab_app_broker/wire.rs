@@ -1336,6 +1336,8 @@ impl JoinedChannel {
             .advance_approval_publication(peer_id, ApprovalPublicationKind::Surface);
         self.state
             .surface_republished(peer_id, &surface, previous.as_ref());
+        // What the window now publishes is decided for it.
+        self.state.refresh_shown_actions_of(peer_id);
         // A catalogue offering its record is what an `open` of it waits for:
         // a directory alone is offered before the app is ready.
         self.state
@@ -2178,8 +2180,8 @@ impl WireConnection {
                             },
                         ))
                     }
-                    Topic::ShownActions(actions) => {
-                        let feed = session.shown_actions(actions).map_err(failed)?;
+                    Topic::ShownActions => {
+                        let feed = session.shown_actions().map_err(failed)?;
                         tokio::task::spawn_local(pump(feed, id, frames, |decisions| {
                             Some(Event::ShownActions(decisions))
                         }))

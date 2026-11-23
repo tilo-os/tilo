@@ -374,12 +374,6 @@ pub type ServedProvider = Box<
     ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError>,
 >;
 
-/// What decides in a harness, in place of the device's daemon, the actions the window shows
-/// ([`FrameHarness::decide_shown_actions`]).
-pub type ShownHost = Box<
-    dyn FnMut(&[crate::shown_actions::ShownAction]) -> Vec<crate::shown_actions::ActionDecision>,
->;
-
 /// One invocation of another provider's action ([`FrameHarness::serve_provider`]).
 pub struct ProvidedInvocation<'a> {
     /// The action as the provider publishes it.
@@ -634,16 +628,6 @@ pub struct FrameHarness {
     /// What takes the place of the providers whose actions the app's controls are bound to
     /// ([`Self::serve_provider`]), by provider.
     providers: HashMap<String, ServedProvider>,
-    /// What decides the actions the window shows ([`Self::decide_shown_actions`]): the host, the
-    /// actions the window last asked it about, and the permissions revision it last decided at.
-    shown_host: Option<(
-        ShownHost,
-        Vec<crate::shown_actions::ShownAction>,
-        Option<u64>,
-    )>,
-    /// What the widget tree asked of the transport that a harness host did not answer, until it is
-    /// taken ([`Self::take_collaboration_requests`]).
-    kept_requests: Vec<crate::collaboration::CollabRequest>,
     bound_invocations:
         HashMap<tilo_actions::InvocationId, crate::bound_dispatch::BoundActionTarget>,
     /// What each job started with [`FrameHarness::start_bound_job`] reported so far, in order.
@@ -737,7 +721,7 @@ struct FrameObservation {
     document: (Vec<automerge::ChangeHash>, usize),
     presentation: u64,
     focused: Option<NodeId>,
-    permissions: Result<crate::permissions::DirectoryPermissionObservation, String>,
+    permissions: PermissionContext,
     owners: Vec<crate::bound_dispatch::BoundOwnerMark>,
 }
 
@@ -1252,14 +1236,6 @@ impl FrameHarness {
         self.permissions = permissions;
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_history_clock(&mut self, clock: fn() -> Option<u64>) {
-        self.invalidate_local();
-        if let Some(history) = &mut self.history {
-            history.set_clock(clock);
-        }
-    }
-
     pub fn validate_history_registration(
         &self,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
@@ -1525,7 +1501,7 @@ impl FrameHarness {
             placed_pointers: Vec::new(),
             tooltips: crate::app_core::TooltipLayer::default(),
             settle_frame_owed: false,
-            permissions: PermissionContext::permissive(),
+            permissions: PermissionContext::owner(),
             modifiers: winit::event::Modifiers::default(),
             interaction: crate::interaction::InteractionEnvironment::default(),
             platform: crate::platform::PlatformConventions::default(),
@@ -1555,8 +1531,6 @@ impl FrameHarness {
             pending_control_invocations: HashSet::new(),
             control_failures: Vec::new(),
             providers: HashMap::new(),
-            shown_host: None,
-            kept_requests: Vec::new(),
             bound_invocations: HashMap::new(),
             job_updates: HashMap::new(),
             acting_for: HashMap::new(),
@@ -1710,65 +1684,7 @@ impl FrameHarness {
     /// What the widget tree asked of the transport since the last call, as a live window's host takes
     /// it: the other half of [`Self::handle_collaboration_event`].
     pub fn take_collaboration_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
-        self.answer_shown_actions();
-        let mut requests = std::mem::take(&mut self.kept_requests);
-        requests.extend(crate::widget::take_collab_requests(self.root.as_mut()));
-        requests
-    }
-
-    /// Decide with `host`, as the device's daemon does, the actions the window shows: what the
-    /// window asks of them is answered in each frame and again whenever permissions change, and
-    /// asked again before each invocation, which is admitted as the host says then.
-    pub fn decide_shown_actions(&mut self, host: ShownHost) {
-        self.invalidate_local();
-        self.shown_host = Some((host, Vec::new(), None));
-    }
-
-    /// Answer what the window asked of the actions it shows, and again when permissions changed
-    /// since, keeping the rest of its requests for whoever takes them. Whether it answered
-    /// anything.
-    fn answer_shown_actions(&mut self) -> bool {
-        if self.shown_host.is_none() {
-            return false;
-        }
-        let mut asked = None;
-        for request in crate::widget::take_collab_requests(self.root.as_mut()) {
-            match request {
-                crate::collaboration::CollabRequest::DecideShownActions { actions } => {
-                    asked = Some(actions);
-                }
-                other => self.kept_requests.push(other),
-            }
-        }
-        let Some((_, shown, decided)) = self.shown_host.as_mut() else {
-            return false;
-        };
-        if let Some(actions) = asked {
-            *shown = actions;
-        } else if *decided == Some(crate::permissions::shared_revision()) {
-            return false;
-        }
-        self.decide_shown_again()
-    }
-
-    /// Decide the actions the window last asked about again, as they stand now, and tell it.
-    fn decide_shown_again(&mut self) -> bool {
-        let Some((host, shown, _)) = self.shown_host.as_mut() else {
-            return false;
-        };
-        if shown.is_empty() {
-            return false;
-        }
-        let verdicts = host(shown);
-        self.invalidate_local();
-        crate::widget::handle_collab_event(
-            self.root.as_mut(),
-            &crate::collaboration::CollabEvent::ActionVerdicts { verdicts },
-        );
-        if let Some((_, _, decided)) = self.shown_host.as_mut() {
-            *decided = Some(crate::permissions::shared_revision());
-        }
-        true
+        crate::widget::take_collab_requests(self.root.as_mut())
     }
 
     /// The live document, read-only.
@@ -2100,7 +2016,7 @@ impl FrameHarness {
             document: crate::doc::settle_mark(&self.state.doc),
             presentation: crate::widget::resource_presentation_epoch(),
             focused: self.focused,
-            permissions: self.permissions.directory_observation(),
+            permissions: self.permissions.clone(),
             owners: crate::bound_dispatch::bound_owner_inputs(self.root.as_ref(), &self.state.doc),
         }
     }
@@ -2121,7 +2037,7 @@ impl FrameHarness {
             self.unfollowed_bookkeeping()
         } else if observation.document != crate::doc::settle_mark(&self.state.doc) {
             "ui.loud.document"
-        } else if observation.permissions != self.permissions.directory_observation() {
+        } else if observation.permissions != self.permissions.clone() {
             "ui.loud.permissions"
         } else {
             "ui.loud.owners"
@@ -2187,7 +2103,7 @@ impl FrameHarness {
             && observation.document.1 == 0
             && self.bookkeeping_followed()
             && observation.document == crate::doc::settle_mark(&self.state.doc)
-            && observation.permissions == self.permissions.directory_observation()
+            && observation.permissions == self.permissions.clone()
             && crate::bound_dispatch::same_owner_inputs(
                 &observation.owners,
                 &crate::bound_dispatch::bound_owner_inputs(self.root.as_ref(), &self.state.doc),
@@ -3173,12 +3089,6 @@ impl FrameHarness {
     fn run_frame(&mut self) {
         self.poll_touch_hold(crate::time::now());
         if let Err(error) = self.try_relayout_following_search() {
-            self.skip_own_frame(&error);
-        }
-        // What the frame asked of the actions it shows is answered, and drawn.
-        if self.answer_shown_actions()
-            && let Err(error) = self.try_relayout_following_search()
-        {
             self.skip_own_frame(&error);
         }
     }
@@ -7308,8 +7218,6 @@ impl FrameHarness {
         delivered: Option<(tilo_actions::InvocationId, Option<&tilo_actions::Actor>)>,
     ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
     {
-        // An action is admitted as the host says now.
-        self.decide_shown_again();
         let (invocation, actor) =
             delivered.unwrap_or_else(|| (tilo_actions::InvocationId::new(), None));
         let author = tilo_actions::Actor::Member(self.author.clone());
@@ -9036,8 +8944,7 @@ impl crate::app_core::ControlCore for FrameHarness {
         crate::bound_dispatch::admit_local_action(
             &self.permissions,
             (&crate::collaboration::local_app_id(), resource, spec),
-            arguments.as_ref(),
-            argument,
+            (arguments.as_ref(), argument),
             confirmed || request.broker_admitted,
         )?;
         crate::invocation_scope::check_continuation(
@@ -9153,7 +9060,7 @@ impl FrameHarness {
         let app_id = crate::collaboration::local_app_id();
         resources
             .into_iter()
-            .filter_map(|resource| self.permissions.permitted_resource(&app_id, resource))
+            .filter_map(|resource| self.permissions.shown_resource(&app_id, resource))
             .collect()
     }
 }

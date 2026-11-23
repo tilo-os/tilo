@@ -45,7 +45,6 @@ pub(crate) fn restore_reviewed_history(
     state: &mut State,
     restore: &ReviewedRestore<'_>,
     (authority, author): (&PermissionContext, &MemberId),
-    now: u64,
     extent: RestoreExtent<'_>,
 ) -> Result<OwnedActionReceipt, String> {
     use crate::history_mode::HistorySourceRegistration;
@@ -147,23 +146,9 @@ pub(crate) fn restore_reviewed_history(
     )
     .with_app(&review.resource().app_id, title);
     context.what = did;
-    let apply = |authority: &PermissionContext,
-                 author: &MemberId,
-                 file: bool,
-                 state: &mut State| {
-        let current = authority.clone().at_unix_time(now);
-        if let Err(refusal) = check_restore_authority(
-            &current,
-            author,
-            &review.resource().app_id,
-            file.then_some(&review.resource().document_id),
-        ) {
-            return Err(match refusal {
-                RestoreRefusal::App => {
-                    "You no longer have permission to restore this document.".to_owned()
-                }
-                RestoreRefusal::File => "You do not have permission to write this file.".to_owned(),
-            });
+    let apply = |authority: &PermissionContext, author: &MemberId, state: &mut State| {
+        if !may_restore(authority, author, &review.resource().app_id) {
+            return Err("You no longer have permission to restore this document.".to_owned());
         }
         let admitted = ConfirmedRestore {
             _authority: authority,
@@ -205,56 +190,25 @@ pub(crate) fn restore_reviewed_history(
     match source {
         HistorySourceRegistration::OwnedDocument { owner, .. } => {
             owner.with_restore_authority(authority, author, |authority, author| {
-                apply(authority, author, true, state)
+                apply(authority, author, state)
             })
         }
-        _ => apply(authority, author, false, state),
+        _ => apply(authority, author, state),
     }
 }
 
-enum RestoreRefusal {
-    App,
-    File,
-}
-
-/// Restoring writes: the author must be the actor `current` describes, and `current` must
-/// grant Write on the app and, for a file-backed record, on the file. `current` is
-/// already stamped at the caller's policy time.
-fn check_restore_authority(
-    current: &PermissionContext,
-    author: &MemberId,
-    app_id: &str,
-    record: Option<&crate::resource::DocumentId>,
-) -> Result<(), RestoreRefusal> {
-    use crate::permissions::{Access, ActionKind, MemberId};
+/// Restoring writes: the author must be the person the window acts for, and the verdict the
+/// host sent of changing the app's records must let them.
+fn may_restore(current: &PermissionContext, author: &MemberId, app_id: &str) -> bool {
     // The installed solo-workspace person is the runner's existing local-author mapping.
     // Other contexts must name the actual author.
-    let acting = current.acting();
-    let mapped = acting
-        .nodes()
-        .into_iter()
-        .filter_map(|node| node.by.member_id())
-        .any(|member| match member {
-            MemberId::Person(id) => member == author || id == crate::permissions::LOCAL_USER,
-            MemberId::Agent(_) | MemberId::Bot(_) => false,
-        });
-    if !mapped
-        || !current.check(&crate::permissions::PermissionScope::app(
-            app_id.to_owned(),
-            ActionKind::Undoable,
+    let mapped = current.user() == author
+        || current.user().person_id() == Some(crate::permissions::LOCAL_USER);
+    mapped
+        && current.allows(&crate::permissions::ShownAction::of_app(
+            app_id,
+            crate::permissions::ActionKind::Undoable,
         ))
-    {
-        return Err(RestoreRefusal::App);
-    }
-    if let Some(path) = record.and_then(crate::resource::DocumentId::file_path)
-        && !current.check(&crate::permissions::PermissionScope::path(
-            path.to_string_lossy().into_owned(),
-            Access::Write,
-        ))
-    {
-        return Err(RestoreRefusal::File);
-    }
-    Ok(())
 }
 
 #[derive(Debug)]

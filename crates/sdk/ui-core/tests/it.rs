@@ -89,8 +89,6 @@ mod mouse_navigation_test;
 mod multi_user_session;
 #[path = "overlay_test.rs"]
 mod overlay_test;
-#[path = "permission_context.rs"]
-mod permission_context;
 #[path = "placed_pointers_test.rs"]
 mod placed_pointers_test;
 #[path = "presence_context.rs"]

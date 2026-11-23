@@ -1,31 +1,25 @@
-//! The chat app's permission check.
+//! What Chat shows a person may do, as the device's dispatch decided it.
 //!
-//! Sharing a channel and embedding a blob both cross the Tilo permission
-//! boundary: a peer only sees a workspace's channels and can only hydrate a
-//! content-addressed embed if the OS has granted it access. This module
-//! routes those decisions through the toolkit's [`ui::permissions`] model
-//! (the `PermissionContext` the compositor hands each app in `draw`), rather
-//! than a local allow-all stub.
+//! Chat decides no permission itself: the dispatch decides every action the window publishes and
+//! sends the verdicts, which the window's [`PermissionContext`] holds. These read them:
+//! * [`ChatPermissions::can_embed`] — may the window show the bytes behind an attachment? Read
+//!   of Chat's records, checked before the image cache asks for the blob and before it paints.
+//! * [`ChatPermissions::can_participate`] — may the person post, react or speak in a call? A
+//!   change of Chat's records.
+//! * [`ChatPermissions::can_moderate`] — may they remove other people's messages?
+//! * [`ChatPermissions::allows`] — the call actions (join, speak, camera, screen).
 //!
-//! Three concrete checks:
-//! * [`ChatPermissions::can_embed`] — may this peer hydrate the bytes behind a
-//!   file/image/video attachment? Checked before the image cache requests the
-//!   blob **and** before the renderer paints it, so an ungranted embed shows a
-//!   locked card and never asks a member for bytes.
-//! * [`ChatPermissions::can_participate`] — may this peer send / react / join a
-//!   call in the current workspace? (`Write` on the workspace.)
-//! * [`ChatPermissions::allows`] — the call-action boundary (join / speak / camera
-//!   / screen-share), backed by the same context.
-//!
-//! The default is fail-closed (no workspace grants), so an uncontextualized
-//! instance cannot read attachments, participate, or moderate until the
-//! compositor supplies a `PermissionContext` for the active workspace.
+//! Until the dispatch said, nothing is offered.
 
-use ui::permissions::{ActionKind, MemberId, PermissionContext, PermissionScope};
+use ui::permissions::{ActionKind, MemberId, PermissionContext, ShownAction};
+use ui::tilo_actions::ActionNeed;
 
 use crate::call::CallAction;
 
-/// Wraps the OS-provided [`PermissionContext`] with the chat-specific checks.
+/// The app Chat's records are kept under.
+const CHAT: &str = "so.tilo.chat";
+
+/// The verdicts the window holds, read for Chat's controls.
 #[derive(Clone, Debug)]
 pub struct ChatPermissions {
     ctx: PermissionContext,
@@ -38,7 +32,7 @@ impl Default for ChatPermissions {
 }
 
 impl ChatPermissions {
-    /// Adopt the context the window acts under this frame.
+    /// Read the verdicts of the context the window acts under this frame.
     pub fn from_context(ctx: PermissionContext) -> Self {
         Self { ctx }
     }
@@ -47,10 +41,8 @@ impl ChatPermissions {
         &self.ctx
     }
 
-    /// May this peer hydrate + render the bytes behind an attachment `blob`?
-    /// A valid content-hash/demo identity plus workspace Read. Attachments belong to
-    /// the conversation, not a peer-local filesystem path, so a viewer who
-    /// can read the workspace can hydrate the workspace's verified shared bytes.
+    /// May the window show the bytes behind an attachment `blob`? A valid content hash (or a
+    /// demo identity) the person may read Chat's records for.
     pub fn can_embed(&self, blob: &str) -> bool {
         let valid_hash = tilo_content::valid_reference(blob);
         let valid_demo = matches!(
@@ -63,51 +55,48 @@ impl ChatPermissions {
         (valid_hash || valid_demo)
             && self
                 .ctx
-                .check(&PermissionScope::workspace(ActionKind::Read))
+                .allows(&ShownAction::of_app(CHAT, ActionKind::Read))
     }
 
-    /// May this peer post / react / join a call here? `Write` on the workspace (a
-    /// Viewer can read the channels but not write into them).
-    ///
-    /// "Here" is the OS's active workspace, not one of chat's own workspace rows.
-    /// This took a `workspace: &str` and discarded it, which read as a
-    /// per-workspace check and was not one — callers threaded an id out of
-    /// chat's document all the way down to a parameter named with an
-    /// underscore. An argument that is carried and dropped is worse than one
-    /// that was never asked for: it describes a boundary that does not exist.
+    /// May the person post, react or join a call in the window's workspace?
     pub fn can_participate(&self) -> bool {
         self.ctx
-            .check(&PermissionScope::workspace(ActionKind::Undoable))
+            .allows(&ShownAction::of_app(CHAT, ActionKind::Undoable))
     }
 
-    /// The workspace this peer is in, as its host names it.
-    pub fn workspace(&self) -> &str {
-        self.ctx.access().workspace()
+    /// The workspace the window is in: the one its launch names, else this device's own.
+    pub fn workspace(&self) -> String {
+        self.ctx.host().map_or_else(
+            || {
+                std::env::var("TILO_WORKSPACE_ID")
+                    .unwrap_or_else(|_| ui::application::PERSONAL_WORKSPACE.to_owned())
+            },
+            |host| host.access().workspace().to_owned(),
+        )
     }
 
-    /// May this peer remove other people's messages? Moderation in chat is
-    /// its `moderation` node, which the workspace's Moderators and owner hold.
+    /// May the person remove other people's messages: the dispatch's verdict of moderating a
+    /// conversation's messages.
     pub fn can_moderate(&self) -> bool {
-        self.ctx.check(&PermissionScope::Action {
-            node: ui::permissions::TreePath::root()
-                .app("so.tilo.chat")
-                .kind("chat.workspace")
-                .any(ui::permissions::policy::Level::Resource)
-                .field(ui::tilo_actions::MODERATION_FIELD)
-                .action("remove-message"),
-            kind: ActionKind::Undoable,
-        })
+        self.ctx.may_on_some(
+            CHAT,
+            ("chat.workspace", "remove-message"),
+            &ActionNeed {
+                kind: ActionKind::Undoable,
+                field: Some(ui::tilo_actions::MODERATION_FIELD.to_owned()),
+                privileged: false,
+            },
+        )
     }
 
-    /// Join/listen requires Read; publication requires Write. This UI check
-    /// complements native authority and local consent, never replaces them.
-    /// Leave is always available after a permission downgrade.
+    /// Joining and listening need reading; speaking and sharing need changing. Leaving is
+    /// always open.
     pub fn allows(&self, action: CallAction) -> bool {
         match action {
             CallAction::Leave => true,
             CallAction::Join => self
                 .ctx
-                .check(&PermissionScope::workspace(ActionKind::Read)),
+                .allows(&ShownAction::of_app(CHAT, ActionKind::Read)),
             _ => self.can_participate(),
         }
     }
@@ -171,7 +160,7 @@ mod tests {
             // A member without admin still passes the View check on a workspace
             // (they can read channels) — it's Edit that's guarded.
             let p = restricted_member();
-            let view_ok = p.ctx.check(&PermissionScope::workspace(ActionKind::Read));
+            let view_ok = p.allows(CallAction::Join);
             assert!(view_ok, "a member can read the workspace");
             assert!(!p.can_participate(), "but cannot write to it");
         }
@@ -195,31 +184,5 @@ mod tests {
                 "attachments stay closed"
             );
         }
-    }
-
-    #[test]
-    fn the_composer_appears_the_moment_authorship_arrives() {
-        use ui::workspace_sync::{WorkspaceSync, WorkspaceSyncState};
-        // The launch opened Chat read-only: its workspace did not let Chat author.
-        let launch = ui::permissions::SharedPermissions::new(PermissionContext::member_of(
-            "3f2b1c00-0000-4000-8000-000000000001",
-            &ui::permissions::MemberId::person("u_guest"),
-            Role::Viewer,
-        ));
-        ui::workspace_sync::follow_participation(&launch);
-        let chat = || ChatPermissions::from_context(launch.borrow().clone());
-        assert!(!chat().can_participate(), "read-only, no composer");
-        ui::workspace_sync::set(Some(WorkspaceSync {
-            state: WorkspaceSyncState::Synced,
-            workspace: "Lounge".into(),
-            writable: Some(true),
-            unsynced_writes: 0,
-            cannot_keep_writes: false,
-        }));
-        assert!(
-            chat().can_participate(),
-            "the workspace's grants made Chat an author: the composer shows"
-        );
-        ui::workspace_sync::set(None);
     }
 }

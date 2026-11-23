@@ -16,7 +16,7 @@ pub(super) struct DirectoryObservation {
     pub registry_generation: u64,
     pub root_domain: crate::widget::ActionDirectoryInvocationDomain,
     pub provider_domains: Vec<crate::widget::ActionDirectoryInvocationDomain>,
-    pub permissions: crate::permissions::DirectoryPermissionObservation,
+    pub permissions: crate::permissions::PermissionContext,
     pub permission_generation: u64,
     pub route: Option<crate::collaboration::AcceptedRoute>,
     pub owners: Vec<crate::bound_dispatch::BoundDirectoryObservation>,

@@ -51,8 +51,6 @@ tilo_test_env::scenario! {
             title: "Cold construction probe".into(),
             icon: crate::widget::IconDescriptor::Glyph("C"),
             resource_type: ResourceType::new("cold.probe"),
-            required: vec![],
-            optional: vec![],
             opens: &[],
             workspace_resource: false,
             opens_before_resource: false,
@@ -73,7 +71,7 @@ tilo_test_env::scenario! {
                     "workspace",
                     crate::permissions::MemberId::person(crate::permissions::LOCAL_USER),
                     crate::permissions::SharedPermissions::new(
-                        crate::permissions::PermissionContext::permissive(),
+                        crate::permissions::PermissionContext::owner(),
                     ),
                     tilo_actions::ActionContext::default(),
                 )?;

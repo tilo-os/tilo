@@ -16,7 +16,7 @@ use ui_core::application_view::{
 };
 use ui_core::automerge::AutoCommit;
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
-use ui_core::permissions::{LivePermissions, PermissionScope};
+use ui_core::permissions::LivePermissions;
 use ui_core::presence::{PresenceCtx, PresenceKey};
 use ui_core::resource::ResourceSaveStatus;
 use ui_core::search::SearchProvider;
@@ -49,7 +49,6 @@ use overlay::OverlayCache;
 mod read;
 mod search;
 mod shared_tree;
-mod shown_item;
 mod typed;
 mod unopened;
 pub(crate) use unopened::Unopened;
@@ -100,10 +99,6 @@ pub(crate) struct ResourceRoot {
     /// while the app runs takes effect at once. `None` for a read-only view
     /// of a past version.
     permissions: Option<LivePermissions>,
-    /// The records other workspaces hold that the window last asked its host about, and what the
-    /// records it publishes beside its own were then ([`super::settings::ViewStorage::resources_key`]).
-    shown_asked: (Vec<(String, u64)>, Vec<ui_core::shown_actions::ShownAction>),
-    write: Option<PermissionScope>,
     stages: Stages,
     /// The item a view operation showed and its host laid out, which the
     /// operation, started again, reads without showing it anew.
@@ -631,8 +626,6 @@ impl ResourceRoot {
             save: super::saves::SaveIndicator::new(saves, title),
             reactions: super::reactions::ReactionsIndicator::default(),
             permissions: None,
-            shown_asked: Default::default(),
-            write: None,
             stages,
             shown_first: None,
             feeds,
@@ -724,18 +717,12 @@ impl ResourceRoot {
         self.save.settle_for_capture(ui_core::time::now());
     }
 
-    /// Follow `permissions`: the resource is editable while they grant
-    /// `write`.
-    pub(crate) fn following(
-        mut self,
-        permissions: Option<LivePermissions>,
-        write: PermissionScope,
-    ) -> Self {
+    /// Follow `permissions`: the verdicts the device's dispatch sends of what the window shows.
+    pub(crate) fn following(mut self, permissions: Option<LivePermissions>) -> Self {
         if let Some(permissions) = &permissions {
             self.dispatch.follow(permissions.clone());
         }
         self.permissions = permissions;
-        self.write = Some(write);
         self
     }
 
@@ -771,11 +758,18 @@ impl ResourceRoot {
     /// (or resume) submitting, bound state and surfaces see the new value.
     fn refresh_access(&self) {
         let _profile = tilo_resource::profiling::Phase::start("framework.access_refresh");
-        if let (Some(permissions), Some(write)) = (&self.permissions, &self.write) {
-            let read_only = !permissions.check(write) && !self.may_change_shown_item(permissions);
-            self.dispatch.set_read_only(read_only);
-            // Its person sees, in the window's bar, that they may only look.
-            ui_core::window_toolbar::show_view_only(read_only);
+        if let Some(permissions) = &self.permissions {
+            // Its person sees, in the window's bar, that they may only look: the dispatch
+            // refuses every change to what the app keeps here.
+            let view_only = matches!(
+                permissions.verdict(&ui_core::permissions::ShownAction::of_app(
+                    self.dispatch.app_id(),
+                    ui_core::permissions::ActionKind::Undoable,
+                )),
+                Some(ui_core::permissions::ActionVerdict::Refused(_))
+            );
+            self.dispatch.set_read_only(view_only);
+            ui_core::window_toolbar::show_view_only(view_only);
         }
         self.dispatch.refresh_permission_states();
     }
@@ -2004,9 +1998,6 @@ impl ui_core::widget::Collaborative for ResourceRoot {
     fn take_collab_requests(&mut self) -> Vec<ui_core::collaboration::CollabRequest> {
         let mut requests =
             ui_core::widget::Collaborative::take_collab_requests(self.share.remote_mut());
-        if let Some(actions) = self.shown_to_ask() {
-            requests.push(ui_core::collaboration::CollabRequest::DecideShownActions { actions });
-        }
         if let Some(mut api) = self.dispatch.opener.api() {
             requests.extend(ui_core::widget::Collaborative::take_collab_requests(
                 &mut api,
@@ -2036,53 +2027,6 @@ impl ui_core::widget::Collaborative for ResourceRoot {
                 content.handle_collab_event(event);
             }
         });
-    }
-}
-
-impl ResourceRoot {
-    /// The actions of the records the window publishes beside its own that another workspace
-    /// holds (a person's profile record, held in their own workspace), when they changed since the
-    /// window last asked its host about them: what it asks now. They are refused here until the
-    /// host's verdicts arrive.
-    fn shown_to_ask(&mut self) -> Option<Vec<ui_core::shown_actions::ShownAction>> {
-        let permissions = self.permissions.as_ref()?;
-        let key = self.storage.resources_key();
-        if key == self.shown_asked.0 {
-            return None;
-        }
-        let mut actions = Vec::new();
-        for resource in &self.storage.resource_resources() {
-            shown_actions_of(self.dispatch.app_id(), resource, &mut actions);
-        }
-        self.shown_asked.0 = key;
-        if actions == self.shown_asked.1 {
-            return None;
-        }
-        permissions.ask_shown(&actions);
-        self.shown_asked.1.clone_from(&actions);
-        Some(actions)
-    }
-}
-
-/// Add to `actions` every action of `resource`, and of its children, that a workspace other than
-/// the window's holds.
-fn shown_actions_of(
-    app: &str,
-    resource: &ResourceSpec,
-    actions: &mut Vec<ui_core::shown_actions::ShownAction>,
-) {
-    if let Some(workspace) = &resource.workspace {
-        actions.extend(resource.actions.iter().map(|action| {
-            ui_core::shown_actions::ShownAction::new(
-                Some(workspace),
-                app,
-                (&resource.kind, resource.id.as_str(), &action.id),
-                &action.contract.need(),
-            )
-        }));
-    }
-    for child in &resource.children {
-        shown_actions_of(app, child, actions);
     }
 }
 

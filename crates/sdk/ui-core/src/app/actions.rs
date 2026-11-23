@@ -1610,8 +1610,7 @@ impl App {
             crate::bound_dispatch::admit_local_action(
                 &self.permission_ctx,
                 (&crate::collaboration::local_app_id(), resource, resolved),
-                typed_arguments.as_ref(),
-                argument,
+                (typed_arguments.as_ref(), argument),
                 confirmation_satisfied || broker_admitted,
             )?;
         }
@@ -2676,7 +2675,7 @@ impl App {
         resource: tilo_actions::ResourceSpec,
     ) -> Option<tilo_actions::ResourceSpec> {
         self.permission_ctx
-            .permitted_resource(&crate::collaboration::local_app_id(), resource)
+            .shown_resource(&crate::collaboration::local_app_id(), resource)
     }
 
     pub fn close_action_palette(&mut self) {

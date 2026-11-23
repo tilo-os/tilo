@@ -310,16 +310,11 @@ impl Agents {
                     return Held::Unknown;
                 }
             }
-            let permissions = PermissionContext::from_access(MemberAccess::person(
-                policy.clone(),
-                person.to_owned(),
-            ))
-            .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
             opened.record = WorkspaceResource::<Record>::open(
                 &opened.records,
                 OWNER,
                 SESSION_APP,
-                Some(LivePermissions::fixed(permissions)),
+                None,
                 Some(self.wake.handle()),
             );
         }

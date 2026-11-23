@@ -7089,14 +7089,11 @@ async fn dispatch_sdk_request(
                 }
             }
         }
-        CollabRequest::DecideShownActions { actions } => {
+        CollabRequest::DecideShownActions => {
             if let Some(earlier) = route.shown_actions.take() {
                 earlier.abort();
             }
-            if actions.is_empty() {
-                return true;
-            }
-            match route.channel.shown_actions(actions.clone()).await {
+            match route.channel.shown_actions().await {
                 Ok(verdicts) => {
                     let tx = inbound_tx.clone();
                     let task = tokio::task::spawn_local(async move {
@@ -7111,18 +7108,10 @@ async fn dispatch_sdk_request(
                     });
                     route.shown_actions = Some(task.abort_handle());
                 }
+                // No verdict comes: the window's controls keep saying they are being checked,
+                // and nothing it shows runs.
                 Err(error) => {
-                    let reason = format!("The host couldn't be asked about this: {error}");
-                    let verdicts = actions
-                        .into_iter()
-                        .map(|action| runtime_collab::shown_actions::ActionDecision {
-                            action,
-                            verdict: runtime_collab::shown_actions::ActionVerdict::Refused(
-                                reason.clone(),
-                            ),
-                        })
-                        .collect();
-                    let _ = inbound_tx.send_reply(CollabEvent::ActionVerdicts { verdicts });
+                    tracing::warn!(%error, "the host could not be asked about the window's actions")
                 }
             }
         }

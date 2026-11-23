@@ -19,7 +19,7 @@ use super::controls::Actions;
 use tilo_resource::{Edit, Effect, Invoke, MemberId, Resource};
 use ui_core::LocalState;
 use ui_core::automerge::ChangeHash;
-use ui_core::permissions::{ActionKind, LivePermissions, PermissionScope, TreePath, policy};
+use ui_core::permissions::{ActionKind, LivePermissions, ShownAction, policy};
 
 /// What a view asks whether its member may do.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -584,52 +584,17 @@ impl DispatchCore {
         }
     }
 
+    /// Whether the member may do what `need` is here, as the device's dispatch decided it: the
+    /// field edit at `need`'s field, else the app's records. A detached dispatcher may what
+    /// writing allows; a past version nothing.
     fn may(&self, need: &ActionNeed) -> bool {
-        let mut node = self.node();
-        if let Some(field) = &need.field {
-            node = node.field(field);
-        }
-        self.may_scope(&PermissionScope::Action {
-            node,
-            kind: need.kind,
-        })
-    }
-
-    /// The node below the workspace where the workspace decides this resource's
-    /// changes, as far as a decision here can name it: an item of the
-    /// record for a resource nested in one at `<kind>/<field>/<item>` (a
-    /// note's body), so what the workspace grants on that item alone (an item
-    /// shared to edit) lets it be changed here too; else the app's.
-    fn node(&self) -> TreePath {
-        let app = TreePath::root().app(self.app_id);
-        // A record of a kind each person keeps their own of is decided on that
-        // record, which the workspace grants its person.
-        let kind = self.applied_as.map_or(self.kind, |(kind, _)| kind);
-        if tilo_actions::policy::roles::requires_document_keys(self.app_id, &self.record) {
-            return app.kind(kind).resource(&*self.record);
-        }
-        if !self.record.is_empty()
-            && tilo_actions::policy::roles::has_member_reader(self.app_id, kind)
-        {
-            return app.kind(kind).resource(&*self.record);
-        }
-        if self.applied_as.is_none() {
-            return app;
-        }
-        match self
-            .resource_id
-            .rsplit_once('/')
-            .and_then(|(collection, item)| Some((collection.split_once('/')?, item)))
-        {
-            Some(((kind, field), item))
-                if !kind.is_empty()
-                    && !field.is_empty()
-                    && !field.contains('/')
-                    && !item.is_empty() =>
-            {
-                app.kind(kind).resource(&*self.record).item(item)
-            }
-            _ => app,
+        match self.permissions.borrow().as_ref() {
+            Some(permissions) => permissions.may(
+                self.app_id,
+                (self.kind, &self.resource_id, tilo_resource::FIELD_EDIT),
+                need,
+            ),
+            None => !self.read_only.get(),
         }
     }
 
@@ -650,10 +615,17 @@ impl DispatchCore {
     /// person: its owner or a member, here now or not: what it holds is
     /// shared with them.
     pub(crate) fn workspace_has_others(&self) -> bool {
-        self.permissions
+        let Some(permissions) = self
+            .permissions
             .borrow()
             .as_ref()
-            .is_some_and(ui_core::permissions::LivePermissions::workspace_has_others)
+            .map(LivePermissions::current)
+        else {
+            return false;
+        };
+        tilo_resource::members::listed()
+            .iter()
+            .any(|(member, _)| member != permissions.user())
     }
 
     /// React (or take a reaction back) at `path`, a [`Reactions`](tilo_resource::Reactions)
@@ -684,21 +656,17 @@ impl DispatchCore {
     }
 
     fn may_govern(&self) -> bool {
-        self.may_scope(&PermissionScope::governance(
-            policy::roles::governance::SETTINGS,
-        ))
+        self.may_govern_by(policy::roles::governance::SETTINGS)
     }
 
     /// Whether the member may invite people to the workspace.
     pub(crate) fn may_invite(&self) -> bool {
-        self.may_scope(&PermissionScope::governance(
-            policy::roles::governance::INVITE,
-        ))
+        self.may_govern_by(policy::roles::governance::INVITE)
     }
 
-    fn may_scope(&self, scope: &PermissionScope) -> bool {
+    fn may_govern_by(&self, action: &str) -> bool {
         match self.permissions.borrow().as_ref() {
-            Some(permissions) => permissions.check(scope),
+            Some(permissions) => permissions.may_govern(action),
             // A detached dispatcher may what writing allows; a past version
             // nothing.
             None => !self.read_only.get(),
@@ -708,7 +676,7 @@ impl DispatchCore {
     #[cfg(any(test, feature = "test-support"))]
     fn refresh_read_only(&self) -> bool {
         let writes = self.permissions.borrow().as_ref().map(|permissions| {
-            permissions.check(&PermissionScope::app(self.app_id, ActionKind::Undoable))
+            permissions.allows(&ShownAction::of_app(self.app_id, ActionKind::Undoable))
         });
         match writes {
             Some(writes) => self.set_read_only(!writes),
@@ -1106,7 +1074,7 @@ impl<R: Resource> Dispatcher<R> {
             permissions
                 .borrow()
                 .as_ref()
-                .map(|live| live.current().access().clone())
+                .and_then(|live| Some(live.current().host()?.access().clone()))
         }
     }
 

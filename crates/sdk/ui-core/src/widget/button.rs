@@ -2,7 +2,6 @@ use crate::component::Person;
 use crate::i18n::widget_text;
 use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
-use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
@@ -92,7 +91,6 @@ pub struct Button {
     native_resource: Option<tilo_actions::ResourceSpec>,
     native_handler: Option<Box<dyn FnMut()>>,
     presence_path: Vec<PathSegment>,
-    permission_scope: Option<PermissionScope>,
     enabled: bool,
     enabled_binding: Option<crate::widget::binding::BoxedBinding<bool>>,
     /// The page's encouraged action: a focus reset lands here, so Enter
@@ -198,7 +196,6 @@ impl Button {
             native_resource: None,
             native_handler: None,
             presence_path: Vec::new(),
-            permission_scope: None,
             enabled: true,
             enabled_binding: None,
             face: crate::widget::CachedPaint::default(),
@@ -219,12 +216,6 @@ impl Button {
     #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
-        self
-    }
-
-    #[must_use]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
         self
     }
 
@@ -2222,7 +2213,6 @@ impl Widget for Button {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
-        dyn crate::permissions::capability::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence,
         dyn crate::widget::ResourceOperations
     );
@@ -2428,13 +2418,7 @@ impl Widget for Button {
         // it applies none: a second layer would dim a disabled face twice.
         if !self.dirty && moment.settled && !self.face.is_empty() {
             self.face.append(out_scene, out_transform, self.rect);
-            crate::widget::draw_permission_scrim_and_peer_focus(
-                self,
-                out_scene,
-                out_transform,
-                theme,
-                presence,
-            );
+            crate::widget::draw_peer_focus(self, out_scene, theme, presence);
             return;
         }
         let enabled = self.effectively_enabled();
@@ -2457,13 +2441,7 @@ impl Widget for Button {
             );
             self.painted_hit = None;
             self.face.append(out_scene, out_transform, self.rect);
-            crate::widget::draw_permission_scrim_and_peer_focus(
-                self,
-                out_scene,
-                out_transform,
-                theme,
-                presence,
-            );
+            crate::widget::draw_peer_focus(self, out_scene, theme, presence);
             return;
         }
         let (label, hint) = self.content();
@@ -2488,13 +2466,7 @@ impl Widget for Button {
         }
         self.painted_hit = hit.map(|hit| Affine::translate(-self.rect.origin().to_vec2()) * hit);
         self.face.append(out_scene, out_transform, self.rect);
-        crate::widget::draw_permission_scrim_and_peer_focus(
-            self,
-            out_scene,
-            out_transform,
-            theme,
-            presence,
-        );
+        crate::widget::draw_peer_focus(self, out_scene, theme, presence);
     }
 
     fn needs_redraw(&self) -> bool {
@@ -2777,12 +2749,6 @@ impl crate::widget::ResourceOperations for Button {
 impl crate::presence::capability::PublishesPresence for Button {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
-    }
-}
-
-impl crate::permissions::capability::PermissionGuarded for Button {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 }
 

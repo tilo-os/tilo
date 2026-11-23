@@ -1,6 +1,5 @@
 use crate::i18n::ArgValue;
 use crate::i18n::widget_text;
-use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::{
     FIGURE_TAGS, FontChoice, HangingPunctuation, Hyphenation, NumericStyle, OpenTypeTag,
@@ -155,7 +154,6 @@ pub struct Text {
     presence_path: Vec<PathSegment>,
     /// The field and the item whose text it shows ([`Self::edits`]).
     edits: Option<(String, String)>,
-    permission_scope: Option<PermissionScope>,
     face: crate::widget::CachedPaint,
     drawn_color: Option<vello::peniko::Color>,
     /// Whether the label needs drawing again, flipped on when the *size*
@@ -211,7 +209,6 @@ impl Text {
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             edits: None,
-            permission_scope: None,
             face: crate::widget::CachedPaint::default(),
             drawn_color: None,
             dirty: true,
@@ -830,12 +827,6 @@ impl Text {
         self.edits = Some((field.into(), item.into()));
         self
     }
-
-    #[must_use]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
-        self
-    }
 }
 
 impl Text {
@@ -886,10 +877,7 @@ impl Widget for Text {
         Some(self)
     }
 
-    crate::provides!(
-        dyn crate::permissions::capability::PermissionGuarded,
-        dyn crate::presence::capability::PublishesPresence
-    );
+    crate::provides!(dyn crate::presence::capability::PublishesPresence);
 
     /// Its words, as a heading where it is one and a paragraph's run of
     /// text otherwise, set the way it sets them.
@@ -1178,9 +1166,7 @@ impl Widget for Text {
             self.face.append(scene, transform, self.rect);
         }
         self.draw_writes(scene, transform, text_renderer, theme, presence);
-        crate::widget::draw_permission_scrim_and_peer_focus(
-            self, scene, transform, theme, presence,
-        );
+        crate::widget::draw_peer_focus(self, scene, theme, presence);
     }
 
     fn name(&self) -> &'static str {
@@ -1259,12 +1245,6 @@ impl Widget for Text {
 impl crate::presence::capability::PublishesPresence for Text {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
-    }
-}
-
-impl crate::permissions::capability::PermissionGuarded for Text {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 }
 

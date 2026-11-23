@@ -91,7 +91,6 @@ impl Workspace {
     #[must_use]
     pub fn grants_for_launch(&self, app: &str, home: Option<PathBuf>) -> LaunchGrants {
         let mut grants = self.grants.for_app(app);
-        grants.author = self.may_change(app);
         // A workspace only ever refuses the person's devices; their own answers allow them.
         grants.sandbox.retain(|cap| {
             !(cap.effect == Effect::Grant
@@ -155,22 +154,18 @@ impl Workspace {
             .any(|cap| cap.names_app(app) && matches!(cap.scope, Scope::NetHost(_)))
     }
 
-    /// Whether `person` may change this workspace through `app`: what its
-    /// answer in the workspace's policy says, and nothing where the session
-    /// holds no policy for the workspace.
-    fn may_change(&self, app: &str) -> bool {
-        let Some(policy) = &self.policy else {
-            return false;
-        };
-        policy
-            .person_on_device(&self.person, false)
-            .decide(
-                &policy.node().app(app),
-                tilo_action_policy::ActionKind::Undoable,
-                &tilo_action_policy::Context::at_time(std::time::SystemTime::now()),
-            )
-            .answer
-            == tilo_action_policy::Answer::Allow
+    /// The person's access in this workspace, for an app whose instance a tilolang host runs:
+    /// what its views offer and refuse by. `None` when the session holds no policy for it.
+    #[must_use]
+    pub fn member_access(&self) -> Option<tilo_action_policy::MemberAccess> {
+        let policy = self
+            .policy
+            .as_ref()
+            .filter(|policy| self.is_workspace() && policy.workspace == self.id)?;
+        Some(tilo_action_policy::MemberAccess::person(
+            policy.clone(),
+            self.person.clone(),
+        ))
     }
 
     /// Write the grants where `tilo-launcher --capabilities` reads them, and
@@ -240,7 +235,6 @@ mod tests {
         assert_eq!(
             workspace.grants_for_launch("so.tilo.file-explorer", Some(home.clone())),
             LaunchGrants {
-                author: false,
                 sandbox: vec![
                     CapOverride::grant(
                         Grantee::person("person-7"),
@@ -367,10 +361,6 @@ mod tests {
             "the launcher reads what was granted to this app, not the workspace's other grants"
         );
         assert_eq!(filtered.sandbox.len(), 1);
-        assert!(
-            filtered.author,
-            "the person may change the workspace through the app"
-        );
 
         // An app id that could leave the launch's directory is refused, and a
         // launch outside a workspace names none.

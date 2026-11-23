@@ -3,7 +3,6 @@
 //! permission bindings, the theme-resolved spacing, and the subtree scene cache that
 //! replays a stable subtree as one append.
 
-use crate::permissions::PermissionScope;
 use crate::presence::PathSegment;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -28,7 +27,6 @@ pub(super) struct Flow {
     /// Overflow extent used for culling independently of an exact allocation.
     pub paint_rect: Rect,
     pub presence_path: Vec<PathSegment>,
-    pub permission_scope: Option<PermissionScope>,
     pub gap_override: Option<f32>,
     pub rhythm: Option<Rhythm>,
     pub padding_rhythm: Option<(Option<Rhythm>, Option<Rhythm>)>,
@@ -110,7 +108,6 @@ impl Flow {
             rect: Rect::ZERO,
             paint_rect: Rect::ZERO,
             presence_path: Vec::new(),
-            permission_scope: None,
             gap_override: None,
             rhythm: None,
             padding_rhythm: None,
@@ -755,16 +752,6 @@ macro_rules! flow_builders {
             self.flow.presence_path = path;
             self
         }
-
-        /// Check this layout behind a permission scope.
-        #[must_use]
-        pub fn with_permission_scope(
-            mut self,
-            scope: $crate::permissions::PermissionScope,
-        ) -> Self {
-            self.flow.permission_scope = Some(scope);
-            self
-        }
     };
 }
 pub(super) use flow_builders;
@@ -805,7 +792,7 @@ macro_rules! flow_widget_methods {
                 .flow
                 .draw_cached(scene, transform, text_renderer, theme, presence)
             {
-                $crate::widget::draw_permission_scrim_and_peer_focus(self, scene, transform, theme, presence);
+                $crate::widget::draw_peer_focus(self, scene, theme, presence);
             }
         }
 
@@ -941,12 +928,6 @@ macro_rules! flow_capabilities {
         impl $crate::presence::capability::PublishesPresence for $ty {
             fn presence_key(&self) -> Option<$crate::presence::PresenceKey> {
                 $crate::presence::PresenceKey::widget(&self.flow.presence_path)
-            }
-        }
-
-        impl $crate::permissions::capability::PermissionGuarded for $ty {
-            fn permission_scope(&self) -> Option<$crate::permissions::PermissionScope> {
-                self.flow.permission_scope.clone()
             }
         }
     };

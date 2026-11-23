@@ -73,7 +73,6 @@ fn chain_with_device_queue(store: &ResourceStore, profile: &std::path::Path) -> 
     let workspace = WorkspaceResources {
         store: store.clone(),
         me: author.clone(),
-        permissions: None,
         app_id: APP,
         app_title: APP,
         device_queue: Some(

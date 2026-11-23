@@ -636,12 +636,9 @@ pub enum CollabRequest {
     CloseResources {
         query_id: u64,
     },
-    /// Ask the host what it says of the actions the window shows, replacing what was asked
-    /// before: answered with [`CollabEvent::ActionVerdicts`] now and again whenever grants change
-    /// one. Empty asks nothing more.
-    DecideShownActions {
-        actions: Vec<runtime_collab::shown_actions::ShownAction>,
-    },
+    /// Hear what the host says of every action the window publishes: answered with
+    /// [`CollabEvent::ActionVerdicts`], every verdict first and then each that changes.
+    DecideShownActions,
 }
 
 impl CollabRequest {

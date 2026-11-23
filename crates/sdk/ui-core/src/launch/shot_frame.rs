@@ -52,7 +52,7 @@ impl ShotFrame {
             theme,
             text,
             presence: PresenceCtx::empty(),
-            permission: PermissionContext::permissive(),
+            permission: PermissionContext::owner(),
             viewport,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),

@@ -261,7 +261,7 @@ tilo_test_env::scenario! {
                 DocumentCheckout::new(app.record().clone(), definition.resource_type.clone()),
                 app.read_document(|doc| doc.clone().save()),
                 &MemberId::person(AGENT),
-                PermissionContext::permissive(),
+                PermissionContext::owner(),
                 created,
             )
         };
@@ -473,7 +473,7 @@ tilo_test_env::scenario! {
             DocumentCheckout::new(app.record().clone(), definition.resource_type.clone()),
             app.read_document(|doc| doc.clone().save()),
             &MemberId::person(AGENT),
-            PermissionContext::permissive(),
+            PermissionContext::owner(),
             false,
         )
         .unwrap();

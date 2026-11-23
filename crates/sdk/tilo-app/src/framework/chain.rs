@@ -67,7 +67,6 @@ use tilo_actions::{ActionContext, ActionError, ActionInvoker};
 use tilo_resource::{Invoke, Refusal, Resource};
 use ui_core::automerge::transaction::Transactable as _;
 use ui_core::automerge::{ChangeHash, ObjType, ROOT, ReadDoc as _, Value};
-use ui_core::permissions::{LivePermissions, PermissionScope, TreePath};
 use ui_core::resource::{
     DocumentCheckout, DocumentId, ResourceOpenError, ResourceStore, ResourceType,
 };
@@ -401,13 +400,12 @@ impl From<String> for Unopened {
     }
 }
 
-/// What a window holds a chain with: the store of the app's records, who
-/// edits, and what they may do in the workspace.
+/// What a window holds a chain with: the store of the app's records and who
+/// edits.
 #[derive(Clone)]
 pub(crate) struct WorkspaceResources {
     pub(crate) store: ResourceStore,
     pub(crate) me: tilo_resource::MemberId,
-    pub(crate) permissions: Option<LivePermissions>,
     pub(crate) app_id: &'static str,
     pub(crate) app_title: &'static str,
     pub(crate) device_queue: Option<ui_core::storage::Settings<waiting::QueuedWrites>>,
@@ -761,47 +759,6 @@ impl ChainCore {
             .retain(|index, _| held.contains(index));
     }
 
-    /// Whether the window's person may do what `need` and `verb` (the
-    /// action's verb, or none for a field edit) say an action does, where
-    /// the chain publishes it.
-    fn may(&self, need: &tilo_actions::ActionNeed, verb: Option<&str>) -> Result<(), ActionError> {
-        let Some(permissions) = &self.workspace.permissions else {
-            return Ok(());
-        };
-        // Decided where the chain publishes the action, as the API
-        // decides it: a grant on the app, the parts' kind or the verb
-        // covers it.
-        let node = if let Some(verb) = verb {
-            tilo_actions::action_node(
-                &TreePath::root(),
-                self.workspace.app_id,
-                self.part.kind,
-                &self.id,
-                need.field.as_deref(),
-                verb,
-            )
-        } else {
-            // A field edit, at the field it changes, as the published
-            // `field-edit`: a grant on that action covers it too.
-            TreePath::root()
-                .app(self.workspace.app_id)
-                .kind(self.part.kind)
-                .resource(self.id.clone())
-                .field(need.field.as_deref().unwrap_or_default())
-                .action(tilo_resource::FIELD_EDIT)
-        };
-        if !permissions.check(&PermissionScope::Action {
-            node,
-            kind: need.kind,
-        }) {
-            return Err(ActionError::Refused(format!(
-                "you may not do this to these {}",
-                self.part.label.to_lowercase()
-            )));
-        }
-        Ok(())
-    }
-
     /// The chain as it is published, from what its head published
     /// (`head`), its earlier parts, newest first (`earlier`), and the
     /// places the app derives from them (`places`): their items, each
@@ -982,8 +939,7 @@ impl ChainCore {
     }
 
     /// Apply a history verb to the part it names ([`PartEdit`]), invoked by
-    /// `invoker` (`action` is that verb): checked as an undoable change where the chain publishes
-    /// the verb, and written into the part's history as any of its steps.
+    /// `invoker` (`action` is that verb), written into the part's history as any of its steps.
     /// Answers the part and its version after.
     fn apply_history(
         &self,
@@ -991,24 +947,6 @@ impl ChainCore {
         action: &dyn tilo_actions::Action,
         invoker: &ActionInvoker,
     ) -> Result<serde_json::Value, ActionError> {
-        if let Some(permissions) = &self.workspace.permissions
-            && !permissions.check(&PermissionScope::Action {
-                node: tilo_actions::action_node(
-                    &TreePath::root(),
-                    self.workspace.app_id,
-                    self.part.kind,
-                    &self.id,
-                    None,
-                    edit.verb(),
-                ),
-                kind: tilo_actions::ActionKind::Undoable,
-            })
-        {
-            return Err(ActionError::Refused(format!(
-                "you may not change the history of these {}",
-                self.part.label.to_lowercase()
-            )));
-        }
         self.hold_kept(edit.part)
             .map_err(|error| self.refused(error))?;
         let encoded = edit.encoded().map_err(ActionError::Refused)?;
@@ -1974,7 +1912,6 @@ impl ChainState {
             .place(&*action, by_app, &kept)
             .map_err(ActionError::Refused)?;
         drop(parts);
-        self.may(&*action)?;
         let newest = self.core.parts.borrow().keys().next_back().copied();
         match self
             .core
@@ -2061,7 +1998,6 @@ impl ChainState {
             let (place, by_app) = (part.route)(&**action, &*base, &*parts);
             let by_app = by_app.or_else(|| self.listed_part(&**action, &kept).map(Ok));
             places.push(place);
-            self.may(&**action)?;
             indices.push(
                 self.place(&**action, by_app, &kept)
                     .map_err(ActionError::Refused)?,
@@ -2145,20 +2081,6 @@ impl ChainState {
         );
         self.core.keep_unsent_group(group, invoker)?;
         Ok(Write::Arriving)
-    }
-
-    /// Whether `invoker` may change this chain by `action`, refused as the
-    /// API refuses it where the chain publishes the action: a grant on the
-    /// app, the parts' kind or the verb covers it.
-    fn may(&self, action: &dyn Any) -> Result<(), ActionError> {
-        if self.core.workspace.permissions.is_none() {
-            return Ok(());
-        }
-        let part = self.part();
-        let Some(need) = (part.need)(action) else {
-            return Ok(());
-        };
-        self.core.may(&need, (part.verb)(action).as_deref())
     }
 
     /// Write into part `index`, just started after part `previous`, what it
@@ -2811,7 +2733,6 @@ impl<P: Chained> Chain<P> {
         let workspace = WorkspaceResources {
             store,
             me: me.clone(),
-            permissions: None,
             app_id,
             app_title: app_id,
             device_queue: None,

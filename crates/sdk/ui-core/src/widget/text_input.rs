@@ -6210,20 +6210,6 @@ impl TextInput {
                 }
             }
         }
-
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !presence.permits(&scope)
-        {
-            let r = self.rect;
-            let overlay = Self::PERMISSION_DENIED_OVERLAY;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                Affine::IDENTITY,
-                overlay,
-                None,
-                &r,
-            );
-        }
     }
 
     fn field_action_bindings(&self) -> Vec<ControlBindingMetadata> {
@@ -6280,11 +6266,6 @@ impl TextInput {
             }]
         }
     }
-}
-
-impl TextInput {
-    pub(crate) const PERMISSION_DENIED_OVERLAY: vello::peniko::Color =
-        crate::tokens::colors::PERMISSION_DENIED_SCRIM;
 }
 
 #[cfg(test)]

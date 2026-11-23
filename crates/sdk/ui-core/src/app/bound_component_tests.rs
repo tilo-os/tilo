@@ -684,8 +684,6 @@ fn bound_components_keep_child_binding() {
             icon: IconDescriptor::Glyph("P"),
             resource_type: crate::resource::ResourceType::new("probe"),
 
-            required: vec![],
-            optional: vec![],
             opens: &[],
             workspace_resource: false,
             opens_before_resource: false,
@@ -699,7 +697,7 @@ fn bound_components_keep_child_binding() {
                 device_id: "D".into(),
                 instance_id: 1,
                 permissions: crate::permissions::SharedPermissions::new(
-                    crate::permissions::PermissionContext::permissive(),
+                    crate::permissions::PermissionContext::owner(),
                 ),
                 author: crate::permissions::MemberId::person("probe-author"),
                 action_context: tilo_actions::ActionContext::default(),
@@ -862,10 +860,6 @@ impl ActionFixture {
     ) -> Self {
         Self::assemble(shared, separate, queue, None)
     }
-    /// The fixture's app woken through `scope`, as a running app is.
-    fn scoped(scope: crate::wake::WakeScope) -> Self {
-        Self::assemble(false, false, None, Some(scope))
-    }
     fn assemble(
         shared: bool,
         separate: bool,
@@ -909,8 +903,6 @@ impl ActionFixture {
                 icon: IconDescriptor::Glyph("P"),
                 resource_type: crate::resource::ResourceType::new("probe"),
 
-                required: vec![],
-                optional: vec![],
                 opens: &[],
                 workspace_resource: false,
                 opens_before_resource: false,
@@ -992,7 +984,6 @@ impl ActionFixture {
     }
 }
 
-include!("directory_permission_tests.rs");
 
 include!("owner_publication_tests.rs");
 
@@ -1484,84 +1475,6 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
             vec![(false, false), (true, false)]
         );
     }
-}
-
-/// The host's view of the person's authority over a bound component's
-/// actions is read when the host changes it, never by a frame.
-#[test]
-fn bound_controls_read_the_host_authority_only_when_it_changes() {
-    use collab_types::action_authority::AppActionAuthorityProjection;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
-    const WORKSPACE: &str = "00000000-0000-0000-0000-000000000004";
-    const APP: &str = "so.tilo.binding-probe";
-    let owner = AppActionAuthorityProjection::project(
-        &tilo_action_policy::WorkspacePolicy::new(WORKSPACE, "fixture-user"),
-        APP,
-        "fixture-user",
-        false,
-    );
-    let held = Arc::new(Mutex::new(serde_json::to_vec(&owner).unwrap()));
-    let reads = Arc::new(AtomicUsize::new(0));
-    let read: tilo_process_services::action_authority::AuthoritySource = {
-        let (held, reads) = (held.clone(), reads.clone());
-        Arc::new(move || {
-            reads.fetch_add(1, Ordering::SeqCst);
-            Ok(Some(held.lock().unwrap().clone()))
-        })
-    };
-    let (watch, changed) = crate::application::manual_authority_watch();
-    let mut fixture = ActionFixture::new();
-    fixture.permissions.set(
-        crate::application::follow_process_authority(
-            crate::permissions::PermissionContext::member_of(
-                WORKSPACE,
-                &crate::permissions::MemberId::person("fixture-user"),
-                crate::permissions::Role::Viewer,
-            ),
-            read,
-            watch,
-            WORKSPACE,
-            APP,
-        )
-        .unwrap(),
-    );
-    assert_eq!(
-        reads.load(Ordering::SeqCst),
-        1,
-        "read once as it is followed"
-    );
-    CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
-    fixture.app.refresh_control_action_availability();
-    assert_eq!(
-        CONTROL_AUTHORITY.with_borrow(Clone::clone),
-        vec![(false, true), (true, true)]
-    );
-    // Every frame the native runner draws pushes availability first.
-    CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
-    for _ in 0..120 {
-        fixture.app.refresh_control_action_availability();
-    }
-    assert_eq!(reads.load(Ordering::SeqCst), 1, "a frame reads no file");
-    assert!(
-        CONTROL_AUTHORITY.with_borrow(Vec::is_empty),
-        "a frame walks no control"
-    );
-    assert_eq!(fixture.app.permissions_change_at(), None);
-    // The host withdraws the person's ownership.
-    let mut revoked = owner.clone();
-    revoked.policy.owner = None;
-    *held.lock().unwrap() = serde_json::to_vec(&revoked).unwrap();
-    let revision = crate::permissions::shared_revision();
-    changed();
-    assert_eq!(reads.load(Ordering::SeqCst), 2);
-    assert_ne!(crate::permissions::shared_revision(), revision);
-    fixture.app.refresh_control_action_availability();
-    assert_eq!(
-        CONTROL_AUTHORITY.with_borrow(Clone::clone),
-        vec![(false, false), (true, false)]
-    );
-    assert_eq!(reads.load(Ordering::SeqCst), 2);
 }
 
 #[test]
@@ -2711,8 +2624,6 @@ tilo_test_env::scenario! {
             resource_type: crate::resource::ResourceType::new("probe"),
             workspace_resource: true,
             opens_before_resource: false,
-            required: vec![],
-            optional: vec![],
             opens: &[],
             create: factory,
         };
@@ -2724,7 +2635,7 @@ tilo_test_env::scenario! {
                 device_id: "D".into(),
                 instance_id: 21,
                 permissions: crate::permissions::SharedPermissions::new(
-                    crate::permissions::PermissionContext::permissive(),
+                    crate::permissions::PermissionContext::owner(),
                 ),
                 author: crate::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),
@@ -3252,9 +3163,6 @@ fn broker_text_slot_keeps_the_advertised_primary_parameter_through_model_resolut
         Err(tilo_actions::ApiError::InvalidArguments(_))
     ));
 }
-
-#[path = "bound_policy_clock_tests.rs"]
-mod policy_clock;
 
 thread_local! {
     static HEARD_ELSEWHERE: RefCell<Vec<crate::component_lifecycle::Heard>> = const { RefCell::new(Vec::new()) };

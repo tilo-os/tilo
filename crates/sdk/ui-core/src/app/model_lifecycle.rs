@@ -27,8 +27,8 @@ fn hosted_pump_timing() -> bool {
 /// value is identical.
 #[derive(PartialEq, Eq)]
 struct HostedAuthorityObservation {
-    app: crate::permissions::DirectoryPermissionObservation,
-    owner: Option<crate::permissions::DirectoryPermissionObservation>,
+    app: crate::permissions::PermissionContext,
+    owner: Option<crate::permissions::PermissionContext>,
 }
 
 /// Every input of `publish_action_surface` that can change without a
@@ -261,22 +261,13 @@ impl super::App {
             .is_none_or(|sync| sync)
     }
 
-    /// Returns true when policy meaning changed since the previous hosted pump
-    /// or cannot be sampled (fail closed: refresh on every such pass).
+    /// Returns true when the host's verdicts changed since the previous hosted pump.
     fn refresh_hosted_authority(&mut self) -> bool {
-        let owner = if let Some(binding) = self.root_widget.callback_binding() {
-            let Ok(observation) = binding.permissions.borrow().directory_observation() else {
-                self.actions.hosted.authority = None;
-                return true;
-            };
-            Some(observation)
-        } else {
-            None
-        };
-        let Ok(app) = self.permission_ctx.directory_observation() else {
-            self.actions.hosted.authority = None;
-            return true;
-        };
+        let owner = self
+            .root_widget
+            .callback_binding()
+            .map(|binding| binding.permissions.get());
+        let app = self.permission_ctx.clone();
         let current = HostedAuthorityObservation { app, owner };
         let changed = self.actions.hosted.authority.as_ref() != Some(&current);
         self.actions.hosted.authority = Some(current);

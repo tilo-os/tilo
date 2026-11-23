@@ -1030,6 +1030,14 @@ impl App {
                 self.request_invocation_cancellation(id);
             }
             CollabEvent::RemoteAction { message } => self.apply_remote_action_answer(message),
+            // What the device's dispatch says of the actions the window shows: its controls show
+            // them, and a press waiting on its verdict runs as it says.
+            CollabEvent::ActionVerdicts { verdicts } => {
+                let mut ctx = self.permission_ctx.clone();
+                ctx.decide_shown(&verdicts);
+                self.set_permission_ctx(ctx);
+                crate::bound_dispatch::decide_bound_shown(self.root_widget.as_ref(), &verdicts);
+            }
             CollabEvent::KeyAccess { route, state } => {
                 if self.collaboration.manager.requested_primary_route() == Some(&route) {
                     self.collaboration.key_access = Some(state);
@@ -1045,7 +1053,6 @@ impl App {
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::ResourceCommandResult { .. }
             | CollabEvent::ResourcePage { .. }
-            | CollabEvent::ActionVerdicts { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
             | CollabEvent::NearbyTransferChanged
             | CollabEvent::SpeakersChanged

@@ -24,7 +24,6 @@ pub(crate) use resource_operation::{
     start_operation_refused,
 };
 
-use crate::permissions::PermissionScope;
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -548,27 +547,15 @@ macro_rules! draw_child_of_dyn {
 
 draw_child_of_dyn!(Widget, AppWidget,);
 
-/// What a guarded, presence-publishing widget draws over itself once drawn:
-/// the denied-permission scrim, then the focus ring of the first peer on it.
-pub(crate) fn draw_permission_scrim_and_peer_focus(
+/// What a presence-publishing widget draws over itself once drawn: the focus ring of the first
+/// peer on it.
+pub(crate) fn draw_peer_focus(
     widget: &(impl Widget + ?Sized),
     scene: &mut Scene,
-    transform: Affine,
     theme: &Theme,
     presence: &PresenceCtx,
 ) {
     let rect = widget.get_rect();
-    if let Some(scope) = crate::permissions::capability::permission_scope(widget)
-        && !presence.permits(&scope)
-    {
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            crate::tokens::colors::PERMISSION_DENIED_SCRIM,
-            None,
-            &rect,
-        );
-    }
     if let Some(key) = crate::presence::capability::presence_key(widget)
         && let Some(user) = presence.here.get(&key).and_then(|peers| peers.first())
     {

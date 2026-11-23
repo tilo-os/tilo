@@ -29,11 +29,6 @@ pub(super) struct ReviewPanel {
     token: Option<crate::history_mode::RestoreReview>,
 }
 impl HistoryHost {
-    #[cfg(test)]
-    pub(crate) fn set_clock(&mut self, clock: fn() -> Option<u64>) {
-        self.clock = clock;
-    }
-
     pub(super) fn show_review(
         &mut self,
         token: Option<crate::history_mode::RestoreReview>,
@@ -188,10 +183,6 @@ impl HistoryHost {
                 }
             };
         }
-        let Some(now) = (self.clock)() else {
-            self.show_review(None, I18nManager::lookup_plain("history-review-no-clock"));
-            return false;
-        };
         let result = crate::state::owned_restore::restore_reviewed_history(
             state,
             &crate::state::owned_restore::ReviewedRestore {
@@ -201,7 +192,6 @@ impl HistoryHost {
                 review,
             },
             (authority, author),
-            now,
             crate::state::owned_restore::RestoreExtent::Whole,
         );
         match result {
@@ -290,10 +280,6 @@ impl HistoryHost {
             );
             return false;
         };
-        let Some(now) = (self.clock)() else {
-            self.show_review(None, I18nManager::lookup_plain("history-review-no-clock"));
-            return false;
-        };
         let result = crate::state::owned_restore::restore_reviewed_history(
             state,
             &crate::state::owned_restore::ReviewedRestore {
@@ -303,7 +289,6 @@ impl HistoryHost {
                 review: &review,
             },
             (authority, author),
-            now,
             extent,
         );
         match result {

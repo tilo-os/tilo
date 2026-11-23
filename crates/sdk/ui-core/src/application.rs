@@ -4,7 +4,7 @@ use crate::application_view::{
     validate_identity,
 };
 use crate::launch::LaunchError;
-use crate::permissions::{MemberId, PermissionContext, PermissionScope, SharedPermissions};
+use crate::permissions::{MemberId, PermissionContext, SharedPermissions};
 use crate::resource::{
     DocumentCheckout, DocumentId, ResourceOpenError, ResourceReservation, ResourceStore,
     ResourceType,
@@ -25,8 +25,6 @@ mod runner;
 mod surface;
 pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
 pub use runner::{ApplicationOwner, NativeProcess, NativeProfile, PERSONAL_WORKSPACE};
-#[cfg(test)]
-pub(crate) use runner::{follow_process_authority, manual_authority_watch};
 pub use surface::prepare_private_surface;
 
 pub use collaboration::state::InstanceId;
@@ -51,8 +49,6 @@ pub struct ApplicationDefinition {
     pub title: Cow<'static, str>,
     pub icon: IconDescriptor,
     pub resource_type: ResourceType,
-    pub required: Vec<PermissionScope>,
-    pub optional: Vec<PermissionScope>,
     /// Media types (`type/subtype`, lowercase) the component opens when a host hands it a file
     /// ([`ProcessContext::take_open_file`]); [`ANY_MEDIA_TYPE`] for a component that opens every file (a
     /// hex editor).
@@ -564,11 +560,6 @@ impl ProcessContext {
             || !views.matches_namespace(&profile, &device_id, &workspace)
         {
             return Err(mismatch("the record store and the views are kept apart"));
-        }
-        for required in &definition.required {
-            if !permissions.borrow().check(required) {
-                return Err(LaunchError::CapabilityDenied(required.clone()));
-            }
         }
         let (record, reservation) = match target {
             LaunchTarget::New => {
@@ -1101,11 +1092,6 @@ impl ApplicationDefinition {
                 ));
             }
             _ => {}
-        }
-        for required in &self.required {
-            if !context.permissions.borrow().check(required) {
-                return Err(LaunchError::CapabilityDenied(required.clone()));
-            }
         }
         if let Some(file) = &context.open_file
             && !self.opens_media_type(file.media_type())
@@ -2380,8 +2366,6 @@ mod bound_lifetime_tests {
                 title: "Mount probe".into(),
                 icon: IconDescriptor::Glyph("P"),
                 resource_type: ResourceType::new("probe"),
-                required: vec![],
-                optional: vec![],
                 opens: &[],
                 workspace_resource: false,
                 opens_before_resource: false,
@@ -2398,7 +2382,7 @@ mod bound_lifetime_tests {
                         device_id: "D".into(),
                         instance_id: 7,
                         permissions: crate::permissions::SharedPermissions::new(
-                            PermissionContext::permissive(),
+                            PermissionContext::owner(),
                         ),
                         author: MemberId::person(&person),
                         action_context: tilo_actions::ActionContext::default(),
@@ -2432,8 +2416,6 @@ mod bound_lifetime_tests {
                 title: "Mount probe".into(),
                 icon: IconDescriptor::Glyph("P"),
                 resource_type: ResourceType::new("probe"),
-                required: vec![],
-                optional: vec![],
                 opens: &[],
                 workspace_resource: false,
                 opens_before_resource: false,
@@ -2448,7 +2430,7 @@ mod bound_lifetime_tests {
                         device_id: "D".into(),
                         instance_id: 7,
                         permissions: crate::permissions::SharedPermissions::new(
-                            PermissionContext::permissive(),
+                            PermissionContext::owner(),
                         ),
                         author: MemberId::person("probe-author"),
                         action_context: tilo_actions::ActionContext::default(),
@@ -2495,8 +2477,6 @@ mod bound_lifetime_tests {
                     title: "Mount probe".into(),
                     icon: IconDescriptor::Glyph("P"),
                     resource_type: ResourceType::new("probe"),
-                    required: vec![],
-                    optional: vec![],
                     opens: &[],
                     workspace_resource: false,
                     opens_before_resource: false,
@@ -2511,7 +2491,7 @@ mod bound_lifetime_tests {
                             device_id: "D".into(),
                             instance_id: 7,
                             permissions: crate::permissions::SharedPermissions::new(
-                                PermissionContext::permissive(),
+                                PermissionContext::owner(),
                             ),
                             author: MemberId::person("probe-author"),
                             action_context: tilo_actions::ActionContext::default(),
@@ -2585,8 +2565,6 @@ mod bound_lifetime_tests {
                     title: "Mount probe".into(),
                     icon: IconDescriptor::Glyph("P"),
                     resource_type: ResourceType::new("probe"),
-                    required: vec![],
-                    optional: vec![],
                     opens: &[],
                     workspace_resource: false,
                     opens_before_resource: false,
@@ -2600,7 +2578,7 @@ mod bound_lifetime_tests {
                         device_id: "D".into(),
                         instance_id: 7,
                         permissions: crate::permissions::SharedPermissions::new(
-                            PermissionContext::permissive(),
+                            PermissionContext::owner(),
                         ),
                         author: MemberId::person("probe-author"),
                         action_context: tilo_actions::ActionContext::default(),
@@ -2842,24 +2820,6 @@ mod portable_tests {
             let saved = views.load(7).unwrap().unwrap();
             assert_eq!(saved.document_id, checkout.id.as_str());
             views.save(&saved).unwrap();
-            let mut denied = probe::definition(probe::probe_factory);
-            denied.required.push(probe::denied_scope());
-            assert!(matches!(
-                ProcessContext::prepare(
-                    &denied,
-                    ProcessContextInputs {
-                        records,
-                        views,
-                        device_id: probe::DEVICE.into(),
-                        instance_id: 8,
-                        permissions: probe::permissions(),
-                        author: probe::author(),
-                        action_context: probe::provenance()
-                    },
-                    &LaunchTarget::New,
-                ),
-                Err(LaunchError::CapabilityDenied(_))
-            ));
         }
     }
 }

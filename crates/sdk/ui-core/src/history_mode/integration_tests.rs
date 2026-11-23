@@ -209,7 +209,9 @@ tilo_test_env::scenario! {
             driver.click_named("history-restore").unwrap();
             let before = driver.state_mut().doc.base_heads();
             match case {
-                "expiry" => NOW.set(200),
+                "expiry" => driver.set_permission_ctx(
+                    grant(LOCAL_USER, RESTORABLE.app_id, Some(150)).at_unix_time(200),
+                ),
                 "replacement" => driver.set_permission_ctx(
                     crate::permissions::PermissionContext::stranger(&crate::permissions::MemberId::person(LOCAL_USER)),
                 ),
@@ -276,12 +278,7 @@ tilo_test_env::scenario! {
     }
 }
 
-thread_local! { static NOW: std::cell::Cell<u64> = const { std::cell::Cell::new(100) }; }
-fn current_time() -> Option<u64> {
-    Some(NOW.get())
-}
 fn review_driver() -> FrameHarness {
-    NOW.set(100);
     let mut state = State::new();
     state.doc.put(ROOT, "body", "old").unwrap();
     state.commit_action(None, None);
@@ -304,7 +301,6 @@ fn review_driver() -> FrameHarness {
         (900, 650),
     )
     .unwrap();
-    driver.set_history_clock(current_time);
     driver.click_named("history-open").unwrap();
     let target = format!(
         "timeline-entry:{}",

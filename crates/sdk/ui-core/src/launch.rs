@@ -350,7 +350,6 @@ pub enum LaunchError {
     Restore(crate::view::ThawError),
     DuplicateApplication(String),
     UnknownApplication(String),
-    CapabilityDenied(crate::permissions::PermissionScope),
     BindingMismatch,
     MissingComponentHost,
     /// Setup failed after the record became Ready: `recovery` holds its store (and any close reports)
@@ -391,7 +390,6 @@ impl fmt::Display for LaunchError {
             Self::Restore(error) => write!(f, "view restore failed: {error}"),
             Self::DuplicateApplication(id) => write!(f, "application {id:?} is already registered"),
             Self::UnknownApplication(id) => write!(f, "application {id:?} is not available"),
-            Self::CapabilityDenied(scope) => write!(f, "required capability denied: {scope:?}"),
             Self::MissingComponentHost => {
                 f.write_str("application definition requires an explicit component host")
             }
@@ -437,9 +435,6 @@ impl fmt::Debug for LaunchError {
         match self {
             Self::Record(error) => f.debug_tuple("Record").field(error).finish(),
             Self::Restore(error) => f.debug_tuple("Restore").field(error).finish(),
-            Self::CapabilityDenied(scope) => {
-                f.debug_tuple("CapabilityDenied").field(scope).finish()
-            }
             Self::ComponentSetup {
                 source,
                 record,
@@ -507,7 +502,6 @@ impl LaunchError {
                 | Self::Restore(_)
                 | Self::ComponentSetup { .. }
                 | Self::ComponentCapture { .. }
-                | Self::CapabilityDenied(_)
                 | Self::BindingMismatch
                 | Self::MissingComponentHost
         ) {
@@ -3122,21 +3116,11 @@ mod prepared_launch_tests {
             assert_eq!(body(&records, &checkout), "edited");
         }
         {
-            static DENIED: std::sync::OnceLock<crate::application::ApplicationDefinition> =
-                std::sync::OnceLock::new();
-            let denied = DENIED.get_or_init(|| {
-                let mut value = definition(action_probe_factory);
-                value.required.push(denied_scope());
-                value
-            });
-            for (definition, preparer, expect_denied) in [
-                (denied, denied_preparer as ComponentHostPreparer, true),
-                (
+            {
+                let (definition, preparer) = (
                     runner_probe_definition(),
                     invalid_preparer as ComponentHostPreparer,
-                    false,
-                ),
-            ] {
+                );
                 let temp = tempfile::tempdir().unwrap();
                 let spec = LaunchSpec::from_definition(definition)
                     .component_host(preparer)
@@ -3153,11 +3137,7 @@ mod prepared_launch_tests {
                     let args = parsed(&spec, &values);
                     let before = calls();
                     let result = dispatch_definition(&spec, &args);
-                    assert_eq!(
-                        matches!(result, Err(LaunchError::CapabilityDenied(_))),
-                        expect_denied
-                    );
-                    assert!(expect_denied || matches!(result, Err(LaunchError::BindingMismatch)));
+                    assert!(matches!(result, Err(LaunchError::BindingMismatch)));
                     assert_eq!(calls(), before);
                 }
             }
@@ -3267,12 +3247,6 @@ mod prepared_launch_tests {
             definition.resource_type.clone(),
         ));
         Ok(prepared)
-    }
-    fn denied_preparer(
-        definition: &crate::application::ApplicationDefinition,
-        args: &LaunchArgs,
-    ) -> Result<PreparedComponentInputs, LaunchError> {
-        prepare_target(definition, args, LaunchTarget::New, permissions())
     }
     fn corrupt_checkout() -> crate::resource::DocumentCheckout {
         crate::resource::DocumentCheckout::new(

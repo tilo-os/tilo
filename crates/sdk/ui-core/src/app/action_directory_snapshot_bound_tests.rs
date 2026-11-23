@@ -56,7 +56,7 @@ tilo_test_env::scenario! {
             assert!(fixture.app.actions.action_directory_snapshot.is_none());
             fixture
                 .permissions
-                .set(crate::permissions::PermissionContext::permissive());
+                .set(crate::permissions::PermissionContext::owner());
             let revision = capture_bound_directory(&mut fixture);
             fixture.app.close_components();
             assert!(matches!(

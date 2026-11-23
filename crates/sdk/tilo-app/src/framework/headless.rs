@@ -275,34 +275,24 @@ fn serve_kept<A: ResourceApp>(
     }
 }
 
-/// Decide in `harness`, as the workspace broker does, the actions of the records `author`'s window
-/// shows that another workspace holds: this host holds the person's own workspace, founded with them
-/// as its owner, which holds their profile records; any other is not held here.
+/// Let the host `permissions` decide by also keep the person's workspace, founded with `author`
+/// as its owner, which keeps their profile records: the records `author`'s window shows that
+/// another workspace keeps are decided there, and any other workspace's are not kept here.
 #[cfg(feature = "test-support")]
-fn decide_each_record_where_it_is_kept(harness: &mut FrameHarness, author: &str) {
-    let actor = tilo_broker_core::BrokerActor::person(author);
-    let own = tilo_actions::policy::roles::workspace_of_person(author).and_then(|id| {
-        let mut workspace =
-            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId::parse(&id)?, "");
-        workspace.policy = tilo_actions::policy::WorkspacePolicy::new(id.clone(), author);
-        Some((id, workspace))
-    });
-    harness.decide_shown_actions(Box::new(move |actions| {
-        let now = ui_core::time::unix_now();
-        actions
-            .iter()
-            .map(|action| ui_core::shown_actions::ActionDecision {
-                action: action.clone(),
-                verdict: actor.shown_verdict(
-                    own.as_ref()
-                        .filter(|(id, _)| action.workspace.as_ref() == Some(id))
-                        .map(|(_, workspace)| workspace),
-                    action,
-                    now,
+fn keep_the_persons_workspace(permissions: &SharedPermissions, author: &str) {
+    let Some(workspace) = tilo_actions::policy::roles::workspace_of_person(author) else {
+        return;
+    };
+    permissions.update(|context| {
+        if let Some(host) = context.host() {
+            *context = PermissionContext::hosted(host.clone().holding(
+                tilo_actions::policy::MemberAccess::person(
+                    tilo_actions::policy::WorkspacePolicy::new(workspace, author),
+                    author.to_owned(),
                 ),
-            })
-            .collect()
-    }));
+            ));
+        }
+    });
 }
 
 pub(super) fn operation(error: impl std::fmt::Display) -> LaunchError {
@@ -945,7 +935,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let mut harness = opened.harness;
         serve_kept::<A>(&mut harness, &opened.profile.settings(), author);
         #[cfg(feature = "test-support")]
-        decide_each_record_where_it_is_kept(&mut harness, author);
+        keep_the_persons_workspace(&opened.permissions, author);
         Ok(Self {
             harness,
             owner: opened.owner,

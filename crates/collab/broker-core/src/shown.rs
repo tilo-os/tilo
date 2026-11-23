@@ -27,13 +27,11 @@ impl BrokerActor {
         let Some(workspace) = workspace else {
             return ActionVerdict::Refused(NOT_HERE.into());
         };
-        match self.action_answer_in(
-            workspace,
-            &action.app,
-            (&action.kind, &action.resource, &action.action),
-            &action.need(),
-            now,
-        ) {
+        let node = action.node(&workspace.node());
+        match self
+            .verdict_in(workspace, &node, action.kind_needed, action.privileged, now)
+            .0
+        {
             Answer::Allow => ActionVerdict::Allowed,
             Answer::Ask => ActionVerdict::AsksFirst,
             Answer::Deny => ActionVerdict::Refused(REFUSED.into()),

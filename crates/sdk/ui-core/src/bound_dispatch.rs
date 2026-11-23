@@ -291,8 +291,8 @@ pub(crate) fn component_controls_allowed(
         (Some(only), None) => Some(only),
         _ => None,
     };
-    let permissions = binding.permissions.borrow().directory_observation().ok();
-    if let (Some(snapshot), Some(permissions)) = (only, permissions)
+    let permissions = binding.permissions.get();
+    if let Some(snapshot) = only
         && let Some(forest) = snapshot.shared_forest()
     {
         let mut memo = snapshot.controls.borrow_mut();
@@ -324,7 +324,7 @@ impl ControlAvailability {
     fn derive(
         binding: &CallbackBinding,
         forest: &Rc<[SharedResource]>,
-        permissions: crate::permissions::DirectoryPermissionObservation,
+        permissions: crate::permissions::PermissionContext,
         addresses: std::collections::HashSet<tilo_actions::ActionAddress>,
     ) -> Self {
         let mut derived = Self {
@@ -400,10 +400,9 @@ fn count_addresses(
 ) {
     let head = node.head();
     let permissions = binding.permissions.borrow();
-    let decider = permissions.action_decider(&binding.app_id);
     for action in &head.actions {
         if !(action.contract.availability.is_available()
-            && decider.permits(&head.kind, head.id.as_str(), action))
+            && permissions.shows(&binding.app_id, head, action))
         {
             continue;
         }
@@ -750,7 +749,7 @@ impl BoundResourceSnapshot {
 /// and the APIs its host offers.
 pub(crate) struct ControlAvailability {
     forest: Rc<[SharedResource]>,
-    permissions: crate::permissions::DirectoryPermissionObservation,
+    permissions: crate::permissions::PermissionContext,
     addresses: std::collections::HashSet<tilo_actions::ActionAddress>,
     /// How many available, permitted actions of `forest` have each address.
     counts: HashMap<tilo_actions::ActionAddress, usize>,
@@ -1269,7 +1268,7 @@ pub(crate) fn activate_bound_search(
     if !binding
         .permissions
         .borrow()
-        .check(&crate::permissions::PermissionScope::app(
+        .allows(&crate::permissions::ShownAction::of_app(
             &binding.app_id,
             crate::permissions::ActionKind::Read,
         ))
@@ -1310,7 +1309,7 @@ pub(crate) fn activate_bound_search(
 pub(crate) struct BoundDirectoryObservation {
     owner: uuid::Uuid,
     pub(crate) generation: Option<u64>,
-    permissions: crate::permissions::DirectoryPermissionObservation,
+    permissions: crate::permissions::PermissionContext,
     revisions: Vec<Option<String>>,
     domains: Vec<crate::widget::ActionDirectoryInvocationDomain>,
 }
@@ -1356,7 +1355,7 @@ pub(crate) fn directory_observation(
             .transpose()
             .map_err(|error| format!("{error:?}"))?;
         if let Some(binding) = &binding {
-            let permissions = binding.permissions.borrow().directory_observation()?;
+            let permissions = binding.permissions.borrow().clone();
             let index = observations
                 .iter()
                 .position(|observation| observation.owner == binding.lifetime_id)
@@ -1407,6 +1406,27 @@ pub(crate) fn directory_observation(
     let mut observations = Vec::new();
     visit(root, doc, None, &mut observations)?;
     Ok(observations)
+}
+
+/// Take the host's `decisions` into the permissions of every component bound under `root`.
+pub(crate) fn decide_bound_shown(
+    root: &dyn Widget,
+    decisions: &[crate::shown_actions::ActionDecision],
+) {
+    fn visit(
+        widget: &dyn Widget,
+        decided: &mut Vec<SharedPermissions>,
+        decisions: &[crate::shown_actions::ActionDecision],
+    ) {
+        if let Some(binding) = widget.callback_binding()
+            && !decided.iter().any(|seen| seen.ptr_eq(&binding.permissions))
+        {
+            binding.permissions.decide_shown(decisions);
+            decided.push(binding.permissions.clone());
+        }
+        widget.for_each_child(&mut |child| visit(child, decided, decisions));
+    }
+    visit(root, &mut Vec::new(), decisions);
 }
 
 #[derive(Default)]
@@ -1473,7 +1493,7 @@ pub(crate) struct BoundOwnerMark {
 /// chain parts', [`CallbackBinding::shown_save_status`]), which its root shows once synced.
 #[derive(PartialEq)]
 pub(crate) struct OwnerInputs {
-    pub(crate) permissions: Result<crate::permissions::DirectoryPermissionObservation, String>,
+    pub(crate) permissions: crate::permissions::PermissionContext,
     pub(crate) save: Result<crate::resource::ResourceSaveStatus, String>,
 }
 
@@ -1517,7 +1537,7 @@ fn owner_marks(root: &dyn Widget, outer: &AutoCommit, inputs: bool) -> Vec<Bound
                 .read_document(outer, |doc, _| crate::doc::settle_mark(doc))
                 .ok();
             let inputs = inputs.then(|| OwnerInputs {
-                permissions: binding.permissions.borrow().directory_observation(),
+                permissions: binding.permissions.get(),
                 save: binding
                     .shown_save_status(&binding.chain_parts())
                     .map_err(|error| error.to_string()),
@@ -1594,7 +1614,7 @@ struct CachedBoundResources {
     /// ([`crate::component_inputs`]); the host's frame count for an owner without one.
     local: LocalInputs,
     locale: u64,
-    permissions: crate::permissions::DirectoryPermissionObservation,
+    permissions: crate::permissions::PermissionContext,
     revisions: Vec<Option<String>>,
     filter_token: u64,
 }
@@ -1685,16 +1705,7 @@ pub(crate) fn discover_cached_bound_resources(
                 .any(|snapshot| snapshot.binding.same_component(binding))
         {
             let generation = binding.generation().map_err(|error| format!("{error:?}"))?;
-            let permissions = match binding.permissions.borrow().directory_observation() {
-                Ok(permissions) => permissions,
-                Err(error) => {
-                    cache
-                        .0
-                        .borrow_mut()
-                        .retain(|entry| !entry.snapshot.binding.same_component(binding));
-                    return Err(error);
-                }
-            };
+            let permissions = binding.permissions.get();
             let revisions = binding
                 .read_document(doc, |doc, _| {
                     let mut revisions = Vec::new();
@@ -1777,7 +1788,7 @@ pub(crate) fn discover_cached_bound_resources(
                     });
                 let resources = resources.map_err(|error| format!("{error:?}"))?;
                 let revision = binding.lifetime.revision();
-                if binding.permissions.borrow().directory_observation()? != permissions {
+                if binding.permissions.borrow().clone() != permissions {
                     return Err("owner policy changed while filtering resources".into());
                 }
                 let snapshot = BoundResourceSnapshot::shared(binding.clone(), resources, controls);
@@ -1816,26 +1827,20 @@ pub(crate) fn discover_cached_bound_resources(
     Ok(snapshots)
 }
 
-/// Action-scoped authority the bound dispatch shares: the action `action` on
-/// `resource` runs when allowed; where the workspace's grants ask first it
-/// runs once the person confirmed it (`confirmed`), and is
-/// [`tilo_actions::ApiError::ConfirmationRequired`] until then, so the window
-/// asks them, saying who decides. A plain quick control (a button's effect)
-/// gets no further than an action declaring its confirmation.
+/// Whether a press of `action` on `resource`, published by `app_id`, runs now: as the verdict
+/// the window's host sent admits it ([`crate::permissions::PermissionContext::admit`]). Until the
+/// verdict comes the press is not ready and is asked again; where the verdict asks first it runs
+/// once the person confirmed it (`confirmed`).
 pub(crate) fn admit_local_action(
     permissions: &PermissionContext,
     (app_id, resource, action): (&str, &ResourceSpec, &tilo_actions::ActionSpec),
-    typed: Option<&serde_json::Map<String, serde_json::Value>>,
-    argument: Option<&str>,
+    value: (
+        Option<&serde_json::Map<String, serde_json::Value>>,
+        Option<&str>,
+    ),
     confirmed: bool,
 ) -> Result<(), tilo_actions::ApiError> {
-    let answer = permissions.invocation_answer(app_id, resource, action, typed, argument);
-    crate::permissions::admit_in_window(answer, action, permissions.asker(), confirmed).map_err(
-        |refused| match permissions.shown_refusal(resource, action) {
-            Some(held) if answer == crate::permissions::Answer::Deny => held,
-            _ => refused,
-        },
-    )
+    permissions.admit(app_id, resource, action, value, confirmed)
 }
 
 /// Why an invocation the person made did not run, in words for them: what
@@ -1918,8 +1923,6 @@ fn internal_refusal(code: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
-
-pub(crate) use ::collaboration::permissions::denied;
 
 /// The one resource `binding` publishes for the document's `request`ed history action, and that
 /// action's name: a keyboard undo or redo reaches a document that declares its history through the
@@ -3014,36 +3017,20 @@ fn perform_resource_action(
                     if reroute.is_some_and(|reroute| reroute(resource, spec)) {
                         return Err(BoundActionError::Rerouted);
                     }
-                    let (answer, spent) = binding.permissions.borrow().invocation_verdict(
-                        &binding.app_id,
-                        resource,
-                        spec,
-                        arguments.as_ref(),
-                        argument,
-                    );
-                    // An invocation the broker delivers was admitted there; what this window was
-                    // told of its actions only shows its controls.
+                    // An invocation the dispatch delivers was admitted there; the person's own
+                    // press runs as the verdict the host sent of it admits it.
                     if !broker_admitted {
-                        let asker = binding.permissions.borrow().asker();
-                        crate::permissions::admit_in_window(answer, spec, asker, confirmed)
-                        .map_err(|refused| {
-                            match binding.permissions.borrow().shown_refusal(resource, spec) {
-                                Some(held) if answer == crate::permissions::Answer::Deny => held,
-                                _ => refused,
-                            }
-                        })?;
+                        admit_local_action(
+                            &binding.permissions.borrow(),
+                            (&binding.app_id, resource, spec),
+                            (arguments.as_ref(), argument),
+                            confirmed,
+                        )?;
                     }
                     crate::invocation_scope::check_continuation(
                         spec,
                         spec.need_for(arguments.as_ref(), argument).kind,
                     )?;
-                    // A grant given once is spent by admitting this call,
-                    // before it runs: the host revokes it, and this API never
-                    // relies on it again.
-                    binding
-                        .permissions
-                        .update(|permissions| permissions.spend_once(&spent))
-                        .map_err(|_| denied(spec))?;
                     // A refused private View must not invoke a Deferred encoder.
                     // The execution guard below remains an independent boundary.
                     crate::invocation_scope::check_shown_here(actor, &binding.author, resource, spec)?;

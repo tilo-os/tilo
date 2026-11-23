@@ -205,7 +205,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> App {
     assembly.values.native_workspace_route = Some(None);
     assembly.values.action_publication_failure = Some(None);
     assembly.values.presence_ctx = Some(inputs.presence_ctx.resolve_in_place());
-    assembly.values.permission_ctx = Some(PermissionContext::permissive());
+    assembly.values.permission_ctx = Some(PermissionContext::owner());
     assembly.values.presence = Some(PresenceRuntime::new());
     assembly.screen_reader = Some((inputs.screen_reader)());
     let (Some(accessibility_theme), Some(screen_reader)) = (

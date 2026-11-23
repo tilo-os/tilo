@@ -227,10 +227,6 @@ pub(super) struct AvailabilityWalk {
     /// The bound components' resources could not be read: their controls
     /// are refreshed again on the next frame.
     pub(super) unread: bool,
-    /// When a bound component's permissions next change with time alone
-    /// (`PermissionContext::next_change_in`): the walk is taken again then,
-    /// and the loop wakes for it.
-    pub(super) changes_at: Option<crate::time::Instant>,
 }
 
 /// Every input of reconciling the document routes with the tree.

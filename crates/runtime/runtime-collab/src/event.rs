@@ -258,10 +258,10 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
         query_id: u64,
         page: Result<Vec<u8>, String>,
     },
-    /// What the host says of the actions the window last named
-    /// (`CollabRequest::DecideShownActions`) now, replacing what it said before. Sent again
-    /// whenever grants change one. They decide how the window shows its controls only; the host
-    /// admits each invocation itself when it is called.
+    /// What the host says of the actions the window publishes (`CollabRequest::DecideShownActions`):
+    /// every verdict first, then those that changed, as the window publishes others or grants
+    /// change. A control's state is the verdict of its action, and a press runs as its verdict
+    /// admits it.
     ActionVerdicts {
         verdicts: Vec<crate::shown_actions::ActionDecision>,
     },

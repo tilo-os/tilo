@@ -785,7 +785,7 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
         assert!(matches!(denied, Err(tilo_actions::ApiError::Unknown(_))));
         assert_eq!(counter(&app), 0, "the denied fallback must not run");
 
-        app.set_permission_ctx(PermissionContext::permissive());
+        app.set_permission_ctx(PermissionContext::owner());
         let allowed = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
         assert!(
             allowed.is_ok(),
@@ -908,7 +908,7 @@ fn action_bound_controls_use_the_fresh_api_and_never_auto_confirm() {
             )
         });
 
-        app.set_permission_ctx(PermissionContext::permissive());
+        app.set_permission_ctx(PermissionContext::owner());
         assert!(unsafe { (*pointer).is_enabled() });
     }
 

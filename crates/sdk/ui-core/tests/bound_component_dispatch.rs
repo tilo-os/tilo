@@ -793,9 +793,12 @@ impl Widget for Root {
         presence: &tilo_ui::PresenceCtx,
     ) {
         assert!(
-            presence.permits(&tilo_ui::permissions::PermissionScope::workspace(
-                tilo_ui::permissions::ActionKind::Undoable
-            )) == EXPECTED_WRITE.get(),
+            presence.permission_context().is_none_or(|context| {
+                context.allows(&tilo_ui::permissions::ShownAction::of_app(
+                    crate::support::application::APP,
+                    tilo_ui::permissions::ActionKind::Undoable,
+                ))
+            }) == EXPECTED_WRITE.get(),
             "draw received outer authority"
         );
         self.mark("draw-permissions");
@@ -1312,7 +1315,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                     let mut renderer = tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap();
                     let presence = tilo_ui::PresenceCtx::empty();
                     presence.with_permissions(
-                        tilo_ui::permissions::PermissionContext::permissive(),
+                        tilo_ui::permissions::PermissionContext::owner(),
                         || {
                             tile.draw(
                                 &mut vello::Scene::new(),
@@ -1445,7 +1448,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
             CAPTURES.with_borrow(|c| c.iter().any(|(_, label, _)| *label == "draw-permissions")),
             "ordinary FrameHarness paint did not reach the permission-aware root"
         );
-        permissions.set(tilo_ui::permissions::PermissionContext::permissive());
+        permissions.set(tilo_ui::permissions::PermissionContext::owner());
         EXPECTED_WRITE.set(true);
         CAPTURES.with_borrow_mut(Vec::clear);
         driver.relayout();

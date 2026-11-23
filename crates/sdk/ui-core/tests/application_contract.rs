@@ -36,60 +36,6 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
 
     {
         let host = ProbeHarness::new();
-        let mut definition = definition(probe_factory);
-        definition.required.push(denied_scope());
-        assert!(matches!(
-            host.prepare(&definition, 11, &LaunchTarget::New),
-            Err(LaunchError::CapabilityDenied(_))
-        ));
-        assert_eq!(calls(), 0);
-        definition.required.clear();
-        definition.optional.push(denied_scope());
-        let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
-        assert!(!context.permissions().check(&definition.optional[0]));
-        definition
-            .instantiate(context, LaunchTarget::New, RestoreInput::None)
-            .unwrap();
-        assert_eq!(calls(), 1);
-    }
-
-    {
-        let host = ProbeHarness::new();
-        let mut definition = definition(probe_factory);
-        definition.required.push(denied_scope());
-        let authority = permissions();
-        authority.set(tilo_ui::permissions::PermissionContext::granted(
-            &tilo_ui::permissions::MemberId::person("probe-author"),
-            &tilo_ui::permissions::TreePath::root(),
-            tilo_ui::permissions::policy::KindSet::ALL,
-            None,
-        ));
-        let context = ProcessContext::prepare(
-            &definition,
-            ProcessContextInputs {
-                records: host.records.clone(),
-                views: host.views.clone(),
-                device_id: DEVICE.into(),
-                instance_id: 11,
-                permissions: authority.clone(),
-                author: author(),
-                action_context: provenance(),
-            },
-            &LaunchTarget::New,
-        )
-        .unwrap();
-        let checkout = context.record().clone();
-        authority.set(permissions().borrow().clone());
-        assert!(matches!(
-            definition.instantiate(context, LaunchTarget::New, RestoreInput::None),
-            Err(LaunchError::CapabilityDenied(_))
-        ));
-        assert_eq!(calls(), 0);
-        assert!(host.records.reserve_resource(&checkout).is_ok());
-    }
-
-    {
-        let host = ProbeHarness::new();
         for (root, device, workspace) in [
             (host.root().join("other-profile"), DEVICE, WORKSPACE),
             (host.root(), "other-device", WORKSPACE),
@@ -866,7 +812,7 @@ fn envelope(device: &str, workspace: &str, scroll: f64) -> SavedInstanceView {
     reason = "fault matrix keeps last-owner transfer, pending-history comparison and repair in one auditable scenario"
 )]
 fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
-    for case in ["definition", "target", "foreign", "malformed", "revoked"] {
+    for case in ["definition", "target", "foreign", "malformed"] {
         let host = ProbeHarness::new();
         let mut component =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
@@ -924,15 +870,6 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         assert_eq!(before.2, 1);
         let mut definition = definition(probe_factory);
         let authority = permissions();
-        if case == "revoked" {
-            definition.required.push(denied_scope());
-            authority.set(tilo_ui::permissions::PermissionContext::granted(
-                &tilo_ui::permissions::MemberId::person("probe-author"),
-                &tilo_ui::permissions::TreePath::root(),
-                tilo_ui::permissions::policy::KindSet::ALL,
-                None,
-            ));
-        }
         let target = existing(&checkout);
         let context = ProcessContext::prepare(
             &definition,
@@ -955,7 +892,6 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
             "target" => {}
             "foreign" => bad.app_id = "foreign.app".into(),
             "malformed" => bad.view.viewport.height = f64::NAN,
-            "revoked" => authority.set(permissions().borrow().clone()),
             _ => unreachable!(),
         }
         let target = if case == "target" {
@@ -986,9 +922,6 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
                 *source,
                 LaunchError::Restore(ThawError::InvalidView(_))
             )),
-            "revoked" => assert!(
-                matches!(*source, LaunchError::CapabilityDenied(scope) if scope == denied_scope())
-            ),
             _ => unreachable!(),
         }
         assert_eq!(record.id, checkout.id);

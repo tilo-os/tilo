@@ -330,7 +330,7 @@ impl AttachedView {
             checkout,
             document,
             invoker: tilo_actions::ActionInvoker::person("owner"),
-            permissions: PermissionContext::permissive(),
+            permissions: PermissionContext::owner(),
             created: false,
             content: None,
             asks_workspace: false,
@@ -921,7 +921,7 @@ impl AttachedView {
     ) -> Option<tilo_actions::ResourceSpec> {
         self.permissions
             .borrow()
-            .permitted_resource(self.definition.app_id(), resource)
+            .shown_resource(self.definition.app_id(), resource)
     }
 
     /// The resource `id` with its own actions, as the member may reach

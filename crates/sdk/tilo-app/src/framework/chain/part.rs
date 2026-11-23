@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use std::collections::{BTreeMap, HashSet};
 
-use tilo_actions::{ActionError, ActionInvoker, ActionNeed, EncodedAction};
+use tilo_actions::{ActionError, ActionInvoker, EncodedAction};
 use tilo_resource::{Reader, Refusal, Resource};
 use ui_core::automerge::{AutoCommit, ChangeHash};
 use ui_core::resource::{DocumentId, ResourceStore};
@@ -91,8 +91,6 @@ pub(super) struct PartType {
     pub(super) listed_items: fn(&dyn Any) -> Option<Vec<Option<tilo_resource::Id>>>,
     /// That verb over only the entries at the positions given.
     pub(super) keep_listed: fn(&dyn Any, &[usize]) -> Option<Action>,
-    /// What an action is for the grants deciding it.
-    pub(super) need: fn(&dyn Any) -> Option<ActionNeed>,
     pub(super) verb: fn(&dyn Any) -> Option<String>,
     /// Whether an action is a step someone takes, which Undo may take back.
     pub(super) is_step: fn(&dyn Any) -> bool,
@@ -214,7 +212,6 @@ impl<P: Chained> Of<P> {
         item: item::<P>,
         listed_items: listed_items::<P>,
         keep_listed: keep_listed::<P>,
-        need: need::<P>,
         verb: verb::<P>,
         is_step: is_step::<P>,
         answers_nothing: answers_nothing::<P>,
@@ -427,10 +424,6 @@ fn listed_items<P: Chained>(action: &dyn Any) -> Option<Vec<Option<tilo_resource
 
 fn keep_listed<P: Chained>(action: &dyn Any, keep: &[usize]) -> Option<Action> {
     P::keep_listed(action.downcast_ref()?, keep).map(|action| Box::new(action) as Action)
-}
-
-fn need<P: Chained>(action: &dyn Any) -> Option<ActionNeed> {
-    Some(tilo_resource::need_of::<P>(action.downcast_ref()?))
 }
 
 fn verb<P: Chained>(action: &dyn Any) -> Option<String> {

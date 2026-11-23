@@ -19,8 +19,6 @@ pub use super::palette::{
 /// up and re-picks the label instead.
 pub const MAX_CHIP_DEEPEN: f32 = 0.35;
 
-pub const PERMISSION_DENIED_SCRIM: Color = Color::from_rgba8(0, 0, 0, 77);
-
 /// Straight (non-premultiplied) 8-bit sRGB mix — the space most widget draw paths blend
 /// in.
 pub fn mix8(a: Color, b: Color, t: f32) -> Color {
@@ -1693,35 +1691,6 @@ mod tests {
                     let (fill, label_ink) = c.legible_fill(raw, c.surfaces.content);
                     let r = contrast_ratio(label_ink, fill);
                     assert!(r >= 4.5, "{label}/{kind}: chip label is {r:.2}:1, below AA");
-                }
-            }
-        }
-
-        phase the_denied_scrim_mutes_neutral_and_inverted_controls;
-        {
-            for (label, palette) in palettes() {
-                let c = Colors::stock(&palette);
-                for (kind, body, content) in [
-                    ("neutral", c.surfaces.raised, c.text_primary),
-                    ("accent", c.intent.accent, c.intent.on_accent),
-                ] {
-                    let before = contrast_ratio(content, body);
-                    let after = contrast_ratio(
-                        composite(PERMISSION_DENIED_SCRIM, content),
-                        composite(PERMISSION_DENIED_SCRIM, body),
-                    );
-                    assert!(
-                        after < before / 1.08,
-                        "{label}/{kind}: the scrim must cost the content contrast \
-                     ({before:.2} -> {after:.2})",
-                    );
-                    let moved =
-                        |x: Color| (lstar(x) - lstar(composite(PERMISSION_DENIED_SCRIM, x))).abs();
-                    let shift = moved(content).max(moved(body));
-                    assert!(
-                        shift >= 3.0,
-                        "{label}/{kind}: the denied control must visibly shift (got {shift:.1} L*)",
-                    );
                 }
             }
         }

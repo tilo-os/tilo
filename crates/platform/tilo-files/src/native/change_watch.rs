@@ -1230,10 +1230,9 @@ mod tests {
         }
 
         phase a_writer_letting_go_is_reported_to_a_watch_that_asks_for_releases;
-        // A file published with [`super::super::held::publish`] is vouched for only while its writer holds
-        // it, and the hold ends with the close of the descriptor it published through, leaving the name
-        // and its bytes as they were: a watch that reads such a file asks for releases, and one that reads
-        // changes hears nothing of them. Only Linux reports the close of a file opened for writing.
+        // A writer letting go of a file closes the descriptor it wrote through, leaving the name and
+        // its bytes as they were: a watch that asks for releases hears it, and one that reads changes
+        // hears nothing of it. Only Linux reports the close of a file opened for writing.
         {
             let dir = tempfile::tempdir().expect("temporary directory");
             let file = dir.path().join("value");

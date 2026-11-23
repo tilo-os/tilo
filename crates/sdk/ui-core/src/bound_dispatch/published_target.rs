@@ -59,42 +59,46 @@ pub(super) fn shared_target(
                 .any(|action| action.id == address.action))
             || node.children().iter().any(|child| resolves(child, address))
     }
-    fn kept(decider: &crate::permissions::ActionDecider<'_>, node: &SharedResource) -> bool {
+    type Shown<'a> = (&'a crate::permissions::PermissionContext, &'a str);
+    fn kept((permissions, app): Shown<'_>, node: &SharedResource) -> bool {
         let head = node.head();
         head.actions
             .iter()
-            .any(|action| decider.permits(&head.kind, head.id.as_str(), action))
-            || node.children().iter().any(|child| kept(decider, child))
+            .any(|action| permissions.shows(app, head, action))
+            || node
+                .children()
+                .iter()
+                .any(|child| kept((permissions, app), child))
     }
-    /// The first node with resource id `id` that filtering keeps (any, with no decider). A node
-    /// filtering drops has no kept node beneath it.
+    /// The first node with resource id `id` that its verdicts keep (any, with no binding). A node
+    /// they drop has no kept node beneath it.
     fn first<'a>(
-        decider: Option<&crate::permissions::ActionDecider<'_>>,
+        shown: Option<Shown<'_>>,
         node: &'a SharedResource,
         id: &str,
     ) -> Option<&'a SharedResource> {
-        if node.id() == id && decider.is_none_or(|decider| kept(decider, node)) {
+        if node.id() == id && shown.is_none_or(|shown| kept(shown, node)) {
             return Some(node);
         }
         node.children()
             .iter()
-            .find_map(|child| first(decider, child, id))
+            .find_map(|child| first(shown, child, id))
     }
     if !forest.iter().any(|node| resolves(node, address)) {
         return None;
     }
     let permissions = binding.map(|binding| binding.permissions.borrow());
-    let decider = binding
+    let shown = binding
         .zip(permissions.as_ref())
-        .map(|(binding, permissions)| permissions.action_decider(&binding.app_id));
+        .map(|(binding, permissions)| (&**permissions, binding.app_id.as_str()));
     let node = forest
         .iter()
-        .find_map(|node| first(decider.as_ref(), node, &address.resource))?;
+        .find_map(|node| first(shown, node, &address.resource))?;
     let mut resource = node.head().clone();
-    if let Some(decider) = &decider {
+    if let Some((permissions, app)) = shown {
         resource
             .actions
-            .retain(|action| decider.permits(&node.head().kind, node.head().id.as_str(), action));
+            .retain(|action| permissions.shows(app, node.head(), action));
     }
     resource
         .actions

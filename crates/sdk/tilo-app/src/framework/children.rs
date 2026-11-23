@@ -39,7 +39,6 @@ use tilo_actions::{
 use tilo_resource::children::{self as lifecycle, ChildList as _, ChildRef, Children as Container};
 use tilo_resource::{Atom, Edit, EditOp, Id, Reader, Resource, Segment};
 use ui_core::arriving::{Arrival, Arriving, Source};
-use ui_core::permissions::{PermissionScope, TreePath};
 use ui_core::resource::{DocumentCheckout, DocumentId, ResourceOpenError, ResourceType};
 use ui_core::widget::Edits;
 
@@ -506,27 +505,6 @@ impl<C: ChildResource> ChildrenState<C> {
         self.follow(id)
     }
 
-    /// Whether `invoker` may take a step `kind` on `verb` of this
-    /// container, as the workspace's roles say.
-    fn may(&self, verb: &str, kind: tilo_actions::ActionKind) -> bool {
-        self.workspace
-            .permissions
-            .as_ref()
-            .is_none_or(|permissions| {
-                permissions.check(&PermissionScope::Action {
-                    node: tilo_actions::action_node(
-                        &TreePath::root(),
-                        self.workspace.app_id,
-                        C::KIND,
-                        &self.id,
-                        None,
-                        verb,
-                    ),
-                    kind,
-                })
-            })
-    }
-
     /// Write `edits` into the parent, as `invoker`, recorded in its
     /// history: the container's lifecycle. The parent the window shows is
     /// written through its own API in the pass that lends it (`live`);
@@ -591,19 +569,6 @@ impl<C: ChildResource> ChildrenState<C> {
         now_ms: i64,
         live: Option<&mut Edits<'_>>,
     ) -> Result<Id, ActionError> {
-        use tilo_actions::ActionKind;
-        let verb = match step {
-            Lifecycle::Create { .. } => lifecycle::CREATE,
-            Lifecycle::Delete { .. } => lifecycle::DELETE,
-            Lifecycle::Restore { .. } => lifecycle::RESTORE,
-            Lifecycle::Move { .. } => lifecycle::MOVE,
-        };
-        if !self.may(verb, ActionKind::Undoable) {
-            return Err(ActionError::Refused(format!(
-                "you may not {verb} these {}",
-                C::LABEL.to_lowercase()
-            )));
-        }
         let parent = (self.parent)();
         match step {
             Lifecycle::Create {
@@ -803,23 +768,6 @@ impl<C: ChildResource> ChildrenState<C> {
         action: &C::Action,
         invoker: &ActionInvoker,
     ) -> Result<Vec<(String, String)>, ActionError> {
-        let need = tilo_resource::need_of::<C>(action);
-        if let Some(permissions) = &self.workspace.permissions {
-            let node = TreePath::root()
-                .app(self.workspace.app_id)
-                .kind(C::KIND)
-                .resource(self.id.clone())
-                .field(need.field.as_deref().unwrap_or_default());
-            if !permissions.check(&PermissionScope::Action {
-                node,
-                kind: need.kind,
-            }) {
-                return Err(ActionError::Refused(format!(
-                    "you may not do this to these {}",
-                    C::LABEL.to_lowercase()
-                )));
-            }
-        }
         self.hold(child).map_err(|unheld| {
             ActionError::Refused(match unheld {
                 Unheld::Missing => "it has not arrived on this device yet".to_owned(),
@@ -1378,7 +1326,6 @@ impl<C: ChildResource> Children<C> {
         let workspace = WorkspaceResources {
             store,
             me: me.clone(),
-            permissions: None,
             app_id,
             app_title: app_id,
             device_queue: None,

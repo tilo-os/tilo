@@ -247,7 +247,6 @@ mod install_tests {
     use tilo_actions::remote::Caller;
     use tilo_app::feedback::MemoryStore;
     use tilo_feedback_transport::{Enrollment, NoCapture, SessionTransport, Startup};
-    use ui::permissions::{PermissionContext, Role};
 
     const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
     const REPORTER: [u8; 32] = [12; 32];
@@ -269,12 +268,6 @@ mod install_tests {
                 SigningKey::from_bytes(&[42; 32]).verifying_key().to_bytes(),
             )
             .in_workspace(WORKSPACE),
-            permissions: PermissionContext::member_of(
-                WORKSPACE,
-                &ui::permissions::MemberId::person(hex::encode(REPORTER)),
-                Role::Owner,
-            )
-            .at_unix_time(0),
         };
         let held = Rc::new(RefCell::new(enrollment.clone()));
         let session = SessionTransport::new(

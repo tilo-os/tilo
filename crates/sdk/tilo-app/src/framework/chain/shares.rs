@@ -33,9 +33,6 @@ impl ChainState {
         place: Option<&str>,
     ) -> Result<Write, ActionError> {
         shares.sort_by_key(|(index, _)| *index);
-        for (_, share) in &shares {
-            self.may(&**share)?;
-        }
         let head = self.core.parts.borrow().keys().next_back().copied();
         for (index, _) in &shares {
             match self

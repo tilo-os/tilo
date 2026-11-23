@@ -192,17 +192,11 @@ impl Conversations {
         if !held {
             return None;
         }
-        let access = tilo_action_policy::MemberAccess::new(
-            opened.policy.clone(),
-            tilo_action_policy::Acting::member(opened.records.author().clone()),
-        );
-        let permissions = PermissionContext::from_access(access)
-            .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
         WorkspaceResource::<tilo_app::tilo_workspace_agent::WorkspaceAgents>::open(
             &opened.records,
             AGENTS_OWNER,
             CHAT_APP,
-            Some(LivePermissions::fixed(permissions)),
+            None,
             None,
         )
     }
@@ -543,11 +537,6 @@ impl Conversations {
             part: None,
         });
         opened.members.clone_from(&workspace.members);
-        let permissions = PermissionContext::from_access(tilo_action_policy::MemberAccess::person(
-            workspace.policy.clone(),
-            person.to_owned(),
-        ))
-        .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
         let chat_id = DocumentId::package_primary();
         if opened.chat.is_none() {
             let held = opened
@@ -561,7 +550,7 @@ impl Conversations {
                 &opened.records,
                 CHAT_OWNER,
                 CHAT_APP,
-                Some(LivePermissions::fixed(permissions.clone())),
+                None,
                 Some(self.wake.handle()),
             );
         }
@@ -579,7 +568,7 @@ impl Conversations {
                 CHAT_OWNER,
                 chat::parts::part(head).as_str(),
                 CHAT_APP,
-                Some(LivePermissions::fixed(permissions)),
+                None,
                 Some(self.wake.handle()),
             );
             opened.part = part.map(|part| (head, part));

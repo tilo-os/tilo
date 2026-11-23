@@ -636,8 +636,6 @@ impl TileSource for Source {
             resource_type: ui::resource::ResourceType::new("keyboard-test"),
             workspace_resource: false,
             opens_before_resource: false,
-            required: vec![],
-            optional: vec![],
             opens: &[],
             create: factory,
         };

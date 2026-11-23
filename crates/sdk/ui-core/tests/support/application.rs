@@ -10,9 +10,7 @@ use tilo_ui::application::{
 use tilo_ui::application_view::InstanceViewStore;
 use tilo_ui::launch::LaunchError;
 use tilo_ui::local_state::LocalState;
-use tilo_ui::permissions::{
-    ActionKind, MemberId, PermissionContext, PermissionScope, SharedPermissions,
-};
+use tilo_ui::permissions::{MemberId, PermissionContext, SharedPermissions};
 use tilo_ui::resource::{DocumentCheckout, ResourceOwners, ResourceStore, ResourceType};
 use tilo_ui::view::ViewContribution;
 use tilo_ui::wake::WakeHandle;
@@ -259,17 +257,12 @@ pub fn author() -> MemberId {
 pub fn provenance() -> tilo_actions::ActionContext {
     tilo_actions::ActionContext::default().with_app(APP, "Probe")
 }
-pub fn denied_scope() -> PermissionScope {
-    PermissionScope::workspace(ActionKind::Undoable)
-}
 pub fn definition(create: tilo_ui::application::ComponentFactory) -> ApplicationDefinition {
     ApplicationDefinition {
         app_id: APP.into(),
         title: "Probe".into(),
         icon: IconDescriptor::Glyph("P"),
         resource_type: ResourceType::new("probe"),
-        required: vec![],
-        optional: vec![],
         opens: &[],
         workspace_resource: false,
         opens_before_resource: false,

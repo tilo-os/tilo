@@ -595,15 +595,6 @@ impl PresenceCtx {
         self.paint_permissions.get()
     }
 
-    /// Whether the authority of the subtree being drawn covers `scope`.
-    /// Outside any [`Self::with_permissions`] everything is allowed.
-    pub fn permits(&self, scope: &crate::permissions::PermissionScope) -> bool {
-        self.permissions
-            .borrow()
-            .as_ref()
-            .is_none_or(|permissions| permissions.check(scope))
-    }
-
     /// The authority of the subtree being drawn, if anyone scoped one.
     pub fn permission_context(&self) -> Option<crate::permissions::PermissionContext> {
         self.permissions.borrow().clone()

@@ -21,8 +21,7 @@
 //! which hands it to the process it already runs.
 //!
 //! Everything the session knows that the plan needs — the workspace and what was
-//! granted in it, the policy the person's authority there is projected from
-//! ([`Workspace`]), the displays and the person's session variables
+//! granted in it ([`Workspace`]), the displays and the person's session variables
 //! ([`env`]) — is passed in as data, so a plan is assertable without a
 //! process appearing. [`spawner`] is the part that does start something, and
 //! reports how it ended so a crash can be told from a normal exit.
@@ -36,7 +35,6 @@
 //! moves each app between the foreground and background tiers of its cgroup
 //! by what it can see, and gives memory back from the background ones first.
 
-pub mod authority;
 pub mod downloaded;
 pub mod env;
 pub mod links;
@@ -62,7 +60,6 @@ pub mod routing;
 pub mod spawner;
 pub mod workspace;
 
-pub use authority::Authority;
 pub use env::SessionEnvironment;
 pub use instance::{Answer, Instance, Shown, Windows, package_identities};
 pub use launch::{Launch, Open};

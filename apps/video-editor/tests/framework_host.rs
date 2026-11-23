@@ -268,33 +268,36 @@ fn agent_answer(app: &mut HeadlessApp<VideoEditor>, action: &str) -> ui::permiss
         })
         .unwrap();
     let need = descriptor.contract.need();
-    let node = tilo_actions::action_node(
-        &ui::permissions::TreePath::root(),
+    let action = ui::permissions::ShownAction::new(
+        None,
         VideoEditor::ID,
-        Project::KIND,
-        &descriptor.address.resource,
-        need.field.as_deref(),
-        action,
+        (Project::KIND, &descriptor.address.resource, action),
+        &need,
     );
-    app.permissions().answer(&node, need.kind)
+    match app.permissions().verdict(&action) {
+        Some(ui::permissions::ActionVerdict::Allowed) => ui::permissions::Answer::Allow,
+        Some(ui::permissions::ActionVerdict::AsksFirst) => ui::permissions::Answer::Ask,
+        _ => ui::permissions::Answer::Deny,
+    }
 }
 
 #[test]
 fn an_agent_is_asked_first_before_a_file_is_read_or_written() {
-    use ui::permissions::{Answer, LOCAL_USER, LOCAL_WORKSPACE, PermissionContext, Role, policy};
+    use ui::permissions::{
+        Answer, HostGrants, LOCAL_USER, LOCAL_WORKSPACE, PermissionContext, Role, policy,
+    };
     const AGENT: &str = "renderer";
 
     let mut app = with_sample();
     // An agent with no answer of the person's yet, inside a turn of the
     // person's that bound how far it reaches.
     let grants = policy::Acting::handed_agent(AGENT, LOCAL_USER).handed_preset(LOCAL_WORKSPACE);
-    app.set_permissions(
-        PermissionContext::member(&ui::permissions::MemberId::person(LOCAL_USER), Role::Owner)
-            .acting_as(
-                policy::Actor::Member(policy::MemberId::agent(AGENT)),
-                grants,
-            ),
-    );
+    app.set_permissions(PermissionContext::hosted(
+        HostGrants::member(&ui::permissions::MemberId::person(LOCAL_USER), Role::Owner).acting_as(
+            policy::Actor::Member(policy::MemberId::agent(AGENT)),
+            grants,
+        ),
+    ));
     // Reading or writing a file is an outside effect: it asks first, like
     // any other.
     for action in [

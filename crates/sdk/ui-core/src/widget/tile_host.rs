@@ -1988,15 +1988,11 @@ impl Widget for TileHost {
             let anim_transform = pose.applied_to(transform);
             self.draw_window(scene, anim_transform, tr, theme, presence);
             scene.pop_layer();
-            crate::widget::draw_permission_scrim_and_peer_focus(
-                self, scene, transform, theme, presence,
-            );
+            crate::widget::draw_peer_focus(self, scene, theme, presence);
             return;
         }
         self.draw_window(scene, transform, tr, theme, presence);
-        crate::widget::draw_permission_scrim_and_peer_focus(
-            self, scene, transform, theme, presence,
-        );
+        crate::widget::draw_peer_focus(self, scene, theme, presence);
     }
     fn needs_redraw(&self) -> bool {
         if let Some(redraw) = self.held_redraw() {

@@ -229,8 +229,6 @@ pub struct LaunchOptions {
     pub retained_files_host_path: Option<PathBuf>,
     /// Verified, selected browser data; projected read-only to Browser GUI only.
     pub browser_continuity_host_path: Option<PathBuf>,
-    /// Separate process action policy projection; never a sandbox capability grant.
-    pub action_authority_host_path: Option<PathBuf>,
     /// Workspace this launch belongs to — the CRDT cluster id ([`crate::sandbox::WORKSPACE_ID_ENV`]).
     pub workspace_id: Option<String>,
     /// Host path of the compositor-written `Vec<CapOverride>` JSON; anything unusable leaves the
@@ -278,7 +276,6 @@ impl Default for LaunchOptions {
             trusted_identities_host_path: None,
             retained_files_host_path: None,
             browser_continuity_host_path: None,
-            action_authority_host_path: None,
             workspace_id: None,
             capabilities_path: None,
             app_id: None,
@@ -561,13 +558,7 @@ pub fn resolve_capabilities(manifest: &ManifestView, opts: &LaunchOptions) -> Ca
         .map(load_capability_file)
         .unwrap_or_default();
     let sandbox = crate::capabilities::declared(manifest, grants.sandbox);
-    let mut plan = CapabilityPlan::for_app(&app_id, &sandbox, Some(unix_now()));
-    // A workspace launch may change the space when its person may.
-    if grants.author {
-        plan.participation = crate::capabilities::Participation::Author;
-    } else if opts.workspace_id.is_some() {
-        plan.participation = crate::capabilities::Participation::ReadOnly;
-    }
+    let plan = CapabilityPlan::for_app(&app_id, &sandbox, Some(unix_now()));
     tracing::info!(
         target: "tilo_launcher::capabilities",
         app = %app_id,
@@ -1813,55 +1804,6 @@ fn validate_retained_files_projection(path: &Path) -> Result<(), LaunchError> {
     Ok(())
 }
 
-/// One app/person projection directory, so atomic replacement and revocation stay visible.
-fn splice_action_authority(
-    argv: &mut Vec<String>,
-    manifest: &ManifestView,
-    opts: &LaunchOptions,
-) -> Result<(), LaunchError> {
-    use collab_types::action_authority::{AppActionAuthorityProjection, MAX_PROJECTION_BYTES};
-    use std::io::Read as _;
-    let Some(path) = opts.action_authority_host_path.as_deref() else {
-        return Ok(());
-    };
-    let invalid =
-        || LaunchError::InvalidServiceLaunch("invalid host action authority binding".into());
-    if path.file_name().and_then(|name| name.to_str()) != Some("current.json") {
-        return Err(invalid());
-    }
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take((MAX_PROJECTION_BYTES as u64).saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_PROJECTION_BYTES {
-        return Err(invalid());
-    }
-    let policy: AppActionAuthorityProjection = serde_json::from_slice(&bytes).map_err(|error| {
-        LaunchError::InvalidServiceLaunch(format!(
-            "invalid host action authority binding: unreadable projection: {error}"
-        ))
-    })?;
-    policy.validate().map_err(|error| {
-        LaunchError::InvalidServiceLaunch(format!("invalid host action authority binding: {error}"))
-    })?;
-    if policy.app_id != manifest.package_id
-        || opts.workspace_id.as_deref() != Some(&policy.workspace)
-    {
-        return Err(LaunchError::InvalidServiceLaunch(format!(
-            "invalid host action authority binding: it is for {} in workspace {}, the launch for {} \
-             in workspace {}",
-            policy.app_id,
-            policy.workspace,
-            manifest.package_id,
-            opts.workspace_id.as_deref().unwrap_or("(none)")
-        )));
-    }
-    let entry = pop_entry(argv)?;
-    crate::sandbox::push_action_authority_bind(argv, path);
-    argv.push(entry);
-    Ok(())
-}
-
 /// Wayland display, spliced before the entrypoint token like the minimal-libs binds.
 fn splice_wayland(
     argv: &mut Vec<String>,
@@ -1984,10 +1926,6 @@ pub(crate) fn push_projection_landlock_rules(
     opts: &LaunchOptions,
     manifest: &ManifestView,
 ) {
-    if opts.action_authority_host_path.is_some() {
-        argv.push("--ro".into());
-        argv.push(crate::sandbox::SANDBOX_ACTION_AUTHORITY_DIR.into());
-    }
     if crate::browser_projection::eligible(manifest, opts) {
         argv.extend([
             "--ro".to_owned(),
@@ -3200,7 +3138,6 @@ pub(crate) fn launch_with_context(
     splice_retained_files(&mut argv, manifest, opts)?;
     let documents = splice_documents(&mut argv, manifest, opts)?;
     let _browser_projection = crate::browser_projection::splice(&mut argv, manifest, opts)?;
-    splice_action_authority(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     splice_egress_proxy_bind(&mut argv, egress_proxy.as_ref())?;
     let (gpu, pipeline_seed) = if retained_io.is_some() || target_projection.is_some() {
@@ -3832,7 +3769,6 @@ fn launch_with_capture_spawn<T>(
     splice_retained_files(&mut argv, manifest, opts)?;
     let documents = splice_documents(&mut argv, manifest, opts)?;
     let _browser_projection = crate::browser_projection::splice(&mut argv, manifest, opts)?;
-    splice_action_authority(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     let (gpu, pipeline_seed) = splice_gpu(&mut argv, manifest, opts, gpu_granted)?;
     splice_sandbox_shim(
@@ -4252,43 +4188,6 @@ mod app_dir_tests {
         phase the_app_directory_is_resolved_per_workspace_and_never_from_the_manifest;
         {
             {
-                let m = manifest("so.tilo.fixture");
-                let workspace = resolve_capabilities(&m, &opts_in(Some("workspace-a")));
-                assert_eq!(
-                    workspace.participation,
-                    crate::capabilities::Participation::ReadOnly
-                );
-
-                let personal = resolve_capabilities(&m, &opts_in(None));
-                assert_eq!(
-                    personal.participation,
-                    crate::capabilities::Participation::Unscoped
-                );
-
-                let dir = tempfile::tempdir().expect("tempdir");
-                let file = dir.path().join("grants.json");
-                std::fs::write(
-                    &file,
-                    serde_json::to_vec(&collab_types::caps::LaunchGrants {
-                        author: true,
-                        sandbox: Vec::new(),
-                    })
-                    .expect("encodes"),
-                )
-                .expect("written");
-                let authored = resolve_capabilities(
-                    &m,
-                    &LaunchOptions {
-                        capabilities_path: Some(file),
-                        ..opts_in(Some("workspace-a"))
-                    },
-                );
-                assert_eq!(
-                    authored.participation,
-                    crate::capabilities::Participation::Author
-                );
-            }
-            {
                 let data = tempfile::tempdir().expect("tempdir");
                 let m = manifest("so.tilo.fixture");
                 let a = resolve_person_dir(&m, &opts_at(data.path(), Some("workspace-a")))
@@ -4604,72 +4503,6 @@ mod debug_output_tests {
                 assert!(debug_output_log(Path::new("/nonexistent")).is_none());
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod action_authority_tests {
-    use super::*;
-    use collab_types::action_authority::AppActionAuthorityProjection;
-    #[test]
-    fn action_authority_binding_is_readonly_scoped_and_separate_from_sandbox_grants() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("current.json");
-        let manifest: ManifestView = crate::manifest::test_manifest(
-            "id = \"so.tilo.store\"
-version = \"1.0\"
-kind = \"app\"",
-            "[entrypoint]
-bin = \"store\"
-",
-        );
-        let policy = AppActionAuthorityProjection::project(
-            &tilo_action_policy::WorkspacePolicy::new("workspace-a", "person-a"),
-            &manifest.package_id,
-            "person-a",
-            false,
-        );
-        std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
-        let opts = LaunchOptions {
-            workspace_id: Some("workspace-a".into()),
-            action_authority_host_path: Some(path),
-            ..LaunchOptions::default()
-        };
-        let before = resolve_capabilities(&manifest, &LaunchOptions::default());
-        let after = resolve_capabilities(&manifest, &opts);
-        assert_eq!(before.ro_paths, after.ro_paths);
-        assert_eq!(before.rw_paths, after.rw_paths);
-        let mut argv = vec!["bwrap".into(), "store".into()];
-        splice_action_authority(&mut argv, &manifest, &opts).unwrap();
-        assert_eq!(
-            argv,
-            vec![
-                "bwrap",
-                "--ro-bind",
-                temp.path().to_str().unwrap(),
-                crate::sandbox::SANDBOX_ACTION_AUTHORITY_DIR,
-                "store"
-            ]
-        );
-        for workspace in [None, Some("workspace-b".into())] {
-            let mut wrong = opts.clone();
-            wrong.workspace_id = workspace;
-            assert!(splice_action_authority(&mut vec!["store".into()], &manifest, &wrong).is_err());
-        }
-        let mut wrong_app = policy;
-        wrong_app.app_id = "so.tilo.settings".into();
-        std::fs::write(
-            opts.action_authority_host_path.as_ref().unwrap(),
-            serde_json::to_vec(&wrong_app).unwrap(),
-        )
-        .unwrap();
-        assert!(splice_action_authority(&mut vec!["store".into()], &manifest, &opts).is_err());
-        std::fs::write(
-            opts.action_authority_host_path.as_ref().unwrap(),
-            vec![b' '; collab_types::action_authority::MAX_PROJECTION_BYTES + 1],
-        )
-        .unwrap();
-        assert!(splice_action_authority(&mut vec!["store".into()], &manifest, &opts).is_err());
     }
 }
 

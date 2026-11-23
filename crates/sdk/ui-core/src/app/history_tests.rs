@@ -1032,8 +1032,6 @@ impl RoutedPrimary {
             title: "Primary Probe".into(),
             icon: crate::widget::IconDescriptor::Glyph("P"),
             resource_type: crate::ResourceType::new("primary.probe"),
-            required: vec![],
-            optional: vec![],
             opens: &[],
             workspace_resource: false,
             opens_before_resource: false,
@@ -1048,7 +1046,7 @@ impl RoutedPrimary {
                 device_id: "D".into(),
                 instance_id: 70,
                 permissions: crate::permissions::SharedPermissions::new(
-                    crate::permissions::PermissionContext::permissive(),
+                    crate::permissions::PermissionContext::owner(),
                 ),
                 author: crate::permissions::MemberId::person("primary-author"),
                 action_context: tilo_actions::ActionContext::default(),
@@ -3504,7 +3502,7 @@ fn component_control_root(
             records: records.clone(),
             checkout,
             permissions: crate::permissions::SharedPermissions::new(
-                crate::permissions::PermissionContext::permissive(),
+                crate::permissions::PermissionContext::owner(),
             ),
             author: crate::permissions::MemberId::person("component-control-author"),
             operation_context: Rc::default(),

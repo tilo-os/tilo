@@ -5,7 +5,6 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 
-use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -181,7 +180,6 @@ pub struct ProgressBar {
     drawn_step: Option<u64>,
     stepped: bool,
     presence_path: Vec<PathSegment>,
-    permission_scope: Option<PermissionScope>,
     /// Accessible label (e.g. "Uploading").
     label: Option<String>,
     /// Whether the label also shows over the track, as a gauge's name does: a bar that says
@@ -219,7 +217,6 @@ impl ProgressBar {
             drawn_step: None,
             stepped: false,
             presence_path: Vec::new(),
-            permission_scope: None,
             label: None,
             label_shown: false,
             label_style: None,
@@ -244,7 +241,6 @@ impl ProgressBar {
             drawn_step: None,
             stepped: false,
             presence_path: Vec::new(),
-            permission_scope: None,
             label: None,
             label_shown: false,
             label_style: None,
@@ -346,12 +342,6 @@ impl ProgressBar {
         self
     }
 
-    #[must_use]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
-        self
-    }
-
     /// Current clamped progress value. `0.0` while the bar is in
     /// indeterminate mode, regardless of any prior `set_progress` call.
     pub fn progress(&self) -> f32 {
@@ -423,10 +413,7 @@ impl Widget for ProgressBar {
 
     crate::described!();
 
-    crate::provides!(
-        dyn crate::permissions::capability::PermissionGuarded,
-        dyn crate::presence::capability::PublishesPresence
-    );
+    crate::provides!(dyn crate::presence::capability::PublishesPresence);
 
     fn build_layout(
         &mut self,
@@ -532,9 +519,7 @@ impl Widget for ProgressBar {
             };
             self.last_segment = current_segment;
         }
-        crate::widget::draw_permission_scrim_and_peer_focus(
-            self, scene, transform, theme, presence,
-        );
+        crate::widget::draw_peer_focus(self, scene, theme, presence);
     }
 
     fn name(&self) -> &'static str {
@@ -604,12 +589,6 @@ impl Widget for ProgressBar {
 impl crate::presence::capability::PublishesPresence for ProgressBar {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
-    }
-}
-
-impl crate::permissions::capability::PermissionGuarded for ProgressBar {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 }
 

@@ -243,8 +243,8 @@ mod component_adapter {
         AudiencePresentationWidgetExt, AutoCommit, CompleteContentProvider,
         CompleteContentWidgetExt, Continuable, ControlBindingMetadata, FloatingSurfaceProvider,
         FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt, HashMap, HashSet,
-        Instant, NodeId, ObjId, PermissionScope, PresenceCtx, PresenceKey, ResourceOperationStart,
-        Scene, TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
+        Instant, NodeId, ObjId, PresenceCtx, PresenceKey, ResourceOperationStart, Scene, TaffyTree,
+        TaffyTreeExt, TextRenderer, Theme, WindowEvent,
     };
 
     pub(crate) struct BoundAppWidget {
@@ -308,7 +308,7 @@ mod component_adapter {
         ) -> crate::component_inputs::PassInputs {
             crate::component_inputs::PassInputs {
                 owner: crate::bound_dispatch::OwnerInputs {
-                    permissions: binding.permissions.borrow().directory_observation(),
+                    permissions: binding.permissions.get(),
                     save: component.record_save_now().ok_or_else(String::new),
                 },
                 locale: crate::i18n::I18nManager::revision(),
@@ -926,7 +926,6 @@ mod component_adapter {
             dyn crate::widget::controls::ActionControls,
             dyn crate::resources::PublishesResources,
             dyn crate::search::capability::SearchSource,
-            dyn crate::permissions::capability::PermissionGuarded,
             dyn crate::presence::capability::PublishesPresence,
             dyn crate::resource::capability::ResourceScoped,
             dyn crate::view::capability::ViewState,
@@ -1806,13 +1805,6 @@ mod component_adapter {
         }
         fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
             self.in_root(|root| crate::presence::capability::presence_payload(root))
-                .flatten()
-        }
-    }
-
-    impl crate::permissions::capability::PermissionGuarded for BoundAppWidget {
-        fn permission_scope(&self) -> Option<PermissionScope> {
-            self.in_root(|root| crate::permissions::capability::permission_scope(root))
                 .flatten()
         }
     }
