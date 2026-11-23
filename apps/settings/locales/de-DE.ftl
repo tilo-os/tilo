@@ -1025,7 +1025,6 @@ sound-notice-test-err = { $channel }-Lautsprecher konnte nicht getestet werden: 
 sound-notice-mic-stopped = Mikrofontest beendet; es wurde kein Audio gespeichert.
 sound-notice-mic-none = Kein Mikrofon angeschlossen.
 sound-notice-mic-started = Mikrofonpegeltest für acht Sekunden gestartet.
-sound-notice-mic-err = Mikrofon konnte nicht getestet werden: { $error }
 sound-notice-device-err = Ausgabegerät konnte nicht geändert werden: { $error }
 
 sound-notice-out-device = Audio-Ausgabegerät geändert.

@@ -29,7 +29,6 @@ use crate::effects::SettingsEffect;
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
 
-mod level_meter;
 mod page;
 mod speaker_sets;
 
@@ -51,6 +50,9 @@ crate::area::pane_area! {
     crate::area::serves!(Sound);
     fn poll(&self) {
         AudioArea::poll(self);
+    }
+    fn next_wake(&self) -> Option<ui::time::Instant> {
+        self.model.get().and_then(|model| model.try_borrow().ok()?.next_wake())
     }
     fn busy(&self) -> bool {
         self.model.get().is_some_and(|model| model.borrow().busy())
@@ -656,17 +658,14 @@ pub struct AudioModel {
     devices_error: Option<String>,
     runtime_notice: Option<String>,
     channel_test: Option<Box<dyn BoundedSession>>,
-    mic_session: Option<Box<dyn MicrophoneMeterSession>>,
-    mic_meter: level_meter::Level,
+    /// When the microphone test the person started ends by itself, so a
+    /// meter left running stops: it shows nothing more after this.
+    mic_test: Option<ui::time::Instant>,
     volume: f32,
     input_volume: f32,
     muted: bool,
     changed: bool,
     changes: DeviceChanges,
-    output_meter: level_meter::Level,
-    /// While a pane shows the area: the capture behind the output's meter.
-    /// Held by the pane, so it ends when the page is left.
-    metering: std::rc::Weak<OutputMetering>,
     /// What a page showing the model holds: the readings are taken in, and
     /// the speaker sets read, only while one does.
     page: std::rc::Weak<()>,
@@ -674,14 +673,8 @@ pub struct AudioModel {
     speakers: Arc<dyn crate::speaker_setup::SpeakerService>,
 }
 
-/// The capture behind the output meter, owned by the pane that shows it:
-/// dropping it (leaving the page) ends the capture, so the meter costs
-/// nothing while the page is not shown.
-#[derive(Default)]
-struct OutputMetering {
-    session: std::cell::RefCell<Option<(String, Box<dyn BoundedSession>)>>,
-    refused: std::cell::RefCell<Option<String>>,
-}
+/// How long a microphone test runs before it stops by itself.
+const MIC_TEST: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// What the Sound area reads: the session's sound resource, the reading it
 /// began at, and what the audio runtime here can do. Opening the resource
@@ -847,15 +840,12 @@ impl AudioModel {
             devices_error: error,
             runtime_notice: None,
             channel_test: None,
-            mic_session: None,
-            mic_meter: level_meter::Level::default(),
+            mic_test: None,
             volume: 0.0,
             input_volume: 0.0,
             muted: false,
             changed: false,
             changes: DeviceChanges::default(),
-            output_meter: level_meter::Level::default(),
-            metering: std::rc::Weak::new(),
             page: std::rc::Weak::new(),
             sets: SpeakerSets::default(),
             speakers: Arc::new(crate::speaker_setup::BrokerSpeakers),
@@ -879,15 +869,12 @@ impl AudioModel {
             devices_error: None,
             runtime_notice: None,
             channel_test: None,
-            mic_session: None,
-            mic_meter: level_meter::Level::default(),
+            mic_test: None,
             volume: 0.5,
             input_volume: 0.75,
             muted: false,
             changed: false,
             changes: DeviceChanges::default(),
-            output_meter: level_meter::Level::default(),
-            metering: std::rc::Weak::new(),
             page: std::rc::Weak::new(),
             sets: SpeakerSets::default(),
             speakers: Arc::new(NoSpeakerSets),
@@ -923,8 +910,6 @@ impl AudioModel {
         ))))));
         model.speakers = Arc::new(SampleSpeakerSets);
         model.take_sound(sound);
-        model.output_meter.set(0.46);
-        model.output_meter.set_live(true);
         model
     }
 
@@ -1331,25 +1316,14 @@ impl AudioModel {
                 ))
             }
             AudioEffect::ToggleMicrophoneTest => {
-                if self.mic_session.take().is_some() {
-                    self.mic_meter.set_live(false);
+                if self.mic_test.take().is_some() {
                     self.runtime_notice = Some(t("sound-notice-mic-stopped"));
                     return Ok(t("sound-notice-mic-stopped"));
                 }
-                let session = self
-                    .input_device()
-                    .ok_or_else(|| t("sound-notice-mic-none"))
-                    .and_then(|device| {
-                        self.runtime
-                            .start_microphone_meter(&device.name, Duration::from_secs(8))
-                    })
-                    .map_err(|error| {
-                        let notice = t_args("sound-notice-mic-err", &[("error", error.into())]);
-                        self.runtime_notice = Some(notice.clone());
-                        notice
-                    })?;
-                self.mic_session = Some(session);
-                self.mic_meter.set_live(true);
+                if self.input_device().is_none() {
+                    return Err(t("sound-notice-mic-none"));
+                }
+                self.mic_test = Some(ui::time::now() + MIC_TEST);
                 self.runtime_notice = Some(t("sound-notice-mic-started"));
                 Ok(t("sound-notice-mic-started"))
             }
@@ -1461,8 +1435,7 @@ impl AudioModel {
         self.sound = sound;
         if moved {
             self.channel_test = None;
-            self.mic_session = None;
-            self.mic_meter.set_live(false);
+            self.mic_test = None;
             self.sets.due = true;
         }
         if let Some(problem) = problem {
@@ -1491,67 +1464,23 @@ impl AudioModel {
             self.runtime_notice = Some(t("sound-notice-test-done"));
             self.changed = true;
         }
-        if let Some(session) = &mut self.mic_session {
-            // The meter reads the level itself each frame; the page is not
-            // rebuilt for it.
-            self.mic_meter.set(session.level());
-            if !session.running() {
-                self.mic_session = None;
-                self.mic_meter.set_live(false);
-                self.runtime_notice = Some(t("sound-notice-mic-done"));
-                self.changed = true;
-            }
+        if self.mic_test.is_some_and(|ends| ui::time::now() >= ends) {
+            // The meter reads the level itself; the page is built again only
+            // here, where the test ends and the meter closes.
+            self.mic_test = None;
+            self.runtime_notice = Some(t("sound-notice-mic-done"));
+            self.changed = true;
         }
         self.take_reading();
         if self.page.upgrade().is_some() && self.poll_speaker_sets() {
             self.changed = true;
         }
-        self.follow_output_meter();
     }
 
-    fn follow_output_meter(&self) {
-        if !self.reaches_devices {
-            return;
-        }
-        let Some(metering) = self.metering.upgrade() else {
-            self.output_meter.set_live(false);
-            return;
-        };
-        let sink = self
-            .output_device()
-            .map(|device| device.name.clone())
-            .filter(|name| !name.is_empty())
-            .filter(|_| self.runtime_caps.microphone_meter);
-        let mut session = metering.session.borrow_mut();
-        if let Some((name, running)) = session.as_mut() {
-            if Some(&*name) == sink.as_ref() && running.running() {
-                return;
-            }
-            if running.running() {
-                *session = None;
-            } else {
-                *metering.refused.borrow_mut() = Some(name.clone());
-                *session = None;
-            }
-        }
-        self.output_meter.set_live(false);
-        let Some(sink) = sink else {
-            return;
-        };
-        if metering.refused.borrow().as_ref() == Some(&sink) {
-            return;
-        }
-        let publish = self.output_meter.publisher(ui::WakeHandle::new());
-        match self.runtime.start_output_meter(&sink, Box::new(publish)) {
-            Ok(started) => {
-                *session = Some((sink, started));
-                self.output_meter.set_live(true);
-            }
-            Err(error) => {
-                tracing::debug!(target: "tilo::settings", %error, "the output meter could not start");
-                *metering.refused.borrow_mut() = Some(sink);
-            }
-        }
+    /// When the window next needs a sync of this area while nothing else
+    /// happens: the microphone test ends by itself.
+    fn next_wake(&self) -> Option<ui::time::Instant> {
+        self.mic_test
     }
 }
 
@@ -1562,24 +1491,14 @@ impl AudioModel {
     }
 
     fn busy(&self) -> bool {
-        self.mic_session.is_some() || self.channel_test.is_some()
+        self.mic_test.is_some() || self.channel_test.is_some()
     }
 
-    /// Start following what a page that shows the model needs: the output's
-    /// meter runs while a page holds what this answers. Pages showing the
-    /// model share one, so building a page again never restarts it.
+    /// What a page showing the model holds: the readings are taken in, and
+    /// the speaker sets read, only while one does.
     fn follow(&mut self) -> Rc<dyn std::any::Any> {
-        let page = crate::watch::shared(&mut self.page, || ());
-        if !self.reaches_devices {
-            return page;
-        }
-        let metering = self.metering.upgrade().unwrap_or_else(|| {
-            let metering = Rc::new(OutputMetering::default());
-            self.metering = Rc::downgrade(&metering);
-            metering
-        });
-        self.follow_output_meter();
-        Rc::new((page, metering))
+        let page: Rc<()> = crate::watch::shared(&mut self.page, || ());
+        page
     }
 }
 
@@ -1907,24 +1826,61 @@ mod tests {
             assert!(sounds.taken().is_empty());
         }
 
-        phase a_test_captures_the_output_the_reading_names;
+        phase a_test_plays_the_output_and_runs_the_microphone_meter_for_a_while;
         {
             let runtime = Arc::new(RecordingRuntime {
                 calls: Mutex::new(Vec::new()),
-                drops: Arc::new(AtomicUsize::new(0)),
             });
             let mut model = published(Arc::new(RecordingSound::default()));
+            let _ = model.poll();
             model.runtime = runtime.clone();
             model
                 .apply(&AudioEffect::TestSpeaker {
                     channel: "left".into(),
                 })
                 .unwrap();
+            // The person's microphone test runs the shared meter, which reads
+            // the device itself; the model only keeps the eight seconds it
+            // runs for.
+            let started = ui::time::now();
+            ui::time::testing::with_monotonic_time(started, || {
+                model.apply(&AudioEffect::ToggleMicrophoneTest).unwrap();
+                assert_eq!(
+                    runtime.calls.lock().unwrap().as_slice(),
+                    ["test(speakers,true)"]
+                );
+                assert!(model.busy(), "a started test is work under way");
+                let ends = model.next_wake().expect("the test ends by itself");
+                assert_eq!(
+                    ends.saturating_duration_since(started),
+                    std::time::Duration::from_secs(8)
+                );
+                model.apply(&AudioEffect::ToggleMicrophoneTest).unwrap();
+                assert!(model.mic_test.is_none(), "a second press stops it");
+                assert!(model.next_wake().is_none(), "nothing is left to wait for");
+            });
+        }
+
+        phase a_microphone_test_stops_by_itself;
+        {
+            let mut model = published(Arc::new(RecordingSound::default()));
             model.apply(&AudioEffect::ToggleMicrophoneTest).unwrap();
-            assert_eq!(
-                runtime.calls.lock().unwrap().as_slice(),
-                ["test(speakers,true)", "meter(built-in-microphone)"]
+            let _ = model.poll();
+            let ends = model.next_wake().expect("the test ends by itself");
+            let still_running = ends
+                .checked_sub(std::time::Duration::from_millis(1))
+                .expect("a moment before the test ends");
+            assert!(
+                !ui::time::testing::with_monotonic_time(still_running, || model.poll()),
+                "nothing changes a moment before the test ends"
             );
+            assert!(model.busy());
+            assert!(
+                ui::time::testing::with_monotonic_time(ends, || model.poll()),
+                "the page is built again as the test ends"
+            );
+            assert!(!model.busy());
+            assert!(model.next_wake().is_none());
         }
 
         phase a_reading_that_is_not_a_sound_is_an_error_until_the_next;
@@ -1995,28 +1951,8 @@ mod tests {
             self.drops.fetch_add(1, Ordering::SeqCst);
         }
     }
-    struct FakeMeter {
-        session: FakeSession,
-    }
-    impl BoundedSession for FakeMeter {
-        fn running(&mut self) -> bool {
-            self.session.running()
-        }
-        fn stop(&mut self) {
-            self.session.stop();
-        }
-    }
-    impl MicrophoneMeterSession for FakeMeter {
-        fn level(&mut self) -> f32 {
-            0.42
-        }
-        fn remaining(&self) -> Duration {
-            Duration::from_secs(4)
-        }
-    }
     struct RecordingRuntime {
         calls: Mutex<Vec<String>>,
-        drops: Arc<AtomicUsize>,
     }
     impl AudioRuntimeControl for RecordingRuntime {
         fn capabilities(&self) -> RuntimeCapabilities {
@@ -2038,7 +1974,7 @@ mod tests {
         fn start_mono(&self, sink: &str) -> Result<Box<dyn BoundedSession>, String> {
             self.calls.lock().unwrap().push(format!("mono({sink})"));
             Ok(Box::new(FakeSession {
-                drops: self.drops.clone(),
+                drops: Arc::default(),
             }))
         }
         fn start_channel_test(
@@ -2051,20 +1987,15 @@ mod tests {
                 .unwrap()
                 .push(format!("test({sink},{left})"));
             Ok(Box::new(FakeSession {
-                drops: self.drops.clone(),
+                drops: Arc::default(),
             }))
         }
         fn start_microphone_meter(
             &self,
-            source: &str,
+            _: &str,
             _: Duration,
         ) -> Result<Box<dyn MicrophoneMeterSession>, String> {
-            self.calls.lock().unwrap().push(format!("meter({source})"));
-            Ok(Box::new(FakeMeter {
-                session: FakeSession {
-                    drops: self.drops.clone(),
-                },
-            }))
+            Err("the shared meter reads the device itself".into())
         }
     }
 
