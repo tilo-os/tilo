@@ -30,8 +30,6 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # published tree is the action API.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
-# The host's state file is replaced whole, never half-written.
-tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-actions = { path = "../actions" }
 # A bot's record events: the dispatcher's event shape and its reader of
 # recorded entries, shared with the shell.
@@ -71,12 +69,7 @@ weather = { path = "../../../apps/weather" }
 # live session, the same code a browser page runs, and the board of who is here and the agent's own word
 # on it.
 tilo-session-client = { path = "../session-client", features = ["toolkit"] }
-# The identity layer's device side: the host an agent's session dials, and the signer it holds.
-tilo-server-client = { path = "../tilo-server-client" }
-# A device on the live session is named by its endpoint id.
-iroh-base.workspace = true
 tilo-server-protocol = { path = "../tilo-server-protocol" }
-tilo-user-identity = { path = "../tilo-user-identity" }
 collab-types = { path = "../collab-types" }
 # An agent's presence is the workspace's own ([`neighbour_wire`]): the same
 # frames a browser and a native shell say theirs in.
@@ -93,12 +86,9 @@ tilo-desktop-model = { path = "../../desktop/desktop-model" }
 # a page shows an app.
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 tilolang-web = { path = "../../lang/tilolang-web" }
-ed25519-dalek.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-hex.workspace = true
 blake3.workspace = true
-getrandom.workspace = true
 # The requests and answers of the model calls a host's agents make.
 tilo-model-gateway = { default-features = false, features = ["host-backend"], path = "../../integrations/model-gateway" }
 # Agents' sessions do their I/O on the host's runtime, or one of their own.
@@ -122,8 +112,6 @@ tilo-content-types = { path = "../content-types" }
 # Where a large upload's bytes wait until its last piece arrives: a file of
 # the host's, never the host's memory.
 tempfile.workspace = true
-# A workspace's content store is kept under the workspace's id.
-uuid.workspace = true
 # The render service's side of `tilo-video-render`, the confined helper an
 # agent's video renders run in (the helper itself is its binary).
 tilo-video-render = { path = "../../engines/video-render", default-features = false }
