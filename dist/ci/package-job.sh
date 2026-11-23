@@ -2,7 +2,7 @@
 # Build and install-test the desktop session for every distribution userspace of one
 # architecture (dist/ci/package-targets.txt), or for the distributions named after it, one after
 # another, into dist/ci-output/<distro>-<arch>: t's desktop-package-<arch> checks (every
-# userspace) and package-arch / package-nix (one each), on privileged nodes with a container
+# userspace) and package/arch and package/nix (one each), on privileged nodes with a container
 # engine.
 #
 #   dist/ci/package-job.sh amd64|arm64 [DISTRO...]
