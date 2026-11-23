@@ -13,7 +13,7 @@
 //! collaborates.
 
 use super::{Apps, Launch, Sockets};
-use crate::unix::{ServiceConnections, ServiceSockets};
+use crate::host::{ServiceConnections, ServiceSockets};
 use app_catalogue::apps::InstalledApp;
 use std::ffi::OsString;
 use std::os::fd::AsRawFd as _;

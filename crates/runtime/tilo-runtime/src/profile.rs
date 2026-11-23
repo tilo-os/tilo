@@ -2,7 +2,7 @@
 //! profile's private directories and environment, hold the profile
 //! exclusively and serve its apps their document media.
 
-use crate::unix;
+use crate::host;
 use std::{
     io,
     path::{Path, PathBuf},
@@ -24,10 +24,10 @@ pub(crate) fn prepare_environment(profile: &Path) -> io::Result<[(&'static str, 
             "profile path must be absolute",
         ));
     }
-    unix::private_directory(profile)?;
+    host::private_directory(profile)?;
     let paths = environment(profile);
     for (_, path) in &paths {
-        unix::private_directory(path)?;
+        host::private_directory(path)?;
     }
     Ok(paths)
 }
@@ -46,9 +46,9 @@ fn environment(profile: &Path) -> [(&'static str, PathBuf); 4] {
 /// Hold `root` exclusively for this process, recording the owner so a
 /// second start can name it.
 pub fn lock(root: &Path) -> io::Result<advisory_lock::FileLock> {
-    unix::private_directory(root)?;
+    host::private_directory(root)?;
     let lock_path = root.join("runtime.lock");
-    let lock = advisory_lock::FileLock::try_exclusive(unix::private_file(&lock_path)?).map_err(
+    let lock = advisory_lock::FileLock::try_exclusive(host::private_file(&lock_path)?).map_err(
         |error| match error {
             advisory_lock::TryLockError::WouldBlock => {
                 let owner = advisory_lock::owner_pid(&lock_path)

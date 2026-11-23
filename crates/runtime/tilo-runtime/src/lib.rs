@@ -8,28 +8,51 @@
 //! the `tilo-runtime` executable, which serves the person's login as its device too
 //! ([`device`]).
 
+#[cfg(unix)]
 use std::{
     io,
     path::Path,
     process::{Child, Command},
 };
 
+#[cfg(unix)]
 mod apps;
 pub mod cli;
+#[cfg(unix)]
 mod daemon;
+#[cfg(windows)]
+#[path = "daemon_windows.rs"]
+mod daemon;
+mod daemon_args;
+#[cfg(unix)]
 pub mod device;
+#[cfg(unix)]
 mod i18n;
+#[cfg(unix)]
 pub mod key_sessions;
+#[cfg(unix)]
 pub mod offload;
+#[cfg(unix)]
 mod os_search;
+#[cfg(unix)]
 pub mod other_devices;
+#[cfg(unix)]
 pub mod personal_devices;
+#[cfg(unix)]
 pub mod profile;
-pub mod unix;
+// Where this platform reaches a profile's services and starts an app against
+// them: Unix sockets and inherited descriptors on Unix, and the Windows edge
+// that refuses in words until named pipes and handle passing are here.
+#[cfg(unix)]
+#[path = "host/unix.rs"]
+pub mod host;
+#[cfg(windows)]
+#[path = "host/windows.rs"]
+pub mod host;
 
 // Workspace admission decodes peer bytes in automerge worker processes started
 // from this test binary; this serves them.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 tilo_automerge_isolate::test_worker!();
 
 /// Socket names inside a profile, shared by the daemon that binds them and
@@ -42,6 +65,7 @@ pub const FILES_SOCKET: &str = "files.sock";
 
 /// One running service session over a profile: the host's identity,
 /// collaboration and content services.
+#[cfg(unix)]
 pub trait RuntimeServices: Sized {
     /// The action host MCP callers browse and invoke through.
     type ActionProvider: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static;

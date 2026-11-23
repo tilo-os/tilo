@@ -37,7 +37,11 @@ path = "src/bin/tilo-runtime.rs"
 name = "it"
 path = "tests/it.rs"
 
-[dependencies]
+# The Windows build is the daemon's command line and its refusal for now: the
+# services it hosts here reach a profile over Unix sockets and inherited
+# descriptors, and named pipes and handle passing are not in yet. Each joins
+# this table when its Windows body exists, behind the same functions.
+[target.'cfg(not(windows))'.dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-paths.workspace = true
@@ -100,7 +104,6 @@ tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 # The surface an app under development names (`app_surface`), and the
 # runtime's own words (consent prompt, device grants), from Fluent. The
 # broker links it on every platform already.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 # The one per-user index the host's own search reads.
 tilo-os-search = { path = "../os-search" }
 # The native request an app hands a host search result back with.
@@ -144,11 +147,20 @@ uuid.workspace = true
 
 # Mounts the workspace files where this user can mount FUSE.
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
+# The toolkit the Unix launch edge and its surface files are read with.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+
+# What the daemon's command line needs on Windows: the profile it names and the
+# MCP projection it can answer without a daemon.
+[target.'cfg(windows)'.dependencies]
+tilo-mcp = { path = "../tilo-mcp" }
+tilo-paths.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+uuid.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser.workspace = true
 # The member that takes work runs its workspaces' shells: ush's own commands

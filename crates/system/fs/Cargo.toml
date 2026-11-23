@@ -191,14 +191,15 @@ accounts = { version = "0.1.0", path = "../accounts", features = ["sign-ins-fixt
 [lints]
 workspace = true
 
-[target.'cfg(not(target_os = "macos"))'.dependencies]
-fuser = { workspace = true, optional = true }
-
 # The Tier 1 native backend: fanotify journal, Btrfs capture epochs and
 # pre-content placeholders. Linux-only kernel interfaces, which the daemon
 # that mounts the tree reads.
 [target.'cfg(target_os = "linux")'.dependencies]
 fs-native = { version = "0.1.0", path = "../fs-native", optional = true }
+# FUSE is a Unix kernel interface: Linux mounts through it, and macOS through
+# its own build below. A host with neither (Windows) keeps the content store
+# and refuses the mount where that is asked.
+fuser = { workspace = true, optional = true }
 
 # Shared filesystem and relay data remain available; no native mount provider.
 [target.'cfg(target_os = "macos")'.dependencies]
