@@ -1,5 +1,5 @@
 [package]
-id = "so.tilo.tasks"
+id = "so.tilo.tasks.native"
 name = "Tasks"
 category = "Office"
 version = "0.1.0"
