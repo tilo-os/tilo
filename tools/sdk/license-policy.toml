@@ -70,7 +70,6 @@ client_roots = [
 # not here, and when one here is no longer reached.
 client_side = [
     "app-fleet",               # the kinds each fleet app declares its members' own
-    "bounded-command",         # a command run with its time and output bounded
     "collab-types",            # a document's signed envelopes, and resource paths
     "neighbour-wire",
     "runtime-portal",
@@ -95,7 +94,6 @@ client_side = [
     "tilo-net",
     "tilo-paths",
     "tilo-platform-caps",
-    "tilo-process",            # a live process's id and its start time
     "tilo-reference",          # the links an invitation is written as
     "tilo-server-client",       # device certification and the device-signer boundary
     "tilo-server-protocol",     # the server's handshake and wire messages
