@@ -18,14 +18,23 @@
 )]
 
 use std::fs;
+use std::io::Write as _;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
+use tilo_app_launch::Connects as _;
 use tilo_app_launch::{Launch, SessionEnvironment};
 use tilo_desktop_model::Workspace;
 use tilo_desktop_policy::Window;
+use tilo_session::app_tabs::ServiceLinks;
 use tilo_session::apps::Apps;
-use tilo_session::{AppActions, Options, Session};
+use tilo_session::{AppActions, Launches, Options, Session};
+use ui::floating_surface::{
+    FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
+};
+use ui::window_targets::{TargetAction, WindowTarget};
 
 use crate::common::PERSON;
 
@@ -97,6 +106,19 @@ fn launcher_recording(home: &tilo_test_env::TestHome, handed: &Path) -> tilo_tes
     .unwrap()
 }
 
+/// As [`launcher_recording`], recording its own process id beside the instance: the window's
+/// shell-ui connection is attributed to the process its launch started.
+fn launcher_recording_pid(home: &tilo_test_env::TestHome, handed: &Path) -> tilo_test_env::StandIn {
+    tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
+        &format!(
+            "printf '%s %s\\n' \"$$\" \"${{TILO_CONTINUITY_INSTANCE:-}}\" >> '{handed}'\nhold\n",
+            handed = handed.display(),
+        ),
+    )
+    .unwrap()
+}
+
 /// The apps this session starts, on its own display, through `launcher`.
 fn apps_at(home: &tilo_test_env::TestHome, launcher: PathBuf) -> Rc<Apps> {
     let mut environment = SessionEnvironment::from_process();
@@ -117,13 +139,169 @@ fn a_window(id: u64) -> Window {
 
 /// A headless session whose shell the tests open windows on, its apps started through `apps`.
 fn session(apps: Rc<Apps>) -> Session {
+    session_on(apps, Arc::<Launches>::default())
+}
+
+/// A headless session whose shell the tests open windows on, its apps started through `apps`, and
+/// the launches it records to `launches`: the connections its windows' shell-ui sockets are made
+/// on.
+fn session_on(apps: Rc<Apps>, launches: Arc<Launches>) -> Session {
     crate::common::headless(Options {
         person: PERSON.to_owned(),
         collab: false,
         apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
         launch: Some(apps),
+        launches,
         ..Options::default()
     })
+}
+
+/// A window whose process is `pid` and whose instance is the tab the shell made for it.
+fn a_window_of(instance: u64, pid: u32) -> Window {
+    Window {
+        id: instance,
+        pid: Some(pid),
+        app_id: Some(APP.into()),
+        title: Some("Tasks".into()),
+        ..Window::default()
+    }
+}
+
+/// Every frame the session wrote back on `connection` by the turn of its loop on which `heard`
+/// holds of them: whole lines, each a host message.
+fn host_frames(
+    session: &mut Session,
+    connection: &mut UnixStream,
+    heard: impl Fn(&[FloatingSurfaceHostMessage]) -> bool,
+) -> Vec<FloatingSurfaceHostMessage> {
+    connection.set_nonblocking(true).unwrap();
+    let mut seen = Vec::new();
+    let mut frames = Vec::new();
+    crate::common::wait_maybe(session, |_| {
+        let mut chunk = [0u8; 1024];
+        loop {
+            match std::io::Read::read(connection, &mut chunk) {
+                Ok(0) => break,
+                Ok(read) => seen.extend_from_slice(&chunk[..read]),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("the connection broke: {error}"),
+            }
+        }
+        let whole = seen
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(&seen[..0], |end| &seen[..end]);
+        frames = String::from_utf8(whole.to_vec())
+            .expect("frames are text")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str(line.trim()).expect("the session wrote a host message")
+            })
+            .collect();
+        heard(&frames).then_some(())
+    });
+    frames
+}
+
+/// A hosted app's window says what its content offers by what each control does, and a press on
+/// one by that name reaches the app on the connection that described it: what a person's tools,
+/// an agent and a test press a tilolang window's bar by.
+#[test]
+fn a_hosted_windows_control_pressed_by_what_it_does_reaches_the_app() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    installed_windowed(&mut home);
+    let handed = home.home().join("started");
+    let launcher = launcher_recording_pid(&home, &handed);
+    let apps = apps_at(&home, launcher.path().to_owned());
+    let started: Arc<Launches> = Arc::new(Launches::default());
+    let mut session = session_on(apps.clone(), Arc::clone(&started));
+
+    apps.open(&Launch::Package {
+        app: APP.to_owned(),
+        open: None,
+    })
+    .expect("the app is opened");
+    let (pid, instance) =
+        crate::common::wait_for(&mut session, "the window's process starts", |_| {
+            fs::read_to_string(&handed).ok().and_then(|text| {
+                let line = text.lines().find(|line| !line.trim().is_empty())?;
+                let (pid, instance) = line.trim().split_once(' ')?;
+                Some((pid.parse::<u32>().ok()?, instance.parse::<u64>().ok()?))
+            })
+        });
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(a_window_of(instance, pid)).unwrap());
+    crate::common::until(
+        &mut session,
+        "the app's window is on the shell",
+        |session| tabs_of(session, APP).contains(&instance),
+    );
+
+    // The window's own shell-ui connection says what its content shows, each control by what it
+    // does.
+    let identity = format!("{APP}:item{}done", '\u{1f}');
+    let mut connection: UnixStream = ServiceLinks::new(Arc::clone(&started))
+        .shell_ui(APP, instance, Some(pid))
+        .expect("the window's shell-ui connection")
+        .into();
+    let targets = FloatingSurfaceClientMessage::WindowTargets {
+        targets: vec![WindowTarget {
+            role: "Button".to_owned(),
+            name: "Done".to_owned(),
+            identity: Some(identity.clone()),
+            rect: [4.0, 6.0, 44.0, 24.0],
+            actions: vec![TargetAction::Activate],
+            level: None,
+            selected: false,
+        }],
+        instance: None,
+    };
+    for frame in [
+        FloatingSurfaceClientMessage::Hello {
+            version: FLOATING_SURFACE_PROTOCOL_VERSION,
+        },
+        targets,
+    ] {
+        let mut bytes = serde_json::to_vec(&frame).unwrap();
+        bytes.push(b'\n');
+        connection.write_all(&bytes).unwrap();
+    }
+    connection.flush().unwrap();
+    crate::common::until(
+        &mut session,
+        "the window's control is listed by what it does",
+        |session| {
+            session
+                .controls()
+                .iter()
+                .any(|control| control.identity.as_deref() == Some(identity.as_str()))
+        },
+    );
+
+    // The press the session makes on the control that does the identity, as the control socket
+    // makes it: the window in front shows it, so it is that window's.
+    session
+        .handle()
+        .press_window_control_doing(&identity, TargetAction::Activate)
+        .expect("the window's control is pressed");
+
+    // The press reaches the app on the connection that described it.
+    let pressed = FloatingSurfaceHostMessage::PressTarget {
+        name: "Done".to_owned(),
+        role: "Button".to_owned(),
+        identity: Some(identity),
+        action: TargetAction::Activate,
+    };
+    let told = host_frames(&mut session, &mut connection, |told| {
+        told.contains(&pressed)
+    });
+    assert!(
+        told.contains(&pressed),
+        "the app is told which of its controls was pressed: {told:?}"
+    );
 }
 
 /// The tabs the shell keeps of `app` anywhere on it, whether a window stands in one or one waits for
