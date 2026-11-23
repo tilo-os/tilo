@@ -463,6 +463,18 @@ view displays_pane() {
             ui.Toggle(bind: d.auto_brightness),
         )
         setting(
+            "Scale",
+            "How large this screen draws what it shows",
+            ui.Slider(
+                bind: d.scale,
+                label: "Scale",
+                min: 0.5,
+                max: 3.0,
+                step: 0.25,
+                shows_value: true,
+            ),
+        )
+        setting(
             "Rotation lock",
             "Keep the picture as it is when the device turns",
             ui.Toggle(bind: d.rotation_lock),
