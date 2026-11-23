@@ -155,7 +155,7 @@ impl ReceiptSurface for KindSurface {
             .verbs
             .iter()
             .find(|verb| verb.id == action)
-            .map(|verb| verb.name.as_str())
+            .map(tilo_actions::surface::VerbSurface::offered)
     }
 
     fn editable(&self, path: &[PathStep]) -> bool {
@@ -391,6 +391,11 @@ writes = ["document", "comments.*"]
             assert_eq!(
                 surface.verb("comment"),
                 Some((ActionKind::Undoable, Some("comments".into())))
+            );
+            assert_eq!(
+                surface.action_name("comment"),
+                Some("comment"),
+                "a native verb is published to the policy under its own id"
             );
             assert!(surface.editable(&[PathStep::Field("body".into())]));
             assert!(!surface.editable(&[PathStep::Field("created".into())]));
