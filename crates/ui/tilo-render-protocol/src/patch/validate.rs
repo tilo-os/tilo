@@ -682,65 +682,32 @@ impl<'a> Validator<'a> {
         Ok(())
     }
 
-    /// Check one message the host sent an app.
+    /// Check one message the host sent an app: the keys it names, then the value it carries.
     fn to_app_message(&self, message: &ToApp) -> Result<(), Refused> {
+        self.to_app_targets(message)?;
+        self.to_app_payload(message)
+    }
+
+    /// The keys and resources `message` names.
+    fn to_app_targets(&self, message: &ToApp) -> Result<(), Refused> {
         match message {
-            ToApp::Fire {
-                key, event, value, ..
-            } => {
+            ToApp::Fire { key, event, .. } => {
                 self.key(key)?;
                 self.key(event)?;
-                if let Some(value) = value {
-                    self.value(value, 0)?;
-                }
             }
-            ToApp::Toggle { target, key, .. } => {
+            ToApp::Toggle { target, key, .. }
+            | ToApp::Splice { target, key, .. }
+            | ToApp::Edit { target, key, .. }
+            | ToApp::EditRich { target, key, .. } => {
                 self.resource(target)?;
                 self.key(key)?;
             }
             ToApp::Resolve { key, .. } => self.key(key)?,
-            ToApp::Splice {
-                target,
-                key,
-                insert,
-                ..
-            } => {
-                self.resource(target)?;
-                self.key(key)?;
-                self.string(insert)?;
-            }
-            ToApp::Edit {
-                target, key, text, ..
-            } => {
-                self.resource(target)?;
-                self.key(key)?;
-                self.string(text)?;
-            }
-            ToApp::EditRich {
-                target, key, rich, ..
-            } => {
-                self.resource(target)?;
-                self.key(key)?;
-                self.value(&Value::Rich(rich.clone()), 0)?;
-            }
-            ToApp::Open { resource } => self.resource(resource)?,
-            ToApp::OpenReference { reference } => self.string(reference)?,
             ToApp::Rows {
-                list,
-                start,
-                end,
-                open,
-                menu,
-                ..
+                list, open, menu, ..
             } => {
                 for key in std::iter::once(list).chain(open).chain(menu) {
                     self.key(key)?;
-                }
-                if end < start || end.saturating_sub(*start) > self.limits.rows {
-                    return Err(Refused::invalid(concat!(
-                        "over the limit of ",
-                        "rows in a message"
-                    )));
                 }
             }
             ToApp::Focus { at } => {
@@ -748,23 +715,14 @@ impl<'a> Validator<'a> {
                     self.key(key)?;
                 }
             }
-            ToApp::Space { width, height, .. } => {
-                if !(width.is_finite() && height.is_finite() && *width >= 0.0 && *height >= 0.0) {
-                    return Err(Refused::invalid("a space is no size"));
-                }
-            }
-            ToApp::FormEdit { field, text, .. } => {
-                self.key(field)?;
-                self.string(text)?;
-            }
-            ToApp::Invoke { address, argument } => self.invoke(address, argument.as_deref())?,
-            ToApp::Serving { call, invoker } => self.serving(call, invoker.as_deref())?,
-            ToApp::PageAnswer { answer, .. } => {
-                if answer.len() > super::MAX_PAGE_BYTES {
-                    return Err(Refused::invalid("over the limit of bytes in a page answer"));
-                }
-            }
-            ToApp::Back
+            ToApp::FormEdit { field, .. } => self.key(field)?,
+            ToApp::Open { .. }
+            | ToApp::OpenReference { .. }
+            | ToApp::Space { .. }
+            | ToApp::Invoke { .. }
+            | ToApp::Serving { .. }
+            | ToApp::PageAnswer { .. }
+            | ToApp::Back
             | ToApp::Answer(_)
             | ToApp::Undo
             | ToApp::Redo
@@ -775,6 +733,45 @@ impl<'a> Validator<'a> {
             | ToApp::FormCancel { .. } => {}
         }
         Ok(())
+    }
+
+    /// The value `message` carries, and how large it comes to.
+    fn to_app_payload(&self, message: &ToApp) -> Result<(), Refused> {
+        match message {
+            ToApp::Fire {
+                value: Some(value), ..
+            } => self.value(value, 0),
+            ToApp::Splice { insert, .. } => self.string(insert),
+            ToApp::Edit { text, .. } => self.string(text),
+            ToApp::EditRich { rich, .. } => self.value(&Value::Rich(rich.clone()), 0),
+            ToApp::Open { resource } => self.resource(resource),
+            ToApp::OpenReference { reference } => self.string(reference),
+            ToApp::Rows { start, end, .. } => {
+                if end < start || end.saturating_sub(*start) > self.limits.rows {
+                    return Err(Refused::invalid(concat!(
+                        "over the limit of ",
+                        "rows in a message"
+                    )));
+                }
+                Ok(())
+            }
+            ToApp::Space { width, height, .. } => {
+                if !(width.is_finite() && height.is_finite() && *width >= 0.0 && *height >= 0.0) {
+                    return Err(Refused::invalid("a space is no size"));
+                }
+                Ok(())
+            }
+            ToApp::Invoke { address, argument } => self.invoke(address, argument.as_deref()),
+            ToApp::Serving { call, invoker } => self.serving(call, invoker.as_deref()),
+            ToApp::PageAnswer { answer, .. } => {
+                if answer.len() > super::MAX_PAGE_BYTES {
+                    return Err(Refused::invalid("over the limit of bytes in a page answer"));
+                }
+                Ok(())
+            }
+            ToApp::FormEdit { text, .. } => self.string(text),
+            _ => Ok(()),
+        }
     }
 
     /// Check an action the host asks an app to run.
