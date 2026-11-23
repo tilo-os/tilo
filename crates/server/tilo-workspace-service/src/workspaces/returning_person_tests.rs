@@ -101,7 +101,7 @@ async fn assert_still_a_member_everywhere(
     );
     let runtime = registry.lock().await.get(&workspace_id).cloned().unwrap();
     assert!(
-        runtime.lock().await.governed_user_roots.contains(&person),
+        runtime.lock().await.admits_person(&person),
         "the handshake and an agent's delegation still find the person a member"
     );
     assert!(

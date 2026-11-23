@@ -655,13 +655,16 @@ pub async fn project_access(workspaces: &Workspaces, workspace: &str) {
             .expect("the workspace's device_access");
         (device_access, governed.workspace_id())
     };
-    workspaces
+    let runtime = workspaces
         .inner
         .host
-        .access
-        .replace_access(workspace_id, device_access)
+        .workspaces
+        .lock()
         .await
-        .expect("the server projects the workspace's device_access");
+        .get(&workspace_id)
+        .cloned()
+        .expect("the server serves the workspace");
+    runtime.lock().await.device_access = Some(Arc::new(device_access));
 }
 
 /// Until when `workspace` restricts `person`, as `host` reads its policy.

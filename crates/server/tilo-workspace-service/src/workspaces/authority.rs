@@ -1,25 +1,36 @@
-//! Who may administer a workspace this server governs, decided in one place.
+//! Who may administer a workspace served here, decided in one place: its signed member list.
 //!
 //! Every administration entry (the `tilo.workspace` and `tilo.host` actions,
 //! the `/workspaces` pages, calls, the moderation
-//! agent) asks [`Workspaces::authorize`] with what it is about to do. The answer comes in three steps:
+//! agent) asks [`Workspaces::authorize`] with what it is about to do. No device or
+//! server governs a workspace: the workspace's member list decides for every
+//! device alike, this server's own included. The answer comes in three steps:
 //!
 //! 1. The device must be a person's current device: certified now, not
-//!    revoked, and not one of the server's agents (an agent governs nothing;
-//!    it joins workspaces through its delegation).
-//! 2. A device of the server's own person administers every workspace here. That
-//!    person is the host's, so what no workspace decides ([`ServiceOperation`]) is
-//!    theirs alone, but for making a person's own workspace, which a host
-//!    that keeps them does for anyone.
-//! 3. Any other device administers a workspace as far as the workspace's governance
-//!    lets its person: the governance action, invitation or change is
-//!    checked against the workspace's policy, read under the workspace's lock so a
-//!    role change and an administration call cannot race. A Moderator
-//!    removes, bans and restricts members by its role's grants, as anyone
-//!    granted those actions does; a member the owner granted `invite`
-//!    invites, never above their own role; an administrator holds every
-//!    governance action; the workspace keeps its owner whoever asks; an Editor
-//!    by role alone governs nothing.
+//!    revoked, and not one of the server's agents (an agent administers
+//!    nothing; it joins workspaces through its delegation).
+//! 2. What no workspace decides ([`ServiceOperation`]: making this host's
+//!    workspaces, its machines, which workspaces it holds) is this host's
+//!    person's, but for making a person's own workspace and keeping their
+//!    list, which a host that keeps them does for anyone.
+//! 3. Inside a workspace, a device does what the member list lets its person
+//!    do: the governance action, invitation or change is checked against
+//!    the workspace's policy, read under the workspace's lock so a role
+//!    change and an administration call cannot race. A device of a member
+//!    the list does not hold yet is that member. A Moderator removes,
+//!    bans and restricts members by its role's grants, as anyone granted
+//!    those actions does; a member the owner granted `invite` invites, never
+//!    above their own role; an administrator holds every governance action;
+//!    the workspace keeps its owner whoever asks; an Editor by role alone
+//!    administers nothing. This server's own person is no exception: in a
+//!    workspace whose list does not have them, they may do nothing, and in
+//!    one that does, they hold the place the list gives them, which for a
+//!    workspace this server made for someone is an administrator's grant
+//!    the owner can withdraw.
+//!
+//! What this server carries out it signs, so it carries out only what its
+//! own person may do there as well: what only the workspace's owner may do is
+//! signed on a device of theirs, never relayed.
 //!
 //! An agent's call is decided by its own grants first, where it is asked
 //! ([`super::actions::agents`]); here it is held to what its person may, as
@@ -38,8 +49,10 @@ use tilo_lock::RwLockRecover as _;
 /// What a workspace administration request asks of its authority.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum WorkspaceOp<'a> {
-    /// The host's own business, which no workspace's governance decides.
+    /// The host's own business, which no workspace decides.
     Host(ServiceOperation),
+    /// Let a further device of a member in, as theirs.
+    Enter,
     /// One of the workspace's governance actions on the workspace itself
     /// ([`roles::governance`]).
     Govern(&'static str),
@@ -78,6 +91,7 @@ impl WorkspaceOp<'_> {
     fn name(self) -> &'static str {
         match self {
             Self::Host(operation) => operation.name(),
+            Self::Enter => "workspace.enter",
             Self::Govern(action) => action,
             Self::Invite(_) | Self::InviteAdministrator => roles::governance::INVITE,
             Self::MakeAdministrator => "make-administrator",
@@ -89,10 +103,8 @@ impl WorkspaceOp<'_> {
     }
 }
 
-/// Why a device of another person cannot do what only the host's person
-/// does. Kept as it was before workspaces decided their own administration, so
-/// a client reading it keeps working.
-const HOST_PERSON_ONLY: &str = "workspace administration requires a device of the server's user";
+/// Why an operation inside a workspace names none here.
+const NO_WORKSPACE: &str = "this server does not hold that workspace";
 
 impl Workspaces {
     /// Whether `device` may do `op` in `workspace` (which every operation but a
@@ -206,20 +218,17 @@ impl Workspaces {
         host_signs: bool,
     ) -> Result<String, CollaborationError> {
         let host = self.inner.host.cert.user_public_key;
-        let server_person = device.user_public_key == host;
-        // An agent is a device of the server's user too, but it governs
-        // nothing: it joins workspaces only through its delegation. The registry
-        // is the server's in every build, so is this refusal: an agent
-        // registered with a server built without its supervisor is still no
-        // person.
-        let agent = server_person
-            && self
-                .inner
-                .host
-                .agents
-                .read_recover()
-                .contains_key(&device.device_public_key);
-        if agent {
+        // An agent is a device of its person too, but it administers nothing:
+        // it joins workspaces only through its delegation. The registry is the
+        // server's in every build, so is this refusal: an agent registered with
+        // a server built without its supervisor is still no person.
+        if self
+            .inner
+            .host
+            .agents
+            .read_recover()
+            .contains_key(&device.device_public_key)
+        {
             return Err(CollaborationError::new(
                 "workspace administration requires a person's device, not an agent's",
             ));
@@ -229,27 +238,9 @@ impl Workspaces {
         }
         tilo_user_identity::verify_device_cert_at(device, now)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
-        // A place is changed on a person the workspace holds, whoever asks: someone it does
-        // not hold is given one by `member.add`, never a place here.
-        if let WorkspaceOp::Role(target, _) = op {
-            let governed = workspace.ok_or_else(|| CollaborationError::new(HOST_PERSON_ONLY))?;
-            let target = hex::encode(target);
-            let policy = governed
-                .peer()
-                .governance()
-                .governed_policy()
-                .map_err(CollaborationError::new)?;
-            if !policy.is_member(&target) {
-                return Err(CollaborationError::new(
-                    tilo_action_policy::Refusal::NotAMember(target).to_string(),
-                ));
-            }
-        }
         if let WorkspaceOp::Host(operation) = op {
             // What anyone may do here is for a host that keeps workspaces of
             // people's own: making theirs, listing them, and keeping their list.
-            // The host's own person needs no offer: every workspace governed
-            // here is theirs, and a key of theirs enters one by asking for it.
             let anyones = matches!(
                 operation,
                 ServiceOperation::CreateOwnWorkspace
@@ -259,7 +250,7 @@ impl Workspaces {
                     | ServiceOperation::KeepPersonalList
                     | ServiceOperation::ReadPersonalList
                     | ServiceOperation::NamePersonalDevice
-            ) && !server_person;
+            ) && device.user_public_key != host;
             if anyones && self.own().is_none() {
                 return Err(CollaborationError::new(
                     "this host keeps no workspaces of people's own",
@@ -268,42 +259,98 @@ impl Workspaces {
             return if operation.permits(&host, device) {
                 Ok(hex::encode(host))
             } else {
-                Err(CollaborationError::new(HOST_PERSON_ONLY))
+                Err(CollaborationError::new(
+                    "only a device of this server's person does that here",
+                ))
             };
         }
-        if server_person {
-            if let (WorkspaceOp::Change(change), Some(workspace)) = (op, workspace) {
-                refuse_changing_the_owner(workspace, change)?;
+        let workspace = workspace.ok_or_else(|| CollaborationError::new(NO_WORKSPACE))?;
+        let policy = workspace
+            .peer()
+            .governance()
+            .governed_policy()
+            .map_err(CollaborationError::new)?;
+        match op {
+            // A further device of a member comes in as theirs, whichever server they ask;
+            // anyone else comes in by an invitation.
+            WorkspaceOp::Enter => {
+                let person = hex::encode(device.user_public_key);
+                return if of_a_member(workspace, device, &policy) {
+                    Ok(person)
+                } else {
+                    Err(CollaborationError::new(
+                        tilo_action_policy::Refusal::NotAMember(person).to_string(),
+                    ))
+                };
             }
-            return Ok(hex::encode(host));
+            // A place is changed on a person the workspace has, whoever asks: someone it does
+            // not have is given one by `member.add`, never a place here.
+            WorkspaceOp::Role(target, _) => {
+                let target = hex::encode(target);
+                if !policy.is_member(&target) {
+                    return Err(CollaborationError::new(
+                        tilo_action_policy::Refusal::NotAMember(target).to_string(),
+                    ));
+                }
+            }
+            _ => {}
         }
-        let workspace = workspace.ok_or_else(|| CollaborationError::new(HOST_PERSON_ONLY))?;
         decide_by_governance(workspace, device, op, now, host_signs.then_some(host))
     }
 }
 
-/// The owner's devices administer everything but the owner's own place.
-fn refuse_changing_the_owner(
+/// Whether `device` is a device of a person `policy`, the workspace's, has as a member: one of
+/// their own, certified by their root or a device of theirs, that the workspace keeps as no
+/// revoked key.
+fn of_a_member(
     workspace: &GovernedWorkspace,
-    change: &Change,
-) -> Result<(), CollaborationError> {
-    let owner = hex::encode(workspace.peer().owner());
-    if let Change::RemoveMember { person }
-    | Change::Ban { person }
-    | Change::Restrict { person, .. } = change
-        && *person == owner
-    {
-        return Err(CollaborationError::new("the owner cannot be removed"));
-    }
-    Ok(())
+    device: &DeviceCert,
+    policy: &tilo_action_policy::WorkspacePolicy,
+) -> bool {
+    crate::workspace_access::person_device(device)
+        && policy.is_member(&hex::encode(device.user_public_key))
+        && !super::collaboration::revoked_keys(workspace).contains(&device.device_public_key)
 }
 
-/// Whether `op` by `device`, a device of a person other than the server's,
-/// is one the workspace's governance lets its person do now, and this host,
-/// whose key signs what it carries out, may make that change itself: what
-/// only the workspace's owner may do is signed on a device of theirs, never
-/// relayed by its host. `host` is the host's own person, when it signs the
-/// change; `None` for one the device signs itself.
+/// What `workspace` lets `device` do: the access of a device its member list holds, or, for a
+/// device the list does not hold yet, its person's, when it is a device of a member's own.
+fn member_access(
+    workspace: &GovernedWorkspace,
+    device: &DeviceCert,
+    op: WorkspaceOp<'_>,
+    now: u64,
+) -> Result<tilo_action_policy::MemberAccess, CollaborationError> {
+    let held = workspace
+        .peer()
+        .permissions(device.device_public_key, system_time(now));
+    let reason = match held {
+        Ok(member) => return Ok(member),
+        Err(reason) => reason,
+    };
+    let policy = workspace
+        .peer()
+        .governance()
+        .governed_policy()
+        .map_err(CollaborationError::new)?;
+    if !of_a_member(workspace, device, &policy) {
+        return Err(CollaborationError::new(format!(
+            "a member the workspace lets {} is needed: {reason}",
+            op.name()
+        )));
+    }
+    Ok(tilo_action_policy::MemberAccess::person(
+        policy,
+        hex::encode(device.user_public_key),
+    ))
+}
+
+/// Whether `op` by `device` is one the workspace's member list lets its person
+/// do now, and this host, whose key signs what it carries out, may make that
+/// change itself: what only the workspace's owner may do is signed on a device
+/// of theirs, never relayed by its host. `host` is the host's own person, when
+/// it signs the change; `None` for one the device signs itself. A device the
+/// list does not hold yet is its person, when it is a device of theirs and
+/// the list has them.
 fn decide_by_governance(
     workspace: &GovernedWorkspace,
     device: &DeviceCert,
@@ -311,15 +358,7 @@ fn decide_by_governance(
     now: u64,
     host: Option<[u8; 32]>,
 ) -> Result<String, CollaborationError> {
-    let member = workspace
-        .peer()
-        .permissions(device.device_public_key, system_time(now))
-        .map_err(|reason| {
-            CollaborationError::new(format!(
-                "{HOST_PERSON_ONLY}, or a member the workspace lets {}: {reason}",
-                op.name()
-            ))
-        })?;
+    let member = member_access(workspace, device, op, now)?;
     // The workspace decides for the person it certified this device to; a
     // certificate naming anyone else speaks for nobody here.
     let person = member
@@ -339,7 +378,9 @@ fn decide_by_governance(
     // No person observed an approval here: an answer that asks first is a
     // refusal, never a pass.
     let decided = match op {
-        WorkspaceOp::Host(_) => return Err(CollaborationError::new(HOST_PERSON_ONLY)),
+        WorkspaceOp::Host(_) | WorkspaceOp::Enter => {
+            return Err(CollaborationError::new(NO_WORKSPACE));
+        }
         WorkspaceOp::Govern(action) => member.policy.check_action(&authority, action, &cx, false),
         WorkspaceOp::Invite(role) => member.policy.check_invite(&authority, role, &cx, false),
         WorkspaceOp::InviteAdministrator => member
@@ -389,8 +430,8 @@ fn decide_by_governance(
             };
             return decide_by_governance(workspace, device, op, now, host);
         }
-        // Who the place belongs to was checked before this host's own authority: one the
-        // workspace holds is moved as [`Self::Place`] moves one.
+        // Who the place belongs to was checked before: one the workspace has is
+        // moved as [`Self::Place`] moves one.
         WorkspaceOp::Role(target, place) => {
             return decide_by_governance(
                 workspace,

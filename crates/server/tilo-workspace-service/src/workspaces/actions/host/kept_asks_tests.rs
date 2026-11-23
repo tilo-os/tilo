@@ -1863,7 +1863,7 @@ mod agents_kinds {
         workspaces
             .author_workspace_document(
                 workspace,
-                workspaces.governor(),
+                workspaces.device_cert(),
                 ("so.tilo.chat", &doc_id),
                 |doc| chat::demo::write_part(doc, &part).map_err(|error| error.to_string()),
             )

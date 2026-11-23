@@ -227,10 +227,7 @@ impl Workspaces {
         // workspace decides its changes against: settle before answering, as
         // a device that enters once more does.
         if !self
-            .inner
-            .host
-            .access
-            .projects_access(governed.workspace_id(), cert.device_public_key)
+            .decides_for(governed.workspace_id(), cert.device_public_key)
             .await
         {
             self.settle(&mut governed).await.ok()?;

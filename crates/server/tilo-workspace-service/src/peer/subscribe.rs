@@ -21,7 +21,7 @@ pub(super) async fn handle_subscribe(
         Ok(ws) => ws,
         Err(refusal) => return Ok(Some(refusal)),
     };
-    let mut wr = crate::workspace_io::fresh_membership(&ws).await?;
+    let mut wr = ws.lock().await;
     wr.add_subscriber(Subscriber {
         device_public_key: peer.device_public_key,
         tx: session.outbound.clone(),
@@ -107,8 +107,8 @@ pub(super) async fn handle_subscribe(
 }
 
 /// Whether `peer` may subscribe to `workspace_id`: the agent's delegation, the
-/// workspace this host holds, and the workspace's decision under a fresh
-/// membership read, enrolling the device when the workspace says so. A device
+/// workspace this host holds, and the workspace's decision by its member list,
+/// enrolling the device when the workspace says so. A device
 /// the server does not admit is refused as not admitted; a connection whose
 /// own authorization changed meanwhile ends.
 async fn admit_subscription(
@@ -158,7 +158,7 @@ async fn admit_subscription(
             },
         }));
     };
-    let mut wr = crate::workspace_io::fresh_membership(&ws).await?;
+    let mut wr = ws.lock().await;
     // The certificate passed when this session first subscribed: failing now
     // is a change mid-session. A first subscribe that fails it is refused
     // below, with no workspace data.
@@ -177,10 +177,9 @@ async fn admit_subscription(
     match session.decide(&wr, peer, WorkspaceOperation::Subscribe) {
         Decision::Admit => {}
         Decision::AdmitAndEnrol => {
-            let revision = wr.membership_revision;
             drop(wr);
-            crate::workspace_io::enrol(&ws, &peer.cert, revision).await?;
-            wr = crate::workspace_io::fresh_membership(&ws).await?;
+            crate::workspace_io::enrol(&ws, &peer.cert).await;
+            wr = ws.lock().await;
             if !session.admits(&wr, peer, WorkspaceOperation::Subscribe) {
                 return Err(PeerError::Protocol(
                     "subscriber authorization changed".into(),

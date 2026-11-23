@@ -8,13 +8,13 @@
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
 
-use std::path::Path;
-
 use tilo_peer_state::join::Role;
 use tilo_server::{Envelope, Server, ServerClient, ServerConfig, TrustPolicy};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestUser, client_endpoint, hold_workspace, invitation, redeem};
+use crate::common::{
+    TestDevice, TestUser, client_endpoint, hold_workspace, invitation, member_devices, redeem,
+};
 use tilo_server::WorkspaceId;
 
 /// The member's own workspace, governed natively on this host.
@@ -73,7 +73,11 @@ async fn home_host() -> HomeHost {
         ),
         "the owner's first device enters the owner's workspace"
     );
-    assert!(members(host.state.path(), OWNERS).contains(&laptop_key));
+    assert!(
+        member_devices(&host.server, OWNERS)
+            .await
+            .contains(&laptop_key)
+    );
     host
 }
 
@@ -103,18 +107,6 @@ async fn subscribe(client: &ServerClient, workspace_id: WorkspaceId) -> Option<E
         }
     })
     .await
-}
-
-/// The devices the workspace's access record admits, as its host keeps them.
-fn members(state: &Path, workspace_id: WorkspaceId) -> Vec<[u8; 32]> {
-    let directory = state.join(format!("workspaces/{workspace_id}"));
-    if !directory.exists() {
-        return Vec::new();
-    }
-    tilo_server::workspace_files::WorkspaceFiles::open(state, workspace_id)
-        .unwrap()
-        .load_membership()
-        .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -151,7 +143,9 @@ async fn cross_user_device_is_not_admitted_into_a_workspace_it_does_not_hold() {
         })
     ));
     assert!(
-        !members(host.state.path(), OWNERS).contains(&bob_key),
+        !member_devices(&host.server, OWNERS)
+            .await
+            .contains(&bob_key),
         "a cross-user device was persisted into the owner's workspace"
     );
 
@@ -200,7 +194,7 @@ async fn owner_device_still_enters_on_a_home_host() {
             ..
         })
     ));
-    let kept = members(host.state.path(), OWNERS);
+    let kept = member_devices(&host.server, OWNERS).await;
     assert!(
         kept.contains(&phone_key) && kept.contains(&tablet_key),
         "a home host keeps its own devices in the workspace's one record"

@@ -644,8 +644,8 @@ fn person_name() -> Option<String> {
         .filter(|name| tilo_identity::store::is_chosen_display_name(name))
 }
 
-/// Open the device's workspace service in its directory: it governs the workspace founded here
-/// on a computer with no login, and holds the member copies of the login's workspaces otherwise.
+/// Open the device's workspace service in its directory: it holds the workspace founded here on
+/// a computer with no login, and the member copies of the login's workspaces.
 fn open_workspaces(
     identity: &Identity,
     endpoint: iroh::Endpoint,
@@ -670,7 +670,6 @@ fn open_workspaces(
             key: &key,
             identity: device,
             endpoint,
-            governs,
             seal_checks: Arc::new(BrokerSealChecks(brokers)),
             apps,
         })

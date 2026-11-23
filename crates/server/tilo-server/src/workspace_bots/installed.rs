@@ -137,7 +137,7 @@ impl tilo_workspace_service::agents::events::Runner for EventRunner {
         let runner = BotRunner::new(
             workspaces.clone(),
             workspace.to_owned(),
-            workspaces.governor().clone(),
+            workspaces.device_cert().clone(),
             key,
             bot,
             BTreeMap::new(),

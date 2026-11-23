@@ -354,7 +354,7 @@ pub async fn enable(workspaces: &Workspaces, workspace: &str) -> Result<(), Stri
     {
         return Ok(());
     }
-    let cert = workspaces.governor();
+    let cert = workspaces.device_cert();
     let grant = moderation_grant(workspace, &hex::encode(cert.user_public_key));
     // The request is the grant as this build writes it: settling the same
     // enable again changes nothing.
@@ -390,7 +390,7 @@ async fn installed_moderation_grant(
 ) -> Result<Option<Grant>, String> {
     let expected = moderation_grant(
         workspace,
-        &hex::encode(workspaces.governor().user_public_key),
+        &hex::encode(workspaces.device_cert().user_public_key),
     );
     let grants = workspaces
         .workspace_grants(workspace)

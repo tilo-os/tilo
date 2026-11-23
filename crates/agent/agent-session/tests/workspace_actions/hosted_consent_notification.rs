@@ -121,7 +121,7 @@ async fn answers(
         device: Some("browser".to_owned()),
     };
     let catalogue = crate::common::catalogue();
-    let governor = workspaces.governor().clone();
+    let governor = workspaces.device_cert().clone();
     let part = chat::parts::part(0);
     workspaces
         .author_application(
@@ -185,7 +185,7 @@ async fn a_use_on_a_server_asks_the_person_where_their_device_hears_it_and_their
     make_agent(&page, &workspaces, &workspace, &acts_for, None).await;
     // Its person approves it, so its turn asks the workspace under its own key.
     served.approving(&workspace, &[AGENT]).await;
-    let governor = workspaces.governor().clone();
+    let governor = workspaces.device_cert().clone();
     workspaces
         .prepare_application(&workspace, &governor, &crate::common::catalogue(), CHAT, "")
         .await

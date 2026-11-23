@@ -26,13 +26,8 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
     let (a, _) = certified_device(&root, user.public_key, "a");
     let id = WorkspaceId::from_u128(11);
     let tmp = tempfile::tempdir().unwrap();
-    let mut wr = crate::workspace::WorkspaceRuntime::open(
-        tmp.path(),
-        id,
-        crate::workspace::Membership::default(),
-    )
-    .unwrap();
-    wr.admit_device(a.device_public_key).unwrap();
+    let mut wr = crate::workspace::WorkspaceRuntime::open(tmp.path(), id).unwrap();
+    wr.list_environment(a.device_public_key, true);
     let (atx, _arx) = mpsc::channel(2);
     let (disconnect, _disconnect_rx) = mpsc::channel(1);
     wr.add_subscriber(Subscriber {
@@ -97,10 +92,12 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
 
     if remove_membership {
         let workspace = registry.lock().await[&id].clone();
-        crate::workspace_io::replace_membership(&workspace, Vec::new())
-            .await
-            .unwrap();
-        assert!(workspace.lock().await.has_subscriber(&a.device_public_key));
+        let mut runtime = workspace.lock().await;
+        runtime.settle_members(tilo_peer_state::GovernedAccess::default(), [], None);
+        assert!(
+            !runtime.has_subscriber(&a.device_public_key),
+            "a member list that leaves the device out refuses its live session"
+        );
     } else {
         let mut entry = tilo_user_identity::RevocationEntry {
             user_public_key: user.public_key,
@@ -202,13 +199,8 @@ async fn requests_the_server_does_not_answer_are_refused() {
     let (a, _) = certified_device(&root, user.public_key, "a");
     let id = WorkspaceId::from_u128(13);
     let tmp = tempfile::tempdir().unwrap();
-    let mut wr = crate::workspace::WorkspaceRuntime::open(
-        tmp.path(),
-        id,
-        crate::workspace::Membership::default(),
-    )
-    .unwrap();
-    wr.admit_device(a.device_public_key).unwrap();
+    let mut wr = crate::workspace::WorkspaceRuntime::open(tmp.path(), id).unwrap();
+    wr.list_environment(a.device_public_key, true);
     let (atx, mut arx) = mpsc::channel(4);
     let (disconnect, _disconnect_rx) = mpsc::channel(1);
     wr.add_subscriber(Subscriber {

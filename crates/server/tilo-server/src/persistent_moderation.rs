@@ -78,7 +78,7 @@ pub(crate) fn follow_published(
                 if running.contains_key(&workspace) {
                     continue;
                 }
-                let host = workspaces.governor();
+                let host = workspaces.device_cert();
                 // A person decides whether their workspace has a moderation
                 // bot: without their enable it holds no grant and stays off.
                 match tilo_server::workspace_bots::enabled(&workspaces, &workspace).await {

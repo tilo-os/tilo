@@ -1184,7 +1184,7 @@ impl Workspaces {
         workspace: WorkspaceId,
         person: [u8; 32],
     ) -> Option<[u8; 32]> {
-        let never = self.governor().device_public_key;
+        let never = self.device_cert().device_public_key;
         self.device_beside(workspace, person, Some(never)).await
     }
 

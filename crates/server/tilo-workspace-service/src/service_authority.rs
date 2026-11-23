@@ -1,63 +1,51 @@
 //! What a caller may do to this host itself, where no workspace decides.
 //!
-//! A workspace this server governs decides its own administration from its
-//! governance (`workspaces::authority`). Some operations name no workspace: making or
-//! listing the host's workspaces, entering one as its owner, the host's compute.
-//! Those belong to the host's person, and this is the one place that says
-//! so. Each operation is named, so a later rule (a delegated administrator
-//! of the host, say) changes this table rather than a comparison in a
-//! handler.
+//! Inside a workspace, its signed member list decides, for this host's own
+//! person as for anyone (`workspaces::authority`): the host is a member and
+//! holder there with the place the list gives it. Some operations name no
+//! workspace: making or listing the host's workspaces, its machines, which
+//! workspaces it holds. Those belong to the host's person, and this is the
+//! one place that says so. Each operation is named, so a later rule (a
+//! delegated administrator of the host, say) changes this table rather than
+//! a comparison in a handler.
 //!
 //! Five are anyone's: making the workspace of their own a host that offers
 //! them keeps for each person ([`ServiceOperation::CreateOwnWorkspace`]),
 //! deleting one of theirs ([`ServiceOperation::DeleteOwnWorkspace`]), listing
 //! workspaces, which answers anyone but the host's person only the ones of
 //! their own, and keeping and reading their own workspace list
-//! ([`ServiceOperation::KeepPersonalList`]). The workspace is governed here like any other; the
-//! person administers it.
+//! ([`ServiceOperation::KeepPersonalList`]). The workspace is served here like any other; the
+//! person owns it, and this host stays in it as an administrator they can withdraw.
 //!
-//! Holding a workspace another host governs is asked of anyone too, and
+//! Holding a workspace another host serves is asked of anyone too, and
 //! decided by the handler: a host takes one as its work setting says, or for
 //! an owner of it the host let in ([`crate::workspaces`]). Which hosts hold a
-//! workspace governed here is its owners' choice, made through its governance
+//! workspace is its owners' choice, made through its member list
 //! (`server.add`, `server.remove`).
 //!
 //! An agent's grant (a key the person certified for a service that acts for
 //! an agent they approved, [`tilo_user_identity::AgentScope`]) is the person
 //! too, within its scope: it makes workspaces when it reaches all of them,
-//! enters the ones it reaches, lists them, and reads the person's revocations. Nothing
-//! else here is an agent's: not entering a workspace as its owner, not the
-//! host's compute, not which hosts serve a workspace.
+//! lists them, and reads the person's revocations. Nothing else here is an
+//! agent's: not which hosts serve a workspace, not the person's machines.
 
 use tilo_user_identity::DeviceCert;
 
-/// An operation on the host that no workspace's governance decides.
+/// An operation on the host that no workspace decides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServiceOperation {
     CreateWorkspace,
     ListWorkspaces,
-    /// Admit the calling device to a workspace as its owner. Never a member's:
-    /// that would let a member make any device the workspace's owner.
+    /// Enrol a further device of a member of a workspace under its person, as
+    /// the workspace's member list decides (`workspaces::authority`): anyone
+    /// else comes in by an invitation.
     EnterWorkspace,
-    /// Record an owner-signed pre-admission and issue its invitation.
-    PreAdmit,
-    /// Write workspace grants the owner decided.
-    PutWorkspaceGrants,
-    /// Make a member an administrator, an Editor with the owner's
-    /// governance. Only the owner makes or unmakes administrators.
-    SetAdministrator,
-    /// Install or renew a bot in a workspace.
-    GovernBot,
-    /// Author or prepare a workspace's applications in exact governor ownership.
-    AuthorApplications,
-    /// Drive the host's personal compute over its control stream.
-    ComputeControl,
-    /// Hold a workspace another host governs, as its governor asks
+    /// Hold a workspace another host serves, as that host asks
     /// ([`crate::workspaces`]): anyone's to ask, and the host's work setting
     /// decides whose it takes.
     HostWorkspace,
-    /// Stop holding a workspace for its governor: the host's person's, or the
-    /// governor's person's, which the handler checks.
+    /// Stop holding a workspace for the host that handed it over: the host's
+    /// person's, or that host's person's, which the handler checks.
     UnhostWorkspace,
     /// Take in what the store of a device keeping a workspace kept here keeps
     /// of it, as that device asks before it lets the workspace go: anyone's to
@@ -70,7 +58,7 @@ pub enum ServiceOperation {
     /// Make, or answer again, the one workspace of the caller's own person on
     /// this host, and invite them into it; or invite them again into a
     /// workspace they were invited into, at the role they hold there, so
-    /// another device of theirs (a key of theirs) enters it as them.
+    /// another device of theirs (a key of theirs) comes in as them.
     /// Anyone's to ask, on a host that keeps workspaces of people's own
     /// (`crate::workspaces::OwnWorkspaceOffer`); the entry says whether it does.
     /// Making a new one is only for a person the site let in through its home
@@ -78,7 +66,7 @@ pub enum ServiceOperation {
     /// records: anyone else hears the entry's refusal and its wait list.
     CreateOwnWorkspace,
     /// Delete a workspace of the caller's own person here, with everything
-    /// the host keeps of it; the host's person deletes any it governs. Which
+    /// the host keeps of it; the host's person deletes any it keeps. Which
     /// workspace is theirs the operation's handler checks against the host's
     /// record of who owns what. Anyone's, on a host that keeps workspaces of
     /// people's own, as making one is; an agent's grant only when it reaches
@@ -121,7 +109,7 @@ pub enum ServiceOperation {
     AdmitMachine,
     /// Take the server `cert` names, reached at `endpoint`, in among the host's
     /// person's servers: a new entry under its device key in their Servers
-    /// document, which this host holds and governs, as the server's own start
+    /// document, which this host holds, as the server's own start
     /// would have made it. Only a device of the person, never an agent's grant.
     AdmitServer,
     /// Keep the disk recovery key of the calling machine in the vault of the host's person's
@@ -140,12 +128,6 @@ impl ServiceOperation {
             Self::CreateWorkspace => "workspace.create",
             Self::ListWorkspaces => "workspace.list",
             Self::EnterWorkspace => "workspace.enter",
-            Self::PreAdmit => "invitation.pre-admit",
-            Self::PutWorkspaceGrants => "workspace.grants.put",
-            Self::SetAdministrator => "member.administrator.set",
-            Self::GovernBot => "bot.govern",
-            Self::AuthorApplications => "application.author",
-            Self::ComputeControl => "compute.control",
             Self::HostWorkspace => "workspace.host",
             Self::UnhostWorkspace => "workspace.unhost",
             Self::CatchUpWorkspace => "workspace.catch-up",
@@ -182,16 +164,20 @@ impl ServiceOperation {
         )
     }
 
-    /// Whether the operation is about where a workspace is held, which its own
-    /// governance decides: its owner's or keeper's to name, or the host's work
-    /// setting to accept ([`crate::workspaces`]). The entry lets anyone ask, since
-    /// a device of neither person may keep one of the workspaces it governs; a
+    /// Whether the operation is one a workspace's own member list decides: a
+    /// member's further device coming in, or where the workspace is held, its
+    /// owner's or holder's to name, or the host's work setting to accept
+    /// ([`crate::workspaces`]). The entry lets anyone ask, since a device of
+    /// neither person may be a member of one of the workspaces it serves; a
     /// catalogue, which has no workspace to ask, offers it to the host's own
     /// person alone.
     pub(crate) const fn decided_by_its_workspace(self) -> bool {
         matches!(
             self,
-            Self::HostWorkspace | Self::UnhostWorkspace | Self::CatchUpWorkspace
+            Self::EnterWorkspace
+                | Self::HostWorkspace
+                | Self::UnhostWorkspace
+                | Self::CatchUpWorkspace
         )
     }
 
@@ -211,6 +197,7 @@ impl ServiceOperation {
                     | Self::KeepPersonalList
                     | Self::ReadPersonalList
                     | Self::NamePersonalDevice
+                    | Self::EnterWorkspace
                     | Self::HostWorkspace
                     | Self::UnhostWorkspace
                     | Self::CatchUpWorkspace
@@ -238,12 +225,6 @@ impl ServiceOperation {
             Self::KeepPersonalList
             | Self::NamePersonalDevice
             | Self::EnterWorkspace
-            | Self::PreAdmit
-            | Self::PutWorkspaceGrants
-            | Self::SetAdministrator
-            | Self::GovernBot
-            | Self::AuthorApplications
-            | Self::ComputeControl
             | Self::HostWorkspace
             | Self::UnhostWorkspace
             | Self::CatchUpWorkspace
@@ -264,16 +245,10 @@ mod tests {
     use super::ServiceOperation;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
-    const ALL: [ServiceOperation; 26] = [
+    const ALL: [ServiceOperation; 20] = [
         ServiceOperation::CreateWorkspace,
         ServiceOperation::ListWorkspaces,
         ServiceOperation::EnterWorkspace,
-        ServiceOperation::PreAdmit,
-        ServiceOperation::PutWorkspaceGrants,
-        ServiceOperation::SetAdministrator,
-        ServiceOperation::GovernBot,
-        ServiceOperation::AuthorApplications,
-        ServiceOperation::ComputeControl,
         ServiceOperation::HostWorkspace,
         ServiceOperation::UnhostWorkspace,
         ServiceOperation::CatchUpWorkspace,
@@ -318,6 +293,7 @@ mod tests {
                     | ServiceOperation::ListWorkspaces
                     | ServiceOperation::KeepPersonalList
                     | ServiceOperation::ReadPersonalList
+                    | ServiceOperation::EnterWorkspace
                     | ServiceOperation::HostWorkspace
                     | ServiceOperation::UnhostWorkspace
                     | ServiceOperation::CatchUpWorkspace
@@ -367,7 +343,6 @@ mod tests {
                 "{}",
                 operation.name()
             );
-            // It asks to enter its own workspace (the handler holds it to that one).
             assert_eq!(
                 operation.permits(&host, &one),
                 reads || operation == ServiceOperation::CreateOwnWorkspace,

@@ -91,7 +91,7 @@ impl Hosted {
         let person = hex::encode(acts_for);
         make_agent(&page, &workspaces, &workspace, &person, None).await;
         let catalogue = crate::common::catalogue();
-        let governor = workspaces.governor().clone();
+        let governor = workspaces.device_cert().clone();
         workspaces
             .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
             .await
@@ -248,7 +248,7 @@ impl Hosted {
         let person = self.person();
         let change = change.into();
         let catalogue = crate::common::catalogue();
-        let governor = self.workspaces.governor().clone();
+        let governor = self.workspaces.device_cert().clone();
         let part = chat::parts::part(0);
         self.workspaces
             .author_application(

@@ -74,9 +74,6 @@ pub mod history_move;
 #[cfg(not(target_arch = "wasm32"))]
 mod i18n;
 #[cfg(not(target_arch = "wasm32"))]
-#[doc(hidden)]
-pub mod membership_watch;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod metrics;
 #[cfg(not(target_arch = "wasm32"))]
 mod own_workspaces;

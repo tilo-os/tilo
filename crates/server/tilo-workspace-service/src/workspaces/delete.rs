@@ -30,7 +30,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tilo_peer_state::GovernedAccess;
 use tilo_server_protocol::refusal::Refusal;
 
 use super::Workspaces;
@@ -88,7 +87,8 @@ impl Workspaces {
         self.inner.workspaces.lock().await.remove(workspace);
         self.inner.readings.forget(workspace);
         // A workspace gone from here admits nobody at the handshake either.
-        self.inner.host.access.forget_workspace(workspace_id);
+        self.inner.memberships.forget(workspace);
+        self.inner.host.access.people_moved();
         self.inner.direct.delete(workspace_id);
         // Everyone in it hears why while their session is open, then nobody
         // is let in. The workspace is already recorded as deleted, so a
@@ -109,20 +109,7 @@ impl Workspaces {
                 .await
                 .refuse_every_live_member(&Refusal::WorkspaceDeleted);
         }
-        self.inner
-            .host
-            .access
-            .replace(
-                workspace_id,
-                GovernedAccess {
-                    member_devices: Vec::new(),
-                    member_user_roots: Vec::new(),
-                },
-                Vec::new(),
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        crate::workspace_io::evict(&self.inner.host.workspaces, workspace_id).await;
+        self.stop_serving(workspace_id).await;
         drop(governed);
         self.forget_deleted(workspace, workspace_id).await;
         tracing::info!(%workspace, workspace_id = %workspace_id, "governed workspace deleted");
@@ -153,23 +140,10 @@ impl Workspaces {
             let governed = governed.lock().await;
             self.inner.workspaces.lock().await.remove(workspace);
             self.inner.readings.forget(workspace);
-            self.inner.host.access.forget_workspace(workspace_id);
+            self.inner.memberships.forget(workspace);
             // Served no more, and not refused as deleted: it can come again.
             self.inner.direct.release(workspace_id);
-            self.inner
-                .host
-                .access
-                .replace(
-                    workspace_id,
-                    GovernedAccess {
-                        member_devices: Vec::new(),
-                        member_user_roots: Vec::new(),
-                    },
-                    Vec::new(),
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-            crate::workspace_io::evict(&self.inner.host.workspaces, workspace_id).await;
+            self.stop_serving(workspace_id).await;
             drop(governed);
         }
         self.forget_deleted(workspace, workspace_id).await;

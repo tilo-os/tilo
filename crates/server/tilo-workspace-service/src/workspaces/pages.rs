@@ -677,23 +677,23 @@ impl Workspaces {
             inviter_name,
         } = request;
         let now = tilo_clock::unix_now_ns();
-        self.authorize(
-            device,
-            None,
-            WorkspaceOp::Host(ServiceOperation::PreAdmit),
-            now,
-        )?;
         grant.verify()?;
-        if grant.owner_user_public_key != self.inner.host.cert.user_public_key {
-            return Err(CollaborationError::new(
-                "only the workspace's owner pre-admits people",
-            ));
-        }
         let identity = grant.workspace.clone();
         let address = self.invitation_addr().await;
         let issued = {
             let workspace = self.workspace(&identity).await?;
             let mut workspace = workspace.lock().await;
+            self.authorize(
+                device,
+                Some(&workspace),
+                WorkspaceOp::Invite(grant.role),
+                now,
+            )?;
+            if grant.owner_user_public_key != workspace.peer().owner() {
+                return Err(CollaborationError::new(
+                    "only the workspace's owner pre-admits people",
+                ));
+            }
             let issued = self.stage_issue(
                 &mut workspace,
                 device,

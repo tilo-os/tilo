@@ -141,7 +141,7 @@ async fn ask(
         .ok_or("the shell asks a workspace's governance or the host, and nothing else")?;
     let id = WorkspaceId::parse(&workspace).ok_or("that is not a workspace")?;
     // A workspace this device keeps answers here, as it answers every member's device.
-    if workspaces.copies().governs_workspace(&workspace).await {
+    if workspaces.copies().administers_workspace(&workspace).await {
         let as_device = Caller::authenticated(cert.user_public_key, cert.device_public_key)
             .in_workspace(workspace);
         let provider = workspaces.copies().device_actions();

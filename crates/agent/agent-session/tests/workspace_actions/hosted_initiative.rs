@@ -144,7 +144,7 @@ async fn furnished(
 ) -> String {
     make_agent(page, workspaces, workspace, person, None).await;
     let catalogue = crate::common::catalogue();
-    let governor = workspaces.governor().clone();
+    let governor = workspaces.device_cert().clone();
     workspaces
         .prepare_application(workspace, &governor, &catalogue, CHAT, "")
         .await

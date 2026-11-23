@@ -91,7 +91,6 @@ pub(crate) async fn open_with_groups(
         },
         endpoint.clone(),
         groups,
-        true,
         |config| workspace_service::ServiceConfig {
             // The desktop's first frame waits on this service, and its endpoint holds its relays
             // back until something needs the device reachable: the service names its address

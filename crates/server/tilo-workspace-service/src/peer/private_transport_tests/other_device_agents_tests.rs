@@ -162,13 +162,8 @@ async fn an_agent_from_another_of_the_persons_devices_acts_here_only_while_let_i
     let (agent_signing_key, agent_cert) = agent_key(&root, user.public_key, id, &agent_id);
     let owner = hex::encode(user.public_key);
     let tmp = tempfile::tempdir().unwrap();
-    let mut wr = crate::workspace::WorkspaceRuntime::open(
-        tmp.path(),
-        id,
-        crate::workspace::Membership::default(),
-    )
-    .unwrap();
-    wr.admit_device(laptop.device_public_key).unwrap();
+    let mut wr = crate::workspace::WorkspaceRuntime::open(tmp.path(), id).unwrap();
+    wr.list_environment(laptop.device_public_key, true);
     let (atx, _arx) = mpsc::channel(8);
     let (disconnect, _disconnect_rx) = mpsc::channel(1);
     wr.add_subscriber(Subscriber {
@@ -293,7 +288,7 @@ async fn an_agent_from_another_of_the_persons_devices_acts_here_only_while_let_i
     );
 }
 
-/// Give the workspace's runtime `policy` from now on, as the server's access projection does:
+/// Give the workspace's runtime `policy` from now on, as settling its member list does:
 /// `device` is a member whose access carries it.
 async fn project(
     registry: &WorkspaceRegistry,
@@ -305,5 +300,7 @@ async fn project(
     let person = tilo_action_policy::Acting::person(policy.owner.clone().unwrap_or_default());
     let mut access = crate::workspace::DeviceAccess::default();
     access.insert(device, MemberAccess::new(policy.clone(), person));
-    shared.lock().await.project_access(access);
+    let mut runtime = shared.lock().await;
+    let members = runtime.members.as_ref().clone();
+    runtime.settle_members(members, [], Some(access));
 }

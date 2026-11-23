@@ -514,7 +514,7 @@ async fn writes_as(
     let person = hosted.person();
     let change = change.into();
     let catalogue = crate::common::catalogue();
-    let governor = hosted.workspaces.governor().clone();
+    let governor = hosted.workspaces.device_cert().clone();
     let part = chat::parts::part(0);
     hosted
         .workspaces

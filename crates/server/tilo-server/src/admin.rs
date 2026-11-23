@@ -246,10 +246,7 @@ fn cmd_status(config: &std::path::Path) -> anyhow::Result<()> {
     durable.dedup();
     println!("durable workspace shards: {}", durable.len());
     for workspace_id in durable {
-        let files =
-            tilo_server::workspace_files::WorkspaceFiles::open(&cfg.state_root, workspace_id)?;
-        let members = files.load_membership()?.len();
-        println!("  {workspace_id}\tmembers={members}");
+        println!("  {workspace_id}");
     }
     if let Some(metrics) = tilo_server::workspace_files::load_metrics(&cfg.state_root)? {
         println!("metrics:");

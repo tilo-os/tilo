@@ -726,7 +726,7 @@ async fn keeps_an_assistant(
 ) {
     use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
     assert!(
-        cert == workspaces.governor(),
+        cert == workspaces.device_cert(),
         "the server writes the list as its governor"
     );
     workspaces

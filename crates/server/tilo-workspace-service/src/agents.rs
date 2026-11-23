@@ -1657,7 +1657,7 @@ impl ServerAgents {
             .workspaces
             .prepare_application(
                 workspace,
-                self.workspaces.governor(),
+                self.workspaces.device_cert(),
                 &catalogue,
                 TASKS,
                 &tracker,
@@ -2388,7 +2388,7 @@ pub async fn count_spend(
     workspaces
         .author_application(
             workspace,
-            workspaces.governor(),
+            workspaces.device_cert(),
             &tilo_agent_session::AppCatalogue::native(),
             AGENTS_OWNER,
             &record,

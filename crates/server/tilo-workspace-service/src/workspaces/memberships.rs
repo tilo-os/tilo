@@ -1,8 +1,9 @@
 //! Which workspaces each person is a member of here, by person, so a person's
-//! listing answers with the workspaces they were invited into without reading
-//! every workspace this host governs.
+//! listing answers with the workspaces they were invited into, and the
+//! handshake trusts every member, without reading every workspace this host
+//! serves.
 //!
-//! Every workspace this host governs is loaded at start and its governance is
+//! Every workspace this host serves is loaded at start and its member list is
 //! settled after each decision ([`super::Workspaces::settle`]), so the index
 //! is filled as the host opens its workspaces and replaced for a workspace
 //! whenever its membership moves. Nothing is kept on disk: the workspaces'
@@ -18,7 +19,7 @@ use tilo_lock::RwLockRecover as _;
 
 /// The people in the workspaces here, by person and by workspace.
 #[derive(Default)]
-pub(super) struct Memberships {
+pub(crate) struct Memberships {
     /// The workspaces each person is a member of, by their user root.
     by_person: std::sync::RwLock<HashMap<[u8; 32], BTreeSet<String>>>,
     /// The people each workspace lists now, by workspace: what a settle
@@ -28,7 +29,7 @@ pub(super) struct Memberships {
 
 impl Memberships {
     /// Record that `workspace` lists exactly `people` now, and no one else.
-    pub(super) fn record(&self, workspace: &str, people: impl IntoIterator<Item = [u8; 32]>) {
+    pub(crate) fn record(&self, workspace: &str, people: impl IntoIterator<Item = [u8; 32]>) {
         let people: BTreeSet<[u8; 32]> = people.into_iter().collect();
         let before = self
             .by_workspace
@@ -62,9 +63,9 @@ impl Memberships {
         }
     }
 
-    /// Forget `workspace`: this host no longer governs it, so it is in no
-    /// one's listing.
-    pub(super) fn forget(&self, workspace: &str) {
+    /// Forget `workspace`: this host serves it no more, so it is in no one's
+    /// listing.
+    pub(crate) fn forget(&self, workspace: &str) {
         let Some(people) = self.by_workspace.write_recover().remove(workspace) else {
             return;
         };
@@ -79,28 +80,33 @@ impl Memberships {
         }
     }
 
-    /// Whether this host governs `workspace`: it settled it since it started, and did not forget
+    /// Whether this host serves `workspace`: it settled it since it started, and did not forget
     /// it since.
-    pub(super) fn governs(&self, workspace: &str) -> bool {
+    pub(crate) fn serves(&self, workspace: &str) -> bool {
         self.by_workspace.read_recover().contains_key(workspace)
     }
 
     /// Whether `person` is a member of `workspace` now.
-    pub(super) fn holds(&self, person: &[u8; 32], workspace: &str) -> bool {
+    pub(crate) fn holds(&self, person: &[u8; 32], workspace: &str) -> bool {
         self.by_person
             .read_recover()
             .get(person)
             .is_some_and(|workspaces| workspaces.contains(workspace))
     }
 
+    /// Every person a workspace here has as a member now.
+    pub(crate) fn people(&self) -> Vec<[u8; 32]> {
+        self.by_person.read_recover().keys().copied().collect()
+    }
+
     /// Whether `person` is a member of any workspace here now.
-    pub(super) fn holds_any(&self, person: &[u8; 32]) -> bool {
+    pub(crate) fn holds_any(&self, person: &[u8; 32]) -> bool {
         self.by_person.read_recover().contains_key(person)
     }
 
     /// The workspaces `person` is a member of, by their ids: whoever answers
     /// them in the order a person reads them sorts them.
-    pub(super) fn of(&self, person: &[u8; 32]) -> Vec<String> {
+    pub(crate) fn of(&self, person: &[u8; 32]) -> Vec<String> {
         self.by_person
             .read_recover()
             .get(person)

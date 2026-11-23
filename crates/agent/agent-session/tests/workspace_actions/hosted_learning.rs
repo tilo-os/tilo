@@ -179,7 +179,7 @@ macro_rules! team {
         make_agent(&$page, &$workspaces, &$workspace, &ada_person, None).await;
         admit(&$workspaces, &server, &$workspace, &bo_browser).await;
         let catalogue = crate::common::catalogue();
-        let governor = $workspaces.governor().clone();
+        let governor = $workspaces.device_cert().clone();
         $workspaces
             .prepare_application(&$workspace, &governor, &catalogue, CHAT, "")
             .await

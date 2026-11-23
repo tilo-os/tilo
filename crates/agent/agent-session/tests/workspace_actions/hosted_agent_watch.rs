@@ -128,7 +128,7 @@ async fn a_turn_on_the_server_wakes_on_a_persons_write_and_is_told_only_what_it_
     make_agent(&page, &workspaces, &workspace, &person, None).await;
     // The workspace's chat, and what her person first tells the agent there.
     let catalogue = crate::common::catalogue();
-    let governor = workspaces.governor().clone();
+    let governor = workspaces.device_cert().clone();
     workspaces
         .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
         .await

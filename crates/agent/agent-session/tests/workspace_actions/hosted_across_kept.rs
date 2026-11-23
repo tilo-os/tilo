@@ -105,7 +105,7 @@ impl Kept {
 
         // His assistant, made as the Agents tab of his page makes it, and the workspace's chat.
         make_agent(&own_page, &workspaces, &own, &hex::encode(person), None).await;
-        let governor = workspaces.governor().clone();
+        let governor = workspaces.device_cert().clone();
         workspaces
             .prepare_application(&own, &governor, &crate::common::catalogue(), CHAT, "")
             .await

@@ -620,7 +620,7 @@ async fn report_copy(workspaces: Weak<super::WorkspacesInner>, workspace: String
         }
         before = now;
         let held = held_copy(&links);
-        let cert = this.governor().clone();
+        let cert = this.device_cert().clone();
         let reported = this
             .author_own_workspace_state(&workspace, &cert, |peer| {
                 peer.workspace_mut()

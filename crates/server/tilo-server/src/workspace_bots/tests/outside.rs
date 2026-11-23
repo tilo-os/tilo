@@ -181,7 +181,7 @@ impl Server {
         let runner = installed::BotRunner::new(
             self.workspaces.clone(),
             self.workspace.clone(),
-            self.workspaces.governor().clone(),
+            self.workspaces.device_cert().clone(),
             ed25519_dalek::SigningKey::from_bytes(&rand::random()),
             bot,
             std::collections::BTreeMap::new(),

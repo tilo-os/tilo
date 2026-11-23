@@ -9,25 +9,19 @@ use super::{
 use tilo_server_protocol::WorkspaceId;
 
 /// Membership + revocation re-check for every workspace this peer is
-/// subscribed to, run when [`AccessAudit`] says. Reloads membership
-/// from disk when the membership watch saw it change, or on every audit
-/// while no live watch covers the workspace, and ends the session if the
-/// device's own cert was revoked or it fell out of membership.
+/// subscribed to, run when [`AccessAudit`] says: ends the session if the
+/// device's own cert was revoked or it fell out of a workspace's member list.
 ///
 /// A workspace its host deleted is not a lapsed subscription: the refusal
 /// that went with the deletion says so, the connection stops following it,
 /// and the session stays for the other workspaces the connection serves — a
 /// backend reaches hundreds of its customers' workspaces on one session, and
 /// deleting one of them must not take the rest away.
-///
-/// Returns whether every subscribed workspace's membership is change-notified,
-/// so the next audit can wait for a change instead of the disk.
 pub(super) async fn audit_subscriber_access(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &mut Vec<WorkspaceId>,
-) -> Result<bool, PeerError> {
-    let mut watched = true;
+) -> Result<(), PeerError> {
     // Server-wide first, so a revoked or untrusted device ends even with no
     // bound workspace left to ask. A connection that holds no workspace here
     // had no access to lose: it ends as a refusal, and only one that held a
@@ -57,8 +51,7 @@ pub(super) async fn audit_subscriber_access(
             gone.push(workspace_id);
             continue;
         };
-        let workspace = crate::workspace_io::fresh_membership(&workspace).await?;
-        watched &= workspace.membership_is_current();
+        let workspace = workspace.lock().await;
         let lost = !current_session(&workspace, peer, session.outbound);
         let decision = session.decide(&workspace, peer, WorkspaceOperation::Subscribe);
         drop(workspace);
@@ -82,7 +75,7 @@ pub(super) async fn audit_subscriber_access(
     if !gone.is_empty() {
         subscribed.retain(|workspace| !gone.contains(workspace));
     }
-    Ok(watched)
+    Ok(())
 }
 
 pub(super) fn session_peer_authorized(peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> bool {
@@ -131,7 +124,7 @@ pub(super) fn unavailable_target(
     wr: &crate::workspace::WorkspaceRuntime,
     target: &[u8; 32],
 ) -> Refusal {
-    if wr.membership.contains(target) {
+    if wr.lists(target) {
         Refusal::Offline
     } else {
         Refusal::NotAMember("addressed device is not in the workspace".into())

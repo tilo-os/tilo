@@ -26,7 +26,7 @@ async fn set_up(served: &mut Served) -> (String, Browser, Id) {
     let person = person_of(&served.ada);
     make_agent(&page, &served.workspaces, &workspace, &person, None).await;
     narrow_agent(&page, &served.workspaces, &workspace, &person, Vec::new()).await;
-    let governor = served.workspaces.governor().clone();
+    let governor = served.workspaces.device_cert().clone();
     served
         .workspaces
         .prepare_application(&workspace, &governor, &crate::common::catalogue(), CHAT, "")

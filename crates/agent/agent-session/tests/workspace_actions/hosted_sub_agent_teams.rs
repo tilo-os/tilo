@@ -714,7 +714,7 @@ async fn a_lead_reads_the_team_under_it_and_nothing_above_or_beside_it() {
 async fn admit(workspaces: &Workspaces, workspace: &str, device: &crate::support::Device) {
     crate::workspace_actions::resource_support::admit_with(
         workspaces,
-        workspaces.governor(),
+        workspaces.device_cert(),
         workspace,
         device,
         tilo_peer_state::join::Role::Editor,

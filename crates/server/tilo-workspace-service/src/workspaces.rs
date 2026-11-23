@@ -75,7 +75,7 @@ use carried::Carried;
 mod clock;
 pub(crate) use clock::system_time;
 mod listing;
-mod memberships;
+pub(crate) mod memberships;
 /// The operator's kill switch, held while a host offers one.
 pub mod mode;
 mod opened_records;
@@ -1131,7 +1131,7 @@ struct WorkspacesInner {
     puts: std::sync::OnceLock<Arc<crate::files::Puts>>,
     /// Which people each workspace here lists, by person, as its governance
     /// settled last ([`memberships`]).
-    memberships: memberships::Memberships,
+    memberships: Arc<memberships::Memberships>,
     /// The owner invitations the host handed out and nobody accepted yet
     /// ([`host_invitations`]).
     owner_invitations: host_invitations::OwnerInvitations,
@@ -1201,21 +1201,9 @@ impl WorkspaceAuthority {
         &self.workspace
     }
 
-    /// Whether `person` is the one this workspace is kept for on this host: a
-    /// workspace of their own, which they made here.
-    #[must_use]
-    pub fn keeps_for(&self, person: &[u8; 32]) -> bool {
-        self.workspaces().is_some_and(|workspaces| {
-            workspaces
-                .own()
-                .and_then(|own| own.owner_of(&self.workspace))
-                == Some(*person)
-        })
-    }
-
-    /// An authority over `workspace`, for a test of the decision.
+    /// An authority over `workspace` with no workspaces behind it, for a test of the decision.
     #[cfg(test)]
-    pub(crate) fn governed_by(workspace: &str) -> Self {
+    pub(crate) fn unattached(workspace: &str) -> Self {
         Self {
             workspaces: std::sync::Weak::new(),
             workspace: workspace.to_owned(),
@@ -1386,6 +1374,7 @@ impl Workspaces {
         );
         #[cfg(not(target_arch = "wasm32"))]
         let models = Arc::new(person_model::Models::new());
+        let memberships = host.access.memberships();
         let this = Self {
             inner: Arc::new(WorkspacesInner {
                 #[cfg(test)]
@@ -1444,7 +1433,7 @@ impl Workspaces {
                 own: std::sync::OnceLock::new(),
                 #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
                 puts: std::sync::OnceLock::new(),
-                memberships: memberships::Memberships::default(),
+                memberships,
                 owner_invitations: host_invitations::OwnerInvitations::open(&dir),
                 personal_pushes: personal::PersonalPushes::default(),
                 device_names: std::sync::Mutex::default(),
@@ -1612,10 +1601,10 @@ impl Workspaces {
         self.inner.direct.release(governed.workspace_id());
         // Its sessions to the other holders end with it.
         drop(std::mem::take(&mut governed.holders));
-        self.stop_serving(governed.workspace_id()).await?;
-        tracing::info!(%workspace, workspace_id = %governed.workspace_id(), "governed workspace released");
-        // Nobody lists a workspace this host governs no longer.
+        // Nobody lists a workspace this host serves no more.
         self.inner.memberships.forget(workspace);
+        self.stop_serving(governed.workspace_id()).await;
+        tracing::info!(%workspace, workspace_id = %governed.workspace_id(), "governed workspace released");
         drop(governed);
         let _ = self.inner.changes.send(workspace.to_owned());
         // No list here names a workspace the host governs no longer.
@@ -1631,22 +1620,9 @@ impl Workspaces {
     /// # Errors
     ///
     /// Its access could not be narrowed.
-    pub(super) async fn stop_serving(&self, workspace_id: WorkspaceId) -> Result<(), String> {
-        self.inner
-            .host
-            .access
-            .replace(
-                workspace_id,
-                GovernedAccess {
-                    member_devices: Vec::new(),
-                    member_user_roots: Vec::new(),
-                },
-                Vec::new(),
-            )
-            .await
-            .map_err(|error| error.to_string())?;
+    pub(super) async fn stop_serving(&self, workspace_id: WorkspaceId) {
+        self.inner.host.access.stop(workspace_id).await;
         crate::workspace_io::evict(&self.inner.host.workspaces, workspace_id).await;
-        Ok(())
     }
 
     /// Every workspace this server governs.
@@ -1674,12 +1650,7 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// No workspace of this host is carried as `workspace_id`, or its
-    /// membership could not be written.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays held until its membership is written"
-    )]
+    /// No workspace of this host is carried as `workspace_id`.
     pub async fn list_device(
         &self,
         workspace_id: WorkspaceId,
@@ -1691,13 +1662,8 @@ impl Workspaces {
             registry.get(&workspace_id).cloned()
         }
         .ok_or_else(|| format!("no workspace of this host is carried as {workspace_id}"))?;
-        let mut workspace = shared.lock().await;
-        if listed {
-            workspace.admit_device(device)
-        } else {
-            workspace.forget_device(&device)
-        }
-        .map_err(|error| error.to_string())
+        shared.lock().await.list_environment(device, listed);
+        Ok(())
     }
 
     /// The delegated agents on `workspace`'s roster, acting or not now.    ///
@@ -1725,49 +1691,60 @@ impl Workspaces {
         self.inner.host.cert.user_public_key
     }
 
-    /// The device that governs every workspace here: this server's own.
+    /// This server's own device: what it signs and serves the workspaces here as.
     #[must_use]
-    pub fn governor(&self) -> &DeviceCert {
+    pub fn device_cert(&self) -> &DeviceCert {
         &self.inner.host.cert
     }
 
-    /// Whether this server's own person governs `governed`: they own it, or
-    /// its governance keeps them as an administrator of a workspace that is
-    /// no person's own here. A workspace a deployment handed to its owner is
-    /// still served and settled by its host, which writes the settings the
-    /// deployment asks for as the administrator it stays. A person's own
-    /// workspace is theirs to govern, and one whose owner took the host's
-    /// grant back is governed here no more. Whatever the host writes, the
-    /// workspace's governance decides again on every replica, so what only
-    /// its owner may change stays theirs.
+    /// Whether this server's own person administers `governed`: its signed member list makes
+    /// them its owner or one of its administrators. The server writes what a deployment asks
+    /// for as that administrator, and the list decides it again on every device, so what only
+    /// its owner may change stays theirs, and an owner who takes the grant back is obeyed.
     #[must_use]
-    fn governs(&self, governed: &GovernedWorkspace) -> bool {
-        let host = self.inner.host.cert.user_public_key;
-        let peer = governed.peer();
-        if peer.owner() == host {
-            return true;
-        }
-        let persons_own = self
-            .own()
-            .is_some_and(|own| own.owner_of(governed.workspace()).is_some());
-        !persons_own
-            && peer
-                .governance()
-                .governed_policy()
-                .is_ok_and(|policy| policy.is_administrator(&hex::encode(host)))
+    fn administers(&self, governed: &GovernedWorkspace) -> bool {
+        let host = hex::encode(self.inner.host.cert.user_public_key);
+        governed
+            .peer()
+            .governance()
+            .governed_policy()
+            .is_ok_and(|policy| policy.is_owner(&host) || policy.is_administrator(&host))
     }
 
-    /// Whether this server's own person governs `workspace` here
-    /// ([`Self::governs`]); `false` for a workspace not held here.
-    pub async fn governs_workspace(&self, workspace: &str) -> bool {
+    /// Whether the server decides `device`'s changes in `workspace_id` by what the member list
+    /// gives it now. A workspace not opened here yet is settled by the bind that opens it, so it
+    /// counts as deciding them.
+    async fn decides_for(&self, workspace_id: WorkspaceId, device: [u8; 32]) -> bool {
+        let runtime = self
+            .inner
+            .host
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace_id)
+            .cloned();
+        let Some(runtime) = runtime else {
+            return true;
+        };
+        runtime
+            .lock()
+            .await
+            .device_access
+            .as_ref()
+            .is_none_or(|device_access| device_access.contains_key(&device))
+    }
+
+    /// Whether this server's own person administers `workspace` here
+    /// ([`Self::administers`]); `false` for a workspace not held here.
+    pub async fn administers_workspace(&self, workspace: &str) -> bool {
         let Ok(governed) = self.workspace(workspace).await else {
             return false;
         };
         let governed = governed.lock().await;
-        self.governs(&governed)
+        self.administers(&governed)
     }
 
-    /// The governor answering the workspace-join exchange for these workspaces.
+    /// What answers the workspace-join exchange for these workspaces.
     #[must_use]
     pub fn join_service(&self) -> tilo_peer_state::join_answer::JoinAnswer<Self> {
         tilo_peer_state::join_answer::JoinAnswer(self.clone())
@@ -2148,7 +2125,7 @@ impl Workspaces {
         .ok()
     }
 
-    /// Hold the workspace, admitting only the members its governance names,
+    /// Hold the workspace, admitting only the members its signed list names,
     /// and follow its members' writes: create the records they start and keep the
     /// governor's copy of the others current.
     ///
@@ -2167,25 +2144,11 @@ impl Workspaces {
             &host.workspaces,
             host.access.state_root().to_path_buf(),
             workspace_id,
-            crate::workspace_access::AdmissionMode::Governed,
             crate::peer::MAX_HELD_WORKSPACES,
         )
         .await
         .map_err(|error| error.to_string())?;
         let mut runtime = runtime_state.lock().await;
-        // This server's authority serves the workspace: never auto-enrol,
-        // even if the workspace was autobound before the authority took it.
-        if std::mem::replace(
-            &mut runtime.admission,
-            crate::workspace_access::AdmissionMode::Governed,
-        ) != crate::workspace_access::AdmissionMode::Governed
-        {
-            crate::authority_epoch::bump();
-        }
-        // The device the workspace was made on governs it; a copy another
-        // server handed over keeps that one's governance.
-        runtime.governs_here =
-            governed.record.owner.device_public_key == self.inner.host.cert.device_public_key;
         runtime.workspace_authority = Some(WorkspaceAuthority {
             workspaces: Arc::downgrade(&self.inner),
             workspace: workspace.clone(),
@@ -2884,8 +2847,8 @@ impl Workspaces {
     }
 
     /// Bring the server in line with the workspace's committed state: admit exactly
-    /// its governed members, then retain every governance change not yet
-    /// published, Runs after each
+    /// the members its signed list has, then retain every governance change not yet
+    /// published. Runs after each
     /// decision, before the decision is answered.
     ///
     /// The changes are kept at the device store and carried on the
@@ -2902,11 +2865,14 @@ impl Workspaces {
         let accessing = crate::timing::start();
         let now = tilo_clock::wall();
         let access: GovernedAccess = workspace.peer().governance().governed_access(now)?;
+        let (device_access, _) = workspace
+            .peer()
+            .governance()
+            .projection(&access.member_devices, now)?;
         crate::timing::event("workspace.settle.access_read", accessing, 0);
-        let members = access.member_devices.clone();
-        // Who is in the workspace is what its governance just said: the person
-        // listing of every one of them is answered from that, not by reading
-        // every workspace this host governs.
+        // Who is in the workspace is what its member list just said: the person
+        // listing of every one of them, and the people the handshake trusts, are
+        // answered from that, not by reading every workspace this host serves.
         self.inner.memberships.record(
             workspace.workspace(),
             access.member_user_roots.iter().copied(),
@@ -2915,17 +2881,10 @@ impl Workspaces {
         // and dropped from its access, so every caller is told what to do.
         let revoked = collaboration::revoked_keys(workspace);
         host.access
-            .replace(workspace.workspace_id(), access, revoked)
+            .settle(workspace.workspace_id(), access, revoked, device_access)
             .await
             .map_err(|error| error.to_string())?;
         crate::timing::event("workspace.settle.access", accessing, 0);
-        let settling = crate::timing::start();
-        let (device_access, _) = workspace.peer().governance().projection(&members, now)?;
-        host.access
-            .replace_access(workspace.workspace_id(), device_access)
-            .await
-            .map_err(|error| error.to_string())?;
-        crate::timing::event("workspace.settle.device_access", settling, 0);
         let publishing = crate::timing::start();
         workspace.publish(&self.inner.records)?;
         crate::timing::event("workspace.settle.publish", publishing, 0);

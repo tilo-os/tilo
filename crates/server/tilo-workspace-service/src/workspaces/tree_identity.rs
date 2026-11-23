@@ -79,7 +79,7 @@ impl Workspaces {
             .map(|(_, record)| record)
             .collect();
         let kind = ResourceType::new(collab_types::FILES_TREE_KIND);
-        let governor = self.governor().clone();
+        let governor = self.device_cert().clone();
         let mut named: usize = 0;
         for record in records {
             let id = DocumentId::parse(&record)

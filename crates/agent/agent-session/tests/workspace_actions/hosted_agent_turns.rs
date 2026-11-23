@@ -772,7 +772,7 @@ async fn an_agent_on_the_host_answers_the_message_a_person_writes_it() {
 
     // The workspace's chat.
     let catalogue = crate::common::catalogue();
-    let governor = workspaces.governor().clone();
+    let governor = workspaces.device_cert().clone();
     workspaces
         .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
         .await
@@ -901,7 +901,7 @@ async fn a_first_message_is_taken_at_the_look_its_own_write_starts() {
     let person = hex::encode(root.verifying_key().to_bytes());
     make_agent(&page, &workspaces, &workspace, &person, None).await;
     let catalogue = crate::common::catalogue();
-    let governor = workspaces.governor().clone();
+    let governor = workspaces.device_cert().clone();
     workspaces
         .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
         .await
@@ -1097,7 +1097,7 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
     let agents_record = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
     make_agent(&page, &workspaces, &workspace, &person, None).await;
     let catalogue = crate::common::catalogue();
-    let governor = workspaces.governor().clone();
+    let governor = workspaces.device_cert().clone();
     workspaces
         .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
         .await
@@ -1434,7 +1434,7 @@ async fn what_a_persons_events_answer_reaches_the_model_of_a_turn() {
     // in it.
     make_agent(&page, &workspaces, &workspace, &person, None).await;
     let catalogue = crate::common::catalogue();
-    let governor = workspaces.governor().clone();
+    let governor = workspaces.device_cert().clone();
     workspaces
         .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
         .await

@@ -23,7 +23,6 @@ use tilo_action_policy::roles::governance;
 
 use super::authority::WorkspaceOp;
 use super::{GovernedWorkspace, WorkspaceDocumentEntry, Workspaces, system_time};
-use crate::service_authority::ServiceOperation;
 use tilo_lock::MutexRecover as _;
 
 /// The name an invitation carries for a person: what the workspace shows them
@@ -380,20 +379,20 @@ impl Workspaces {
         Ok(workspace.collaboration().pending(now))
     }
 
-    /// Admit `device`, a device of this server's own user, to `workspace` as its
-    /// owner. Returns whether governance changed.
+    /// Enrol `device`, a further device of a member of `workspace`, under its person. Returns
+    /// whether the member list changed.
+    ///
+    /// # Errors
+    ///
+    /// The device is no device of a member's own, or the workspace is not held here.
     pub async fn enter(
         &self,
         workspace: &str,
         device: &DeviceCert,
     ) -> Result<bool, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(
-            device,
-            None,
-            WorkspaceOp::Host(ServiceOperation::EnterWorkspace),
-            now,
-        )?;
+        self.check_now(device, Some(workspace), WorkspaceOp::Enter)
+            .await?;
         self.admit_entering(workspace, device, now).await
     }
 
@@ -419,8 +418,8 @@ impl Workspaces {
             &self.inner.host.key,
             system_time(now),
             |_, candidate| {
-                let admitted = candidate.admit_certificate(
-                    device.clone(),
+                let admitted = candidate.governance_mut().admit_member_device(
+                    device,
                     &self.inner.host.key,
                     system_time(now),
                 )?;
@@ -431,10 +430,7 @@ impl Workspaces {
         if admitted {
             self.settle(&mut workspace).await?;
         } else if !self
-            .inner
-            .host
-            .access
-            .projects_access(workspace.workspace_id(), device.device_public_key)
+            .decides_for(workspace.workspace_id(), device.device_public_key)
             .await
         {
             // Admitted already, but an earlier entry can have been cut off
@@ -755,13 +751,14 @@ impl Workspaces {
         done
     }
 
-    /// Write workspace grants the governor decided (workspace settings such as a
-    /// role's Deny on a kind), keyed by their ids.
+    /// Write workspace grants (workspace settings such as a role's Deny on a kind), keyed by
+    /// their ids, as `administrator` decided.
     ///
     /// # Errors
     ///
-    /// Refuses non-administrators, a workspace this server's person does not
-    /// govern ([`Workspaces::governs`]), and grants for another workspace.
+    /// Refuses a device whose person the workspace does not let grant, a workspace
+    /// this server's person does not administer ([`Workspaces::administers`]), and
+    /// grants for another workspace.
     pub async fn put_workspace_grants(
         &self,
         workspace: &str,
@@ -770,17 +767,17 @@ impl Workspaces {
         grants: Vec<tilo_action_policy::Grant>,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(
-            administrator,
-            None,
-            WorkspaceOp::Host(ServiceOperation::PutWorkspaceGrants),
-            now,
-        )?;
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
-        if !self.governs(&workspace) {
+        self.authorize(
+            administrator,
+            Some(&workspace),
+            WorkspaceOp::Govern(governance::GRANT),
+            now,
+        )?;
+        if !self.administers(&workspace) {
             return Err(CollaborationError::new(
-                "this server's person does not govern the workspace",
+                "this server's person does not administer the workspace",
             ));
         }
         let key = self.inner.host.key.clone();
@@ -803,7 +800,7 @@ impl Workspaces {
     /// # Errors
     ///
     /// Why the grants were not taken back; a workspace this server's person
-    /// does not govern ([`Workspaces::governs`]) is refused.
+    /// does not administer ([`Workspaces::administers`]) is refused.
     pub async fn remove_workspace_grants(
         &self,
         workspace: &str,
@@ -812,17 +809,17 @@ impl Workspaces {
         ids: Vec<tilo_action_policy::GrantId>,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(
-            administrator,
-            None,
-            WorkspaceOp::Host(ServiceOperation::PutWorkspaceGrants),
-            now,
-        )?;
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
-        if !self.governs(&workspace) {
+        self.authorize(
+            administrator,
+            Some(&workspace),
+            WorkspaceOp::Govern(governance::REVOKE),
+            now,
+        )?;
+        if !self.administers(&workspace) {
             return Err(CollaborationError::new(
-                "this server's person does not govern the workspace",
+                "this server's person does not administer the workspace",
             ));
         }
         let key = self.inner.host.key.clone();
@@ -1327,18 +1324,18 @@ impl Workspaces {
             ));
         }
         let now = tilo_clock::unix_now_ns();
-        self.authorize(
-            administrator,
-            None,
-            WorkspaceOp::Host(ServiceOperation::GovernBot),
-            now,
-        )?;
         command.validate()?;
         // The command names itself: the same install or renewal sent again
         // is the same administration request.
         let digest = request_digest(&("bot.govern", &command))?;
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
+        self.authorize(
+            administrator,
+            Some(&workspace),
+            WorkspaceOp::Govern(governance::GRANT),
+            now,
+        )?;
         let key = self.inner.host.key.clone();
         workspace
             .peer()

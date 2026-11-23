@@ -1796,16 +1796,14 @@ impl Workspaces {
     pub(super) async fn bind_member(&self, governed: &GovernedWorkspace) -> Result<(), String> {
         let services = &self.inner.host;
         let workspace_id = governed.workspace_id();
-        let runtime_state = crate::workspace_io::get_or_initialize(
+        crate::workspace_io::get_or_initialize(
             &services.workspaces,
             services.access.state_root().to_path_buf(),
             workspace_id,
-            crate::workspace_access::AdmissionMode::Governed,
             crate::peer::MAX_HELD_WORKSPACES,
         )
         .await
         .map_err(|error| error.to_string())?;
-        runtime_state.lock().await.governs_here = false;
         Ok(())
     }
 

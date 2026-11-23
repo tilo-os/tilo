@@ -63,9 +63,7 @@ pub(super) async fn handle_remote_action(
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return refuse(Refusal::NotReady);
     };
-    let Ok(mut wr) = crate::workspace_io::fresh_membership(&ws).await else {
-        return refuse(Refusal::NotReady);
-    };
+    let mut wr = ws.lock().await;
     if !current_session(&wr, peer, session.outbound) {
         // The workspace dropped this connection's subscription (its device
         // revoked or removed): its audit ends it.

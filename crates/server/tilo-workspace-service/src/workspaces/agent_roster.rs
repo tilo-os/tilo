@@ -88,7 +88,7 @@ impl Workspaces {
             return Ok(0);
         }
         let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let governor = self.governor().clone();
+        let governor = self.device_cert().clone();
         let home = workspace.to_owned();
         Box::pin(self.author_workspace_document(
             workspace,
@@ -115,7 +115,7 @@ impl Workspaces {
     ) -> Result<R, String> {
         let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         Box::pin(self.author_workspace_document_from(
-            (workspace, self.governor()),
+            (workspace, self.device_cert()),
             (tilo_workspace_agent::OWNER, &list),
             // What is written onto it is this host's own change, never the genesis actor's.
             Some(Box::new(

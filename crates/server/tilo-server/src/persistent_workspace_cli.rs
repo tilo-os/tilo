@@ -2827,7 +2827,7 @@ mod tests {
 
         let (server, workspaces, server_cert) = host(dir.path()).await;
         assert!(
-            workspaces.governs_workspace(&workspace).await,
+            workspaces.administers_workspace(&workspace).await,
             "the host administers the workspace it handed over"
         );
         for step in 0..2 {
@@ -2892,13 +2892,13 @@ mod tests {
             .await
             .unwrap();
         tilo_test_env::within("the handed copy holds the workspace", async {
-            while !copied.governs_workspace(&workspace).await {
+            while !copied.administers_workspace(&workspace).await {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await;
         assert!(
-            copied.governs_workspace(&workspace).await,
+            copied.administers_workspace(&workspace).await,
             "the copy's person administers the workspace they were handed"
         );
         assert!(

@@ -6,10 +6,8 @@
 //! caller chooses, such as the workspace's default record every member's first
 //! window of the app opens.
 
-use super::authority::WorkspaceOp;
 use super::genesis::publish_genesis;
 use super::{CollaborationError, Workspaces, system_time};
-use crate::service_authority::ServiceOperation;
 use tilo_agent_session::{AppCatalogue, ConfinedReplica, Seed};
 use tilo_user_identity::DeviceCert;
 
@@ -133,12 +131,6 @@ impl Workspaces {
         change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
     ) -> Result<R, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(
-            governor,
-            None,
-            WorkspaceOp::Host(ServiceOperation::AuthorApplications),
-            now,
-        )?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
                 "application authoring requires exact governor ownership",
@@ -265,12 +257,6 @@ impl Workspaces {
         changes: &[u8],
     ) -> Result<(), CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(
-            governor,
-            None,
-            WorkspaceOp::Host(ServiceOperation::AuthorApplications),
-            now,
-        )?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
                 "bot publication requires exact governor ownership",
@@ -394,12 +380,6 @@ impl Workspaces {
         record: &str,
     ) -> Result<bool, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(
-            governor,
-            None,
-            WorkspaceOp::Host(ServiceOperation::AuthorApplications),
-            now,
-        )?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
                 "application creation requires exact governor ownership",

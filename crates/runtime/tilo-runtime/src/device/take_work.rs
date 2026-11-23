@@ -502,7 +502,6 @@ fn open_member_service(
             },
             bound,
             groups,
-            false,
             |config| config,
         )
         .await

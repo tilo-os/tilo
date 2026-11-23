@@ -10,8 +10,6 @@
 //! - [`AUDIT_SETTLE`] after the certificate or agent delegation the
 //!   connection holds expires (every frame is already refused from the
 //!   expiry on; the settle lets one in flight be answered before the close);
-//! - every [`UNWATCHED_AUDIT`] while a subscribed workspace's membership file can
-//!   only be observed by reading it (no live membership watch covers it);
 //! - otherwise after [`AUDIT_BACKSTOP`], for a writer that forgets to
 //!   announce its change, on a connection of another device.
 //!
@@ -32,12 +30,7 @@ use tokio::time::Instant;
 use super::AgentRegistry;
 use crate::auth::AuthenticatedPeer;
 use tilo_lock::RwLockRecover as _;
-use tilo_server_protocol::WorkspaceId;
 
-/// Audit cadence while a subscribed workspace's membership file is not watched:
-/// reading the disk is then the only way an external edit is seen, so it is
-/// read as often as before the watch existed.
-const UNWATCHED_AUDIT: Duration = Duration::from_secs(1);
 /// The longest a connection goes unaudited while every input of its audit
 /// announces its changes.
 const AUDIT_BACKSTOP: Duration = Duration::from_secs(30);
@@ -54,20 +47,20 @@ pub(super) struct AccessAudit {
     /// Whether the connection is of another device than the host's own, so
     /// it is audited on [`AUDIT_BACKSTOP`] too.
     backstop: bool,
-    /// The subscribed workspaces the last audit found change-notified.
-    watched: Vec<WorkspaceId>,
 }
 
 impl AccessAudit {
-    /// A new connection is first audited on the unwatched cadence: until an
-    /// audit has looked, nothing is known about its workspaces. `own_device` says
-    /// it is the host's own device's.
-    pub(super) fn new(own_device: bool) -> Self {
-        Self {
-            due: Some(after(Instant::now(), UNWATCHED_AUDIT)),
+    /// The connection of `peer`: its subscriptions are decided as they are
+    /// made, so it is next audited on a change, at an expiry, or on
+    /// [`AUDIT_BACKSTOP`]. `own_device` says it is the host's own device's,
+    /// which has no backstop.
+    pub(super) fn new(own_device: bool, peer: &AuthenticatedPeer, agents: &AgentRegistry) -> Self {
+        let mut audit = Self {
+            due: None,
             backstop: !own_device,
-            watched: Vec::new(),
-        }
+        };
+        audit.audited(peer, agents);
+        audit
     }
 
     /// When the next audit runs, if one is due before a change is announced.
@@ -84,33 +77,10 @@ impl AccessAudit {
         self.due_by(after(Instant::now(), AUDIT_SETTLE));
     }
 
-    /// A workspace subscribed since the last audit is not known to be watched.
-    pub(super) fn cover(&mut self, subscribed: &[WorkspaceId]) {
-        if subscribed
-            .iter()
-            .any(|workspace| !self.watched.contains(workspace))
-        {
-            self.due_by(after(Instant::now(), UNWATCHED_AUDIT));
-        }
-    }
-
-    /// Schedule the next audit after one that passed; `watched` says whether
-    /// every workspace in `subscribed` had change-notified membership.
-    pub(super) fn audited(
-        &mut self,
-        peer: &AuthenticatedPeer,
-        agents: &AgentRegistry,
-        subscribed: &[WorkspaceId],
-        watched: bool,
-    ) {
+    /// Schedule the next audit after one that passed.
+    pub(super) fn audited(&mut self, peer: &AuthenticatedPeer, agents: &AgentRegistry) {
         let now = Instant::now();
-        let mut due = if !watched {
-            Some(after(now, UNWATCHED_AUDIT))
-        } else if self.backstop {
-            Some(after(now, AUDIT_BACKSTOP))
-        } else {
-            None
-        };
+        let mut due = self.backstop.then(|| after(now, AUDIT_BACKSTOP));
         let delegation_expiry = agents
             .read_recover()
             .get(&peer.device_public_key)
@@ -131,11 +101,6 @@ impl AccessAudit {
             due = Some(due.map_or(at, |due| due.min(at)));
         }
         self.due = due;
-        self.watched = if watched {
-            subscribed.to_vec()
-        } else {
-            Vec::new()
-        };
     }
 }
 
@@ -156,6 +121,7 @@ fn after(now: Instant, delay: Duration) -> Instant {
 
 #[cfg(test)]
 mod tests {
+    use tilo_server_protocol::WorkspaceId;
     use tilo_server_protocol::delegation::{DelegateScope, Delegation};
     use tilo_user_identity::UserIdentity;
 
@@ -173,47 +139,38 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn an_idle_watched_connection_waits_for_the_backstop_not_a_tick() {
+    async fn an_idle_connection_waits_for_the_backstop_not_a_tick() {
         let (_, peer) = peer();
         let agents = AgentRegistry::default();
-        let mut audit = AccessAudit::new(false);
-        assert_eq!(audit.due().unwrap(), Instant::now() + UNWATCHED_AUDIT);
-
-        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], true);
-        audit.cover(&[WorkspaceId::from_u128(7)]);
+        let mut audit = AccessAudit::new(false, &peer, &agents);
         assert_eq!(audit.due().unwrap(), Instant::now() + AUDIT_BACKSTOP);
 
         tokio::time::advance(Duration::from_secs(10)).await;
-        audit.cover(&[WorkspaceId::from_u128(7)]);
-        assert!(audit.due().unwrap() > Instant::now());
+        audit.audited(&peer, &agents);
+        assert_eq!(audit.due().unwrap(), Instant::now() + AUDIT_BACKSTOP);
     }
 
     #[tokio::test(start_paused = true)]
     async fn the_hosts_own_device_waits_for_a_change_not_a_backstop() {
         let (_, peer) = peer();
         let agents = AgentRegistry::default();
-        let mut audit = AccessAudit::new(true);
-        assert_eq!(audit.due(), Some(Instant::now() + UNWATCHED_AUDIT));
-
-        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], true);
-        audit.cover(&[WorkspaceId::from_u128(7)]);
+        let mut audit = AccessAudit::new(true, &peer, &agents);
         assert_eq!(audit.due(), None, "nothing is due while nothing changes");
 
         audit.changed();
         assert_eq!(audit.due(), Some(Instant::now() + AUDIT_SETTLE));
 
-        // An unwatched workspace is still read on the unwatched cadence.
-        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], false);
-        assert_eq!(audit.due(), Some(Instant::now() + UNWATCHED_AUDIT));
+        audit.audited(&peer, &agents);
+        assert_eq!(audit.due(), None, "and again once it was audited");
     }
 
     #[tokio::test(start_paused = true)]
     async fn the_hosts_own_device_is_audited_at_its_certificates_expiry() {
         let (_, mut peer) = peer();
         let agents = AgentRegistry::default();
-        let mut audit = AccessAudit::new(true);
+        let mut audit = AccessAudit::new(true, &peer, &agents);
         peer.cert.expires_at_ns = Some(in_secs(5));
-        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], true);
+        audit.audited(&peer, &agents);
         let due = audit.due().expect("the expiry is a deadline");
         assert!(due <= Instant::now() + Duration::from_secs(5) + AUDIT_SETTLE);
         assert!(due > Instant::now() + Duration::from_secs(4));
@@ -223,8 +180,8 @@ mod tests {
     async fn an_announced_change_is_audited_after_the_settle() {
         let (_, peer) = peer();
         let agents = AgentRegistry::default();
-        let mut audit = AccessAudit::new(false);
-        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], true);
+        let mut audit = AccessAudit::new(false, &peer, &agents);
+        audit.audited(&peer, &agents);
         audit.changed();
         assert_eq!(audit.due().unwrap(), Instant::now() + AUDIT_SETTLE);
         // A second change does not push the audit back.
@@ -237,29 +194,13 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn unwatched_and_newly_subscribed_workspaces_keep_the_one_second_cadence() {
-        let (_, peer) = peer();
-        let agents = AgentRegistry::default();
-        let mut audit = AccessAudit::new(false);
-
-        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], false);
-        assert_eq!(audit.due().unwrap(), Instant::now() + UNWATCHED_AUDIT);
-        audit.cover(&[WorkspaceId::from_u128(7)]);
-        assert_eq!(audit.due().unwrap(), Instant::now() + UNWATCHED_AUDIT);
-
-        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], true);
-        audit.cover(&[WorkspaceId::from_u128(7), WorkspaceId::from_u128(8)]);
-        assert_eq!(audit.due().unwrap(), Instant::now() + UNWATCHED_AUDIT);
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn certificate_and_delegation_expiry_are_deadlines() {
         let (root, mut peer) = peer();
         let agents = AgentRegistry::default();
-        let mut audit = AccessAudit::new(false);
+        let mut audit = AccessAudit::new(false, &peer, &agents);
 
         peer.cert.expires_at_ns = Some(in_secs(5));
-        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], true);
+        audit.audited(&peer, &agents);
         assert!(audit.due().unwrap() <= Instant::now() + Duration::from_secs(5) + AUDIT_SETTLE);
         assert!(audit.due().unwrap() > Instant::now() + Duration::from_secs(4));
 
@@ -283,14 +224,14 @@ mod tests {
             .write()
             .unwrap()
             .insert(peer.device_public_key, Some(delegation));
-        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], true);
+        audit.audited(&peer, &agents);
         assert!(audit.due().unwrap() <= Instant::now() + Duration::from_secs(2) + AUDIT_SETTLE);
         assert!(audit.due().unwrap() > Instant::now() + Duration::from_secs(1));
 
         // An expiry already past is not a deadline to spin on.
         agents.write().unwrap().clear();
         peer.cert.expires_at_ns = Some(1);
-        audit.audited(&peer, &agents, &[], true);
+        audit.audited(&peer, &agents);
         assert_eq!(audit.due().unwrap(), Instant::now() + AUDIT_BACKSTOP);
     }
 }

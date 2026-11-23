@@ -133,7 +133,7 @@ impl Workspaces {
         if self.inner.readings.held(workspace)?.member {
             return self.member_identity().ok().map(|device| device.device());
         }
-        Some(self.governor().device_public_key)
+        Some(self.device_cert().device_public_key)
     }
 
     /// Whether `workspace` seals every write of its resources: its device takes part in the

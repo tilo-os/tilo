@@ -188,7 +188,7 @@ async fn on_roster(
     workspaces
         .author_application(
             workspace,
-            workspaces.governor(),
+            workspaces.device_cert(),
             &tilo_agent_session::AppCatalogue::native(),
             ui::tilo_workspace_agent::OWNER,
             &document,

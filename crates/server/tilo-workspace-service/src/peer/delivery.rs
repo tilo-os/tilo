@@ -99,7 +99,7 @@ pub(super) async fn authorize_state_recipient(
         .get(&id)
         .cloned()
         .ok_or_else(|| PeerError::Protocol("workspace disappeared".into()))?;
-    let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
+    let runtime = workspace.lock().await;
     if !session.admits(&runtime, peer, WorkspaceOperation::State)
         || !current_session(&runtime, peer, session.outbound)
     {

@@ -1745,7 +1745,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         self.runtime
             .block_on(workspaces.apply_packaged_action(
                 &workspace.to_string(),
-                workspaces.governor(),
+                workspaces.device_cert(),
                 tilo_workspace_service::workspaces::PackagedAction {
                     app,
                     kind,

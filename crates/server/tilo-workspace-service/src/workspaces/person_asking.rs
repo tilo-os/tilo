@@ -365,8 +365,8 @@ impl Workspaces {
         at: SystemTime,
         change: ApprovalChange<'_>,
     ) -> Result<(), String> {
-        if !self.governs(workspace) {
-            return Err("this server's person does not govern the workspace".to_owned());
+        if !self.administers(workspace) {
+            return Err("this server's person does not administer the workspace".to_owned());
         }
         let key = &self.inner.host.key;
         let mut candidate = workspace.peer().clone();
@@ -562,7 +562,7 @@ impl Workspaces {
             let workspace = self.workspace(&entry.scope.workspace).await;
             if let Ok(workspace) = workspace {
                 let mut workspace = workspace.lock().await;
-                if self.governs(&workspace) {
+                if self.administers(&workspace) {
                     let at = tilo_clock::wall();
                     self.change_approval(
                         &mut workspace,

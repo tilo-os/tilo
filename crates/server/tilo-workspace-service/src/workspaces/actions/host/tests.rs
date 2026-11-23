@@ -288,17 +288,27 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
     let workspace = workspaces.create("Mine").await.unwrap();
     let laptop = owners_laptop();
 
-    // Another person's device is offered nothing, and invoking is unknown.
+    // Another person's device is offered nothing, invoking is unknown, and a workspace that
+    // does not have them lets them in by no entry.
     let (_, stranger) = guest_device();
     assert!(
         offered(&host, &stranger, &caller(&stranger))
             .await
             .is_empty()
     );
+    let entered = invoke(
+        &host,
+        &stranger,
+        host_request(ENTER_WORKSPACE, json!({ "workspace": workspace.workspace })),
+    )
+    .await;
+    assert!(
+        matches!(entered, Err(ActionCallError::Refused { .. })),
+        "{entered:?}"
+    );
     for (action, argument) in [
         (CREATE_WORKSPACE, json!({ "name": "Theirs" })),
         (LIST_WORKSPACES, json!({})),
-        (ENTER_WORKSPACE, json!({ "workspace": workspace.workspace })),
     ] {
         assert_eq!(
             invoke(&host, &stranger, host_request(action, argument)).await,

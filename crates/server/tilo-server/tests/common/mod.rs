@@ -235,6 +235,24 @@ pub fn start_server_serving(
     })
 }
 
+/// The devices `workspace`'s signed member list has, as `server` holds it now: none when it
+/// holds no such workspace.
+pub async fn member_devices(server: &Server, workspace: WorkspaceId) -> Vec<[u8; 32]> {
+    let Some(state) = server
+        .workspaces()
+        .expect("the server holds workspaces")
+        .state(&workspace.to_string())
+        .await
+    else {
+        return Vec::new();
+    };
+    state
+        .governance()
+        .governed_access(std::time::SystemTime::now())
+        .expect("the workspace's member list")
+        .member_devices
+}
+
 /// The server's person makes `workspace` on their server, and it holds it;
 /// `members`, devices of theirs, enter it. These tests enter a workspace the
 /// way production does — a server holds what is made on it, and a member

@@ -10,14 +10,13 @@
 //! 2. An agent device acts only inside its live delegation.
 //! 3. A host this workspace is attached to is admitted on the protocols that carry
 //!    its changes (subscribe, state, publish, replay), listed or not.
-//! 4. An exact member device — within any pending replacement's ceiling — or
-//!    a device of a user root the workspace's signed authority admits is admitted.
-//! 5. In a workspace this server governs, a device of a person its governance
-//!    has as a member ([`person_device`]: a browser tab, a new computer of
-//!    theirs) is enrolled when it subscribes: governance records it under its
-//!    person, as the entry does for a further device of a member, so it holds
-//!    the part its person holds. Membership follows the person, not one
-//!    device key.
+//! 4. A device the workspace's signed member list has is admitted
+//!    ([`crate::workspace::WorkspaceRuntime::members`]).
+//! 5. In a workspace served here, a device of a person the member list has
+//!    ([`person_device`]: a browser tab, a new computer of theirs) is enrolled
+//!    when it subscribes: the list records it under its person, as the entry
+//!    does for a further device of a member, so it holds the part its person
+//!    holds. Membership follows the person, not one device key.
 //! 6. Anything else is not a member.
 //!
 //! An agent's grant (a key the person certified for a service that acts for
@@ -28,13 +27,12 @@
 //! - its scope reaches this workspace (all of the person's, or exactly this
 //!   one: a one-workspace grant, root-certified or minted, reaches no other
 //!   and never the site's home workspace);
-//! - it is an exact member device here: it redeemed an invitation for its
-//!   person, as any new device of theirs does, so the workspace's roster
-//!   holds it under its person;
-//! - in a governed workspace, its person is still a member;
+//! - the member list has it: it redeemed an invitation for its person, as any
+//!   new device of theirs does, so the list holds it under its person;
+//! - its person is still a member;
 //! - and the protocol is one an agent works on: subscribe, state, publish,
 //!   replay, channel access, remote actions, the live session and content
-//!   discovery. Never compute, environments or governed membership, and
+//!   discovery. Never compute, environments or membership as an agent, and
 //!   never by attachment or a host's enrolment.
 //!
 //! What it does there is its person's agent's ([`crate::peer`] makes its
@@ -62,25 +60,22 @@
 //! by that member's root is that member's device, admitted to the channels its
 //! records take part in like any other.
 //!
-//! And one protocol admits a device to a workspace's governance itself:
-//! [`WorkspaceOperation::DelegateMembership`], a delegated agent joining, as a
-//! governed member, a workspace this server governs. Agents are members: each
-//! has its own device key, a certificate and a delegation its person's root
-//! signed, and the governor records it on the workspace's roster bound to that
-//! delegation, so every member admits its changes as its own, at its person's
-//! role and never above Editor, only within the delegation, and only until the
-//! governor withdraws it. The rule, after steps 1 to 3: admit iff the
-//! workspace's admission is governance's, this server governs it, and the
+//! And one protocol admits a device to a workspace's member list itself:
+//! [`WorkspaceOperation::DelegateMembership`], a delegated agent joining a
+//! workspace served here as a member. Agents are members: each has its own
+//! device key, a certificate and a delegation its person's root signed, and
+//! the member list records it bound to that delegation, so every member
+//! admits its changes as its own, at its person's role and never above
+//! Editor, only within the delegation, and only until it is withdrawn. The
+//! rule, after steps 1 to 3: admit iff the workspace is served here and the
 //! device is a registered agent whose live delegation (step 2) names this
 //! workspace and the person the agent acts for. The agent's approver is any
 //! device of that person, the host's own person included and never singled
-//! out. A device that is no agent, and any workspace this server does not
-//! govern, are refused; nothing is admitted by membership or attachment. Being a governed member is what admits the agent
-//! to the workspace on the other protocols and lets the workspace's key holders admit it
-//! to the channels of its records.
-//!
-//! The workspace's admission mode is one value, so a governed workspace can never be
-//! left auto-enrolling by a writer that updated one flag and not the other.
+//! out. A device that is no agent, and any workspace not served here, are
+//! refused; nothing is admitted by membership or attachment. Being on the
+//! member list is what admits the agent to the workspace on the other
+//! protocols and lets the workspace's key holders admit it to the channels of
+//! its records.
 
 use std::sync::RwLock;
 
@@ -92,29 +87,6 @@ use crate::policy::TrustPolicy;
 use crate::workspace::WorkspaceRuntime;
 use tilo_lock::RwLockRecover as _;
 use tilo_server_protocol::WorkspaceId;
-
-/// How a workspace admits devices beyond its exact membership.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum AdmissionMode {
-    /// Only exact member devices and admitted user roots.
-    #[default]
-    Explicit,
-    /// Native governance owns admission; nothing is ever auto-enrolled, and
-    /// no later binding may relax it.
-    Governed,
-}
-
-impl AdmissionMode {
-    /// The mode a workspace takes when a binding asks for `requested`:
-    /// governance, once set, is never relaxed.
-    #[must_use]
-    pub(crate) const fn rebind(self, requested: Self) -> Self {
-        match self {
-            Self::Governed => Self::Governed,
-            Self::Explicit => requested,
-        }
-    }
-}
 
 /// The protocol asking. Protocols differ only in the three properties below.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,8 +114,8 @@ pub enum WorkspaceOperation {
     Environment,
     /// Originating or receiving a remote (directed) action.
     RemoteAction,
-    /// A delegated agent becoming a governed member of a workspace this
-    /// server governs (see the module documentation).
+    /// A delegated agent becoming a member of a workspace served here (see
+    /// the module documentation).
     #[cfg(any(test, feature = "agents"))]
     DelegateMembership,
 }
@@ -170,9 +142,9 @@ pub enum Decision {
     Deny(DenyReason),
 }
 
-/// Whether `user` is the person this host runs for, or is admitted by a
-/// workspace it serves: who the host queues a device certificate for, beside
-/// the owner's own devices.
+/// Whether `user` is the person this host runs for, or a member of a workspace
+/// it serves: who the host queues a device certificate for, beside the owner's
+/// own devices.
 pub async fn admits_person(
     workspaces: &crate::peer::WorkspaceRegistry,
     own_user: [u8; 32],
@@ -220,9 +192,8 @@ pub enum DenyReason {
     /// A hosted browser environment's device whose environment stopped: it
     /// reaches nothing, and no protocol admits it, until its certificate expires.
     EnvironmentStopped,
-    /// Governed membership as an agent asked for by a device that is no
-    /// delegated agent of its person, or for a workspace this server does
-    /// not govern.
+    /// Membership as an agent asked for by a device that is no delegated
+    /// agent of its person, or for a workspace not served here.
     #[cfg(any(test, feature = "agents"))]
     NotADelegatedAgent,
 }
@@ -388,92 +359,18 @@ impl ServerTrust<'_> {
     }
 }
 
-/// The workspace facts [`decide`] reads.
-#[derive(Clone, Copy)]
-pub(crate) struct WorkspaceFacts<'a> {
-    runtime: &'a WorkspaceRuntime,
-    /// Member devices just read from disk, in place of the runtime's set.
-    listed: Option<&'a [[u8; 32]]>,
+/// Whether a subscribe enrols `peer`'s device in `workspace` (step 5): the
+/// workspace is served here, its member list has the device's person, and the
+/// device is one of theirs.
+fn enrols_member_device(workspace: &WorkspaceRuntime, peer: &AuthenticatedPeer) -> bool {
+    workspace.workspace_authority.is_some()
+        && person_device(&peer.cert)
+        && workspace.admits_person(&peer.user_public_key)
 }
 
-impl<'a> WorkspaceFacts<'a> {
-    /// The workspace with member devices read from disk by a caller that may not
-    /// reload the runtime's set; the replacement ceiling still bounds them.
-    #[cfg(test)]
-    pub(crate) const fn with_listed(runtime: &'a WorkspaceRuntime, listed: &'a [[u8; 32]]) -> Self {
-        Self {
-            runtime,
-            listed: Some(listed),
-        }
-    }
-
-    pub(crate) const fn current(runtime: &'a WorkspaceRuntime) -> Self {
-        Self {
-            runtime,
-            listed: None,
-        }
-    }
-
-    fn within_ceiling(&self, device: &[u8; 32]) -> bool {
-        self.runtime
-            .membership_ceiling
-            .as_ref()
-            .is_none_or(|ceiling| ceiling.contains(device))
-    }
-
-    /// Whether governance owns this workspace's admission and this server's own
-    /// workspace authority governs it.
-    #[cfg(any(test, feature = "agents"))]
-    fn governed_here(&self) -> bool {
-        self.runtime.admission == AdmissionMode::Governed
-            && self.runtime.workspace_authority.is_some()
-    }
-
-    /// Whether a subscribe enrols `peer`'s device here (step 5): this server
-    /// governs the workspace, its governance has the device's person as a
-    /// member, the device is one of theirs, and no pending replacement keeps
-    /// it out. A workspace of a person's own admits a device of theirs by
-    /// their root alone, before any of theirs has entered it: the host knows
-    /// whose it is, and names them its member as the device joins.
-    fn enrols_member_device(&self, peer: &AuthenticatedPeer) -> bool {
-        self.runtime.admission == AdmissionMode::Governed
-            && self.runtime.workspace_authority.is_some()
-            && person_device(&peer.cert)
-            && (self
-                .runtime
-                .governed_user_roots
-                .contains(&peer.user_public_key)
-                || self.keeps_for(&peer.user_public_key))
-            && self.within_ceiling(&peer.device_public_key)
-    }
-
-    /// Whether this host keeps the workspace for `person`, one of their own.
-    fn keeps_for(&self, person: &[u8; 32]) -> bool {
-        self.runtime
-            .workspace_authority
-            .as_ref()
-            .is_some_and(|authority| authority.keeps_for(person))
-    }
-
-    fn lists(&self, device: &[u8; 32]) -> bool {
-        let listed = self.listed.map_or_else(
-            || self.runtime.membership.contains(device),
-            |listed| listed.contains(device),
-        );
-        listed && self.within_ceiling(device)
-    }
-}
-
-/// Whether the workspace lists `peer` for `op`: steps 4 to 6 of the rule, with
-/// no certificate, agent, cross-user or local-person question. Only for
-/// a recipient check that has no server trust at hand; everything else asks
-/// [`decide`].
-pub(crate) fn listed(
-    workspace: WorkspaceFacts<'_>,
-    peer: &AuthenticatedPeer,
-    op: WorkspaceOperation,
-) -> bool {
-    (op.carries_changes() && workspace.runtime.attached(&peer.device_public_key))
+/// Whether the workspace lists `peer` for `op`: steps 3 and 4 of the rule.
+fn listed(workspace: &WorkspaceRuntime, peer: &AuthenticatedPeer, op: WorkspaceOperation) -> bool {
+    (op.carries_changes() && workspace.attached(&peer.device_public_key))
         || workspace.lists(&peer.device_public_key)
 }
 
@@ -484,24 +381,18 @@ pub fn decide(
     peer: &AuthenticatedPeer,
     op: WorkspaceOperation,
 ) -> Decision {
-    decide_in(
-        WorkspaceFacts::current(workspace),
-        trust,
-        peer,
-        op,
-        tilo_clock::unix_now_ns(),
-    )
+    decide_in(workspace, trust, peer, op, tilo_clock::unix_now_ns())
 }
 
-/// [`decide`] over explicit workspace facts at `now_ns`.
+/// [`decide`] at `now_ns`.
 pub(crate) fn decide_in(
-    workspace: WorkspaceFacts<'_>,
+    workspace: &WorkspaceRuntime,
     trust: &ServerTrust<'_>,
     peer: &AuthenticatedPeer,
     op: WorkspaceOperation,
     now_ns: u64,
 ) -> Decision {
-    if let Err(reason) = trust.actor(peer, workspace.runtime.workspace_id(), now_ns) {
+    if let Err(reason) = trust.actor(peer, workspace.workspace_id(), now_ns) {
         return Decision::Deny(reason);
     }
     match crate::environment::environment_of(trust.environments, &peer.device_public_key) {
@@ -520,15 +411,11 @@ pub(crate) fn decide_in(
     if op == WorkspaceOperation::DelegateMembership {
         // Never by membership, enrolment or attachment: only an agent inside
         // its live delegation, acting for its own person's root, in a
-        // workspace governed here.
+        // workspace served here.
         let delegated = trust
-            .delegation(
-                &peer.device_public_key,
-                workspace.runtime.workspace_id(),
-                now_ns,
-            )
+            .delegation(&peer.device_public_key, workspace.workspace_id(), now_ns)
             .is_some_and(|delegation| delegation.user_public_key == peer.user_public_key);
-        return if delegated && workspace.governed_here() {
+        return if delegated && workspace.workspace_authority.is_some() {
             Decision::Admit
         } else {
             Decision::Deny(DenyReason::NotADelegatedAgent)
@@ -537,7 +424,7 @@ pub(crate) fn decide_in(
     if listed(workspace, peer, op) {
         return Decision::Admit;
     }
-    if op == WorkspaceOperation::Subscribe && workspace.enrols_member_device(peer) {
+    if op == WorkspaceOperation::Subscribe && enrols_member_device(workspace, peer) {
         return Decision::AdmitAndEnrol;
     }
     Decision::Deny(DenyReason::NotAMember)
@@ -569,11 +456,11 @@ pub fn person_device(cert: &tilo_user_identity::DeviceCert) -> bool {
 /// [`crate::environment::EnvironmentScope::reaches`], and the live session
 /// offers such a device no namespace of anyone else's.
 fn environment_decision(
-    workspace: WorkspaceFacts<'_>,
+    workspace: &WorkspaceRuntime,
     scope: crate::environment::EnvironmentScope,
     op: WorkspaceOperation,
 ) -> Decision {
-    if scope.admits(workspace.runtime.workspace_id(), op) {
+    if scope.admits(workspace.workspace_id(), op) {
         Decision::Admit
     } else {
         Decision::Deny(DenyReason::OutOfEnvironmentScope)
@@ -584,12 +471,12 @@ fn environment_decision(
 /// module): its person's agent, only where its scope reaches, it redeemed
 /// its person's invitation and its person is a member, on an agent's protocols.
 fn grant_decision(
-    workspace: WorkspaceFacts<'_>,
+    workspace: &WorkspaceRuntime,
     peer: &AuthenticatedPeer,
     scope: tilo_user_identity::AgentScope,
     op: WorkspaceOperation,
 ) -> Decision {
-    let here = workspace.runtime.workspace_id();
+    let here = workspace.workspace_id();
     let reaches = scope
         .workspace_name()
         .is_none_or(|one| WorkspaceId::parse(&one) == Some(here));
@@ -604,12 +491,11 @@ fn grant_decision(
             | WorkspaceOperation::Live
             | WorkspaceOperation::ContentDiscovery
     );
-    let person_member = workspace.runtime.admission != AdmissionMode::Governed
-        || workspace
-            .runtime
-            .governed_user_roots
-            .contains(&peer.user_public_key);
-    if reaches && agents_protocol && person_member && workspace.lists(&peer.device_public_key) {
+    if reaches
+        && agents_protocol
+        && workspace.admits_person(&peer.user_public_key)
+        && workspace.lists(&peer.device_public_key)
+    {
         Decision::Admit
     } else {
         Decision::Deny(DenyReason::NotAMember)

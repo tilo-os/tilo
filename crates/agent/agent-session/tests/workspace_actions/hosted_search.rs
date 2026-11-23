@@ -230,7 +230,7 @@ impl Served {
             bound(&workspace),
         )
         .await;
-        let governor = self.workspaces.governor().clone();
+        let governor = self.workspaces.device_cert().clone();
         self.workspaces
             .prepare_application(&workspace, &governor, &crate::common::catalogue(), CHAT, "")
             .await
@@ -333,7 +333,7 @@ impl Served {
         (text, now_ms): (&str, Option<i64>),
         invoke: ui::tilo_resource::Invoke<chat::parts::ChatMessages>,
     ) -> Id {
-        let governor = self.workspaces.governor().clone();
+        let governor = self.workspaces.device_cert().clone();
         let held = self
             .workspaces
             .resource_document(workspace, CHAT, "")

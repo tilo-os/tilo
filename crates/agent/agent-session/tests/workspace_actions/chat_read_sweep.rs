@@ -292,7 +292,7 @@ async fn replied_at(
     (conversation, parent): (&Id, &Id),
     (text, when): (&str, i64),
 ) -> Id {
-    let governor = served.workspaces.governor().clone();
+    let governor = served.workspaces.device_cert().clone();
     let held = served
         .workspaces
         .resource_document(workspace, CHAT, "")

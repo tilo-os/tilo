@@ -53,29 +53,19 @@ pub(crate) async fn entry_arrival(
 /// `arrivals` of `members` people coming through the entry: member rows
 /// decoded, signatures checked, whole reads of the governance and replays
 /// of its membership log.
-async fn work_per_arrival(members: u32, arrivals: u32) -> Vec<(tilo_peer_state::work::Work, u64)> {
+async fn work_per_arrival(members: u32, arrivals: u32) -> Vec<tilo_peer_state::work::Work> {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let workspace = created.workspace;
-    let access = dir
-        .path()
-        .join("workspaces")
-        .join(created.workspace_id.to_string())
-        .join(crate::workspace_files::GOVERNED_ACCESS_FILE);
-    let access_len = || std::fs::metadata(&access).map_or(0, |file| file.len());
     let mut work = Vec::new();
     for n in 0..members + arrivals {
         let before = tilo_peer_state::work::now();
-        let before_access = access_len();
         entry_arrival(&workspaces, &cert, &workspace, n).await;
         if n >= members {
-            work.push((
-                tilo_peer_state::work::now().since(before),
-                access_len().saturating_sub(before_access),
-            ));
+            work.push(tilo_peer_state::work::now().since(before));
         }
     }
     drop(workspaces);
@@ -86,39 +76,32 @@ async fn work_per_arrival(members: u32, arrivals: u32) -> Vec<(tilo_peer_state::
 /// Letting one more person in costs the host the same in a workspace of 40
 /// as in one of 10: it decodes no member's row, checks no member's
 /// signature or invitation receipt, and neither reads the governance whole
-/// nor replays the membership history for the people already there, and
-/// what it writes of the workspace's access is the newcomer, not everyone
-/// let in before. Counted rather than timed, so a slow machine neither hides
+/// nor replays the membership history for the people already there.
+/// Counted rather than timed, so a slow machine neither hides
 /// nor fakes a cost that grows with the workspace. Of a few arrivals the
 /// middle one counts: now and then an arrival starts the workspace's
-/// publication over, or writes its access anew, which is paid once per many
+/// publication over, which is paid once per many
 /// arrivals, not by each.
 #[tokio::test]
 async fn letting_one_more_person_in_costs_the_same_however_many_are_in() {
-    let middle = |mut work: Vec<(tilo_peer_state::work::Work, u64)>| {
-        work.sort_by_key(|(work, access)| {
+    let middle = |mut work: Vec<tilo_peer_state::work::Work>| {
+        work.sort_by_key(|work| {
             (
                 work.identities_decoded,
                 work.signatures_verified,
                 work.admission_reads,
                 work.replays,
                 work.receipts_read,
-                *access,
             )
         });
         work[work.len() / 2]
     };
-    let (small, small_access) = middle(work_per_arrival(10, 5).await);
-    let (large, large_access) = middle(work_per_arrival(40, 5).await);
+    let small = middle(work_per_arrival(10, 5).await);
+    let large = middle(work_per_arrival(40, 5).await);
     assert_eq!(
         small, large,
         "an arrival among 40 people costs what one among 10 does"
     );
-    assert_eq!(
-        small_access, large_access,
-        "an arrival among 40 people writes as much of the workspace's access as one among 10"
-    );
-    assert!(small_access > 0, "the newcomer's access is written");
     // Each state an admission writes is read from the one before it, with
     // what the admission wrote read again, and the membership is the one
     // before it with the newcomer's receipt folded in: neither walks the
