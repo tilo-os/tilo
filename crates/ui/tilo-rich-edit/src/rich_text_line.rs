@@ -1224,19 +1224,22 @@ impl RichTextLine {
     /// document did not, and nothing in it moves on its own — the person's
     /// own caret, a settling suggestion, a completion list, a scroll glide,
     /// or someone else in the document.
-    fn keeps_its_drawing(&self, theme: &Theme, presence: &PresenceCtx) -> bool {
+    fn keeps_its_drawing(&self, theme: &Theme, env: &tilo_ui::DrawEnv<'_>) -> bool {
         if self.paint_dirty || self.face.is_empty() {
             return false;
         }
         if self.face_model != ui::input_generation::model()
-            || self.face_permissions != presence.paint_permission_generation()
+            || self.face_permissions != env.paint_permissions
         {
             return false;
         }
         if self.inner.paint_changed() || self.inner.needs_animation_frame() {
             return false;
         }
-        if self.inner.is_focused() || self.inner.shows_peers(presence) {
+        if self.inner.is_focused()
+            || ui::presence::capability::presence_key(&*self.inner)
+                .is_some_and(|key| env.sites.get(&key).is_some_and(|people| !people.is_empty()))
+        {
             return false;
         }
         self.face_key.as_ref().is_some_and(|face| {
@@ -1593,7 +1596,7 @@ impl Widget for RichTextLine {
         if env.should_cull(self.inner.paint_bounds()) {
             return;
         }
-        if self.keeps_its_drawing(theme,&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone())) {
+        if self.keeps_its_drawing(theme, &env) {
             note_face_work(None);
         } else {
             let rect = self.inner.get_rect();

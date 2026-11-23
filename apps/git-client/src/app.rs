@@ -666,6 +666,8 @@ impl Widget for GitClientApp {
     fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
+        let fallback_presence = Default::default();
+        let presence = env.presence.unwrap_or(&fallback_presence);
         self.state().draw(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
     }
 
@@ -822,7 +824,7 @@ impl GitClientState {
         // A key (1, 2, 3, d) changes what the bar shows without a sync.
         ui::window_toolbar::declare(Some(self.window_toolbar()));
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
-        self.paint_window(&mut ctx,&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+        self.paint_window(&mut ctx, presence);
     }
 
     fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {

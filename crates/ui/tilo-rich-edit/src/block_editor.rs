@@ -9689,7 +9689,7 @@ impl Widget for BlockEditor {
             }
         }
 
-        let document_selections = self.resolve_document_selections(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        let document_selections = self.resolve_document_selections(presence);
         for (i, b) in self.blocks.iter().enumerate() {
             if painted[i] {
                 self.draw_block_presence(i, b, &document_selections, &mut ctx);

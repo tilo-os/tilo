@@ -999,6 +999,8 @@ impl Widget for MergeView {
     fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
+        let fallback_presence = Default::default();
+        let presence = env.presence.unwrap_or(&fallback_presence);
         self.action_hits.clear();
         self.source_hits.clear();
         // One metric snapshot per frame: spans, scroll clamp, controls and paint
@@ -1067,7 +1069,7 @@ impl Widget for MergeView {
             theme.tokens.colors.surfaces.content,
         );
 
-        self.draw_merged_band(&mut ctx,&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+        self.draw_merged_band(&mut ctx, presence);
         self.dirty = false;
     }
 

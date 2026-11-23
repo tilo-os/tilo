@@ -147,7 +147,7 @@ impl VideoEditorApp {
         let (tag, tag_rect) = self.playhead_tag(r, tr, theme);
         let mut claimed: Vec<(f64, f64)> = vec![(tag_rect.x0, tag_rect.x1)];
         let peer_name = caption(theme);
-        let peer_tags = crate::presence::place_peer_tags(&mut tilo_ui::DrawCtx::new(scene, tf, tr, theme, env.clone()),
+        let peer_tags = crate::presence::place_peer_tags(presence,
             r.tracks,
             &claimed,
             |t| self.time_to_x(t, &r.tracks),

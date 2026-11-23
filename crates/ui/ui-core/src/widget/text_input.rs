@@ -5031,6 +5031,8 @@ impl Widget for TextInput {
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        let fallback_presence = Default::default();
+        let presence = env.presence.unwrap_or(&fallback_presence);
         self.last_caret_width = theme.caret_width;
         self.ml_caret = None;
         self.reduce_motion = theme.reduce_motion;
@@ -5044,7 +5046,7 @@ impl Widget for TextInput {
         // Fields that are not collecting a mention read no roster at all.
         if self.is_focused && self.completion().mentions() {
             self.mention_roster =
-                crate::widget::mention_picker::merged_roster(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()), &self.mention_candidates);
+                crate::widget::mention_picker::merged_roster(presence, &self.mention_candidates);
         } else {
             self.mention_roster.clear();
         }
