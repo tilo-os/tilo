@@ -958,7 +958,7 @@ impl ServerAgents {
     }
 
     /// A test's script answers in every workspace here that linked no model.
-    #[cfg(feature = "test-support")]
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn scripted(mut self, model: impl Into<Option<Model>>) -> Self {
         self.model = model.into();
