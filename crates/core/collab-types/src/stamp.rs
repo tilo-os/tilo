@@ -114,6 +114,10 @@ impl Stamp {
     /// neither.
     #[must_use]
     pub fn invoked_by(&self) -> Option<tilo_action_policy::Actor> {
+        // An empty invoker names nobody: it must not read as a person with no id.
+        if self.invoker.is_empty() {
+            return None;
+        }
         if let Ok(actor) = tilo_failure::ignored!(
             "a stamp the route wrote holds a person id, which is read next",
             serde_json::from_str::<tilo_action_policy::Actor>(&self.invoker)
