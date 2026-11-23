@@ -39,10 +39,6 @@ fn system() -> CallerId {
     app("binary:/usr/bin/chromium")
 }
 
-fn other_system() -> CallerId {
-    app("binary:/usr/bin/1password")
-}
-
 fn local() -> CallerId {
     app("local-process:/home/me/tool")
 }
@@ -70,7 +66,7 @@ fn store_at(dir: &Path, keys: &Switch) -> Store {
 tilo_test_env::scenario! {
     fn the_store_keeps_items_sealed_under_the_identitys_key;
 
-    phase the_store_is_locked_until_the_identity_is_there_and_then_needs_no_prompt;
+    phase a_locked_store_writes_nothing_and_opens_once_the_identity_is_there;
     {
         let dir = tempfile::tempdir().unwrap();
         let keys = Switch::new(Switch::ABSENT);
@@ -392,52 +388,15 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn applications_are_kept_apart_recorded_and_revocable;
+    fn applications_are_kept_apart_recorded_and_permanent;
 
-    phase an_application_sees_only_what_it_made_or_the_system_shared;
+    phase an_imported_item_belongs_to_the_system_not_to_a_program_the_person_runs;
     {
+        // Which application sees which item, and revocation, over the real
+        // D-Bus interface: tests/dbus.rs,
+        // `applications_are_attributed_isolated_and_revocable`.
         let dir = tempfile::tempdir().unwrap();
         let store = store_at(dir.path(), &Switch::new(7));
-        let (chromium, onepassword, tool) = (system(), other_system(), local());
-
-        let mine = store
-            .create_item(
-                &chromium,
-                "default",
-                new_item("c", &[("app", "c")], b"cs"),
-                true,
-            )
-            .unwrap();
-        assert!(
-            store
-                .search(&onepassword, None, &attributes(&[("app", "c")]))
-                .unwrap()
-                .is_empty()
-        );
-        assert!(matches!(
-            store.read_secret(&onepassword, &mine),
-            Err(StoreError::NoSuchObject)
-        ));
-        assert!(matches!(
-            store.delete_item(&tool, &mine),
-            Err(StoreError::NoSuchObject)
-        ));
-        let theirs = store
-            .create_item(
-                &onepassword,
-                "default",
-                new_item("o", &[("app", "c")], b"os"),
-                true,
-            )
-            .unwrap();
-        assert_ne!(theirs, mine);
-        assert_eq!(
-            store.read_secret(&chromium, &mine).unwrap().0.expose(),
-            b"cs"
-        );
-
-        // Items brought from the old keyring: system apps read them, an
-        // application the person merely runs does not.
         let legacy = LegacyItem {
             label: "Chrome Safe Storage".into(),
             attributes: attributes(&[("application", "chrome")]),
@@ -448,74 +407,45 @@ tilo_test_env::scenario! {
         };
         assert_eq!(store.import("gnome-keyring", vec![legacy]).unwrap(), 1);
         let found = store
-            .search(&chromium, None, &attributes(&[("application", "chrome")]))
+            .search(&system(), None, &attributes(&[("application", "chrome")]))
             .unwrap();
         assert_eq!(found.len(), 1);
         assert!(
             store
-                .search(&tool, None, &attributes(&[("application", "chrome")]))
+                .search(&local(), None, &attributes(&[("application", "chrome")]))
                 .unwrap()
-                .is_empty()
+                .is_empty(),
+            "an application the person merely runs does not read the keyring's items"
         );
     }
 
-    phase every_application_is_recorded_and_can_be_revoked_and_forgotten;
+    phase every_application_is_recorded_counted_and_kept_across_a_restart;
     {
         let dir = tempfile::tempdir().unwrap();
         let keys = Switch::new(7);
         let store = store_at(dir.path(), &keys);
-        let (chromium, tool) = (system(), local());
         store
             .create_item(
-                &chromium,
+                &system(),
                 "default",
                 new_item("c", &[("a", "1")], b"s"),
                 true,
             )
             .unwrap();
-        store.search(&tool, None, &BTreeMap::new()).unwrap();
-        store.search(&tool, None, &BTreeMap::new()).unwrap();
+        store.search(&local(), None, &BTreeMap::new()).unwrap();
+        store.search(&local(), None, &BTreeMap::new()).unwrap();
 
-        let apps = store.apps().unwrap();
-        assert_eq!(apps.len(), 2);
-        let record = apps.iter().find(|row| row.id == tool).unwrap();
-        assert_eq!(record.uses, 2);
-        assert_eq!(record.access, Access::Allowed);
-        assert_eq!(apps.iter().find(|row| row.id == chromium).unwrap().items, 1);
-        assert!(record.name.contains("not part of the system"));
-
-        assert_eq!(store_at(dir.path(), &keys).apps().unwrap().len(), 2);
-
-        store.set_access(&chromium, Access::Revoked).unwrap();
-        assert!(matches!(
-            store.search(&chromium, None, &BTreeMap::new()),
-            Err(StoreError::Revoked)
-        ));
-        assert!(matches!(
-            store.create_item(&chromium, "default", new_item("c", &[], b"s"), false),
-            Err(StoreError::Revoked)
-        ));
-        assert!(store.search(&tool, None, &BTreeMap::new()).is_ok());
-        assert!(matches!(
-            store_at(dir.path(), &keys).search(&chromium, None, &BTreeMap::new()),
-            Err(StoreError::Revoked)
-        ));
-
-        store.set_access(&chromium, Access::Allowed).unwrap();
+        let record = store
+            .apps()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == local())
+            .unwrap();
+        assert_eq!(record.uses, 2, "every use is counted");
         assert_eq!(
-            store
-                .search(&chromium, None, &BTreeMap::new())
-                .unwrap()
-                .len(),
-            1
-        );
-
-        store.forget_app(&chromium).unwrap();
-        assert!(
-            store
-                .search(&chromium, None, &BTreeMap::new())
-                .unwrap()
-                .is_empty()
+            store_at(dir.path(), &keys).apps().unwrap().len(),
+            2,
+            "the records are kept across a restart"
         );
         assert!(matches!(
             store.set_access(&app("binary:/usr/bin/nothing"), Access::Revoked),
@@ -523,8 +453,10 @@ tilo_test_env::scenario! {
         ));
     }
 
-    phase migration_runs_once_and_never_duplicates;
+    phase identical_imported_items_collapse_into_one;
     {
+        // An import runs once and never again (tests/migrate.rs); this is the
+        // old keyring's own duplicates.
         let dir = tempfile::tempdir().unwrap();
         let keys = Switch::new(7);
         let store = store_at(dir.path(), &keys);
@@ -536,7 +468,6 @@ tilo_test_env::scenario! {
             created: 5,
             modified: 6,
         };
-        assert!(store.migration().unwrap().is_none());
         assert_eq!(
             store
                 .import("gnome-keyring", vec![legacy(b"a"), legacy(b"a")])
@@ -548,30 +479,20 @@ tilo_test_env::scenario! {
             (state.source.as_str(), state.imported),
             ("gnome-keyring", 2)
         );
-
-        // A second import, here or after a restart, changes nothing.
         assert_eq!(
             store.import("gnome-keyring", vec![legacy(b"b")]).unwrap(),
             0
         );
-        let restarted = store_at(dir.path(), &keys);
-        assert_eq!(
-            restarted
-                .import("gnome-keyring", vec![legacy(b"c")])
-                .unwrap(),
-            0
-        );
-        let found = restarted
+        let found = store_at(dir.path(), &keys)
             .search(
                 &system(),
                 None,
                 &attributes(&[("xdg:schema", "org.gnome.NetworkManager.Connection")]),
             )
             .unwrap();
-        // The two identical items collapsed into one.
-        assert_eq!(found.len(), 1);
+        assert_eq!(found.len(), 1, "the two identical items collapsed into one");
         assert_eq!(
-            restarted
+            store_at(dir.path(), &keys)
                 .read_secret(&system(), &found[0])
                 .unwrap()
                 .0
@@ -580,31 +501,15 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase sandbox_master_secrets_are_stable_separate_and_revocable;
+    phase a_sandbox_name_is_checked_before_it_becomes_an_application;
     {
+        // Its stability, separation and revocation over the real interface:
+        // tests/dbus.rs,
+        // `the_portal_host_gets_sandbox_secrets_from_the_same_store`.
         let dir = tempfile::tempdir().unwrap();
-        let keys = Switch::new(7);
-        let store = store_at(dir.path(), &keys);
-        let one = store.sandbox_secret("so.tilo.notes").unwrap();
-        assert_eq!(
-            *one,
-            *store_at(dir.path(), &keys)
-                .sandbox_secret("so.tilo.notes")
-                .unwrap()
-        );
-        assert_ne!(*one, *store.sandbox_secret("so.tilo.chat").unwrap());
+        let store = store_at(dir.path(), &Switch::new(7));
         assert!(store.sandbox_secret("").is_err());
         assert!(store.sandbox_secret("a/b").is_err());
-
-        let id = CallerId::sandbox("so.tilo.notes").unwrap();
-        assert!(store.apps().unwrap().iter().any(|row| row.id == id));
-        store.set_access(&id, Access::Revoked).unwrap();
-        assert!(matches!(
-            store.sandbox_secret("so.tilo.notes"),
-            Err(StoreError::Revoked)
-        ));
-        store.forget_app(&id).unwrap();
-        assert_ne!(*one, *store.sandbox_secret("so.tilo.notes").unwrap());
     }
 }
 
