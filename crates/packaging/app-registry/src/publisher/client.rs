@@ -33,6 +33,7 @@ impl RegistryClient {
         Self::validate_url(base)?;
         let http = tilo_net::http::blocking_client()
             .timeout(Duration::from_secs(300))
+            .redirect(redirect_policy())
             .build()
             .context("build HTTP client")?;
         Ok(Self {
@@ -200,6 +201,28 @@ impl RegistryClient {
     }
 }
 
+fn check_redirect(
+    previous: &[reqwest::Url],
+    next: &reqwest::Url,
+) -> std::result::Result<(), &'static str> {
+    if !tilo_net::secure_endpoint(next) {
+        return Err("refused redirect to an unsafe registry address");
+    }
+    if previous.iter().any(|url| url.scheme() == "https") && next.scheme() != "https" {
+        return Err("refused redirect from https to plain http");
+    }
+    Ok(())
+}
+
+fn redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if let Err(reason) = check_redirect(attempt.previous(), attempt.url()) {
+            return attempt.error(reason);
+        }
+        reqwest::redirect::Policy::default().redirect(attempt)
+    })
+}
+
 fn failure(url: &str, response: reqwest::blocking::Response) -> anyhow::Error {
     let status = response.status();
     let body = response.text().unwrap_or_default();
@@ -213,7 +236,12 @@ fn failure(url: &str, response: reqwest::blocking::Response) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::RegistryClient;
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+
+    use ed25519_dalek::SigningKey;
+
+    use super::{RegistryClient, check_redirect};
 
     #[test]
     fn validate_url_allows_local_http_and_refuses_credentials() {
@@ -222,6 +250,7 @@ mod tests {
             "http://127.0.0.1:8080/",
             "http://127.1.2.3:8080/",
             "http://localhost:8080/",
+            "http://localhost.:8080/",
             "http://tilo.localhost:8080/",
             "http://[::1]:8080/",
         ] {
@@ -233,6 +262,9 @@ mod tests {
         for unsafe_url in [
             "http://apps.tilo.so/",
             "http://localhost.example.com/",
+            "http://0.0.0.0/",
+            "http://[::]/",
+            "http://[::ffff:127.0.0.1]/",
             "https://placeholder:placeholder@apps.tilo.so/",
             "https://placeholder@apps.tilo.so/",
             "https://:placeholder@apps.tilo.so/",
@@ -248,5 +280,78 @@ mod tests {
                 "unsafe registry URL was accepted: {unsafe_url}"
             );
         }
+    }
+
+    #[test]
+    fn redirects_refuse_plain_http_public_targets_and_https_downgrades() {
+        let https = reqwest::Url::parse("https://apps.tilo.so/uploads/abc.tapp").unwrap();
+        assert!(
+            check_redirect(
+                std::slice::from_ref(&https),
+                &reqwest::Url::parse("https://cdn.tilo.so/uploads/abc.tapp").unwrap(),
+            )
+            .is_ok()
+        );
+        for refused in [
+            "http://apps.tilo.so/uploads/abc.tapp",
+            "http://127.0.0.1:8080/uploads/abc.tapp",
+            "http://tilo.localhost:8080/uploads/abc.tapp",
+            "https://placeholder:placeholder@cdn.tilo.so/uploads/abc.tapp",
+        ] {
+            assert!(
+                check_redirect(
+                    std::slice::from_ref(&https),
+                    &reqwest::Url::parse(refused).unwrap(),
+                )
+                .is_err(),
+                "unsafe redirect target was allowed: {refused}"
+            );
+        }
+
+        // A server answering 307 to plain http on a public host is not followed.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0_u8; 4096];
+            let _ = stream.read(&mut buf);
+            stream
+                .write_all(
+                    b"HTTP/1.1 307 Temporary Redirect\r\nLocation: http://public.example/hijack\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        });
+        let client = RegistryClient::new(&format!("http://{addr}")).unwrap();
+        let key = SigningKey::from_bytes(&[7_u8; 32]);
+        let error = client.upload(&key, b"payload").unwrap_err();
+        server.join().unwrap();
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains("unsafe registry address"),
+            "307 to public plain http must be refused by redirect policy: {chain}"
+        );
+
+        // A 307 to another safe local address on the same host is followed.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            let mut buf = [0_u8; 4096];
+            let _ = first.read(&mut buf);
+            let redirect = format!(
+                "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{addr}/entries/so.tilo.ok\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            first.write_all(redirect.as_bytes()).unwrap();
+            let (mut second, _) = listener.accept().unwrap();
+            let _ = second.read(&mut buf);
+            second
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        });
+        let client = RegistryClient::new(&format!("http://{addr}")).unwrap();
+        assert!(client.entry("so.tilo.ok").unwrap().is_none());
+        server.join().unwrap();
     }
 }
