@@ -8,9 +8,11 @@
 //! itself and read again when it comes back shows here as a wake that no one asked for.
 //!
 //! The app runs on the process's own loop: frames while it owes any, then a wait on its wake, as
-//! `tilolang-process` runs it. What is counted are the threads R09 counts: the compositor's
-//! collaboration broker and the app's collaboration shovel, sampled by name over a settled idle
-//! window.
+//! `tilolang-process` runs it. The window is the app process's own: it takes each batch the app
+//! sends, composes the view again, and answers what its controls ask of the app, so a view that
+//! sets its state on every render shows here as the write and the wake per frame it costs. What
+//! is counted are the threads R09 counts: the compositor's collaboration broker and the app's
+//! collaboration shovel, sampled by name over a settled idle window.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -27,7 +29,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tilo_render_protocol::channel::Channel;
-use tilo_render_protocol::patch::Transport as _;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilo_service::Questions;
 use tilo_session::{AppSocket, Options, Session};
@@ -223,11 +224,28 @@ fn an_idle_notes_window_in_a_workspace_this_device_holds_wakes_nothing() {
                         ),
                         Some(watched),
                     );
-                    // The window's end is taken as a window takes its frames, so nothing the app
-                    // sends waits unread on the channel.
+                    // The notebook a person reads: a note whose body says its sections, as the
+                    // app's own scenario seeds one. The window shows the tree of notes and the
+                    // outline of the one open beside them.
+                    for instance in host.instances_mut() {
+                        instance.stage("the notebook and a note's outline");
+                    }
+                    // The window is built from what the app sends, as the app process builds it:
+                    // each batch it takes composes the view again, and what that asks of the app
+                    // — a selection, the rows a list shows — goes back on the channel.
+                    let window_stop = Arc::clone(&app_stop);
                     std::thread::spawn(move || {
-                        let mut window = ChannelTransport::new(theirs).expect("the window");
-                        while let Ok(Some(_batch)) = window.recv() {}
+                        let mut window = tilo_app_window::AppWindow::new(
+                            Box::new(ChannelTransport::new(theirs).expect("the window")),
+                            Vec::new(),
+                        );
+                        while !window_stop.load(Ordering::Relaxed) {
+                            window.receive();
+                            if window.owes() {
+                                window.flush();
+                            }
+                            std::thread::park_timeout(Duration::from_millis(1));
+                        }
                     });
                     // Opening the notebook is work the process owes; it is done before the idle
                     // window opens, so what is counted is what an idle app costs. A host that
@@ -235,14 +253,18 @@ fn an_idle_notes_window_in_a_workspace_this_device_holds_wakes_nothing() {
                     let settle_by = Instant::now() + Duration::from_secs(300);
                     loop {
                         let turned = host.turn();
-                        if !turned && !host.owes_work() {
-                            break;
-                        }
                         if Instant::now() > settle_by {
                             break;
                         }
-                        if !turned {
-                            std::thread::park_timeout(Duration::from_millis(1));
+                        if turned || host.owes_work() {
+                            continue;
+                        }
+                        // Quiet: the window has taken the frames it was sent, and what it asks
+                        // back of the app — the rows a list shows, the focus it moved — has
+                        // reached it.
+                        std::thread::park_timeout(Duration::from_millis(50));
+                        if !host.turn() && !host.owes_work() {
+                            break;
                         }
                     }
                     // Frames an idle app owes over the window: none, unless something wakes it.
