@@ -42,13 +42,13 @@ pub(super) fn prepare_governance(
 /// the records one that starts the workspace over must still publish.
 pub(super) fn durable_messages(
     candidate: &mut StatePeer,
-    peer: &StatePeer,
-    (key, now): (&SigningKey, SystemTime),
-    generation: u64,
+    _peer: &StatePeer,
+    (_key, _now): (&SigningKey, SystemTime),
+    _generation: u64,
 ) -> Result<Vec<neighbour_wire::NeighbourMsg>, String> {
-    candidate
-        .publication_mut()
-        .durable_mutation_messages(peer, key, now, generation)
+    // What the commit changed is the workspace change every device admits; a
+    // record's own writes reach its readers as its device sends them.
+    Ok(vec![candidate.workspace_message()])
 }
 
 /// The records `candidate`, a change built from `peer`, changes: what its
@@ -105,7 +105,7 @@ pub(super) fn base_publications(
     }
     candidate
         .publication_mut()
-        .durable_bootstrap_messages(key, now, generation)?
+        .bootstrap_messages(key, now)?
         .iter()
         .filter(|message| match message {
             neighbour_wire::NeighbourMsg::AppDocument {

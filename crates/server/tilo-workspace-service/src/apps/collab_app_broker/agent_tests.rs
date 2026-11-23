@@ -553,12 +553,7 @@ fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
             let mut next = before.clone();
             next.governance_mut()
                 .put_governed_grants(&[grant], &f.native.key, now)?;
-            next.publication_mut().durable_mutation_messages(
-                &before,
-                &f.native.key,
-                now,
-                view.generation().checked_add(1).unwrap(),
-            )
+            Ok(vec![next.workspace_message()])
         })
         .unwrap();
     for message in messages {

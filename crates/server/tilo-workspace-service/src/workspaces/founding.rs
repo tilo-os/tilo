@@ -84,7 +84,7 @@ impl GovernedWorkspace {
         prepare_governance(&mut peer, key, now)?;
         let outgoing = peer
             .publication_mut()
-            .durable_bootstrap_messages(key, now, 1)?
+            .bootstrap_messages(key, now)?
             .iter()
             .map(|message| publication(message, true))
             .collect::<Result<Vec<_>, _>>()?;
