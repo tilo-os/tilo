@@ -93,47 +93,13 @@ pub(crate) fn rename_noreplace(root: &Path, from: &VPath, to: &VPath) -> Result<
         return Err(FsError::AlreadyExists);
     }
     let target = prepare(root, to)?;
-    rename_exclusive(&source, &target)?;
+    crate::native::rename::rename_entry_noreplace(&source, &target)?;
     let target_parent = target.parent().unwrap_or(root);
     atomic::sync_directory(target_parent)?;
     match source.parent() {
         Some(parent) if parent != target_parent => Ok(atomic::sync_directory(parent)?),
         _ => Ok(()),
     }
-}
-
-/// `renameat2(RENAME_NOREPLACE)` on Linux and `renameatx_np(RENAME_EXCL)` on Apple systems; a file
-/// system without them falls back to [`link_then_unlink`].
-#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
-fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
-    use rustix::fs::{CWD, RenameFlags, renameat_with};
-    use rustix::io::Errno;
-
-    match renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE) {
-        Ok(()) => Ok(()),
-        Err(errno) if errno == Errno::INVAL || errno == Errno::NOSYS || errno == Errno::NOTSUP => {
-            link_then_unlink(from, to)
-        }
-        Err(errno) => Err(errno.into()),
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
-fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
-    link_then_unlink(from, to)
-}
-
-/// A hard link cannot replace a name, so linking then unlinking the source moves a file without
-/// clobbering; directory entries cannot be linked.
-fn link_then_unlink(from: &Path, to: &Path) -> io::Result<()> {
-    if fs::symlink_metadata(from)?.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "this file system cannot move a directory without risking replacement",
-        ));
-    }
-    fs::hard_link(from, to)?;
-    fs::remove_file(from)
 }
 
 pub(crate) fn remove(root: &Path, path: &VPath) -> Result<(), FsError> {
