@@ -716,4 +716,55 @@ mod tests {
         .unwrap();
         assert!(refused.run_with("review", &helper).is_err());
     }
+
+    #[test]
+    fn package_reader_accepts_flat_and_kind_expectations() {
+        let (home, identity, declaration) = fixture();
+        let directory = root(home.path());
+        let cx = Context {
+            home: home.path().to_path_buf(),
+            identity,
+            declaration: declaration.clone(),
+            digest: [0; 32],
+        };
+        assert_eq!(
+            Browser::package(&cx, &directory).unwrap(),
+            (
+                directory.join(&declaration.payload.filename),
+                declaration.payload.operation.clone()
+            )
+        );
+        let mut flat = serde_json::json!({
+            "schema": 1,
+            "operation": declaration.payload.operation,
+            "purpose": "browser_profiles",
+            "filename": declaration.payload.filename,
+            "setup_binding": declaration.payload.setup_binding,
+            "sealed_bytes": declaration.payload.sealed_bytes,
+            "plaintext_bytes": declaration.payload.plaintext_bytes,
+            "entries": declaration.payload.entries,
+            "ciphertext_sha256": declaration.payload.ciphertext_sha256,
+            "plan_sha256": declaration.payload.kind.plan_sha256,
+            "limits": declaration.payload.limits,
+        });
+        std::fs::write(
+            directory.join("expectation.json"),
+            serde_json::to_vec(&flat).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            Browser::package(&cx, &directory).unwrap(),
+            (
+                directory.join(&declaration.payload.filename),
+                declaration.payload.operation
+            )
+        );
+        flat["extra"] = serde_json::json!(true);
+        std::fs::write(
+            directory.join("expectation.json"),
+            serde_json::to_vec(&flat).unwrap(),
+        )
+        .unwrap();
+        assert!(Browser::package(&cx, &directory).is_err());
+    }
 }

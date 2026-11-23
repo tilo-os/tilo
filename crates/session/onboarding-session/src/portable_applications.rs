@@ -303,4 +303,63 @@ mod tests {
         .unwrap();
         assert!(reopened.run_with("review", &helper).is_err());
     }
+
+    #[test]
+    fn package_reader_accepts_flat_and_kind_expectations_and_refuses_flat_protocol() {
+        let (home, identity, mut declaration) = fixture();
+        declaration.kind.consumer_protocol = 1;
+        let flat = serde_json::json!({
+            "schema": 1,
+            "operation": declaration.operation,
+            "purpose": "flatpak_applications",
+            "filename": declaration.filename,
+            "setup_binding": declaration.setup_binding,
+            "sealed_bytes": declaration.sealed_bytes,
+            "plaintext_bytes": declaration.plaintext_bytes,
+            "entries": declaration.entries,
+            "ciphertext_sha256": declaration.ciphertext_sha256,
+            "manifest_sha256": declaration.kind.manifest_sha256,
+            "limits": declaration.limits,
+        });
+        let directory = root(home.path());
+        let cx = Context {
+            home: home.path().to_path_buf(),
+            identity,
+            declaration: declaration.clone(),
+            digest: [0; 32],
+        };
+        std::fs::write(
+            directory.join("expectation.json"),
+            serde_json::to_vec(&declaration).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            Applications::package(&cx, &directory).unwrap(),
+            (
+                directory.join(&declaration.filename),
+                declaration.operation.clone()
+            )
+        );
+
+        std::fs::write(
+            directory.join("expectation.json"),
+            serde_json::to_vec(&flat).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            Applications::package(&cx, &directory).unwrap(),
+            (directory.join(&declaration.filename), declaration.operation)
+        );
+
+        for protocol in [1, 2] {
+            let mut with_protocol = flat.clone();
+            with_protocol["consumer_protocol"] = serde_json::json!(protocol);
+            std::fs::write(
+                directory.join("expectation.json"),
+                serde_json::to_vec(&with_protocol).unwrap(),
+            )
+            .unwrap();
+            assert!(Applications::package(&cx, &directory).is_err());
+        }
+    }
 }
