@@ -468,6 +468,7 @@ files-notice-open-with = Open With…
 files-menu-undo = Undo
 files-open-failed = Couldn’t open “{ $name }”
 files-new-folder-failed-title = Couldn’t create the folder
+files-new-file-failed-title = Couldn’t create the file
 files-rename-failed-title = Couldn’t rename
 files-trash-failed = Couldn’t move to Trash
 files-move-failed = Couldn’t move everything to “{ $destination }”

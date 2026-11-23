@@ -1049,8 +1049,9 @@ impl TreeBrowser {
     }
 
     /// The row a new folder or file is named in, as the row it becomes: its icon, and its name
-    /// typed in place, chosen and ready to type over (a file's name up to its extension). Enter
-    /// or leaving it makes it; Escape lets it be.
+    /// typed in place, chosen whole and ready to type over. Enter or leaving it makes it;
+    /// Escape lets it be. A typed file name without an extension of its own keeps the proposed
+    /// one, as a computer's Files reads it (`crate::naming`).
     fn naming_row(
         &self,
         kind: FileNodeKind,
@@ -1077,18 +1078,21 @@ impl TreeBrowser {
             .with_plain_field()
             .filling()
             .on_cancel(move || window.stop_naming());
-        // The name as proposed is chosen, a file's up to its extension, so the first keystroke
-        // types over it; once the person typed, their caret stays where they left it.
+        // The name as proposed is chosen whole, so the first keystroke types over it; once the
+        // person typed, their caret stays where they left it.
         if typed == Self::proposed_name(kind) {
-            let end = std::path::Path::new(&typed)
-                .file_stem()
-                .filter(|_| !is_folder)
-                .map_or(typed.len(), std::ffi::OsStr::len);
-            label = label.with_selection(0, end);
+            label = label.with_selection(0, typed.len());
         }
+        let proposed = typed.clone();
         if let Some(binding) = self
             .actions
-            .effect_binding(effect.map(|typed: String| Some(typed)))
+            .effect_binding(effect.map(move |typed: String| {
+                Some(if is_folder {
+                    typed
+                } else {
+                    crate::naming::file_name(&typed, &proposed)
+                })
+            }))
         {
             label = label.on_action(binding);
         }
@@ -2111,7 +2115,7 @@ mod window_tests {
                 .contains_key("files-tree-new-file-name"),
             "the row holds the name being typed"
         );
-        // The name up to its extension is chosen: typing replaces it and keeps `.txt`.
+        // The proposed name is chosen whole: typing replaces it, and a bare name keeps `.txt`.
         app.harness().type_text("plan");
         app.harness().key("Enter");
         app.flush().unwrap();

@@ -2,20 +2,15 @@ use super::{FilesState, tidy_menu};
 use crate::command::FileCommand;
 use crate::i18n::t;
 use crate::model::SortBy;
-use std::path::PathBuf;
 
 impl FilesState {
     #[allow(
         clippy::too_many_lines,
         reason = "one declarative menu specification keeps visibility, enablement, and command identity auditable"
     )]
-    pub(super) fn context_menu_spec(
-        &self,
-        templates: &[PathBuf],
-    ) -> Vec<(String, Option<FileCommand>)> {
+    pub(super) fn context_menu_spec(&self) -> Vec<(String, Option<FileCommand>)> {
         let has_sel = !self.selection.is_empty();
         let can_paste = self.can_paste_clipboard();
-        let has_templates = !templates.is_empty();
         let in_trash = self.is_trash_view();
         let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
 
@@ -234,12 +229,7 @@ impl FilesState {
         }
 
         spec.push((t("files-menu-new-folder"), Some(FileCommand::NewFolder)));
-        if has_templates {
-            spec.push((
-                t("files-menu-new-file"),
-                Some(FileCommand::OpenTemplatesMenu),
-            ));
-        }
+        spec.push((t("files-menu-new-file"), Some(FileCommand::NewFile)));
         if can_paste {
             spec.push((t("files-menu-paste"), Some(FileCommand::Paste)));
         }

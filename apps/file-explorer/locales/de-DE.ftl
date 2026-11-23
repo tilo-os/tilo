@@ -467,6 +467,7 @@ files-notice-open-with = Öffnen mit …
 files-menu-undo = Rückgängig
 files-open-failed = „{ $name }“ konnte nicht geöffnet werden
 files-new-folder-failed-title = Der Ordner konnte nicht erstellt werden
+files-new-file-failed-title = Die Datei konnte nicht erstellt werden
 files-rename-failed-title = Umbenennen nicht möglich
 files-trash-failed = Verschieben in den Papierkorb nicht möglich
 files-move-failed = Nicht alles konnte nach „{ $destination }“ verschoben werden

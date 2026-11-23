@@ -71,6 +71,9 @@ const TRANSFER_SHOWN_AFTER: Duration = Duration::from_millis(600);
 /// How long a drag rests on a folder before the folder opens.
 const SPRING_OPEN: Duration = Duration::from_millis(700);
 const CLASH_TARGET: &str = "files-clash-choice:";
+/// The field a name is typed in, as the published controls name it: it is drawn over the
+/// list rather than composed into it, so it is described where it stands.
+const RENAME_FIELD_TARGET: &str = "files.rename_input";
 const COLLAB_PANEL_MAX_LINES: usize = 20;
 fn paste_conflict(
     name: Option<&str>,
@@ -181,17 +184,28 @@ const STATE_SURFACE_LOCATION_CHARS: usize = 36;
 const MAX_EAGER_ENTRY_RESOURCES: usize = 128;
 const MAX_ANSWERED_ENTRIES: usize = 64;
 
-/// A new folder's name typed before its row has the field: the keyboard is the person's from the
-/// press, so what they type at once is kept for the field that opens, never read as a row's first
-/// letters. `commit` is Enter pressed before the field came.
+/// A new folder or file's name typed before its row has the field: the keyboard is the person's
+/// from the press, so what they type at once is kept for the field that opens, never read as a
+/// row's first letters. `commit` is Enter pressed before the field came.
 #[derive(Default)]
 struct NamingAhead {
     typed: String,
     commit: bool,
 }
 
+/// A new file being named in the list: the empty file made at once, and the name proposed for
+/// it. Its templates are offered under the field, and a typed name is read as a computer's
+/// Files reads it ([`crate::naming`]).
+struct NewFileNaming {
+    /// Where the empty file was made, so Escape can let it be.
+    path: Option<PathBuf>,
+    /// Its proposed name, whose extension a typed name without one keeps.
+    proposed: String,
+}
+
 enum OpFollowUp {
     NewFolder,
+    NewFile,
     Rename,
     Trash { count: usize },
     Move { destination: String },
@@ -490,6 +504,15 @@ pub struct FilesState {
     rename_seed_pending: bool,
     /// What the person typed for a new folder's name before its row took the field.
     naming_ahead: Option<NamingAhead>,
+    /// The new file whose name is being typed, with the templates offered under its field.
+    naming_new_file: Option<NewFileNaming>,
+    /// The name the field a new entry is named in answers to, as the bar, a walk and an
+    /// assistive technology find it.
+    naming_field_name: Option<String>,
+    /// The field the templates were last offered under, so they are placed once it stands.
+    templates_field: Option<vello::kurbo::Rect>,
+    /// Whether the templates offered under a new file's field are the open menu.
+    templates_open: bool,
     rename_input: TextInput,
     rename_rect: Rc<Cell<Option<vello::kurbo::Rect>>>,
     rename_paint: ui::own_paint::OwnPaint,
@@ -829,6 +852,10 @@ impl FileExplorerWidget {
             rename_buffer: String::new(),
             rename_seed_pending: false,
             naming_ahead: None,
+            naming_new_file: None,
+            naming_field_name: None,
+            templates_field: None,
+            templates_open: false,
             rename_input: TextInput::local()
                 .with_kind(ui::widget::TextInputKind::Name)
                 .with_id("files.rename_input")
@@ -1078,6 +1105,14 @@ impl FilesState {
                 Some(error) => {
                     self.naming_ahead = None;
                     self.notify_failure(t("files-new-folder-failed-title"), &error, None);
+                }
+            },
+            OpFollowUp::NewFile => match error {
+                None => self.follow_new_file(outcome),
+                Some(error) => {
+                    self.naming_ahead = None;
+                    self.naming_new_file = None;
+                    self.notify_failure(t("files-new-file-failed-title"), &error, None);
                 }
             },
             OpFollowUp::Rename => match error {
@@ -3375,6 +3410,7 @@ impl FilesState {
             && matches!(
                 &cmd,
                 FileCommand::NewFolder
+                    | FileCommand::NewFile
                     | FileCommand::NewFromTemplate(_)
                     | FileCommand::Rename
                     | FileCommand::RenameCommit
@@ -3396,6 +3432,7 @@ impl FilesState {
             && matches!(
                 &cmd,
                 FileCommand::NewFolder
+                    | FileCommand::NewFile
                     | FileCommand::NewFromTemplate(_)
                     | FileCommand::Paste
                     | FileCommand::OpenTerminal
@@ -3998,9 +4035,8 @@ impl FilesState {
                 true
             }
             // These rows open their own rows beside themselves in the menu.
-            FileCommand::OpenTemplatesMenu
-            | FileCommand::OpenShortcutsMenu
-            | FileCommand::OpenWithMenu => false,
+            FileCommand::OpenShortcutsMenu | FileCommand::OpenWithMenu => false,
+            FileCommand::NewFile => self.apply_new_file(),
             FileCommand::RunShortcut { shortcut } => {
                 let identities = self.selected_entry_identities();
                 self.status = Some(match self.shortcut_menu.run(&shortcut, &identities) {
@@ -4116,13 +4152,13 @@ impl FilesState {
         self.selection.select_only(i);
         self.retain_shown_selection();
         self.begin_rename();
-        self.rename_input
-            .set_accessible_name(t("files-tree-new-folder-name"));
+        self.naming_field_name = Some(t("files-tree-new-folder-name"));
         self.follow_naming_ahead();
     }
 
-    /// The name typed before a new folder's row took the field becomes the name it opens with,
-    /// and Enter pressed with it makes the folder now.
+    /// The name typed before a new file's row took the field becomes the name it opens with,
+    /// and Enter pressed with it makes the file now. The whole proposed name is chosen, so
+    /// typing replaces it.
     fn follow_naming_ahead(&mut self) {
         let Some(ahead) = self.naming_ahead.take() else {
             return;
@@ -4135,6 +4171,72 @@ impl FilesState {
         if ahead.commit {
             self.commit_rename();
         }
+    }
+
+    /// A new file is on disk: the row it becomes takes the field its name is typed in, as a
+    /// page's new file does, and the templates the person has are offered under it.
+    fn follow_new_file(&mut self, outcome: &crate::file_ops::Outcome) {
+        let created = outcome.result().iter().find_map(|change| match change {
+            crate::file_ops::Change::Wrote { path } | crate::file_ops::Change::Created { path } => {
+                Some(PathBuf::from(path))
+            }
+            _ => None,
+        });
+        let Some(path) = created else {
+            self.naming_ahead = None;
+            self.naming_new_file = None;
+            return;
+        };
+        let Some(i) = self
+            .displayed_entries()
+            .iter()
+            .position(|entry| entry.path == path)
+        else {
+            self.naming_ahead = None;
+            self.naming_new_file = None;
+            return;
+        };
+        if let Some(naming) = &mut self.naming_new_file {
+            naming.path = Some(path);
+        }
+        self.selection.select_only(i);
+        self.retain_shown_selection();
+        self.begin_rename();
+        self.naming_field_name = Some(t("files-tree-new-file-name"));
+        self.follow_naming_ahead();
+    }
+
+    fn apply_new_file(&mut self) -> bool {
+        if self.renaming.is_some() {
+            self.cancel_rename();
+        }
+        let proposed = crate::fileops::unique_destination(
+            &self.current_path,
+            &t("files-tree-new-file-default-name"),
+        )
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| t("files-tree-new-file-default-name"));
+        // The name is the person's from the press: what they type before the row takes the field
+        // waits for it ([`NamingAhead`]) instead of choosing rows.
+        self.naming_ahead = Some(NamingAhead::default());
+        self.naming_new_file = Some(NewFileNaming {
+            path: None,
+            proposed: proposed.clone(),
+        });
+        self.queue(
+            crate::file_ops::FileOp::Write {
+                folder: self.current_path.display().to_string(),
+                name: proposed,
+                text: String::new(),
+                replace: false,
+            },
+            OpFollowUp::NewFile,
+        );
+        true
     }
 
     fn apply_new_folder(&mut self) -> bool {
@@ -4302,6 +4404,9 @@ impl FilesState {
     }
 
     fn apply_new_from_template(&mut self, template: &Path) -> bool {
+        // The person chose a template over naming an empty file: the empty one goes, and the
+        // copy takes the field.
+        self.let_the_new_file_be();
         self.perform(crate::effects::FilesEffect::NewFromTemplate {
             template: template_resource_id(&template.to_string_lossy()),
         });
@@ -4558,14 +4663,9 @@ impl FilesState {
     }
 
     #[doc(hidden)]
-    pub fn debug_show_templates_menu(&mut self, at: Point) {
-        self.last_cursor = at;
-        self.open_context_menu(at);
-        if let Some(shown) = self.shown_menu.as_mut()
-            && let Some(&(row, _)) = shown.nested.first()
-        {
-            shown.menu.open_submenu(row, true);
-        }
+    pub fn debug_show_templates_menu(&mut self, _at: Point) {
+        // The field a new file is named in, with the templates offered under it.
+        self.apply_new_file();
     }
 
     fn opened_menu(&mut self) -> Option<&mut ContextMenu> {
@@ -5730,6 +5830,7 @@ impl FilesState {
             // A name already there is renamed under its own words, unless the caller says this
             // is a new entry whose name is being given (`files-tree-new-folder-name`).
             self.rename_input.set_accessible_name(String::new());
+            self.naming_field_name = None;
             self.renaming = Some(i);
             e.name.clone_into(&mut self.rename_buffer);
             self.rename_seed_pending = true;
@@ -5741,6 +5842,9 @@ impl FilesState {
 
     fn end_rename_editor(&mut self) {
         self.renaming = None;
+        self.naming_new_file = None;
+        self.naming_field_name = None;
+        self.templates_field = None;
         self.rename_seed_pending = false;
         self.rename_select_pending = false;
         self.rename_input.set_focus(false);
@@ -5748,7 +5852,19 @@ impl FilesState {
     }
 
     pub fn cancel_rename(&mut self) {
+        // A new file Escape lets be: the empty file the press made goes with the field.
+        self.let_the_new_file_be();
         self.end_rename_editor();
+    }
+
+    /// The empty file a new-file field made, let be: its press asked for a name and the
+    /// person chose something else, so it goes while it still holds nothing.
+    fn let_the_new_file_be(&mut self) {
+        if let Some(path) = self.naming_new_file.take().and_then(|naming| naming.path)
+            && std::fs::metadata(&path).is_ok_and(|meta| meta.len() == 0)
+        {
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     fn paint_background(&mut self, theme: &ui::Theme) {
@@ -5906,6 +6022,9 @@ impl FilesState {
             let ring = input.get_rect().inflate(reach, reach);
             input.overhang().map_or(ring, |chip| ring.union(chip))
         });
+        if self.naming_new_file.is_some() {
+            self.place_templates_under(rect);
+        }
     }
 
     fn draw_drop_highlight(
@@ -6017,7 +6136,12 @@ impl FilesState {
             return false;
         };
         let path = entry.path.clone();
-        let new_name = self.rename_buffer.trim().to_string();
+        // A new file's typed name is read as a computer's Files reads it: a bare name keeps the
+        // proposed extension, and one with an extension of its own stands as typed.
+        let new_name = self.naming_new_file.as_ref().map_or_else(
+            || self.rename_buffer.trim().to_string(),
+            |naming| crate::naming::file_name(&self.rename_buffer, &naming.proposed),
+        );
         let unchanged = path
             .file_name()
             .and_then(|n| n.to_str())
@@ -6136,7 +6260,7 @@ impl FilesState {
         // changed since this folder was read is asked for again here.
         self.invalidate_open_with();
         let spec = self
-            .context_menu_spec(&self.available_templates())
+            .context_menu_spec()
             .into_iter()
             .map(|(label, cmd)| {
                 let checked = self.command_checked(cmd.as_ref());
@@ -6195,7 +6319,6 @@ impl FilesState {
     ) -> Option<(Vec<MenuItem>, Vec<Option<FileCommand>>)> {
         let spec = match command {
             FileCommand::OpenWithMenu => return Some(self.open_with_rows()),
-            FileCommand::OpenTemplatesMenu => self.template_rows(),
             FileCommand::OpenShortcutsMenu => self.shortcut_rows(),
             _ => return None,
         };
@@ -6203,6 +6326,7 @@ impl FilesState {
         Some((items, rows))
     }
 
+    /// The templates a new file starts from, as its field offers them under itself.
     fn template_rows(&self) -> Vec<MenuRow> {
         self.available_templates()
             .into_iter()
@@ -6404,10 +6528,20 @@ impl FilesState {
         (anchor, flip_y)
     }
 
-    /// The templates a new file starts from, as the toolbar's "New file" offers them.
-    fn open_templates_menu(&mut self) {
-        let (anchor, flip_y) = self.view_menu_place();
-        self.open_menu_right_aligned(self.template_rows(), anchor, flip_y);
+    /// The templates a new file starts from, offered under its field once the field stands:
+    /// the field is the list's own row, so the rows are placed where the field was drawn.
+    fn place_templates_under(&mut self, field: vello::kurbo::Rect) {
+        if self.templates_field == Some(field) {
+            return;
+        }
+        let rows = self.template_rows();
+        if rows.is_empty() {
+            // The templates are still being listed: the next frame offers them.
+            return;
+        }
+        self.templates_field = Some(field);
+        self.open_menu_right_aligned(rows, Point::new(field.x0, field.y1 + 2.0), field.y0 - 2.0);
+        self.templates_open = true;
     }
 
     fn open_view_menu(&mut self) {
@@ -6451,13 +6585,7 @@ impl FilesState {
             Some(FileCommand::NewFolder),
             None,
         ));
-        if !self.available_templates().is_empty() {
-            spec.push((
-                t("files-menu-new-file"),
-                Some(FileCommand::OpenTemplatesMenu),
-                None,
-            ));
-        }
+        spec.push((t("files-menu-new-file"), Some(FileCommand::NewFile), None));
         if self.undo.can_undo() {
             spec.push((t("files-menu-undo"), Some(FileCommand::Undo), None));
         }
@@ -6650,7 +6778,7 @@ impl FilesState {
             && self
                 .awaiting_ops
                 .iter()
-                .any(|(_, follow)| matches!(follow, OpFollowUp::NewFolder));
+                .any(|(_, follow)| matches!(follow, OpFollowUp::NewFolder | OpFollowUp::NewFile));
         if naming_ahead {
             let mut kept = true;
             match &ke.logical_key {
@@ -7525,6 +7653,13 @@ impl FilesState {
 
     fn sync_frame(&mut self, chrome: &mut Chrome, state: &AppModel, path: &ModelPath) {
         self.adopt_preferences();
+        // A row an assistive technology or an agent chose in an open menu is applied here, as
+        // the pointer's own press applies it on the event that chose it.
+        if let Some(command) = chrome.take_chosen() {
+            chrome.context_menu.close();
+            self.apply_command(command);
+            self.structure_dirty = true;
+        }
         if self.drain_commands() | self.drain_opened() {
             self.structure_dirty = true;
         }
@@ -7552,13 +7687,19 @@ impl FilesState {
 
         self.rename_input.sync(state, path);
         if self.rename_select_pending {
-            let is_dir = self
-                .renaming
-                .and_then(|i| self.displayed_entries().get(i).map(|e| e.is_dir))
-                .unwrap_or(true);
-            match rename_stem_end(&self.rename_buffer, is_dir) {
-                Some(stem) => self.rename_input.set_selection(0, stem),
-                None => self.rename_input.select_all(),
+            if self.naming_new_file.is_some() {
+                // A new file's proposed name is chosen whole, as a page's is: the first
+                // keystroke types over it, extension and all.
+                self.rename_input.select_all();
+            } else {
+                let is_dir = self
+                    .renaming
+                    .and_then(|i| self.displayed_entries().get(i).map(|e| e.is_dir))
+                    .unwrap_or(true);
+                match rename_stem_end(&self.rename_buffer, is_dir) {
+                    Some(stem) => self.rename_input.set_selection(0, stem),
+                    None => self.rename_input.select_all(),
+                }
             }
             self.rename_select_pending = false;
         }
@@ -7609,6 +7750,11 @@ impl FilesState {
         }
         if let Some(pending) = self.clash.as_mut() {
             pending.paint(scene, transform, text_renderer, theme, window);
+        }
+        if self.templates_open && self.naming_new_file.is_none() {
+            // The field the templates were offered under is gone: the rows go with it.
+            chrome.context_menu.close();
+            self.templates_open = false;
         }
         if chrome.context_menu.is_open() {
             layout_menu_widget(&mut chrome.context_menu);
@@ -7750,6 +7896,35 @@ impl FilesState {
             self.release_click();
         }
 
+        // A new file's field with its templates open under it: Enter and Escape are the
+        // field's, as they are without the rows, never the open rows' first choice.
+        if self.renaming.is_some()
+            && self.naming_new_file.is_some()
+            && let WindowEvent::KeyboardInput { event: ke, .. } = event
+            && ke.state == ElementState::Pressed
+        {
+            use winit::keyboard::{Key, NamedKey};
+            match ke.logical_key {
+                Key::Named(NamedKey::Enter) => {
+                    chrome.context_menu.close();
+                    self.templates_open = false;
+                    self.rename_buffer = self.rename_input.value().to_string();
+                    self.commit_rename();
+                    *ctx.handled = true;
+                    self.structure_dirty = true;
+                    return;
+                }
+                Key::Named(NamedKey::Escape) => {
+                    chrome.context_menu.close();
+                    self.templates_open = false;
+                    self.cancel_rename();
+                    *ctx.handled = true;
+                    self.structure_dirty = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
         if self.handle_live_drag_event(chrome, event, ctx)
             || self.handle_open_menu_event(chrome, event, ctx)
             || self.handle_right_click_open_menu(chrome, event, ctx)
@@ -7835,10 +8010,50 @@ impl FilesState {
                 Politeness::Polite
             })
             .with_state(AccessState::new().busy(self.is_loading))
+            .with_children(self.rename_field_accessibility().into_iter().collect())
+    }
+
+    /// The field a new entry's name is typed in, as the published controls hold it: its
+    /// name, what is typed, and where it stands, so a walk, the palette and an assistive
+    /// technology find it as they find a row.
+    fn rename_field_accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        self.renaming?;
+        let mut node = AccessNode::new(Role::TextInput)
+            .with_name(
+                self.naming_field_name
+                    .clone()
+                    .unwrap_or_else(|| t("files-new-name-placeholder")),
+            )
+            .with_value(self.rename_buffer.clone())
+            .with_state(AccessState::new().focusable(true).focused(true))
+            .with_action_target(RENAME_FIELD_TARGET);
+        if let Some(rect) = self.rename_rect.get() {
+            node = node.with_bounds(rect);
+        }
+        Some(node)
     }
 
     fn perform_window_action(&mut self, target: &str, action: &ui::a11y::Action) -> bool {
         use ui::a11y::Action;
+        if target == RENAME_FIELD_TARGET {
+            // What a reader does to the field it is shown: type a name into it, or put the
+            // keyboard there. Enter through the window then makes the file, as a person's does.
+            return match action {
+                Action::Focus | Action::Activate => {
+                    self.rename_select_pending = true;
+                    true
+                }
+                Action::SetValue(text) => {
+                    self.rename_buffer = text.trim().to_string();
+                    self.rename_seed_pending = true;
+                    self.rename_select_pending = false;
+                    self.structure_dirty = true;
+                    true
+                }
+                _ => false,
+            };
+        }
         if let Some(index) = target.strip_prefix(CLASH_TARGET)
             && matches!(action, Action::Activate)
         {

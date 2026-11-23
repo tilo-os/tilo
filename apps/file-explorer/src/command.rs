@@ -89,8 +89,10 @@ pub enum FileCommand {
     OpenDrive(String),
     Uninstall,
     RecheckRemoteAccount(String),
-    OpenTemplatesMenu,
     OpenShortcutsMenu,
+    /// Make a new file: the list opens the field its name is typed in, and the
+    /// templates the person has are offered under it.
+    NewFile,
     RunShortcut {
         shortcut: String,
     },

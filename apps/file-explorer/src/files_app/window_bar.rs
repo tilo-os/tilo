@@ -17,7 +17,6 @@ use crate::model::ViewMode;
 #[derive(Clone, PartialEq)]
 pub(super) enum BarCommand {
     Run(FileCommand),
-    NewFile,
 }
 
 pub(super) type BarEntries = BarCommands<BarCommand>;
@@ -200,13 +199,8 @@ impl FilesState {
             ));
         }
         if !archive && !recent {
-            if !self.available_templates().is_empty() {
-                actions.push(
-                    entries
-                        .entry("file-plus", t("files-menu-new-file"), BarCommand::NewFile)
-                        .in_menu(),
-                );
-            }
+            actions
+                .push(run("file-plus", t("files-menu-new-file"), FileCommand::NewFile).in_menu());
             actions.push(
                 run(
                     "square-terminal",
@@ -318,10 +312,6 @@ impl FilesState {
             }
             event @ ToolbarEvent::Action { .. } => match self.bar_entries.pressed(&event) {
                 Some(BarCommand::Run(command)) => Some(command),
-                Some(BarCommand::NewFile) => {
-                    self.open_templates_menu();
-                    None
-                }
                 None => None,
             },
             ToolbarEvent::Search { .. }

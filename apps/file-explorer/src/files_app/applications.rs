@@ -228,6 +228,7 @@ impl FilesState {
         if matches!(
             cmd,
             FileCommand::NewFolder
+                | FileCommand::NewFile
                 | FileCommand::NewFromTemplate(_)
                 | FileCommand::Paste
                 | FileCommand::OpenTerminal
