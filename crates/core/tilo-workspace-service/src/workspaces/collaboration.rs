@@ -9,7 +9,7 @@
 use collab_types::workspace_grant::WorkspaceGrant;
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::join::JoinBootstrap;
+use tilo_peer_state::join::{JoinBootstrap, JoinCompleteRequest};
 use tilo_peer_state::join_answer::{JoinWorkspaces, WorkspaceTxn};
 use tilo_peer_state::join_log::{Administered, Governed, Signer};
 pub use tilo_peer_state::join_log::{JoinError as CollaborationError, Redeeming};
@@ -837,61 +837,6 @@ impl Workspaces {
             .await;
         drop(workspace);
         completion
-    }
-
-    /// Hold the person `request.user_public_key` in `workspace` at
-    /// `request.place`, whether or not a device of theirs has joined: what an
-    /// administrator does when they know the person's key rather than handing
-    /// them an invitation. A member already is moved to the place; their
-    /// entry lets them in from then on, and a key of theirs reaches the
-    /// workspace before any device of theirs has joined.
-    ///
-    /// # Errors
-    ///
-    /// Why `administrator`'s person may not give that place, a name that is not
-    /// a display name, the workspace's own owner, or governance that cannot be
-    /// updated.
-    pub async fn add_member(
-        &self,
-        workspace: &str,
-        administrator: &DeviceCert,
-        request: AddMemberRequest,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        let workspace = self.workspace(workspace).await?;
-        let mut workspace = workspace.lock().await;
-        let person = request.user_public_key;
-        let place = request.place;
-        let op = WorkspaceOp::Place(person, place);
-        self.authorize(administrator, Some(&workspace), op, now)?;
-        let key = self.inner.host.key.clone();
-        let name = request.name.as_deref();
-        let admission = self.admission(&workspace, [person]).await?;
-        let mut kept = Vec::new();
-        let done = self
-            .administer(
-                &mut workspace,
-                request.request_id,
-                request_digest(&("member", person, &place, name))?,
-                |peer| {
-                    let changed = peer.governance_mut().place_member(
-                        person,
-                        place,
-                        name,
-                        &key,
-                        system_time(now),
-                    )?;
-                    kept = admission.keep(peer, (&key, system_time(now)))?;
-                    Ok(changed)
-                },
-                now,
-            )
-            .await;
-        if done.is_ok() {
-            self.kept_memberships(workspace.workspace(), &kept);
-        }
-        drop(workspace);
-        done
     }
 
     /// Write workspace grants (workspace settings such as a role's Deny on a kind), keyed by
@@ -1991,82 +1936,20 @@ impl Workspaces {
             let _ = written.answer.send(result.clone());
         }
     }
-
-    /// Admit the verified `joins` to `workspace` in one governance change: the
-    /// shared admission ([`tilo_peer_state::join_answer::admit`]), each
-    /// person's membership record kept in that change ([`Admission`]),
-    /// published before anyone hears their answer. People arriving together
-    /// cost the workspace one write and one publication instead of one each,
-    /// and each of those grows with the workspace.
-    ///
-    /// Answers each join in order. Fails as a whole when the change cannot
-    /// be committed or published.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the replica stays held until the admission is committed over it"
-    )]
-    pub(super) async fn admit_redemptions(
-        &self,
-        workspace: &mut GovernedWorkspace,
-        joins: &[Redeeming<'_>],
-        now: u64,
-    ) -> Result<Vec<Result<JoinBootstrap, CollaborationError>>, CollaborationError> {
-        let key = &self.inner.host.key;
-        let admission = self
-            .admission(
-                workspace,
-                joins
-                    .iter()
-                    .map(|join| join.redemption.certificate().user_public_key),
-            )
-            .await?;
-        let deciding = crate::timing::start();
-        let (admitted, committed, kept) = {
-            let shared = workspace.peer.shared();
-            let mut replica = shared.lock();
-            let mut held = HeldWorkspace::new(
-                key,
-                self.serving_certificate(),
-                workspace,
-                &mut replica,
-                &admission,
-            );
-
-            let admitted = tilo_peer_state::join_answer::admit(&mut held, joins, key, now);
-            (admitted, held.committed, held.kept)
-        };
-        crate::timing::event("join.admit.decide", deciding, joins.len() as u64);
-        if committed {
-            let settling = crate::timing::start();
-            self.settle(workspace).await?;
-            crate::timing::event("join.admit.settle", settling, joins.len() as u64);
-            self.kept_memberships(workspace.workspace(), &kept);
-            // The workspace keeps the grant of every key it admitted, so every
-            // holder and every API server reads the same grant from the
-            // workspace itself, whichever way the key came in.
-            if let Ok(answers) = &admitted {
-                for (join, answer) in joins.iter().zip(answers) {
-                    let certificate = join.redemption.certificate();
-                    if answer.is_ok()
-                        && let Some(scope) = certificate.capabilities.agent
-                    {
-                        self.list_grant(workspace, certificate, scope, join.name, now)
-                            .await?;
-                    }
-                }
-            }
-            // Someone invited from the wait list is in now: their entry
-            // leaves it.
-            workspace.forget_joined_wait_list();
-        }
-        admitted
-    }
 }
+
+/// What a change committed while a workspace is held keeps with it: the
+/// members' records an admission writes ([`super::admitting`]), answering
+/// whose it kept.
+pub(super) type Keeping<'a> = &'a dyn Fn(
+    &mut tilo_peer_state::StatePeer,
+    (&SigningKey, std::time::SystemTime),
+) -> Result<Vec<[u8; 32]>, String>;
 
 /// A workspace of this server while a governor decides, under its lock: whether
 /// its log changed unwritten, and whether a governance change was
 /// committed that its members have not been sent yet.
-struct HeldWorkspace<'a> {
+pub(super) struct HeldWorkspace<'a> {
     key: &'a SigningKey,
     /// The device answering this workspace's joins: this server's own, which
     /// need not be the device that governs the workspace.
@@ -2075,35 +1958,35 @@ struct HeldWorkspace<'a> {
     /// The workspace's state, held for the decision: a member's write reaches
     /// the replica over the link it syncs on, without this workspace's lock.
     replica: &'a mut tilo_peer_state::StatePeer,
-    /// The memberships a change committed here keeps along.
-    admission: &'a Admission,
+    /// What a change committed here keeps along.
+    keeping: Option<Keeping<'a>>,
     staged: bool,
-    committed: bool,
+    pub(super) committed: bool,
     /// Whose memberships the committed changes kept.
-    kept: Vec<[u8; 32]>,
+    pub(super) kept: Vec<[u8; 32]>,
 }
 
 impl<'a> HeldWorkspace<'a> {
-    const fn new(
+    pub(super) const fn new(
         key: &'a SigningKey,
         answering: &'a DeviceCert,
         workspace: &'a mut GovernedWorkspace,
         replica: &'a mut tilo_peer_state::StatePeer,
-        admission: &'a Admission,
+        keeping: Option<Keeping<'a>>,
     ) -> Self {
         Self {
             key,
             answering,
             workspace,
             replica,
-            admission,
+            keeping,
             staged: false,
             committed: false,
             kept: Vec::new(),
         }
     }
 
-    /// Commit `peer` as `change`, with the memberships it gives kept in it,
+    /// Commit `peer` as `change`, with what it keeps along written in it,
     /// and `log`'s answer as the workspace's join log.
     fn commit(
         &mut self,
@@ -2112,9 +1995,10 @@ impl<'a> HeldWorkspace<'a> {
         change: super::Change,
         log: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
     ) -> Result<(), CollaborationError> {
-        let kept = self
-            .admission
-            .keep(&mut peer, (self.key, system_time(now)))?;
+        let kept = match self.keeping {
+            Some(keep) => keep(&mut peer, (self.key, system_time(now)))?,
+            None => Vec::new(),
+        };
         self.workspace.commit_held(
             self.replica,
             peer,
@@ -2190,13 +2074,11 @@ impl JoinWorkspaces for Workspaces {
     async fn with_workspace<T: Send>(
         &self,
         workspace: &str,
-        admitting: Option<[u8; 32]>,
         decide: impl FnOnce(&mut dyn WorkspaceTxn) -> Result<T, CollaborationError> + Send,
     ) -> Result<T, CollaborationError> {
         let held = self.workspace(workspace).await?;
         let mut locked = held.lock().await;
-        let admission = self.admission(&locked, admitting).await?;
-        let (answer, staged, committed, kept) = {
+        let (answer, staged, committed) = {
             // A member's write reaches this workspace's replica over the link it
             // syncs on, without this workspace's lock: holding the replica for
             // the decision is what keeps the state a change is built from the
@@ -2208,14 +2090,13 @@ impl JoinWorkspaces for Workspaces {
                 self.serving_certificate(),
                 &mut locked,
                 &mut replica,
-                &admission,
+                None,
             );
             let answer = decide(&mut held);
-            (answer, held.staged, held.committed, held.kept)
+            (answer, held.staged, held.committed)
         };
         if committed {
             self.settle(&mut locked).await?;
-            self.kept_memberships(workspace, &kept);
         }
         drop(locked);
         if staged {
@@ -2223,111 +2104,17 @@ impl JoinWorkspaces for Workspaces {
         }
         answer
     }
-}
 
-/// What admitting people to a workspace writes besides its member list: each
-/// one's membership ([`super::membership::Membership`]) at the role the
-/// admitting change gives them, kept in that same change, so the workspace
-/// never lists a member whose membership it does not keep, nor the reverse.
-struct Admission {
-    /// Who the change may admit, with their membership records.
-    members: Vec<([u8; 32], super::authored::HeldRecord)>,
-    /// The device that writes the records: this host.
-    writer: DeviceCert,
-}
-
-impl Workspaces {
-    /// Take what admitting `people` to `workspace` writes of their memberships.
-    ///
-    /// # Errors
-    /// A membership record cannot be written here
-    /// ([`Self::hold_record`]).
-    async fn admission(
+    async fn admit_completed(
         &self,
-        workspace: &GovernedWorkspace,
-        people: impl IntoIterator<Item = [u8; 32]>,
-    ) -> Result<Admission, CollaborationError> {
-        let mut members: Vec<([u8; 32], super::authored::HeldRecord)> = Vec::new();
-        for person in people {
-            if members.iter().any(|(held, _)| *held == person) {
-                continue;
-            }
-            let record = super::membership::member_record(&person);
-            let held = self
-                .hold_record(workspace, (super::membership::APP, &record))
-                .await?;
-            members.push((person, held));
-        }
-        Ok(Admission {
-            members,
-            writer: self.serving_certificate().clone(),
-        })
-    }
-
-    /// Tell whoever follows `workspace`'s records of the memberships an
-    /// admission kept of `people`.
-    fn kept_memberships(&self, workspace: &str, people: &[[u8; 32]]) {
-        for person in people {
-            self.wrote(
-                workspace,
-                super::membership::APP,
-                &super::membership::member_record(person),
-            );
-        }
-    }
-}
-
-impl Admission {
-    /// Keep in `candidate` the membership of each person it may admit at the
-    /// role `candidate`'s governance gives them, where their record holds
-    /// another, signed with `key` at `now`. Answers whose it kept.
-    ///
-    /// # Errors
-    /// The governance does not read, or a record cannot be written.
-    fn keep(
-        &self,
-        candidate: &mut tilo_peer_state::StatePeer,
-        (key, now): (&SigningKey, std::time::SystemTime),
-    ) -> Result<Vec<[u8; 32]>, String> {
-        use super::membership::Membership;
-        if self.members.is_empty() {
-            return Ok(Vec::new());
-        }
-        let policy = candidate
-            .governance()
-            .governed_policy()
-            .map_err(|error| error.to_string())?;
-        let made_at_ms = i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX);
-        let mut kept = Vec::new();
-        for (person, record) in &self.members {
-            let Some(role) = policy.active_role(&hex::encode(person)) else {
-                continue;
-            };
-            let role = role.name().to_string();
-            let genesis = super::person_workspace::genesis::<Membership>(record.workspace())?;
-            let (_, published) = record.write(
-                candidate,
-                Some(Box::new(genesis)),
-                |doc| {
-                    let held = tilo_resource::Replica::<Membership>::from_doc(doc.clone())
-                        .state()
-                        .map_err(|error| error.to_string())?;
-                    if held.role.as_deref() == Some(role.as_str()) {
-                        return Ok(());
-                    }
-                    super::person_workspace::invoke(
-                        doc,
-                        &self.writer,
-                        Membership::KEEP_ROLE.with((role.clone(), made_at_ms)),
-                    )
-                },
-                (key, now),
-            )?;
-            if published {
-                kept.push(*person);
-            }
-        }
-        Ok(kept)
+        remote_endpoint: [u8; 32],
+        request: &JoinCompleteRequest,
+        now: u64,
+    ) -> Option<Result<JoinBootstrap, CollaborationError>> {
+        Some(
+            self.admit_answered(remote_endpoint, request.proof.clone(), now)
+                .await,
+        )
     }
 }
 

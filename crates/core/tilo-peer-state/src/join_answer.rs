@@ -79,9 +79,7 @@ pub trait JoinWorkspaces: Send + Sync {
 
     /// Run `decide` on `workspace`, locked, then make what it staged durable
     /// and send what it committed, and only then answer what `decide`
-    /// answered. `admitting` is the person `decide` may admit: a store that
-    /// keeps a record of each member writes theirs in the change that admits
-    /// them.
+    /// answered.
     ///
     /// # Errors
     /// The workspace is not governed here, `decide` refuses, or its change
@@ -89,9 +87,23 @@ pub trait JoinWorkspaces: Send + Sync {
     fn with_workspace<T: Send>(
         &self,
         workspace: &str,
-        admitting: Option<[u8; 32]>,
         decide: impl FnOnce(&mut dyn WorkspaceTxn) -> Result<T, JoinError> + Send,
     ) -> impl Future<Output = Result<T, JoinError>> + Send;
+
+    /// Admit the device at `remote_endpoint` that proved `request` in one
+    /// change of its workspace, or answer again what its earlier, identical
+    /// request was answered: the workspace as the admission committed it.
+    /// `None` where the store leaves the admission to [`JoinAnswer`], which
+    /// decides it in [`Self::with_workspace`].
+    fn admit_completed(
+        &self,
+        remote_endpoint: [u8; 32],
+        request: &JoinCompleteRequest,
+        now: u64,
+    ) -> impl Future<Output = Option<Result<JoinBootstrap, JoinError>>> + Send {
+        let _ = (remote_endpoint, request, now);
+        std::future::ready(None)
+    }
 }
 
 /// The workspace-join exchange answered for the workspaces in `S`.
@@ -220,7 +232,7 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
                 device_cert,
             } => {
                 store
-                    .with_workspace(&workspace, None, |workspace| {
+                    .with_workspace(&workspace, |workspace| {
                         let governed = workspace.governed();
                         if governed.host.device_public_key != store.signer().device_public_key() {
                             return Err(JoinError::new(
@@ -241,7 +253,7 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
             }
             JoinTransportRequest::Inspect { signed_invitation } => {
                 store
-                    .with_workspace(&workspace, None, |workspace| {
+                    .with_workspace(&workspace, |workspace| {
                         let join = workspace.log().inspect(
                             &workspace.governed(),
                             &signed_invitation,
@@ -257,7 +269,7 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
             JoinTransportRequest::Challenge(request) => {
                 let nonce = store.nonce()?;
                 store
-                    .with_workspace(&workspace, None, |workspace| {
+                    .with_workspace(&workspace, |workspace| {
                         let mut log = workspace.log().clone();
                         let challenge = log.challenge(
                             &workspace.governed(),
@@ -274,16 +286,22 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
                     .await?
             }
             JoinTransportRequest::Complete(request) => {
-                let person = request.proof.challenge.user_public_key;
-                self.signed(&workspace, Some(person), |workspace, signed| {
-                    complete(workspace, remote_endpoint, &request, signed, now)
-                        .map(JoinTransportResponse::Complete)
-                })
-                .await?
+                // A store that admits through its own action does so in one change of
+                // its own; the exchange decides it here only for a store that does not.
+                if let Some(admitted) = store.admit_completed(remote_endpoint, &request, now).await
+                {
+                    JoinTransportResponse::Complete(admitted?)
+                } else {
+                    self.signed(&workspace, |workspace, signed| {
+                        complete(workspace, remote_endpoint, &request, signed, now)
+                            .map(JoinTransportResponse::Complete)
+                    })
+                    .await?
+                }
             }
             JoinTransportRequest::MembershipChallenge(request) => {
                 let nonce = store.nonce()?;
-                self.signed(&workspace, None, |workspace, signed| {
+                self.signed(&workspace, |workspace, signed| {
                     // A further device of someone the workspace has in it
                     // needs no invitation: the workspace admits it as that
                     // member's device, and it proves the membership it was
@@ -305,7 +323,7 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
                 .await?
             }
             JoinTransportRequest::MembershipComplete(request) => {
-                self.signed(&workspace, None, |workspace, signed| {
+                self.signed(&workspace, |workspace, signed| {
                     membership_complete(workspace, remote_endpoint, &request, signed, now)
                         .map(JoinTransportResponse::MembershipComplete)
                 })
@@ -320,11 +338,9 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
     /// signed turn of this device's signer: a run that asked for a signature
     /// the signer has not given yet commits nothing, the signer signs what it
     /// asked for outside the workspace's lock, and `decide` runs again.
-    /// `admitting` is the person `decide` may admit.
     async fn signed<T: Send>(
         &self,
         workspace: &str,
-        admitting: Option<[u8; 32]>,
         mut decide: impl FnMut(&mut dyn WorkspaceTxn, &Signatures) -> Result<T, JoinError> + Send,
     ) -> Result<T, JoinError> {
         let signer = self.0.signer();
@@ -332,7 +348,7 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
         for _ in 0..SIGNED_RUNS {
             let ran = self
                 .0
-                .with_workspace(workspace, admitting, |held| decide(held, &signatures))
+                .with_workspace(workspace, |held| decide(held, &signatures))
                 .await;
             if !signatures
                 .sign_wanted(signer)

@@ -47,7 +47,7 @@ pub mod environment_device;
 pub mod invocation_record;
 pub mod linux_apps;
 pub mod mcp_server;
-pub use caller::{Caller, KeptCaller, device_agent_id};
+pub use caller::{Caller, Invited, KeptCaller, device_agent_id};
 pub mod signed_invocation;
 pub use signed_invocation::{SignedCall, SignedInvocation};
 mod catalogue;

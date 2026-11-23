@@ -516,8 +516,9 @@ impl Session {
         } else {
             let id = connection.server().enter(connection, workspace).await?;
             Served {
-                server: self
-                    .agent_surface(Arc::new(connection.device.workspace_actions(id)), workspace),
+                // Every action, a change to who is in the workspace among them, is the host's
+                // to run, where the workspace is kept.
+                server: self.agent_surface(Arc::new(connection.device.actions(id)), workspace),
             }
         };
         let held = Arc::new(held);

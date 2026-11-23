@@ -2607,3 +2607,76 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
 
     server.shutdown().await;
 }
+
+/// Two devices that redeem one invitation at once: `workspace/members#admit` takes the workspace
+/// and checks the invitation's spent mark under it, so exactly one is admitted, with its
+/// membership kept in the change that admits it, and the other is told in words that the
+/// invitation was already redeemed. Nothing of the other is written.
+#[tokio::test]
+async fn two_devices_redeeming_one_invitation_at_once_admit_exactly_one() {
+    use crate::workspaces::membership::{self, Membership};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let issued = invoke(
+        &host,
+        workspace_id,
+        &caller(&owner),
+        request(&workspace, governance::INVITE, json!({ "role": "editor" })),
+    )
+    .await
+    .unwrap();
+    let signed = hex::decode(issued["invitation"].as_str().unwrap()).unwrap();
+    let (_, ada) = guest_device();
+    let (_, bo) = guest_device();
+
+    let (first, second) = tokio::join!(
+        workspaces.admit_proven(signed.clone(), ada.clone(), rand::random(), "Ada", None),
+        workspaces.admit_proven(signed, bo.clone(), rand::random(), "Bo", None),
+    );
+
+    let (winner, loser, refused) = match (&first, &second) {
+        (JoinReply::Admitted { .. }, JoinReply::Refused(why)) => (&ada, &bo, why),
+        (JoinReply::Refused(why), JoinReply::Admitted { .. }) => (&bo, &ada, why),
+        _ => panic!("exactly one is admitted: {first:?}, {second:?}"),
+    };
+    assert_eq!(refused, "invitation was already redeemed");
+    let listed = invoke(
+        &host,
+        workspace_id,
+        &caller(&owner),
+        request(&workspace, MEMBERS, json!({})),
+    )
+    .await
+    .unwrap();
+    let people: Vec<String> = roles(&listed).into_iter().map(|(who, _)| who).collect();
+    assert!(
+        people.contains(&hex::encode(winner.user_public_key)),
+        "{listed}"
+    );
+    assert!(
+        !people.contains(&hex::encode(loser.user_public_key)),
+        "{listed}"
+    );
+    let kept = |cert: &DeviceCert| {
+        let record = membership::member_record(&cert.user_public_key);
+        crate::workspaces::person_workspace::read_on::<Membership>(
+            workspaces,
+            &workspace,
+            (membership::APP, record.as_str()),
+        )
+    };
+    assert_eq!(
+        kept(winner).await.unwrap().role.as_deref(),
+        Some("editor"),
+        "the admitted person's membership is kept with their admission"
+    );
+    assert_eq!(
+        kept(loser).await.unwrap().role,
+        None,
+        "nothing of the refused device is written"
+    );
+    server.shutdown().await;
+}

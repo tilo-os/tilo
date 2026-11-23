@@ -2003,6 +2003,11 @@ impl Workspaces {
                 if agent_record::is_agents_operation(operation) {
                     return self.agents_invoke(workspace_id, caller, request).await;
                 }
+                // A device that holds an invitation is admitted by it, before anyone in the
+                // workspace knows its key: its issuer's grant decides, not the caller's.
+                if operation == ADD_MEMBER && super::admitting::redeems(request) {
+                    return self.admit_invoke(workspace_id, caller, request).await;
+                }
                 let asked = governance_request(request, workspace, operation);
                 if operation == tilo_server_protocol::workspaces::RUN_UNATTENDED {
                     self.unattended_invoke(workspace_id, caller, certificate, &asked)
@@ -3367,6 +3372,14 @@ impl ServiceWorkspaceActions {
     pub(crate) fn attach(&self, workspaces: Workspaces) {
         workspaces.govern_device_actions_with(Arc::downgrade(&self.shared));
         workspaces.answer_asked_with(Arc::new(HostAsked(Arc::downgrade(&self.shared))));
+        // The workspaces' governance is a provider of this device's one dispatch, as every
+        // other provider is: a call made here reaches it there, admission among them.
+        workspaces.providers().provide(
+            WORKSPACE_GOVERNANCE_PROVIDER,
+            WORKSPACE_GOVERNANCE_PROVIDER,
+            super::providers::Reach::ThisDevice,
+            Arc::new(Governing(self.clone())),
+        );
         let _ = self.shared.workspaces.set(workspaces);
     }
 
@@ -3872,6 +3885,59 @@ impl InWorkspace {
         } else {
             Err(ActionCallError::UnknownInvocation)
         })
+    }
+}
+
+/// The workspaces' governance on this device's one dispatch
+/// ([`super::providers::Providers`]): a call names its workspace in its address, and is answered
+/// as that workspace's governance answers it ([`InWorkspace`]), the actions of its agents
+/// (`workspace/agents#create`, `#update`, `#delete`) and its admission (`workspace/members#admit`)
+/// among them.
+#[derive(Clone)]
+struct Governing(ServiceWorkspaceActions);
+
+impl Governing {
+    /// The governance of the workspace `workspace_id` names, for a caller whose certificate the
+    /// workspace reads itself.
+    fn of(&self, workspace_id: Option<WorkspaceId>) -> InWorkspace {
+        InWorkspace {
+            server: self.0.clone(),
+            workspace_id,
+            certificate: None,
+        }
+    }
+}
+
+impl ActionProvider for Governing {
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        let workspace_id = caller.workspace().and_then(WorkspaceId::parse);
+        self.of(workspace_id).query(caller, query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let workspace_id = workspace_governance_operation(&request.target.address)
+            .and_then(|(workspace, _)| WorkspaceId::parse(workspace));
+        self.of(workspace_id).invoke(caller, request)
+    }
+
+    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        self.of(None).observe(caller, id)
+    }
+
+    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        self.of(None).next_change(caller, id)
+    }
+
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        self.of(None).cancel(caller, id)
     }
 }
 

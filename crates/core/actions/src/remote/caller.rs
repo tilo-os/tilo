@@ -86,6 +86,19 @@ pub struct Caller {
     steps_unasked: bool,
     // The device's operating system (`Self::local_system`), which acts for nobody.
     system: bool,
+    // The invitation a visitor redeems (`Self::invited`): it acts by its issuer's authority,
+    // which the action checks against the issuer's grant when it runs.
+    invited: Option<Invited>,
+}
+
+/// The authority an invitation carries ([`Caller::invited`]): the signed invitation, and the
+/// device key of whoever issued it, whose grant decides what it admits.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Invited {
+    /// The signed invitation, as its issuer handed it over.
+    pub invitation: Vec<u8>,
+    /// The device key that signed it.
+    pub issuer: [u8; 32],
 }
 
 impl Caller {
@@ -109,6 +122,7 @@ impl Caller {
             own_bound: None,
             steps_unasked: false,
             system: false,
+            invited: None,
         }
     }
 
@@ -132,6 +146,22 @@ impl Caller {
         let mut caller = Self::admitted(Acting::visitor(&device_public_key), None);
         caller.device_public_key = Some(device_public_key);
         caller
+    }
+
+    /// A visitor redeeming `invited`: the device `device_public_key` its connection proved,
+    /// acting by the authority of the invitation's issuer and nothing more. The action that
+    /// admits it checks the invitation, and the issuer's grant, when it runs.
+    #[must_use]
+    pub fn invited(device_public_key: [u8; 32], invited: Invited) -> Self {
+        let mut caller = Self::visitor(device_public_key);
+        caller.invited = Some(invited);
+        caller
+    }
+
+    /// The invitation this caller redeems ([`Self::invited`]).
+    #[must_use]
+    pub const fn invitation(&self) -> Option<&Invited> {
+        self.invited.as_ref()
     }
 
     /// A person on a connection the provider admitted itself, by the id that
@@ -757,6 +787,8 @@ impl KeptCaller {
             own_bound: self.own_bound,
             steps_unasked: self.steps_unasked,
             system: self.system,
+            // A redemption never waits for a person's yes, so no kept call carries one.
+            invited: None,
         }
     }
 }

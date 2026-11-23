@@ -116,7 +116,6 @@ impl JoinWorkspaces for MemoryWorkspaces {
     fn with_workspace<T: Send>(
         &self,
         workspace: &str,
-        _: Option<[u8; 32]>,
         decide: impl FnOnce(&mut dyn WorkspaceTxn) -> Result<T, JoinError> + Send,
     ) -> impl std::future::Future<Output = Result<T, JoinError>> + Send {
         std::future::ready(if workspace == WORKSPACE {

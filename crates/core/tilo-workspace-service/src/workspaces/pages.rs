@@ -20,10 +20,11 @@ use tilo_action_policy::roles::governance;
 use tilo_peer_state::join::VerifiedRedemption;
 use tilo_server_protocol::workspaces::{
     DocumentAccess, Inviter, JoinReply, PendingInvite, PreAdmission, Role, ServerEntry,
-    WaitListEntry, Workspace, WorkspaceHolder, WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
+    WaitListEntry, Workspace, WorkspaceHolder, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_user_identity::DeviceCert;
 
+use super::admitting::Admitting;
 use super::authority::WorkspaceOp;
 use super::collaboration::carried;
 use super::hosts::holders_of;
@@ -32,6 +33,7 @@ use super::{
     IssuedInvitation, WorkspaceSummary, Workspaces, system_time,
 };
 use crate::service_authority::ServiceOperation;
+use tilo_actions::remote::{Caller, Invited};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
@@ -53,7 +55,6 @@ pub struct PreAdmitRequest {
 /// and where its answer goes.
 pub(super) struct QueuedAdmission {
     presented: Presented,
-    proof_digest: [u8; 32],
     name: String,
     token: Vec<u8>,
     answer: tokio::sync::oneshot::Sender<Result<JoinReply, CollaborationError>>,
@@ -79,7 +80,7 @@ pub(crate) struct Presented {
 
 impl Presented {
     /// The device redeeming.
-    const fn device(&self) -> [u8; 32] {
+    pub(super) const fn device(&self) -> [u8; 32] {
         self.cert.device_public_key
     }
 
@@ -91,7 +92,7 @@ impl Presented {
 
     /// What the workspace's join receipt keeps of the request, so the same
     /// request again is answered rather than redeemed twice.
-    fn digest(&self) -> Result<[u8; 32], CollaborationError> {
+    pub(super) fn digest(&self) -> Result<[u8; 32], CollaborationError> {
         super::collaboration::request_digest(&(
             "tilo/redeemed-on-connection/v1",
             &self.invitation,
@@ -102,7 +103,7 @@ impl Presented {
 
     /// The verified redemption, for an invitation `workspace` issued and
     /// still holds redeemable, at the device answering for it.
-    fn redeem(
+    pub(super) fn redeem(
         &self,
         workspace: &GovernedWorkspace,
         answering: &DeviceCert,
@@ -1344,9 +1345,14 @@ impl Workspaces {
         let proving = crate::timing::start();
         let (invitation, person) = (presented.invitation.clone(), presented.cert.user_public_key);
         let cert = presented.cert.clone();
-        let reply = self
-            .prove(presented, &joined_name(name)?, token, now)
-            .await?;
+        let joined = joined_name(name)?;
+        let reply = match token {
+            Some(token) => {
+                self.prove_pre_admitted(presented, &joined, token, now)
+                    .await?
+            }
+            None => self.enter_invited(presented, &joined, now).await?,
+        };
         if let JoinReply::Admitted { workspace, .. } = &reply {
             self.accepted(workspace, &invitation, person).await;
             // A key that came in with an invitation is listed as every key
@@ -1365,68 +1371,40 @@ impl Workspaces {
         Ok(reply)
     }
 
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays locked while the request is admitted"
-    )]
-    async fn prove(
+    /// Admit the device `presented` names with its invitation, shown to the workspace's people
+    /// as `name`: `workspace/members#admit` asked on this device's dispatch as the invitation's
+    /// authority, which its issuer's grant decides.
+    async fn enter_invited(
         &self,
         presented: Presented,
         name: &str,
-        token: Option<&[u8]>,
         now: u64,
     ) -> Result<JoinReply, CollaborationError> {
-        if let Some(token) = token {
-            return self.prove_pre_admitted(presented, name, token, now).await;
-        }
-        let identity = presented.workspace(now)?;
-        let request_id = presented.request_id;
-        let device = presented.device();
-        let proof_digest = presented.digest()?;
-        let governed = self.workspace(&identity.to_string()).await?;
-        let mut workspace = governed.lock().await;
-        // A page that asked again under the same request — a reload, a lost
-        // answer — hears what became of it, not that its invitation is spent.
-        if workspace.admitted_device(request_id) == Some(device) {
-            return Self::admitted(&workspace, device, now);
-        }
-        let redemption = presented.redeem(&workspace, self.serving_certificate(), now)?;
-        let invite_id = redemption.join().invite_id();
-        if workspace.redeemed(invite_id) {
-            return Err(CollaborationError::new("invitation was already redeemed"));
-        }
-        // An invitation is the approval of whoever made it: a page that holds
-        // one is let in by its issuer's own grant, as at every other entry, and
-        // never waits for someone in the workspace to answer for it.
-        let issuer = redemption.join().grant().issuer.clone();
-        self.authorize(
-            &issuer,
-            Some(&workspace),
-            WorkspaceOp::Invite(redemption.join().grant().role),
-            now,
-        )?;
-        let join = super::collaboration::Redeeming {
-            remote_endpoint: device,
-            request_id,
-            proof_digest,
-            redemption: &redemption,
-            // A device that names no person arrives as it is: the name the workspace already
-            // knows the person by stands, and one it does not know yet stays unnamed rather than
-            // taking a device's label for a person's name.
-            name: (!name.trim().is_empty()).then_some(name),
-        };
-        self.admit_redemptions(&mut workspace, &[join], now)
+        let workspace = presented.workspace(now)?;
+        let issuer = tilo_peer_state::join_log::invitation_issuer(&presented.invitation, now)?;
+        let caller = Caller::invited(
+            presented.device(),
+            Invited {
+                invitation: presented.invitation.clone(),
+                issuer,
+            },
+        );
+        let admitted = self
+            .admit_through(
+                workspace,
+                &caller,
+                vec![Admitting::Entry {
+                    invitation: presented.invitation,
+                    certificate: presented.cert,
+                    request_id: presented.request_id,
+                    name: name.to_owned(),
+                    token: None,
+                }],
+            )
             .await?
             .pop()
-            .unwrap_or_else(|| Err(CollaborationError::new("join bootstrap was not built")))?;
-        tracing::info!(
-            workspace = %identity,
-            invite_id = %hex::encode(invite_id),
-            person = %hex::encode(device),
-            outcome = "admitted",
-            "workspace join admitted with its invitation"
-        );
-        Self::admitted(&workspace, device, now)
+            .ok_or_else(|| CollaborationError::new("join bootstrap was not built"))?;
+        Ok(admitted.entered())
     }
 
     /// What a device the workspace just admitted hears: the workspace it is in
@@ -1468,13 +1446,11 @@ impl Workspaces {
         now: u64,
     ) -> Result<JoinReply, CollaborationError> {
         let workspace = presented.workspace(now)?;
-        let proof_digest = presented.digest()?;
         let (answer, answered) = tokio::sync::oneshot::channel();
         let first = self.queue_admission(
             &workspace.to_string(),
             QueuedAdmission {
                 presented,
-                proof_digest,
                 name: name.to_owned(),
                 token: token.to_vec(),
                 answer,
@@ -1484,7 +1460,7 @@ impl Workspaces {
             // Its own task: a page that goes away mid-pass must not cut off
             // the answers of everyone else in it.
             let workspaces = self.clone();
-            tokio::spawn(async move { workspaces.admit_queued(&workspace.to_string()).await });
+            tokio::spawn(async move { workspaces.admit_queued(workspace).await });
         }
         answered
             .await
@@ -1502,177 +1478,51 @@ impl Workspaces {
         first
     }
 
-    /// Admit every pre-admitted redemption queued for `workspace`.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays locked until its admissions are committed, published and answered"
-    )]
-    async fn admit_queued(&self, identity: &str) {
+    /// Admit every pre-admitted redemption queued for `workspace`, all in one ask of
+    /// `workspace/members#admit` on this device's dispatch, as this device: the owner's
+    /// pre-admissions decide each.
+    async fn admit_queued(&self, workspace: WorkspaceId) {
+        let identity = workspace.to_string();
         let locking = crate::timing::start();
-        let workspace = self.workspace(identity).await;
-        let mut locked = match &workspace {
-            Ok(workspace) => Some(workspace.lock().await),
-            Err(_) => None,
-        };
+        // Redemptions that arrive while the workspace commits another change wait for the next
+        // pass together: it starts once the workspace is free.
+        if let Ok(governed) = self.workspace(&identity).await {
+            drop(governed.lock().await);
+        }
         let queued = self
             .inner
             .queued_admissions
             .lock_recover()
-            .remove(identity)
+            .remove(&identity)
             .unwrap_or_default();
         crate::timing::event("join.queued.locked", locking, queued.len() as u64);
         let admitting = crate::timing::start();
-        let answers = match (&workspace, locked.as_mut()) {
-            (Ok(_), Some(workspace)) => self.admit_pre_admitted(workspace, &queued).await,
-            (Err(error), _) => vec![Err(error.clone()); queued.len()],
-            (Ok(_), None) => Vec::new(),
-        };
-        crate::timing::event("join.queued.admit", admitting, queued.len() as u64);
-        for (queued, answer) in queued.into_iter().zip(answers) {
-            let _ = queued.answer.send(answer);
-        }
-    }
-
-    /// Check each queued redemption alone, then admit those that hold in one
-    /// change and spend their grants in one write. Answers each in order.
-    async fn admit_pre_admitted(
-        &self,
-        workspace: &mut GovernedWorkspace,
-        queued: &[QueuedAdmission],
-    ) -> Vec<Result<JoinReply, CollaborationError>> {
-        let now = tilo_clock::unix_now_ns();
-        let mut answers: Vec<Option<Result<JoinReply, CollaborationError>>> =
-            Vec::with_capacity(queued.len());
-        let mut admitting = Vec::new();
-        let mut invites = std::collections::BTreeSet::new();
-        for (index, join) in queued.iter().enumerate() {
-            match self.check_pre_admitted(workspace, join, &mut invites, now) {
-                Ok(checked) => {
-                    admitting.push((index, checked));
-                    answers.push(None);
-                }
-                Err(answer) => answers.push(Some(*answer)),
-            }
-        }
-        let joins: Vec<_> = admitting
+        let admissions = queued
             .iter()
-            .map(
-                |(index, (redemption, _, _))| super::collaboration::Redeeming {
-                    remote_endpoint: redemption.certificate().device_public_key,
-                    request_id: redemption.request_id(),
-                    proof_digest: queued.get(*index).map_or([0; 32], |join| join.proof_digest),
-                    redemption,
-                    name: queued.get(*index).map(|join| join.name.as_str()),
-                },
-            )
+            .map(|join| Admitting::Entry {
+                invitation: join.presented.invitation.clone(),
+                certificate: join.presented.cert.clone(),
+                request_id: join.presented.request_id,
+                name: join.name.clone(),
+                token: Some(join.token.clone()),
+            })
             .collect();
-        let admitted = if joins.is_empty() {
-            Ok(Vec::new())
-        } else {
-            self.admit_redemptions(workspace, &joins, now).await
-        };
-        drop(joins);
-        let mut spent = Vec::new();
-        match admitted {
-            Ok(admitted) => {
-                for ((index, (redemption, label, role)), admitted) in
-                    admitting.into_iter().zip(admitted)
-                {
-                    let answer = admitted.map(|_| {
-                        let certificate = redemption.certificate();
-                        let invite_id = redemption.join().invite_id();
-                        spent.push((
-                            invite_id,
-                            WorkspaceNotice::PreAdmitted {
-                                user_public_key: certificate.user_public_key,
-                                name: queued
-                                    .get(index)
-                                    .map(|join| join.name.clone())
-                                    .unwrap_or_default(),
-                                label,
-                                role,
-                                at_ns: now,
-                            },
-                        ));
-                        tracing::info!(
-                            workspace = %workspace.workspace(),
-                            invite_id = %hex::encode(invite_id),
-                            person = %hex::encode(certificate.user_public_key),
-                            outcome = "pre-admitted",
-                            "workspace join admitted under the owner's pre-admission"
-                        );
-                        JoinReply::Admitted {
-                            workspace: workspace.workspace().to_owned(),
-                            workspace_id: workspace.workspace_id(),
-                            name: workspace.name(),
-                            role,
-                        }
-                    });
-                    if let Some(slot) = answers.get_mut(index) {
-                        *slot = Some(answer);
-                    }
+        let answers = self
+            .admit_through(workspace, &Caller::local_system(), admissions)
+            .await;
+        crate::timing::event("join.queued.admit", admitting, queued.len() as u64);
+        match answers {
+            Ok(answers) => {
+                for (queued, answer) in queued.into_iter().zip(answers) {
+                    let _ = queued.answer.send(Ok(answer.entered()));
                 }
             }
             Err(error) => {
-                for (index, _) in admitting {
-                    if let Some(slot) = answers.get_mut(index) {
-                        *slot = Some(Err(error.clone()));
-                    }
+                for queued in queued {
+                    let _ = queued.answer.send(Err(error.clone()));
                 }
             }
         }
-        if !spent.is_empty()
-            && let Err(error) = workspace.admissions.spend(spent)
-        {
-            let error = CollaborationError::from(error);
-            for answer in answers.iter_mut().flatten() {
-                if answer.is_ok() {
-                    *answer = Err(error.clone());
-                }
-            }
-        }
-        answers
-            .into_iter()
-            .map(|answer| {
-                answer.unwrap_or_else(|| Err(CollaborationError::new("join was not answered")))
-            })
-            .collect()
-    }
-
-    /// What admits one queued redemption under its pre-admission (the
-    /// verified redemption, the grant's label and role), or its answer.
-    /// `invites` holds the invitations already admitted in this pass.
-    fn check_pre_admitted(
-        &self,
-        workspace: &GovernedWorkspace,
-        join: &QueuedAdmission,
-        invites: &mut std::collections::BTreeSet<[u8; 32]>,
-        now: u64,
-    ) -> Result<(VerifiedRedemption, String, Role), Box<Result<JoinReply, CollaborationError>>>
-    {
-        let redemption = join
-            .presented
-            .redeem(workspace, self.serving_certificate(), now)
-            .map_err(|error| Box::new(Err(error)))?;
-        let invite_id = redemption.join().invite_id();
-        if workspace.redeemed(invite_id) || !invites.insert(invite_id) {
-            return Err(Box::new(Err(CollaborationError::new(
-                "invitation was already redeemed",
-            ))));
-        }
-        let role = redemption.join().grant().role;
-        let grant = workspace
-            .admissions
-            .grant_for(invite_id, &join.token, now)
-            .map_err(|error| Box::new(Err(CollaborationError::from(error))))?;
-        self.pre_admission_signer(workspace, grant)
-            .map_err(|error| Box::new(Err(CollaborationError::from(error))))?;
-        if grant.role != role || grant.workspace != workspace.workspace() {
-            return Err(Box::new(Err(CollaborationError::new(
-                "the pre-admission is for another workspace or role",
-            ))));
-        }
-        Ok((redemption, grant.label.clone(), role))
     }
 }
 

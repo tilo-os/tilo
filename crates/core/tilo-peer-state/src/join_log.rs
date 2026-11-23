@@ -390,6 +390,14 @@ pub fn invitation_workspace(
     Ok(join.grant().workspace_id)
 }
 
+/// The device key that issued `signed_invitation`, read once its signature
+/// holds: whose grant decides what the invitation admits.
+pub fn invitation_issuer(signed_invitation: &[u8], now_ns: u64) -> Result<[u8; 32], JoinError> {
+    let join =
+        decode_and_verify_invitation(signed_invitation, None, &RevocationList::new(), now_ns)?;
+    Ok(join.grant().issuer.device_public_key)
+}
+
 /// What happened to an administration request asked before.
 pub enum Administered {
     /// The same request was committed in this generation.
