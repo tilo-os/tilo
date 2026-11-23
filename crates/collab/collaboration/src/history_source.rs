@@ -128,10 +128,10 @@ impl authors::ResolveAuthor for TestWords {
     fn resolve(&self, actor_hex: &str) -> authors::HistoryAuthor {
         let name = authors::actor_handle(actor_hex)
             .unwrap_or_else(|| authors::UNKNOWN_AUTHOR_NAME.to_owned());
-        authors::HistoryAuthor::new(
+        authors::author_coloured(
             name,
-            authors::stable_hue(actor_hex),
             authors::short_id(actor_hex),
+            collab_types::presence::user_color(actor_hex),
         )
     }
 }

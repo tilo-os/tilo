@@ -74,7 +74,7 @@ fn global_driver(pending: Rc<Cell<bool>>, calls: Rc<Cell<usize>>) -> FrameHarnes
     driver.click_named("history-open").unwrap();
     let target = format!(
         "timeline-entry:{}",
-        crate::widget::history_group::hex16(&crate::history_source::entry_id_from_hash(
+        crate::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
             &hash.to_string()
         ))
     );
@@ -210,7 +210,7 @@ fn readiness_component_tile_checks_retained_child_at_confirmation() {
     driver.click_named("history-open").unwrap();
     let target = format!(
         "timeline-entry:{}",
-        crate::widget::history_group::hex16(&crate::history_source::entry_id_from_hash(
+        crate::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
             &selected.to_string()
         ))
     );

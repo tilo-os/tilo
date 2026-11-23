@@ -202,6 +202,27 @@ pub fn user_color(user_id: &str) -> (u8, u8, u8) {
     identity_rgb(PresenceHue::of_identity(user_id))
 }
 
+/// The colour a member wears until they choose one ([`PresenceHue::of_member`]), as it
+/// travels: the one lookup every surface asks (the bar's faces, the People list, a profile
+/// card, an agent's card in a window, its marks and carets, and the run a change is
+/// attributed to), so one member is one colour everywhere.
+#[must_use]
+pub fn member_color(member: &tilo_action_policy::MemberId) -> (u8, u8, u8) {
+    identity_rgb(PresenceHue::of_member(member))
+}
+
+/// The colour the identity `identity` (an actor's bytes as text) wears with no choice of its
+/// own: the member it spells ([`member_color`]), or else the palette slot the string hashes
+/// to ([`user_color`]). A person's key and an actor nobody named keep their slot; an agent's
+/// change wears what the agent is, never the slot its `agent:<id>` spelling would hash to.
+#[must_use]
+pub fn identity_color(identity: &str) -> (u8, u8, u8) {
+    match tilo_action_policy::MemberId::of_actor_bytes(identity.as_bytes()) {
+        Some(member) => member_color(&member),
+        None => user_color(identity),
+    }
+}
+
 /// The MCP client an agent is, by the name it goes by: a run is named for its client and a number
 /// of the person's runs ("Claude Code #3"), a grant or a live face for the client itself. A name
 /// that only ends in a number ("Cursor 2") keeps it: only a run's `#<digits>` names a number.

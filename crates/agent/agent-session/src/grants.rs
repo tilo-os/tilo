@@ -900,9 +900,7 @@ fn grant_proposal(
         parse_color_hex(text).ok_or("a grant's colour is #rrggbb")?
     } else {
         let (r, g, b) =
-            collab_types::presence::identity_rgb(collab_types::presence::PresenceHue::of_member(
-                &collab_types::MemberId::agent(agent_id),
-            ));
+            collab_types::presence::member_color(&collab_types::MemberId::agent(agent_id));
         [r, g, b]
     };
     Ok(DelegateProposal {

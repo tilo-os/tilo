@@ -24,7 +24,7 @@ use collaboration::history_source::authors::handle_actor_hex;
 pub use collaboration::history_source::authors::{
     DeviceActors, MemberNames, ResolveAuthor, UNKNOWN_AUTHOR_NAME, actor_handle, app_name,
     app_words, author_coloured, device_actor, installed_app_name, name_words, set_installed_apps,
-    short_id, stable_hue,
+    short_id,
 };
 #[cfg(test)]
 use collaboration::history_source::authors::{SHORT_LEN, rgb_to_hue};
@@ -294,7 +294,7 @@ impl AuthorDirectory {
                     (noted.name.clone(), crate::presence::member_color(&member))
                 } else {
                     person(&noted.name)
-                        .unwrap_or_else(|| (noted.name.clone(), identity_colour(&noted.name)))
+                        .unwrap_or_else(|| (noted.name.clone(), crate::presence::identity_color(&noted.name)))
                 };
                 let author = author_coloured(shown, short_id(&identity), rgb);
                 let author = if agent {
@@ -610,7 +610,7 @@ impl AuthorDirectory {
         self.color_overrides
             .get(identity)
             .copied()
-            .unwrap_or_else(|| identity_colour(identity))
+            .unwrap_or_else(|| crate::presence::identity_color(identity))
     }
 
     fn author_from_identity(
@@ -761,20 +761,7 @@ pub fn local_identity_author() -> Option<HistoryAuthor> {
 /// History row for `identity`: the colour presence paints that identity in
 /// when no override is set.
 pub fn author_for_identity(name: impl Into<String>, identity: &str) -> HistoryAuthor {
-    author_coloured(name, short_id(identity), identity_colour(identity))
-}
-
-/// The colour the identity `identity` wears with no choice of its own: the
-/// member it spells, painted as presence paints it
-/// ([`crate::presence::member_color`]), or else the palette slot the string
-/// hashes to. A person's key and an actor nobody named keep their slot; an
-/// agent's change wears what the agent is, never the slot its `agent:<id>`
-/// spelling would hash to.
-fn identity_colour(identity: &str) -> (u8, u8, u8) {
-    match tilo_actions::MemberId::of_actor_bytes(identity.as_bytes()) {
-        Some(member) => crate::presence::member_color(&member),
-        None => crate::presence::user_color(identity),
-    }
+    author_coloured(name, short_id(identity), crate::presence::identity_color(identity))
 }
 
 #[cfg(test)]
@@ -1125,23 +1112,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn unknown_actors_get_stable_distinct_hues_in_the_right_sextants;
-
-        phase unknown_actors_get_stable_distinct_hues;
-        // An unknown actor gets a stable colour, so the same stranger is
-        // recognisable across rows even with no name.
-        {
-            let a = "ff00ff00ff00ff00";
-            let b = "00ff00ff00ff00ff";
-            assert_eq!(stable_hue(a), stable_hue(a), "hue is deterministic");
-            assert_ne!(
-                stable_hue(a),
-                stable_hue(b),
-                "distinct actors, distinct hues"
-            );
-            assert!((0.0..360.0).contains(&stable_hue(a)));
-            assert!((0.0..360.0).contains(&stable_hue(b)));
-        }
+        fn colours_map_onto_the_expected_hue_sextants;
 
         phase rgb_maps_onto_the_expected_hue_sextants;
         // The identity file's avatar colour drives the dot, so the timeline

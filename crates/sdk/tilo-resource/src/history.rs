@@ -39,18 +39,29 @@ pub struct Version {
 /// gesture reads as its gesture's entry ([`tilo_actions::entry_of`]).
 pub fn version_of(doc: &automerge::Automerge, meta: &automerge::ChangeMetadata<'_>) -> Version {
     let message = meta.message.as_deref().map(str::to_owned);
-    let context = match message.as_deref() {
-        Some(text) if text.starts_with(tilo_actions::CONTINUATION_PREFIX) => {
-            tilo_actions::entry_of(doc, meta.hash)
-        }
-        text => text.and_then(ActionContext::from_change_message),
-    };
+    let context = context_of(doc, meta.hash, message.as_deref());
     Version {
         hash: meta.hash,
         actor: meta.actor.to_hex_string(),
         time_ms: meta.timestamp.saturating_mul(1000),
         context,
         message,
+    }
+}
+
+/// What the change `hash` of `doc`, written with `message`, did: the action
+/// its message records, or, for a continuation of a gesture, the gesture's
+/// entry ([`tilo_actions::entry_of`]).
+pub fn context_of(
+    doc: &automerge::Automerge,
+    hash: ChangeHash,
+    message: Option<&str>,
+) -> Option<ActionContext> {
+    match message {
+        Some(text) if text.starts_with(tilo_actions::CONTINUATION_PREFIX) => {
+            tilo_actions::entry_of(doc, hash)
+        }
+        text => text.and_then(ActionContext::from_change_message),
     }
 }
 

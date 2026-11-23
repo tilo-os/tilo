@@ -17,7 +17,7 @@ use ui::history_source::{GENERATED_BY, descriptions, groups};
 use ui::models::{Content, Message, ModelRequest, Role, ToolChoice};
 use ui::widget::HistoryEntryId;
 use ui::widget::history::HistoryEntry;
-use ui::widget::history_group::{GroupingConfig, NamedRange, from_hex16, group_entries, hex16};
+use ui::widget::history_group::{GroupingConfig, NamedRange, group_entries};
 
 /// How many changes one description request asks about: enough to spend a request's latency on, few
 /// enough that one failure loses little.
@@ -374,7 +374,7 @@ fn covered_entries(entries: &[HistoryEntry], named: &[NamedRange]) -> HashSet<Hi
 }
 
 fn group_key(start: &HistoryEntryId) -> String {
-    format!("{}{}", ui::history_source::GROUPS_KEY, hex16(start))
+    format!("{}{}", ui::history_source::GROUPS_KEY, HistoryEntryId::hex(start))
 }
 
 /// Every change's actor, so a run can be told as this device's own.
@@ -400,7 +400,7 @@ fn fact_of(entry: &HistoryEntry) -> Fact {
             .map(str::to_owned)
     });
     Fact {
-        change: hex16(&entry.id),
+        change: HistoryEntryId::hex(&entry.id),
         summary: entry.summary.clone(),
         purpose: context.and_then(|context| context.purpose.clone()),
         item,
@@ -410,7 +410,7 @@ fn fact_of(entry: &HistoryEntry) -> Fact {
 
 /// The id a hex change name stands for, when it is one this code wrote.
 fn id_of(change: &str) -> Option<HistoryEntryId> {
-    from_hex16(change)
+    HistoryEntryId::from_hex(change)
 }
 
 /// One line per asked change, from a JSON answer: only the changes asked about, each once, each a

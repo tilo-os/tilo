@@ -52,7 +52,7 @@ pub use authors::{
     AuthorDirectory, HistoryAgent, MemberNames, RosterAgent, UNKNOWN_AUTHOR_NAME, actor_handle,
     actor_label, app_name, app_words, author_coloured, author_for_identity, installed_app_name,
     local_identity_author, name_words, note_mount_actor, note_resource_mount, set_installed_apps,
-    short_id, stable_hue,
+    short_id,
 };
 /// What changed in a workspace's records, as a host's replica took it in.
 pub use collaboration::history_source::feed;

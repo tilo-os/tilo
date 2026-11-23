@@ -174,7 +174,7 @@ fn open_at_operation() -> ActionSpec {
 /// The change `id` in 32 lowercase hex digits, as [`decode_entry`] reads it.
 #[cfg(any(feature = "native", test))]
 pub(crate) fn encode_entry(id: HistoryEntryId) -> String {
-    crate::widget::history_group::hex16(&id)
+    crate::HistoryEntryId::hex(&id)
 }
 /// The change `value` names in its 32 lowercase hex digits, if it is one.
 pub(crate) fn decode_entry(value: &str) -> Option<HistoryEntryId> {

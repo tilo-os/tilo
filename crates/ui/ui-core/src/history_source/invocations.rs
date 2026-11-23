@@ -27,7 +27,6 @@ use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 
 use crate::history_source::revert::ChangeRange;
 use crate::widget::history::HistoryEntryId;
-use crate::widget::history_group::{from_hex16, hex16};
 pub use collaboration::history_source::{INVOCATIONS_KEY, is_invocation_marker};
 use tilo_automerge::read::int_at;
 
@@ -159,7 +158,7 @@ pub fn record_invocation_with_details(
     steps: &[InvocationStep],
 ) -> Option<String> {
     let first = steps.first()?;
-    let key = format!("{INVOCATIONS_KEY}{}", hex16(&first.range.start));
+    let key = format!("{INVOCATIONS_KEY}{}", HistoryEntryId::hex(&first.range.start));
     let label: String = label.trim().chars().take(MAX_LABEL_LEN).collect();
     let at = i64::try_from(crate::time::unix_now_ms()).unwrap_or(i64::MAX);
 
@@ -181,8 +180,8 @@ pub fn record_invocation_with_details(
         };
         let _ = doc.put(&m, "app", s.app.as_str());
         let _ = doc.put(&m, "record", s.record.as_str());
-        let _ = doc.put(&m, "start", hex16(&s.range.start));
-        let _ = doc.put(&m, "end", hex16(&s.range.end));
+        let _ = doc.put(&m, "start", HistoryEntryId::hex(&s.range.start));
+        let _ = doc.put(&m, "end", HistoryEntryId::hex(&s.range.end));
         if let Ok(what) = serde_json::to_string(&s.what) {
             let _ = doc.put(&m, "what", what.as_str());
         }
@@ -221,8 +220,8 @@ pub fn read_invocations(doc: &AutoCommit) -> Vec<AgentSession> {
                     continue;
                 };
                 let (Some(start), Some(end)) = (
-                    doc.str_at(&m, "start").and_then(|s| from_hex16(&s)),
-                    doc.str_at(&m, "end").and_then(|s| from_hex16(&s)),
+                    doc.str_at(&m, "start").and_then(|s| HistoryEntryId::from_hex(&s)),
+                    doc.str_at(&m, "end").and_then(|s| HistoryEntryId::from_hex(&s)),
                 ) else {
                     continue;
                 };
@@ -287,6 +286,6 @@ pub fn forget_invocation(doc: &mut AutoCommit, id: &str) -> bool {
 
 /// The invocation whose first step starts at `start`, if one is recorded.
 pub fn invocation_starting_at(doc: &AutoCommit, start: &HistoryEntryId) -> Option<AgentSession> {
-    let key = format!("{INVOCATIONS_KEY}{}", hex16(start));
+    let key = format!("{INVOCATIONS_KEY}{}", HistoryEntryId::hex(start));
     read_invocations(doc).into_iter().find(|r| r.id == key)
 }

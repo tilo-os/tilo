@@ -82,7 +82,6 @@ tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # `tilo-files` keeps; record ids hash paths with a fixed FNV-1a.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }
-fnv.workspace = true
 blake3.workspace = true
 hex.workspace = true
 serde_json.workspace = true

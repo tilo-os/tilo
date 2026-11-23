@@ -294,7 +294,7 @@ impl Widget for ActivityTimeline {
                     }
                     VisualRow::Entry(entry, depth) => {
                         let item = self.entries.get(*entry)?;
-                        let id = crate::widget::history_group::hex16(&item.id);
+                        let id = crate::HistoryEntryId::hex(&item.id);
                         let said = if item.is_genesis() {
                             self.summary_of(item).to_owned()
                         } else {
@@ -384,7 +384,7 @@ impl Widget for ActivityTimeline {
                 .find_map(|(index, row)| match row {
                     VisualRow::Entry(entry, _)
                         if self.entries.get(*entry).is_some_and(|item| {
-                            crate::widget::history_group::hex16(&item.id) == hex_id
+                            crate::HistoryEntryId::hex(&item.id) == hex_id
                         }) =>
                     {
                         Some(index)

@@ -250,19 +250,6 @@ pub fn short_id(actor_hex: &str) -> String {
     actor_hex.chars().take(SHORT_LEN).collect()
 }
 
-/// Deterministic avatar hue for an actor with no registered colour: FNV-1a
-/// over the actor hex, folded into `[0, 360)`. Same actor, same hue in every
-/// process and on every peer.
-pub fn stable_hue(actor_hex: &str) -> f32 {
-    let mut hasher = fnv::FnvHasher::default();
-    std::hash::Hasher::write(&mut hasher, actor_hex.as_bytes());
-    let hash = std::hash::Hasher::finish(&hasher);
-    // `hash % 360` is always `0..359`, which fits a `u16` exactly and so
-    // converts to `f32` without any precision loss.
-    let bucket = u16::try_from(hash % 360).unwrap_or(0);
-    f32::from(bucket)
-}
-
 /// RGB → hue in degrees. Saturation/value are fixed by
 /// [`hue_to_rgb`], so only the hue survives —
 /// deliberate, it keeps the dots a coherent family.
