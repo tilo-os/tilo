@@ -11,7 +11,7 @@ use std::sync::Arc;
 use assistant::App;
 use serde_json::json;
 use ui::prelude::*;
-use ui::tilo_actions::remote::{Caller, InvokeArgument, TestProvider};
+use ui::tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, TestProvider};
 use ui::tilo_reference::ResourceRef;
 use ui::tilo_resource::NonBlank;
 use ui::tilo_workspace_agent::{self as workspace_agent, WorkspaceAgents, workspace_agents};
@@ -224,7 +224,7 @@ fn a_job_for_a_sub_agent_goes_to_the_main_agent_through_chats_own_send() {
     app.frame();
     app.harness().click_named("assistant-job-start").unwrap();
     app.settle();
-    let asked = chat.asked();
+    let asked = sent(&chat);
     assert_eq!(asked.len(), 1, "one message: {asked:?}");
     // Chat's own `send`, in this workspace: the conversation is Chat's to open and post in.
     let conversations = ResourceRef::whole("so.tilo.chat", "chat.workspace", "Chat");
@@ -251,6 +251,125 @@ fn a_job_for_a_sub_agent_goes_to_the_main_agent_through_chats_own_send() {
     app.frame();
     assert!(shows(&mut app, "assistant-open-in-chat"));
     assert!(!shows(&mut app, "assistant-job"));
+}
+
+/// The provider that answers the agent's transforms, as `assistant`'s own composer asks it.
+const TRANSFORMS: &str = "tilo.agent.transforms";
+
+/// The provider that answers the agent's transforms as `decided`, and Chat's `send` otherwise.
+fn deciding(decided: serde_json::Value) -> Arc<TestProvider> {
+    Arc::new(TestProvider::new().completing(move |request| {
+        if request.target.provider == TRANSFORMS {
+            ui::tilo_actions::ActionOutput {
+                value: Some(decided.clone()),
+                resources: Vec::new(),
+            }
+        } else {
+            ui::tilo_actions::ActionOutput::default()
+        }
+    }))
+}
+
+/// A window with its assistant and the composer open, and `api` answering its steps.
+fn asking(
+    api: Arc<TestProvider>,
+) -> (
+    TestApp<App>,
+    tilo_test_env::ScopedEnv,
+    ui::RemoteActionsGuard,
+) {
+    english();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_WORKSPACE_ID", WORKSPACE);
+    let served = ui::RemoteActions::enter(api, Caller::local_person("ada"));
+    let mut app = TestApp::<App>::in_workspace(WORKSPACE).expect("the window");
+    app.frame();
+    app.harness().click_named("assistant-create").unwrap();
+    app.frame();
+    app.harness()
+        .click_named("assistant-start-sub-agent")
+        .unwrap();
+    app.frame();
+    (app, env, served)
+}
+
+/// The requests `api` was asked, other than the transform that decides the request.
+fn sent(api: &TestProvider) -> Vec<InvokeRequest> {
+    api.asked()
+        .into_iter()
+        .filter(|request| request.target.provider != TRANSFORMS)
+        .collect()
+}
+
+/// A request the agent can answer is answered in the composer, and no sub-agent starts.
+#[test]
+fn a_request_the_agent_answers_is_answered_in_the_composer() {
+    let api = deciding(json!({"answer": "It is 3 pm where they are."}));
+    let (mut app, _env, _served) = asking(Arc::clone(&api));
+
+    app.harness().click_named("assistant-job").unwrap();
+    app.harness().type_text("What time is it where they are?");
+    app.frame();
+    app.harness().click_named("assistant-job-start").unwrap();
+    app.settle();
+
+    assert!(
+        says(&mut app, "It is 3 pm where they are."),
+        "the agent's answer stands in the composer"
+    );
+    assert!(
+        shows(&mut app, "assistant-job"),
+        "the composer stays for the person to ask again"
+    );
+    // It was asked the request through the host's own transforms, with the person's words.
+    let asked = api.asked();
+    let decided = asked
+        .iter()
+        .find(|request| request.target.provider == TRANSFORMS)
+        .expect("the agent is asked what the request is");
+    assert_eq!(decided.target.address.action, "respond");
+    assert_eq!(
+        decided.argument,
+        InvokeArgument::Json(
+            json!({"request": "What time is it where they are?"})
+                .as_object()
+                .unwrap()
+                .clone()
+        )
+    );
+    assert!(
+        sent(&api).is_empty(),
+        "an answered question starts no sub-agent"
+    );
+}
+
+/// A request the agent names work for starts a sub-agent, as it did before the ask.
+#[test]
+fn a_request_the_agent_names_work_for_starts_a_sub_agent() {
+    let api = deciding(json!({"work": "Find out why sign-ups dropped"}));
+    let (mut app, _env, _served) = asking(Arc::clone(&api));
+
+    app.harness().click_named("assistant-job").unwrap();
+    app.harness().type_text("Why did sign-ups drop?");
+    app.frame();
+    app.harness().click_named("assistant-job-start").unwrap();
+    app.settle();
+
+    let sent = sent(&api);
+    assert_eq!(sent.len(), 1, "the job goes to the main agent: {sent:?}");
+    assert!(
+        sent[0]
+            .argument
+            .to_slot()
+            .is_some_and(|argument| argument.contains("Why did sign-ups drop?")),
+        "the sub-agent gets the person's own words"
+    );
+    app.frame();
+    assert!(
+        shows(&mut app, "assistant-open-in-chat"),
+        "the main chat is where the work stands"
+    );
+    assert!(!shows(&mut app, "assistant-job"), "the composer closes");
 }
 
 /// The workspace's document of its agents, by its id.
