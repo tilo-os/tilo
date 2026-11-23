@@ -526,6 +526,115 @@ fn native_home_consumer_refuses_missing_protocol_before_any_extraction_or_adopti
 }
 
 #[test]
+fn native_home_helper_refuses_parent_dir_arguments_before_extracting_quarantine() {
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    private(&root);
+    let _setup = prepared_setup(&root);
+    let home = root.join("active-home");
+    private(&home);
+    let workspace = home.join(".local/state/tilo/portable-home/operation");
+    private(&workspace);
+    let media = root.join("media");
+    private(&media);
+    let expected = Expectation {
+        operation: "home-operation".into(),
+        filename: "home-home-operation.sealed".into(),
+        setup_binding: BINDING.into(),
+        sealed_bytes: 512,
+        plaintext_bytes: 256,
+        entries: 2,
+        ciphertext_sha256: [7; 32],
+        limits: Limits {
+            plaintext_bytes: 2048,
+            entries: 32,
+            metadata_bytes: 1024,
+        },
+        kind: crate::setup::portable_home_media::Home { runtime_sockets: 0 },
+    };
+    expected.validate().unwrap();
+    let receipt = workspace.join("receipt.json");
+    fs::write(&receipt, serde_json::to_vec(&expected).unwrap()).unwrap();
+    fs::set_permissions(&receipt, fs::Permissions::from_mode(0o600)).unwrap();
+    let package = media.join(&expected.filename);
+    fs::write(&package, b"fixture-home-package").unwrap();
+    fs::set_permissions(&package, fs::Permissions::from_mode(0o600)).unwrap();
+    for parent in [&workspace, &home, &media] {
+        private(&parent.join("sub"));
+    }
+
+    let cases = [
+        ("workspace", "--workspace", workspace.join("sub/..")),
+        ("home", "--home", home.join("sub/..")),
+        (
+            "package",
+            "--package",
+            media.join("sub/..").join(&expected.filename),
+        ),
+    ];
+    for (label, flag, bad_path) in cases {
+        let quarantine_dir = root.join(format!("refused-quarantine-{label}"));
+        private(&quarantine_dir);
+        let setup_quarantine = quarantine_dir.join("contents");
+        let mut args = [
+            ("--package", package.clone().into_os_string()),
+            ("--receipt", receipt.clone().into_os_string()),
+            (
+                "--setup-package",
+                root.join("setup.sealed").into_os_string(),
+            ),
+            (
+                "--setup-quarantine",
+                setup_quarantine.clone().into_os_string(),
+            ),
+            ("--home", home.clone().into_os_string()),
+            ("--workspace", workspace.clone().into_os_string()),
+            ("--action", "review".into()),
+        ];
+        for (name, value) in &mut args {
+            if *name == flag {
+                *value = bad_path.clone().into_os_string();
+            }
+        }
+        let argv = args
+            .into_iter()
+            .flat_map(|(name, value)| [std::ffi::OsString::from(name), value]);
+        let mut output = Vec::new();
+        let mut secret = PASSWORD;
+        let error = crate::setup::portable_home_helper::run_with_admission(
+            argv,
+            &mut secret,
+            &mut output,
+            || {
+                crate::setup::home_admission::require(
+                    Some(&crate::setup::test_support::home_consumer()),
+                    Some(2),
+                )
+            },
+        )
+        .expect_err("a path holding .. must be refused");
+        assert_eq!(
+            fs::read_dir(&quarantine_dir).unwrap().count(),
+            0,
+            "{label}: quarantine directory must stay empty before rejecting {flag}"
+        );
+        assert!(
+            !setup_quarantine.exists(),
+            "{label}: setup package must not be extracted into quarantine"
+        );
+        assert_eq!(error.kind(), io::ErrorKind::Other, "{label}: {error}");
+        assert_eq!(
+            error.to_string(),
+            "Portable home could not be authenticated or adopted",
+            "{label}"
+        );
+        assert!(output.is_empty(), "{label}");
+    }
+}
+
+#[test]
 fn portable_home_root_acl_reaches_active_home_and_restart_verifies_it() {
     let fixture = fixture_with_root_acl(true);
     let cancel = AtomicBool::new(false);
