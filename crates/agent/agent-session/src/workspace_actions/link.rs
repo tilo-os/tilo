@@ -243,6 +243,12 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     fn records(&self, _channel: &str) -> Option<Vec<(String, String)>> {
         None
     }
+    /// Whether this host runs the actions published under `provider` itself, not a record's:
+    /// the ones [`Self::run_own_action`] answers.
+    fn serves_own(&self, _provider: &str) -> bool {
+        false
+    }
+
     /// The actions of `workspace` this host runs itself, not a record's (its
     /// governance: giving yourself a name, inviting someone), whose words hold
     /// `needle`, as `caller` may run them: what a page's search lists beside

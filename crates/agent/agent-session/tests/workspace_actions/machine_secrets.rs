@@ -132,7 +132,7 @@ async fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_els
                     Some(vm.target(ACCOUNT)),
                 ),
             )),
-            Arc::new(tilo_server::machine_agents::MachineAgentsServer::new(None)),
+            Arc::new(tilo_server::machine_agents::MachineAgentsServer::new()),
         ),
     ));
     let hosted = crate::harness::hosted::start(

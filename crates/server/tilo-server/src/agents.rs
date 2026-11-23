@@ -274,9 +274,7 @@ pub fn host_shells(state: PathBuf) -> Result<Arc<HostShells>, String> {
     if let Some(linux) = crate::linux_devices::LinuxDevices::from_env() {
         return Ok(Arc::new(HostShells::at(ShellsAt::Devices(Arc::new(linux)))));
     }
-    let agents = Arc::new(crate::machine_agents::MachineAgentsServer::new(Some(
-        state.clone(),
-    )));
+    let agents = Arc::new(crate::machine_agents::MachineAgentsServer::new());
     let shells = ush::workspace_shell::WorkspaceShells::from_env(state)
         .serving_agents(Arc::clone(&agents) as Arc<dyn ush::hosted_vm::MachineAgents>);
     let terminals = ush::environment_terminals::EnvironmentTerminals::new(Arc::new(shells));
@@ -396,12 +394,7 @@ impl HostShells {
             server.workspaces(),
             tokio::runtime::Handle::try_current(),
         ) {
-            agents.bind(
-                workspaces.clone(),
-                actions.clone(),
-                server.confirmations(),
-                runtime,
-            );
+            agents.bind(workspaces.clone(), actions.clone(), runtime);
         }
         if let (ShellsAt::Devices(linux), Some(workspaces), Ok(runtime)) = (
             &self.at,
@@ -1244,12 +1237,26 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         rows
     }
 
+    /// The host runs the actions of a program asking to work in a workspace's machine itself.
+    fn serves_own(&self, provider: &str) -> bool {
+        provider == crate::machine_agents::PROVIDER
+    }
+
     fn run_own_action(
         &self,
         workspace: WorkspaceId,
         caller: &tilo_actions::remote::Caller,
         request: &tilo_actions::remote::InvokeRequest,
     ) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
+        // A program asking to work in the workspace's machine: the host answers it itself,
+        // leaving it to the person until they answer ([`crate::machine_agents::let_in`]).
+        if request.target.provider == crate::machine_agents::PROVIDER {
+            let workspaces = self
+                .workspaces
+                .as_ref()
+                .ok_or(tilo_actions::remote::ActionCallError::UnknownAction)?;
+            return crate::machine_agents::let_in(workspaces, &self.runtime, caller, request);
+        }
         if request.target.provider == PAGE_ACTIONS_PROVIDER {
             return self.run_page_action(workspace, caller, request);
         }
@@ -1758,7 +1765,6 @@ fn attach_resources(
             workspaces: server.workspaces().cloned(),
             environments: server.web_context().server.environments.clone(),
             runtime: tokio::runtime::Handle::current(),
-            certification: server.confirmations(),
             hand: server.hand(),
         });
         // The VM hosts start the sessions when this host's own device asks.

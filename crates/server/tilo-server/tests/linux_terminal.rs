@@ -413,7 +413,7 @@ async fn a_terminal_on_the_host_itself_is_the_device_that_opened_it() {
             state.path().join("shells"),
             Some(vms.target("acct-1")),
         ))),
-        Arc::new(MachineAgentsServer::new(None)),
+        Arc::new(MachineAgentsServer::new()),
     )));
     let streams = streams(&shells).await;
     let devices = devices().await;

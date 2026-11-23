@@ -2746,6 +2746,9 @@ impl AppBrokerState {
             }
             tilo_action_policy::Answer::Ask => match confirmation {
                 Some(Confirmation::Approved(_)) => approved,
+                // Their approve of the asked record this call was kept as: the dispatch admitted
+                // it again with it.
+                Some(Confirmation::Asked(_)) => true,
                 Some(Confirmation::Confirmed) => policy.direct(),
                 _ => false,
             },

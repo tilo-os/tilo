@@ -99,6 +99,26 @@ impl Worker {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
+        // A host's own actions belong to no record and no app: it answers them itself
+        // ([`WorkspaceDocumentsLink::run_own_action`]), with the dispatch admitting the call
+        // and keeping it asked as it does every other.
+        if let Some(link) = self.shared.link.get().cloned()
+            && link.serves_own(&request.target.provider)
+        {
+            match link.run_own_action(workspace_id, caller, request) {
+                Ok(value) => {
+                    return Ok((
+                        ActionOutput {
+                            value: Some(value),
+                            resources: Vec::new(),
+                        },
+                        None,
+                    ));
+                }
+                Err(ActionCallError::UnknownAction) => {}
+                Err(error) => return Err(Outcome::Rejected(error)),
+            }
+        }
         let appearance = self
             .admit_appearance(workspace_id, caller, request)
             .map_err(Outcome::Rejected)?;

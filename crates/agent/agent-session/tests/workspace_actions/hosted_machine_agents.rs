@@ -1,32 +1,88 @@
 //! `claude` typed in a hosted workspace's Terminal, on a server somebody else operates as
 //! tilo.sh is: the program reaches the workspace's server at its machine's agent socket, and
 //! works in the workspace as an agent of its own once the person whose session started it
-//! allows it.
+//! lets it in.
 //!
-//! The person's page is their approver ([`tilo_server_client::questions`]): each connection is
-//! put to them, naming the agent it would be (`claude-code@dev#1`). Allowed, it acts as that
-//! agent for them, and History keeps what it does as that agent's. Denied, it is refused. Each
-//! connection is an agent of its own (`#2` next), "Always allow" lets the next one of that
-//! program in that environment in unasked and nowhere else, a session nobody started is refused
-//! before anyone is asked, and Stop ends one agent alone.
+//! The ask is the call's own asked invocation record: the person's own device lists it
+//! ([`tilo_actions::remote::asked::WAITING`]) and answers it (`resolve`), and the host lets
+//! the program in on their approve. Allowed, it acts as that agent for them
+//! (`claude-code@dev#1`), and History keeps what it does as that agent's. Denied, it is
+//! refused. "Always let it in" leaves a grant that lets the next connection of that program
+//! in that environment in unasked, and nowhere else; revoking the grant asks again, and a
+//! session nobody started is refused before anyone is asked.
 
-use super::api::ISSUER;
-use super::api_on_server::api_on_server_shelled;
-use super::api_unattended::{Key, Person, Sheet, asked, backend, beside, waiting, workspace};
-use super::*;
 use serde_json::{Value, json};
 use std::future::Future;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
+use tilo_actions::remote::InvokeArgument;
+use tilo_actions::remote::asked::{self, Asked, AskedList};
+use tilo_actions::remote::workspace_invocations;
 use tilo_server::machine_agents::{AgentConnection, MachineAgents as _, MachineAgentsServer};
-use tilo_server_client::questions::{MemberQuestions, answer_questions};
-use tilo_server_client::{CertifyError, MemberApprover};
-use tilo_server_protocol::certify::ConfirmationAnswer;
-use tokio::sync::mpsc;
+
+use super::api::ISSUER;
+use super::api_on_server::api_on_server_shelled;
+use super::api_unattended::{Key, backend, workspace};
+use super::*;
 
 /// The program that connects, as the machine names its executable.
 const CLAUDE: &str = "/home/tilo/.local/bin/claude";
+
+/// The question that waits for the person, once it is asked.
+async fn asked(page: &mut Page, workspace: &str) -> Asked {
+    let _ = workspace;
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let listed = page
+            .invoke_on(
+                asked::PROVIDER,
+                ActionAddress::new(asked::WAITING, asked::LIST),
+                InvokeArgument::None,
+            )
+            .await
+            .expect("the person's own device reads what waits for them");
+        let list: AskedList =
+            serde_json::from_value(listed.value.unwrap_or_default()).expect("a list of asks");
+        if let Some(question) = list.questions.first() {
+            assert_eq!(list.questions.len(), 1, "one ask at a time: {list:?}");
+            return question.clone();
+        }
+        assert!(Instant::now() < deadline, "the person was never asked");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// What waits for the person now.
+async fn waiting(page: &mut Page) -> Vec<Asked> {
+    let listed = page
+        .invoke_on(
+            asked::PROVIDER,
+            ActionAddress::new(asked::WAITING, asked::LIST),
+            InvokeArgument::None,
+        )
+        .await
+        .expect("the person's own device reads what waits for them");
+    serde_json::from_value::<AskedList>(listed.value.unwrap_or_default())
+        .expect("a list of asks")
+        .questions
+}
+
+/// The person answers `question` with `resolution`: the record settles.
+async fn answers(page: &mut Page, question: &Asked, resolution: &str) {
+    page.invoke_on(
+        workspace_invocations::PROVIDER,
+        ActionAddress::new(question.record.record.clone(), asked::RESOLVE),
+        InvokeArgument::Json(
+            json!({"resolution": resolution})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+        ),
+    )
+    .await
+    .expect("the person's answer reaches the record");
+}
 
 /// One program's connection to the machine's agent socket, as `tilo-runtime --connect` holds it.
 struct Client {
@@ -60,19 +116,19 @@ impl Client {
         }
     }
 
-    /// Send `method` with `params`: its id, or `None` once the server closed the connection.
-    fn send(&mut self, method: &str, params: &Value) -> Option<u64> {
+    /// Send `method` with `params`: its id.
+    fn send(&mut self, method: &str, params: &Value) -> u64 {
         let id = self.next;
         self.next += 1;
         let request = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         self.stream
             .write_all(format!("{request}\n").as_bytes())
-            .ok()
-            .map(|()| id)
+            .unwrap();
+        id
     }
 
     /// Say who it is, as an MCP client opens.
-    fn open(&mut self) -> Option<u64> {
+    fn open(&mut self) -> u64 {
         self.send(
             "initialize",
             &json!({"protocolVersion": "2025-06-18", "capabilities": {},
@@ -80,93 +136,46 @@ impl Client {
         )
     }
 
-    /// Wait, beside the page, for the answer to request `id`; `None` once the server closed
-    /// the connection.
-    async fn answer(
-        &mut self,
-        page: &mut Page<'_, impl Future<Output = CertifyError>>,
-        id: u64,
-    ) -> Option<Value> {
+    /// Wait for the answer to request `id`; `None` once the server closed the connection.
+    async fn answer(&mut self, id: u64) -> Option<Value> {
         let mut lines = self.lines.take().unwrap();
-        let (lines, answer) = beside(
-            page,
-            tokio::task::spawn_blocking(move || {
-                let answer = loop {
-                    let mut line = String::new();
-                    match lines.read_line(&mut line) {
-                        Ok(0) | Err(_) => break None,
-                        Ok(_) => {
-                            let message: Value = serde_json::from_str(&line).unwrap();
-                            if message["id"] == id {
-                                break Some(message);
-                            }
+        let (lines, answer) = tokio::task::spawn_blocking(move || {
+            let answer = loop {
+                let mut line = String::new();
+                match lines.read_line(&mut line) {
+                    Ok(0) | Err(_) => break None,
+                    Ok(_) => {
+                        let message: Value = serde_json::from_str(&line).unwrap();
+                        if message["id"] == id {
+                            break Some(message);
                         }
                     }
-                };
-                (lines, answer)
-            }),
-        )
+                }
+            };
+            (lines, answer)
+        })
         .await
         .unwrap();
         self.lines = Some(lines);
         answer
     }
-
-    /// [`Self::send`], then [`Self::answer`].
-    async fn say(
-        &mut self,
-        page: &mut Page<'_, impl Future<Output = CertifyError>>,
-        method: &str,
-        params: &Value,
-    ) -> Option<Value> {
-        let id = self.send(method, params)?;
-        self.answer(page, id).await
-    }
 }
 
-/// The person's page, kept up beside what the story waits for.
-type Page<'a, F> = std::pin::Pin<&'a mut F>;
-
-/// The agent names History gives the Terminal versions in `workspace`, by the agent member each
-/// names.
-async fn terminal_actors(key: &Key<'_>, workspace: &str) -> Vec<(String, String)> {
-    let (status, history) = key
-        .post(
-            &format!("/v1/workspaces/{workspace}/resources/terminal/actions/history"),
-            &json!({"last": 100}),
-        )
-        .await;
-    assert_eq!(status, 200, "{history}");
-    history["result"]["versions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|version| {
-            Some((
-                version["actor"]["by"]["member"]["agent"]
-                    .as_str()?
-                    .to_owned(),
-                version["actor"]["name"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned(),
-            ))
-        })
-        .collect()
+/// The workspace on the server, its machine's agents, and Ada's own page into it.
+struct Fixture {
+    workspace: String,
+    agents: Arc<MachineAgentsServer>,
+    /// Where the person answers what waits for them.
+    page: Page,
+    /// Ada, the workspace's person.
+    person: [u8; 32],
+    /// What lets the person's answer leave a grant the next connection reads.
+    workspaces: tilo_workspace_service::workspaces::Workspaces,
+    laptop: Device,
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_program_in_the_workspaces_machine_works_there_as_its_own_agent_once_allowed() {
-    Box::pin(works_as_its_own_agent()).await;
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "one story: the person's first sessions of Claude Code in their machine"
-)]
-async fn works_as_its_own_agent() {
-    let on_server = Box::pin(api_on_server_shelled(ISSUER)).await;
-    let api = Arc::clone(&on_server.api);
+async fn fixture() -> Fixture {
+    let on_server = api_on_server_shelled(ISSUER).await;
     let agents = Arc::clone(
         on_server
             .shell
@@ -175,79 +184,97 @@ async fn works_as_its_own_agent() {
             .expect("a server running its shells serves their machines' agents"),
     );
     let (ada, token) = backend(&on_server).await;
-    let ada_key = Key { api: &api, token };
-    let ws = workspace(&ada_key, "Studio").await;
+    let key = Key {
+        api: &on_server.api,
+        token,
+    };
+    let workspace = workspace(&key, "Studio").await;
+    let person = ada.verifying_key().to_bytes();
+    let laptop = enrol(&ada, "Ada's laptop", DeviceCapabilities::member());
+    let page = Page::open_workspace(&on_server.hosted, &laptop, &on_server.host, &workspace).await;
+    // Ada ran a command in the workspace's Terminal: her session is the one `claude` starts in.
+    let session =
+        tilo_actions::remote::Caller::authenticated(person, laptop.cert.device_public_key)
+            .in_workspace(workspace.clone());
+    agents.started(&workspace, "s1", &session);
+    let workspaces = on_server
+        .hosted
+        .server
+        .workspaces()
+        .expect("the server governs its workspaces")
+        .clone();
+    Fixture {
+        workspace,
+        agents,
+        page,
+        person,
+        workspaces,
+        laptop,
+    }
+}
 
-    // Ada's tab holds her root: it is her approver at the server.
-    let host = MemberApprover::new(on_server.server_host());
-    let (answers, mut answered) = mpsc::unbounded_channel();
-    let person = Person {
-        asked: Arc::default(),
-        answers,
-    };
-    let mut sheet = Sheet {
-        asked: Arc::clone(&person.asked),
-    };
-    let mut questions = MemberQuestions {
-        server: &host,
-        root: &ada,
-        device: None,
-    };
-    let page = answer_questions(&mut questions, &mut sheet, &mut answered, || {
-        tokio::time::sleep(Duration::from_millis(50))
-    });
-    tokio::pin!(page);
+impl Fixture {
+    /// Whoever answers `agent` in `scope`: the grant an "always" leaves, or its revocation.
+    async fn answer(&self, agent: &str, offer: tilo_action_policy::Answer) {
+        use tilo_action_policy::{ActionKind, AnswerScope, Grantee, agent_answers};
+        let scope = AnswerScope::action(
+            tilo_server::machine_agents::PROVIDER,
+            tilo_server::machine_agents::ENVIRONMENT_KIND,
+            tilo_server::machine_agents::LET_IN,
+        );
+        let grant = agent_answers::answer_grant(
+            &self.workspace,
+            Grantee::agent(agent),
+            (&scope, ActionKind::Outside),
+            offer,
+            Grantee::person(hex::encode(self.person)),
+        );
+        self.workspaces
+            .put_workspace_grants(&self.workspace, &self.laptop.cert, [7; 32], vec![grant])
+            .await
+            .expect("the workspace's policy takes the answer");
+    }
+}
 
-    // Nobody started a session yet: a program claiming one is refused, nobody asked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_program_works_there_as_its_own_agent_once_its_person_lets_it_in() {
+    let mut fixture = fixture().await;
+    let agents = Arc::clone(&fixture.agents);
+    let ws = fixture.workspace.clone();
+
+    // Nobody started a session: a program claiming one is refused, nobody asked.
     let mut stray = Client::connect(&agents, &ws, "dev", "no-such-session");
-    let id = stray.open().unwrap();
-    let refused = stray.answer(&mut page, id).await.expect("an answer");
+    let opening = stray.open();
+    let refused = stray.answer(opening).await.expect("an answer");
     assert!(
         refused["error"]["message"]
             .as_str()
             .is_some_and(|message| message.contains("started by nobody")),
         "{refused}"
     );
-    assert_eq!(person.questions(), 0);
+    assert!(waiting(&mut fixture.page).await.is_empty());
 
-    // Ada runs a command in the workspace's Terminal: her session is the one `claude` starts in.
-    let (status, ran) = beside(&mut page, ada_key.run(&ws, "echo hello")).await;
-    let mut asked_so_far = 0;
-    if let Some(run) = waiting(status, &ran) {
-        asked_so_far += 1;
-        asked(&mut page, &person, asked_so_far).await;
-        person.answer(ConfirmationAnswer::AllowOnce);
-        let (status, ran) = beside(&mut page, ada_key.follow(&ws, &run)).await;
-        assert_eq!(status, 200, "{ran}");
-    } else {
-        assert_eq!(status, 200, "{ran}");
-    }
-    let sessions = agents.sessions(&ws);
-    assert_eq!(sessions.len(), 1, "{sessions:?}");
-    let (session, starter) = sessions[0].clone();
-    assert_eq!(starter, hex::encode(ada.verifying_key().to_bytes()));
-
-    // `claude` connects: Ada is asked about the agent it would be.
-    let mut first = Client::connect(&agents, &ws, "dev", &session);
-    let opening = first.open().unwrap();
-    asked_so_far += 1;
-    asked(&mut page, &person, asked_so_far).await;
-    let question = person.last();
-    assert_eq!(question.agent_id, "claude-code@dev#1", "{question:?}");
+    // `claude` connects: the person's own page sees the ask, naming the agent it would be.
+    let mut first = Client::connect(&agents, &ws, "dev", "s1");
+    let opening = first.open();
+    let question = asked(&mut fixture.page, &ws).await;
     assert_eq!(
-        question.agent_label, "Claude Code in dev #1",
+        question.facts.by,
+        tilo_actions::remote::asked::AskedBy::Agent(tilo_actions::remote::asked::Named {
+            id: "claude-code@dev".into(),
+            name: "Claude Code in dev".into(),
+        }),
         "{question:?}"
     );
-    assert_eq!(question.workspace, "Studio", "{question:?}");
-    assert!(question.allow_always, "{question:?}");
-    assert!(
-        question
-            .arguments
-            .contains(&("Program".to_owned(), CLAUDE.to_owned())),
-        "{question:?}"
-    );
-    person.answer(ConfirmationAnswer::AllowOnce);
-    let opened = first.answer(&mut page, opening).await.expect("an answer");
+    assert_eq!(question.on.as_deref(), Some("dev"), "{question:?}");
+    assert_eq!(question.facts.fact("Environment"), Some("dev"));
+    assert_eq!(question.facts.fact("Program"), Some(CLAUDE));
+    assert_eq!(question.facts.verb, "let in");
+    assert_eq!(question.facts.plural.as_deref(), Some("environments"));
+
+    // Their approve runs it: the program is let in as its own agent.
+    answers(&mut fixture.page, &question, "approve").await;
+    let opened = first.answer(opening).await.expect("an answer");
     assert!(opened["result"]["serverInfo"].is_object(), "{opened}");
     assert_eq!(
         agents
@@ -261,109 +288,58 @@ async fn works_as_its_own_agent() {
         )]
     );
 
-    // What it does is its own: its command is asked about as the agent's, and History keeps it
-    // as claude-code@dev#1's, for Ada.
-    let call = first
-        .send(
-            "tools/call",
-            &json!({"name": "tilo_do", "arguments":
-                   {"path": "terminal#run", "args": {"command": "echo from-claude"}}}),
-        )
-        .unwrap();
-    asked_so_far += 1;
-    asked(&mut page, &person, asked_so_far).await;
-    assert_eq!(
-        person.last().agent_id,
-        "claude-code@dev#1",
-        "{:?}",
-        person.last()
-    );
-    person.answer(ConfirmationAnswer::AllowOnce);
-    let called = first.answer(&mut page, call).await.expect("an answer");
-    assert_ne!(called["result"]["isError"], true, "{called}");
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let actors = beside(&mut page, terminal_actors(&ada_key, &ws)).await;
-        if actors
-            .iter()
-            .any(|(agent, name)| agent == "claude-code@dev#1" && name == "Claude Code in dev #1")
-        {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "History never kept the command as the agent's: {actors:?}"
-        );
-        beside(&mut page, tokio::time::sleep(Duration::from_millis(100))).await;
-    }
-
-    // A second connection is an agent of its own, and Ada lets that program in for good there.
-    let mut second = Client::connect(&agents, &ws, "dev", &session);
-    let opening = second.open().unwrap();
-    asked_so_far += 1;
-    asked(&mut page, &person, asked_so_far).await;
-    assert_eq!(person.last().agent_id, "claude-code@dev#2");
-    person.answer(ConfirmationAnswer::AllowAlways);
-    let opened = second.answer(&mut page, opening).await.expect("an answer");
-    assert!(opened["result"].is_object(), "{opened}");
-
-    // Stop ends the first alone.
-    assert!(agents.stop(&ws, "claude-code@dev#1"));
-    assert!(
-        first
-            .say(&mut page, "tools/list", &json!({}))
-            .await
-            .is_none(),
-        "the stopped agent's connection ended"
-    );
-    let listed = second
-        .say(&mut page, "tools/list", &json!({}))
-        .await
-        .expect("the other agent goes on");
-    assert!(listed["result"]["tools"].is_array(), "{listed}");
-    assert_eq!(
-        agents
-            .running(&ws)
-            .into_iter()
-            .map(|running| running.agent)
-            .collect::<Vec<_>>(),
-        ["claude-code@dev#2"]
-    );
-
-    // "Always allow" lets its next session in that environment in, unasked.
-    let mut third = Client::connect(&agents, &ws, "dev", &session);
-    let opening = third.open().unwrap();
-    let opened = third.answer(&mut page, opening).await.expect("an answer");
-    assert!(opened["result"].is_object(), "{opened}");
-    assert_eq!(person.questions(), asked_so_far, "nobody was asked");
-    assert!(
-        agents
-            .running(&ws)
-            .iter()
-            .any(|running| running.agent == "claude-code@dev#3")
-    );
-
-    // In another environment it is asked again; denied, it is refused.
-    let mut elsewhere = Client::connect(&agents, &ws, "site", &session);
-    let opening = elsewhere.open().unwrap();
-    asked_so_far += 1;
-    asked(&mut page, &person, asked_so_far).await;
-    assert_eq!(person.last().agent_id, "claude-code@site#4");
-    person.answer(ConfirmationAnswer::Deny);
-    let refused = elsewhere
-        .answer(&mut page, opening)
-        .await
-        .expect("an answer");
+    // Another connection asks again, and their decline refuses it.
+    let mut second = Client::connect(&agents, &ws, "dev", "s1");
+    let opening = second.open();
+    let question = asked(&mut fixture.page, &ws).await;
+    answers(&mut fixture.page, &question, "decline").await;
+    let refused = second.answer(opening).await.expect("an answer");
     assert!(
         refused["error"]["message"]
             .as_str()
             .is_some_and(|message| message.contains("did not let")),
         "{refused}"
     );
-    assert!(
-        !agents
-            .running(&ws)
-            .iter()
-            .any(|running| running.environment == "site")
+    assert_eq!(
+        agents.running(&ws).len(),
+        1,
+        "only the one they let in is at work"
     );
+
+    // Allowed for good, the same program in the same environment goes in unasked.
+    let mut third = Client::connect(&agents, &ws, "dev", "s1");
+    let opening = third.open();
+    let question = asked(&mut fixture.page, &ws).await;
+    answers(&mut fixture.page, &question, "approve_and_grant").await;
+    let opened = third.answer(opening).await.expect("an answer");
+    assert!(opened["result"].is_object(), "{opened}");
+    let mut fourth = Client::connect(&agents, &ws, "dev", "s1");
+    let opening = fourth.open();
+    let opened = fourth.answer(opening).await.expect("an answer");
+    assert!(opened["result"].is_object(), "{opened}");
+    assert!(
+        waiting(&mut fixture.page).await.is_empty(),
+        "nobody was asked the second time"
+    );
+
+    // Another environment is not what they allowed.
+    let mut elsewhere = Client::connect(&agents, &ws, "site", "s1");
+    let _opening = elsewhere.open();
+    let question = asked(&mut fixture.page, &ws).await;
+    assert_eq!(
+        question.facts.by,
+        tilo_actions::remote::asked::AskedBy::Agent(tilo_actions::remote::asked::Named {
+            id: "claude-code@site".into(),
+            name: "Claude Code in site".into(),
+        }),
+        "{question:?}"
+    );
+
+    // Taking the answer back asks again.
+    fixture
+        .answer("claude-code@dev", tilo_action_policy::Answer::Ask)
+        .await;
+    let mut fifth = Client::connect(&agents, &ws, "dev", "s1");
+    let _opening = fifth.open();
+    let _question = asked(&mut fixture.page, &ws).await;
 }

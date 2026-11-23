@@ -40,8 +40,8 @@ use tilo_actions::remote::browser::{MARK, Report, SEND_HELD};
 use tilo_actions::remote::environment_device;
 use tilo_actions::remote::linux_apps::{self, AppLaunch};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, CataloguePage, CatalogueQuery,
-    ConfirmedInvocation, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+    ActionCallError, ActionProvider as _, Caller, CataloguePage, CatalogueQuery, InvokeArgument,
+    InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_actions::selection::logical_resource_id;
 use tilo_server_protocol::hosted::Material;
@@ -73,6 +73,9 @@ const CLOCK_WAIT_NS: u64 = 60 * 1_000_000_000;
 /// How often the page's use is reported while it is in use: one an action or a viewer is what the
 /// host counts its idle limit from, and a page being read for an hour is in use the whole time.
 const USED_EVERY: Duration = Duration::from_secs(60);
+/// How often a call the person is asked about is looked at again, where the host cannot tell
+/// this session when the invocation moved.
+const FOLLOW_EVERY: Duration = Duration::from_millis(250);
 /// The colour the record of the person a session serves carries, as a device that joined
 /// without their root gets it.
 const ENVIRONMENT_AVATAR: [u8; 3] = [88, 101, 242];
@@ -435,12 +438,15 @@ enum Arrived {
     Held(Vec<Held>),
     /// Its host told it to start a Linux app.
     Launch(AppLaunch),
-    /// What the person answered about a held request: their word for it, or
-    /// why they did not give one, and the invocation it answers.
+    /// What the workspace's host answered the call that would release the
+    /// request the page waits with: the receipt as it stood, and the call.
     Answered {
         request: Box<InvokeRequest>,
-        answer: Box<Result<ConfirmedInvocation, ActionCallError>>,
+        answer: Box<Result<tilo_actions::remote::InvocationReceipt, ActionCallError>>,
     },
+    /// That call is over without running: the person did not allow it, or
+    /// nobody answered, so the page stays as it was filled.
+    Kept(Box<InvokeRequest>),
 }
 
 /// One departure the window holds that no page action asked for.
@@ -814,23 +820,36 @@ impl HostedBrowser {
                 Arrived::PageAction => self.used(),
                 Arrived::Launch(launch) => self.launches.push(launch),
                 Arrived::Held(held) => self.report(held),
-                Arrived::Answered {
-                    mut request,
-                    answer,
-                } => match *answer {
-                    // The person allowed that one request: it runs as their
-                    // own, carrying their word, and leaves once.
-                    Ok(confirmed) => {
-                        confirmed.apply(&mut request);
-                        self.run(&request);
+                Arrived::Answered { request, answer } => match *answer {
+                    // It ran: the window released what it was waiting with, as
+                    // the person allowed.
+                    Ok(receipt) => match receipt.status {
+                        ReceiptStatus::Completed { .. } => {}
+                        // Kept as its asked record, or still with the window:
+                        // followed until it settles.
+                        ReceiptStatus::Accepted
+                        | ReceiptStatus::Rejected {
+                            error: ActionCallError::ConfirmationRequired(_),
+                        } => self.follow_ask(*request),
+                        ReceiptStatus::Rejected { .. }
+                        | ReceiptStatus::Failed { .. }
+                        | ReceiptStatus::Cancelled { .. } => self.kept(*request),
+                    },
+                    // Nothing answered it: the page stays as it was filled,
+                    // and the engine drops the request at its own deadline.
+                    Err(error) => {
+                        tilo_failure::ignored!(
+                            "a call nobody answered releases nothing, and the engine drops the \
+                             request the page waits with",
+                            tracing::warn!(
+                                %error,
+                                "the workspace's host answered nothing about a page's request"
+                            )
+                        );
+                        self.kept(*request);
                     }
-                    // A denial keeps the page as it was filled, and drops the
-                    // held request, as it says.
-                    Err(_) => tilo_failure::ignored!(
-                        "a denial drops the held request, and keeps the page as it was filled",
-                        self.run(&keep(*request))
-                    ),
                 },
+                Arrived::Kept(request) => self.kept(*request),
             }
         }
     }
@@ -967,9 +986,10 @@ impl HostedBrowser {
         });
     }
 
-    /// Ask the workspace's host about each departure the window holds that
-    /// nobody has been asked about yet: it puts them to the person, and their
-    /// answer comes back as [`Arrived::Answered`].
+    /// Call the workspace's host about each departure the window keeps that
+    /// nobody has been asked about yet, as the person at this device: the host
+    /// keeps each call as its own asked record where the person must give
+    /// their yes, and its answer comes back as [`Arrived::Answered`].
     fn report(&mut self, held: Vec<Held>) {
         let Some(window) = (match &self.window {
             Window::Open(provider) => Some(*provider),
@@ -992,12 +1012,12 @@ impl HostedBrowser {
             let request = answer(held.id, window, &held.describing, &held.facts, SEND_HELD);
             let arrived = self.sender.clone();
             let waking = self.waking.clone();
-            host.confirm(&caller, &request).then(move |answer| {
+            host.invoke(&caller, request.clone()).then(move |answer| {
                 let answered = Arrived::Answered {
                     request: Box::new(request),
-                    answer: Box::new(
-                        answer.unwrap_or(Err(ActionCallError::confirmation_required())),
-                    ),
+                    answer: Box::new(answer.unwrap_or(Err(ActionCallError::Unavailable {
+                        reason: "the workspace's host answered nothing".into(),
+                    }))),
                 };
                 if arrived.send(answered).is_err() {
                     return;
@@ -1007,6 +1027,67 @@ impl HostedBrowser {
                 }
             });
         }
+    }
+
+    /// Follow the call that would release `request`'s request until it
+    /// settles: the person's approve runs it where the window keeps what it
+    /// releases, and their decline, or nobody's answer, is told to the loop as
+    /// [`Arrived::Kept`]. Nothing blocks: the host tells this when the
+    /// invocation moved, or the wait between looks keeps a thread busy.
+    fn follow_ask(&self, request: InvokeRequest) {
+        let Some(host) = self
+            .hosted
+            .as_ref()
+            .and_then(|hosted| hosted.host_actions(&self.material.workspace))
+        else {
+            return self.kept(request);
+        };
+        let Ok(runtime) = tilo_rt::try_app() else {
+            return self.kept(request);
+        };
+        let caller = self.caller();
+        let arrived = self.sender.clone();
+        let waking = self.waking.clone();
+        let invocation = request.invocation;
+        runtime.spawn(async move {
+            loop {
+                let settled = match host.observe(&caller, &invocation) {
+                    Some(state) => match state.update {
+                        tilo_actions::InvocationUpdate::Succeeded { .. } => return,
+                        tilo_actions::InvocationUpdate::Failed { .. }
+                        | tilo_actions::InvocationUpdate::Cancelled { .. } => true,
+                        tilo_actions::InvocationUpdate::Accepted { .. }
+                        | tilo_actions::InvocationUpdate::Progress { .. }
+                        | tilo_actions::InvocationUpdate::Item { .. } => false,
+                    },
+                    // The host no longer has it, so it will not run.
+                    None => true,
+                };
+                if settled {
+                    if arrived.send(Arrived::Kept(Box::new(request))).is_ok()
+                        && let Some(wake) = &waking
+                    {
+                        wake();
+                    }
+                    return;
+                }
+                match host.next_change(&caller, &invocation) {
+                    Some(change) => {
+                        let _ = change.await;
+                    }
+                    None => tokio::time::sleep(FOLLOW_EVERY).await,
+                }
+            }
+        });
+    }
+
+    /// Keep the page as it was filled, dropping the request the call would
+    /// have released.
+    fn kept(&self, request: InvokeRequest) {
+        tilo_failure::ignored!(
+            "a denial drops the request, and keeps the page as it was filled",
+            self.run(&keep(request))
+        );
     }
 
     /// Run `request` on the window as the person at this device: the page action

@@ -92,7 +92,7 @@ impl OnTheirServer {
                             Some(vms.target("acct-1")),
                         ),
                     )),
-                    Arc::new(tilo_server::machine_agents::MachineAgentsServer::new(None)),
+                    Arc::new(tilo_server::machine_agents::MachineAgentsServer::new()),
                 ),
             )),
             None => tilo_server::agents::host_shells(shells.path().join("shells")).unwrap(),

@@ -27,30 +27,22 @@
 //!   ([`HostedBrowsers::listed`]), so a caller finds it as it finds any
 //!   app's window. What the window answers such a caller reaches it as this
 //!   host's, the device it asked ([`HostedBrowsers::answers_for_host`]).
-//! - **Ask** ([`HostedBrowsers::ask`]): a page action asks the person first,
-//!   and nobody stands in front of a window in a VM to ask. The window refuses
-//!   such an action for want of their answer; this host puts the question to
-//!   their approving devices itself, as it does for its own agents' actions,
-//!   and answers its caller that the invocation waits. Allowed, the same
-//!   invocation goes to the window again carrying their confirmation —
-//!   signed by this host's own device key, for that one invocation — which
-//!   the window that certified it accepts for its own person, running it
-//!   without asking again; nothing else is a confirmation there. Denied or
-//!   unanswered, it ends refused. A caller needs nothing beyond asking and
-//!   following what it asked for. The window's refusal states the departure
-//!   the action's run reached — what is about to leave, where, and the
-//!   picture of the filled page — so the question names what leaves rather
-//!   than a label for it, the same as for a departure the page started on its
-//!   own. A key its person let operate web pages
+//! - **Ask**: a page action asks the person first, and nobody stands in front
+//!   of a window in a VM to ask. The window refuses such an action for want
+//!   of their answer, stating what leaves and where
+//!   ([`tilo_actions::remote::browser::departure_asked`]); that refusal
+//!   travels to whoever carried the call, and the dispatch there keeps it as
+//!   the call's own asked invocation record. Their approve admits the same
+//!   invocation again, carrying their answer, and this host hands it to the
+//!   window ([`Confirmation::Asked`]); their decline ends it, and the page
+//!   stays as it was. A departure the page started on its own — a script
+//!   posting, a download — is the same call, invoked by the session that runs
+//!   the window: nobody stands at the page, so its own session carries it
+//!   and the host relays it. A key its person let operate web pages
 //!   ([`DeviceCapabilities::browser_pages`]) is not asked about the page
 //!   actions that lets it take — [`OPERATING_ACTIONS`], never a submission —
 //!   and this host answers for them where their answer would have: the
-//!   window runs it once, as theirs, and counts it. A departure the page
-//!   started on its own — a script posting, a download — waits on nobody's
-//!   invocation, so the session holding the window reports it here
-//!   ([`Self::held_reported`]) and the person is asked about it just the
-//!   same: their allow answers the session with the approval that releases
-//!   that one request, and a denial keeps the page as it is.
+//!   window runs it once, as theirs, and counts it.
 //! - **Meter** ([`BrowserMeter`]): every page action is admitted for the
 //!   workspace's account before it is handed over, and counted once the
 //!   window answers that it ran. A refused one is answered with the host's
@@ -84,7 +76,6 @@ mod turn_fills;
 pub use turn_fills::FILL_PAGE_ITEM;
 
 use crate::WorkspaceId;
-use crate::certification::CertificationProtocol;
 use ed25519_dalek::SigningKey;
 use iroh::EndpointAddr;
 use tilo_actions::remote::linux_apps::{self, AppLaunch};
@@ -96,7 +87,6 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionFailure, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
-use tilo_server_protocol::certify::{ConfirmationAnswer, PageDeparture, PendingConfirmation};
 use tilo_user_identity::{
     Answered, DeviceCapabilities, DeviceCert, HostApproval, Parties, sign_device_cert,
 };
@@ -200,26 +190,6 @@ const NOT_READY_WAITS: [Duration; 4] = [
     Duration::from_secs(2),
 ];
 
-/// How long a page action's question waits for the person: as long as the
-/// window holds what it asks about (`apps/browser`, whose engine lets a
-/// request wait ten minutes at most), less a margin, so an answer always
-/// finds the request still held. Every device of the person is asked, and
-/// told again by a notification when no Tilo of theirs is open.
-pub const ANSWER_WAIT: Duration = Duration::from_secs(9 * 60);
-
-/// The phase of a page action that waits for the person's answer.
-pub const WAITING_FOR_PERSON: &str = "waiting_for_person";
-/// What a caller following such a page action is told while it waits.
-pub const WAITING_MESSAGE: &str =
-    "waiting for the person to approve it in Tilo, on any of their devices; it runs once they do";
-/// What a caller is told when the person did not answer while the window
-/// could hold what the action reached.
-pub const UNANSWERED: &str = "the person didn't answer in 9 minutes, so nothing was sent and \
-     the page stays as it was filled; run the action again to ask them again";
-/// `answer_wait` in nanoseconds.
-fn answer_wait_ns(answer_wait: Duration) -> u64 {
-    u64::try_from(answer_wait.as_nanos()).unwrap_or(u64::MAX)
-}
 /// The label the workspace shows the session's device under.
 pub const DEVICE_LABEL: &str = "Browser";
 /// The address the sessions in the sessions reach this host at, written
@@ -392,9 +362,6 @@ pub struct Authority {
     /// The runtime the workspaces run on: listing a device writes membership
     /// there.
     pub runtime: tokio::runtime::Handle,
-    /// Where the person is asked about an action their agent made: the
-    /// channel their approving devices answer on.
-    pub certification: crate::certification::CertificationProtocol,
     /// Where a page action the person allowed is handed to the window that
     /// refused it, as the caller asked it: the host's own delivery.
     pub hand: crate::app_serving::Hand,
@@ -448,11 +415,6 @@ enum Stage {
     /// With the window, which answers the caller itself — as it answers a
     /// caller asking after it.
     Running,
-    /// The window refused it for want of the person's word: this host asks
-    /// them, and the caller waits for their answer.
-    Asking,
-    /// The person allowed it: with the window again, carrying their answer.
-    Allowed,
     /// It is over: the update a caller asking after it is answered with.
     Over(InvocationUpdate),
 }
@@ -462,18 +424,7 @@ impl Stage {
     /// asks how it went.
     fn state(&self, invocation: tilo_actions::InvocationId) -> InvocationUpdate {
         match self {
-            Self::Running | Self::Allowed => InvocationUpdate::Accepted { invocation },
-            // Said to the caller as what it waits on, so an agent following
-            // it tells whoever it works for to look at their device rather
-            // than guess why nothing happens.
-            Self::Asking => InvocationUpdate::Progress {
-                invocation,
-                sequence: 0,
-                phase: WAITING_FOR_PERSON.to_owned(),
-                completed: None,
-                total: None,
-                message: Some(WAITING_MESSAGE.to_owned()),
-            },
+            Self::Running => InvocationUpdate::Accepted { invocation },
             Self::Over(update) => update.clone(),
         }
     }
@@ -499,12 +450,8 @@ pub struct HostedBrowsers {
     apps: Mutex<BTreeMap<WorkspaceId, Open>>,
     authority: Mutex<Option<Authority>>,
     /// The page actions handed to a window and not yet answered, by
-    /// invocation: what a count is owed for once it ran, and what asks first.
+    /// invocation: what a count is owed for once it ran.
     handed: Arc<Mutex<HashMap<tilo_actions::InvocationId, Handed>>>,
-    /// The held requests the person is being asked about, by workspace and
-    /// the id the window published them with: a session that reports one
-    /// again is told it is asked already rather than asked twice.
-    asking: Arc<Mutex<std::collections::HashSet<(WorkspaceId, u32)>>>,
     /// The page actions this server handed to windows for the turns it carries out itself
     /// ([`turn_pages`]).
     turn_pages: turn_pages::TurnPages,
@@ -513,9 +460,6 @@ pub struct HostedBrowsers {
     /// How long an environment device that disconnected has to come back
     /// before its environment stops ([`RECONNECT`]).
     reconnect: Duration,
-    /// How long a page action's question waits for the person
-    /// ([`ANSWER_WAIT`]).
-    answer_wait: Duration,
     /// The fills of a page's field this server handed to windows for the turns it carries
     /// out itself ([`turn_fills`]).
     turn_fills: turn_fills::TurnFills,
@@ -542,11 +486,9 @@ impl HostedBrowsers {
             apps: Mutex::default(),
             authority: Mutex::default(),
             handed: Arc::default(),
-            asking: Arc::default(),
             turn_pages: turn_pages::TurnPages::default(),
             next_waiter: AtomicU64::new(0),
             reconnect: RECONNECT,
-            answer_wait: ANSWER_WAIT,
             turn_fills: turn_fills::TurnFills::default(),
         }
     }
@@ -556,14 +498,6 @@ impl HostedBrowsers {
     #[must_use]
     pub const fn with_reconnect(mut self, reconnect: Duration) -> Self {
         self.reconnect = reconnect;
-        self
-    }
-
-    /// Wait `answer_wait` for the person's answer to a page action's question
-    /// before it is refused ([`ANSWER_WAIT`]).
-    #[must_use]
-    pub const fn with_answer_wait(mut self, answer_wait: Duration) -> Self {
-        self.answer_wait = answer_wait;
         self
     }
 
@@ -745,13 +679,6 @@ impl HostedBrowsers {
         caller: &Caller,
         message: &RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
-        if let RemoteActionMessage::Confirm {
-            correlation,
-            request,
-        } = message
-        {
-            return self.held_reported(workspace_id, caller, *correlation, request);
-        }
         if let Some(taken) = self.page_answered(workspace_id, caller, message) {
             return Some(taken);
         }
@@ -804,16 +731,15 @@ impl HostedBrowsers {
             Some(Confirmation::Approved(token)) => {
                 self.approved(token, workspace_id, device, request)
             }
+            // The person approved the asked record this call was kept as: the
+            // dispatch admitted the same call again carrying their answer, and
+            // the window runs it with it. Admission drops an answer from
+            // anything a caller sent, so what reaches here is the dispatch's.
+            Some(Confirmation::Asked(_)) => true,
             Some(_) => false,
         };
         if !permitted {
             return answered_with(message, ActionCallError::NotPermitted);
-        }
-        // A page action the person is already being asked about waits for
-        // their answer: a caller that asks again is told so, not handed over
-        // twice.
-        if request.confirmation.is_none() && self.waits_for_the_person(request, device) {
-            return Some(waiting(request.invocation));
         }
         // A key whose person let it operate web pages needs no question about
         // one: this host answers for them with the same approval their answer
@@ -822,23 +748,15 @@ impl HostedBrowsers {
         let mut operated = None;
         if request.confirmation.is_none()
             && certificate.is_some_and(|certificate| operates(certificate, request))
-            && let (Some(&person), Some((_, key))) = (caller.user_public_key(), self.certifying())
+            && let (Some(&person), Some(key)) = (caller.user_public_key(), self.signing_key())
         {
-            let asked = Asked {
-                person,
-                window,
-                device,
-                request: request.clone(),
-                departure: None,
-                until_ns: tilo_clock::unix_now_ns()
-                    .saturating_add(answer_wait_ns(self.answer_wait)),
-            };
+            let approval = host_approval(person, &key, device, window, request);
             let mut run = request.clone();
-            match asked.confirmed(&Ok(ConfirmationAnswer::AllowOnce), &key) {
-                Ok(confirmed) => {
-                    confirmed.apply(&mut run);
-                    operated = Some(run);
-                }
+            match approval.and_then(|confirmed| {
+                confirmed.apply(&mut run);
+                Ok(run)
+            }) {
+                Ok(run) => operated = Some(run),
                 Err(error) => return answered_with(message, error),
             }
         }
@@ -879,114 +797,12 @@ impl HostedBrowsers {
         }
     }
 
-    /// A departure a window holds that no page action is waiting on — the
-    /// page posted on its own, or started a download — is put to the person
-    /// here: the session holding the window reports it
-    /// ([`RemoteActionMessage::Confirm`] naming the window's [`SEND_HELD`]),
-    /// this host asks the person once, and their answer is the approval that
-    /// releases that one request, made for the invocation the report names.
-    /// A denial, or a question nobody answers, is the answer that keeps the
-    /// page as it is: the session runs [`KEEP_HELD`] with it.
-    ///
-    /// Only the environment's own device reports a hold of its own window,
-    /// and a hold it reports again while the person is being asked is told
-    /// so, never asked about twice. `None` for a message that is not this
-    /// host's: it is served, or refused, as it was.
-    fn held_reported(
-        &self,
-        workspace_id: WorkspaceId,
-        caller: &Caller,
-        correlation: u64,
-        request: &InvokeRequest,
-    ) -> Option<crate::app_serving::Routing> {
-        let (provider, window) = {
-            let open = self.open.lock_recover();
-            let up = open.get(&workspace_id)?;
-            (up.window.provider.clone(), up.window.device)
-        };
-        if *caller.device_public_key()? != window
-            || !page_action(&request.target, &provider)
-            || request.target.address.action != SEND_HELD
-        {
-            return None;
-        }
-        let refused = |error: ActionCallError| {
-            Some(crate::app_serving::Routing::Answer(Pending::ready(
-                RemoteActionMessage::ConfirmResponse {
-                    correlation,
-                    result: Err(error),
-                },
-            )))
-        };
-        if request.confirmation.is_some() {
-            return refused(ActionCallError::NotPermitted);
-        }
-        let Some(held) = held_of(&request.argument) else {
-            return refused(ActionCallError::InvalidRequest {
-                reason: "a held request is named by the id it was published with".to_owned(),
-            });
-        };
-        let (Some(&person), Some(device)) = (caller.user_public_key(), caller.device_public_key())
-        else {
-            return refused(ActionCallError::NotPermitted);
-        };
-        let (Some((certification, key)), Some(_)) = (self.certifying(), self.hand()) else {
-            return refused(ActionCallError::Unavailable {
-                reason: "this host asks nobody about a page".into(),
-            });
-        };
-        if !self.asking.lock_recover().insert((workspace_id, held)) {
-            return refused(ActionCallError::Unavailable {
-                reason: "the person is already being asked about that request".into(),
-            });
-        }
-        let asked = Asked {
-            person,
-            window,
-            device: *device,
-            request: request.clone(),
-            // The departure the session reported is what the person is asked
-            // about: the window stated it beside the hold it published.
-            departure: departure_of(request.context.as_ref()),
-            until_ns: tilo_clock::unix_now_ns().saturating_add(answer_wait_ns(self.answer_wait)),
-        };
-        let question = asked.question(caller);
-        let (answer, answered) = pending();
-        let asking = Arc::clone(&self.asking);
-        let taking = self.submission(
-            workspace_id,
-            format!("browser-hold/{}/{held}", hex::encode(window)),
-        );
-        tokio::runtime::Handle::current().spawn(async move {
-            let (result, taken) = match taking.await {
-                Ok(Taking::Answered(answer)) => (answer.map(Box::new), None),
-                Ok(Taking::Taken(taken)) => {
-                    let answered_by_person = certification.confirm_for(person, question).await;
-                    let result = taken
-                        .handing(asked.confirmed(&answered_by_person, &key))
-                        .await
-                        .map(Box::new);
-                    (result, Some(taken))
-                }
-                Err(error) => (Err(error), None),
-            };
-            asking.lock_recover().remove(&(workspace_id, held));
-            answer.complete(RemoteActionMessage::ConfirmResponse {
-                correlation,
-                result,
-            });
-            if let Some(taken) = taken {
-                taken.release().await;
-            }
-        });
-        Some(crate::app_serving::Routing::Answer(answered))
-    }
-
     /// The window's answer to a page action this host handed it: it ran
     /// (`Completed`), so it is counted — once, when it ran — and its caller is
     /// answered with the page's receipt; the window asks the person first
-    /// (`ConfirmationRequired`), so this host puts the question to them and
-    /// answers the caller that its invocation waits, rather than refused.
+    /// (`ConfirmationRequired`), stating what leaves and where, and that
+    /// refusal travels to the caller as it is: whoever carried the call keeps
+    /// it as its asked record, and the person's approve admits it again.
     /// Anything else ran nothing and is counted not at all.
     pub fn relayed(
         &self,
@@ -1001,39 +817,33 @@ impl HostedBrowsers {
             return None;
         }
         let mut handed = self.handed.lock_recover();
-        let entry = handed.get_mut(&receipt.invocation)?;
-        if entry.window != from {
+        let known = handed.get(&receipt.invocation)?;
+        if known.window != from {
             return None;
         }
         match &receipt.status {
             ReceiptStatus::Completed { .. } => {
                 // The action ran where the window says it did, and nowhere
                 // else: a count is owed once.
-                let allowed = matches!(entry.stage, Stage::Allowed);
-                let ran = allowed || matches!(entry.stage, Stage::Running);
+                let entry = handed.get_mut(&receipt.invocation)?;
+                let ran = matches!(entry.stage, Stage::Running);
                 let workspace = entry.workspace.clone();
                 answered(entry, &receipt.status);
-                let update = entry.stage.state(receipt.invocation);
                 drop(handed);
                 if ran {
                     self.counted(&workspace);
                 }
-                // The caller's own invocation was answered with "accepted,
-                // it waits": what ran is told to it as the state it follows,
-                // not as a second receipt for the same invocation.
-                allowed.then(|| state_message(receipt.invocation, update, None))
+                None
             }
+            // It waits for the person: the call it names is handed back as the
+            // record it is kept as, and runs again — this time for them — once
+            // they approve it. The window's own answer to that run is counted
+            // like any other.
             ReceiptStatus::Rejected {
-                error: ActionCallError::ConfirmationRequired { departure },
-            } if !matches!(entry.stage, Stage::Over(_)) => {
-                entry.stage = Stage::Asking;
-                let caller = entry.caller.clone();
-                let request = entry.request.clone();
-                let departure =
-                    departure_of_facts(&tilo_actions::remote::browser::stated_facts(departure));
-                drop(handed);
-                self.ask(workspace_id, &caller, &request, departure);
-                Some(waiting_receipt(request.invocation))
+                error: ActionCallError::ConfirmationRequired(_),
+            } => {
+                handed.remove(&receipt.invocation);
+                None
             }
             // Running, or to be followed: the answer is still to come, and
             // what it settles is counted then.
@@ -1041,6 +851,7 @@ impl HostedBrowsers {
             ReceiptStatus::Rejected { .. }
             | ReceiptStatus::Failed { .. }
             | ReceiptStatus::Cancelled { .. } => {
+                let entry = handed.get_mut(&receipt.invocation)?;
                 answered(entry, &receipt.status);
                 None
             }
@@ -1050,106 +861,6 @@ impl HostedBrowsers {
     /// Count one page action a window of `workspace` says it carried out.
     fn counted(&self, workspace: &str) {
         self.meter.record(workspace, &self.account);
-    }
-
-    /// Ask the person `caller` acts for whether `request` — a page action of
-    /// `workspace_id`'s window — may run, once. Their answer runs it as the
-    /// caller asked it, carrying the approval the window accepts; a denial, or
-    /// a question nobody answers, ends the invocation refused and nothing
-    /// runs. `departure` is what the window said it holds for them, when it
-    /// said so: the question names what leaves a page rather than a label.
-    fn ask(
-        &self,
-        workspace_id: WorkspaceId,
-        caller: &Caller,
-        request: &InvokeRequest,
-        departure: Option<PageDeparture>,
-    ) {
-        let Some(window) = self.window_of(workspace_id, request) else {
-            return;
-        };
-        let (Some(&person), Some(&device)) = (caller.user_public_key(), caller.device_public_key())
-        else {
-            return;
-        };
-        let (Some((certification, key)), Some(hand)) = (self.certifying(), self.hand()) else {
-            return;
-        };
-        let asked = Asked {
-            person,
-            window,
-            device,
-            request: request.clone(),
-            departure,
-            until_ns: tilo_clock::unix_now_ns().saturating_add(answer_wait_ns(self.answer_wait)),
-        };
-        let question = asked.question(caller);
-        tracing::info!(
-            workspace = %workspace_id,
-            action = %request.target.address.action,
-            person = %hex::encode(person),
-            "asking the person about a page action"
-        );
-        let invocation = request.invocation;
-        let mut run = request.clone();
-        let handed = Arc::clone(&self.handed);
-        let taking = self.submission(workspace_id, format!("browser-hold/{}", invocation.0));
-        tokio::runtime::Handle::current().spawn(async move {
-            let (confirmed, taken) = match taking.await {
-                // The person answered it already: their answer goes to the
-                // window as it did then, and the window, which keeps what
-                // each invocation did, carries it out at most once.
-                Ok(Taking::Answered(answer)) => (answer, None),
-                Ok(Taking::Taken(taken)) => {
-                    let answered = certification.confirm_for(person, question).await;
-                    (
-                        taken.handing(asked.confirmed(&answered, &key)).await,
-                        Some(taken),
-                    )
-                }
-                Err(error) => (Err(error), None),
-            };
-            {
-                let mut handed = handed.lock_recover();
-                // A caller that stopped waiting while the person decided
-                // has nothing done for it.
-                if let Some(entry) = handed.get_mut(&invocation) {
-                    match confirmed {
-                        Ok(confirmed) => {
-                            confirmed.apply(&mut run);
-                            entry.stage = Stage::Allowed;
-                            drop(handed);
-                            // The invocation goes once more, as the caller
-                            // asked it, with the person's answer: the window
-                            // that refused it accepts this one, and answers
-                            // the caller itself.
-                            hand.hand(
-                                workspace_id,
-                                (device, person),
-                                window,
-                                RemoteActionMessage::Invoke(run),
-                            );
-                        }
-                        Err(error) => over(entry, update_of_error(invocation, &error)),
-                    }
-                }
-            }
-            if let Some(taken) = taken {
-                taken.release().await;
-            }
-        });
-    }
-
-    /// Whether `request` of `device`'s is one this host is already asking the
-    /// person about, or has handed over with their answer.
-    fn waits_for_the_person(&self, request: &InvokeRequest, device: [u8; 32]) -> bool {
-        self.handed
-            .lock_recover()
-            .get(&request.invocation)
-            .is_some_and(|entry| {
-                entry.caller.device_public_key() == Some(&device)
-                    && matches!(entry.stage, Stage::Asking | Stage::Allowed)
-            })
     }
 
     /// Answer a caller asking how one of a window's invocations went
@@ -1194,7 +905,6 @@ impl HostedBrowsers {
             Stage::Over(update) => {
                 return Some(state_routing(invocation, update.clone(), correlation));
             }
-            Stage::Asking | Stage::Allowed => {}
         }
         let wait = Duration::from_millis(u64::from(wait_ms.unwrap_or_default()));
         if wait.is_zero() {
@@ -1242,10 +952,9 @@ impl HostedBrowsers {
             return None;
         }
         let stopped = match &entry.stage {
-            Stage::Running | Stage::Allowed => {
+            Stage::Running => {
                 return Some(crate::app_serving::Routing::Device(entry.window));
             }
-            Stage::Asking => Ok(()),
             Stage::Over(_) => Err(ActionCallError::NotCancellable {
                 reason: "it is over".to_owned(),
             }),
@@ -1261,27 +970,18 @@ impl HostedBrowsers {
         )))
     }
 
-    /// The window `workspace_id`'s page action `request` is about: `None` for
-    /// anything that is not a page action of a window up here.
-    fn window_of(&self, workspace_id: WorkspaceId, request: &InvokeRequest) -> Option<[u8; 32]> {
-        let open = self.open.lock_recover();
-        let up = open.get(&workspace_id)?;
-        page_action(&request.target, &up.window.provider).then_some(up.window.device)
-    }
-
-    /// Where the person is asked about a page action, and the key their answer
-    /// is approved with: this host's own, once it runs.
-    fn certifying(&self) -> Option<(CertificationProtocol, SigningKey)> {
-        let authority = self.authority.lock_recover();
-        let authority = authority.as_ref()?;
-        Some((authority.certification.clone(), authority.key.clone()))
-    }
-
     /// Where a frame this host hands over after its own answer goes: the
     /// server's own delivery to the device holding the window.
     fn hand(&self) -> Option<crate::app_serving::Hand> {
         let authority = self.authority.lock_recover();
         Some(authority.as_ref()?.hand.clone())
+    }
+
+    /// The key this host answers for its person with, once it runs: the
+    /// stand-in's own.
+    fn signing_key(&self) -> Option<SigningKey> {
+        let authority = self.authority.lock_recover();
+        Some(authority.as_ref()?.key.clone())
     }
 
     /// Whether `token` is this host's answer for exactly this page action:
@@ -1383,70 +1083,6 @@ impl HostedBrowsers {
     /// The workspaces this server serves, once it serves them.
     fn workspaces(&self) -> Option<crate::workspaces::Workspaces> {
         self.authority.lock_recover().as_ref()?.workspaces.clone()
-    }
-
-    /// Take the page submission `lease` names in `workspace_id`'s own state
-    /// as this server's device, for as long as the person is given to answer
-    /// and their answer to be handed over: of the workspace's holders, the
-    /// one that took it asks the person and hands over their answer, and no
-    /// other does, after a takeover or across a partition alike. A
-    /// submission the person already answered — through this holder or
-    /// another, before a restart or a takeover — is answered as they did,
-    /// from what the workspace kept, and never asked about again.
-    fn submission(
-        &self,
-        workspace_id: WorkspaceId,
-        lease: String,
-    ) -> impl Future<Output = Result<Taking, ActionCallError>> + Send + 'static {
-        let workspaces = self.workspaces();
-        let ttl = self.answer_wait.saturating_add(SUBMISSION_HANDOVER);
-        async move {
-            let unheld = || ActionCallError::Unavailable {
-                reason: "this server holds no copy of the workspace to ask in".into(),
-            };
-            let workspaces = workspaces.ok_or_else(unheld)?;
-            let workspace = workspaces
-                .workspace_identity(workspace_id)
-                .await
-                .ok_or_else(unheld)?;
-            if let Some(answer) = kept_answer(&workspaces, &workspace, &lease).await {
-                return Ok(Taking::Answered(answer));
-            }
-            let device = workspaces.serving_certificate().clone();
-            let claimed = workspaces
-                .author_own_workspace_state(&workspace, &device, |peer| {
-                    peer.workspace_mut().take_lease(
-                        &device,
-                        &lease,
-                        ttl,
-                        tilo_peer_state::unranked(),
-                        std::time::SystemTime::now(),
-                    )
-                })
-                .await
-                .map_err(|error| ActionCallError::Unavailable {
-                    reason: error.to_string(),
-                })?;
-            if claimed.is_none() {
-                return Err(ActionCallError::Unavailable {
-                    reason: ANOTHER_HOLDER_ASKS.into(),
-                });
-            }
-            let taken = Submission {
-                workspaces,
-                workspace,
-                lease,
-            };
-            // The merged state may hold an answer given before this holder
-            // took the submission: it is the answer, asked never again.
-            if let Some(answer) =
-                kept_answer(&taken.workspaces, &taken.workspace, &taken.lease).await
-            {
-                taken.release().await;
-                return Ok(Taking::Answered(answer));
-            }
-            Ok(Taking::Taken(taken))
-        }
     }
 
     /// [`Self::workspace_name`], asked again a few times with a growing
@@ -1883,20 +1519,6 @@ fn certified(
     Ok((minted, secret))
 }
 
-/// The held request `argument` names (`{"id": "4"}`), as the window publishes
-/// each hold's answer action with the id it holds.
-#[must_use]
-pub fn held_of(argument: &tilo_actions::remote::InvokeArgument) -> Option<u32> {
-    let tilo_actions::remote::InvokeArgument::Json(arguments) = argument else {
-        return None;
-    };
-    match arguments.get("id")? {
-        serde_json::Value::String(id) => id.parse().ok(),
-        serde_json::Value::Number(id) => id.as_u64().and_then(|id| id.try_into().ok()),
-        _ => None,
-    }
-}
-
 /// What the server says of a page action handed to the window with nobody's
 /// answer: whether the caller's certificate came with it, and whether that
 /// certificate is an agent's that may operate web pages, which is what would
@@ -1922,6 +1544,40 @@ fn note_unanswered_handover(
     );
 }
 
+/// The approval this host gives the window for `request`: signed with `key` for the person it
+/// serves, for exactly this invocation, naming the caller and the window it runs on.
+fn host_approval(
+    person: [u8; 32],
+    key: &SigningKey,
+    caller: [u8; 32],
+    window: [u8; 32],
+    request: &InvokeRequest,
+) -> Result<ConfirmedInvocation, ActionCallError> {
+    let now = tilo_clock::unix_now_ns();
+    let mut approval = HostApproval::unsigned(
+        Parties {
+            person,
+            host: key.verifying_key().to_bytes(),
+            caller,
+            target: window,
+        },
+        Answered {
+            invocation: *request.invocation.0.as_bytes(),
+            provider: request.target.provider.clone(),
+            resource: request.target.address.resource.clone(),
+            action: request.target.address.action.clone(),
+            argument: argument_digest(request.argument.to_slot().as_deref()),
+        },
+        (now, now.saturating_add(APPROVAL_LIFETIME)),
+    );
+    approval
+        .sign(key)
+        .map(|()| ConfirmedInvocation::unchanged(Confirmation::Approved(approval.encode())))
+        .map_err(|error| ActionCallError::Unavailable {
+            reason: format!("the host could not answer for the person: {error}"),
+        })
+}
+
 /// Whether `certificate` is a key its person let operate web pages in
 /// Browser, asking `request`, which is one of the actions that lets it take
 /// without asking them ([`OPERATING_ACTIONS`]). The key reaches only the
@@ -1932,228 +1588,6 @@ pub fn operates(certificate: &DeviceCert, request: &InvokeRequest) -> bool {
     certificate.capabilities.agent.is_some()
         && certificate.capabilities.browser_pages
         && OPERATING_ACTIONS.contains(&request.target.address.action.as_str())
-}
-
-/// How long past the person's wait a page submission stays taken: time to
-/// hand their answer to the window.
-const SUBMISSION_HANDOVER: Duration = Duration::from_secs(60);
-
-/// Why a holder that did not take a page submission asks nothing about it.
-pub const ANOTHER_HOLDER_ASKS: &str = "another holder of the workspace is asking the person";
-
-/// What came of taking a page submission ([`HostedBrowsers::submission`]).
-enum Taking {
-    /// This server's device took it: it asks the person.
-    Taken(Submission),
-    /// The person already answered it; the answer the workspace kept.
-    Answered(Result<ConfirmedInvocation, ActionCallError>),
-}
-
-/// The person's answer to the page submission `lease`, as a holder of
-/// `workspace` kept it once it was handed over.
-async fn kept_answer(
-    workspaces: &crate::workspaces::Workspaces,
-    workspace: &str,
-    lease: &str,
-) -> Option<Result<ConfirmedInvocation, ActionCallError>> {
-    let done = workspaces.state(workspace).await?.workspace().done(lease)?;
-    match serde_json::from_value(done.answer) {
-        Ok(answer) => Some(answer),
-        Err(error) => {
-            tracing::warn!(%lease, %error, "a kept answer is not one this build reads");
-            None
-        }
-    }
-}
-
-/// A page submission this server's device took in its workspace's state
-/// ([`HostedBrowsers::submission`]).
-struct Submission {
-    workspaces: crate::workspaces::Workspaces,
-    workspace: String,
-    lease: String,
-}
-
-impl Submission {
-    /// `confirmed`, the person's answer, as it may be handed over: only
-    /// while this server still holds the submission. A holder that lost it
-    /// while the person decided — another one took it over, or won it once
-    /// a partition healed — hands over nothing, so the page acts once. The
-    /// person's answer, an approval or a denial, is kept in the workspace
-    /// before it is handed over, so the same submission arriving later at
-    /// any holder is answered with it ([`Taking::Answered`]).
-    async fn handing(
-        &self,
-        confirmed: Result<ConfirmedInvocation, ActionCallError>,
-    ) -> Result<ConfirmedInvocation, ActionCallError> {
-        let ours = self.workspaces.serving_certificate().device_public_key;
-        let held = self
-            .workspaces
-            .state(&self.workspace)
-            .await
-            .and_then(|state| {
-                state
-                    .workspace()
-                    .lease(&self.lease, std::time::SystemTime::now())
-                    .holder
-            })
-            .is_some_and(|holder| holder.device == ours);
-        if !held {
-            return Err(ActionCallError::Unavailable {
-                reason: ANOTHER_HOLDER_ASKS.into(),
-            });
-        }
-        // A question nobody answered is no answer: the next arrival asks.
-        if matches!(confirmed, Ok(_) | Err(ActionCallError::NotPermitted)) {
-            self.keep(&confirmed).await;
-        }
-        confirmed
-    }
-
-    /// Keep `answer` as the person's answer to this submission.
-    async fn keep(&self, answer: &Result<ConfirmedInvocation, ActionCallError>) {
-        let device = self.workspaces.serving_certificate().clone();
-        let kept = match serde_json::to_value(answer) {
-            Ok(answer) => self
-                .workspaces
-                .author_own_workspace_state(&self.workspace, &device, |peer| {
-                    peer.workspace_mut().keep_done(
-                        &device,
-                        &self.lease,
-                        answer,
-                        std::time::SystemTime::now(),
-                    )
-                })
-                .await
-                .map(drop)
-                .map_err(|error| error.to_string()),
-            Err(error) => Err(error.to_string()),
-        };
-        if let Err(error) = kept {
-            tracing::warn!(lease = %self.lease, %error, "the person's answer was not kept");
-        }
-    }
-
-    /// Let the submission go once its answer was handed over.
-    async fn release(self) {
-        let device = self.workspaces.serving_certificate().clone();
-        if let Err(error) = self
-            .workspaces
-            .author_own_workspace_state(&self.workspace, &device, |peer| {
-                peer.workspace_mut().release_lease(
-                    &device,
-                    &self.lease,
-                    std::time::SystemTime::now(),
-                )
-            })
-            .await
-        {
-            tracing::warn!(lease = %self.lease, %error, "a page submission was not let go");
-        }
-    }
-}
-
-/// One page action the person is asked about, and what their answer is
-/// turned into for the window that refused it.
-struct Asked {
-    /// The person asked: their approving devices answer it.
-    person: [u8; 32],
-    /// The window's device, which their answer names as its target.
-    window: [u8; 32],
-    /// The caller's device, which it names as the one that asked.
-    device: [u8; 32],
-    /// The action as the caller asked it: what the question shows, and what
-    /// their answer is good for running.
-    request: InvokeRequest,
-    /// The page departure the question asks about, when there is one: what
-    /// leaves a page nobody stands at, and the filled page it leaves from.
-    departure: Option<PageDeparture>,
-    /// When the question stops waiting for an answer.
-    until_ns: u64,
-}
-
-impl Asked {
-    /// The question this puts to the person, which they answer once.
-    fn question(&self, caller: &Caller) -> PendingConfirmation {
-        question(
-            caller.workspace().unwrap_or_default(),
-            caller,
-            &self.request,
-            self.departure.clone(),
-            self.until_ns,
-        )
-    }
-
-    /// `answer` as this invocation's confirmation, or the refusal it amounts
-    /// to: the approval `key` signs, for exactly this action and these
-    /// arguments, naming this caller and this window.
-    fn confirmed(
-        &self,
-        answer: &Result<ConfirmationAnswer, String>,
-        key: &SigningKey,
-    ) -> Result<ConfirmedInvocation, ActionCallError> {
-        match answer {
-            // The question shows no draft, so nothing in it is changed.
-            Ok(ConfirmationAnswer::AllowOnce) => {
-                let now = tilo_clock::unix_now_ns();
-                let mut approval = HostApproval::unsigned(
-                    Parties {
-                        person: self.person,
-                        host: key.verifying_key().to_bytes(),
-                        caller: self.device,
-                        target: self.window,
-                    },
-                    Answered {
-                        invocation: *self.request.invocation.0.as_bytes(),
-                        provider: self.request.target.provider.clone(),
-                        resource: self.request.target.address.resource.clone(),
-                        action: self.request.target.address.action.clone(),
-                        argument: argument_digest(self.request.argument.to_slot().as_deref()),
-                    },
-                    (now, now.saturating_add(APPROVAL_LIFETIME)),
-                );
-                approval
-                    .sign(key)
-                    .map(|()| {
-                        ConfirmedInvocation::unchanged(Confirmation::Approved(approval.encode()))
-                    })
-                    .map_err(|error| ActionCallError::Unavailable {
-                        reason: format!("the host could not answer for the person: {error}"),
-                    })
-            }
-            Ok(
-                ConfirmationAnswer::Deny
-                | ConfirmationAnswer::Reply(_)
-                | ConfirmationAnswer::Secret(_)
-                | ConfirmationAnswer::AllowAlways,
-            ) => Err(ActionCallError::NotPermitted),
-            Err(error) => {
-                tracing::warn!(
-                    person = %hex::encode(self.person),
-                    action = %self.request.target.address.action,
-                    %error,
-                    "the person was asked about a page action and no answer came"
-                );
-                Err(ActionCallError::Unavailable {
-                    reason: UNANSWERED.to_owned(),
-                })
-            }
-        }
-    }
-}
-
-/// `invocation` accepted, and to be followed: what a caller is answered with
-/// while the person is asked about it.
-fn waiting_receipt(invocation: tilo_actions::InvocationId) -> RemoteActionMessage {
-    RemoteActionMessage::Receipt(InvocationReceipt {
-        invocation,
-        status: ReceiptStatus::Accepted,
-    })
-}
-
-/// [`waiting_receipt`], as where a caller's frame goes.
-fn waiting(invocation: tilo_actions::InvocationId) -> crate::app_serving::Routing {
-    crate::app_serving::Routing::Answer(Pending::ready(waiting_receipt(invocation)))
 }
 
 /// `update` as the answer a caller asking after `invocation` receives.
@@ -2243,119 +1677,6 @@ fn update_of_error(
             retryable: false,
         },
     }
-}
-
-/// The question `request` puts to the person, as their approving devices
-/// draw it: the agent that asked, by the name it goes by, the action as the
-/// caller described it, the workspace it acts in, and — when what it asks
-/// about is a page about to send something (`departure`, which the window
-/// stated) — the page it leaves from, what it sends there, and the filled page
-/// as a picture they can see.
-fn question(
-    workspace: &str,
-    caller: &tilo_actions::remote::Caller,
-    request: &InvokeRequest,
-    departure: Option<PageDeparture>,
-    until_ns: u64,
-) -> PendingConfirmation {
-    let mut id = [0_u8; 32];
-    let _ = getrandom::fill(&mut id);
-    let address = &request.target.address;
-    let context = request.context.as_ref();
-    let agent_id = caller.acting().agent_id().unwrap_or_default().to_owned();
-    // A question about a page is put by the page itself when no agent named
-    // itself, and its detail names the site it leaves from rather than the
-    // record it is kept under: a person reads the address they are on.
-    let about_a_page = departure.is_some();
-    let agent_label = caller
-        .agent_name()
-        .map(str::to_owned)
-        .or_else(|| about_a_page.then(|| "This page".to_owned()))
-        .unwrap_or_else(|| address.action.clone());
-    let resource_label = departure.as_ref().map_or_else(
-        || {
-            context
-                .and_then(|context| context.resource.as_ref())
-                .map_or_else(
-                    || address.resource.clone(),
-                    |resource| resource.label.clone(),
-                )
-        },
-        |page| {
-            if page.page.is_empty() {
-                page.destination.clone()
-            } else {
-                page.page.clone()
-            }
-        },
-    );
-    PendingConfirmation {
-        id,
-        agent_id,
-        agent_label,
-        action_label: departure.as_ref().map_or_else(
-            || {
-                context
-                    .and_then(|context| context.purpose.clone())
-                    .unwrap_or_else(|| address.action.clone())
-            },
-            PageDeparture::doing,
-        ),
-        resource_label,
-        risk: context
-            .and_then(|context| {
-                context
-                    .facets
-                    .iter()
-                    .find(|facet| facet.key == tilo_actions::RISK_FACET)
-            })
-            .map_or_else(|| "destructive".to_owned(), |facet| facet.value.clone()),
-        // A page about to send something is acting outside Tilo: the sheet
-        // says so instead of guessing "it deletes something" from a page it
-        // never inspected.
-        kind: if about_a_page {
-            "outside".to_owned()
-        } else {
-            String::new()
-        },
-        workspace: workspace.to_owned(),
-        expires_at_ns: until_ns,
-        page: departure,
-        ..PendingConfirmation::default()
-    }
-}
-
-/// The page departure `context` reports ([`DEPARTURE_FACET`]), when it reports
-/// one: a window that holds a page's own departure states what it is about to
-/// send and the picture of the filled page, and the session holding it passes
-/// them on with the question it asks.
-///
-/// [`DEPARTURE_FACET`]: tilo_actions::remote::browser::DEPARTURE_FACET
-fn departure_of(context: Option<&tilo_actions::ActionContext>) -> Option<PageDeparture> {
-    departure_of_facts(&tilo_actions::remote::browser::departure_facts(context))
-}
-
-/// [`departure_of`], from the facts a window stated: the same ones it publishes
-/// a hold it started itself with, and the ones it answers a page action's run
-/// with when what that reached waits for the person.
-fn departure_of_facts(facts: &[(String, String)]) -> Option<PageDeparture> {
-    let stated = |name: &str| {
-        facts
-            .iter()
-            .find(|(key, _)| key == name)
-            .map(|(_, value)| value.clone())
-            .unwrap_or_default()
-    };
-    let departure = PageDeparture {
-        page: stated("page"),
-        kind: stated("kind"),
-        method: stated("method"),
-        destination: stated("destination"),
-        picture: Some(stated("picture")).filter(|picture| !picture.is_empty()),
-    };
-    // A window that reported nothing about its page is no departure: it asks
-    // about an action, not about something leaving a page.
-    (departure != PageDeparture::default()).then_some(departure)
 }
 
 /// [`Reason::NoPaymentMethod`] for an account whose period's free actions are

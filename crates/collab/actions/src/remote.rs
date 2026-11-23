@@ -146,7 +146,7 @@ pub use test_provider::TestProvider;
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
 
 use crate::api::ActionAddress;
-use crate::context::ActionContext;
+use crate::context::{ActionContext, ActionFacet};
 use crate::outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use crate::params::ARGUMENTS_JSON_PREFIX;
 
@@ -848,9 +848,7 @@ impl InvocationState {
             // is a refusal to the caller, not a failure of the action.
             InvocationUpdate::Failed { error, .. } if error.code == CONFIRMATION_REQUIRED_CODE => {
                 ReceiptStatus::Rejected {
-                    error: ActionCallError::asks(asked::AskedFacts::from_details(
-                        error.details.as_ref(),
-                    )),
+                    error: ActionCallError::asks(asked_facts_of(error.details.as_ref())),
                 }
             }
             InvocationUpdate::Failed { error, .. } => ReceiptStatus::Failed {
@@ -864,6 +862,28 @@ impl InvocationState {
             invocation: self.invocation(),
             status,
         }
+    }
+}
+
+/// What a run's refusal for want of the person's yes states of itself: the facts it wrote, or —
+/// an app whose run reached something about to leave a page — the departure it stated, as the
+/// page it leaves from and what leaves it ([`browser::stated_facts`]).
+fn asked_facts_of(details: Option<&serde_json::Value>) -> asked::AskedFacts {
+    let facets: Vec<ActionFacet> = details
+        .cloned()
+        .and_then(|details| serde_json::from_value(details).ok())
+        .unwrap_or_default();
+    if facets.is_empty() {
+        return asked::AskedFacts::from_details(details);
+    }
+    let stated = browser::stated_facts(&facets);
+    let page = stated
+        .iter()
+        .find(|(name, _)| name == "page")
+        .map(|(_, value)| value.clone());
+    asked::AskedFacts {
+        on: page,
+        ..browser::departure_asked(stated)
     }
 }
 
