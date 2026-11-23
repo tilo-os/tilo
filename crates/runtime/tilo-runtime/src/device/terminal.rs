@@ -33,6 +33,17 @@ impl HostShells {
         }
     }
 
+    /// Carry the terminal stream this device handed `device` over `from` and `to`: the device
+    /// that asked for it presents its one-use id, and nobody else may take it.
+    pub(crate) fn serve_terminal(
+        &self,
+        device: [u8; 32],
+        from: impl std::io::Read + Send + 'static,
+        to: impl std::io::Write,
+    ) -> std::io::Result<ush::environment_terminals::Ended> {
+        self.terminals.serve_handed(device, from, to)
+    }
+
     /// The vault items `by`'s program in `workspace`'s machine starts with: what the workspace's
     /// machine secrets document names, each released for them, and nothing else.
     fn secrets(&self, workspace: &str, by: &Caller) -> Result<Vec<VmSecret>, String> {

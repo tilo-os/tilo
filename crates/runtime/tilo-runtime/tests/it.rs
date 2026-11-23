@@ -114,6 +114,10 @@ mod root_holder_login;
 mod runtime_daemon_process;
 #[path = "session_api_connect.rs"]
 mod session_api_connect;
+#[path = "shared_workspace.rs"]
+mod shared_workspace;
+#[path = "terminal_streams.rs"]
+mod terminal_streams;
 #[path = "tracker.rs"]
 mod tracker;
 #[path = "workspace_list.rs"]

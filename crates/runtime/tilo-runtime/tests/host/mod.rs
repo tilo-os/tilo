@@ -337,6 +337,34 @@ impl Host {
         self.dial(key, workspace).await
     }
 
+    /// A device of another person than this computer's, `label`, entered into `workspace` as a
+    /// test fixture admits them: who a workspace shared with other people has among its members.
+    pub async fn other_person(&self, label: &str, workspace: &str) -> Member {
+        let (root, user) = tilo_user_identity::UserIdentity::generate(label, 1);
+        let mut secret = [0; 32];
+        getrandom::fill(&mut secret).unwrap();
+        let key = SigningKey::from_bytes(&secret);
+        let now = tilo_clock::unix_now_ns().saturating_sub(60 * 1_000_000_000);
+        let mut cert = DeviceCert {
+            user_public_key: user.public_key,
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: label.into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: now,
+            expires_at_ns: Some(now.saturating_add(24 * 60 * 60 * 1_000_000_000)),
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        tilo_workspace_service::workspaces::fixtures::enter_key(
+            self.daemon.workspaces(),
+            workspace,
+            &cert,
+        )
+        .await;
+        self.dial(key, workspace).await
+    }
+
     /// A key no certificate of `workspace` names, asking the daemon over the device link: a
     /// page at the workspace's public entry. It reaches only what the workspace opens to any key.
     pub async fn visitor(&self, workspace: &str) -> Member {
@@ -526,6 +554,12 @@ pub struct Member {
 }
 
 impl Member {
+    /// This device's endpoint, as it dials a host's terminal streams.
+    #[must_use]
+    pub fn endpoint(&self) -> &iroh::Endpoint {
+        &self._endpoint
+    }
+
     /// The action at `address` of `provider`, with `arguments`, followed until it settles.
     pub async fn call(
         &self,

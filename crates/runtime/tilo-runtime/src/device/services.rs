@@ -563,36 +563,6 @@ impl Daemon {
         let taking = take_work.is_some();
         let take_work =
             take_work_action_service(root, &workspaces, take_work, &replica_slot, stage)?;
-        // The workspaces this device governs run their Terminal sessions' shells here: the
-        // dispatch answers the records' `run` and `open-terminal` with ush's shells. A member
-        // that takes its server's work runs them for its server instead, and answers none
-        // itself.
-        #[cfg(target_os = "linux")]
-        if !taking {
-            stage("opening the workspaces' shells");
-            // This computer is the machine: its person's own workspace runs its programs here,
-            // as a desktop install's Terminal does, in ush's Host environment.
-            let shells = super::take_work::workspace_shells(
-                root,
-                &workspaces,
-                Some(replica_slot.clone()),
-                None,
-            )
-            .on_machine(true);
-            let host = Arc::new(super::terminal::HostShells::new(
-                shells,
-                workspaces.copies().clone(),
-            ));
-            let terminal = tilo_workspace_service::workspaces::terminal::TerminalService::new(
-                workspaces.copies().clone(),
-                host,
-                tilo_rt::app().handle().clone(),
-            );
-            workspaces.copies().provide(
-                tilo_workspace_service::workspaces::terminal::PROVIDER,
-                Arc::new(terminal),
-            );
-        }
         // The one action service the daemon's router answers the device actions on: the work
         // this member takes from its server when it takes any, else its workspaces'. A ticket's
         // certify call is admitted on it while a computer asks.
@@ -600,6 +570,57 @@ impl Daemon {
             || workspaces.copies().action_service(),
             take_work::TakesWork::actions,
         );
+        // The workspaces this device governs run their Terminal sessions' shells here: the
+        // dispatch answers the records' `run` and `open-terminal` with ush's shells, and the
+        // endpoint takes the streams it hands out. A member that takes its server's work runs
+        // them for its server instead, and answers none itself.
+        #[cfg(target_os = "linux")]
+        let terminals: TerminalProtocols = {
+            let mut terminals: TerminalProtocols = Vec::new();
+            if !taking {
+                stage("opening the workspaces' shells");
+                // This computer is the machine: its person's own workspace runs its programs here,
+                // as a desktop install's Terminal does, in ush's Host environment.
+                let shells = super::take_work::workspace_shells(
+                    root,
+                    &workspaces,
+                    Some(replica_slot.clone()),
+                    None,
+                )
+                .on_machine(true);
+                let host = Arc::new(super::terminal::HostShells::new(
+                    shells,
+                    workspaces.copies().clone(),
+                ));
+                // A stream is taken by the device that asked for it, as the endpoint that dials
+                // asks on the action service: the device's own endpoint is the device.
+                let streams = Arc::clone(&host);
+                let dialling = actions.clone();
+                terminals.push((
+                    ush::environment_terminals::ALPN,
+                    Box::new(ush::environment_terminals::quic::Route::new(
+                        move |endpoint, from, to| {
+                            let device = dialling.device_of(endpoint);
+                            if let Err(error) = streams.serve_terminal(device, from, to) {
+                                tracing::debug!(%error, "a terminal stream was refused");
+                            }
+                        },
+                    )),
+                ));
+                let terminal = tilo_workspace_service::workspaces::terminal::TerminalService::new(
+                    workspaces.copies().clone(),
+                    host,
+                    tilo_rt::app().handle().clone(),
+                );
+                workspaces.copies().provide(
+                    tilo_workspace_service::workspaces::terminal::PROVIDER,
+                    Arc::new(terminal),
+                );
+            }
+            terminals
+        };
+        #[cfg(not(target_os = "linux"))]
+        let terminals: TerminalProtocols = Vec::new();
         // The device actions the daemon answers itself.
         stage("opening the device's tickets");
         let tickets = Arc::new({
@@ -635,6 +656,7 @@ impl Daemon {
             actions,
             host: (founded.is_some() || kept.is_some()).then(|| workspaces.service().as_ref()),
             kept: kept_protocols,
+            terminals,
         });
         // What is the person's alone is kept in their own workspace, read and written here on
         // this daemon's runtime once its service holds it: their devices, and the answers they
@@ -2323,6 +2345,9 @@ impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority f
     }
 }
 
+/// One protocol the endpoint answers beside the device actions, and what answers it.
+type TerminalProtocols = Vec<(&'static [u8], Box<dyn iroh::protocol::DynProtocolHandler>)>;
+
 /// What the runtime's endpoint is served with: the workspaces it keeps, the host its person's
 /// keys reach, the work it takes and a ticket's certify call.
 struct EndpointServing<'a> {
@@ -2338,6 +2363,9 @@ struct EndpointServing<'a> {
     host: Option<&'a tilo_workspace_service::service::WorkspaceService>,
     /// What a server answers for what it keeps.
     kept: tilo_server::daemon::Protocols,
+    /// The terminal streams of the shells this device runs, which the devices it hands them to
+    /// dial.
+    terminals: TerminalProtocols,
 }
 
 /// Serve what this runtime answers on the endpoint its workspaces run, from one router: the
@@ -2350,6 +2378,7 @@ fn serve_device_endpoint(serving: EndpointServing<'_>) -> iroh::protocol::Router
         actions,
         host,
         kept,
+        terminals,
     } = serving;
     let runtime = tilo_rt::app().handle();
     let _entered = runtime.enter();
@@ -2369,6 +2398,9 @@ fn serve_device_endpoint(serving: EndpointServing<'_>) -> iroh::protocol::Router
         router = router.accept(alpn, handler);
     }
     for (alpn, handler) in kept {
+        router = router.accept(alpn, handler);
+    }
+    for (alpn, handler) in terminals {
         router = router.accept(alpn, handler);
     }
     router = router.accept(tilo_peer_state::actions::ACTIONS_ALPN, actions);
