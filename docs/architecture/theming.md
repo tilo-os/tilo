@@ -525,7 +525,7 @@ What an app may do:
 
 - **Own its content surfaces.** A canvas, a document page, a video, a game or
   a map is content, and the app chooses how it looks. The reference pattern is
-  the reading page (`crates/sdk/tilo-rich-edit/src/reading/`): its own paper
+  the reading page (`crates/ui/tilo-rich-edit/src/reading/`): its own paper
   and ink are the reader's to pick, while everything the toolkit draws around
   it reads strictly from `Theme`.
 
@@ -681,7 +681,7 @@ theme should supply.
 
 | File | Sites | Content | Chrome | Notes |
 |---|---:|---:|---:|---|
-| `crates/sdk/tilo-rich-edit/src/reading/` | 4 | 4 | 0 | the reading page's paper and ink, picked by its reader |
+| `crates/ui/tilo-rich-edit/src/reading/` | 4 | 4 | 0 | the reading page's paper and ink, picked by its reader |
 | `word-processor/src/widget.rs` | 19 | 16 | 3 | paper, paper ink, table and placeholder tints and stored run colours are content; caret, active-band edge and spelling squiggle are affordances that should come from `intent.you` and `danger`, made legible on paper |
 | `word-processor/src/review_overlay.rs` | 14 | 0 | 14 | comment and change cards, accept/reject buttons, insertion/deletion ink |
 | `word-processor/src/widget/tests.rs`, `style_color_picker.rs` | 4 | 4 | 0 | fixtures; seed from a stored style |

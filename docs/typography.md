@@ -583,7 +583,7 @@ default, deliberately disables automatic hyphenation, glyph expansion,
 justification, and punctuation protrusion; both participate in layout cache
 identity.
 
-The typesetter is `crates/sdk/tilo-rich-edit/src/reading/`: a document's rich
+The typesetter is `crates/ui/tilo-rich-edit/src/reading/`: a document's rich
 text becomes pages the `ui.Reading` component draws. Its unit tests hold the
 line breaking, hyphenation, BiDi and pagination rules.
 
