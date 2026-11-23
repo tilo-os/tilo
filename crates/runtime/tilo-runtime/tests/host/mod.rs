@@ -398,16 +398,21 @@ pub struct Agent {
 impl Agent {
     /// The MCP tool `name` with `arguments`: its `tools/call` result.
     pub async fn tool(&self, name: &str, arguments: &Value) -> Value {
+        let answer = self
+            .ask("tools/call", json!({"name": name, "arguments": arguments}))
+            .await;
+        answer["result"].clone()
+    }
+
+    /// The MCP request `method` with `params`, answered whole.
+    pub async fn ask(&self, method: &str, params: Value) -> Value {
         let id = self
             .calls
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let answer = self
-            .session
-            .handle(json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
-                          "params": {"name": name, "arguments": arguments}}))
+        self.session
+            .handle(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
             .await
-            .unwrap();
-        answer["result"].clone()
+            .unwrap()
     }
 }
 

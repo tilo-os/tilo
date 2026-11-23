@@ -16,6 +16,26 @@
 // entry every module's tests start.
 tilo_automerge_isolate::test_worker!();
 
+#[path = "agent_fixture.rs"]
+mod agent_fixture;
+#[path = "agent_machine.rs"]
+mod agent_machine;
+#[path = "agent_member.rs"]
+mod agent_member;
+#[path = "agent_models.rs"]
+mod agent_models;
+#[path = "agent_on_device.rs"]
+mod agent_on_device;
+#[path = "agent_presence.rs"]
+mod agent_presence;
+#[path = "agent_scheduling.rs"]
+mod agent_scheduling;
+#[path = "agent_terminal.rs"]
+mod agent_terminal;
+#[path = "agent_turns.rs"]
+mod agent_turns;
+#[path = "agent_windows.rs"]
+mod agent_windows;
 #[path = "chat.rs"]
 mod chat;
 #[path = "daemon_flows.rs"]
