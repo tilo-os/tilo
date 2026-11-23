@@ -37,6 +37,9 @@ type VoiceChannel {
 type TextChannel {
     name: Text
     topic: Text
+    /// What has been said here so far, in a few paragraphs, as an agent last wrote it down: what
+    /// a turn reads in place of the messages it summarizes. Empty until one is written.
+    summary: Text = ""
     messages: Collection<Message>
     /// The threads its messages started, each the one a message's `thread` names.
     /// TODO(language): an owned `Option<Thread>` on the message; a reference needs a home.
@@ -61,6 +64,10 @@ type Message {
     parts: Collection<Part>
     /// Whether it is pinned to its channel, which search finds.
     pinned: Bool = false
+    /// The agent's turn that wrote it: the id of the `#answer` invocation it answers in, which
+    /// Stop cancels and whose steps, questions and cost are the turn's. Empty for a message a
+    /// person wrote.
+    turn: Text = ""
     /// Who reacted, by emoji.
     reactions: Map<Set<Actor>>
     /// A view the message sends, as its sender had it among their views: a reader adds it to
@@ -111,6 +118,9 @@ type Report {
 /// A side conversation branched off one message.
 type Thread {
     name: Text
+    /// What has been said here so far, in a few paragraphs, as an agent last wrote it down: what
+    /// a turn reads in place of the messages it summarizes. Empty until one is written.
+    summary: Text = ""
     messages: Collection<Message>
     archived: Bool = false
     /// The reports filed about its messages, for the workspace's moderators.
@@ -129,6 +139,9 @@ type Direct (readers: people) {
     /// The one person an earlier version kept it with, before it said who is in it: what its
     /// migration reads (`carry_direct_people`).
     person: Actor
+    /// What has been said here so far, in a few paragraphs, as an agent last wrote it down: what
+    /// a turn reads in place of the messages it summarizes. Empty until one is written.
+    summary: Text = ""
     messages: Collection<Message>
     threads: Collection<Thread>
     /// The reports filed about its messages, for the workspace's moderators.
@@ -746,8 +759,9 @@ action send(
     body: RichText,
     reply_to: Option<Message> = .none,
     attachments: List<File> = [],
+    turn: Text = "",
 ) -> Message uses notify (icon: .send, label: "Send", did: "wrote a message") {
-    let m = Message(body: body, reply_to: reply_to)
+    let m = Message(body: body, reply_to: reply_to, turn: turn)
     let sent = match to {
         c: TextChannel => c.messages.insert(m),
         t: Thread => t.messages.insert(m),
@@ -777,6 +791,19 @@ action write_to(all: Conversations, who: Actor, body: RichText) -> Message uses 
 ) {
     let d = message_person(all, who)
     send(d, body)
+}
+
+/// Writes down what has been said in a conversation so far, replacing what was written before:
+/// what an agent's next turn there reads in place of the messages it covers.
+action summarize(to: TextChannel | Thread | Direct, summary: Text) (
+    icon: .file_text,
+    label: "Summarize",
+) {
+    match to {
+        c: TextChannel => c.summary = summary,
+        t: Thread => t.summary = summary,
+        d: Direct => d.summary = summary,
+    }
 }
 
 /// Sends a view as a message: its title as what the message says, its definition for anyone
