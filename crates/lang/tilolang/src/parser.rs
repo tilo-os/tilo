@@ -2883,3 +2883,52 @@ impl<'a> Parser<'a> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_module;
+    use crate::ast::Item;
+    use crate::print::print_module;
+
+    /// The `incoming` option of the one type `src` declares.
+    fn incoming(src: &str) -> crate::ast::IncomingDecl {
+        let (module, diags) = parse_module(src);
+        assert!(diags.is_empty(), "{diags:?}");
+        module
+            .expect("a module")
+            .items
+            .into_iter()
+            .find_map(|item| match item {
+                Item::Type(ty) => ty.incoming,
+                _ => None,
+            })
+            .expect("the type says incoming")
+    }
+
+    #[test]
+    fn a_type_says_which_records_its_origin_receives() {
+        const SOURCE: &str = "app t.inc \"Incoming\"\n\ntype Message (origin: imap.message, title: subject, incoming: from) {\n  from: Text\n}\n";
+        let declared = incoming(SOURCE);
+        assert_eq!(
+            declared.sender.as_ref().map(|field| field.name.as_str()),
+            Some("from")
+        );
+        // The printer writes it back as it was declared.
+        let (module, _) = parse_module(SOURCE);
+        let printed = print_module(&module.expect("a module"));
+        assert!(printed.contains("incoming: from"), "{printed}");
+        assert_eq!(
+            incoming(&printed)
+                .sender
+                .as_ref()
+                .map(|field| field.name.as_str()),
+            Some("from")
+        );
+    }
+
+    #[test]
+    fn a_type_without_a_sender_field_says_its_records_arrive_all_the_same() {
+        const SOURCE: &str = "app t.inc \"Incoming\"\n\ntype Note (origin: imap.message, incoming) {\n  subject: Text\n}\n";
+        assert!(incoming(SOURCE).sender.is_none());
+    }
+}
