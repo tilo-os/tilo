@@ -234,11 +234,9 @@ fn changes_in(
     let kind = collaboration::resource::identity(doc)
         .map(|checkout| checkout.kind.as_str().to_owned())
         .unwrap_or_default();
-    let events =
-        tilo_agent_session::bot::events_since(workspace, document, &kind, doc.document(), since);
+    let events = events_since(workspace, document, &kind, doc.document(), since);
     let theirs: Vec<&DocumentEvent> = events
         .iter()
-        .map(|(event, _)| event)
         .filter(|event| !event.housekeeping && !own.made(event))
         .collect();
     if theirs.is_empty() {
@@ -252,6 +250,41 @@ fn changes_in(
         "changes": theirs.len(),
         "by": by,
     }))
+}
+
+/// The changes of `doc` after `since` (hex heads), as the events their recorded entries
+/// describe. A change that carries no entry (a genesis, a merge with no action) is none.
+fn events_since(
+    workspace: &str,
+    record: &str,
+    kind: &str,
+    doc: &automerge::Automerge,
+    since: &[String],
+) -> Vec<DocumentEvent> {
+    let since: Vec<automerge::ChangeHash> = since
+        .iter()
+        .filter_map(|hex| {
+            tilo_failure::ignored!(
+                "a head that does not parse names no change, so the changes are read from before it, none skipped",
+                hex.parse().ok()
+            )
+        })
+        .collect();
+    doc.get_changes(&since)
+        .into_iter()
+        .filter_map(|change| {
+            let context = change
+                .message()
+                .and_then(tilo_actions::ActionContext::from_change_message)?;
+            Some(tilo_automation::dispatch::event_of(
+                workspace,
+                record,
+                kind,
+                &change.hash().to_string(),
+                &context,
+            ))
+        })
+        .collect()
 }
 
 /// What a look holds the workspace's tasks against.
