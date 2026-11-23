@@ -398,9 +398,8 @@ impl Sheet {
             list.iter()
                 .filter_map(|text| parse_area(text))
                 .flat_map(|(start, end)| {
-                    (start.1..=end.1).flat_map(move |row| {
-                        (start.0..=end.0).map(move |column| (column, row))
-                    })
+                    (start.1..=end.1)
+                        .flat_map(move |row| (start.0..=end.0).map(move |column| (column, row)))
                 })
                 .collect()
         };
@@ -450,15 +449,25 @@ impl Sheet {
     /// The chosen area.
     fn selection(&self) -> (Addr, Addr) {
         (
-            (self.anchor.0.min(self.focus.0), self.anchor.1.min(self.focus.1)),
-            (self.anchor.0.max(self.focus.0), self.anchor.1.max(self.focus.1)),
+            (
+                self.anchor.0.min(self.focus.0),
+                self.anchor.1.min(self.focus.1),
+            ),
+            (
+                self.anchor.0.max(self.focus.0),
+                self.anchor.1.max(self.focus.1),
+            ),
         )
     }
 
     fn column_x(&self, column: u32) -> f64 {
         let mut x = 0.0;
         for index in 0..column {
-            x += self.widths.get(&index).copied().unwrap_or_else(|| self.metrics.col_w());
+            x += self
+                .widths
+                .get(&index)
+                .copied()
+                .unwrap_or_else(|| self.metrics.col_w());
         }
         x
     }
@@ -466,17 +475,27 @@ impl Sheet {
     fn row_y(&self, row: u32) -> f64 {
         let mut y = 0.0;
         for index in 0..row {
-            y += self.heights.get(&index).copied().unwrap_or_else(|| self.metrics.row_h());
+            y += self
+                .heights
+                .get(&index)
+                .copied()
+                .unwrap_or_else(|| self.metrics.row_h());
         }
         y
     }
 
     fn column_w(&self, column: u32) -> f64 {
-        self.widths.get(&column).copied().unwrap_or_else(|| self.metrics.col_w())
+        self.widths
+            .get(&column)
+            .copied()
+            .unwrap_or_else(|| self.metrics.col_w())
     }
 
     fn row_h(&self, row: u32) -> f64 {
-        self.heights.get(&row).copied().unwrap_or_else(|| self.metrics.row_h())
+        self.heights
+            .get(&row)
+            .copied()
+            .unwrap_or_else(|| self.metrics.row_h())
     }
 
     /// The strip the column headers take.
@@ -591,9 +610,11 @@ impl Sheet {
     }
 
     fn fire_select(&self) {
-        self.events.select.fire(Some(crate::component::Value::Text(area_ref(
-            self.selection(),
-        ))));
+        self.events
+            .select
+            .fire(Some(crate::component::Value::Text(area_ref(
+                self.selection(),
+            ))));
     }
 
     /// Report a written cell as a pair of reference and input.
@@ -606,7 +627,9 @@ impl Sheet {
             values.push(crate::component::Value::Text(cell_ref(addr)));
             values.push(crate::component::Value::Text(input));
         }
-        self.events.edit.fire(Some(crate::component::Value::List(values)));
+        self.events
+            .edit
+            .fire(Some(crate::component::Value::List(values)));
     }
 
     /// The input the cell holds in the app's data, as the editor starts from it.
@@ -614,7 +637,9 @@ impl Sheet {
         // The app hands the grid what the cell shows and its raw input is not part of that; the
         // editor starts from what it shows, which is what a person edits unless the app opens
         // the formula bar instead.
-        self.cells.get(&addr).map_or_else(String::new, |cell| cell.text.clone())
+        self.cells
+            .get(&addr)
+            .map_or_else(String::new, |cell| cell.text.clone())
     }
 
     /// Start editing `addr`, from the cell's text or from `typed` when the person typed over it.
@@ -690,12 +715,18 @@ impl Sheet {
     /// Which rows and columns the body shows.
     fn visible_lines(&self) -> (std::ops::Range<u32>, std::ops::Range<u32>) {
         let viewport = self.viewport();
-        let columns = self.line_at(self.scroll_x, true).map_or(0, |(index, _)| index)..self
-            .line_at(self.scroll_x + viewport.width(), true)
-            .map_or(self.columns, |(index, _)| index.saturating_add(1));
-        let rows = self.line_at(self.scroll_y, false).map_or(0, |(index, _)| index)..self
-            .line_at(self.scroll_y + viewport.height(), false)
-            .map_or(self.rows, |(index, _)| index.saturating_add(1));
+        let columns = self
+            .line_at(self.scroll_x, true)
+            .map_or(0, |(index, _)| index)
+            ..self
+                .line_at(self.scroll_x + viewport.width(), true)
+                .map_or(self.columns, |(index, _)| index.saturating_add(1));
+        let rows = self
+            .line_at(self.scroll_y, false)
+            .map_or(0, |(index, _)| index)
+            ..self
+                .line_at(self.scroll_y + viewport.height(), false)
+                .map_or(self.rows, |(index, _)| index.saturating_add(1));
         (columns, rows)
     }
 
@@ -877,7 +908,11 @@ impl Sheet {
                     self.commit_edit(Some((left, self.focus.1)));
                     return true;
                 }
-                motion(if control { Motion::WordLeft } else { Motion::Left })
+                motion(if control {
+                    Motion::WordLeft
+                } else {
+                    Motion::Left
+                })
             }
             Key::Named(NamedKey::ArrowRight) => {
                 if editing.entering && !shift && !control {
@@ -886,7 +921,11 @@ impl Sheet {
                     self.commit_edit(Some((right, self.focus.1)));
                     return true;
                 }
-                motion(if control { Motion::WordRight } else { Motion::Right })
+                motion(if control {
+                    Motion::WordRight
+                } else {
+                    Motion::Right
+                })
             }
             Key::Named(NamedKey::ArrowUp) => {
                 if editing.entering {
@@ -969,9 +1008,7 @@ impl Sheet {
                     .as_ref()
                     .filter(|editing| editing.addr == addr)
                     .map(|editing| editing.text.clone());
-                out.push_str(
-                    &editing.unwrap_or_else(|| self.cell_input(addr)),
-                );
+                out.push_str(&editing.unwrap_or_else(|| self.cell_input(addr)));
             }
             out.push('\n');
         }
@@ -1005,7 +1042,12 @@ impl Sheet {
         let (_, end) = self.selection();
         let cell = self.cell_rect(end);
         let side = f64::from(8);
-        Rect::new(cell.x1 - side / 2.0, cell.y1 - side / 2.0, cell.x1 + side / 2.0, cell.y1 + side / 2.0)
+        Rect::new(
+            cell.x1 - side / 2.0,
+            cell.y1 - side / 2.0,
+            cell.x1 + side / 2.0,
+            cell.y1 + side / 2.0,
+        )
     }
 
     /// A header edge's grab: resizing a column or a row.
@@ -1065,12 +1107,7 @@ impl Widget for Sheet {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(
-        &mut self,
-        taffy: &TaffyTree<()>,
-        node: NodeId,
-        origin: Point,
-    ) {
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let rect = crate::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.rect = rect;
@@ -1231,14 +1268,18 @@ impl Widget for Sheet {
                     }
                     Some(Drag::ResizeColumn(column)) => {
                         let body = self.body();
-                        let (_, start) = self.line_at(self.column_x(column), true).unwrap_or((column, 0.0));
+                        let (_, start) = self
+                            .line_at(self.column_x(column), true)
+                            .unwrap_or((column, 0.0));
                         let width = (point.x - body.x0 - start + self.scroll_x).max(f64::from(16));
                         self.widths.insert(column, width);
                         self.dirty = true;
-                        self.events.resized_column.fire(Some(crate::component::Value::List(vec![
-                            crate::component::Value::Text(col_letters(column)),
-                            crate::component::Value::Text(format!("{width:.0}")),
-                        ])));
+                        self.events
+                            .resized_column
+                            .fire(Some(crate::component::Value::List(vec![
+                                crate::component::Value::Text(col_letters(column)),
+                                crate::component::Value::Text(format!("{width:.0}")),
+                            ])));
                     }
                     Some(Drag::ResizeRow(row)) => {
                         let body = self.body();
@@ -1246,10 +1287,12 @@ impl Widget for Sheet {
                         let height = (point.y - body.y0 - start + self.scroll_y).max(f64::from(12));
                         self.heights.insert(row, height);
                         self.dirty = true;
-                        self.events.resized_row.fire(Some(crate::component::Value::List(vec![
-                            crate::component::Value::Text((row + 1).to_string()),
-                            crate::component::Value::Text(format!("{height:.0}")),
-                        ])));
+                        self.events
+                            .resized_row
+                            .fire(Some(crate::component::Value::List(vec![
+                                crate::component::Value::Text((row + 1).to_string()),
+                                crate::component::Value::Text(format!("{height:.0}")),
+                            ])));
                     }
                     Some(Drag::Fill) => self.dirty = true,
                     None => {
@@ -1309,7 +1352,8 @@ impl Widget for Sheet {
                         }
                     }
                     if point.x < header_w && point.y >= header_h {
-                        if let Some((row, _)) = self.line_at(point.y - header_h + self.scroll_y, false)
+                        if let Some((row, _)) =
+                            self.line_at(point.y - header_h + self.scroll_y, false)
                         {
                             self.anchor = (0, row);
                             self.focus = (self.columns.saturating_sub(1), row);
@@ -1337,10 +1381,12 @@ impl Widget for Sheet {
                             let from = area_ref((start, source));
                             let to = area_ref((start, target));
                             if from != to {
-                                self.events.fill.fire(Some(crate::component::Value::List(vec![
-                                    crate::component::Value::Text(from),
-                                    crate::component::Value::Text(to),
-                                ])));
+                                self.events
+                                    .fill
+                                    .fire(Some(crate::component::Value::List(vec![
+                                        crate::component::Value::Text(from),
+                                        crate::component::Value::Text(to),
+                                    ])));
                             }
                         }
                         self.dirty = true;
@@ -1394,11 +1440,13 @@ impl Widget for Sheet {
     }
 
     fn ime_content(&self) -> Option<crate::ime::InputContent> {
-        self.editing.as_ref().map(|_| crate::ime::InputContent::TEXT)
+        self.editing
+            .as_ref()
+            .map(|_| crate::ime::InputContent::TEXT)
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-                let (start, end) = self.selection();
+        let (start, end) = self.selection();
         let (columns, rows) = self.visible.clone();
         let mut row_nodes = Vec::new();
         for row in rows {
@@ -1525,7 +1573,9 @@ impl Sheet {
         let color = crate::surface::edge_on(theme.tokens.colors.surfaces.content);
         let stroke = Stroke::new(1.0);
         for &column in columns.clone().collect::<Vec<_>>().iter() {
-            let x = (body.x0 + self.column_x(column) + self.column_w(column) - self.scroll_x).round() + 0.5;
+            let x = (body.x0 + self.column_x(column) + self.column_w(column) - self.scroll_x)
+                .round()
+                + 0.5;
             if (body.x0..=body.x1).contains(&x) {
                 ctx.scene.stroke(
                     &stroke,
@@ -1562,9 +1612,24 @@ impl Sheet {
         let colors = &theme.tokens.colors;
         let header_h = self.header_h();
         let header_w = self.header_w();
-        let col_strip = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + header_h);
-        let row_strip = Rect::new(self.rect.x0, self.rect.y0, self.rect.x0 + header_w, self.rect.y1);
-        let corner = Rect::new(self.rect.x0, self.rect.y0, self.rect.x0 + header_w, self.rect.y0 + header_h);
+        let col_strip = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + header_h,
+        );
+        let row_strip = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x0 + header_w,
+            self.rect.y1,
+        );
+        let corner = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x0 + header_w,
+            self.rect.y0 + header_h,
+        );
         crate::surface::region(ctx.scene, ctx.transform, col_strip, Region::Sidebar, theme);
         crate::surface::region(ctx.scene, ctx.transform, row_strip, Region::Sidebar, theme);
         crate::surface::region(ctx.scene, ctx.transform, corner, Region::Sidebar, theme);
@@ -1578,7 +1643,10 @@ impl Sheet {
             if band.x1 < body.x0 || band.x0 > body.x1 {
                 continue;
             }
-            if (start.0..=end.0).contains(&column) && start.1 == 0 && end.1 == self.rows.saturating_sub(1) {
+            if (start.0..=end.0).contains(&column)
+                && start.1 == 0
+                && end.1 == self.rows.saturating_sub(1)
+            {
                 ctx.fill_rect(band, colors.intent.selection_tint);
             }
             let label = col_letters(column);
@@ -1600,7 +1668,10 @@ impl Sheet {
             if band.y1 < body.y0 || band.y0 > body.y1 {
                 continue;
             }
-            if (start.1..=end.1).contains(&row) && start.0 == 0 && end.0 == self.columns.saturating_sub(1) {
+            if (start.1..=end.1).contains(&row)
+                && start.0 == 0
+                && end.0 == self.columns.saturating_sub(1)
+            {
                 ctx.fill_rect(band, colors.intent.selection_tint);
             }
             let label = (row + 1).to_string();
@@ -1668,13 +1739,8 @@ impl Sheet {
         let (start, end) = self.selection();
         let top_left = self.cell_rect(start);
         let bottom_right = self.cell_rect(end);
-        let outline = Rect::new(
-            top_left.x0,
-            top_left.y0,
-            bottom_right.x1,
-            bottom_right.y1,
-        )
-        .intersect(body);
+        let outline =
+            Rect::new(top_left.x0, top_left.y0, bottom_right.x1, bottom_right.y1).intersect(body);
         if !outline.is_zero_area() {
             ctx.stroke_rect(outline, colors.intent.accent_ink, 1.5);
         }
@@ -1786,4 +1852,3 @@ impl Sheet {
         ctx.fill_round(handle, 2.0, theme.tokens.colors.intent.accent_ink);
     }
 }
-

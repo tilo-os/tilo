@@ -2411,4 +2411,3 @@ impl crate::widget::controls::ActionControls for NavList {
 
 mod component;
 pub use component::{NavEntry, NavItemProps, NavListProps, NavSectionProps};
-

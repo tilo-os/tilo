@@ -2466,9 +2466,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         Some(self)
     }
 
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-    );
+    crate::provides!(dyn crate::widget::controls::ActionControls,);
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)

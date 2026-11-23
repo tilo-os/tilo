@@ -208,6 +208,234 @@ mod real {
         let _ = decode_frame_at(&mut e, 15_000, "scrub after playback");
         assert!(!e.is_playing(), "the scrub left the pipeline running");
     }
+
+    /// The player's one decoded stream, played where the session's outputs name: a captured
+    /// engine hands its sound to the host, which fans it out to each speaker. A second speaker
+    /// that the person takes out stops receiving at once, and the first keeps playing.
+    #[test]
+    fn the_players_sound_reaches_every_speaker_and_a_taken_out_one_leaves_the_rest() {
+        use self::sound::{
+            Casts, Devices, Playback, Speakers, played, pump_sound, speaker, tone_fixture,
+        };
+        let _registry = registry_policy_lock();
+        let clip = tone_fixture();
+        let mut e = MediaEngine::with_config(EngineConfig::default().captured());
+        assert!(
+            e.is_real_decode(),
+            "these assertions require the real pipeline"
+        );
+        e.open(tilo_media::Source::LocalFile(clip));
+        e.play();
+
+        let devices = std::sync::Arc::new(Devices::default());
+        let mut bridge = Playback::new(Speakers(std::sync::Arc::clone(&devices)), Casts);
+        let outputs = vec![
+            speaker("outputs/1", "Built-in"),
+            speaker("outputs/2", "Desk"),
+        ];
+        bridge.apply(&outputs).expect("both speakers start");
+
+        // One pipeline decodes the sound; the bridge fans it to both speakers.
+        tilo_test_env::wait_until("sound on both speakers", || {
+            pump_sound(&e, &mut bridge);
+            played(&devices, "Built-in") >= 4_096 && played(&devices, "Desk") >= 4_096
+        });
+
+        // Both play the video's sound, not silence: the same samples on each.
+        let (built_in, desk) = {
+            let played = devices.played.lock().unwrap();
+            (played["Built-in"].clone(), played["Desk"].clone())
+        };
+        let shared = built_in.len().min(desk.len());
+        assert_eq!(
+            built_in[..shared],
+            desk[..shared],
+            "both speakers play the one stream"
+        );
+        assert!(
+            built_in[..shared].iter().any(|&sample| sample != 0),
+            "the speakers play the video's sound, not silence"
+        );
+
+        // The person takes the desk speaker out of the session: it stops receiving, and the
+        // built-in one keeps playing without a gap of more than the piece in flight.
+        let built_in = played(&devices, "Built-in");
+        let desk = played(&devices, "Desk");
+        bridge.apply(&outputs[..1]).expect("the desk speaker goes");
+        tilo_test_env::wait_until("the built-in speaker keeps playing", || {
+            pump_sound(&e, &mut bridge);
+            played(&devices, "Built-in") >= built_in.saturating_add(4_096)
+        });
+        assert_eq!(
+            played(&devices, "Desk"),
+            desk,
+            "a taken-out speaker receives no more sound"
+        );
+        e.pause();
+    }
+
+    /// The pieces the player's sound goes through: a bridge whose speakers record what they
+    /// receive, and a tone made at test time (no media is committed).
+    mod sound {
+        use std::collections::BTreeMap;
+        use std::path::PathBuf;
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        use gstreamer::prelude::*;
+        use tilo_media::MediaEngine;
+        use tilo_media::playback_bridge::{CollectionOutput, PlaybackBridge};
+        use tilo_media::playback_cast::{CastEvent, CastTransport, Receiver};
+        use tilo_media::playback_sink::{OpenSink, SinkFactory, SinkStream};
+
+        use crate::common::shared_gst_registry;
+
+        pub type Playback = PlaybackBridge<Speakers, Casts>;
+
+        /// What each speaker received.
+        #[derive(Default)]
+        pub struct Devices {
+            pub played: Mutex<BTreeMap<String, Vec<i16>>>,
+        }
+
+        pub struct Speakers(pub Arc<Devices>);
+
+        impl SinkFactory for Speakers {
+            fn open(&self, device: &str) -> Result<OpenSink, String> {
+                Ok(OpenSink {
+                    device: device.to_owned(),
+                    stream: Box::new(Speaker {
+                        chart: Arc::clone(&self.0),
+                        device: device.to_owned(),
+                    }),
+                })
+            }
+        }
+
+        struct Speaker {
+            chart: Arc<Devices>,
+            device: String,
+        }
+
+        impl SinkStream for Speaker {
+            fn write(&mut self, samples: &[i16]) -> Result<(), String> {
+                if let Ok(mut played) = self.chart.played.lock() {
+                    played
+                        .entry(self.device.clone())
+                        .or_default()
+                        .extend_from_slice(samples);
+                }
+                Ok(())
+            }
+
+            fn close(&mut self) {}
+        }
+
+        /// A cast side that finds nothing and casts nowhere: this test plays on speakers.
+        #[derive(Default)]
+        pub struct Casts;
+
+        impl CastTransport for Casts {
+            fn discover(&mut self) -> Result<Vec<Receiver>, String> {
+                Ok(Vec::new())
+            }
+
+            fn begin(&mut self, _cast: &str, _receiver: &Receiver) -> Result<(), String> {
+                Err("this test casts nowhere".to_owned())
+            }
+
+            fn end(&mut self, _cast: &str) {}
+
+            fn events(&mut self) -> Vec<(String, CastEvent)> {
+                Vec::new()
+            }
+        }
+
+        pub fn speaker(id: &str, device: &str) -> CollectionOutput {
+            CollectionOutput {
+                id: id.to_owned(),
+                kind: "speaker".to_owned(),
+                device: device.to_owned(),
+                name: device.to_owned(),
+                volume: 1.0,
+                synced: true,
+            }
+        }
+
+        /// How many samples `device` received.
+        pub fn played(devices: &Arc<Devices>, device: &str) -> usize {
+            devices
+                .played
+                .lock()
+                .map_or(0, |played| played.get(device).map_or(0, Vec::len))
+        }
+
+        /// Hand the player's decoded sound to the bridge, then wait for more.
+        pub fn pump_sound(engine: &MediaEngine, bridge: &mut Playback) {
+            let samples = engine.take_audio();
+            if !samples.is_empty() {
+                bridge.write(&samples);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        /// A stereo 48 kHz WAV of a sine tone, made once: a source with sound and no picture.
+        pub fn tone_fixture() -> PathBuf {
+            let cache = std::env::var_os("TILO_TEST_CACHE_DIR")
+                .filter(|dir| !dir.is_empty())
+                .map_or_else(std::env::temp_dir, PathBuf::from)
+                .join("tilo-media-test-fixtures");
+            std::fs::create_dir_all(&cache).expect("create media fixture cache directory");
+            let clip = cache.join("tone-v1.wav");
+            if clip.is_file() {
+                return clip;
+            }
+            shared_gst_registry();
+            gstreamer::init().expect("initialize GStreamer for the tone fixture");
+            let pipeline = gstreamer::parse::launch(
+                "audiotestsrc wave=sine num-buffers=90 ! \
+                 audio/x-raw,rate=48000,channels=2 ! wavenc ! filesink name=sound",
+            )
+            .expect("construct the tone fixture pipeline")
+            .downcast::<gstreamer::Pipeline>()
+            .expect("the tone fixture graph is a pipeline");
+            pipeline
+                .by_name("sound")
+                .expect("the tone fixture's output file")
+                .set_property("location", clip.to_string_lossy().as_ref());
+            pipeline
+                .set_state(gstreamer::State::Playing)
+                .expect("start the tone fixture encoder");
+            let bus = pipeline.bus().expect("the tone fixture pipeline bus");
+            let deadline = tilo_test_env::hang_deadline();
+            let mut reached_eos = false;
+            while std::time::Instant::now() < deadline {
+                let Some(message) = bus.timed_pop(gstreamer::ClockTime::from_mseconds(500)) else {
+                    continue;
+                };
+                match message.view() {
+                    gstreamer::MessageView::Eos(_) => {
+                        reached_eos = true;
+                        break;
+                    }
+                    gstreamer::MessageView::Error(error) => panic!(
+                        "the tone fixture failed: {} ({:?})",
+                        error.error(),
+                        error.debug()
+                    ),
+                    _ => {}
+                }
+            }
+            let _ = pipeline.set_state(gstreamer::State::Null);
+            assert!(reached_eos, "the tone fixture timed out before EOS");
+            assert!(
+                std::fs::metadata(&clip).is_ok_and(|metadata| metadata.len() > 4_096),
+                "the tone fixture is not a real WAV: {}",
+                clip.display()
+            );
+            clip
+        }
+    }
 }
 
 /// The synthesized fallback has no pipeline clock, but its playhead must still

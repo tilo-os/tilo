@@ -496,9 +496,7 @@ impl Widget for Card {
         Some(self)
     }
 
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-    );
+    crate::provides!(dyn crate::widget::controls::ActionControls,);
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let before = self.parts.rect;
@@ -741,8 +739,6 @@ impl Widget for Card {
 }
 
 activation_controls!(Card, activation);
-
-
 
 /// Standard actions in declaration/focus order: secondaries, then primary.
 /// Unspecified buttons use measured content sizing; explicit sizes remain manual.

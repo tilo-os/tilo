@@ -574,9 +574,7 @@ impl StatTile {
 }
 
 impl Widget for StatTile {
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-    );
+    crate::provides!(dyn crate::widget::controls::ActionControls,);
 
     fn build_layout(
         &mut self,
@@ -697,9 +695,7 @@ impl Widget for StatTile {
     }
 }
 
-
 activation_controls!(StatTile, activation);
-
 
 /// A set of stat tiles that reflows by width: all in one row when they fit,
 /// then half per row (a 2×2 for four), then one per row. Tiles are separated

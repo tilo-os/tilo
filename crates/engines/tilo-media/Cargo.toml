@@ -76,6 +76,10 @@ realtime = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 # consumers that only enumerate the audio graph do not link libpipewire; the
 # stream logic and its backend trait compile either way.
 pipewire = ["dep:pipewire"]
+# A playback's cast outputs ask the projector service over its control socket.
+# The protocol stacks (Cast, AirPlay, Miracast, FCast, mDNS, D-Bus) link only
+# when this is on; the client and its states compile either way.
+cast = ["dep:tilo-projector"]
 # Test builds of this crate and its dependents: startup waits use the shared
 # test hang bound instead of the shipping budget.
 test-support = ["dep:tilo-test-env"]
@@ -109,6 +113,9 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # Config, data and cache homes for the echo-cancel client, sound themes and
 # the extensions stamp: the same XDG resolution every other platform crate uses.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
+# The projector service a cast output asks, over its control socket. Optional so
+# a build that never casts links none of the four protocol stacks.
+tilo-projector = { version = "0.1.0", path = "../../system/projector", optional = true, default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Decode stack — only linked under `--features decode`. Same pins as

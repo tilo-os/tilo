@@ -1,0 +1,225 @@
+{
+  "app": "video-player",
+  "said": "Video",
+  "tl": {
+    "id": "so.tilo.video",
+    "package": "video"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Video for the first time",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "wait_for": "Open video"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "open-video",
+      "said": "Open a video from the person's home",
+      "ops": [
+        {
+          "clip": {
+            "name": "Sunset Timelapse.mp4"
+          }
+        },
+        {
+          "press_any": [
+            "Open video"
+          ]
+        },
+        {
+          "choose": {
+            "name": "Sunset Timelapse.mp4"
+          }
+        },
+        {
+          "point": [
+            640,
+            340
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Pause"
+          }
+        }
+      ]
+    },
+    {
+      "id": "pause",
+      "said": "Pause it",
+      "ops": [
+        {
+          "point": [
+            640,
+            340
+          ]
+        },
+        {
+          "press_any": [
+            "Pause"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Play"
+          }
+        }
+      ]
+    },
+    {
+      "id": "play",
+      "said": "Play it again",
+      "ops": [
+        {
+          "point": [
+            640,
+            340
+          ]
+        },
+        {
+          "press_any": [
+            "Play"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Pause"
+          }
+        }
+      ]
+    },
+    {
+      "id": "seek",
+      "said": "Seek to the middle of the video",
+      "ops": [
+        {
+          "point": [
+            640,
+            340
+          ]
+        },
+        {
+          "click": "Playback position"
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "fullscreen",
+      "said": "Watch it fullscreen, then come back",
+      "ops": [
+        {
+          "point": [
+            640,
+            340
+          ]
+        },
+        {
+          "press_any": [
+            "Enter fullscreen"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Exit fullscreen"
+          }
+        },
+        {
+          "press_any": [
+            "Exit fullscreen"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "volume",
+      "said": "Mute it, then unmute it",
+      "ops": [
+        {
+          "point": [
+            640,
+            340
+          ]
+        },
+        {
+          "press_any": [
+            "Mute"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Unmute"
+          }
+        },
+        {
+          "press_any": [
+            "Unmute"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "next-video",
+      "said": "Open the next video in the folder",
+      "ops": [
+        {
+          "clip": {
+            "name": "Cutaway Market.mp4"
+          }
+        },
+        {
+          "press_any": [
+            "Open video"
+          ]
+        },
+        {
+          "choose": {
+            "name": "Cutaway Market.mp4"
+          }
+        },
+        {
+          "point": [
+            640,
+            340
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Pause"
+          }
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "dark",
+      "said": "The same video in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        },
+        {
+          "point": [
+            640,
+            340
+          ]
+        }
+      ]
+    }
+  ]
+}

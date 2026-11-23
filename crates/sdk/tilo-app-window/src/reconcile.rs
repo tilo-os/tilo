@@ -707,7 +707,9 @@ impl Reconciler {
         let outer = ui::webview::window_engine();
         if description.name == "WebView" {
             let mut held = self.page_engine.borrow_mut();
-            let engine = held.get_or_insert_with(ui::webview::new_page_engine).clone();
+            let engine = held
+                .get_or_insert_with(ui::webview::new_page_engine)
+                .clone();
             ui::webview::set_window_engine(Some(engine));
         }
         let built = {

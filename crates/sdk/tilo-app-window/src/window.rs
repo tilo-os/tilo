@@ -25,11 +25,13 @@ use std::rc::Rc;
 use page::{chosen_item, content_nodes, node_of_key};
 use tilo_render_protocol::patch::validate::{PatchLimits, Validator};
 use tilo_render_protocol::patch::{self as wire, Answer, Level, ToApp, ToUi, Transport, Words};
+use ui::floating_surface::{FloatingRole, FloatingSource, FloatingSurfaceRequest};
 use ui::tokens::{MotionSource, Rhythm};
 use ui::widget::arrange::{Fit, Part, Stack};
 use ui::widget::toast::ToastKind;
 use ui::widget::{
-    Absent, Element, NavPane, NavShell, PermissionPrompt, PromptChoice, SidebarPlacement, Widget,
+    Absent, Element, NavPane, NavShell, PermissionPrompt, PictureInPictureAsk, PromptChoice,
+    SidebarPlacement, Widget,
 };
 
 use crate::i18n::{t, t_args};
@@ -338,8 +340,14 @@ pub struct AppWindow {
     /// What the app said a part has no window to show, until its embedder takes it.
     notices: Vec<(wire::NoticeKind, String)>,
     /// The actions the app offers the person at this window, as their command palette lists them
-    /// ([`ToUi::Actions`]).
+    /// ([`ToUi::Actions`]), with the surface its resources publish.
     pub(crate) offered: crate::catalogue::Offered,
+    /// The app whose window this is, as its package names it (`so.tilo.video`): what a floating
+    /// surface it asks for names as the app it mirrors.
+    app_id: String,
+    /// The places a playback plays, as the app sent them ([`ToUi::Outputs`]): the window process
+    /// hands them to the host that plays them.
+    outputs: Option<Vec<u8>>,
     /// How many rows the frame's list showed before the search typed anything: what the search's
     /// counter counts them of.
     search_total: Option<usize>,
@@ -457,6 +465,8 @@ impl AppWindow {
             shape: Shape::Window,
             notices: Vec::new(),
             offered: crate::catalogue::Offered::default(),
+            app_id: String::new(),
+            outputs: None,
             search_total: None,
             save: ui::SaveStatusSurface::new(),
             heard: Vec::new(),
@@ -474,6 +484,58 @@ impl AppWindow {
     #[must_use]
     pub fn actions(&self) -> &[tilo_actions::ActionDescriptor] {
         self.offered.actions()
+    }
+
+    /// The app whose window this is, as its package names it: a picture-in-picture surface the
+    /// window asks for mirrors that app's player.
+    pub fn set_app_id(&mut self, app_id: impl Into<String>) {
+        self.app_id = app_id.into();
+    }
+
+    /// The places a playback plays, as the app last sent them ([`ToUi::Outputs`]), until the host
+    /// takes them.
+    pub fn take_outputs(&mut self) -> Option<Vec<u8>> {
+        self.outputs.take()
+    }
+
+    /// The sound the window's player decoded since this was last asked, as stereo 48 kHz
+    /// interleaved S16: the one stream the host plays in every place the session's outputs name,
+    /// so several speakers and a cast target carry the same sound.
+    pub fn take_audio(&self) -> Vec<i16> {
+        let mut samples = Vec::new();
+        audio_of(self.body.as_ref(), &mut samples);
+        samples
+    }
+
+    /// Say `text` in the app's window as a notice of `kind`: a place the session plays that
+    /// refused or stopped, said where the person looks instead of only in the log.
+    pub fn say_notice(&mut self, text: &str, kind: wire::NoticeKind) {
+        self.notice(&Words::Plain(text.to_owned()), kind, false);
+    }
+
+    /// The action the window answers by address, for a press no control of its tree declares: an
+    /// action whose chord is `pressed`, on the resource the window shows. A row's action is answered
+    /// by the row it is on, never by the window.
+    fn listed_action(
+        &self,
+        pressed: &ui::platform::Shortcut,
+    ) -> Option<tilo_actions::ActionAddress> {
+        let shown: Vec<String> = [self.root.as_ref(), self.detail.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(|view| view.target.id_string())
+            .collect();
+        self.actions()
+            .iter()
+            .find(|action| {
+                shown.contains(&action.address.resource)
+                    && action
+                        .state
+                        .shortcut
+                        .as_deref()
+                        .is_some_and(|chord| same_press(chord, pressed))
+            })
+            .map(|action| action.address.clone())
     }
 
     /// The person chose `address` from the window's command palette with `argument`, or pressed a
@@ -684,6 +746,7 @@ impl AppWindow {
                 ToUi::Ask(ask) => self.rebuild_ask(ask.as_ref()),
                 ToUi::Form(form) => self.show_form(form.as_deref()),
                 ToUi::Actions(catalogue) => self.take_actions(&catalogue)?,
+                ToUi::Outputs(outputs) => self.outputs = Some(outputs),
                 ToUi::Took { fired } => {
                     self.took = self.took.max(fired);
                     // What was typed after the presses it ran goes to what they opened, before what
@@ -767,7 +830,7 @@ impl AppWindow {
         }
     }
 
-    /// What the app offers the person at the window now ([`crate::catalogue::take`]).
+    /// What the app offers the person at the window now ([`crate::catalogue::Offered::take`]).
     fn take_actions(&mut self, catalogue: &[u8]) -> Result<(), String> {
         self.offered.take(catalogue)?;
         // The window publishes each action as the resource its controls are on.
@@ -2052,7 +2115,11 @@ impl AppWindow {
 
     /// Where a press of `pressed` leads in the window: the field it brings the person to, the field
     /// that carries it out (the keyboard is already there), or the control that runs it — on the
-    /// item the keyboard is on first, then what that is in, then the window.
+    /// item the keyboard is on first, then what that is in, then the window. A key is a binding to
+    /// an action: the control that declares it runs it with the arguments the view bound, and a
+    /// chord no control declares runs the action the window offers on the resource it shows, by its
+    /// address, as the palette runs it. The person's own chords are the session's: it claims them
+    /// before a window sees the press.
     fn press_where(&self, pressed: &ui::platform::Shortcut) -> Option<Press> {
         let built = self.built.as_ref()?;
         let focused = self.focused_control();
@@ -2071,8 +2138,10 @@ impl AppWindow {
         if let Some(field) = focus_field(built, pressed) {
             return Some(Press::Lead(field));
         }
-        shortcut_action_where(built, focused.as_deref(), pressed)
-            .map(|(key, event)| Press::Run(key, event))
+        if let Some(found) = shortcut_action_where(built, focused.as_deref(), pressed) {
+            return Some(Press::Run(found.0, found.1));
+        }
+        self.listed_action(pressed).map(Press::RunAction)
     }
 
     /// The press the field the keyboard is in takes as its own: Enter, which a field of one line
@@ -2560,6 +2629,12 @@ fn bound_text(value: &Value) -> String {
     }
 }
 
+/// Whether a chord as the app published it, or the person moved it, is the press `pressed`, matched
+/// as the toolkit matches every shortcut: one key in one spelling, read through the keyboard in use.
+fn same_press(chord: &str, pressed: &ui::platform::Shortcut) -> bool {
+    ui::platform::Shortcut::from(chord).same_press(pressed)
+}
+
 /// Show what each bound control under `node` is bound to, as `bound` holds it by key in the
 /// composed tree (each of `node`'s keys carrying `prefix` there), reporting whether any control was
 /// given a value other than the one it showed.
@@ -2752,6 +2827,106 @@ impl ui::widget::WindowHistory for AppWindow {
     }
 }
 
+/// The fullscreen intent a view declares, at any depth: a player sits inside the shell's
+/// containers, so the window asks down the tree and reports the first intent it finds to the
+/// host, which fullscreens the window.
+fn fullscreen_intent_of(root: &dyn Widget) -> Option<bool> {
+    if let Some(provider) =
+        ui::widget::capability::capability::<dyn ui::widget::FullscreenProvider>(root)
+        && let Some(intent) = provider.fullscreen_intent()
+    {
+        return Some(intent);
+    }
+    let mut found = None;
+    root.for_each_child(&mut |child| {
+        if found.is_none() {
+            found = fullscreen_intent_of(child);
+        }
+    });
+    found
+}
+
+impl ui::widget::FullscreenProvider for AppWindow {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        fullscreen_intent_of(self.body.as_ref())
+    }
+}
+
+/// A player in the view asked for picture-in-picture, at whatever depth the view's containers
+/// nest it: the window answers for its tree and names the app's own player as the floating
+/// surface's source, so the surface shows the live picture where it stands, with the role a
+/// small video above the window has.
+impl ui::widget::FloatingSurfaceProvider for AppWindow {
+    fn take_floating_surface_request(&mut self) -> Option<FloatingSurfaceRequest> {
+        let ask = picture_in_picture_of(self.body.as_ref())?;
+        let aspect = ask.aspect;
+        Some(FloatingSurfaceRequest {
+            id: format!("{app}:picture-in-picture", app = self.app_id),
+            title: ask.title,
+            role: FloatingRole::PictureInPicture,
+            source: FloatingSource::AppElement {
+                app_id: self.app_id.clone(),
+                element_id: "video_surface".to_owned(),
+                region: ask.region,
+            },
+            preferred_size: ui::kurbo::Size::new(360.0, 360.0 / aspect),
+            aspect_ratio: Some(aspect),
+            initial_rect: None,
+            presentation_rect: None,
+            tracking_source: None,
+        })
+    }
+}
+
+/// Whether a player in the view has a picture-in-picture request waiting, at any depth.
+fn picture_in_picture_wanted(root: &dyn Widget) -> bool {
+    if let Some(provider) =
+        ui::widget::capability::capability::<dyn ui::widget::PictureInPictureProvider>(root)
+        && provider.wants_picture_in_picture()
+    {
+        return true;
+    }
+    let mut found = false;
+    root.for_each_child(&mut |child| {
+        if !found {
+            found = picture_in_picture_wanted(child);
+        }
+    });
+    found
+}
+
+/// The player in the view that asked for picture-in-picture, at any depth: a player sits inside
+/// the shell's containers, so the window asks down the tree for the one that has a request.
+fn picture_in_picture_of(root: &dyn Widget) -> Option<PictureInPictureAsk> {
+    if let Some(provider) =
+        ui::widget::capability::capability::<dyn ui::widget::PictureInPictureProvider>(root)
+        && let Some(ask) = provider.take_picture_in_picture()
+    {
+        return Some(ask);
+    }
+    let mut found = None;
+    // Many children may hold a player; the one that asked is the only one with a request, and
+    // asking each in turn takes it at most once.
+    root.for_each_child(&mut |child| {
+        if found.is_none() {
+            found = picture_in_picture_of(child);
+        }
+    });
+    found
+}
+
+/// The sound every player in the view decoded since it was last taken, at whatever depth the
+/// view's containers nest it: the window answers for its tree, and the host plays the stream in
+/// the places the session's outputs name.
+fn audio_of(root: &dyn Widget, samples: &mut Vec<i16>) {
+    if let Some(provider) =
+        ui::widget::capability::capability::<dyn ui::widget::AudioTapProvider>(root)
+    {
+        samples.extend(provider.take_audio());
+    }
+    root.for_each_child(&mut |child| audio_of(child, samples));
+}
+
 impl ui::widget::Decorator for AppWindow {
     type Inner = dyn Widget;
 
@@ -2779,6 +2954,22 @@ impl ui::widget::Decorator for AppWindow {
             request.provide::<dyn ui::widget::WindowHistory>(self);
             return;
         }
+        // A player in the view asks the window for fullscreen, however the view's containers
+        // nest it: the window answers the host's one question, and the host fullscreens it.
+        if request.wants::<dyn ui::widget::FullscreenProvider>()
+            && fullscreen_intent_of(self.body.as_ref()).is_some()
+        {
+            request.provide::<dyn ui::widget::FullscreenProvider>(self);
+            return;
+        }
+        // Likewise a player's picture-in-picture: the window floats the picture the view asked
+        // for, however deeply its containers nest it.
+        if request.wants::<dyn ui::widget::FloatingSurfaceProvider>()
+            && picture_in_picture_wanted(self.body.as_ref())
+        {
+            request.provide::<dyn ui::widget::FloatingSurfaceProvider>(self);
+            return;
+        }
         self.body.provide(request);
     }
 
@@ -2797,6 +2988,18 @@ impl ui::widget::Decorator for AppWindow {
         }
         if request.wants::<dyn ui::widget::WindowHistory>() && self.shape == Shape::Window {
             request.provide::<dyn ui::widget::WindowHistory>(self);
+            return;
+        }
+        if request.wants::<dyn ui::widget::FullscreenProvider>()
+            && fullscreen_intent_of(self.body.as_ref()).is_some()
+        {
+            request.provide::<dyn ui::widget::FullscreenProvider>(self);
+            return;
+        }
+        if request.wants::<dyn ui::widget::FloatingSurfaceProvider>()
+            && picture_in_picture_wanted(self.body.as_ref())
+        {
+            request.provide::<dyn ui::widget::FloatingSurfaceProvider>(self);
             return;
         }
         self.body.provide_mut(request);
@@ -2949,6 +3152,12 @@ impl ui::widget::Decorator for AppWindow {
             // The control that declares the action runs it.
             Press::Run(node_key, event) => {
                 self.act(UiEvent::Fire(node_key, event, None, None));
+                self.take_events();
+            }
+            // A key the window answers for an action no control of its tree declares: the action
+            // runs from its address, as choosing it in the palette does.
+            Press::RunAction(address) => {
+                self.invoke_action(address, None);
                 self.take_events();
             }
         }

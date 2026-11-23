@@ -26,7 +26,6 @@ use crate::widget::activation::Activation;
 pub(crate) const TINT_FILL: f32 = 0.15;
 pub(crate) const TINT_EDGE: f32 = 0.38;
 
-
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum ChipStyle {
     #[default]
@@ -994,9 +993,7 @@ impl Chip {
 impl Widget for Chip {
     crate::described!();
 
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-    );
+    crate::provides!(dyn crate::widget::controls::ActionControls,);
 
     fn set_interaction_environment(
         &mut self,

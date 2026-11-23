@@ -22,6 +22,7 @@ pub mod catalogue;
 pub mod date;
 pub mod form;
 pub mod i18n;
+mod media_source;
 pub mod pane;
 pub mod reconcile;
 pub mod rows;

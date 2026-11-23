@@ -259,7 +259,11 @@ impl WebView {
     /// events here: the window that holds the engine hands them to its page, and nothing else
     /// takes them.
     #[must_use]
-    pub fn reporting(mut self, navigate: crate::component::Event, fail: crate::component::Event) -> Self {
+    pub fn reporting(
+        mut self,
+        navigate: crate::component::Event,
+        fail: crate::component::Event,
+    ) -> Self {
         self.navigate = navigate;
         self.fail = fail;
         self.reports_events = true;

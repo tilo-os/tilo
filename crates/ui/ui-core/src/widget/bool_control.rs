@@ -155,7 +155,6 @@ impl BoolControl {
         }
     }
 
-
     pub fn local(state: &crate::LocalState<bool>, accessible_name: Option<String>) -> Self {
         let (checked, binding) = super::binding::local(state);
         Self {

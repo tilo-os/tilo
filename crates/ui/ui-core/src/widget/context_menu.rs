@@ -1625,9 +1625,7 @@ impl ContextMenu {
 }
 
 impl Widget for ContextMenu {
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-    );
+    crate::provides!(dyn crate::widget::controls::ActionControls,);
 
     /// A menu paints its panel in the window's top layer and nothing in
     /// place: it asks for a frame only when what it paints — its own panel

@@ -2102,7 +2102,6 @@ impl Button {
         style.min_size = Size::from_lengths(height, height);
         taffy.set_style(node, style).is_ok()
     }
-
 }
 
 impl Widget for Button {

@@ -6274,6 +6274,20 @@
           }
         },
         {
+          "name": "seek_to",
+          "doc": "Jump here, in seconds: a one-shot control, applied when `seek_to_seq` changes, so a bookmark's jump, a restart or a jump to the end reaches the player once and the resting `position` never fights the `progress` reading.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "seek_to_seq",
+          "doc": "Counts the view's jumps: a number it raises each time it asks to jump.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
           "name": "source",
           "doc": "Where it is stored, as a `file://` address or a URL the engine fetches.",
           "type": {
@@ -6292,6 +6306,32 @@
           "name": "muted",
           "doc": "Whether it is muted.",
           "type": "bool"
+        },
+        {
+          "name": "rate",
+          "doc": "The speed it plays at, `0.25..=4`; absent at normal speed.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "repeat",
+          "doc": "Whether it begins again when it ends.",
+          "type": "bool"
+        },
+        {
+          "name": "audio_track",
+          "doc": "The audio track by its index in `audio_tracks`; absent leaves the engine's choice.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "subtitle_track",
+          "doc": "The subtitle track by its index in `subtitle_tracks`; `-1` turns subtitles off.",
+          "type": {
+            "option": "int"
+          }
         }
       ],
       "events": [
@@ -6319,6 +6359,37 @@
           "name": "fail",
           "doc": "The player could not show its video: carries what the engine said.",
           "value": "text"
+        },
+        {
+          "name": "progress",
+          "doc": "Where playback got to while it played, as a share of its length (`0..=1`): reported on the first frame it plays, then every five seconds, and once more when it stops, so a view remembers the place a video was left at even when nobody moved the playhead.",
+          "value": "float"
+        },
+        {
+          "name": "length",
+          "doc": "How long it runs, in seconds, once the engine has read it.",
+          "value": "float"
+        },
+        {
+          "name": "audio_tracks",
+          "doc": "The audio tracks' labels, in the order `audio_track` indexes them.",
+          "value": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "subtitle_tracks",
+          "doc": "The subtitle tracks' labels, in the order `subtitle_track` indexes them.",
+          "value": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "chapters",
+          "doc": "The chapters' labels, in the order `seek` indexes them.",
+          "value": {
+            "list": "text"
+          }
         }
       ],
       "semantics": {

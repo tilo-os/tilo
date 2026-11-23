@@ -171,7 +171,30 @@ d-r3ksw6bn = Störung
 d-qv7t2mza = Online
     .doc = Ob YouTube geantwortet hat, als es zuletzt gefragt wurde.
 
+d-c5r6nee5 = Sitzungen
+    .doc = Jede Sitzung, die dieser Client angelegt hat, als eigene Ressourcen aufgehoben; `playing` nennt die eine.
+
+d-rze2dh5p = Sitzung
+    .doc = Die Sitzung, über die dieser Client abspielt: die vorhandene oder eine jetzt angelegte.
+
+d-gktyfqta = Wiedergabe
+    .doc = Was läuft und wo es steht: die gemeinsame Sitzung, die Video und Musik teilen, sodass die Live-Karte der Leiste, die Medientasten des Systems und die Playerseite eine Sitzung sind.
+
 d-thwdswkk-filter-online = Online
+
+d-thwdswkk-filter-playing = Wiedergabe
+
+d-zr6yytbi = Ansehen
+    .doc = Trägt das Video in den Verlauf ein und spielt es in der Sitzung ab `at` seiner Länge ab.
+
+d-zr6yytbi-at = Position
+
+d-zr6yytbi-when = Zeitpunkt
+
+d-6p3uylcd = Wiedergabestelle merken
+    .doc = Merkt sich, wo das Video in der gemeinsamen Sitzung läuft, ohne bei jedem Schritt einen Eintrag im Verlauf zu schreiben: Starten, Fortsetzen und Springen sind die Schritte, die der Verlauf festhält.
+
+d-6p3uylcd-at = Position
 
 d-tmam46un = Abonnieren
     .doc = Abonniert den Kanal oder kündigt das Abonnement: der Knopf sagt, was er tun wird.
@@ -307,6 +330,7 @@ d-yh23kjna = Kanalseite
 
 d-w7mpbzm4 = Videoseite
     .w-play = Abspielen
+    .w-can-t-play-this-video = Dieses Video lässt sich nicht abspielen
     .w-unsubscribe = Abonnement beenden
     .w-subscribe = Abonnieren
     .w-liked = Gefällt mir

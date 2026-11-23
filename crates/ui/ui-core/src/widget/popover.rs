@@ -1343,9 +1343,7 @@ impl<C: Widget + 'static> crate::widget::controls::ActionControls for Popover<C>
 }
 
 impl<C: Widget + 'static> Widget for Popover<C> {
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-    );
+    crate::provides!(dyn crate::widget::controls::ActionControls,);
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         if self.panel.open && self.panel.stale {

@@ -31,8 +31,7 @@ impl PropType for SheetCell {
             return Err(format!("a sheet's cell is a `cell`, not `{case}`"));
         }
         Ok(Self {
-            cell: case_field(fields, "cell")?
-                .ok_or("`cell` needs `cell`, its A1 reference")?,
+            cell: case_field(fields, "cell")?.ok_or("`cell` needs `cell`, its A1 reference")?,
             text: case_field(fields, "text")?.unwrap_or_default(),
             kind: case_field(fields, "kind")?.unwrap_or_default(),
             bold: case_field(fields, "bold")?.unwrap_or_default(),
@@ -51,12 +50,7 @@ pub fn sheet_cell_description() -> EnumDescription {
             name: "cell".to_owned(),
             doc: "A cell at its A1 reference, showing `text`.".to_owned(),
             fields: vec![
-                case_field_description(
-                    "cell",
-                    Type::Text,
-                    None,
-                    "Its A1 reference, such as `A1`.",
-                ),
+                case_field_description("cell", Type::Text, None, "Its A1 reference, such as `A1`."),
                 case_field_description(
                     "text",
                     Type::Text,
@@ -94,7 +88,12 @@ impl PropType for Peer {
         if case != "peer" {
             return Err(format!("a sheet's peer is a `peer`, not `{case}`"));
         }
-        let field = |name: &str| fields.iter().find(|(key, _)| key == name).map(|(_, value)| value);
+        let field = |name: &str| {
+            fields
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value)
+        };
         let Some(area) = field("area").and_then(|value| match value {
             Value::Text(text) => Some(text.clone()),
             _ => None,
@@ -144,7 +143,12 @@ impl PropType for SheetSize {
         let Value::Case { case, fields } = value else {
             return Err(wrong(&Self::ty(), value));
         };
-        let field = |name: &str| fields.iter().find(|(key, _)| key == name).map(|(_, value)| value);
+        let field = |name: &str| {
+            fields
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value)
+        };
         let number = |name: &str| match field(name) {
             Some(Value::Float(value)) => Ok(*value),
             Some(Value::Int(value)) => Ok(*value as f64),

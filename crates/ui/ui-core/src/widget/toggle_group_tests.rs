@@ -1,9 +1,9 @@
 use super::*;
-use automerge::AutoCommit;
 use crate::presence::PresenceCtx;
 use crate::testing::dispatch;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
+use automerge::AutoCommit;
 use std::cell::RefCell;
 use std::rc::Rc;
 use taffy::prelude::TaffyMaxContent;

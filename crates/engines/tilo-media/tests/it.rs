@@ -35,3 +35,5 @@ mod playback;
 mod realtime_stream_color;
 #[path = "software_fallback.rs"]
 mod software_fallback;
+#[path = "subtitles.rs"]
+mod subtitles;

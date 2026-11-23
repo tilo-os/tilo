@@ -656,6 +656,11 @@ pub enum ToUi {
         #[serde(with = "serde_bytes")]
         request: Vec<u8>,
     },
+    /// The places a playback plays, as the app's `outputs` Collection stands now: JSON, one item
+    /// per place with the Collection item's id and the `Output` type's fields. The window process
+    /// plays them on the computer's sound devices and casts to a receiver (`tilo-media`'s
+    /// playback bridge); it is sent only when the Collection changed.
+    Outputs(#[serde(with = "serde_bytes")] Vec<u8>),
 }
 
 /// What the person did, as the window tells its app.

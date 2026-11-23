@@ -46,6 +46,10 @@ pub mod frame;
 pub mod handoff;
 pub mod hw;
 mod now_playing;
+pub mod playback_bridge;
+pub mod playback_cast;
+pub mod playback_host;
+pub mod playback_sink;
 pub mod pw_stream;
 pub mod realtime;
 pub mod ring;
@@ -67,6 +71,7 @@ pub mod gst_backend;
 
 #[cfg(gst_decode)]
 pub mod pcm;
+pub mod playback;
 
 #[cfg(any(gst_decode, gst_realtime))]
 mod gst_frames;

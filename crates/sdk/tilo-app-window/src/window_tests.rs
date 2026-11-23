@@ -550,7 +550,12 @@ fn a_batch_that_breaks_the_protocol_shows_the_error_state_and_nothing_else() {
 }
 
 fn catalogue_of(label: &str, shortcut: Option<&str>) -> Vec<u8> {
-    crate::catalogue::whole(&actions_on("tasks:1", label, shortcut))
+    catalogue_on("tasks:1", label, shortcut)
+}
+
+/// The published catalogue of `resource`'s one action, as the window receives it.
+fn catalogue_on(resource: &str, label: &str, shortcut: Option<&str>) -> Vec<u8> {
+    crate::catalogue::whole(&actions_on(resource, label, shortcut))
 }
 
 /// The one action `label` with `shortcut` of the resource `resource`, as the app surveys it.
@@ -863,6 +868,74 @@ fn a_plain_declared_key_sessions_it_alone() {
         .filter(|message| matches!(message, ToApp::Fire { .. }))
         .collect();
     assert!(fired.is_empty(), "`q` declares nothing: {fired:?}");
+}
+
+/// A window showing `doc` with a shell and nothing else: no control declares a key, so a key the
+/// window answers is answered by the action it published.
+fn plain_page() -> Vec<ToUi> {
+    vec![ToUi::Open {
+        level: Level::Root,
+        target: doc(),
+        tree: UiNode::empty("ui.NavShell", "shell"),
+        front: None,
+    }]
+}
+
+/// The actions the window asked the app to run, as the app heard them.
+fn ran_actions(app: &mut local::End) -> Vec<ToApp> {
+    sent(app)
+        .into_iter()
+        .filter(|message| matches!(message, ToApp::Invoke { .. }))
+        .collect()
+}
+
+/// A key is a binding to an action: a chord the app published for the resource its window shows runs
+/// that action by its address, as the palette runs it, whether or not the view draws a control for
+/// it — and a chord published for another resource is no key of this window's.
+#[test]
+fn a_published_key_runs_its_action_by_address() {
+    let mut page = plain_page();
+    page.push(ToUi::Actions(catalogue_on(
+        "doc",
+        "Archive",
+        Some("Ctrl+e"),
+    )));
+    let (mut app, mut harness) = drawn(&page);
+    press(&mut harness, &["command"], "E");
+    assert_eq!(
+        ran_actions(&mut app),
+        [ToApp::Invoke {
+            address: tilo_actions::ActionAddress::new("doc", "new"),
+            argument: None,
+        }],
+        "the published chord ran the action, as the palette runs it"
+    );
+    // A press of anything else runs nothing.
+    press(&mut harness, &["command"], "Q");
+    press(&mut harness, &[], "e");
+    assert!(
+        ran_actions(&mut app).is_empty(),
+        "no other press is the action's key"
+    );
+}
+
+/// A key published for a resource the window does not show is no key here: a window answers the
+/// actions of what it shows, never another window's (which is why an unfocused window, whose keys
+/// the desktop routes elsewhere, runs nothing).
+#[test]
+fn a_key_of_another_resource_runs_nothing() {
+    let mut page = plain_page();
+    page.push(ToUi::Actions(catalogue_on(
+        "tasks:1",
+        "Archive",
+        Some("Ctrl+e"),
+    )));
+    let (mut app, mut harness) = drawn(&page);
+    press(&mut harness, &["command"], "E");
+    assert!(
+        ran_actions(&mut app).is_empty(),
+        "the chord belongs to another resource's window"
+    );
 }
 
 /// The window's primary action is where a person comes to add a list's next item: run from the bar
@@ -2770,4 +2843,140 @@ fn an_editors_press_of_an_undoable_action_reaches_the_app() {
             .any(|message| matches!(message, ToApp::Invoke { .. } | ToApp::Fire { .. })),
         "the editor's press reaches the app: {told:?}"
     );
+}
+
+/// A player in the view that holds a picture-in-picture request, as a view's declared player
+/// does when the person presses its control.
+#[derive(Default)]
+struct AskingPlayer {
+    ask: std::cell::RefCell<Option<ui::widget::PictureInPictureAsk>>,
+}
+
+impl ui::widget::Widget for AskingPlayer {
+    ui::provides!(dyn ui::widget::PictureInPictureProvider);
+
+    fn sync(&mut self, _: &ui::widget::AppModel, _: &ui::widget::ModelPath) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        _: &ui::Theme,
+        _: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>,
+    ) -> ui::taffy::NodeId {
+        use ui::widget::TaffyTreeExt as _;
+        taffy.leaf_node(ui::taffy::Style::default())
+    }
+
+    fn name(&self) -> &'static str {
+        "AskingPlayer"
+    }
+}
+
+impl ui::widget::PictureInPictureProvider for AskingPlayer {
+    fn wants_picture_in_picture(&self) -> bool {
+        self.ask.borrow().is_some()
+    }
+
+    fn take_picture_in_picture(&self) -> Option<ui::widget::PictureInPictureAsk> {
+        self.ask.borrow_mut().take()
+    }
+}
+
+/// A player's picture-in-picture request reaches the floating surface, at whatever depth the
+/// view's containers nest it: the surface mirrors the app's own player element with the role a
+/// small video above the window has, shaped like the picture.
+#[test]
+fn a_players_picture_in_picture_request_becomes_a_floating_surface() {
+    let region = ui::kurbo::Rect::new(24.0, 64.0, 744.0, 469.0);
+    let aspect = region.width() / region.height();
+    let asking = AskingPlayer::default();
+    *asking.ask.borrow_mut() = Some(ui::widget::PictureInPictureAsk {
+        region,
+        aspect,
+        title: "Why every magnet you own is lying to you".to_owned(),
+    });
+    let mut page = AppWindow::new(Box::new(local::pair().1), Vec::new());
+    page.set_app_id("so.tilo.video");
+    page.body = Box::new(
+        Stack::stack()
+            .fill_width()
+            .fill_height()
+            .push_part(part(Box::new(asking), Fit::fill(1.0))),
+    );
+    let ask = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut page)
+        .expect("the player's request reaches the floating surface");
+    assert_eq!(
+        ask.role,
+        ui::floating_surface::FloatingRole::PictureInPicture
+    );
+    assert_eq!(ask.title, "Why every magnet you own is lying to you");
+    assert_eq!(
+        ask.source,
+        ui::floating_surface::FloatingSource::AppElement {
+            app_id: "so.tilo.video".to_owned(),
+            element_id: "video_surface".to_owned(),
+            region,
+        },
+        "the surface mirrors the app's own player where it stands"
+    );
+    assert_eq!(ask.aspect_ratio, Some(aspect));
+    assert!(
+        (ask.preferred_size.height - 360.0 / aspect).abs() < 0.01,
+        "the surface keeps the picture's shape: {:?}",
+        ask.preferred_size
+    );
+    assert!(
+        ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut page).is_none(),
+        "one press makes one surface"
+    );
+}
+
+/// A player in the view that holds the sound it decoded, as a view's declared player does while a
+/// video plays.
+#[derive(Default)]
+struct SoundingPlayer {
+    audio: std::cell::RefCell<Vec<i16>>,
+}
+
+impl ui::widget::Widget for SoundingPlayer {
+    ui::provides!(dyn ui::widget::AudioTapProvider);
+
+    fn sync(&mut self, _: &ui::widget::AppModel, _: &ui::widget::ModelPath) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        _: &ui::Theme,
+        _: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>,
+    ) -> ui::taffy::NodeId {
+        use ui::widget::TaffyTreeExt as _;
+        taffy.leaf_node(ui::taffy::Style::default())
+    }
+
+    fn name(&self) -> &'static str {
+        "SoundingPlayer"
+    }
+}
+
+impl ui::widget::AudioTapProvider for SoundingPlayer {
+    fn take_audio(&self) -> Vec<i16> {
+        std::mem::take(&mut *self.audio.borrow_mut())
+    }
+}
+
+/// The sound a player decoded reaches the host that plays it, at whatever depth the view's
+/// containers nest it, and once: the host writes it to every place the session's outputs name.
+#[test]
+fn a_players_sound_reaches_the_host_that_plays_it() {
+    let sounding = SoundingPlayer::default();
+    sounding.audio.borrow_mut().extend([17_i16, -17, 42, 0]);
+    let mut page = AppWindow::new(Box::new(local::pair().1), Vec::new());
+    page.body = Box::new(
+        Stack::stack()
+            .fill_width()
+            .fill_height()
+            .push_part(part(Box::new(sounding), Fit::fill(1.0))),
+    );
+    assert_eq!(page.take_audio(), [17_i16, -17, 42, 0]);
+    assert!(page.take_audio().is_empty(), "the sound is taken once");
 }

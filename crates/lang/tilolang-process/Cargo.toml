@@ -22,6 +22,7 @@ path = "src/main.rs"
 app-launch = [
     "dep:ui",
     "dep:tilo-app-window",
+    "dep:media",
     "dep:tilo-failure",
     "dep:tilo-files",
     "dep:tilo-app-module",
@@ -130,6 +131,8 @@ mail-engine = { path = "../../integrations/mail-engine", features = ["test-suppo
 tilo-account-probe = { path = "../../integrations/account-probe", features = ["test-support"] }
 # The pictures a page is sent are PNGs as `data:` addresses (`tests/window/gallery_html.rs`).
 base64.workspace = true
+# The address a clip plays at (`tests/window/video_decode.rs`), as the declared player opens it.
+media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["decode"] }
 
 # One test binary for the host, every file under tests/ a module of it, and one for an app's
 # windows (`tests/window`).
@@ -145,4 +148,6 @@ path = "tests/window/it.rs"
 workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The window plays a playback's outputs through the one host, so the cast stacks link here.
+media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["cast"], optional = true }
 workspace-hack = { version = "0.1" }

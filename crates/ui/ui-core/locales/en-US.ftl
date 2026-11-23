@@ -1300,6 +1300,7 @@ media-position-value = { $position } of { $duration }
 media-fullscreen-enter = Enter fullscreen
 media-fullscreen-exit = Exit fullscreen
 media-playback-settings = Playback settings
+media-picture-in-picture = Picture in picture
 media-toggle-on = On
 media-toggle-off = Off
 floating-window-title = Floating window

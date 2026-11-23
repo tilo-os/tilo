@@ -1262,9 +1262,7 @@ impl crate::widget::controls::ActionControls for Toolbar {
 impl Widget for Toolbar {
     crate::described!();
 
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-    );
+    crate::provides!(dyn crate::widget::controls::ActionControls,);
 
     fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
         Widget::set_platform_conventions(&mut self.menu, conventions);

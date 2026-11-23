@@ -811,7 +811,20 @@ impl Source for NodeSource<'_> {
 
     fn prop(&mut self, name: &str) -> Option<Prop> {
         let ty = &self.description.prop(name)?.ty;
-        self.value(name, ty)
+        let prop = self.value(name, ty)?;
+        // A video's address is Tilo's: a view names it as content (`tilo-blob://…`), and the
+        // window hands the toolkit a medium it plays. Text is the only prop this rewrites.
+        if self.description.name == "VideoPlayer"
+            && name == "source"
+            && let Prop::Text(address) = &prop
+        {
+            let title = match self.node.props.get("title") {
+                Some(Value::Text(text)) => Some(text.as_str()),
+                _ => None,
+            };
+            return Some(Prop::Text(crate::media_source::playable(address, title)));
+        }
+        Some(prop)
     }
 
     fn state(&mut self, name: &str) -> Option<Prop> {

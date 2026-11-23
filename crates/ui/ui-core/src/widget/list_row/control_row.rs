@@ -324,8 +324,6 @@ impl crate::widget::Decorator for ControlRow {
 
 crate::widget::activation::activation_controls!(ControlRow, activation);
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;

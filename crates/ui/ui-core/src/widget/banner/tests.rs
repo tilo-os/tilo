@@ -37,11 +37,9 @@ fn the_retained_banner_holds_its_buttons_and_dismisses_through_its_control() {
             Banner::warning("You're offline")
                 .with_message("Changes will sync when you reconnect.")
                 .with_id("offline")
-                .with_action(
-                    Button::new("offline.retry", "Try again").on_click(move || {
-                        retry.set(retry.get() + 1);
-                    }),
-                )
+                .with_action(Button::new("offline.retry", "Try again").on_click(move || {
+                    retry.set(retry.get() + 1);
+                }))
                 .on_dismiss(move || seen.set(seen.get() + 1)),
         ))
         .push(Box::new(crate::widget::Text::new("Below").with_id("below")));

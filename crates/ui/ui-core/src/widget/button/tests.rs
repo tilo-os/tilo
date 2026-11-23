@@ -37,10 +37,7 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
         }
     };
 
-    let harness = click(
-        Button::new("go", "Copy").on_click(counter()),
-        Role::Editor,
-    );
+    let harness = click(Button::new("go", "Copy").on_click(counter()), Role::Editor);
     assert_eq!(
         ran.load(Ordering::SeqCst),
         1,
@@ -54,10 +51,7 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
     );
     assert_eq!(harness.refusal_said(), None);
 
-    let harness = click(
-        Button::new("go", "Copy").on_click(counter()),
-        Role::Viewer,
-    );
+    let harness = click(Button::new("go", "Copy").on_click(counter()), Role::Viewer);
     assert_eq!(
         ran.load(Ordering::SeqCst),
         2,

@@ -1344,6 +1344,14 @@ class Walk:
             })
         self.session.control({"op": "pointer_button", "pressed": False, "button": "left"})
         return {"dragged": value["window"], "rect": window["rect"]}
+    def op_point(self, value) -> dict:
+        """Rest the pointer at a place of the window, `[x, y]`: what a person
+        does to bring out the controls a surface hides until the pointer is over
+        it. The point is recorded, so a step that found no control there says
+        where the pointer was waiting."""
+        x, y = value
+        self.session.control({"op": "pointer_move", "x": float(x), "y": float(y)})
+        return {"point": [x, y]}
 
     def op_click(self, value) -> dict:
         """Press at the middle of the control `selector` names: a field, or a
@@ -2517,6 +2525,57 @@ class Walk:
         path = folder / name
         path.write_bytes(FIXTURE_PICTURE_PNG)
         return {"image": str(self.session.own(path))}
+
+    def op_fixture(self, value) -> dict:
+        """Put a step's fixture file where a person's file chooser reaches it,
+        as a file of the tree rather than text written by the step: a video has
+        bytes a step file cannot say. The step names the file under the walk's
+        `fixtures/` and the name it is reached by."""
+        name, source = value["name"], value["from"]
+        folder = self.state / "home"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / name
+        shutil.copyfile(WALKS / "fixtures" / source, path)
+        return {"file": str(path), "bytes": path.stat().st_size}
+
+    def op_clip(self, value) -> dict:
+        """Make a short VP9/AAC video where a person's file chooser reaches it, so a walk
+        needs no committed media. The clip is generated once per walk (GStreamer, else
+        ffmpeg), a few hundred kilobytes, and contains no third-party media."""
+        name = value["name"]
+        folder = self.state / "home"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / name
+        gst = [
+            "gst-launch-1.0", "-e", "-q",
+            "mp4mux", "name=mux", "!", "filesink", f"location={path}",
+            "videotestsrc", "num-buffers=50", "pattern=ball", "!",
+            "video/x-raw,width=160,height=120,framerate=25/1", "!",
+            "videoconvert", "!", "vp9enc", "!", "queue", "!", "mux.video_0",
+            "audiotestsrc", "num-buffers=94", "samplesperbuffer=1024", "wave=silence", "!",
+            "audio/x-raw,rate=48000,channels=1", "!", "audioconvert", "!",
+            "avenc_aac", "!", "aacparse", "!", "queue", "!", "mux.audio_0",
+        ]
+        ffmpeg = [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-f", "lavfi", "-i", "testsrc=size=160x120:rate=25:duration=2",
+            "-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=48000",
+            "-shortest", "-c:v", "libvpx-vp9", "-b:v", "64k", "-c:a", "aac", str(path),
+        ]
+        made = None
+        for program in (gst, ffmpeg):
+            if shutil.which(program[0]) is None:
+                continue
+            try:
+                run(program)
+            except Failed:
+                continue
+            if path.is_file() and path.stat().st_size > 0:
+                made = program[0]
+                break
+        if made is None:
+            raise Failed("no gst-launch-1.0 or ffmpeg to make the walk's clip")
+        return {"file": str(path), "bytes": path.stat().st_size, "made_by": made}
 
     def chooser_question(self) -> dict | None:
         """The file chooser asking the person now, if one is."""

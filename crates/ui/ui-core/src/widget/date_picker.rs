@@ -397,7 +397,6 @@ pub enum ExternalDatePickerHit {
 impl Widget for DatePicker {
     crate::described!();
 
-
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(binding) = &mut self.local_state
             && let Pulled::Value(date) = binding.pull(state, path)

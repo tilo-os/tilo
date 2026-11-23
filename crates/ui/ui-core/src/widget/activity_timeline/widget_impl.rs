@@ -377,9 +377,10 @@ impl Widget for ActivityTimeline {
                 .enumerate()
                 .find_map(|(index, row)| match row {
                     VisualRow::Entry(entry, _)
-                        if self.entries.get(*entry).is_some_and(|item| {
-                            crate::HistoryEntryId::hex(&item.id) == hex_id
-                        }) =>
+                        if self
+                            .entries
+                            .get(*entry)
+                            .is_some_and(|item| crate::HistoryEntryId::hex(&item.id) == hex_id) =>
                     {
                         Some(index)
                     }

@@ -1906,7 +1906,6 @@ impl ToggleGroup {
         style.size.width = width;
         taffy.set_style(node, style).is_ok()
     }
-
 }
 
 impl ToggleGroup {

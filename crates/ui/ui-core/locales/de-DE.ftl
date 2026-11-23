@@ -1267,6 +1267,7 @@ media-position-value = { $position } von { $duration }
 media-fullscreen-enter = Vollbild öffnen
 media-fullscreen-exit = Vollbild verlassen
 media-playback-settings = Wiedergabeeinstellungen
+media-picture-in-picture = Bild im Bild
 media-toggle-on = Ein
 media-toggle-off = Aus
 floating-window-title = Schwebendes Fenster
