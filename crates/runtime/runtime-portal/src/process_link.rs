@@ -257,37 +257,68 @@ pub struct InstanceRequest {
     pub link_home: Option<String>,
 }
 
-/// The descriptors one instance arrives with.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct InstanceFds {
-    #[serde(with = "crate::packet::fd")]
-    pub broker: Descriptor,
-    #[serde(with = "crate::packet::fd")]
-    pub identity: Descriptor,
-    #[serde(with = "crate::packet::fd")]
-    pub module: Descriptor,
-    /// The instance's end of its view's patch connection. `None` for a call that shows nothing
-    /// ([`Shows::Nothing`]).
-    #[serde(with = "crate::packet::optional_fd")]
-    pub window: Option<Descriptor>,
-    /// The instance's connection to its app's origin connector, when its types hold an outside
-    /// service's resources.
-    #[serde(with = "crate::packet::optional_fd")]
-    pub origin: Option<Descriptor>,
-    /// The instance's connection to the device's content store, scoped to its app in its
-    /// workspace: what a file it chooses or keeps, and the pictures its document holds, are read
-    /// and written through. `None` on a device that keeps no content store.
-    #[serde(with = "crate::packet::optional_fd")]
-    pub content: Option<Descriptor>,
-    /// The instance's connection to the person's chooser: what `file.choose` and `file.save`
-    /// ask. `None` on a session that serves none.
-    #[serde(with = "crate::packet::optional_fd")]
-    pub chooser: Option<Descriptor>,
-    /// The instance's connection to the person's clipboard: what `clipboard.copy` offers and
-    /// `clipboard.paste` reads, since its process holds no display to do either on. `None` on a
-    /// session that serves none.
-    #[serde(with = "crate::packet::optional_fd")]
-    pub clipboard: Option<Descriptor>,
+/// Declares the connections a packet of one shape carries, once: its fields, which the packet
+/// writes and reads in that order, and how many descriptors it carries at most
+/// ([`InstanceFds::CONNECTIONS`]). The link sizes its descriptor buffers from that count, so a
+/// connection added to the list below is one more the buffers hold, never one they leave out.
+macro_rules! connections {
+    ($(#[$doc:meta])* $name:ident {
+        $(
+            $(#[$field_doc:meta])*
+            $field:ident: $ty:ty [with = $with:literal],
+        )*
+    }) => {
+        $(#[$doc])*
+        #[derive(Debug, Serialize, Deserialize)]
+        pub struct $name {
+            $(
+                $(#[$field_doc])*
+                #[serde(with = $with)]
+                pub $field: $ty,
+            )*
+        }
+
+        impl $name {
+            /// The most descriptors a packet of this shape carries: one for each connection, since
+            /// every one of them may be carried.
+            pub const CONNECTIONS: usize = [$(stringify!($field)),*].len();
+        }
+    };
+}
+
+connections! {
+    /// The descriptors one instance arrives with.
+    InstanceFds {
+        broker: Descriptor [with = "crate::packet::fd"],
+        identity: Descriptor [with = "crate::packet::fd"],
+        module: Descriptor [with = "crate::packet::fd"],
+        /// The instance's end of its view's patch connection. `None` for a call that shows nothing
+        /// ([`Shows::Nothing`]).
+        window: Option<Descriptor> [with = "crate::packet::optional_fd"],
+        /// The instance's connection to its app's origin connector, when its types hold an outside
+        /// service's resources.
+        origin: Option<Descriptor> [with = "crate::packet::optional_fd"],
+        /// The instance's connection to the device's content store, scoped to its app in its
+        /// workspace: what a file it chooses or keeps, and the pictures its document holds, are
+        /// read and written through. `None` on a device that keeps no content store.
+        content: Option<Descriptor> [with = "crate::packet::optional_fd"],
+        /// The instance's connection to the person's chooser: what `file.choose` and `file.save`
+        /// ask. `None` on a session that serves none.
+        chooser: Option<Descriptor> [with = "crate::packet::optional_fd"],
+        /// The instance's connection to the person's clipboard: what `clipboard.copy` offers and
+        /// `clipboard.paste` reads, since its process holds no display to do either on. `None` on a
+        /// session that serves none.
+        clipboard: Option<Descriptor> [with = "crate::packet::optional_fd"],
+    }
+}
+
+/// The most descriptors one message on the link carries: every connection an instance arrives
+/// with ([`InstanceFds::CONNECTIONS`]), the widest message. A window request's two, a patch's and a
+/// build's one, and a task's connections ([`TaskFds::CONNECTIONS`]) are fewer.
+pub const MAX_FDS: usize = max(InstanceFds::CONNECTIONS, TaskFds::CONNECTIONS);
+
+const fn max(left: usize, right: usize) -> usize {
+    if left > right { left } else { right }
 }
 
 #[cfg(unix)]
@@ -341,14 +372,13 @@ pub struct TaskRequest {
     pub changed_at_document: std::collections::BTreeSet<String>,
 }
 
-/// The descriptors a task arrives with: its program connection and a memfd of the apps its
-/// programs are compiled against ([`encode_apps`]).
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TaskFds {
-    #[serde(with = "crate::packet::fd")]
-    pub program: Descriptor,
-    #[serde(with = "crate::packet::fd")]
-    pub apps: Descriptor,
+connections! {
+    /// The descriptors a task arrives with: its program connection and a memfd of the apps its
+    /// programs are compiled against ([`encode_apps`]).
+    TaskFds {
+        program: Descriptor [with = "crate::packet::fd"],
+        apps: Descriptor [with = "crate::packet::fd"],
+    }
 }
 
 /// One app a task's programs may name, as the session hands it to the task's process: a tilolang
