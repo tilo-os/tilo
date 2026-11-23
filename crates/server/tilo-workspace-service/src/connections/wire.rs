@@ -19,12 +19,10 @@ use std::time::Duration;
 // The one place the guard's own names are taken from; the rest of the
 // connections take them from here.
 pub(crate) use tilo_net::proxy::host::{
-    Destinations, Lookup, check_destination, guarded_client, is_public, refused_address,
-    system_lookup,
+    Destinations, Lookup, check_destination, guarded_client, is_non_public_literal, is_public,
+    is_withheld_request_header, refused_address, system_lookup, written_out,
 };
 use tilo_net::{HeaderValue, Url};
-
-use super::address::literal_inside;
 
 /// What this server calls for its people's connections, and how it looks a
 /// name up.
@@ -191,7 +189,7 @@ impl Wire {
 /// there, on a port the web uses, with no sign-in in it.
 fn allowed(url: &Url, destinations: Destinations) -> Result<(), Problem> {
     let plain = url.scheme() != "https";
-    if (plain && !(destinations == Destinations::Any && literal_inside(url)))
+    if (plain && !(destinations == Destinations::Any && is_non_public_literal(url)))
         || !url.username().is_empty()
         || url.password().is_some()
         || check_destination(url, destinations).is_err()
@@ -259,6 +257,9 @@ mod tests {
             format!("http://service.example:{port}/mcp"),
             format!("https://ada:secret@service.example:{port}/mcp"),
             "https://service.example:25/mcp".to_owned(),
+            "blob:http://127.0.0.1/x".to_owned(),
+            "redis://127.0.0.1/".to_owned(),
+            "file://127.0.0.1/etc/passwd".to_owned(),
         ] {
             assert_eq!(
                 wire.send(ask(&address)).await.unwrap_err(),
@@ -311,12 +312,20 @@ mod tests {
         assert_eq!(let_in.send(ask(&literal)).await.unwrap().status, 200);
         assert_eq!(inside.drain_requests().len(), 1);
         // Even while let, a plain request goes to a literal address inside
-        // and to no name: a name could be anywhere.
-        let plain_name = format!("http://service.example:{}/mcp", inside.port());
-        assert_eq!(
-            let_in.send(ask(&plain_name)).await.unwrap_err(),
-            Problem::NotCalled
-        );
+        // and to no name: a name could be anywhere. Non-http(s) schemes that
+        // carry a literal address are refused too.
+        for refused in [
+            format!("http://service.example:{}/mcp", inside.port()),
+            "blob:http://127.0.0.1/x".to_owned(),
+            "redis://127.0.0.1/".to_owned(),
+            "file://127.0.0.1/etc/passwd".to_owned(),
+        ] {
+            assert_eq!(
+                let_in.send(ask(&refused)).await.unwrap_err(),
+                Problem::NotCalled,
+                "{refused}"
+            );
+        }
 
         let (to_loopback, asked) = resolving(vec![IpAddr::from([127, 0, 0, 1])]);
         let wire = Wire::new(&Reach {

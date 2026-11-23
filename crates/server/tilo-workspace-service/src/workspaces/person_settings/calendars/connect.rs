@@ -43,7 +43,6 @@
 //! same account told twice adds nothing: connected already, it is refused in
 //! words; asked for and not yet answered, the one question stands.
 
-use std::net::IpAddr;
 use std::path::Path;
 
 use accounts::vault_items::{ItemId, ItemKind, Place};
@@ -57,7 +56,9 @@ use tilo_actions::remote::{
 use tilo_dav::Url;
 
 use super::{AddWithItem, CONNECT, RESOURCE, account_id, accounts_in, argument, server_of};
-use crate::connections::wire::{Destinations, Lookup, check_destination, is_public, system_lookup};
+use crate::connections::wire::{
+    Destinations, Lookup, check_destination, is_public, system_lookup, written_out,
+};
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::{AskedTurn, HostedTurn};
 use crate::workspaces::person_asking::kept_asks::{KeptAskKind, hashed_ask_id};
@@ -256,25 +257,6 @@ fn refused(reason: impl Into<String>) -> ActionError {
     }
 }
 
-/// The literal address `url` names, where it names one and not a name.
-fn literal(url: &Url) -> Option<IpAddr> {
-    if url.domain().is_some() {
-        return None;
-    }
-    // What is left of an origin without its scheme: `127.0.0.1:8080`,
-    // `[::1]:8080`, or the address alone on the scheme's own port.
-    let origin = url.origin().ascii_serialization();
-    let at = origin.split_once("://").map_or("", |(_, at)| at);
-    let address = at.strip_prefix('[').map_or_else(
-        || at.rsplit_once(':').map_or(at, |(address, _)| address),
-        |inside| inside.split(']').next().unwrap_or_default(),
-    );
-    tilo_failure::ignored!(
-        "what is no literal address is a name, and a name is looked up",
-        address.parse::<IpAddr>().ok()
-    )
-}
-
 /// `said` as an address written whole. What a person says is taken as they
 /// say it: an address with its scheme stands as it is; a server's bare name,
 /// with the port and the path said with it, is that name's https address; a
@@ -316,7 +298,7 @@ async fn bounded(address: &str, reach: Destinations, lookup: &Lookup) -> Result<
     if !url.username().is_empty() || url.password().is_some() {
         return Err(CARRIES_SIGN_IN);
     }
-    let literal = literal(&url);
+    let literal = written_out(&url);
     let plain_inside = url.scheme() == "http"
         && reach == Destinations::Any
         && literal.is_some_and(|address| !is_public(address));
@@ -688,6 +670,7 @@ mod tests {
     )]
 
     use std::future::Future;
+    use std::net::IpAddr;
     use std::pin::Pin;
     use std::sync::Arc;
 
@@ -784,6 +767,22 @@ mod tests {
             Err(NOT_HTTPS),
             "plain http to a name, wherever the server may call"
         );
+        for non_http in [
+            "blob:http://127.0.0.1/x",
+            "redis://127.0.0.1/",
+            "file://127.0.0.1/etc/passwd",
+        ] {
+            assert_eq!(
+                bounded(non_http, public, &never).await,
+                Err(NOT_HTTPS),
+                "{non_http} (public)"
+            );
+            assert_eq!(
+                bounded(non_http, any, &never).await,
+                Err(NOT_HTTPS),
+                "{non_http} (any)"
+            );
+        }
     }
 
     /// What a person says is taken as they say it: a server's bare name, with

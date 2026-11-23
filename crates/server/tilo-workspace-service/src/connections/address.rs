@@ -1,10 +1,8 @@
 //! A service's address, in the one spelling a connection keeps it in.
 
-use std::net::IpAddr;
-
 use tilo_net::Url;
 
-use super::wire::{Destinations, check_destination, is_public};
+use super::wire::{Destinations, check_destination, is_non_public_literal};
 
 /// The longest address taken.
 const MAX_ADDRESS_BYTES: usize = 2_048;
@@ -68,7 +66,9 @@ impl Address {
             return Err(NotAnAddress::CarriesSecret);
         }
         url.set_fragment(None);
-        if url.scheme() == "http" && !(destinations == Destinations::Any && literal_inside(&url)) {
+        if url.scheme() == "http"
+            && !(destinations == Destinations::Any && is_non_public_literal(&url))
+        {
             return Err(NotAnAddress::NotHttps);
         }
         check_destination(&url, destinations).map_err(|_| NotAnAddress::NotCalled)?;
@@ -88,24 +88,6 @@ impl Address {
 /// The name or the literal address `url` is reached by.
 pub(crate) fn reached_by(url: &Url) -> Option<&str> {
     url.host_str()
-}
-
-/// Whether `url` names a literal address that is not on the public
-/// internet: the one kind of address a server calls without TLS, and only
-/// where its operator lets it call its own network. A name is never one.
-pub(crate) fn literal_inside(url: &Url) -> bool {
-    reached_by(url)
-        .and_then(|literal| {
-            tilo_failure::ignored!(
-                "what is no literal address is a name, and a name is never inside",
-                literal
-                    .trim_start_matches('[')
-                    .trim_end_matches(']')
-                    .parse::<IpAddr>()
-                    .ok()
-            )
-        })
-        .is_some_and(|address| !is_public(address))
 }
 
 /// The site `url` names, with its port when it names one: what the system
@@ -180,16 +162,35 @@ mod tests {
     fn only_the_servers_own_network_is_called_without_tls_and_only_when_let() {
         let inside = Address::parse("http://127.0.0.1:8000/mcp", Destinations::Any).unwrap();
         assert_eq!(inside.as_str(), "http://127.0.0.1:8000/mcp");
-        assert!(Address::parse("https://10.0.0.7/mcp", Destinations::Any).is_ok());
+        for ok in [
+            "https://10.0.0.7/mcp",
+            "http://[::1]:8000/mcp",
+            "http://[::ffff:127.0.0.1]:8000/mcp",
+            "http://127.0.0.1./mcp",
+            "http://2130706433:8000/mcp",
+            "http://0x7f.1:8000/mcp",
+        ] {
+            assert!(Address::parse(ok, Destinations::Any).is_ok(), "{ok}");
+        }
         for address in [
             "http://orchard.example/mcp",
             "http://localhost:8000/mcp",
             "http://93.184.216.34/mcp",
+            "http://1.1.1.1./mcp",
+            "http://[::ffff:1.1.1.1]/mcp",
+            "blob:http://127.0.0.1/x",
+            "redis://127.0.0.1/",
+            "file://127.0.0.1/etc/passwd",
         ] {
             assert_eq!(
                 Address::parse(address, Destinations::Any),
                 Err(NotAnAddress::NotHttps),
                 "{address}"
+            );
+            assert_eq!(
+                Address::parse(address, Destinations::Public),
+                Err(NotAnAddress::NotHttps),
+                "{address} (public)"
             );
         }
     }
