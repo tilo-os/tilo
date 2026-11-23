@@ -388,8 +388,8 @@ def assemble_inside(args):
     repo, target, stage = args.repo, args.target_dir, args.stage
     entries = named_applications(repo, args.cohort, args.app)
     tilolang = tilolang_apps(args.plan) if args.plan is not None else []
-    binaries = [target / profile_directory(args.profile) / entry['binary']
-                for entry in entries]
+    binaries = [target / profile_directory(args.profile) / entry['binary'] for entry in entries]
+    binaries += [target / 'release/tilolang-process'] if tilolang else []  # runs on it as well
     if any(not binary.is_file() for binary in binaries):
         raise ValueError('a required cohort binary is absent; refusing a partial store')
     toolkit = target / profile_directory(args.profile) / 'libruntime_dylib.so'
