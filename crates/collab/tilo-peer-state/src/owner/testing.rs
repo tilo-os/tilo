@@ -1,6 +1,5 @@
 //! Fixtures and internals for owner tests, the desktop session's included.
 #![allow(
-    clippy::expect_used,
     clippy::missing_panics_doc,
     clippy::unwrap_used,
     clippy::indexing_slicing,
@@ -38,7 +37,7 @@ pub fn invoker_of(peer: &StatePeer, device: [u8; 32]) -> tilo_actions::ActionInv
         .certificates()
         .into_iter()
         .find(|cert| cert.device_public_key == device)
-        .expect("a device of this workspace signs the change");
+        .unwrap();
     tilo_actions::ActionInvoker::person(hex::encode(cert.user_public_key))
 }
 

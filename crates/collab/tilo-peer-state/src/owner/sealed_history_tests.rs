@@ -199,7 +199,8 @@ async fn a_device_alone_takes_every_change_to_one_sealed_record_past_its_bound()
 }
 
 /// A device given no keys to compact with does not rewrite a full history: its
-/// writes wait, and say so.
+/// writes wait, and say so; given the keys, its history is compacted and the
+/// write past its bound lands and reads after a restart.
 #[tokio::test]
 async fn without_compaction_keys_a_full_sealed_history_waits() {
     let joined = enrolled();
@@ -216,18 +217,54 @@ async fn without_compaction_keys_a_full_sealed_history_waits() {
     let mut typist = Typist::over(&base(owner, workspace), 1, invoker);
     let mut refused = None;
     for key in keys_typed('k', 300) {
-        match write(owner, workspace, &keys, typist.change(&key), now).await {
+        let changes = typist.change(&key);
+        match write(owner, workspace, &keys, changes.clone(), now).await {
             Ok(()) => {}
             Err(WriteRefusal::HistoryFull { .. }) => {
-                refused = Some(key);
+                refused = Some((key, changes));
                 break;
             }
             Err(error) => panic!("{key}: {error}"),
         }
     }
+    let (refused_key, refused_changes) =
+        refused.expect("a device that cannot compact waits for its key holder");
+    // The keys are here now: the history is compacted and the write it held back lands.
+    owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
+    write(owner, workspace, &keys, refused_changes, now)
+        .await
+        .expect("a write past the bound lands once its history compacts");
+    write(owner, workspace, &keys, typist.change("k-after"), now)
+        .await
+        .expect("the device goes on writing after the compaction");
+    let path = joined.path.clone();
+    let held = owner
+        .with_current(workspace, |view| Ok(history(view.peer(), &keys)))
+        .unwrap();
     assert!(
-        refused.is_some(),
-        "a device that cannot compact waits for its key holder"
+        held.len() < 256,
+        "the history is compacted within its bound: {}",
+        held.len()
+    );
+    drop(joined.owner);
+    let reopened = open_file(&path).unwrap();
+    let document = reopened
+        .with_current(workspace, |view| {
+            let mut opener = |write: &collab_types::SignedOp| open(&keys, write);
+            let record = view
+                .peer()
+                .publication()
+                .opened_document(APP, "", &mut opener)
+                .unwrap()
+                .expect("the chat is held");
+            Ok(AutoCommit::load(&record.document).unwrap())
+        })
+        .unwrap();
+    let typed_keys = typed(&document);
+    assert!(typed_keys.contains(&refused_key), "the held write landed");
+    assert!(
+        typed_keys.contains(&"k-after".to_owned()),
+        "the next one landed"
     );
 }
 
