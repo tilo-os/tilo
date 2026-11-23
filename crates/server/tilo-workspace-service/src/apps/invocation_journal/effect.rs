@@ -36,14 +36,14 @@ impl PreparedEffect {
         workspace: &str,
         invocation: uuid::Uuid,
         redacted: &[u8],
-    ) -> Result<Self, String> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             version: 1,
             update,
             workspace: workspace.to_owned(),
             invocation,
             redacted: redacted.to_vec(),
-        })
+        }
     }
 
     /// The workspace the receipt is recorded in, and its exact bytes.
@@ -163,7 +163,7 @@ impl InvocationJournal {
         redacted: &[u8],
     ) -> Result<(PreparedEffect, Durable), String> {
         self.ready()?;
-        let prepared = PreparedEffect::new(update, workspace, invocation, redacted)?;
+        let prepared = PreparedEffect::new(update, workspace, invocation, redacted);
         let (at, record) = self
             .document_mut(key)
             .map_err(|_| "unknown prepared invocation")?;

@@ -1357,7 +1357,7 @@ impl Workspaces {
         if self.governed_copy(workspace_id).await.is_none() {
             return Err("this workspace is not governed here".into());
         }
-        let message = self.local_document_message(
+        let message = Self::local_document_message(
             workspace_id,
             device.device(),
             app,
@@ -1392,7 +1392,6 @@ impl Workspaces {
 
     /// The frame a write of `author`'s goes out as.
     fn local_document_message(
-        &self,
         workspace_id: WorkspaceId,
         author: [u8; 32],
         app: &str,

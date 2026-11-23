@@ -549,8 +549,7 @@ fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
         .native
         .owner
         .with_current(workspace_id(), |view| {
-            let before = view.peer().clone();
-            let mut next = before.clone();
+            let mut next = view.peer().clone();
             next.governance_mut()
                 .put_governed_grants(&[grant], &f.native.key, now)?;
             Ok(vec![next.workspace_message()])

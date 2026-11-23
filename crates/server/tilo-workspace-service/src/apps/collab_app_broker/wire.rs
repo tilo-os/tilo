@@ -577,7 +577,7 @@ impl JoinedChannel {
         &self,
         resource: &str,
         action: &str,
-        update: tilo_actions::InvocationUpdate,
+        update: &tilo_actions::InvocationUpdate,
     ) -> Result<Recording, BrokerError> {
         // No app changes another app's route: a channel held to read refuses.
         self.writable()?;
@@ -645,7 +645,7 @@ impl JoinedChannel {
             let identity = self.verified_identity.clone();
             let redacted =
                 serde_json::to_vec(&receipt).map_err(|e| BrokerError::failed(e.to_string()))?;
-            let workspace = surface.route.cluster_id.clone();
+            let workspace = surface.route.cluster_id;
             return Ok(Box::pin(async move {
                 let _order = state.owner_commit_order.lock().await;
                 state.revalidate_admission(&route, &identity)?;
@@ -1845,7 +1845,7 @@ impl WireConnection {
                 let recorded = self.channel(channel).and_then(|session| {
                     let update = serde_json::from_str(&update).map_err(|e| e.to_string())?;
                     session
-                        .record_local_effect_dispatch(&resource, &action, update)
+                        .record_local_effect_dispatch(&resource, &action, &update)
                         .map_err(|e| e.to_string())
                 });
                 Box::pin(async move {

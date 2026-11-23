@@ -41,14 +41,14 @@ pub(super) fn prepare_governance(
 /// since the governor's copy in `peer`: the messages a commit sends on, and
 /// the records one that starts the workspace over must still publish.
 pub(super) fn durable_messages(
-    candidate: &mut StatePeer,
+    candidate: &StatePeer,
     _peer: &StatePeer,
     (_key, _now): (&SigningKey, SystemTime),
     _generation: u64,
-) -> Result<Vec<neighbour_wire::NeighbourMsg>, String> {
+) -> Vec<neighbour_wire::NeighbourMsg> {
     // What the commit changed is the workspace change every device admits; a
     // record's own writes reach its readers as its device sends them.
-    Ok(vec![candidate.workspace_message()])
+    vec![candidate.workspace_message()]
 }
 
 /// The records `candidate`, a change built from `peer`, changes: what its
@@ -60,19 +60,17 @@ pub(super) fn changed_records(
     signing: (&SigningKey, SystemTime),
     generation: u64,
 ) -> Result<std::collections::BTreeSet<(String, String)>, String> {
-    Ok(
-        durable_messages(&mut candidate.clone(), peer, signing, generation)?
-            .into_iter()
-            .filter_map(|message| match message {
-                neighbour_wire::NeighbourMsg::AppDocument {
-                    app_id,
-                    document_id,
-                    ..
-                } => Some((app_id, document_id)),
-                _ => None,
-            })
-            .collect(),
-    )
+    Ok(durable_messages(candidate, peer, signing, generation)
+        .into_iter()
+        .filter_map(|message| match message {
+            neighbour_wire::NeighbourMsg::AppDocument {
+                app_id,
+                document_id,
+                ..
+            } => Some((app_id, document_id)),
+            _ => None,
+        })
+        .collect())
 }
 
 /// What a commit that starts the workspace over from a base publishes in
@@ -93,7 +91,7 @@ pub(super) fn base_publications(
     generation: u64,
 ) -> Result<Vec<Publication>, String> {
     if !candidate.signed_by_governor(&key.verifying_key().to_bytes()) {
-        let writes = durable_messages(candidate, replica, (key, now), generation)?;
+        let writes = durable_messages(candidate, replica, (key, now), generation);
         let mut outgoing = vec![publication(&candidate.workspace_message(), true)?];
         for write in writes
             .iter()

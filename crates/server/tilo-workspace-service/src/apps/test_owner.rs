@@ -349,6 +349,10 @@ impl SessionOwner {
 /// A write the broker hands the record: a document as it signed it, or an
 /// effect's terminal receipt.
 #[derive(Clone, Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the fixture's two shapes, matched where the change is applied"
+)]
 pub enum Change {
     Document {
         app: String,
