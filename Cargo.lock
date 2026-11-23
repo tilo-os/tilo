@@ -2516,10 +2516,14 @@ dependencies = [
 name = "cloud-source"
 version = "0.1.0"
 dependencies = [
+ "cloud-source",
  "jiff",
+ "reqwest",
  "serde",
  "serde_json",
+ "test-http",
  "thiserror 2.0.21",
+ "tilo-net",
  "url",
  "workspace-hack",
  "zeroize",

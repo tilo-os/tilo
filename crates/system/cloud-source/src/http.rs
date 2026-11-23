@@ -1,10 +1,35 @@
-//! The provider-neutral reading of HTTP responses, shared by every provider.
+//! Provider-neutral HTTP helpers shared by cloud providers: reading responses
+//! and, behind the `client` feature, building the shared blocking client.
 
 use std::io::{self, Read};
 use std::ops::Range;
 use std::time::{Duration, SystemTime};
 
 use crate::{CredentialSource, Download, Error, Result};
+
+/// Build the shared blocking HTTP client for cloud storage providers: Tilo's
+/// TLS defaults, the `Tilo-Storage/0.1` user agent, a 30-minute whole-request
+/// timeout for streaming uploads, ranged reads and long polls, a 10-second
+/// connect timeout, and redirects disabled so providers handle 3xx responses
+/// explicitly without forwarding credentials.
+///
+/// # Errors
+/// [`Error::Offline`] when the HTTP client cannot be built.
+#[cfg(all(feature = "client", not(target_family = "wasm")))]
+pub fn blocking_client() -> Result<reqwest::blocking::Client> {
+    tilo_net::http::blocking_client()
+        .user_agent("Tilo-Storage/0.1")
+        // Whole-request deadline: chunk uploads, large ranged reads and long
+        // polls stream for a while; the connect timeout catches dead servers.
+        .timeout(Duration::from_secs(30 * 60))
+        .connect_timeout(Duration::from_secs(10))
+        // Redirects are handled explicitly so credentials are never forwarded
+        // and non-redirect 3xx responses (such as 308 Resume Incomplete) reach
+        // the provider unchanged.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| Error::Offline)
+}
 
 /// `Content-Range: bytes <first>-<last>/<total|*>` as the half-open range
 /// `first..last + 1` and the total, `None` when the total is `*`.
@@ -546,5 +571,31 @@ mod tests {
             784_111_777
         );
         assert!(parse_http_date("yesterday").is_none());
+    }
+
+    #[cfg(all(feature = "client", not(target_family = "wasm")))]
+    #[test]
+    fn blocking_client_sends_user_agent_and_refuses_redirects() {
+        use test_http::{Reply, Responder};
+
+        let target = Responder::silent();
+        let location = format!("{}/redirected", target.url());
+        let server = Responder::start(vec![Reply::status(302).header("Location", &location)]);
+
+        let client = blocking_client().unwrap();
+        let response = client.get(format!("{}/item", server.url())).send().unwrap();
+
+        assert_eq!(response.status().as_u16(), 302);
+        assert_eq!(
+            response
+                .headers()
+                .get("location")
+                .and_then(|value| value.to_str().ok()),
+            Some(location.as_str())
+        );
+
+        let request = server.next_request();
+        assert_eq!(request.header("user-agent"), Some("Tilo-Storage/0.1"));
+        target.assert_untouched();
     }
 }

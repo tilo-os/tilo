@@ -192,7 +192,7 @@ doc = false
 "clocks" = { path = "../../apps/clocks", default-features = false, features = [] }
 "clocks-model" = { path = "../../apps/clocks-model", default-features = false, features = [] }
 "clocks-model-wasm" = { path = "../../apps/clocks-model-wasm", default-features = false, features = [] }
-"cloud-source" = { path = "../../crates/system/cloud-source", default-features = false, features = ["conformance"] }
+"cloud-source" = { path = "../../crates/system/cloud-source", default-features = false, features = ["client", "conformance"] }
 "cloud-source-dav" = { path = "../../crates/system/cloud-source-dav", default-features = false, features = ["fake-server"] }
 "cloud-source-dropbox" = { path = "../../crates/system/cloud-source-dropbox", default-features = false, features = ["fake-server"] }
 "cloud-source-gdrive" = { path = "../../crates/system/cloud-source-gdrive", default-features = false, features = ["fake-server"] }
@@ -1761,7 +1761,7 @@ doc = false
 "clap_derive-4_6_1" = { package = "clap_derive", version = "^4.6.1", default-features = false, features = ["default"] }
 "clap_lex-1_0_0" = { package = "clap_lex", version = "^1.0.0", default-features = false, features = [] }
 "cli-shim" = { path = "../../crates/packaging/cli-shim", default-features = false, features = [] }
-"cloud-source" = { path = "../../crates/system/cloud-source", default-features = false, features = ["conformance"] }
+"cloud-source" = { path = "../../crates/system/cloud-source", default-features = false, features = ["client", "conformance"] }
 "cloud-source-dav" = { path = "../../crates/system/cloud-source-dav", default-features = false, features = ["fake-server"] }
 "cloud-source-dropbox" = { path = "../../crates/system/cloud-source-dropbox", default-features = false, features = ["fake-server"] }
 "cloud-source-gdrive" = { path = "../../crates/system/cloud-source-gdrive", default-features = false, features = ["fake-server"] }
@@ -2846,7 +2846,7 @@ doc = false
 "clocks" = { path = "../../apps/clocks", default-features = false, features = [] }
 "clocks-model" = { path = "../../apps/clocks-model", default-features = false, features = [] }
 "clocks-model-wasm" = { path = "../../apps/clocks-model-wasm", default-features = false, features = [] }
-"cloud-source" = { path = "../../crates/system/cloud-source", default-features = false, features = ["conformance"] }
+"cloud-source" = { path = "../../crates/system/cloud-source", default-features = false, features = ["client", "conformance"] }
 "cloud-source-dav" = { path = "../../crates/system/cloud-source-dav", default-features = false, features = ["fake-server"] }
 "cloud-source-dropbox" = { path = "../../crates/system/cloud-source-dropbox", default-features = false, features = ["fake-server"] }
 "cloud-source-gdrive" = { path = "../../crates/system/cloud-source-gdrive", default-features = false, features = ["fake-server"] }
@@ -4415,7 +4415,7 @@ doc = false
 "clap_derive-4_6_1" = { package = "clap_derive", version = "^4.6.1", default-features = false, features = ["default"] }
 "clap_lex-1_0_0" = { package = "clap_lex", version = "^1.0.0", default-features = false, features = [] }
 "cli-shim" = { path = "../../crates/packaging/cli-shim", default-features = false, features = [] }
-"cloud-source" = { path = "../../crates/system/cloud-source", default-features = false, features = ["conformance"] }
+"cloud-source" = { path = "../../crates/system/cloud-source", default-features = false, features = ["client", "conformance"] }
 "cloud-source-dav" = { path = "../../crates/system/cloud-source-dav", default-features = false, features = ["fake-server"] }
 "cloud-source-dropbox" = { path = "../../crates/system/cloud-source-dropbox", default-features = false, features = ["fake-server"] }
 "cloud-source-gdrive" = { path = "../../crates/system/cloud-source-gdrive", default-features = false, features = ["fake-server"] }

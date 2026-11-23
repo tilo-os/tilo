@@ -127,17 +127,7 @@ impl GDrive {
     pub fn new(mut config: DriveConfig, credentials: Arc<dyn CredentialSource>) -> Result<Self> {
         let quanta = config.upload_chunk.div_ceil(UPLOAD_QUANTUM).max(1);
         config.upload_chunk = quanta.saturating_mul(UPLOAD_QUANTUM);
-        let http = tilo_net::http::blocking_client()
-            .user_agent("Tilo-Storage/0.1")
-            // Whole-request deadline: chunk uploads and large ranged reads
-            // stream for a while; the connect timeout catches dead links.
-            .timeout(Duration::from_secs(30 * 60))
-            .connect_timeout(Duration::from_secs(10))
-            // A resumable upload's `308 Resume Incomplete` is not a
-            // redirect, and nothing Drive answers needs following.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| Error::Offline)?;
+        let http = http::blocking_client()?;
         Ok(Self {
             inner: Arc::new(Inner {
                 config,

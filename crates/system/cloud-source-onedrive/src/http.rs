@@ -44,18 +44,7 @@ pub struct Http {
 
 impl Http {
     pub fn new(credentials: Arc<dyn CredentialSource>) -> Result<Self> {
-        let client = tilo_net::http::blocking_client()
-            .user_agent("Tilo-Storage/0.1")
-            // Whole-request deadline: large ranged reads and fragment
-            // uploads stream for a while; the connect timeout catches dead
-            // servers.
-            .timeout(Duration::from_secs(30 * 60))
-            .connect_timeout(Duration::from_secs(10))
-            // Redirects are handled explicitly: a version download answers
-            // 302 to a pre-authenticated URL that must not get the token.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| Error::Offline)?;
+        let client = cloud_source::http::blocking_client()?;
         Ok(Self {
             client,
             credentials,

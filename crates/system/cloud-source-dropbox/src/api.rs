@@ -152,16 +152,7 @@ impl Api {
         credentials: Arc<dyn CredentialSource>,
         path_root: Option<String>,
     ) -> Result<Self> {
-        let http = tilo_net::http::blocking_client()
-            .user_agent("Tilo-Storage/0.1")
-            // Whole-request deadline: chunk uploads, large ranged reads and
-            // long polls (up to 480 s plus Dropbox's jitter) take a while;
-            // the connect timeout catches dead servers.
-            .timeout(Duration::from_secs(30 * 60))
-            .connect_timeout(Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| Error::Offline)?;
+        let http = http::blocking_client()?;
         Ok(Self {
             http,
             endpoints,

@@ -11,11 +11,10 @@ description = "Google Drive accounts as a cloud-source provider: Drive API v3 id
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 hex = { workspace = true, optional = true }
-cloud-source = { version = "0.1.0", path = "../cloud-source" }
+cloud-source = { version = "0.1.0", path = "../cloud-source", features = ["client"] }
 reqwest = { workspace = true, features = ["blocking"] }
 serde.workspace = true
 serde_json.workspace = true
-tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["blocking"] }
 # The in-memory Drive server behind `fake-server`.
 md-5 = { workspace = true, optional = true }
 sha1 = { version = "0.11", optional = true }
@@ -41,6 +40,7 @@ fake-server = ["dep:test-http", "dep:md-5", "dep:sha1", "dep:sha2", "dep:hex"]
 cloud-source = { path = "../cloud-source", features = ["conformance"] }
 # The conformance run needs the fake server of this very crate.
 cloud-source-gdrive = { path = ".", features = ["fake-server"] }
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["blocking"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 uuid.workspace = true
 zeroize.workspace = true
