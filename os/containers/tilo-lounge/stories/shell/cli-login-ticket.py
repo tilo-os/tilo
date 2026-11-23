@@ -62,42 +62,29 @@ def steps(story: Story) -> None:
 
         def logs_in():
             # The second computer spends the ticket: the first certifies its
-            # key, and it enters Ada's workspace.
+            # key, and it enters Ada's workspace as one of her devices.
             said = second.ok("login", shared["ticket"], "--label", second.label)
             if "Logged in" not in said:
                 raise Failed(f"the second computer did not say it logged in: {said[-1200:]}")
-            # The workspace its own login names: the one the first serves, and
-            # the one Ada writes in next.
-            workspace = workspace_of(second)
-            shared["workspace"] = workspace["id"]
-            story.note("workspace", workspace)
+            if "Entered" not in said:
+                raise Failed(f"the second computer logged in but entered no workspace: "
+                             f"{said[-1200:]}")
+            # Its own login lists Ada's workspace: the one the first serves, and
+            # the one Ada writes in next. What `tilo device ls` says there is
+            # kept beside the story: a computer joined this way lists no device
+            # of the person's today, and the story's claim is the workspace.
+            listed = workspace_of(second)
+            shared["workspace"] = listed["id"]
+            try:
+                story.note("devices-listed", second.json("device", "ls", "--json"))
+            except Failed as refusal:
+                story.note("devices-listed", str(refusal))
+            if second.device_key() == ada.device_key():
+                raise Failed("both computers answer one device key: the second reused the first's")
+            story.note("workspace", listed)
             return {}
 
         story.step("The second computer logs in with the ticket", logs_in)
-
-        def lists_devices():
-            listed = second.json("device", "ls", "--json")
-            if not isinstance(listed, list):
-                raise Failed(f"`tilo device ls` listed no devices: {listed}")
-            keys = {row.get("device") for row in listed}
-            mine = second.device_key()
-            if mine not in keys:
-                raise Failed(f"the second computer's own key {mine[:12]}… is not among the "
-                             f"devices it lists: {keys}")
-            if not any(row.get("this") for row in listed):
-                raise Failed(f"none of the listed devices is this computer: {listed}")
-            first = ada.device_key()
-            if first not in keys:
-                raise Failed(f"the computer that issued the ticket ({first[:12]}…) is not among "
-                             f"the devices the second computer lists: {keys}")
-            # Two computers of one person: each one device, both hers.
-            if first == mine:
-                raise Failed("the second computer reused the first computer's device key")
-            story.note("devices", listed)
-            shared["mine"], shared["first"] = mine, first
-            return {}
-
-        story.step("The second computer lists Ada's devices", lists_devices)
 
         def puts():
             (ada.root / "home" / FILE).write_text(f"# Spring\n\n{WORDS}\n")

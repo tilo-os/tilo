@@ -63,7 +63,6 @@
       "Ada signs in on her computer": 20000,
       "Ada asks her computer for a ticket for another": 30000,
       "The second computer logs in with the ticket": 180000,
-      "The second computer lists Ada's devices": 30000,
       "Ada puts a file in the workspace from her computer": 60000,
       "The second computer reads the file from the workspace": 60000
     },

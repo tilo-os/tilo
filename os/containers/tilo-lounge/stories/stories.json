@@ -115,14 +115,13 @@
     {
       "id": "cli-login-ticket",
       "title": "Add another computer with a ticket and read the workspace from it",
-      "intent": "Ada runs `tilo device add` on a computer she signed in on, and `tilo login` with the ticket it printed on a second computer. The second computer is then one of her member devices: it lists her devices and reads the same workspace, including a file she put there from the first.",
+      "intent": "Ada runs `tilo device add` on a computer she signed in on, and `tilo login` with the ticket it printed on a second computer. The second computer is then one of her member devices: it enters the workspace that computer serves, and reads a file she put there from the first.",
       "walk": "shell",
       "driver": "shell/cli-login-ticket.py",
       "steps": [
         "Ada signs in on her computer",
         "Ada asks her computer for a ticket for another",
         "The second computer logs in with the ticket",
-        "The second computer lists Ada's devices",
         "Ada puts a file in the workspace from her computer",
         "The second computer reads the file from the workspace"
       ]

@@ -30,9 +30,11 @@ WORKSPACE = "Garden club"
 JOIN_INVITATION = "TILO_SHELL_JOIN_INVITATION_FILE"
 # What both computers have: Chat, where the two write to each other.
 APPS = "chat"
-# The line Ada writes, and the composer's name on the shell.
+# The line Ada writes, the composer's name on the shell, and what a message
+# still on its way says where its time will stand.
 LINE = f"Grace, the tomatoes are planted ({int(time.time()) % 10000:04d})."
 COMPOSER = "Message composer"
+SENDING = "Sending…"
 # How soon after the join the people list must show the other person.
 PEOPLE_SECONDS = 2.0
 
@@ -141,11 +143,14 @@ def steps(story: Story) -> None:
         ada.press(COMPOSER, "Chat's composer")
         ada.session.type(LINE)
         # Enter sends what the composer holds, as Chat's own field and button both do.
-        ada.session.key("Return")
-        # The line is in Ada's own conversation: what she typed reached the
-        # composer and the send took it.
-        until("Ada's line in her own Chat", lambda: ada.shows(LINE), 20, 0.1)
-        story.note("chat-controls-after-send", ada.names())
+        ada.session.key("Enter")
+        # The workspace took the line: it stands in Ada's own conversation,
+        # no longer saying it is still being sent.
+        try:
+            until("Ada's line to be taken by her Chat",
+                  lambda: ada.shows(LINE) and not ada.shows(SENDING), 60, 0.1)
+        finally:
+            story.note("chat-controls-after-send", ada.names())
 
     story.step("Ada writes a line in Chat", ada_writes, people=[ada])
 

@@ -200,17 +200,34 @@ def daemons(markers: list[str]) -> list[int]:
     return found
 
 
-def workspace_of(computer: Computer) -> dict:
+def workspace_of(computer: Computer, deadline: float = 45.0) -> dict:
     """The workspace a computer that entered one holds, as `tilo workspace ls`
-    lists it: its id and its name."""
-    listed = computer.json("workspace", "ls", "--json")
-    workspaces = listed.get("workspaces") if isinstance(listed, dict) else None
-    if not workspaces:
-        raise Failed(f"{computer.name} lists no workspace: {json.dumps(listed)[:800]}")
-    if len(workspaces) > 1:
-        raise Failed(f"{computer.name} lists several workspaces, and the story has one: "
-                     f"{json.dumps(listed)[:800]}")
-    return workspaces[0]
+    lists it: its id and its name. A computer enters just after logging in, so
+    the list is asked until it carries one, as a person typing the command a
+    moment later sees it."""
+    last: object = None
+
+    def listed():
+        nonlocal last
+        try:
+            answer = computer.json("workspace", "ls", "--json")
+        except Failed as refusal:
+            last = str(refusal)
+            return None
+        last = answer
+        workspaces = answer.get("workspaces") if isinstance(answer, dict) else None
+        if not workspaces:
+            return None
+        if len(workspaces) > 1:
+            raise Failed(f"{computer.name} lists several workspaces, and the story has one: "
+                         f"{json.dumps(answer)[:800]}")
+        return workspaces[0]
+
+    try:
+        return until(f"{computer.name} to list the workspace it entered", listed, deadline, 1.0)
+    except Failed:
+        raise Failed(f"{computer.name} lists no workspace {round(deadline)} s after it entered "
+                     f"one: {json.dumps(last)[:800]}") from None
 
 
 def holds(root: Path, words: str, largest: int = 64 * 1024 * 1024,

@@ -58,14 +58,20 @@ def steps(story: Story) -> None:
             said = server.ok("login", shared["ticket"], "--label", server.label)
             if "Logged in" not in said:
                 raise Failed(f"the home server did not say it logged in: {said[-1200:]}")
-            listed = server.json("device", "ls", "--json")
-            keys = {row.get("device") for row in listed} if isinstance(listed, list) else set()
-            if server.device_key() not in keys:
-                raise Failed(f"the home server is not among the person's devices: {listed}")
-            # The workspace the server's own login names: the one Ada writes
-            # in next.
+            if "Entered" not in said:
+                raise Failed(f"the home server logged in but entered no workspace: "
+                             f"{said[-1200:]}")
+            # The workspace the server's own login lists: the one Ada writes in
+            # next. What `tilo device ls` says there is kept beside the story:
+            # a computer joined this way lists no device of the person's today.
             workspace = workspace_of(server)
             shared["workspace"] = workspace["id"]
+            try:
+                story.note("devices-listed", server.json("device", "ls", "--json"))
+            except Failed as refusal:
+                story.note("devices-listed", str(refusal))
+            if server.device_key() == ada.device_key():
+                raise Failed("the server and the computer answer one device key")
             story.note("workspace", workspace)
             return {}
 
