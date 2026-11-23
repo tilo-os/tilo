@@ -22,7 +22,9 @@ use crate::auth::{
 use crate::frame::{read_frame, write_frame, write_refusal};
 use crate::policy::TrustPolicy;
 use tilo_lock::RwLockRecover as _;
-use tilo_server_protocol::entering::{ENTERING_DEADLINE, Entered, Entry, MAX_ENTERING};
+use tilo_server_protocol::entering::{
+    ENTERING_DEADLINE, EnterRefusal, Entered, Entry, MAX_ENTERING,
+};
 
 /// The most bytes a pre-authentication frame may declare. The session's
 /// 64 MiB limit would let a few hundred idle peers pin the host's memory.
@@ -295,17 +297,44 @@ impl LiveIdentity {
             return Err(HandshakeError::NotEntering);
         };
         let mut said = false;
-        let entered = n0_future::time::timeout(ENTERING_DEADLINE, async {
-            let _entry = ENTERING.acquire().await.map_err(|_| queue_closed())?;
-            enter(self, hello, &binding, send, admit, &mut said).await
-        })
+        let started = tilo_clock::now();
+        // The device's certificate and proof are checked and this server's
+        // proof written first: from then on the device reads the answer, so a
+        // deadline that passes is answered like any refusal, never with a
+        // closed connection.
+        let begun = n0_future::time::timeout(
+            ENTERING_DEADLINE,
+            begin_entry(self, hello, &binding, send, &mut said),
+        )
         .await;
         if said {
             refusal_read(recv, send).await;
         }
-        let entered = entered.map_err(|_| timed_out())?;
-        entered.map(|(peer, entered)| (peer, Some(entered)))
+        let (peer, cert, entry) = begun.map_err(|_| timed_out())??;
+        let left =
+            ENTERING_DEADLINE.saturating_sub(tilo_clock::now().saturating_duration_since(started));
+        let entered = n0_future::time::timeout(left, async {
+            let _entry = ENTERING.acquire().await.map_err(|_| queue_closed())?;
+            let admitting = crate::timing::start();
+            let entered = admit.enter(&cert, entry).await;
+            crate::timing::event("entry.admitted", admitting, 0);
+            Ok::<_, HandshakeError>(entered)
+        })
+        .await
+        .unwrap_or_else(|_| Ok(Entered::Refused(EnterRefusal::Workspace(entry_timed_out()))))?;
+        Ok((peer, Some(entered)))
     }
+}
+
+/// What a device hears when the workspace did not answer its entry within
+/// [`ENTERING_DEADLINE`]. Asking again is safe: the same entry is answered,
+/// never taken twice.
+fn entry_timed_out() -> String {
+    format!(
+        "The workspace did not answer within {} seconds, so entering was stopped. Try again: \
+         entering again picks up where this left off.",
+        ENTERING_DEADLINE.as_secs()
+    )
 }
 
 /// How long a device that was told why its hello is refused has to read it.
@@ -368,18 +397,17 @@ fn timed_out() -> HandshakeError {
 }
 
 /// One entry, after its hello: the device's certificate and its proof on
-/// this connection checked ([`auth::server_enter`]), this server's proof
-/// written at once, and the workspace's answer once the entry let the person
-/// in and the workspace admitted the device. Nothing after the hello is read.
-/// `said` is set once a refused device was told why ([`say_refusal`]).
-async fn enter<W>(
+/// this connection checked ([`auth::server_enter`]) and this server's proof
+/// written at once; the peer, its certificate and the entry for the workspace
+/// to answer. Nothing after the hello is read. `said` is set once a refused
+/// device was told why ([`say_refusal`]).
+async fn begin_entry<W>(
     identity: &LiveIdentity,
     mut hello: Hello,
     binding: &[u8; 32],
     send: &mut W,
-    admit: &dyn Admit,
     said: &mut bool,
-) -> Result<(AuthenticatedPeer, Entered), HandshakeError>
+) -> Result<(AuthenticatedPeer, DeviceCert, Entry), HandshakeError>
 where
     W: AsyncWrite + Unpin + Send,
 {
@@ -421,10 +449,7 @@ where
     let Some(entry) = hello.entering.take() else {
         return Err(HandshakeError::NotEntering);
     };
-    let admitting = crate::timing::start();
-    let entered = admit.enter(&hello.cert, entry).await;
-    crate::timing::event("entry.admitted", admitting, 0);
-    Ok((peer, entered))
+    Ok((peer, hello.cert, entry))
 }
 
 // Both entry points use this path: one permit and one timeout, never an
@@ -1292,6 +1317,79 @@ mod tests {
             "held for {held:?}"
         );
         assert_eq!(budget.available_permits(), 1);
+    }
+
+    /// An entry the workspace never answers is answered when its deadline passes: refused, in
+    /// words the person reads, saying it timed out and that entering again is safe.
+    #[tokio::test(start_paused = true)]
+    async fn an_entry_the_workspace_never_answers_is_refused_once_its_deadline_passes() {
+        use ed25519_dalek::Signer as _;
+        use tilo_server_protocol::entering::{Entering, Through, entry_digest};
+
+        struct NeverAnswers;
+        impl Admit for NeverAnswers {
+            fn enter<'a>(
+                &'a self,
+                _cert: &'a DeviceCert,
+                _entry: Entry,
+            ) -> EntryFuture<'a, Entered> {
+                Box::pin(std::future::pending())
+            }
+        }
+
+        let (identity, _, _) = server_and_removed_device();
+        let (person, _) = UserIdentity::generate("Bob", 1);
+        let (key, device) = device_of(&person, "laptop");
+        let binding = [7; 32];
+        let entering = Entering {
+            workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".to_owned(),
+            name: "Bob".to_owned(),
+            request_id: [2; 32],
+            through: Through::Entry,
+        };
+        let proof = key
+            .sign(&entry_digest(
+                &binding,
+                &device.device_public_key,
+                &entering,
+            ))
+            .to_bytes();
+        let hello = Hello::entering(
+            device,
+            [1; 32],
+            Entry {
+                entering,
+                access: None,
+                proof,
+            },
+        );
+        let (server, mut client) = tokio::io::duplex(4096);
+        let (mut recv, mut send) = split(server);
+        write_frame(&mut client, &postcard::to_allocvec(&hello).unwrap())
+            .await
+            .unwrap();
+        let started = tokio::time::Instant::now();
+        let (_, entered) = identity
+            .authenticate_or_enter(
+                EndpointTrust::Fixed(HandshakeTrust::AnyCertifiedDevice),
+                &mut recv,
+                &mut send,
+                MAX_FRAME_BYTES,
+                Some(&NeverAnswers),
+                Some(binding),
+            )
+            .await
+            .expect("an entry past its deadline is answered, not dropped");
+        assert_eq!(started.elapsed(), ENTERING_DEADLINE);
+        let Some(Entered::Refused(refusal)) = entered else {
+            panic!("an entry past its deadline was not refused: {entered:?}");
+        };
+        let reason = refusal.reason();
+        assert!(
+            reason.contains("did not answer within 30 seconds"),
+            "{reason}"
+        );
+        assert!(reason.contains("Try again"), "{reason}");
     }
 
     #[tokio::test(start_paused = true)]
