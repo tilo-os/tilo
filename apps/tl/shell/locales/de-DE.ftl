@@ -475,6 +475,7 @@ d-vidcax4k = Arbeitsbereichsmenü
     .w-join-a-workspace = Einem Arbeitsbereich beitreten
     .w-workspace-settings = Einstellungen des Arbeitsbereichs
     .w-overview = Übersicht
+    .w-history = Verlauf
 
 d-hac3p23j = Lautstärke
     .w-volume-muted = Lautstärke, stumm
@@ -653,6 +654,7 @@ d-wud3t5ro = Hinweisgruppe
 d-t3ywtwqj = Hinweiszeile
     .w-hand-to-agent = An Agent übergeben
     .w-dismiss = Verwerfen
+    .w-hand-to-agent = An Agent übergeben
 
 d-yyk2izra = Banner
     .w-1-more-notification = Noch 1 Benachrichtigung
@@ -733,6 +735,8 @@ d-uvwnwa4d = Agenten-Chip
     .w-new = { $name }, { $unseen } neu
     .w-show-who-is-here = Zeigen, wer hier ist
     .w-stop = Stopp
+    .w-new = { $name }, { $unseen } neu
+    .w-show-who-is-here = Zeigt, wer hier ist
 
 d-teccuwja = Schnelleinstellungen
     .w-quick-settings = Schnelleinstellungen
@@ -777,6 +781,8 @@ d-w3fe7tjv = Pegel
     .w-unmute = Stummschaltung aufheben
     .w-mute = Stummschalten
     .w-volume = Lautstärke
+    .w-unmute = Ton an
+    .w-mute = Stumm
 
 d-wvxjuiww = Tonbereich
     .w-sound = Ton
@@ -1075,6 +1081,9 @@ d-dgtjjxex = Menü der Person
     .w-join-a-workspace = Einem Arbeitsbereich beitreten
     .w-workspace-settings = Einstellungen des Arbeitsbereichs
     .w-overview = Übersicht
+    .w-history = Verlauf
+    .w-about-tilo = Über Tilo
+    .w-tilo = Tilo
 
 d-zlo3t3an = Aufnahmeanzeige
     .w-watching = { $label } sieht zu
@@ -1345,4 +1354,73 @@ d-tkt6f7u6 = Über-Fenster
 d-vv7k7lcl = Super-Tasten
 
 d-fhub73iw = Platzinhalt
+
+
+# Added from the source: new words.
+d-hnvxrx3k = VPN ein- oder ausschalten
+    .doc = Schaltet das VPN über sein erstes Profil ein oder über das verbundene aus: der eine Druck auf die Kachel, in welche Richtung auch immer.
+
+d-hnvxrx3k-v = V
+
+d-zlo3t3an = Aufnahmestatus
+    .w-watching = Schaue { $label } zu
+    .w-watching-and-more = Schaue { $label } und { $more } weiteren zu
+    .w-watching-2 = Schaue zu
+
+d-ytz24ncc = Rückgängig-Leiste
+    .w-notifications-cleared = Benachrichtigungen gelöscht
+    .w-undo = Rückgängig
+
+d-76zs5p4r = Antwortzeile
+    .w-reply = Antworten
+    .w-send = Senden
+    .w-write-a-reply-first = Schreibe zuerst eine Antwort
+
+d-ny7ms2ry = Bildschirmanzeige
+
+d-6va3umd4 = VPN-Kachel
+    .w-vpn = VPN
+
+d-fabhsxf6 = Nachtlicht-Kachel
+    .w-night-light = Nachtlicht
+
+d-vr3zx6ry = Flugmodus-Kachel
+    .w-airplane-mode = Flugmodus
+
+d-72cehcnn = Mobilfunk-Kachel
+    .w-mobile-data = Mobile Daten
+
+d-ntsyqtrw = Energiemodus-Kachel
+    .w-power-saver = Energiesparen
+    .w-balanced = Ausgeglichen
+    .w-performance = Leistung
+
+d-wvxjuiww = Ton-Bereich
+    .w-sound = Ton
+    .w-unmute-the-microphone = Mikrofon einschalten
+    .w-mute-the-microphone = Mikrofon stummschalten
+    .w-microphone = Mikrofon
+
+d-thduakjg = Netzwerk-Bereich
+    .w-wi-fi = WLAN
+    .w-wired-network = Kabelnetzwerk
+    .w-connected = Verbunden
+    .w-cable-unplugged = Kabel nicht angeschlossen
+    .w-wi-fi-is-off = WLAN ist aus
+    .w-scanning-for-networks = Suche nach Netzwerken
+    .w-enter-the-password-for = Passwort für { $password_for } eingeben
+    .w-password = Passwort
+    .w-join = Beitreten
+    .w-cancel = Abbrechen
+    .w-hidden-network = Verstecktes Netzwerk
+    .w-join-a-network-that-does-not = Einem Netzwerk beitreten, das seinen Namen nicht sendet
+    .w-network-name = Netzwerkname
+    .w-saved-networks = Gespeicherte Netzwerke
+
+d-zjz5sskl = Bluetooth-Bereich
+    .w-bluetooth = Bluetooth
+    .w-bluetooth-is-off = Bluetooth ist aus
+    .w-stop-looking = Suche beenden
+    .w-look-for-devices = Nach Geräten suchen
+    .w-no-devices-found = Keine Geräte gefunden
 
