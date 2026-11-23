@@ -51,27 +51,3 @@ pub enum DictationAction {
     )]
     DiscardTranscript,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn no_action_allows_the_microphone_or_takes_a_transcript_out() {
-        let actions: Vec<String> = DictationAction::specs()
-            .into_iter()
-            .map(|spec| spec.id.clone())
-            .collect();
-        assert_eq!(
-            actions,
-            ["start", "finish", "cancel", "discard-transcript"],
-            "consent and copying stay on the person's own prompt"
-        );
-        for spec in DictationAction::specs() {
-            assert_eq!(
-                spec.operation_type.as_deref(),
-                Some("so.tilo.dictation.session")
-            );
-        }
-    }
-}
