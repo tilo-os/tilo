@@ -137,6 +137,7 @@ pub enum Change {
     WifiPassword {
         profile: String,
         password: String,
+    },
     /// Make a profile of an installed plugin's type.
     CreatePluginVpn {
         service: String,
@@ -503,6 +504,7 @@ impl Device for OsDevice {
             }
             Change::WifiPassword { profile, password } => {
                 os_actions::network_settings::set_wifi_profile_password(profile, password)
+            }
             Change::CreatePluginVpn {
                 service,
                 name,
