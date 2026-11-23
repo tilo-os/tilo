@@ -1,0 +1,49 @@
+[package]
+name = "tilo-canvas-engine"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Canvas's artwork engine: the mark and layer model, its actions, brush presets, grades, pictures, regions, SVG and the wet-media binding, with no window of its own."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+# Ids derived from what a mark holds, so every replica names it alike.
+blake3.workspace = true
+# Areas are combined (union, subtract, intersect, exclude) exactly, as polygons.
+i_overlay = { version = "9.0", default-features = false }
+# Oil and watercolour marks are painted by the shared media simulation.
+tilo-wet-media = { path = "../../engines/wet-media" }
+# A picture and a look are stored as content and answered by their address.
+tilo-content = { path = "../../system/content" }
+# The resource model an artwork, a layer and a mark are kept as.
+tilo-resource = { path = "../../sdk/tilo-resource" }
+# The drawing layer under the components: colour, geometry, pictures, text.
+tilo-ui = { path = "../../ui/ui-core" }
+# An SVG is imported by reading its shape tree, and its pictures are embedded base64.
+usvg = { version = "0.47", default-features = false }
+base64.workspace = true
+# A saved artwork is a ZIP package carrying its pictures.
+zip.workspace = true
+# Exports are PNGs; looks are JPEGs unless a caller asks for PNG.
+png = "0.18"
+# Tiles an export or a look waits for are painted side by side.
+rayon = "1.12.0"
+# An SVG or a reference picture named by a path is read where files have one.
+tilo-files = { path = "../../platform/tilo-files" }
+# A photo's subject is found on the device by the model the person set up.
+tilo-subject = { path = "../../engines/tilo-subject" }
+# Recent artworks that cannot be remembered are reported in the log.
+tracing.workspace = true
+
+[dev-dependencies]
+# Scenarios build their fixtures through the resource's own actions.
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

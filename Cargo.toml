@@ -325,6 +325,7 @@ members = [
     "crates/services/vision",
 
     # Media
+    "crates/engines/canvas-engine",
     "crates/engines/ocr",
     "crates/engines/segment",
     "crates/engines/thumbnail",

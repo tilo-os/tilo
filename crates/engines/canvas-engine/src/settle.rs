@@ -11,11 +11,11 @@
 
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
+use tilo_ui::vello::peniko::ImageData;
 use tilo_wet_media::{LayerPainter, Painted};
-use ui::vello::peniko::ImageData;
 
 use crate::picture::image_of;
-use ui::lock::MutexRecover as _;
+use tilo_ui::lock::MutexRecover as _;
 
 /// What a painted layer is asked to show.
 #[derive(Clone)]
@@ -171,7 +171,7 @@ impl Settle {
                 let slot = Arc::new(Slot::default());
                 self.running = Some(Arc::clone(&slot));
                 let ask = ask.clone();
-                drop(ui::rt::app().spawn_blocking(move || {
+                drop(tilo_ui::rt::app().spawn_blocking(move || {
                     let done = paint(&mut painter, &ask, have);
                     slot.put(painter, done);
                 }));
@@ -197,7 +197,7 @@ impl Settle {
 /// Whether painting can be handed to another thread here: a browser page
 /// has one thread, and waiting there for a job would wait forever.
 fn threads() -> bool {
-    ui::rt::available(ui::rt::Feature::Threads)
+    tilo_ui::rt::available(tilo_ui::rt::Feature::Threads)
 }
 
 /// Paint `ask` with `painter`: the layer's picture when it is not the one

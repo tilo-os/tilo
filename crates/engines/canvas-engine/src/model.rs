@@ -10,12 +10,12 @@
 )]
 
 use std::collections::BTreeMap;
-use ui::num::f32_of_f64;
-use ui::num::f64_of_usize;
+use tilo_ui::num::f32_of_f64;
+use tilo_ui::num::f64_of_usize;
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Id, Identified, JsonSchema, Keyed, Map, Model};
-use ui::vello::kurbo::{Affine, BezPath, Point, Rect, Shape as _};
+use tilo_resource::{self, Id, Identified, JsonSchema, Keyed, Map, Model};
+use tilo_ui::vello::kurbo::{Affine, BezPath, Point, Rect, Shape as _};
 
 /// The largest artwork side, in units.
 pub const MAX_SIDE: f64 = 8192.0; // a document limit in artwork units, not on-screen spacing
@@ -663,7 +663,7 @@ impl Default for Shape {
 impl Artwork {
     /// The artwork as `doc` holds it, stacked (see [`Self::settle`]).
     pub fn from_doc(doc: &tilo_resource::Doc) -> Result<Self, tilo_resource::ModelError> {
-        let mut art = <Self as tilo_resource::Fields>::read_fields(doc, &ui::automerge::ROOT)?;
+        let mut art = <Self as tilo_resource::Fields>::read_fields(doc, &tilo_ui::automerge::ROOT)?;
         art.settle();
         Ok(art)
     }
@@ -918,7 +918,7 @@ pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), tilo_resou
             "no canvas migration from storage version {from}"
         )));
     }
-    let root = &ui::automerge::ROOT;
+    let root = &tilo_ui::automerge::ROOT;
     for (_, mark) in map_values(doc, root, "marks")? {
         retype_json::<Shape>(doc, &mark, "shape")?;
         retype_json::<Style>(doc, &mark, "style")?;
@@ -960,7 +960,7 @@ fn image_problem(shape: &Shape) -> Option<String> {
         return None;
     };
     let (frame, width, height) = ([*x, *y, *width, *height], *width, *height);
-    if ui::tilo_actions::content_hash(src).is_none() {
+    if tilo_ui::tilo_actions::content_hash(src).is_none() {
         Some("an image's src is a file path, content address or data: URI".into())
     } else if !finite(&frame) || width <= 0.0 || height <= 0.0 {
         Some("an image needs finite x, y and a positive width and height".into())
@@ -1168,7 +1168,7 @@ impl Shape {
                 }
             }
             Self::Ellipse { cx, cy, rx, ry } => {
-                ui::vello::kurbo::Ellipse::new((*cx, *cy), (*rx, *ry), 0.0).to_path(0.1)
+                tilo_ui::vello::kurbo::Ellipse::new((*cx, *cy), (*rx, *ry), 0.0).to_path(0.1)
             }
             Self::Polygon { points } => polyline(points, true),
             Self::Line { points } => polyline(points, false),
@@ -1466,7 +1466,7 @@ pub fn short_number(value: f64) -> String {
 /// SVG path data for `path`, to a thousandth of a unit.
 #[must_use]
 pub fn path_data(path: &BezPath) -> String {
-    use ui::vello::kurbo::PathEl;
+    use tilo_ui::vello::kurbo::PathEl;
     let point = |p: Point| format!("{},{}", short_number(p.x), short_number(p.y));
     let parts: Vec<String> = path
         .elements()
@@ -1686,7 +1686,9 @@ impl Mark {
         // A path with no segments (a one-point stroke: a click with a
         // brush) has an empty box at the origin; its extent is its point.
         let extent = match path.elements().first() {
-            Some(&ui::vello::kurbo::PathEl::MoveTo(point)) if path.segments().next().is_none() => {
+            Some(&tilo_ui::vello::kurbo::PathEl::MoveTo(point))
+                if path.segments().next().is_none() =>
+            {
                 Rect::from_points(point, point)
             }
             _ => path.bounding_box(),
@@ -1739,14 +1741,14 @@ impl Mark {
     }
 
     fn near_outline(&self, point: Point, within: f64) -> bool {
-        use ui::vello::kurbo::ParamCurveNearest as _;
+        use tilo_ui::vello::kurbo::ParamCurveNearest as _;
         let mut near = false;
         let mut last: Option<Point> = None;
-        ui::vello::kurbo::flatten(self.shape.path(), 0.5, |element| match element {
-            ui::vello::kurbo::PathEl::MoveTo(at) => last = Some(at),
-            ui::vello::kurbo::PathEl::LineTo(at) => {
+        tilo_ui::vello::kurbo::flatten(self.shape.path(), 0.5, |element| match element {
+            tilo_ui::vello::kurbo::PathEl::MoveTo(at) => last = Some(at),
+            tilo_ui::vello::kurbo::PathEl::LineTo(at) => {
                 if let Some(from) = last {
-                    let line = ui::vello::kurbo::Line::new(from, at);
+                    let line = tilo_ui::vello::kurbo::Line::new(from, at);
                     if line.nearest(point, 0.1).distance_sq <= within * within {
                         near = true;
                     }

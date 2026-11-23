@@ -13,10 +13,10 @@
     reason = "kurbo's float geometry and pixel sizes bounded by the render's"
 )]
 
-use ui::num::usize_of_f64;
+use tilo_ui::num::usize_of_f64;
 
-use ui::TextRenderer;
-use ui::vello::kurbo::{Affine, Point};
+use tilo_ui::TextRenderer;
+use tilo_ui::vello::kurbo::{Affine, Point};
 
 use crate::model::{Artwork, Matte};
 use crate::region::{Coverage, Op, Region};
@@ -52,14 +52,14 @@ pub struct Prepared {
     rgba: Vec<u8>,
     width: u32,
     height: u32,
-    view: ui::vello::kurbo::Rect,
+    view: tilo_ui::vello::kurbo::Rect,
     to_cells: Affine,
     at: Option<(usize, usize)>,
     at_units: Option<[f64; 2]>,
     subject: bool,
     current: Option<Vec<bool>>,
     reach: f64,
-    bounds: ui::vello::kurbo::Rect,
+    bounds: tilo_ui::vello::kurbo::Rect,
 }
 
 pub fn prepare(
@@ -68,8 +68,8 @@ pub fn prepare(
     text: &mut TextRenderer,
     art: &Artwork,
 ) -> Result<Prepared, String> {
-    let content = ui::tilo_resource::content::current()
-        .ok_or("the artwork's content store is unavailable")?;
+    let content =
+        tilo_resource::content::current().ok_or("the artwork's content store is unavailable")?;
     prepare_in(select, renderer, text, art, content)
 }
 
@@ -175,7 +175,7 @@ impl Prepared {
             )
             .ok_or("the selection is too small to refine")?,
         };
-        let began = ui::time::now();
+        let began = tilo_ui::time::now();
         let matte = if self.reach > 0.0 {
             let picture = tilo_subject::Picture {
                 rgba: &self.rgba,
@@ -255,7 +255,7 @@ fn view_of(
     subject: bool,
     current: Option<&Region>,
     refine: f64,
-) -> Result<(ui::vello::kurbo::Rect, f64), String> {
+) -> Result<(tilo_ui::vello::kurbo::Rect, f64), String> {
     if subject {
         return Ok((
             art.bounds(),
@@ -307,7 +307,7 @@ fn matte_picture(matte: &tilo_subject::Matte) -> Result<Vec<u8>, String> {
         .collect();
     let width = u32::try_from(matte.width).map_err(|_| "the matte is too wide")?;
     let height = u32::try_from(matte.height).map_err(|_| "the matte is too tall")?;
-    ui::png::encode_rgba8(width, height, &rgba)
+    tilo_ui::png::encode_rgba8(width, height, &rgba)
         .map_err(|error| format!("the matte could not be kept: {error}"))
 }
 
@@ -346,7 +346,7 @@ pub fn clean(using: &mut UseSelection) -> Result<(), String> {
             .layer(&layer)
             .filter(|layer| layer.is_mask())
             .map_or_else(|| layer.clone(), |mask| mask.mask_of.clone());
-        let content = ui::tilo_resource::content::current()
+        let content = tilo_resource::content::current()
             .ok_or("the artwork's content store is unavailable")?;
         let alpha = matte_alpha(&content, &matte)?;
         let mut cleaned = Vec::new();
@@ -371,7 +371,7 @@ fn matte_alpha(
 ) -> Result<tilo_subject::Matte, String> {
     let bytes = crate::picture::bytes_of(content, &matte.src)
         .ok_or("the selection's refined edge is not on this device; refine it again")?;
-    let image = ui::image_codec::decode_now(&bytes, None)
+    let image = tilo_ui::image_codec::decode_now(&bytes, None)
         .map_err(|error| format!("the refined edge cannot be read: {error}"))?;
     let (width, height) = (image.width as usize, image.height as usize);
     tilo_subject::Matte::new(
@@ -409,7 +409,7 @@ fn clean_picture(
     let Some(bytes) = crate::picture::bytes_of(content, src) else {
         return Ok(None);
     };
-    let image = ui::image_codec::decode_now(&bytes, None)
+    let image = tilo_ui::image_codec::decode_now(&bytes, None)
         .map_err(|error| format!("{:?}'s picture cannot be read: {error}", mark.id))?;
     let (width, height) = (image.width as usize, image.height as usize);
     let [x, y, w, h] = matte.rect;
@@ -472,7 +472,7 @@ fn clean_picture(
         let start = (row * width + x0) * 4;
         out[start..start + cw * 4].copy_from_slice(&clean[index * cw * 4..(index + 1) * cw * 4]);
     }
-    let picture = ui::image_codec::DecodedImage::from_rgba(width as u32, height as u32, out)
+    let picture = tilo_ui::image_codec::DecodedImage::from_rgba(width as u32, height as u32, out)
         .ok_or("the cleaned picture is malformed")?;
     store_picture(content, &encode_like(&picture, &bytes)?).map(Some)
 }
@@ -481,19 +481,23 @@ fn store_picture(content: &tilo_content::ContentStore, bytes: &[u8]) -> Result<S
     let hash = content
         .put(bytes)
         .map_err(|error| format!("the content could not be stored: {error}"))?;
-    ui::tilo_actions::content_resource(&hash).ok_or_else(|| "the content has no address".to_owned())
+    tilo_ui::tilo_actions::content_resource(&hash)
+        .ok_or_else(|| "the content has no address".to_owned())
 }
 
 /// `picture` encoded as its source was: a photograph that came as a JPEG
 /// stays one (at a quality that adds no visible loss), so the cleaned copy
 /// costs about what the original did to keep and sync, rather than a PNG
 /// several times its size; anything else is kept losslessly as PNG.
-fn encode_like(picture: &ui::image_codec::DecodedImage, source: &[u8]) -> Result<Vec<u8>, String> {
+fn encode_like(
+    picture: &tilo_ui::image_codec::DecodedImage,
+    source: &[u8],
+) -> Result<Vec<u8>, String> {
     let (width, height) = (picture.width, picture.height);
-    let kept = if ui::image_codec::sniff(source) == Some(ui::image_codec::Format::Jpeg) {
-        ui::jpeg::encode_rgba8_opaque(width, height, &picture.rgba, CLEANED_JPEG_QUALITY)
+    let kept = if tilo_ui::image_codec::sniff(source) == Some(tilo_ui::image_codec::Format::Jpeg) {
+        tilo_ui::jpeg::encode_rgba8_opaque(width, height, &picture.rgba, CLEANED_JPEG_QUALITY)
     } else {
-        ui::png::encode_rgba8(width, height, &picture.rgba)
+        tilo_ui::png::encode_rgba8(width, height, &picture.rgba)
     };
     kept.map_err(|error| format!("the cleaned picture could not be kept: {error}"))
 }

@@ -17,8 +17,8 @@ use i_overlay::float::simplify::SimplifyShape;
 use i_overlay::float::single::SingleFloatOverlay;
 use i_overlay::mesh::float::outline::offset::OutlineOffset;
 use i_overlay::mesh::float::style::{LineJoin, OutlineStyle};
-use ui::num::f64_of_usize;
-use ui::vello::kurbo::{
+use tilo_ui::num::f64_of_usize;
+use tilo_ui::vello::kurbo::{
     Affine, BezPath, ParamCurve as _, ParamCurveNearest as _, PathEl, PathSeg, Point, Rect,
     Shape as _,
 };
@@ -82,7 +82,7 @@ impl Region {
     /// open subpath is closed back to its start.
     pub fn of_path(path: &BezPath) -> Self {
         let mut contours: Vec<Contour> = Vec::new();
-        ui::vello::kurbo::flatten(path.iter(), TOLERANCE, |element| match element {
+        tilo_ui::vello::kurbo::flatten(path.iter(), TOLERANCE, |element| match element {
             PathEl::MoveTo(at) => contours.push(vec![[at.x, at.y]]),
             PathEl::LineTo(at) => {
                 if let Some(contour) = contours.last_mut() {

@@ -213,7 +213,7 @@ impl FileChooser {
         let request = PickRequest::save(
             &lookup(heading),
             &lookup("canvas-save"),
-            &document::file_name(&title, EXTENSION),
+            &document::file_name(&title, EXTENSION, &lookup("canvas-untitled")),
         )
         .filter(
             FileFilter::new(&lookup("canvas-filter-artwork"))
@@ -295,7 +295,7 @@ impl FileChooser {
     fn choose_export(&self, stem: &str, settings: Settings, bytes: Vec<u8>) {
         let lookup = |key: &str| crate::locales::CATALOG.t(key);
         let extension = settings.format.extension();
-        let name = document::file_name(stem, extension);
+        let name = document::file_name(stem, extension, &lookup("canvas-untitled"));
         let request = PickRequest::save(
             &lookup("canvas-export-title"),
             &lookup("canvas-export"),

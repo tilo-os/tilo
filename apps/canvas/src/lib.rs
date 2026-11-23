@@ -10,44 +10,25 @@
 pub use ui::apps::CANVAS as APP_ID;
 pub const APP_TITLE: &str = "Canvas";
 
-pub mod actions;
-pub mod adjust;
-pub mod answer;
-pub mod author;
-pub mod background;
-pub mod brushes;
-pub mod chart;
-pub mod content;
-pub mod content_geometry;
-pub mod detail;
-pub mod document;
-pub mod fonts;
 pub mod gesture;
 pub mod locales;
-pub mod media;
 pub mod menu;
-pub mod model;
-pub mod palette;
 pub mod panels;
-pub mod picture;
 pub mod preview;
-pub mod region;
-pub mod render;
-pub mod resource;
 #[cfg(feature = "samples")]
 pub mod sample;
-pub mod selection;
-pub mod settle;
-pub mod strokes;
-pub mod subject;
 pub mod surface;
-pub mod svg;
 pub mod thumb;
 pub mod tools;
-pub mod view_ops;
-pub mod wand;
 
 pub use model::Artwork;
+
+// The artwork's engine, which has no window of its own.
+pub use canvas_engine::{
+    actions, adjust, answer, author, background, brushes, chart, content, content_geometry, detail,
+    document, fonts, media, model, palette, picture, region, render, resource, selection, settle,
+    strokes, subject, svg, view_ops, wand,
+};
 
 use panels::pane::Group;
 use ui::LocalState;

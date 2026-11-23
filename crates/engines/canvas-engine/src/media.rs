@@ -2,11 +2,11 @@
 //! and the presets saved in this artwork, which travel with it.
 
 use std::collections::BTreeMap;
-use ui::num::f32_of_f64;
+use tilo_ui::num::f32_of_f64;
 
 use serde::{Deserialize, Serialize};
+use tilo_resource::{self, JsonSchema};
 use tilo_wet_media::{Engines, Pigment, Preset, Texture};
-use ui::tilo_resource::{self, JsonSchema};
 
 use crate::model::Artwork;
 

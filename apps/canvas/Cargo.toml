@@ -42,6 +42,8 @@ path = "tests/it.rs"
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-paint-engine = { path = "../../crates/engines/loadable/paint", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# The artwork model, brushes, grades, pictures and regions, with no window.
+canvas-engine = { package = "tilo-canvas-engine", path = "../../crates/engines/canvas-engine" }
 # Oil and watercolour layers are painted by the shared media simulation.
 tilo-wet-media = { path = "../../crates/engines/wet-media" }
 # A look or export is stored as content and answered by its address.
@@ -50,8 +52,6 @@ serde.workspace = true
 serde_json.workspace = true
 # Ids derived from an action's content, so every replica names marks alike.
 blake3.workspace = true
-# Tiles an export or a look waits for are painted side by side.
-rayon = "1.12.0"
 # Ids minted where a layer is authored.
 uuid.workspace = true
 # Exports are PNGs; looks are JPEGs unless a caller asks for PNG.
@@ -62,14 +62,6 @@ usvg = { version = "0.47", default-features = false }
 base64.workspace = true
 # Recent artworks that cannot be remembered are reported in the log.
 tracing.workspace = true
-# Selections and shapes are combined (union, subtract, intersect, exclude)
-# exactly, as polygons.
-i_overlay = { version = "9.0", default-features = false }
-# An SVG or reference picture named by a path is read where files have one.
-tilo-files = { path = "../../crates/platform/tilo-files" }
-# A photo's subject is found on this device by the model the person set
-# up, through the model gateway; its edge is refined to the picture here.
-tilo-subject = { path = "../../crates/engines/tilo-subject" }
 # A saved artwork is a ZIP package carrying its pictures.
 zip.workspace = true
 

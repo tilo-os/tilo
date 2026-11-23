@@ -15,8 +15,8 @@
 
 use std::collections::HashMap;
 
-use ui::vello::kurbo::{Affine, Rect};
-use ui::vello::peniko::ImageData;
+use tilo_ui::vello::kurbo::{Affine, Rect};
+use tilo_ui::vello::peniko::ImageData;
 
 use crate::adjust::Grade;
 use crate::model::{Adjust, Shape};
@@ -37,10 +37,10 @@ pub async fn decode(bytes: &[u8]) -> Result<ImageData, String> {
             "the picture is over {MAX_PICTURE_SIDE} pixels a side"
         ));
     }
-    let decoded = ui::image_codec::decode(bytes, None)
+    let decoded = tilo_ui::image_codec::decode(bytes, None)
         .await
         .map_err(|error| error.to_string())?;
-    Ok(ui::raster::rgba8(
+    Ok(tilo_ui::raster::rgba8(
         decoded.rgba,
         decoded.width,
         decoded.height,
@@ -52,9 +52,9 @@ pub async fn decode(bytes: &[u8]) -> Result<ImageData, String> {
 /// # Errors
 ///
 /// What it is otherwise.
-pub fn accepted(bytes: &[u8]) -> Result<ui::image_codec::Format, String> {
-    use ui::image_codec::Format;
-    match ui::image_codec::sniff(bytes) {
+pub fn accepted(bytes: &[u8]) -> Result<tilo_ui::image_codec::Format, String> {
+    use tilo_ui::image_codec::Format;
+    match tilo_ui::image_codec::sniff(bytes) {
         Some(format @ (Format::Png | Format::Jpeg | Format::WebP)) => Ok(format),
         Some(format) => Err(format!("{format:?} is not PNG, JPEG or WebP")),
         None => Err("not a PNG, JPEG or WebP".to_owned()),
@@ -62,11 +62,11 @@ pub fn accepted(bytes: &[u8]) -> Result<ui::image_codec::Format, String> {
 }
 
 pub fn dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
-    ui::image_codec::dimensions(bytes).ok_or_else(|| "its size cannot be read".to_owned())
+    tilo_ui::image_codec::dimensions(bytes).ok_or_else(|| "its size cannot be read".to_owned())
 }
 
 pub fn bytes_of(content: &tilo_content::ContentStore, address: &str) -> Option<Vec<u8>> {
-    let hash = ui::tilo_actions::content_hash(address)?;
+    let hash = tilo_ui::tilo_actions::content_hash(address)?;
     content.read(hash)
 }
 
@@ -245,7 +245,7 @@ impl Pyramid {
 }
 
 fn blank() -> ImageData {
-    ui::raster::rgba8(vec![0; 4], 1, 1)
+    tilo_ui::raster::rgba8(vec![0; 4], 1, 1)
 }
 
 /// `image` at half the size, each pixel the mean of the two by two it
@@ -276,7 +276,7 @@ fn halve(image: &ImageData) -> ImageData {
 }
 
 pub fn image_of(pixels: Vec<u8>, width: usize, height: usize) -> ImageData {
-    ui::raster::rgba8(
+    tilo_ui::raster::rgba8(
         pixels,
         u32::try_from(width).unwrap_or(1),
         u32::try_from(height).unwrap_or(1),
@@ -456,9 +456,9 @@ impl Pictures {
         let owned = address.to_owned();
         // The decoder reads the window's store, handed to it here.
         let content = self.content();
-        let wake = ui::WakeHandle::new();
+        let wake = tilo_ui::WakeHandle::new();
         let sent = address.to_owned();
-        ui::rt::app().spawn_then(
+        tilo_ui::rt::app().spawn_then(
             async move { decode_all(content, sent).await },
             move |levels| {
                 let _ = sender.send(levels);
@@ -485,7 +485,7 @@ impl Pictures {
             if !self.decoding.contains_key(src) {
                 self.start(src);
             }
-            if ui::rt::available(ui::rt::Feature::BlockOn) {
+            if tilo_ui::rt::available(tilo_ui::rt::Feature::BlockOn) {
                 // Wait for it rather than look at the placeholder the canvas
                 // shows while it arrives. A picture that did not decode is
                 // kept as one that did not come, and waits no longer.
@@ -516,7 +516,7 @@ impl Pictures {
         self.collect();
         if !self.decoded.contains_key(address) {
             self.start(address);
-            if self.patient && ui::rt::available(ui::rt::Feature::BlockOn) {
+            if self.patient && tilo_ui::rt::available(tilo_ui::rt::Feature::BlockOn) {
                 // Already on its way: wait for it rather than decode twice.
                 // A look, an export or a comparison must see the picture
                 // itself, not the placeholder the canvas shows while it
@@ -614,7 +614,7 @@ mod tests {
         phase the_whole_picture_fills_its_frame;
         {
             let map = placement([0.0, 0.0, 1.0, 1.0]).picture_to_local((800, 600));
-            let corner = map * ui::vello::kurbo::Point::new(800.0, 600.0);
+            let corner = map * tilo_ui::vello::kurbo::Point::new(800.0, 600.0);
             assert!((corner.x - 410.0).abs() < 1e-9 && (corner.y - 320.0).abs() < 1e-9);
         }
 
@@ -625,7 +625,7 @@ mod tests {
             assert!((cropped.crop[0] - 0.25).abs() < 1e-9);
             assert!((cropped.crop[3] - 2.0 / 3.0).abs() < 1e-9);
             let size = (800, 600);
-            let pixel = ui::vello::kurbo::Point::new(400.0, 100.0);
+            let pixel = tilo_ui::vello::kurbo::Point::new(400.0, 100.0);
             let before = whole.picture_to_local(size) * pixel;
             let after = cropped.picture_to_local(size) * pixel;
             assert!(before.distance(after) < 1e-6);
@@ -646,9 +646,9 @@ mod tests {
             let map = turned.picture_to_local((800, 600)).inverse();
             for corner in [
                 turned.frame.origin(),
-                ui::vello::kurbo::Point::new(turned.frame.x1, turned.frame.y1),
-                ui::vello::kurbo::Point::new(turned.frame.x0, turned.frame.y1),
-                ui::vello::kurbo::Point::new(turned.frame.x1, turned.frame.y0),
+                tilo_ui::vello::kurbo::Point::new(turned.frame.x1, turned.frame.y1),
+                tilo_ui::vello::kurbo::Point::new(turned.frame.x0, turned.frame.y1),
+                tilo_ui::vello::kurbo::Point::new(turned.frame.x1, turned.frame.y0),
             ] {
                 let at = map * corner;
                 assert!(at.x >= -1e-6 && at.y >= -1e-6 && at.x <= 800.0 + 1e-6 && at.y <= 600.0 + 1e-6);
@@ -671,10 +671,10 @@ mod tests {
     }
 
     fn stored(content: &tilo_content::ContentStore) -> String {
-        let png = ui::png::encode_rgba8(6, 4, &[230, 30, 20, 255].repeat(6 * 4))
+        let png = tilo_ui::png::encode_rgba8(6, 4, &[230, 30, 20, 255].repeat(6 * 4))
             .expect("the fixture encodes");
         let hash = content.put(&png).expect("the fixture is kept");
-        ui::tilo_actions::content_resource(&hash).expect("the fixture has an address")
+        tilo_ui::tilo_actions::content_resource(&hash).expect("the fixture has an address")
     }
 
     /// Run passes until `shows` holds, as the canvas draws frame after frame
@@ -683,7 +683,7 @@ mod tests {
         let deadline = tilo_test_env::hang_deadline();
         while !shows() {
             assert!(
-                ui::time::now() < deadline,
+                tilo_ui::time::now() < deadline,
                 "the picture did not decode off the frame in time"
             );
             std::thread::sleep(std::time::Duration::from_millis(1));

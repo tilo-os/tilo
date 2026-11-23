@@ -13,11 +13,11 @@
 )]
 
 use std::collections::BTreeMap;
-use ui::num::f32_of_f64;
+use tilo_ui::num::f32_of_f64;
 
+use tilo_ui::vello::kurbo::{BezPath, Point, Rect, Shape as _};
 use tilo_wet_media::StrokePoint as WetPoint;
 use tilo_wet_media::brush::Sample;
-use ui::vello::kurbo::{BezPath, Point, Rect, Shape as _};
 
 use crate::model::{Mark, Shape, Style};
 
@@ -469,10 +469,10 @@ pub fn kept(points: &[Vec<f64>], tolerance: f64) -> Vec<usize> {
     let mut keep = vec![0, last];
     let mut spans = vec![(0, last)];
     while let Some((from, to)) = spans.pop() {
-        let line = ui::vello::kurbo::Line::new(at(from), at(to));
+        let line = tilo_ui::vello::kurbo::Line::new(at(from), at(to));
         let mut worst = (0.0, from);
         for index in from + 1..to {
-            use ui::vello::kurbo::ParamCurveNearest as _;
+            use tilo_ui::vello::kurbo::ParamCurveNearest as _;
             let distance = line.nearest(at(index), 1e-9).distance_sq.sqrt();
             if distance > worst.0 {
                 worst = (distance, index);
@@ -652,8 +652,8 @@ fn outline(samples: &[Sample], half: &[f64]) -> BezPath {
         return path;
     };
     if samples.len() == 1 {
-        return ui::vello::kurbo::Shape::to_path(
-            &ui::vello::kurbo::Circle::new(sample_point(first), radius(0)),
+        return tilo_ui::vello::kurbo::Shape::to_path(
+            &tilo_ui::vello::kurbo::Circle::new(sample_point(first), radius(0)),
             0.1,
         );
     }
@@ -790,7 +790,7 @@ fn nib(laid: &Laid, angle: f64, size: f64) -> BezPath {
 /// `path` wound counter-clockwise in y-down units (positive shoelace), so
 /// it adds to, never cuts out of, what it is filled with.
 fn wound_positive(path: BezPath) -> BezPath {
-    let area = ui::vello::kurbo::Shape::area(&path);
+    let area = tilo_ui::vello::kurbo::Shape::area(&path);
     if area >= 0.0 {
         path
     } else {
@@ -906,7 +906,7 @@ pub struct DabInput<'a> {
     /// The ground's tooth at a point of the artwork, `0..=1`, mean a half.
     pub tooth: &'a dyn Fn(Point) -> f64,
     /// The mark's own units to the artwork's.
-    pub to_artwork: ui::vello::kurbo::Affine,
+    pub to_artwork: tilo_ui::vello::kurbo::Affine,
 }
 
 pub fn dab(input: &DabInput<'_>) -> Option<Dabs> {
@@ -1057,7 +1057,7 @@ impl Grid {
             let laid = f64::from(*value);
             let alpha = if grain > 0.0 {
                 let local = self.origin
-                    + ui::vello::kurbo::Vec2::new(
+                    + tilo_ui::vello::kurbo::Vec2::new(
                         ((index % self.width) as f64 + 0.5) / self.scale,
                         ((index / self.width) as f64 + 0.5) / self.scale,
                     );
@@ -1195,7 +1195,7 @@ pub fn stroke_of(mark: &Mark) -> Option<(&[Vec<f64>], f64)> {
 
 #[cfg(test)]
 mod tests {
-    use ui::vello::kurbo::Shape as _;
+    use tilo_ui::vello::kurbo::Shape as _;
 
     use super::*;
 
@@ -1232,7 +1232,7 @@ mod tests {
             scale: 2.0,
             rgb: [20, 20, 20],
             tooth: &flat,
-            to_artwork: ui::vello::kurbo::Affine::IDENTITY,
+            to_artwork: tilo_ui::vello::kurbo::Affine::IDENTITY,
         })
         .expect("laid")
     }
@@ -1340,7 +1340,7 @@ mod tests {
                         scale: 1.0,
                         rgb: [20, 20, 20],
                         tooth: &flat,
-                        to_artwork: ui::vello::kurbo::Affine::IDENTITY,
+                        to_artwork: tilo_ui::vello::kurbo::Affine::IDENTITY,
                     })
                     .expect("laid")
                 };
@@ -1399,8 +1399,8 @@ mod tests {
                     let off = shape
                         .windows(2)
                         .map(|pair| {
-                            use ui::vello::kurbo::ParamCurveNearest as _;
-                            let side = ui::vello::kurbo::Line::new(pair[0], pair[1]);
+                            use tilo_ui::vello::kurbo::ParamCurveNearest as _;
+                            let side = tilo_ui::vello::kurbo::Line::new(pair[0], pair[1]);
                             side.nearest(*at, 1e-9).distance_sq.sqrt()
                         })
                         .fold(f64::MAX, f64::min);
@@ -1520,7 +1520,7 @@ mod tests {
             let at_quarter = curve
                 .elements()
                 .iter()
-                .filter_map(ui::vello::kurbo::PathEl::end_point)
+                .filter_map(tilo_ui::vello::kurbo::PathEl::end_point)
                 .min_by(|a, b| (a.x - 25.0).abs().total_cmp(&(b.x - 25.0).abs()))
                 .unwrap();
             // A straight segment would be at y 15 there; the spline is higher.
@@ -1534,9 +1534,8 @@ mod tests {
         path.elements()
             .iter()
             .filter_map(|element| match element {
-                ui::vello::kurbo::PathEl::MoveTo(at) | ui::vello::kurbo::PathEl::LineTo(at) => {
-                    Some(*at)
-                }
+                tilo_ui::vello::kurbo::PathEl::MoveTo(at)
+                | tilo_ui::vello::kurbo::PathEl::LineTo(at) => Some(*at),
                 _ => None,
             })
             .collect()

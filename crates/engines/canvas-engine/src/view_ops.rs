@@ -7,18 +7,18 @@
 )]
 
 use serde_json::{Value, json};
-use ui::TextRenderer;
-use ui::num::f64_of_usize;
-use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Point, Rect};
-use ui::vello::peniko::Color;
+use tilo_ui::TextRenderer;
+use tilo_ui::num::f64_of_usize;
+use tilo_ui::vello::Scene;
+use tilo_ui::vello::kurbo::{Affine, Point, Rect};
+use tilo_ui::vello::peniko::Color;
 
 use crate::media;
 use crate::model::{Artwork, Layer, Shape};
 use crate::model::{Mark, path_data};
 use crate::render::{Options, Renderer};
 use crate::resource::{Compare, Export, Inspect, Look};
-use ui::offscreen::pixels::{PixelsAnswer, PixelsError, PixelsRequest};
+use tilo_ui::offscreen::pixels::{PixelsAnswer, PixelsError, PixelsRequest};
 
 /// The default longest side of a look, in pixels: enough to judge a
 /// composition; a region look shows detail. A model pays for every pixel.
@@ -158,7 +158,8 @@ pub fn encode_jpeg_at(
     height: u32,
     quality: u8,
 ) -> Result<Vec<u8>, String> {
-    ui::jpeg::encode_rgba8_opaque(width, height, rgba, quality).map_err(|error| error.to_string())
+    tilo_ui::jpeg::encode_rgba8_opaque(width, height, rgba, quality)
+        .map_err(|error| error.to_string())
 }
 
 /// What `paint` draws of `region`, as RGBA: over a neutral grey, or over
@@ -212,7 +213,7 @@ impl Drawing {
     /// the GPU; in a browser page they come a few frames later.
     #[must_use]
     pub fn request(self) -> PixelsRequest {
-        ui::offscreen::pixels::request(self.scene, self.width, self.height, self.background)
+        tilo_ui::offscreen::pixels::request(self.scene, self.width, self.height, self.background)
     }
 
     /// Its pixels now, for a caller that cannot wait for them.
@@ -227,9 +228,8 @@ impl Drawing {
 pub fn rgba_of(answer: Option<PixelsAnswer>) -> Result<(Vec<u8>, u32, u32), String> {
     match answer {
         Some(Ok(pixels)) => Ok((pixels.rgba, pixels.width, pixels.height)),
-        Some(Err(PixelsError::TooLarge { max, .. })) => Err(crate::locales::CATALOG.t_args(
-            "canvas-export-too-large",
-            &[("pixels", max.to_string().into())],
+        Some(Err(PixelsError::TooLarge { max, .. })) => Err(format!(
+            "Too large: a picture is at most {max} pixels a side"
         )),
         Some(Err(PixelsError::Failed(why))) => Err(why),
         Some(Err(PixelsError::Unavailable)) | None => Err(unavailable()),
@@ -326,7 +326,7 @@ impl<T: 'static> Awaiting<T> {
 
 /// Why a picture this caller cannot wait for is missing.
 fn unavailable() -> String {
-    crate::locales::CATALOG.t("canvas-pictures-unavailable")
+    "This needs a picture of the artwork, which can’t be made here yet.".to_owned()
 }
 
 /// The side of the patch of artwork the eyedropper averages, in units.
@@ -511,7 +511,8 @@ fn flatten(reference: &[u8], width: u32, inside: Rect, ground: [u8; 3]) -> Vec<u
     for (index, pixel) in reference.chunks_exact(4).enumerate() {
         let x = index % width;
         let y = index / width;
-        let centre = ui::vello::kurbo::Point::new(f64_of_usize(x) + 0.5, f64_of_usize(y) + 0.5);
+        let centre =
+            tilo_ui::vello::kurbo::Point::new(f64_of_usize(x) + 0.5, f64_of_usize(y) + 0.5);
         if !inside.contains(centre) {
             out.extend_from_slice(&[0, 0, 0, 0]);
             continue;
@@ -658,7 +659,7 @@ pub enum PictureFinish {
     Export {
         format: &'static str,
         quality: u8,
-        path: Option<ui::tilo_resource::AbsolutePath>,
+        path: Option<tilo_resource::AbsolutePath>,
     },
 }
 
@@ -786,7 +787,7 @@ pub fn measure(
                 crate::render::letters(&mark.shape, text)
                     .into_iter()
                     .map(|letter| {
-                        use ui::vello::kurbo::Shape as _;
+                        use tilo_ui::vello::kurbo::Shape as _;
                         (mark.affine() * letter.path).bounding_box()
                     })
                     .fold(estimated, |all, letter| all.union(letter))
@@ -815,7 +816,7 @@ pub fn measure(
                 .filter(|letter| !letter.path.elements().is_empty())
                 .take(MEASURED_LETTERS)
                 .map(|letter| {
-                    use ui::vello::kurbo::Shape as _;
+                    use tilo_ui::vello::kurbo::Shape as _;
                     let b = (mark.affine() * letter.path).bounding_box();
                     json!({"t": letter.text, "box": [round(b.x0), round(b.y0), round(b.width()), round(b.height())]})
                 })
@@ -991,9 +992,9 @@ const EXPORT_JPEG_QUALITY: u8 = 90;
 
 /// RGBA8 as lossless WebP bytes.
 pub fn encode_webp(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
-    let pixels = ui::image_codec::DecodedImage::from_rgba(width, height, rgba.to_vec())
+    let pixels = tilo_ui::image_codec::DecodedImage::from_rgba(width, height, rgba.to_vec())
         .ok_or("the pixels do not match their size")?;
-    ui::image_codec::encode_now(&pixels, ui::image_codec::Encoding::WebP)
+    tilo_ui::image_codec::encode_now(&pixels, tilo_ui::image_codec::Encoding::WebP)
         .map_err(|error| error.to_string())
 }
 
@@ -1081,7 +1082,7 @@ fn mark_entry(art: &Artwork, mark: &Mark, named_layer: bool, full: bool) -> Valu
         if let Some(area) = mark.area() {
             // Kept inside an area (the selection it was laid in): its box,
             // and with `full` its outline.
-            let inside = ui::vello::kurbo::Shape::bounding_box(&area);
+            let inside = tilo_ui::vello::kurbo::Shape::bounding_box(&area);
             fields.insert(
                 "inside".into(),
                 json!([
@@ -1644,7 +1645,7 @@ fn beside_versions(
 
 #[cfg(test)]
 mod tests {
-    use ui::offscreen::pixels::{Pixels, PixelsError};
+    use tilo_ui::offscreen::pixels::{Pixels, PixelsError};
 
     /// A picture that cannot be had says why in plain words, never an
     /// error's name.

@@ -4,7 +4,7 @@
 //! works on marks works on it, and one undo takes it away.
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, JsonSchema, Refusal};
+use tilo_resource::{self, JsonSchema, Refusal};
 
 use crate::actions::{Draw, NewMark, refuse};
 use crate::model::{Artwork, Shape, valid_id};
@@ -421,7 +421,7 @@ mod tests {
     use crate::actions::{Draw, NewMark};
     use crate::model::{Artwork, Shape};
     use serde_json::{Value, json};
-    use ui::prelude::{Replica, TestApp};
+    use tilo_resource::Replica;
 
     fn rect_of(art: &Artwork, id: &str) -> [f64; 4] {
         match art.mark(id).map(|mark| &mark.shape) {
@@ -436,18 +436,25 @@ mod tests {
         }
     }
 
-    fn chart(app: &mut TestApp<crate::App>, arguments: Value) -> Result<Value, String> {
-        app.call("chart", arguments)
-            .map(Option::unwrap_or_default)
+    fn chart(art: &mut Replica<Artwork>, chart: Chart) -> Result<Value, String> {
+        art.apply(Artwork::CHART.with(chart))
+            .map(|answer| answer.unwrap_or_default())
             .map_err(|error| error.to_string())
     }
 
     #[test]
     fn bars_are_proportional_equal_and_stand_on_one_baseline() {
-        let mut app = TestApp::<crate::App>::new().unwrap();
+        let mut art = Replica::<Artwork>::new();
         let answer = chart(
-            &mut app,
-            json!({"labels": ["North", "South", "East"], "values": [40, 20, 10], "box": [100, 100, 600, 400], "title": "Q3", "values_shown": true}),
+            &mut art,
+            Chart {
+                labels: vec!["North".into(), "South".into(), "East".into()],
+                values: vec![40.0, 20.0, 10.0],
+                area: Some([100.0, 100.0, 600.0, 400.0]),
+                title: Some("Q3".into()),
+                values_shown: Some(true),
+                ..Chart::default()
+            },
         )
         .unwrap();
         let added: Vec<&str> = answer["added"]
@@ -460,7 +467,7 @@ mod tests {
             added.contains(&"chart-bar-1") && added.contains(&"chart-title"),
             "{answer}"
         );
-        let art = app.state();
+        let art = art.state().unwrap();
         let bars: Vec<[f64; 4]> = (1..=3)
             .map(|n| rect_of(&art, &format!("chart-bar-{n}")))
             .collect();
@@ -480,15 +487,35 @@ mod tests {
 
     #[test]
     fn mismatched_or_invalid_chart_input_is_refused_saying_which() {
-        let mut app = TestApp::<crate::App>::new().unwrap();
-        let mismatch = chart(&mut app, json!({"labels": ["a"], "values": [1, 2]})).unwrap_err();
+        let mut art = Replica::<Artwork>::new();
+        let mismatch = chart(
+            &mut art,
+            Chart {
+                labels: vec!["a".into()],
+                values: vec![1.0, 2.0],
+                ..Chart::default()
+            },
+        )
+        .unwrap_err();
         assert!(mismatch.contains("one label per value"), "{mismatch}");
-        let negative =
-            chart(&mut app, json!({"labels": ["a", "b"], "values": [1, -2]})).unwrap_err();
+        let negative = chart(
+            &mut art,
+            Chart {
+                labels: vec!["a".into(), "b".into()],
+                values: vec![1.0, -2.0],
+                ..Chart::default()
+            },
+        )
+        .unwrap_err();
         assert!(negative.contains("item 1 is -2"), "{negative}");
         let kind = chart(
-            &mut app,
-            json!({"labels": ["a"], "values": [1], "kind": "pie"}),
+            &mut art,
+            Chart {
+                labels: vec!["a".into()],
+                values: vec![1.0],
+                kind: Some("pie".into()),
+                ..Chart::default()
+            },
         )
         .unwrap_err();
         assert!(kind.contains("bar or hbar"), "{kind}");
@@ -496,14 +523,29 @@ mod tests {
 
     #[test]
     fn a_second_chart_takes_the_next_free_prefix_and_hbar_runs_along_x() {
-        let mut app = TestApp::<crate::App>::new().unwrap();
-        chart(&mut app, json!({"labels": ["a"], "values": [1]})).unwrap();
+        let mut art = Replica::<Artwork>::new();
         chart(
-            &mut app,
-            json!({"labels": ["done"], "values": [3], "max": 4, "kind": "hbar", "box": [0, 0, 400, 40]}),
+            &mut art,
+            Chart {
+                labels: vec!["a".into()],
+                values: vec![1.0],
+                ..Chart::default()
+            },
         )
         .unwrap();
-        let bar = rect_of(&app.state(), "chart-2-bar-1");
+        chart(
+            &mut art,
+            Chart {
+                labels: vec!["done".into()],
+                values: vec![3.0],
+                max: Some(4.0),
+                kind: Some("hbar".into()),
+                area: Some([0.0, 0.0, 400.0, 40.0]),
+                ..Chart::default()
+            },
+        )
+        .unwrap();
+        let bar = rect_of(&art.state().unwrap(), "chart-2-bar-1");
         assert_eq!(bar[2], 300.0, "three quarters of the box's width");
     }
 

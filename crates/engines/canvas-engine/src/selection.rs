@@ -12,9 +12,9 @@
 )]
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::Refusal;
-use ui::tilo_resource::{self, JsonSchema, order};
-use ui::vello::kurbo::{BezPath, Rect, Shape as _};
+use tilo_resource::Refusal;
+use tilo_resource::{self, JsonSchema, order};
+use tilo_ui::vello::kurbo::{BezPath, Rect, Shape as _};
 
 use crate::actions::{add_marks, derived_id, placed, refuse, target_layer, units};
 use crate::model::{
@@ -88,7 +88,7 @@ fn mark_region(mark: &Mark) -> Result<Region, Refusal> {
 
 /// The outline of the area a mark covers, in artwork units.
 pub(crate) fn mark_outline(mark: &Mark) -> Result<BezPath, Refusal> {
-    use ui::vello::kurbo::{Cap, Join, Stroke, StrokeOpts};
+    use tilo_ui::vello::kurbo::{Cap, Join, Stroke, StrokeOpts};
     let filled = mark.style.fill.is_some() || mark.style.gradient.is_some() || !mark.inked();
     let path: BezPath = match &mark.shape {
         Shape::Text { .. } => {
@@ -104,7 +104,7 @@ pub(crate) fn mark_outline(mark: &Mark) -> Result<BezPath, Refusal> {
             let pen = Stroke::new(width)
                 .with_caps(Cap::Round)
                 .with_join(Join::Round);
-            ui::vello::kurbo::stroke(shape.path(), &pen, &StrokeOpts::default(), 0.05)
+            tilo_ui::vello::kurbo::stroke(shape.path(), &pen, &StrokeOpts::default(), 0.05)
         }
     };
     let mut path = path;
@@ -161,7 +161,7 @@ impl Select {
         }
         if let Some(bounds) = self.ellipse {
             let bounds = check_box(bounds, "ellipse")?;
-            let ellipse = ui::vello::kurbo::Ellipse::from_rect(bounds);
+            let ellipse = tilo_ui::vello::kurbo::Ellipse::from_rect(bounds);
             parts.push(Region::of_path(&ellipse.to_path(0.05)));
         }
         if let Some(points) = &self.points {
@@ -188,7 +188,7 @@ impl Select {
             .reduce(|all, part| all.combine(&part, Op::Union)))
     }
 
-    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
+    pub fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
         if self.mode.as_deref() == Some("none") {
             doc.selection = None;
             return Ok(());
@@ -256,7 +256,7 @@ impl Select {
             .clone()
             .filter(|_| mode == "replace" && self.invert != Some(true) && self.grow.is_none());
         if let Some(Matte { src, rect }) = &matte
-            && (ui::tilo_actions::content_hash(src).is_none()
+            && (tilo_ui::tilo_actions::content_hash(src).is_none()
                 || !rect.iter().all(|value| value.is_finite())
                 || rect[2] <= 0.0
                 || rect[3] <= 0.0)
@@ -287,7 +287,7 @@ fn selected_shape(art: &Artwork) -> Result<(Shape, f64), Refusal> {
 }
 
 impl UseSelection {
-    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
+    pub fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
         if let Some(cleaned) = self
             .cleaned
             .as_deref()
@@ -390,7 +390,7 @@ fn give_pictures(
     pictures: &[[String; 2]],
 ) -> Result<(), Refusal> {
     for [id, src] in pictures {
-        if ui::tilo_actions::content_hash(src).is_none() {
+        if tilo_ui::tilo_actions::content_hash(src).is_none() {
             return Err(refuse(format!("{src:?} is not a content address")));
         }
         let mark = art
@@ -510,7 +510,7 @@ pub(crate) fn remove_layer_marks(doc: &mut Artwork, art: &Artwork, layer: &str) 
 }
 
 impl Combine {
-    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
+    pub fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
         let op = Op::parse(&self.op).ok_or_else(|| {
             refuse(format!(
                 "op {:?} must be union, subtract, intersect or exclude",
@@ -548,9 +548,9 @@ impl Combine {
             style.stroke_width = 0.0;
         }
         if let (Some(gradient), Some(transform)) = (&mut style.gradient, bottom.transform) {
-            let affine = ui::vello::kurbo::Affine::new(transform);
+            let affine = tilo_ui::vello::kurbo::Affine::new(transform);
             for point in [&mut gradient.from, &mut gradient.to] {
-                let at = affine * ui::vello::kurbo::Point::new(point[0], point[1]);
+                let at = affine * tilo_ui::vello::kurbo::Point::new(point[0], point[1]);
                 *point = [at.x, at.y];
             }
         }

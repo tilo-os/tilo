@@ -5,9 +5,9 @@
     reason = "float geometry, and point indices bounded by the strokes they index"
 )]
 
-use ui::tilo_resource::Refusal;
-use ui::tilo_resource::order;
-use ui::vello::kurbo::{Line, ParamCurveNearest as _, Point};
+use tilo_resource::Refusal;
+use tilo_resource::order;
+use tilo_ui::vello::kurbo::{Line, ParamCurveNearest as _, Point};
 
 use crate::model::{Artwork, MAX_POINTS, Mark, Shape, StrokePoint};
 
@@ -247,7 +247,7 @@ mod tests {
         phase an_oversized_extension_is_refused_without_losing_points;
         {
             use crate::actions::{EditMarks, NewStroke, Paint};
-            use ui::prelude::Replica;
+            use tilo_resource::Replica;
 
             for near_start in [false, true] {
                 let mut art = Replica::<Artwork>::new();
@@ -255,7 +255,7 @@ mod tests {
                     strokes: vec![NewStroke {
                         id: Some("line".into()),
                         points: (0..MAX_POINTS - 1)
-                            .map(|x| vec![ui::num::f64_of_usize(x), 20.0])
+                            .map(|x| vec![tilo_ui::num::f64_of_usize(x), 20.0])
                             .collect(),
                         size: 4.0,
                         colour: "#112233".into(),

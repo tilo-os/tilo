@@ -2,7 +2,7 @@
 //! by name, and the views a caller with no screen uses to see it.
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{
+use tilo_resource::{
     self, ActionCx, ActionRef, Doc, Invoke, JsonSchema, ModelError, Place, Refusal, SearchEntry,
     resource,
 };
@@ -23,6 +23,9 @@ use crate::svg::ImportSvg as SvgImport;
 /// The kind the artwork's typed references name, so a control binding one
 /// finds the action it publishes.
 pub const ARTWORK_KIND: tilo_resource::ResourceKind = tilo_resource::ResourceKind::of::<Artwork>();
+
+/// The item the artwork publishes its selection as, so a view and an agent name the same one.
+pub const SELECTION_ITEM: &str = "selection";
 
 /// Parts of the artwork's verbs that controls bind.
 impl Artwork {
@@ -266,7 +269,7 @@ pub struct Export {
     #[schema(range(min = 1, max = 100))]
     pub quality: Option<u8>,
     /// An absolute `.png`, `.jpg` or `.webp` path to write it to.
-    pub path: Option<ui::tilo_resource::AbsolutePath>,
+    pub path: Option<tilo_resource::AbsolutePath>,
 }
 
 /// Find an area in the picture of the artwork: like colour touching a
@@ -304,7 +307,7 @@ pub struct ExportSvg {
     /// Text along a path is always outlined.
     pub outline_text: Option<bool>,
     /// An absolute `.svg` path to write it to.
-    pub path: Option<ui::tilo_resource::AbsolutePath>,
+    pub path: Option<tilo_resource::AbsolutePath>,
 }
 
 /// Save the artwork as a `.artwork` file.
@@ -312,15 +315,19 @@ pub struct ExportSvg {
 #[serde(deny_unknown_fields)]
 pub struct SaveArtwork {
     /// An absolute `.artwork` path to write; else kept as content.
-    pub path: Option<ui::tilo_resource::AbsolutePath>,
+    pub path: Option<tilo_resource::AbsolutePath>,
 }
 
 /// What the canvas answers to look at, measure, compare and write out the
 /// artwork: views read it as it is or was, effects write a picture or a
 /// file of it. Each takes its fields as named arguments, as its schema
 /// describes them, and answers with JSON.
-#[derive(Clone, Debug, PartialEq, ui::tilo_resource::Effect)]
-#[effect(operation = "canvas.view", app = "so.tilo.canvas")]
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(
+    operation = "canvas.view",
+    app = "so.tilo.canvas",
+    catalogue = "../../../apps/canvas/locales"
+)]
 pub enum ViewOp {
     /// Look at the artwork.
     ///
@@ -458,7 +465,7 @@ pub fn keep_picture(src: &str) -> Result<(String, (u32, u32)), String> {
         base64::engine::general_purpose::STANDARD
             .decode(encoded)
             .map_err(|error| format!("the inline picture is not base64: {error}"))?
-    } else if ui::tilo_actions::content_hash(src).is_some() {
+    } else if tilo_ui::tilo_actions::content_hash(src).is_some() {
         let bytes = crate::picture::bytes_of(&crate::content::store(), src)
             .ok_or_else(|| format!("{src} is not in this app's content store"))?;
         let size = picture_size(src, &bytes)?;
@@ -576,7 +583,7 @@ fn artwork_bytes(file: &str) -> Result<Vec<u8>, String> {
     if trimmed.starts_with('{') {
         return Ok(trimmed.as_bytes().to_vec());
     }
-    if let Some(hash) = ui::tilo_actions::content_hash(trimmed) {
+    if let Some(hash) = tilo_ui::tilo_actions::content_hash(trimmed) {
         return crate::content::store()
             .read(hash)
             .ok_or_else(|| format!("no stored content {trimmed}"));
@@ -605,7 +612,8 @@ pub fn store(bytes: &[u8]) -> Result<String, String> {
     let hash = crate::content::store()
         .put(bytes)
         .map_err(|error| format!("the content could not be stored: {error}"))?;
-    ui::tilo_actions::content_resource(&hash).ok_or_else(|| "the content has no address".to_owned())
+    tilo_ui::tilo_actions::content_resource(&hash)
+        .ok_or_else(|| "the content has no address".to_owned())
 }
 
 /// What the verbs resolve where they are invoked, from the world outside:
@@ -693,6 +701,7 @@ impl Artwork {
 /// Each takes its documented argument struct flat, applies to the artwork
 /// as read, and is refused whole when any part of it is.
 #[resource(
+    catalogue = "../../../apps/canvas/locales",
     kind = "canvas.artwork",
     app = "so.tilo.canvas",
     initialize = Artwork::genesis,
@@ -915,7 +924,7 @@ impl Artwork {
     ) -> Result<(), Refusal> {
         // The picture is named by its content, which every replica reads
         // from its own store.
-        if ui::tilo_actions::content_hash(&picture.path).is_none() {
+        if tilo_ui::tilo_actions::content_hash(&picture.path).is_none() {
             return Err(Refusal::new(format!(
                 "{:?} is not kept as content: open names a picture by its content address",
                 picture.path
@@ -988,10 +997,7 @@ impl Artwork {
     /// every member holds them — so a peer draws the selection on
     /// their own screen, and a member with no pointer of its own shows
     /// what it picked.
-    fn lands(
-        state: &Self,
-        action: &<Self as ui::tilo_resource::Resource>::Action,
-    ) -> Option<Place> {
+    fn lands(state: &Self, action: &<Self as tilo_resource::Resource>::Action) -> Option<Place> {
         let ArtworkAction::Select(select) = &action.operation else {
             return None;
         };
@@ -1005,7 +1011,7 @@ impl Artwork {
             .collect();
         let (first, last) = (*picked.first()?, picked.last()?);
         Some(Place::Range {
-            item: crate::surface::peers::SELECTION_ITEM.to_owned(),
+            item: SELECTION_ITEM.to_owned(),
             start: first,
             end: last.saturating_add(1),
         })
@@ -1090,7 +1096,7 @@ impl Artwork {
     pub(crate) fn apply_to(doc: &mut Doc, invoke: impl Into<Invoke<Self>>) {
         use tilo_resource::__private::ReadDoc as _;
         use tilo_resource::Resource as _;
-        if doc.length(&ui::automerge::ROOT) == 0 {
+        if doc.length(&tilo_ui::automerge::ROOT) == 0 {
             Self::initialize(doc).expect("a blank artwork initializes");
         }
         let mut replica = tilo_resource::Replica::<Self>::from_doc(std::mem::take(doc));
@@ -1107,8 +1113,8 @@ impl Artwork {
 
 #[cfg(test)]
 mod export_reads {
-    use ui::tilo_actions::ActionKind;
-    use ui::tilo_resource::Effect as _;
+    use tilo_resource::Effect as _;
+    use tilo_ui::tilo_actions::ActionKind;
 
     /// Looking at the artwork and keeping a picture, an SVG or the artwork
     /// file of it as content only read it, so whoever may read the artwork,

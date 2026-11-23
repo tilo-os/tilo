@@ -472,7 +472,7 @@ fn each<T: Send>(parts: Vec<T>, work: &(impl Fn(T) + Sync)) {
         parts.into_iter().for_each(work);
         return;
     }
-    ui::rt::cpu_pool().scope(|scope| {
+    tilo_ui::rt::cpu_pool().scope(|scope| {
         for part in parts {
             scope.spawn(move |_| work(part));
         }

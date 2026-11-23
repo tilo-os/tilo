@@ -421,7 +421,7 @@ pub fn flood(
 mod tests {
     use super::*;
     use crate::region::{Coverage, Region};
-    use ui::vello::kurbo::{Affine, Point};
+    use tilo_ui::vello::kurbo::{Affine, Point};
 
     /// A picture `width` by `height` painted by `paint(x, y)`.
     fn picture(width: usize, height: usize, paint: impl Fn(usize, usize) -> [u8; 3]) -> Vec<u8> {

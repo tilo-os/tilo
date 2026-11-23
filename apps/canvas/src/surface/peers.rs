@@ -25,7 +25,7 @@ pub const PEER_VIEW_TTL: Duration = Duration::from_secs(10 * 60);
 pub const MAX_PEER_LABEL_BYTES: usize = 128;
 /// The item a presence's place in an artwork is named by: the artwork
 /// itself. A [`Place`](ui::tilo_resource::Place) range over it counts marks.
-pub const SELECTION_ITEM: &str = "selection";
+pub use canvas_engine::resource::SELECTION_ITEM;
 
 /// Where one presence is in the artwork: marks `start..end`, in the order
 /// the artwork keeps them (bottom to top).

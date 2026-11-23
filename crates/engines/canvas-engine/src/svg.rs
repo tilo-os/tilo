@@ -20,9 +20,9 @@ use std::fmt::Write as _;
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, JsonSchema};
-use ui::vello::kurbo::{Affine, BezPath, Point, Rect};
-use ui::vello::peniko::Color;
+use tilo_resource::{self, JsonSchema};
+use tilo_ui::vello::kurbo::{Affine, BezPath, Point, Rect};
+use tilo_ui::vello::peniko::Color;
 use usvg::roxmltree;
 
 use crate::actions::{Draw, NewMark};
@@ -649,7 +649,7 @@ impl Writer {
         let family = font
             .as_deref()
             .and_then(crate::fonts::family)
-            .unwrap_or(ui::UI_SANS_FAMILY);
+            .unwrap_or(tilo_ui::UI_SANS_FAMILY);
         let family = format!("'{}', {generic}", escape(family));
         let (anchor, at) = match (align.as_deref(), width) {
             (Some("center"), Some(width)) => ("middle", x + width / 2.0),
@@ -754,7 +754,7 @@ pub fn source(svg: &str) -> Result<String, String> {
     if trimmed.starts_with('<') {
         return Ok(svg.to_owned());
     }
-    let bytes = if let Some(hash) = ui::tilo_actions::content_hash(trimmed) {
+    let bytes = if let Some(hash) = tilo_ui::tilo_actions::content_hash(trimmed) {
         crate::content::store()
             .read(hash)
             .ok_or_else(|| format!("no stored content {trimmed}"))?

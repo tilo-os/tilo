@@ -6,13 +6,13 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use tilo_content::ContentStore;
-use ui::TextRenderer;
+use tilo_ui::TextRenderer;
 
 use crate::model::Artwork;
 use crate::render::Renderer;
 use crate::resource::ViewOp;
 use crate::view_ops::{self, Picture};
-use ui::lock::MutexRecover as _;
+use tilo_ui::lock::MutexRecover as _;
 
 #[derive(Clone, Default)]
 pub struct Pictures {

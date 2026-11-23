@@ -1982,20 +1982,17 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "canvas",
- "i_overlay",
  "image",
  "png",
- "rayon",
  "runtime-dylib",
  "serde",
  "serde_json",
  "tempfile",
  "tilo-app",
+ "tilo-canvas-engine",
  "tilo-content",
- "tilo-files",
  "tilo-model-client",
  "tilo-paint-engine",
- "tilo-subject",
  "tilo-test-env",
  "tilo-wet-media",
  "tracing",
@@ -18112,6 +18109,30 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "tilo-sort",
+]
+
+[[package]]
+name = "tilo-canvas-engine"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "i_overlay",
+ "png",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tilo-content",
+ "tilo-files",
+ "tilo-resource",
+ "tilo-subject",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-wet-media",
+ "tracing",
+ "usvg",
+ "workspace-hack",
+ "zip",
 ]
 
 [[package]]

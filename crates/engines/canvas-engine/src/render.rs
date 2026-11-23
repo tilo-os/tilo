@@ -11,19 +11,19 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use ui::num::f32_of_f64;
+use tilo_ui::num::f32_of_f64;
 
+use tilo_ui::TextRenderer;
+use tilo_ui::vello::Scene;
+use tilo_ui::vello::kurbo::{Affine, BezPath, Cap, Join, PathEl, Point, Rect, Shape as _, Stroke};
+use tilo_ui::vello::peniko::{
+    BlendMode, Color, ColorStop, Compose, Extend, Fill, Gradient as PenikoGradient, ImageBrush,
+    ImageData, Mix,
+};
 use tilo_wet_media::{
     Blend, Canvas, ColourField, Engines, FieldKind, Fill as WetFill, Heightfield, LayerPainter,
     Mark as WetMark, Painted, Pigment, Settings, Stroke as WetStroke, StrokePoint as WetPoint,
     Texture,
-};
-use ui::TextRenderer;
-use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, BezPath, Cap, Join, PathEl, Point, Rect, Shape as _, Stroke};
-use ui::vello::peniko::{
-    BlendMode, Color, ColorStop, Compose, Extend, Fill, Gradient as PenikoGradient, ImageBrush,
-    ImageData, Mix,
 };
 
 use crate::adjust::Grade;
@@ -1207,7 +1207,7 @@ fn draw_picture(
     };
     let mut brush = ImageBrush::new(image).with_alpha(f32_of_f64(mark.style.opacity()));
     if mark.style.pixelated {
-        brush = brush.with_quality(ui::vello::peniko::ImageQuality::Low);
+        brush = brush.with_quality(tilo_ui::vello::peniko::ImageQuality::Low);
     }
     let to_frame = placement.picture_to_local(size) * Affine::scale(step);
     let vignetted = mark
@@ -1291,7 +1291,7 @@ pub fn selection_outline(scene: &mut Scene, path: &BezPath, width: f64, phase: f
 
 fn contours(path: &BezPath, to_cells: Affine) -> Vec<Vec<(f32, f32)>> {
     let mut contours: Vec<Vec<(f32, f32)>> = Vec::new();
-    ui::vello::kurbo::flatten(to_cells * path.clone(), 0.25, |element| match element {
+    tilo_ui::vello::kurbo::flatten(to_cells * path.clone(), 0.25, |element| match element {
         PathEl::MoveTo(at) => contours.push(vec![(f32_of_f64(at.x), f32_of_f64(at.y))]),
         PathEl::LineTo(at) => {
             if let Some(contour) = contours.last_mut() {
@@ -1834,7 +1834,7 @@ fn draw_dabbed(
         }) else {
             return;
         };
-        let image = ui::raster::rgba8(dabs.pixels, dabs.width, dabs.height);
+        let image = tilo_ui::raster::rgba8(dabs.pixels, dabs.width, dabs.height);
         cx.brushes.bytes = cx.brushes.bytes.saturating_add(image.data.len());
         cx.brushes.entries.insert(
             key,
@@ -2056,7 +2056,7 @@ fn draw_feathered(
     let style = &mark.style;
     let closed = mark.shape.closed() || matches!(mark.shape, Shape::Stroke { .. });
     let named = |value: Option<&str>| value.and_then(|value| colour(value, palette));
-    let brush: Option<ui::vello::peniko::Brush> = if closed {
+    let brush: Option<tilo_ui::vello::peniko::Brush> = if closed {
         style
             .gradient
             .as_ref()
@@ -2110,7 +2110,7 @@ fn draw_inner_shadow(
     // silhouette cut out of it, offset; its soft edge reaches inward.
     let margin = shadow.blur + dx.abs() + dy.abs() + 4.0;
     let around = {
-        use ui::vello::kurbo::Shape as _;
+        use tilo_ui::vello::kurbo::Shape as _;
         let mut around = path.bounding_box().inflate(margin, margin).to_path(0.1);
         around.extend(path.iter());
         around
@@ -2150,7 +2150,7 @@ const SHADOW_RINGS: u16 = 10;
 fn soft_paint(
     scene: &mut Scene,
     at: Affine,
-    brush: &ui::vello::peniko::Brush,
+    brush: &tilo_ui::vello::peniko::Brush,
     path: &BezPath,
     (filled, line): (bool, f64),
     soft: f64,
@@ -2176,7 +2176,7 @@ fn soft_paint(
         return;
     }
     let outside = {
-        use ui::vello::kurbo::Shape as _;
+        use tilo_ui::vello::kurbo::Shape as _;
         let mut outside = path
             .bounding_box()
             .inflate(soft + 4.0, soft + 4.0)
@@ -2243,7 +2243,7 @@ fn draw_shadow(
     );
 }
 
-pub fn text_style(shape: &Shape) -> Option<ui::TextStyle> {
+pub fn text_style(shape: &Shape) -> Option<tilo_ui::TextStyle> {
     let Shape::Text {
         size,
         font,
@@ -2258,28 +2258,28 @@ pub fn text_style(shape: &Shape) -> Option<ui::TextStyle> {
         return None;
     };
     let family = match font.as_deref().and_then(crate::fonts::family) {
-        None => ui::FontChoice::SansSerif,
-        Some(family) => ui::FontChoice::Named(family.to_owned()),
+        None => tilo_ui::FontChoice::SansSerif,
+        Some(family) => tilo_ui::FontChoice::Named(family.to_owned()),
     };
     let weight = weight.unwrap_or(400);
     let tier = match weight {
-        0..=449 => ui::TextWeight::Regular,
-        450..=549 => ui::TextWeight::Medium,
-        550..=649 => ui::TextWeight::Semibold,
-        _ => ui::TextWeight::Bold,
+        0..=449 => tilo_ui::TextWeight::Regular,
+        450..=549 => tilo_ui::TextWeight::Medium,
+        550..=649 => tilo_ui::TextWeight::Semibold,
+        _ => tilo_ui::TextWeight::Bold,
     };
     let align = match align.as_deref() {
-        Some("center") => ui::ParagraphAlign::Center,
-        Some("end") => ui::ParagraphAlign::End,
-        _ => ui::ParagraphAlign::Start,
+        Some("center") => tilo_ui::ParagraphAlign::Center,
+        Some("end") => tilo_ui::ParagraphAlign::End,
+        _ => tilo_ui::ParagraphAlign::Start,
     };
     Some(
-        ui::TextStyle::content(f32_of_f64(*size))
+        tilo_ui::TextStyle::content(f32_of_f64(*size))
             .with_family(family)
             .with_weight(tier)
             // The shipped faces are variable: any weight between their
             // lightest and boldest draws as given.
-            .with_font_variation(ui::OpenTypeTag::WEIGHT, f32::from(weight))
+            .with_font_variation(tilo_ui::OpenTypeTag::WEIGHT, f32::from(weight))
             .with_italic(*italic)
             .with_tracking(f32_of_f64(tracking.unwrap_or(0.0) / 1000.0))
             .with_line_height(f32_of_f64(line_height.unwrap_or(1.2)))
@@ -2291,7 +2291,7 @@ pub fn text_style(shape: &Shape) -> Option<ui::TextStyle> {
 /// out in, and how far its first baseline sits below the layout's top.
 fn text_frame(
     shape: &Shape,
-    style: &ui::TextStyle,
+    style: &tilo_ui::TextStyle,
     text: &mut TextRenderer,
 ) -> Option<(f64, f64, Option<f32>)> {
     let Shape::Text {
@@ -2378,12 +2378,12 @@ pub fn letters(shape: &Shape, text: &mut TextRenderer) -> Vec<Letter> {
 /// direction at its middle, the line placed at the path's start, middle or
 /// end by `align`. Letters past either end are left out.
 fn on_path<'a>(
-    glyphs: &'a [ui::GlyphOutline],
+    glyphs: &'a [tilo_ui::GlyphOutline],
     path: &BezPath,
     align: Option<&str>,
-) -> Vec<(BezPath, &'a ui::GlyphOutline)> {
+) -> Vec<(BezPath, &'a tilo_ui::GlyphOutline)> {
     let mut points: Vec<Point> = Vec::new();
-    ui::vello::kurbo::flatten(path.iter(), 0.1, |element| match element {
+    tilo_ui::vello::kurbo::flatten(path.iter(), 0.1, |element| match element {
         PathEl::MoveTo(at) if points.is_empty() => points.push(at),
         PathEl::MoveTo(at) | PathEl::LineTo(at) => points.push(at),
         _ => {}
@@ -2604,7 +2604,7 @@ fn draw_grid(
             label,
             transform * Affine::translate((x + pixel * 2.0, y + pixel)),
             None,
-            &ui::TextStyle::content(font),
+            &tilo_ui::TextStyle::content(font),
         );
     };
     let lines = |from: f64, to: f64| {
@@ -2624,7 +2624,7 @@ fn draw_grid(
             transform,
             line,
             None,
-            &ui::vello::kurbo::Line::new((at, view.y0), (at, view.y1)),
+            &tilo_ui::vello::kurbo::Line::new((at, view.y0), (at, view.y1)),
         );
         tag(scene, text, at + pixel * 2.0, view.y0 + pixel, at);
     }
@@ -2634,7 +2634,7 @@ fn draw_grid(
             transform,
             line,
             None,
-            &ui::vello::kurbo::Line::new((view.x0, at), (view.x1, at)),
+            &tilo_ui::vello::kurbo::Line::new((view.x0, at), (view.x1, at)),
         );
         if at > view.y0 + pixel * 16.0 {
             tag(scene, text, view.x0 + pixel * 2.0, at + pixel, at);

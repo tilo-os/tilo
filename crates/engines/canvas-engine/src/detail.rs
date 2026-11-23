@@ -22,19 +22,19 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use ui::num::f32_of_f64;
+use tilo_ui::num::f32_of_f64;
 
+use tilo_ui::vello::kurbo::{Affine, Rect};
+use tilo_ui::vello::peniko::ImageData;
 use tilo_wet_media::{
     Canvas, Heightfield, LayerPainter, MediumEngine, Painted, Rgb, Settings, Texture, windowed,
 };
-use ui::vello::kurbo::{Affine, Rect};
-use ui::vello::peniko::ImageData;
 
 /// A tile's side, in cells of its level.
 pub const TILE: usize = 256; // a simulation unit, not on-screen spacing
 use crate::content_geometry::FINEST;
 use crate::picture::image_of;
-use ui::lock::MutexRecover as _;
+use tilo_ui::lock::MutexRecover as _;
 const KEEP: usize = 240;
 /// How much coarser than a pixel the coarse picture may be before a finer
 /// level is simulated: a little blur is cheaper than a level.
@@ -380,7 +380,7 @@ impl Tiles {
             let shared = Arc::clone(&self.shared);
             // Detached: a tile finished after the view moved on is kept
             // for when it comes back.
-            drop(ui::rt::app().spawn_blocking(move || {
+            drop(tilo_ui::rt::app().spawn_blocking(move || {
                 let image = job.run();
                 let mut shared = shared.lock_recover();
                 shared.running.remove(&job.key);
@@ -508,7 +508,7 @@ impl Tiles {
             .collect();
         // On the CPU pool, as every app's parallel work: the pool sizes it
         // to the device, and in a browser page its one thread.
-        let done: Vec<(blake3::Hash, ImageData)> = ui::rt::cpu_pool()
+        let done: Vec<(blake3::Hash, ImageData)> = tilo_ui::rt::cpu_pool()
             .install(|| todo.par_iter().map(|job| (job.key, job.run())).collect());
         for (key, image) in done {
             self.ready.insert(key, (image, self.frame));

@@ -12,10 +12,10 @@
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
-use ui::num::usize_of_f64;
+use tilo_ui::num::usize_of_f64;
 
-use ui::TextRenderer;
-use ui::vello::kurbo::{Affine, Point, Rect};
+use tilo_ui::TextRenderer;
+use tilo_ui::vello::kurbo::{Affine, Point, Rect};
 
 use crate::model::{Artwork, path_data};
 use crate::region::{Coverage, Op, Region};
@@ -185,7 +185,7 @@ pub struct ColourSearch {
 }
 
 struct Looking {
-    pixels: ui::offscreen::pixels::PixelsRequest,
+    pixels: tilo_ui::offscreen::pixels::PixelsRequest,
     sight: Glance,
 }
 

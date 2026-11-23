@@ -11,12 +11,12 @@
 )]
 
 use std::collections::BTreeMap;
-use ui::num::f64_of_usize;
+use tilo_ui::num::f64_of_usize;
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::Refusal;
-use ui::tilo_resource::{self, JsonSchema, order};
-use ui::vello::kurbo::BezPath;
+use tilo_resource::Refusal;
+use tilo_resource::{self, JsonSchema, order};
+use tilo_ui::vello::kurbo::BezPath;
 
 use crate::media::{self, MediumSpec};
 use crate::model::{
@@ -27,7 +27,7 @@ use crate::model::{
 /// The arguments `invoke` gives the verb `id`, read as that verb's struct;
 /// none when it invokes another.
 pub fn read_as<T: serde::de::DeserializeOwned>(
-    invoke: &ui::tilo_resource::Invoke<Artwork>,
+    invoke: &tilo_resource::Invoke<Artwork>,
     id: &str,
 ) -> Option<T> {
     if invoke.id != id {
@@ -650,7 +650,7 @@ fn check_style(art: &Artwork, layer: &str, style: &Style) -> Result<(), Refusal>
 /// A transform must be finite and keep some area, so the mark can be found
 /// and turned back.
 fn check_transform(transform: [f64; 6]) -> Result<(), Refusal> {
-    let affine = ui::vello::kurbo::Affine::new(transform);
+    let affine = tilo_ui::vello::kurbo::Affine::new(transform);
     if transform
         .iter()
         .all(|value| value.is_finite() && value.abs() <= MAX_SIDE * 4.0)
@@ -701,7 +701,7 @@ pub(crate) fn units<'a>(art: &'a Artwork, ids: &[String]) -> Result<Vec<Vec<&'a 
 }
 
 /// The extent of a unit of marks: what of them can show.
-fn extent(art: &Artwork, unit: &[&Mark]) -> ui::vello::kurbo::Rect {
+fn extent(art: &Artwork, unit: &[&Mark]) -> tilo_ui::vello::kurbo::Rect {
     unit.iter()
         .map(|mark| art.visible_bounds(mark))
         .reduce(|a, b| a.union(b))
@@ -870,7 +870,7 @@ pub(crate) fn placed(id: String, name: String, shape: Shape, style: Style) -> Ma
 /// What a new mark's `clip` names, as the mark keeps it: the mark it is
 /// cut to, or the area it is kept inside (`selection` is the selection's
 /// area as it is now; SVG path data is an area of its own).
-pub(crate) fn clip_named(art: &Artwork, clip: Option<&str>) -> Result<(String, String), Refusal> {
+pub fn clip_named(art: &Artwork, clip: Option<&str>) -> Result<(String, String), Refusal> {
     match clip {
         None | Some("") => Ok((String::new(), String::new())),
         Some(SELECTION_CLIP) => {
@@ -1118,8 +1118,12 @@ impl Paint {
 /// the layer's content, as a picture's cut-out goes with the picture. A
 /// mask whose own marks were edited too, or whose layer's marks moved
 /// apart or only in part, stays where it is.
-fn carry_masks(doc: &mut Artwork, art: &Artwork, travels: &[(&Mark, ui::vello::kurbo::Affine)]) {
-    let same = |a: ui::vello::kurbo::Affine, b: ui::vello::kurbo::Affine| {
+fn carry_masks(
+    doc: &mut Artwork,
+    art: &Artwork,
+    travels: &[(&Mark, tilo_ui::vello::kurbo::Affine)],
+) {
+    let same = |a: tilo_ui::vello::kurbo::Affine, b: tilo_ui::vello::kurbo::Affine| {
         a.as_coeffs()
             .iter()
             .zip(b.as_coeffs())
@@ -1137,13 +1141,14 @@ fn carry_masks(doc: &mut Artwork, art: &Artwork, travels: &[(&Mark, ui::vello::k
         let together = layer_travels.all(|&(_, other)| same(went, other));
         let whole = count == art.marks_of(&layer.id).count();
         let mask_edited = travels.iter().any(|(mark, _)| mark.layer == mask.id);
-        if !together || !whole || mask_edited || same(went, ui::vello::kurbo::Affine::IDENTITY) {
+        if !together || !whole || mask_edited || same(went, tilo_ui::vello::kurbo::Affine::IDENTITY)
+        {
             continue;
         }
         let [a, b, c, d, dx, dy] = went.as_coeffs();
         let shift = same(
-            ui::vello::kurbo::Affine::new([a, b, c, d, 0.0, 0.0]),
-            ui::vello::kurbo::Affine::IDENTITY,
+            tilo_ui::vello::kurbo::Affine::new([a, b, c, d, 0.0, 0.0]),
+            tilo_ui::vello::kurbo::Affine::IDENTITY,
         );
         for mark in art.marks_of(&mask.id) {
             let mut carried = mark.clone();
@@ -1242,14 +1247,14 @@ impl EditMarks {
         let (mirror, crop) = self.picture_edits()?;
         let turns = self.scale.is_some() || self.rotate.is_some() || self.flip.is_some();
         // Where each mark went, for the masks that go with their layer.
-        let mut travels: Vec<(&Mark, ui::vello::kurbo::Affine)> = Vec::new();
+        let mut travels: Vec<(&Mark, tilo_ui::vello::kurbo::Affine)> = Vec::new();
         for unit in units {
-            let centre = extent(art, &unit).center() + ui::vello::kurbo::Vec2::new(dx, dy);
-            let about = ui::vello::kurbo::Affine::translate(centre.to_vec2())
-                * ui::vello::kurbo::Affine::rotate(rotate.to_radians())
-                * ui::vello::kurbo::Affine::scale(scale)
+            let centre = extent(art, &unit).center() + tilo_ui::vello::kurbo::Vec2::new(dx, dy);
+            let about = tilo_ui::vello::kurbo::Affine::translate(centre.to_vec2())
+                * tilo_ui::vello::kurbo::Affine::rotate(rotate.to_radians())
+                * tilo_ui::vello::kurbo::Affine::scale(scale)
                 * mirror
-                * ui::vello::kurbo::Affine::translate(-centre.to_vec2());
+                * tilo_ui::vello::kurbo::Affine::translate(-centre.to_vec2());
             let went = self.travel(turns.then_some(about), (dx, dy));
             for original in unit {
                 if destination
@@ -1283,7 +1288,7 @@ impl EditMarks {
                     mark.transform = Some((about * mark.affine()).as_coeffs());
                 }
                 if let Some(transform) = self.transform {
-                    mark = mark.transformed(ui::vello::kurbo::Affine::new(transform));
+                    mark = mark.transformed(tilo_ui::vello::kurbo::Affine::new(transform));
                 }
                 // Cut last: the area is where it is now, wherever the mark moved.
                 self.recut(art, &mut mark)?;
@@ -1318,23 +1323,23 @@ impl EditMarks {
     /// turns, then the edit's own transform.
     fn travel(
         &self,
-        about: Option<ui::vello::kurbo::Affine>,
+        about: Option<tilo_ui::vello::kurbo::Affine>,
         by: (f64, f64),
-    ) -> ui::vello::kurbo::Affine {
+    ) -> tilo_ui::vello::kurbo::Affine {
         self.transform.map_or(
-            ui::vello::kurbo::Affine::IDENTITY,
-            ui::vello::kurbo::Affine::new,
-        ) * about.unwrap_or(ui::vello::kurbo::Affine::IDENTITY)
-            * ui::vello::kurbo::Affine::translate(by)
+            tilo_ui::vello::kurbo::Affine::IDENTITY,
+            tilo_ui::vello::kurbo::Affine::new,
+        ) * about.unwrap_or(tilo_ui::vello::kurbo::Affine::IDENTITY)
+            * tilo_ui::vello::kurbo::Affine::translate(by)
     }
 
     /// The flip as an affine about the origin, and the crop asked for,
     /// refusing what cannot be.
-    fn picture_edits(&self) -> Result<(ui::vello::kurbo::Affine, Option<[f64; 4]>), Refusal> {
+    fn picture_edits(&self) -> Result<(tilo_ui::vello::kurbo::Affine, Option<[f64; 4]>), Refusal> {
         let mirror = match self.flip.as_deref() {
-            None => ui::vello::kurbo::Affine::IDENTITY,
-            Some("horizontal") => ui::vello::kurbo::Affine::FLIP_X,
-            Some("vertical") => ui::vello::kurbo::Affine::FLIP_Y,
+            None => tilo_ui::vello::kurbo::Affine::IDENTITY,
+            Some("horizontal") => tilo_ui::vello::kurbo::Affine::FLIP_X,
+            Some("vertical") => tilo_ui::vello::kurbo::Affine::FLIP_Y,
             Some(other) => {
                 return Err(refuse(format!(
                     "flip {other:?} must be horizontal or vertical"
@@ -1737,14 +1742,17 @@ pub(crate) fn set_artwork(
 ) -> Result<(), Refusal> {
     let crop = match (&set.crop, &set.fit) {
         (Some(_), Some(_)) => return Err(refuse("give crop or fit, not both")),
-        (Some([x, y, width, height]), None) => {
-            Some(ui::vello::kurbo::Rect::new(*x, *y, x + width, y + height))
-        }
+        (Some([x, y, width, height]), None) => Some(tilo_ui::vello::kurbo::Rect::new(
+            *x,
+            *y,
+            x + width,
+            y + height,
+        )),
         // Whole units inside what the mark shows, so no sliver of ground
         // is left along an edge.
         (None, Some(id)) => {
             let shown = extent(art, &units_of(art, id)?);
-            Some(ui::vello::kurbo::Rect::new(
+            Some(tilo_ui::vello::kurbo::Rect::new(
                 (shown.x0 - 1e-6).ceil(),
                 (shown.y0 - 1e-6).ceil(),
                 (shown.x1 + 1e-6).floor(),
@@ -2002,7 +2010,7 @@ pub(crate) fn replace(
 fn crop_artwork(
     doc: &mut Artwork,
     art: &Artwork,
-    area: ui::vello::kurbo::Rect,
+    area: tilo_ui::vello::kurbo::Rect,
 ) -> Result<(), Refusal> {
     // Whole units, so the picture an export makes is exactly the area.
     let (x0, y0) = (area.x0.round(), area.y0.round());
@@ -2026,7 +2034,7 @@ fn crop_artwork(
         if let Some(selection) = &art.selection {
             let mut moved = selection.clone();
             let mut path = BezPath::from_svg(&selection.d).unwrap_or_default();
-            path.apply_affine(ui::vello::kurbo::Affine::translate((-x0, -y0)));
+            path.apply_affine(tilo_ui::vello::kurbo::Affine::translate((-x0, -y0)));
             moved.d = crate::model::path_data(&path);
             if let Some(matte) = &mut moved.matte {
                 matte.rect[0] -= x0;
@@ -2274,7 +2282,7 @@ pub(crate) fn edit_layer(
 
 impl Align {
     pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
-        use ui::vello::kurbo::Rect;
+        use tilo_ui::vello::kurbo::Rect;
         let units = units(art, &self.ids)?;
         if self.edge.is_none() && self.distribute.is_none() {
             return Err(refuse(
@@ -2398,7 +2406,7 @@ pub(crate) fn set_reference(
     }
     let mut reference = match (&art.reference, &set.image) {
         (_, Some(image)) => {
-            if ui::tilo_actions::content_hash(image).is_none() {
+            if tilo_ui::tilo_actions::content_hash(image).is_none() {
                 return Err(refuse(format!(
                     "image {image:?} must be an absolute path to a PNG or JPEG, a content address, or data:image/png;base64,…"
                 )));
@@ -2446,8 +2454,8 @@ mod crop_tests {
     use super::*;
     use crate::model::Matte;
     use crate::selection::{Select, UseSelection};
-    use ui::prelude::Replica;
-    use ui::vello::kurbo::Rect;
+    use tilo_resource::Replica;
+    use tilo_ui::vello::kurbo::Rect;
 
     #[test]
     fn cropping_moves_the_active_selection_and_its_soft_edge() {
