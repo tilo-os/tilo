@@ -54,11 +54,20 @@ impl ContentHandoff {
     /// row of the entity that holds those bytes: immediate, taking nothing.
     #[must_use]
     pub fn spec(&self, id: &str, hash: &str) -> ActionSpec {
-        ApplicationLaunch::with_content(self.app.clone(), hash.to_owned()).spec(
-            id,
-            &self.label,
-            &self.description,
-        )
+        self.spec_named(id, hash, None)
+    }
+
+    /// [`Self::spec`] with the file's name, where the one handing it over knows it
+    /// (`recording.mkv`): bytes alone say an image is a PNG, never that a video is an MKV, so
+    /// the app it opens in reads the kind and the container from the name.
+    #[must_use]
+    pub fn spec_named(&self, id: &str, hash: &str, name: Option<&str>) -> ActionSpec {
+        let launch = ApplicationLaunch::with_content(self.app.clone(), hash.to_owned());
+        let launch = match name {
+            Some(name) => launch.named(name),
+            None => launch,
+        };
+        launch.spec(id, &self.label, &self.description)
     }
 
     /// An emitter opening whatever content hash it is handed, in this app:

@@ -29,7 +29,9 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# The window half draws every installed tilolang app; a video a view declares plays through the
+# shared player, so the runtime carries the decoder every app's window would otherwise link.
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["decode"] }
 tilolang-tilo = { path = "../../crates/platform/tilolang-tilo" }
 tilo-failure = { path = "../../crates/platform/tilo-failure" }
 # The app window's half of the window, and the patch protocol between it and the instance.
@@ -49,6 +51,8 @@ tilolang-tilo = { path = "../../crates/platform/tilolang-tilo", features = ["tes
 mail-engine = { path = "../../crates/platform/mail-engine", features = ["test-support"] }
 tilo-account-probe = { path = "../../crates/platform/account-probe", features = ["test-support"] }
 tilo-content = { path = "../../crates/system/content" }
+# The address a clip plays at (`tests/video_decode.rs`), as the player opens it.
+media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # A hosted app's window against the tilolang host running its instance (`tests/hosted.rs`),
 # whose tests play the broker over the host's own fake (`testing`).
@@ -76,6 +80,9 @@ uuid.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+# A tl Playback's `outputs` reaches the computer's sound devices and casts to a television: the
+# window process plays them through the one playback host, so the cast stacks link here.
+media = { package = "tilo-media", path = "../../crates/platform/tilo-media", features = ["cast"] }
 # Later builds `tilolang dev` publishes are watched (`src/updates.rs`).
 tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"] }
 tilo-startup-metrics = { version = "0.1.0", path = "../../crates/system/tilo-startup-metrics" }

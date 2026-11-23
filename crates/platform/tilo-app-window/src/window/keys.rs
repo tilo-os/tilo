@@ -58,6 +58,9 @@ pub(super) enum Press {
     Lead(String),
     Commit,
     Run(String, String),
+    /// Run the action at this address, as the palette runs it: by its address, with the resource the
+    /// window shows as its target and no other argument.
+    RunAction(tilo_actions::ActionAddress),
 }
 
 pub(super) fn keyed<'a>(widget: &'a dyn Widget, key: &str) -> Option<&'a dyn Widget> {

@@ -231,9 +231,16 @@ pub struct Presentation {
 /// shortcut.
 pub(super) fn declared_key(e: &Expr) -> Result<String, String> {
     let text = plain_text(e).unwrap_or_default();
-    tilo_ui_graph::keys::Chord::parse(&text)
-        .map(|chord| chord.text())
-        .map_err(|said| format!("`key:` takes a shortcut: {said}"))
+    let chord = tilo_ui_graph::keys::Chord::parse(&text)
+        .map_err(|said| format!("`key:` takes a shortcut: {said}"))?;
+    // F1 names every key the desktop answers, so nothing may be bound to it.
+    if chord.key == "f1" {
+        return Err(format!(
+            "`{}` is the desktop's own key, which names every shortcut: no action can answer it",
+            chord.text()
+        ));
+    }
+    Ok(chord.text())
 }
 
 pub fn sentence_case(name: &str) -> String {

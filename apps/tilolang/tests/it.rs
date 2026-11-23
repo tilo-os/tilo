@@ -45,6 +45,8 @@ mod narrow;
 mod open_by;
 mod settle;
 mod support;
+#[path = "video_decode.rs"]
+mod video_decode;
 #[path = "views.rs"]
 mod views;
 

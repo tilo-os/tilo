@@ -2180,16 +2180,23 @@ impl Resolver<'_> {
         out
     }
 
-    /// Two actions of one target that declare the same shortcut: one would silently take the other's
-    /// key wherever both are offered.
+    /// Two actions of one scope that answer the same shortcut: one would silently take the other's
+    /// key wherever both are offered. A scope is what an action's key is answered on
+    /// ([`Self::shortcut_scope`]): a row's type, or the window.
     fn one_shortcut_each(&mut self, module: &ast::Module) {
         let mut seen: Vec<(Option<TypeKey>, String, String)> = Vec::new();
         for item in &module.items {
             let Item::Action(a) = item else { continue };
-            let Some(opt) = a.opts.iter().find(|o| o.name.name == "key") else {
-                continue;
-            };
-            let Ok(key) = declared_key(&opt.value) else {
+            let span = a
+                .opts
+                .iter()
+                .find(|o| o.name.name == "key")
+                .map_or(a.name.span, |o| o.value.span);
+            let Some(key) = self
+                .env
+                .own_callable(&a.name.name)
+                .and_then(|c| c.present.key.clone())
+            else {
                 continue;
             };
             let scope = self
@@ -2206,7 +2213,7 @@ impl Resolver<'_> {
                         "`{key}` is already `{holder}`'s shortcut: two actions of the window cannot answer the same keys"
                     ),
                 };
-                self.err("E090", opt.value.span, said);
+                self.err("E090", span, said);
                 continue;
             }
             seen.push((scope, key, a.name.name.clone()));

@@ -18,6 +18,10 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
+use media::playback::OutputState;
+use media::playback_bridge::{CollectionOutput, PlaybackBridge};
+use media::playback_cast::transport::ProjectorTransport;
+use media::playback_sink::SystemSinkFactory;
 use tilo_app_window::AppWindow;
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
@@ -375,6 +379,12 @@ impl InProcess {
 struct Connected {
     view: AppWindow,
     watch: Option<Watch>,
+    /// Where the app's playback plays: its `outputs` Collection, applied to the computer's sound
+    /// devices and to a television a person casts to.
+    playback: PlaybackBridge<SystemSinkFactory, ProjectorTransport>,
+    /// What each place is called, by its id, from the outputs the app last sent: a refusal or a
+    /// drop is said by the name the person gave it.
+    labels: std::collections::BTreeMap<String, String>,
 }
 
 /// The window. See the module docs.
@@ -541,9 +551,16 @@ impl HostedWindow {
         match connected {
             Ok((transport, watched)) => {
                 let watch = Watch::start(watched, wake);
+                let mut view = AppWindow::new(Box::new(transport), Vec::new());
+                // A floating surface the view asks for mirrors its app's own player.
+                if let Some(bundle) = crate::installed_bundle() {
+                    view.set_app_id(bundle.meta.app.as_str());
+                }
                 self.connected = Some(Connected {
-                    view: AppWindow::new(Box::new(transport), Vec::new()),
+                    view,
                     watch,
+                    playback: PlaybackBridge::new(SystemSinkFactory, ProjectorTransport::new()),
+                    labels: std::collections::BTreeMap::new(),
                 });
                 true
             }
@@ -561,6 +578,50 @@ impl HostedWindow {
             watch.follow();
         }
         let received = connected.view.receive();
+        // The app's playback changed: its places play where the person put them, on this
+        // computer's devices and on a television. A place that refuses is said, and the others
+        // keep playing.
+        while let Some(outputs) = connected.view.take_outputs() {
+            match serde_json::from_slice::<Vec<CollectionOutput>>(&outputs) {
+                Ok(outputs) => {
+                    connected.labels = outputs
+                        .iter()
+                        .map(|output| (output.id.clone(), output.label()))
+                        .collect();
+                    if let Err(failed) = connected.playback.apply(&outputs) {
+                        // What the app's view cannot show itself — the system's own doing, not
+                        // the app's — is said in the window that plays it.
+                        for why in failed {
+                            let said = Self::named(connected, &why);
+                            connected
+                                .view
+                                .say_notice(&said, tilo_render_protocol::patch::NoticeKind::Error);
+                        }
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "a playback's outputs do not read"),
+            }
+        }
+        // A cast that dropped is started again; one that keeps dropping fails in words.
+        let _ = connected.playback.poll();
+        for event in connected.playback.events() {
+            match (&event.state, &event.detail) {
+                (OutputState::Failed, detail) => {
+                    let label = Self::named(connected, &event.id);
+                    let why = detail.as_deref().unwrap_or("it stopped playing.");
+                    let said = format!("{label}: {why}");
+                    connected
+                        .view
+                        .say_notice(&said, tilo_render_protocol::patch::NoticeKind::Error);
+                }
+                (state, Some(detail)) => {
+                    tracing::info!(output = %event.id, ?state, %detail, "a playback output");
+                }
+                (state, None) => {
+                    tracing::info!(output = %event.id, ?state, "a playback output");
+                }
+            }
+        }
         if connected.view.take_activation() {
             activation.set(true);
         }
@@ -568,6 +629,31 @@ impl HostedWindow {
             watch.took();
         }
         received
+    }
+
+    /// What a place is called, as the app last named it: `at` is the place's id, or a failure
+    /// of it as `"<id>: why"`, and the reason is kept beside the name.
+    fn named(connected: &Connected, at: &str) -> String {
+        let (id, why) = at.split_once(": ").unwrap_or((at, ""));
+        let label = connected
+            .labels
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| id.to_owned());
+        if why.is_empty() {
+            label
+        } else {
+            format!("{label}: {why}")
+        }
+    }
+
+    /// Play the sound the window's player decoded since the last frame in every place the
+    /// session's outputs name: one stream, every speaker and cast target.
+    fn play_sound(connected: &mut Connected) {
+        let samples = connected.view.take_audio();
+        if !samples.is_empty() {
+            connected.playback.write(&samples);
+        }
     }
 
     fn content(&self) -> &(dyn Widget + 'static) {
@@ -741,6 +827,9 @@ impl ui::widget::Decorator for HostedWindow {
             connected.view.flush();
         }
         self.content_mut().sync(state, path);
+        if let Some(connected) = &mut self.connected {
+            Self::play_sound(connected);
+        }
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
@@ -757,6 +846,9 @@ impl ui::widget::Decorator for HostedWindow {
             None => false,
         };
         let child = self.content_mut().update(state, path);
+        if let Some(connected) = &mut self.connected {
+            Self::play_sound(connected);
+        }
         // What the window still owes its instance — a range of rows it asked for, keys typed
         // after a press it heard ran — goes on the next pass: the frame that wrote it is not
         // the last one the window needs.

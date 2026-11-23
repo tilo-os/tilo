@@ -10,6 +10,9 @@ use zeroize::Zeroizing;
 
 use crate::{CaptureProfile, ProjectionDevice, ProjectionOptions};
 
+#[cfg(unix)]
+pub mod client;
+
 /// Framing of the control socket. Requests and events are small; the largest
 /// is a discovery result.
 pub const CONTROL_FRAMING: Framing = Framing::little_endian(1024 * 1024);

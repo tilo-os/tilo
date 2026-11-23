@@ -1363,6 +1363,45 @@ pub trait FullscreenProvider {
     fn on_fullscreen_changed(&mut self, _active: bool) {}
 }
 
+/// A player asking the host to float its picture above the window, as picture-in-picture does:
+/// the region it draws on, the picture's shape, and what the person calls it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PictureInPictureAsk {
+    /// The player's region in the window, which the floating surface mirrors.
+    pub region: vello::kurbo::Rect,
+    /// The picture's shape, width over height: the surface keeps it whatever its size.
+    pub aspect: f64,
+    /// What the floating surface is called, as the video's title.
+    pub title: String,
+}
+
+/// Optional picture-in-picture capability for a player a view declares. The person pressed the
+/// player's Picture-in-picture control; the host floats the picture with the region and shape the
+/// player gives. Read through `&self` because a host walks the tree it draws immutably to find
+/// the player, and takes the request once (a [`std::cell::Cell`] inside the player holds it).
+pub trait PictureInPictureProvider {
+    /// Whether a request waits to be taken, without taking it: a host asks this before it
+    /// offers itself as the one that answers for the tree.
+    fn wants_picture_in_picture(&self) -> bool {
+        false
+    }
+
+    fn take_picture_in_picture(&self) -> Option<PictureInPictureAsk> {
+        None
+    }
+}
+
+/// Optional sound capability for a player a view declares: the player decodes the sound but
+/// opens no device, and its host plays the one stream in every place the session's outputs name
+/// (a speaker in another room, a cast target). The samples are stereo 48 kHz interleaved S16,
+/// the shape every playback sink takes. Read through `&self` because a host walks the tree it
+/// draws immutably to find the player, and takes the sound once.
+pub trait AudioTapProvider {
+    fn take_audio(&self) -> Vec<i16> {
+        Vec::new()
+    }
+}
+
 /// Optional full-document/canvas capture capability.
 pub trait CompleteContentProvider {
     fn complete_content_size(&self) -> Option<vello::kurbo::Size>;

@@ -22,10 +22,20 @@ if [[ ${1:-} == --list || -z ${1:-} ]]; then
 fi
 walk=$1
 shift
-[[ -f $walks/$walk.json ]] || { echo "no walk named $walk (scripts/headless-examples/walk.sh --list)" >&2; exit 2; }
-# A walk of a family runs in the family's check, on the session its walks share.
-check=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("family") or sys.argv[2])' \
-    "$walks/$walk.json" "$walk")
+if [[ -f $walks/$walk.json ]]; then
+    # A walk's check is the family it names, else the walk's own.
+    check=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("family") or sys.argv[2])' \
+        "$walks/$walk.json" "$walk")
+else
+    # A family: the check that walks every walk naming it, in their order.
+    python3 -c 'import json,pathlib,sys
+name, walks = sys.argv[2], pathlib.Path(sys.argv[1])
+if not any(json.loads(path.read_text()).get("family") == name
+           for path in walks.glob("*.json")):
+    raise SystemExit(1)' "$walks" "$walk" \
+        || { echo "no walk or family named $walk (scripts/headless-examples/walk.sh --list)" >&2; exit 2; }
+    check=$walk
+fi
 
 inputs=()
 write_baseline=0

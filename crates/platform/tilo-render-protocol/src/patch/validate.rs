@@ -208,8 +208,8 @@ impl<'a> Validator<'a> {
             ToUi::Actions(catalogue) => {
                 self.carried(catalogue.len(), "over the limit of bytes in a catalogue")
             }
-            ToUi::Heard(heard) => {
-                self.carried(heard.len(), "over the limit of bytes in what was heard")
+            ToUi::Heard(bytes) | ToUi::Outputs(bytes) => {
+                self.carried(bytes.len(), "over the limit of bytes in a message")
             }
             ToUi::Front {
                 shows: Some((_, target)),

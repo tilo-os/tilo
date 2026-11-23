@@ -49,6 +49,10 @@ pub struct EngineConfig {
     pub volume: f32,
     pub audio_output: bool,
     pub video_output: bool,
+    /// Hand the sound to the host ([`MediaEngine::take_audio`]) instead of a sound device: a
+    /// playback that plays in several places at once, or casts, routes the one decoded stream
+    /// itself, so nothing opens the computer's device here.
+    pub audio_capture: bool,
 }
 
 impl Default for EngineConfig {
@@ -59,6 +63,7 @@ impl Default for EngineConfig {
             volume: 0.8,
             audio_output: true,
             video_output: true,
+            audio_capture: false,
         }
     }
 }
@@ -91,6 +96,15 @@ impl EngineConfig {
     #[must_use]
     pub fn audio_only(mut self) -> Self {
         self.video_output = false;
+        self
+    }
+
+    /// Decode the sound for the host to play, rather than opening a sound device: what a
+    /// playback with several outputs, or a cast, needs. [`MediaEngine::take_audio`] answers the
+    /// samples.
+    #[must_use]
+    pub fn captured(mut self) -> Self {
+        self.audio_capture = true;
         self
     }
 
@@ -227,6 +241,7 @@ impl MediaEngine {
             config.hw_policy,
             config.audio_output,
             config.video_output,
+            config.audio_capture,
         ) {
             Ok(gst) => Backend::Gst(Box::new(gst)),
             Err(reason) => {
@@ -629,6 +644,18 @@ impl MediaEngine {
             Backend::Gst(g) => g.audio_buffers_rendered(),
             _ => 0,
         }
+    }
+
+    /// The sound decoded since this was last asked, as stereo 48 kHz interleaved S16: the one
+    /// stream a host plays where the session's outputs name, when the engine was built
+    /// [`captured`](EngineConfig::captured). Empty on a backend that hands no sound over (the
+    /// synthesized one) and when nothing was decoded.
+    pub fn take_audio(&self) -> Vec<i16> {
+        #[cfg(gst_decode)]
+        if let Backend::Gst(g) = &self.backend {
+            return g.take_audio();
+        }
+        Vec::new()
     }
 
     pub fn position_ms(&self) -> u64 {

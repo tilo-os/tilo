@@ -58,6 +58,10 @@ use tilolang_tilo::{HostEffect, OpenEffect};
 mod used;
 use used::{Used, used_apps};
 
+/// The package whose `Playback` an app's session keeps: the one a window's playback outputs come
+/// from.
+const PLAYBACK_APP: &str = "so.tilo.playback";
+
 use crate::phrases::Phrases;
 use crate::presence::Presence;
 
@@ -913,6 +917,9 @@ pub struct Hosted {
     /// The content store the app's files are kept in, which the session opened for it: the bytes
     /// of the file its launch named are read from here, as its own `file.text()` reads them.
     files: Option<tilo_content::ContentStore>,
+    /// The playback's outputs as the window was last told them: sent again only when the app's
+    /// `outputs` Collection changed.
+    outputs_sent: Option<Vec<u8>>,
 }
 
 /// The wake scope an instance's code runs in, the device's content store registered for it: an
@@ -1044,6 +1051,7 @@ impl Hosted {
             early: Vec::new(),
             opening: None,
             files: kept.content.clone(),
+            outputs_sent: None,
         }
     }
 
@@ -1258,12 +1266,81 @@ impl Hosted {
             changed |= self.delivered(event, &cancelled);
         }
         changed |= self.read_used();
+        // A change of where the session plays reaches the window that plays it.
+        if changed {
+            changed |= self.say_outputs();
+        }
         self.send_asks();
         self.publish();
         self.answer_directory();
         self.publish_search_index();
         changed |= self.opened();
         changed
+    }
+
+    /// Tell the window where the app's playback plays, when that changed: the session's
+    /// `outputs` Collection, each item with its own id, kind, device, name, volume and whether it
+    /// stays in step. An app that plays nothing sends none.
+    fn say_outputs(&mut self) -> bool {
+        if !self
+            .bundle
+            .imports
+            .iter()
+            .any(|import| import.meta.app == PLAYBACK_APP)
+        {
+            return false;
+        }
+        let Some(host) = self.instance.host() else {
+            return false;
+        };
+        let Ok(root) = host.root_of(&self.spec.app) else {
+            return false;
+        };
+        let runtime = host.runtime();
+        let Ok(Value::Ref(playing)) = runtime.read(&root, "playing") else {
+            return false;
+        };
+        let Ok(Value::List(items)) = runtime.read(&playing.target, "outputs") else {
+            return false;
+        };
+        let text = |output: &tilolang_tilo::runtime::ResourceRef, field: &str| match runtime
+            .read(output, field)
+        {
+            Ok(Value::Text(value)) => value,
+            _ => String::new(),
+        };
+        let mut outputs: Vec<serde_json::Value> = Vec::with_capacity(items.len());
+        for item in &items {
+            let Value::Ref(output) = item else {
+                continue;
+            };
+            let volume = match runtime.read(&output.target, "volume") {
+                Ok(Value::Float(volume)) => volume,
+                _ => 1.0,
+            };
+            let synced = match runtime.read(&output.target, "synced") {
+                Ok(Value::Bool(synced)) => synced,
+                _ => true,
+            };
+            outputs.push(serde_json::json!({
+                "id": output.target.id_string(),
+                "kind": text(&output.target, "kind"),
+                "device": text(&output.target, "device"),
+                "name": text(&output.target, "name"),
+                "volume": volume,
+                "synced": synced,
+            }));
+        }
+        let Ok(bytes) = serde_json::to_vec(&outputs) else {
+            return false;
+        };
+        if self.outputs_sent.as_deref() == Some(bytes.as_slice()) {
+            return false;
+        }
+        self.outputs_sent = Some(bytes.clone());
+        self.instance.say(ToUi::Outputs(bytes));
+        self.instance.flush();
+        true
     }
 
     /// Run the action the package declares for the file the app was opened with, once the

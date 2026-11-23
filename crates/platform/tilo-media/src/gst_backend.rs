@@ -227,13 +227,60 @@ fn build_video_sink(
     }
 }
 
+/// The audio sink bin of a captured engine: it converts the decoded sound to the shape every
+/// playback sink takes (stereo 48 kHz interleaved S16), applies the gain stage, and hands each
+/// buffer to the tap the host drains. The appsink paces the pipeline to the media clock exactly
+/// as a device would, so the sound the host plays stays the sound the picture follows; nothing
+/// here opens a device.
+fn build_capture_sink() -> Option<(gst::Element, AudioTap)> {
+    let tap: AudioTap = Arc::new(Mutex::new(VecDeque::new()));
+    let bin = gst::parse::bin_from_description(
+        "audioconvert ! audioresample ! volume name=tilo_gain ! \
+         audio/x-raw,format=S16LE,layout=interleaved,channels=2,rate=48000 ! \
+         appsink name=tilo_asink sync=true max-buffers=4 drop=true",
+        true,
+    )
+    .ok()?;
+    let appsink = bin
+        .by_name("tilo_asink")?
+        .downcast::<gst_app::AppSink>()
+        .ok()?;
+    let sink_tap = Arc::clone(&tap);
+    appsink.set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |sink| {
+                if let Ok(sample) = sink.pull_sample()
+                    && let Some(buffer) = sample.buffer()
+                    && let Ok(map) = buffer.map_readable()
+                {
+                    let Ok(mut held) = sink_tap.lock() else {
+                        return Ok(gst::FlowSuccess::Ok);
+                    };
+                    held.extend(
+                        map.as_chunks::<2>()
+                            .0
+                            .iter()
+                            .map(|&pair| i16::from_le_bytes(pair)),
+                    );
+                    // A host that stopped taking loses the oldest sound; the newest waits.
+                    let excess = held.len().saturating_sub(AUDIO_TAP_SAMPLES);
+                    if excess > 0 {
+                        drop(held.drain(..excess));
+                    }
+                }
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
+    Some((bin.upcast::<gst::Element>(), tap))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SeekMode {
     Accurate,
     // Snap to the nearest keyframe: cheap, up to a GOP away from the requested time.
     Keyframe,
 }
-
 impl SeekMode {
     fn flags(self) -> gst::SeekFlags {
         match self {
@@ -251,6 +298,15 @@ struct Observed {
     refused: Vec<(String, String)>,
 }
 
+/// The sound a captured pipeline handed over and the host has not taken yet: stereo 48 kHz
+/// interleaved S16, the shape every playback sink takes.
+type AudioTap = Arc<Mutex<VecDeque<i16>>>;
+
+/// How much sound a captured pipeline buffers for its host: two seconds of stereo S16 at
+/// 48 kHz. A host that stops taking (a window that is not drawing) loses the oldest sound
+/// instead of growing without bound; the newest second always waits.
+const AUDIO_TAP_SAMPLES: usize = 2 * 48_000 * 2;
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "four unrelated facts about a live pipeline — transport state, \
@@ -267,6 +323,8 @@ pub struct GstState {
     observed: Arc<Mutex<Observed>>,
     governed_output: Option<Arc<crate::audio_output::gst::Bridge>>,
     audio_buffers: Arc<std::sync::atomic::AtomicU64>,
+    /// The sound this pipeline hands its host, when it was built captured.
+    audio_tap: Option<AudioTap>,
     draining_output: bool,
     output_error_reported: bool,
 
@@ -368,6 +426,7 @@ impl GstState {
         policy: HwPolicy,
         audio_output: bool,
         video_output: bool,
+        audio_capture: bool,
     ) -> Result<Self, String> {
         gst::init().map_err(|error| format!("GStreamer could not start: {error}"))?;
         // Pick up plugins a codec-pack merge added (or an unmerge removed) before ranking.
@@ -389,14 +448,21 @@ impl GstState {
         // Audio through a real sink so playback is audible, with an explicit `volume`
         // element: `playbin`'s own volume property re-negotiates the stream, while a gain
         // stage can be moved per source. An engine that never plays sound opens no audio
-        // device.
+        // device. A captured engine decodes the sound into the tap instead, so its host can
+        // play one stream in every place the session's outputs name without a device here.
         let mut governed_output = None;
+        let mut audio_tap = None;
         if !video_output {
             // Sound only: the picture the source may also carry is never decoded.
             playbin.set_property_from_str("flags", "audio");
         }
         if !audio_output {
             playbin.set_property_from_str("flags", "video+text+deinterlace+soft-colorbalance");
+        } else if audio_capture {
+            let (audio_bin, tap) = build_capture_sink()
+                .ok_or("the audio capture could not be built (audioconvert, appsink)")?;
+            playbin.set_property("audio-sink", &audio_bin);
+            audio_tap = Some(tap);
         } else if crate::audio_output::is_governed() {
             let (audio_bin, output) = crate::audio_output::gst::sink_bin("tilo_asink", "tilo_gain")
                 .map_err(|error| format!("the audio output could not be built: {error}"))?;
@@ -450,6 +516,7 @@ impl GstState {
             observed,
             governed_output,
             audio_buffers,
+            audio_tap,
             draining_output: false,
             output_error_reported: false,
             latest: None,
@@ -869,6 +936,18 @@ impl GstState {
             .playbin
             .property::<Option<gst::Element>>("audio-sink")?;
         sink.downcast::<gst::Bin>().ok()?.by_name("tilo_asink")
+    }
+
+    /// The sound the capture sink handed over since this was last asked, as stereo 48 kHz
+    /// interleaved S16. Empty for a pipeline that plays through a device.
+    pub fn take_audio(&self) -> Vec<i16> {
+        let Some(tap) = &self.audio_tap else {
+            return Vec::new();
+        };
+        match tap.lock() {
+            Ok(mut held) => held.drain(..).collect(),
+            Err(_) => Vec::new(),
+        }
     }
 
     pub fn position_ms(&self) -> u64 {

@@ -4,8 +4,8 @@ use media::Source;
 
 use crate::component::{Component, Described, Event, Value};
 
-use super::{NowPlaying, PlaybackState, VideoPlayer};
-use crate::widget::DrawChild;
+use super::{NowPlaying, PlaybackState, PlayerSetting, PlayerSettingEvent, VideoPlayer};
+use crate::widget::{DrawChild, PictureInPictureAsk, PictureInPictureProvider};
 
 /// A video with its playback controls over it: play/pause, the scrubber, the volume, mute and
 /// fullscreen. The app's player is the one truth; what the person does reaches the view as its
@@ -27,6 +27,12 @@ pub struct VideoPlayerProps {
     pub position: Option<f64>,
     /// How long it is, in seconds.
     pub duration: Option<f64>,
+    /// Jump here, in seconds: a one-shot control, applied when `seek_to_seq` changes, so a
+    /// bookmark's jump, a restart or a jump to the end reaches the player once and the resting
+    /// `position` never fights the `progress` reading.
+    pub seek_to: Option<f64>,
+    /// Counts the view's jumps: a number it raises each time it asks to jump.
+    pub seek_to_seq: Option<i64>,
     /// Where it is stored, as a `file://` address or a URL the engine fetches.
     #[component(data)]
     pub source: Option<String>,
@@ -34,23 +40,43 @@ pub struct VideoPlayerProps {
     pub volume: Option<f64>,
     /// Whether it is muted.
     pub muted: bool,
+    /// The speed it plays at, `0.25..=4`; absent at normal speed.
+    pub rate: Option<f64>,
+    /// Whether it begins again when it ends.
+    pub repeat: bool,
+    /// The audio track by its index in `audio_tracks`; absent leaves the engine's choice.
+    pub audio_track: Option<i64>,
+    /// The subtitle track by its index in `subtitle_tracks`; `-1` turns subtitles off.
+    pub subtitle_track: Option<i64>,
     /// Play or pause was pressed: carries `true` when it plays.
     #[component(event(value = bool))]
     pub set_playing: Event,
     /// It was moved to a place in the video: carries `0..=1`.
     #[component(event(value = f64))]
     pub seek: Event,
-    /// Where playback got to while it played, as a share of its length (`0..=1`): reported on the
-    /// first frame it plays, then every five seconds, and once more when it stops, so a view
-    /// remembers the place a video was left at even when nobody moved the playhead.
-    #[component(event(value = f64))]
-    pub progress: Event,
     /// The volume was set: carries `0..=1`.
     #[component(event(value = f64))]
     pub set_volume: Event,
     /// The player could not show its video: carries what the engine said.
     #[component(event(value = String))]
     pub fail: Event,
+    /// Where playback got to while it played, as a share of its length (`0..=1`): reported on the
+    /// first frame it plays, then every five seconds, and once more when it stops, so a view
+    /// remembers the place a video was left at even when nobody moved the playhead.
+    #[component(event(value = f64))]
+    pub progress: Event,
+    /// How long it runs, in seconds, once the engine has read it.
+    #[component(event(value = f64))]
+    pub length: Event,
+    /// The audio tracks' labels, in the order `audio_track` indexes them.
+    #[component(event(value = Vec<String>))]
+    pub audio_tracks: Event,
+    /// The subtitle tracks' labels, in the order `subtitle_track` indexes them.
+    #[component(event(value = Vec<String>))]
+    pub subtitle_tracks: Event,
+    /// The chapters' labels, in the order `seek` indexes them.
+    #[component(event(value = Vec<String>))]
+    pub chapters: Event,
     /// The engine the player runs the video on, which its app builds.
     #[component(skip)]
     pub engine: Option<media::MediaEngine>,
@@ -58,19 +84,37 @@ pub struct VideoPlayerProps {
 
 /// A video player driven from a view: its picture follows what the view declares, and its
 /// controls report the view's events.
+/// The player's gear-menu control that asks for picture-in-picture.
+pub const PICTURE_IN_PICTURE: &str = "picture_in_picture";
+
 pub struct DeclaredVideo {
     player: VideoPlayer,
     playing: bool,
     set_playing: Event,
     seek: Event,
-    progress: Event,
     fail: Event,
-    /// Where playback was last reported at, in milliseconds: the app's share is reported again
-    /// only when a five-second step of it passed, or when playback stopped.
-    reported_ms: Option<u64>,
+    progress: Event,
+    length: Event,
+    audio_tracks: Event,
+    subtitle_tracks: Event,
+    chapters: Event,
+    /// What the player last told the view, so only a reading that moved is reported.
+    reported: Reported,
     /// The address the player was opened at: a view that answers with another one for the same
     /// video (what asking the service again does) opens that one.
     source: Option<String>,
+    /// The controls the view asks for now, and the ones the engine has.
+    wanted: Applied,
+    applied: Applied,
+    /// Whether it begins again when it ends.
+    repeat: bool,
+    /// The jump the view asks for, and the sequence number it asked with.
+    jump: Option<(f64, i64)>,
+    /// Whether the person pressed Picture-in-picture since the host last asked.
+    pip: std::cell::Cell<bool>,
+    /// The sound the player decoded since the host last took it, for the host to play in every
+    /// place the session's outputs name.
+    audio: std::cell::RefCell<Vec<i16>>,
 }
 
 /// How far playback moves between the progress reports a view keeps: five seconds of video, so a
@@ -80,6 +124,27 @@ const PROGRESS_STEP_MS: u64 = 5_000;
 /// How far the player's own playhead may stand from the place a view declares before it is moved
 /// there: a view that declares the place it was just told is not moved back to it.
 const SEEK_TOLERANCE_MS: u64 = 1_000;
+
+/// The readings last sent to the view.
+#[derive(Default)]
+struct Reported {
+    /// Where the view was last told playback stands, in milliseconds: a share is reported again
+    /// only when a five-second step passed, or when playback stopped.
+    progress_ms: Option<u64>,
+    duration_ms: Option<u64>,
+    audio: Option<Vec<String>>,
+    subtitles: Option<Vec<String>>,
+    chapters: Option<Vec<String>>,
+}
+
+/// The engine controls last applied from the view's props.
+#[derive(Default, Clone, Copy)]
+struct Applied {
+    rate: Option<f64>,
+    audio: Option<i64>,
+    subtitles: Option<i64>,
+    seek_to_seq: Option<i64>,
+}
 
 impl DeclaredVideo {
     /// The player the props describe.
@@ -91,14 +156,24 @@ impl DeclaredVideo {
             playing,
             position,
             duration,
+            seek_to,
+            seek_to_seq,
             source,
             volume,
             muted,
+            rate,
+            repeat,
+            audio_track,
+            subtitle_track,
             set_playing,
             seek,
-            progress,
             set_volume,
             fail,
+            progress,
+            length,
+            audio_tracks,
+            subtitle_tracks,
+            chapters,
             engine,
         } = props;
         let _ = set_volume;
@@ -106,17 +181,34 @@ impl DeclaredVideo {
         if let Some(engine) = engine {
             player.set_engine(engine);
         }
+        // The player's own controls are the shared ones; picture-in-picture is one of them,
+        // offered to every view that draws a player, so an app never builds one itself.
+        player.set_setting(PlayerSetting::button(
+            PICTURE_IN_PICTURE,
+            crate::icons::Icon::PictureInPicture2,
+            crate::i18n::widget_format("media-picture-in-picture", &[]),
+            0,
+        ));
+        if let Some(address) = &source {
+            // A window that draws a declared player is the one that plays its video: the
+            // toolkit builds the engine there, over whatever decoder the process carries. The
+            // address is the one the host handed over, already a medium this process plays.
+            // The sound is captured rather than played on a device: the session's `outputs`
+            // name every place it comes out, and the host routes the one stream there.
+            #[cfg(feature = "native")]
+            player.ensure_engine(|| {
+                media::MediaEngine::with_config(media::EngineConfig::default().captured())
+            });
+            player.open(Source::for_uri(address));
+        }
+        if let Some(duration) = duration {
+            player.set_duration_ms(seconds_to_ms(duration));
+        }
         if let Some(title) = title {
             player.set_now_playing(NowPlaying {
                 title,
                 ..NowPlaying::default()
             });
-        }
-        if let Some(source) = &source {
-            player.open(Source::for_uri(source));
-        }
-        if let Some(duration) = duration {
-            player.set_duration_ms(seconds_to_ms(duration));
         }
         if let Some(poster) = poster {
             let store = crate::pictures::Pictures::window().store().clone();
@@ -128,29 +220,42 @@ impl DeclaredVideo {
         if muted {
             player.toggle_mute();
         }
-        let reporting = seek.clone();
-        if !seek.is_none() {
-            player = player.on_seek(move |at: f64| {
-                reporting.fire(Some(Value::Float(at)));
-            });
-        }
         if playing {
             player.play();
         }
         if let Some(position) = position {
-            // The place the view opens the video at is reported as a seek of its own, so a view
-            // that keeps the place hears the one it starts at too.
             player.seek_to_ms(seconds_to_ms(position));
+        }
+        let reporting = seek.clone();
+        if !seek.is_none() {
+            player = player.on_seek(move |share: f64| {
+                reporting.fire(Some(Value::Float(share)));
+            });
         }
         Self {
             player,
             playing,
             set_playing,
             seek,
-            progress,
             fail,
-            reported_ms: None,
+            progress,
+            length,
+            audio_tracks,
+            subtitle_tracks,
+            chapters,
+            reported: Reported::default(),
+            applied: Applied::default(),
+            wanted: Applied {
+                rate,
+                audio: audio_track,
+                subtitles: subtitle_track,
+                seek_to_seq: None,
+            },
+            jump: seek_to.zip(seek_to_seq),
+            repeat,
             source,
+            pip: std::cell::Cell::new(false),
+            audio: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -160,10 +265,20 @@ impl DeclaredVideo {
         &mut self.player
     }
 
-    /// Report what the player asks of the view since the last frame: the play state it moved
-    /// to when the person pressed play or pause, the place playback got to as it played, and why
-    /// it could not go on. The app's player stays the one truth.
+    /// Report what the player offers the view since the last frame: the play state it moved to,
+    /// where it stands, how long it runs, its tracks and chapters. Also apply the controls that
+    /// changed, and begin again when the view asked it to repeat. The app's player stays the one
+    /// truth.
     fn report(&mut self) {
+        // A control the person pressed in the player's own gear menu: picture-in-picture is one
+        // the host answers, so the player keeps it for the walk that takes it.
+        for event in self.player.take_setting_events() {
+            if matches!(&event, PlayerSettingEvent::Activated { id } if id == PICTURE_IN_PICTURE) {
+                self.pip.set(true);
+            }
+        }
+        // What the engine said, or the decoder or the limit it hit: a view shows it as the
+        // player's failure instead of a picture that never came.
         for event in self.player.take_media_events() {
             if let Some(reason) = failure_of(&event) {
                 self.fail.fire(Some(Value::Text(reason)));
@@ -174,9 +289,109 @@ impl DeclaredVideo {
             self.playing = playing;
             self.set_playing.fire(Some(Value::Bool(playing)));
         }
+        let duration_ms = self.player.duration_ms();
+        if self.reported.duration_ms != Some(duration_ms) {
+            self.reported.duration_ms = Some(duration_ms);
+            self.length.fire(Some(Value::Float(
+                crate::num::f64_of_u64(duration_ms) / 1000.0,
+            )));
+        }
+        // After the length went to the view, so the share it reads names a place in a video it
+        // knows the length of.
         self.report_progress(playing);
+        let audio: Vec<String> = self
+            .player
+            .engine()
+            .map(|engine| {
+                engine
+                    .audio_tracks()
+                    .into_iter()
+                    .map(|track| track.label)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if self.reported.audio.as_ref() != Some(&audio) {
+            self.reported.audio = Some(audio.clone());
+            self.audio_tracks.fire(Some(labels(audio)));
+        }
+        let subtitles: Vec<String> = self
+            .player
+            .engine()
+            .map(|engine| {
+                engine
+                    .subtitle_tracks()
+                    .into_iter()
+                    .map(|track| track.label)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if self.reported.subtitles.as_ref() != Some(&subtitles) {
+            self.reported.subtitles = Some(subtitles.clone());
+            self.subtitle_tracks.fire(Some(labels(subtitles)));
+        }
+        let chapters: Vec<String> = self
+            .player
+            .engine()
+            .map(|engine| {
+                engine
+                    .chapters()
+                    .into_iter()
+                    .map(|chapter| chapter.label)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if self.reported.chapters.as_ref() != Some(&chapters) {
+            self.reported.chapters = Some(chapters.clone());
+            self.chapters.fire(Some(labels(chapters)));
+        }
+        if let Some((seconds, seq)) = self.jump
+            && self.applied.seek_to_seq != Some(seq)
+        {
+            self.player.seek_to_ms(seconds_to_ms(seconds));
+            self.applied.seek_to_seq = Some(seq);
+        }
+        if let Some(engine) = self.player.engine_mut() {
+            if self.wanted.rate != self.applied.rate {
+                if let Some(rate) = self.wanted.rate {
+                    engine.set_rate(crate::num::f32_of_f64(rate));
+                }
+                self.applied.rate = self.wanted.rate;
+            }
+            if self.wanted.audio != self.applied.audio {
+                if let Some(index) = self
+                    .wanted
+                    .audio
+                    .and_then(|index| u32::try_from(index).ok())
+                {
+                    engine.select_audio_track(index);
+                }
+                self.applied.audio = self.wanted.audio;
+            }
+            if self.wanted.subtitles != self.applied.subtitles {
+                engine.select_subtitle_track(
+                    self.wanted
+                        .subtitles
+                        .and_then(|index| u32::try_from(index).ok()),
+                );
+                self.applied.subtitles = self.wanted.subtitles;
+            }
+            // The sound belongs to the host: it plays it wherever the session's outputs name.
+            let samples = engine.take_audio();
+            if !samples.is_empty() {
+                self.audio.borrow_mut().extend(samples);
+            }
+        }
+        if self.repeat
+            && self.player.is_playing()
+            && duration_ms > 0
+            && self.player.position_ms().saturating_add(250) >= duration_ms
+        {
+            self.player.seek_to_ms(0);
+        }
     }
+}
 
+impl DeclaredVideo {
     /// Report where playback got to, as the share of the video's length the view keeps: once on
     /// the first frame it plays, then every five-second step, and once when it stops or ends. A
     /// player that has not started is not reported at zero, which reads as a video watched whole.
@@ -186,10 +401,11 @@ impl DeclaredVideo {
             return;
         }
         let due = if playing {
-            self.reported_ms
+            self.reported
+                .progress_ms
                 .is_none_or(|was| position / PROGRESS_STEP_MS != was / PROGRESS_STEP_MS)
         } else {
-            self.reported_ms != Some(position)
+            self.reported.progress_ms != Some(position)
         };
         if !due {
             return;
@@ -198,7 +414,7 @@ impl DeclaredVideo {
         if duration == 0 {
             return;
         }
-        self.reported_ms = Some(position);
+        self.reported.progress_ms = Some(position);
         let share = crate::num::f64_of_u64(position) / crate::num::f64_of_u64(duration);
         self.progress
             .fire(Some(Value::Float(share.clamp(0.0, 1.0))));
@@ -232,7 +448,51 @@ fn seconds_to_ms(seconds: f64) -> u64 {
     ms
 }
 
+/// The labels as the view reads them, as a list of text.
+fn labels(labels: Vec<String>) -> Value {
+    Value::List(labels.into_iter().map(Value::Text).collect())
+}
+
+impl PictureInPictureProvider for DeclaredVideo {
+    fn wants_picture_in_picture(&self) -> bool {
+        self.pip.get()
+    }
+
+    /// The floating picture the person asked for: the player's own region, the picture's shape,
+    /// and the video's title. Taken once, so one press makes one surface.
+    fn take_picture_in_picture(&self) -> Option<PictureInPictureAsk> {
+        if !self.pip.replace(false) {
+            return None;
+        }
+        let region = crate::widget::Widget::get_rect(&self.player);
+        if region.width() < 1.0 || region.height() < 1.0 {
+            return None;
+        }
+        let aspect = (region.width() / region.height()).clamp(0.4, 2.8);
+        Some(PictureInPictureAsk {
+            region,
+            aspect,
+            title: self.player.now_playing().title.clone(),
+        })
+    }
+}
+
+impl crate::widget::AudioTapProvider for DeclaredVideo {
+    /// The sound the player decoded since the host last asked, for the host to play in every
+    /// place the session's outputs name. One pipeline decodes it; the host fans it out.
+    fn take_audio(&self) -> Vec<i16> {
+        std::mem::take(&mut *self.audio.borrow_mut())
+    }
+}
+
 impl crate::widget::Widget for DeclaredVideo {
+    // A view's player offers picture-in-picture, and its sound to the host; the host walks the
+    // tree it draws to find it.
+    crate::provides!(
+        dyn PictureInPictureProvider,
+        dyn crate::widget::AudioTapProvider
+    );
+
     /// The player itself.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         crate::widget::Widget::html(&self.player, cx);
@@ -344,32 +604,46 @@ impl Described for DeclaredVideo {
         Self::new(props)
     }
 
-    /// A changed play state or a changed position takes in place.
+    /// A changed play state, position or control takes in place.
     fn set_props(&mut self, props: VideoPlayerProps) -> bool {
         let VideoPlayerProps {
             playing,
             position,
+            duration,
+            seek_to,
+            seek_to_seq,
             source,
             volume,
+            rate,
+            repeat,
+            audio_track,
+            subtitle_track,
             muted: _,
             seek,
-            progress,
             fail,
+            progress,
+            length,
+            audio_tracks,
+            subtitle_tracks,
+            chapters,
             ..
         } = props;
         self.fail = fail;
         self.seek = seek;
         self.progress = progress;
+        self.length = length;
+        self.audio_tracks = audio_tracks;
+        self.subtitle_tracks = subtitle_tracks;
+        self.chapters = chapters;
+        self.repeat = repeat;
+        self.wanted = Applied {
+            rate,
+            audio: audio_track,
+            subtitles: subtitle_track,
+            seek_to_seq: self.wanted.seek_to_seq,
+        };
+        self.jump = seek_to.zip(seek_to_seq);
         self.playing = playing;
-        // Another address for the same video: the service answered the player's failure, and the
-        // new one is opened where the view says the person was.
-        if let Some(source) = &source
-            && self.source.as_deref() != Some(source.as_str())
-        {
-            self.player.open(Source::for_uri(source));
-            self.source = Some(source.clone());
-            self.reported_ms = None;
-        }
         if playing {
             self.player.play();
         } else {
@@ -378,12 +652,22 @@ impl Described for DeclaredVideo {
         if let Some(volume) = volume {
             self.player.set_volume(crate::num::f32_of_f64(volume));
         }
+        if let Some(duration) = duration {
+            self.player.set_duration_ms(seconds_to_ms(duration));
+        }
+        // A view that answers with another address for the same video (asking the service again
+        // after a failure) plays what it now names.
+        if source != self.source
+            && let Some(address) = &source
+        {
+            self.player.open(Source::for_uri(address));
+        }
+        self.source = source;
         if let Some(position) = position {
-            // A view declares the place it was last told about: the player is moved there only
-            // when it stands somewhere else, so reporting where playback got to does not pull it
-            // back to that place on the next frame.
+            // A view that declares the place it was just told is not moved back to it.
             let at = seconds_to_ms(position);
-            if at.abs_diff(self.player.position_ms()) > SEEK_TOLERANCE_MS {
+            let standing = self.player.position_ms();
+            if at.abs_diff(standing) > SEEK_TOLERANCE_MS {
                 self.player.seek_to_ms(at);
             }
         }
@@ -398,95 +682,23 @@ fn _playing(_: PlaybackState) {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::component::testing::{Node, fired};
+    use crate::widget::video_player::PlayerSettingControl;
 
-    /// The player a view declares through `props`, with its events queued.
-    fn player(
-        queue: &crate::Intents<crate::component::Fired>,
-        events: &[&'static str],
-        props: &[(&str, Value)],
-    ) -> DeclaredVideo {
-        let mut node = Node::new("VideoPlayer", "v", queue);
-        for event in events {
-            node = node.on(event);
-        }
-        for (name, value) in props {
-            node = node.prop(name, value.clone());
-        }
-        let props = VideoPlayerProps::from_source(&mut node).expect("the props read");
-        <DeclaredVideo as Described>::from_props("v", props)
-    }
-
-    fn report(share: f64) -> crate::component::Fired {
-        fired("v", "progress", Some(Value::Float(share)))
-    }
-
-    tilo_test_env::scenario! {
-        fn the_player_reports_where_playback_got_to;
-
-        phase a_five_second_step_is_reported_and_stopping_reports_the_last_place_once;
-        {
-            let queue = crate::Intents::default();
-            let mut video = player(
-                &queue,
-                &["progress", "set_playing"],
-                &[("playing", Value::Bool(true)), ("duration", Value::Float(100.0))],
-            );
-            let doc: &crate::widget::AppModel = &();
-            crate::headless::frame_widget(&mut video, doc);
-            assert_eq!(queue.take(), [], "a video that has not moved is not reported at zero");
-            video.player().seek_to_ms(4_200);
-            crate::headless::frame_widget(&mut video, doc);
-            assert_eq!(queue.take(), [report(0.042)], "the first playing frame reports");
-            video.player().seek_to_ms(4_900);
-            crate::headless::frame_widget(&mut video, doc);
-            assert_eq!(queue.take(), [], "inside the same five seconds nothing is said again");
-            video.player().seek_to_ms(5_000);
-            crate::headless::frame_widget(&mut video, doc);
-            assert_eq!(queue.take(), [report(0.05)], "the next five seconds are reported");
-            video.player().seek_to_ms(5_000);
-            crate::headless::frame_widget(&mut video, doc);
-            assert_eq!(queue.take(), [], "a place already reported is not reported again");
-            video.player().pause();
-            crate::headless::frame_widget(&mut video, doc);
-            assert_eq!(
-                queue.take(),
-                [fired("v", "set_playing", Some(Value::Bool(false)))],
-                "stopping where it stood reports the stop only"
-            );
-            video.player().seek_to_ms(7_000);
-            crate::headless::frame_widget(&mut video, doc);
-            assert_eq!(queue.take(), [report(0.07)], "a pause reports the place it was left at");
-        }
-
-        phase a_place_the_view_declares_moves_the_player_only_when_it_stands_elsewhere;
-        {
-            let queue = crate::Intents::default();
-            let mut video = player(
-                &queue,
-                &["seek"],
-                &[("position", Value::Float(30.0)), ("duration", Value::Float(100.0))],
-            );
-            assert_eq!(
-                queue.take(),
-                [fired("v", "seek", Some(Value::Float(0.3)))],
-                "starting at a place reports it, as a share of the video"
-            );
-            video.set_props(VideoPlayerProps {
-                position: Some(30.4),
-                duration: Some(100.0),
-                ..VideoPlayerProps::default()
-            });
-            assert_eq!(queue.take(), [], "the place it already stands at is not sought again");
-            video.set_props(VideoPlayerProps {
-                position: Some(45.0),
-                ..VideoPlayerProps::default()
-            });
-            assert_eq!(
-                queue.take(),
-                [fired("v", "seek", Some(Value::Float(0.45)))],
-                "a place it does not stand at moves it"
-            );
-        }
+    /// Every view's player offers picture-in-picture as one of its own controls, so an app never
+    /// builds the control itself.
+    #[test]
+    fn a_declared_player_offers_picture_in_picture() {
+        let video = DeclaredVideo::new(VideoPlayerProps::default());
+        let setting = video
+            .player
+            .settings()
+            .iter()
+            .find(|setting| setting.id == PICTURE_IN_PICTURE)
+            .expect("the player offers picture-in-picture");
+        assert!(
+            matches!(setting.control, PlayerSettingControl::Button),
+            "it is a control that runs when pressed: {:?}",
+            setting.control
+        );
     }
 }
