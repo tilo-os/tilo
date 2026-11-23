@@ -263,9 +263,7 @@ where
     {
         return Err("the host proved another device than the one dialled".into());
     }
-    let ack2 = crate::signer::signed_ack2(signer, &ack.server_nonce)
-        .await
-        .map_err(|error| error.0)?;
+    let ack2 = crate::signer::signed_ack2(signer, &ack.server_nonce).await?;
     let ack2 = postcard::to_allocvec(&ack2).map_err(|error| error.to_string())?;
     crate::frame::write_frame(send, &ack2)
         .await
