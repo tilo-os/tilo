@@ -1,6 +1,6 @@
 {
   "app": "capabilities-unused-installer",
-  "said": "Installer: the wizard the live medium runs",
+  "said": "Installer: the image writer the app is, and the wizard the live medium runs",
   "family": "capabilities-unused",
   "live": "rust",
   "apps": "imager",
@@ -17,14 +17,22 @@
         {"launch": true},
         {"wait_for": "window"},
         {"targets": true},
-        {"actions": "installer"}
+        {"actions": "imager"}
       ],
       "dark": true,
       "budget_ms": 15000
     },
     {
+      "id": "image-write-status",
+      "said": "Ask what the image writer is doing",
+      "ops": [
+        {"act": ["imager.job", "status"]}
+      ],
+      "budget_ms": 8000
+    },
+    {
       "id": "wizard-status",
-      "said": "Ask the installer wizard where it stands",
+      "said": "Ask the installation wizard where it stands",
       "ops": [
         {"act": ["installer", "status"]}
       ],
