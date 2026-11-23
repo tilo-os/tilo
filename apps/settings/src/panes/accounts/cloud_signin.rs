@@ -56,42 +56,140 @@ pub struct Completed {
     pub secret: accounts::Secret,
 }
 
-/// A preparation that keeps a sync mount frozen until the mode change is saved, and restores it
-/// unless the save completed.
-struct ImportPreparation {
-    socket: std::path::PathBuf,
-    account: String,
-    token: Option<String>,
-    writer: Option<runtime_fs::cloud::FileLock>,
+/// Copying a drive's files into the workspace once, through the device's migrations: the whole
+/// drive is chosen, then brought into a workspace folder named after it, where it syncs as the
+/// workspace's own files.
+pub(super) struct CopyOnce {
+    pub(super) account: String,
+    source: &'static str,
+    found: Option<(String, String)>,
+    finding: Option<ui::CatalogueCall>,
+    /// How many of its steps were asked: the choice, then the copy.
+    asked: usize,
+    running: Option<ui::InvocationCall>,
+    line: Option<String>,
+    ended: Option<Result<(), String>>,
 }
 
-impl Drop for ImportPreparation {
-    fn drop(&mut self) {
-        if let Some(token) = self.token.take() {
-            let socket = self.socket.clone();
-            let account = self.account.clone();
-            let writer = self.writer.take();
-            std::thread::spawn(move || {
-                let _writer = writer;
-                if let Err(error) = runtime_fs::cloud::CloudClient::connect(socket)
-                    .and_then(|mut client| client.abort_import(&account, &token))
-                {
-                    tracing::warn!(%error, "could not restore cloud sync after a cancelled mode change");
+impl CopyOnce {
+    fn new(kind: AccountKind, account: String) -> Option<Self> {
+        let source = match kind {
+            AccountKind::GoogleDrive => "gdrive",
+            AccountKind::OneDrive => "onedrive",
+            AccountKind::Dropbox => "dropbox",
+            AccountKind::ICloudDrive => "icloud",
+            _ => return None,
+        };
+        Some(Self {
+            account,
+            source,
+            found: None,
+            finding: None,
+            asked: 0,
+            running: None,
+            line: None,
+            ended: None,
+        })
+    }
+
+    pub(super) const fn going(&self) -> bool {
+        self.ended.is_none()
+    }
+
+    /// Move the copy on through `remote`; whether what it shows changed.
+    pub(super) fn poll(&mut self, remote: &ui::RemoteActions) -> bool {
+        use ui::Arrival;
+        use ui::tilo_actions::InvocationUpdate;
+        use ui::tilo_actions::remote::{InvokeArgument, migrations};
+        if !self.going() {
+            return false;
+        }
+        if self.found.is_none() {
+            let finding = self
+                .finding
+                .get_or_insert_with(|| remote.catalogue(migrations::query()));
+            match finding.get() {
+                Arrival::Pending { .. } => return false,
+                Arrival::Ready(page) => match migrations::found(&page.rows) {
+                    Some(found) => self.found = Some(found),
+                    None => {
+                        self.ended = Some(Err(t("accounts-copy-unavailable")));
+                        return true;
+                    }
+                },
+                Arrival::Failed(error) => {
+                    self.ended = Some(Err(error.to_string()));
+                    return true;
                 }
-            });
+            }
+        }
+        let Some(found) = &self.found else {
+            return false;
+        };
+        if let Some(running) = &self.running {
+            match running.get() {
+                Arrival::Ready(InvocationUpdate::Progress { message, .. }) => {
+                    let changed = message.is_some() && message != self.line;
+                    if changed {
+                        self.line = message;
+                    }
+                    return changed;
+                }
+                Arrival::Ready(InvocationUpdate::Succeeded { .. }) => self.running = None,
+                Arrival::Ready(InvocationUpdate::Failed { error, .. }) => {
+                    self.ended = Some(Err(error.message));
+                    return true;
+                }
+                Arrival::Ready(InvocationUpdate::Cancelled { message, .. }) => {
+                    self.ended = Some(Err(message.unwrap_or_default()));
+                    return true;
+                }
+                Arrival::Failed(error) => {
+                    self.ended = Some(Err(error.to_string()));
+                    return true;
+                }
+                Arrival::Pending { .. } | Arrival::Ready(_) => return false,
+            }
+        }
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("source".into(), self.source.into());
+        arguments.insert("account".into(), self.account.clone().into());
+        let step = match self.asked {
+            0 => {
+                // `path:` is the drive's top: everything in it.
+                arguments.insert("keys".into(), serde_json::json!(["path:"]));
+                arguments.insert("only".into(), true.into());
+                migrations::CHOOSE
+            }
+            1 => {
+                arguments.insert("yes".into(), true.into());
+                migrations::START
+            }
+            _ => {
+                self.ended = Some(Ok(()));
+                return true;
+            }
+        };
+        self.asked += 1;
+        self.running = Some(remote.invoke(
+            migrations::target(found, step),
+            InvokeArgument::Json(arguments),
+            None,
+        ));
+        true
+    }
+
+    /// What the account's row says of the copy.
+    pub(super) fn shown(&self) -> String {
+        match &self.ended {
+            None => self.line.as_ref().map_or_else(
+                || t("accounts-copy-going"),
+                |line| t_args("accounts-copy-going-line", &[("line", line.clone().into())]),
+            ),
+            Some(Ok(())) => t("accounts-copy-done"),
+            Some(Err(error)) => t_args("accounts-copy-failed", &[("error", error.clone().into())]),
         }
     }
-}
-
-fn finish_import(mut preparation: Option<ImportPreparation>) -> Result<(), String> {
-    if let Some(prepared) = preparation.as_mut() {
-        let token = prepared.token.as_deref().ok_or("missing import token")?;
-        runtime_fs::cloud::CloudClient::connect(&prepared.socket)
-            .and_then(|mut client| client.complete_import(&prepared.account, token))
-            .map_err(|error| error.to_string())?;
-        prepared.token = None;
-    }
-    Ok(())
 }
 
 /// A sign-in that needs a code before it can finish.
@@ -114,8 +212,6 @@ enum CodeStage {
 }
 
 enum Outcome {
-    Prepared(ImportPreparation, Box<Completed>),
-    Saved(accounts::AccountId),
     Completed(Box<Completed>),
     NeedsCode(Box<CodeStage>),
     CodeRejected(Box<CodeStage>, String),
@@ -156,8 +252,6 @@ pub struct SignInFlow {
     stage: Stage,
     ready: Option<Outcome>,
     message: Option<String>,
-    preparation: Option<ImportPreparation>,
-    saved_id: Option<accounts::AccountId>,
 }
 
 impl SignInFlow {
@@ -204,8 +298,6 @@ impl SignInFlow {
             stage: Stage::Form,
             ready: None,
             message: None,
-            preparation: None,
-            saved_id: None,
         }
     }
 
@@ -793,7 +885,6 @@ impl SignInFlow {
     }
 
     pub fn cancel(&mut self) {
-        self.preparation = None;
         self.ready = None;
         if let Stage::Waiting {
             cancel: Some(cancel),
@@ -861,30 +952,10 @@ impl SignInFlow {
 
     fn apply_outcome(&mut self, outcome: Outcome) -> (Option<Completed>, bool) {
         match outcome {
-            Outcome::Prepared(prepared, completed) => {
+            Outcome::Completed(completed) => {
                 self.stage = Stage::Form;
-                self.preparation = Some(prepared);
                 self.message = None;
                 (Some(*completed), true)
-            }
-            Outcome::Saved(id) => {
-                self.stage = Stage::Form;
-                self.saved_id = Some(id);
-                (None, true)
-            }
-            Outcome::Completed(completed) => {
-                if self.existing_id.is_some()
-                    && self.kind.is_cloud_storage()
-                    && self.original_mode == Some(FilesMode::Sync)
-                    && accounts::cloud_types::mode_of(&completed.config) == Some(FilesMode::Import)
-                {
-                    self.prepare_import(completed);
-                    (None, true)
-                } else {
-                    self.stage = Stage::Form;
-                    self.message = None;
-                    (Some(*completed), true)
-                }
             }
             Outcome::NeedsCode(stage) => {
                 let message = match &*stage {
@@ -902,7 +973,6 @@ impl SignInFlow {
                 (None, true)
             }
             Outcome::Failed(error) => {
-                self.preparation = None;
                 self.stage = Stage::Form;
                 self.message = Some(format!("Could not sign in: {error}"));
                 (None, true)
@@ -910,102 +980,18 @@ impl SignInFlow {
         }
     }
 
-    /// Freeze the account's clean sync mount before the Import mode is saved, and pin the hold
-    /// across the save.
-    fn prepare_import(&mut self, completed: Box<Completed>) {
-        let Some(account) = self.existing_id.clone() else {
-            self.message = Some("Only an existing Sync account needs preparation".into());
-            return;
-        };
-        let root = self
-            .credential_store
-            .config_root()
-            .map(std::path::Path::to_path_buf)
-            .or_else(accounts::config_root);
-        let (sender, result) = channel::sync_channel(1);
-        let _ = crate::device_read::thread(
-            "settings-cloud-sign-in",
-            Box::new(move || {
-                let prepared = runtime_fs::cloud::default_socket()
-                    .ok_or_else(|| std::io::Error::other("cloud service is unavailable"))
-                    .and_then(|socket| {
-                        let root =
-                            root.ok_or_else(|| std::io::Error::other("no account directory"))?;
-                        let writer = runtime_fs::cloud::import_writer_lock(&root, &account)?;
-                        let mut client = runtime_fs::cloud::CloudClient::connect(&socket)?;
-                        let token = client.prepare_import(&account)?;
-                        let prepared = ImportPreparation {
-                            socket,
-                            account,
-                            token: Some(token),
-                            writer: Some(writer),
-                        };
-                        client.begin_commit_import(
-                            &prepared.account,
-                            prepared.token.as_deref().unwrap_or_default(),
-                        )?;
-                        Ok(prepared)
-                    });
-                let _ = sender.send(match prepared {
-                    Ok(prepared) => Outcome::Prepared(prepared, completed),
-                    Err(error) => Outcome::Failed(format!(
-                        "Cannot switch to Import safely: {error}. Pending uploads must finish before retrying. For an interrupted mode change, close this form and choose Recover mode change on the account."
-                    )),
-                });
-            }),
-        );
-        self.stage = Stage::Waiting {
-            urls: None,
-            launch: None,
-            result,
-            cancel: None,
-        };
-        self.message = Some("Preparing Import safely…".into());
-    }
-
-    /// Complete a pinned Import hold once the account's new mode is saved, on a worker.
-    pub(super) fn finish_async(&mut self, id: accounts::AccountId) {
-        let preparation = self.preparation.take();
-        if preparation.is_none() {
-            self.saved_id = Some(id);
-            return;
-        }
-        let (sender, result) = channel::sync_channel(1);
-        let _ = crate::device_read::thread(
-            "settings-cloud-sign-in",
-            Box::new(move || {
-                let saved = finish_import(preparation).map(|()| id);
-                let outcome = match saved {
-                    Ok(id) => Outcome::Saved(id),
-                    Err(error) => Outcome::Failed(format!(
-                        "Could not save the mode change: {error}. Restoring Sync. If Sync does not return, close this form and choose Recover mode change on the account."
-                    )),
-                };
-                let _ = sender.send(outcome);
-            }),
-        );
-        self.stage = Stage::Waiting {
-            urls: None,
-            launch: None,
-            result,
-            cancel: None,
-        };
-        self.message = Some("Saving account mode safely…".into());
-    }
-
-    pub(super) fn take_saved(&mut self) -> Option<accounts::AccountId> {
-        self.saved_id.take()
+    /// The copy saving `account` starts: a drive connected to be copied in once, or one switched
+    /// from Sync to it, is copied into the workspace.
+    pub(super) fn copy_once(&self, account: &accounts::Account) -> Option<CopyOnce> {
+        let copies = accounts::cloud_types::files_mode(account) == Some(FilesMode::Import)
+            && self.original_mode != Some(FilesMode::Import);
+        copies
+            .then(|| CopyOnce::new(self.kind, account.id.to_string()))
+            .flatten()
     }
 
     pub fn save_failed(&mut self, error: &str) {
-        let changing_mode = self.preparation.take().is_some();
-        self.message = Some(if changing_mode {
-            format!(
-                "Could not save the mode change: {error}. Restoring Sync. If Sync does not return, close this form and choose Recover mode change on the account."
-            )
-        } else {
-            format!("Could not save the account: {error}")
-        });
+        self.message = Some(format!("Could not save the account: {error}"));
     }
 
     /// Block until the running step reports (opening a page the worker learns on the way),

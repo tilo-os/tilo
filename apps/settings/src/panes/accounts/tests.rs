@@ -836,53 +836,81 @@ fn account_actions_include_sync_now_for_mounted_accounts() {
     }
 }
 
-/// An account whose mode change was interrupted says so and offers its recovery, through the
-/// action the row publishes.
+/// A drive connected to be copied in once, or switched from Sync to it, is chosen whole and
+/// brought into the workspace through the device's migrations; one kept in Sync is not copied.
 #[test]
-fn an_interrupted_mode_change_offers_its_recovery_on_the_row() {
-    let (_dir, root) = scratch_root();
-    let mut account = accounts::Account::new("drive-1", accounts::cloud_types::GOOGLE_DRIVE);
-    account.display_name = "Drive".into();
-    account.config = serde_json::json!({
-        "provider": "google-drive",
-        "files_mode": "sync",
-    });
-    let mut store = accounts::person::AccountList::default();
-    store.keep(&account).unwrap();
-    root.save_store(&store).unwrap();
-    root.sync_reporter(account.id.clone())
-        .failed()
-        .expect("the interrupted change is recorded");
-    let pane = AccountsPane::in_root(root).with_cloud_mounts(CloudMounts::known(Vec::new()));
-    let mut app = window_showing(pane);
-    let published = app
-        .with_widget::<crate::window::Inspected, _>(|settings| {
-            area(settings)
-                .unwrap()
-                .rows()
-                .into_iter()
-                .map(|published| {
-                    let id = published.id().to_string();
-                    let actions: Vec<String> = published
-                        .into_resource()
-                        .actions
-                        .into_iter()
-                        .map(|spec| spec.id.clone())
-                        .collect();
-                    (id, actions)
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap();
-    let actions = published
-        .iter()
-        .find(|(id, _)| id == "settings.account:drive-1")
-        .map(|(_, actions)| actions.clone())
-        .expect("the drive's row is published");
+fn a_drive_switched_to_copy_once_is_brought_into_the_workspace_through_the_migrations() {
+    use ui::tilo_actions::remote::{
+        Caller, CataloguePage, CatalogueResource, CatalogueRow, InvokeArgument, TestProvider,
+        migrations,
+    };
+    let mut synced = accounts::Account::new("drive-1", accounts::cloud_types::GOOGLE_DRIVE);
+    synced.config = serde_json::json!({"provider": "google-drive", "files_mode": "sync"});
+    let mut copied = synced.clone();
+    copied.config["files_mode"] = "import".into();
+    let flow = |existing: &accounts::Account| {
+        cloud_signin::SignInFlow::new(
+            AccountKind::GoogleDrive,
+            Some(existing),
+            account_credentials::CredentialStore::for_root(None),
+            std::sync::Arc::new(cloud_signin::PortalOpener),
+        )
+    };
     assert!(
-        actions.iter().any(|action| action == "recover-cloud-mode"),
-        "recovering the interrupted change is offered: {actions:?}"
+        flow(&synced).copy_once(&synced).is_none(),
+        "Sync is kept as a mount"
     );
+    assert!(
+        flow(&copied).copy_once(&copied).is_none(),
+        "saving a drive already copied in once copies nothing again"
+    );
+    let mut copy = flow(&synced)
+        .copy_once(&copied)
+        .expect("the switch from Sync copies the drive in");
+    let provider = std::sync::Arc::new(
+        TestProvider::new()
+            .with_catalogue(|_, _| {
+                Ok(CataloguePage {
+                    rows: vec![CatalogueRow {
+                        provider: "migrate".into(),
+                        resource: CatalogueResource {
+                            id: "devices/this/migrate".into(),
+                            kind: migrations::RESOURCE_KIND.into(),
+                            ..CatalogueResource::default()
+                        },
+                        ..CatalogueRow::default()
+                    }],
+                    ..CataloguePage::default()
+                })
+            })
+            .completing(|_| ui::tilo_actions::ActionOutput::default()),
+    );
+    let remote =
+        ui::RemoteActions::with_provider(provider.clone(), Caller::local_app("so.tilo.settings"));
+    let deadline = tilo_test_env::hang_deadline();
+    while copy.going() {
+        assert!(std::time::Instant::now() < deadline, "the copy ends");
+        copy.poll(&remote);
+        remote.poll();
+    }
+    assert_eq!(copy.shown(), t("accounts-copy-done"));
+    let asked = provider.asked();
+    let steps: Vec<&str> = asked
+        .iter()
+        .map(|request| request.target.address.action.as_str())
+        .collect();
+    assert_eq!(steps, [migrations::CHOOSE, migrations::START]);
+    let InvokeArgument::Json(choice) = &asked[0].argument else {
+        panic!("the steps take JSON arguments");
+    };
+    assert_eq!(choice["source"], "gdrive");
+    assert_eq!(choice["account"], "drive-1");
+    assert_eq!(
+        choice["keys"],
+        serde_json::json!(["path:"]),
+        "the whole drive"
+    );
+    assert_eq!(choice["only"], true);
 }
 
 fn until_finished(finished: impl Fn() -> bool) {

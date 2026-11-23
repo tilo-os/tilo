@@ -471,6 +471,8 @@ fn begin(place: &Place, source: &str, journal: &mut Journal, title: String) -> R
     journal.brought.clear();
     journal.already_there = 0;
     journal.failure = None;
+    journal.failed.clear();
+    journal.left_out.clear();
     place.keep_journal(source, journal)?;
     Ok(invocation)
 }
@@ -668,6 +670,9 @@ fn status_of(source: &str, review: &Review, journal: &Journal, landed: usize) ->
         "already_there": journal.already_there,
         "in_workspace": landed,
         "failure": journal.failure,
+        "failed": journal.failed,
+        "left_out": journal.left_out,
+        "destination": journal.destination,
         "next": next,
     })
 }

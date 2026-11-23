@@ -1,100 +1,7 @@
-//! Credential-free browsing and streamed reads for independent cloud imports,
-//! available only on the cloud Files socket.
+//! Credential-free cloud file requests, available only on the cloud Files
+//! socket.
 
 use serde::{Deserialize, Serialize};
-
-/// Maximum bytes in a transfer response, below the cloud frame limit.
-pub const IMPORT_CHUNK_LIMIT: u32 = 256 * 1024;
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ImportRequest {
-    Browse {
-        folder: Option<String>,
-        offset: u32,
-    },
-    /// Prepare verified file/export bytes without blocking the service loop.
-    StartRead {
-        id: String,
-        revision: Option<String>,
-    },
-    ReadStatus {
-        session: String,
-    },
-    ReadChunk {
-        session: String,
-        offset: u64,
-        length: u32,
-    },
-    CloseRead {
-        session: String,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ImportKind {
-    Folder,
-    File,
-    NativeExport,
-    Unsupported,
-}
-
-/// One remote entry as it will be represented locally, never a download URL.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImportEntry {
-    pub id: String,
-    pub name: String,
-    pub kind: ImportKind,
-    pub revision: Option<String>,
-    pub size: Option<u64>,
-    pub content_writable: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ImportErrorKind {
-    AuthenticationRequired,
-    Offline,
-    PermissionDenied,
-    Unsupported,
-    TooLarge,
-    SourceChanged,
-    Cancelled,
-    QuotaExceeded,
-    InvalidRequest,
-    Other,
-}
-
-/// Safe user-facing error; never contains credentials or private cache paths.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImportError {
-    pub kind: ImportErrorKind,
-    pub message: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ImportReadState {
-    Preparing,
-    Ready { size: u64 },
-    Failed(ImportError),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ImportReply {
-    Page {
-        folder: String,
-        entries: Vec<ImportEntry>,
-        next_offset: Option<u32>,
-    },
-    Preparing {
-        session: String,
-    },
-    ReadState(ImportReadState),
-    Chunk {
-        bytes: Vec<u8>,
-        eof: bool,
-    },
-    Closed,
-    Error(ImportError),
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileRequest {
@@ -134,7 +41,6 @@ pub enum FileReply {
     Revisions(Vec<FileRevision>),
     Restored,
     Link(String),
-    ImportFrozen,
     Description(FileDescription),
 }
 
@@ -187,14 +93,6 @@ impl CloudClient {
     /// # Errors
     /// Always returns Unsupported.
     pub fn mounts(&mut self) -> std::io::Result<Vec<CloudMount>> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "cloud Files service requires a Unix host",
-        ))
-    }
-    /// # Errors
-    /// Always returns Unsupported.
-    pub fn import(&mut self, _: &str, _: ImportRequest) -> std::io::Result<ImportReply> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "cloud Files service requires a Unix host",

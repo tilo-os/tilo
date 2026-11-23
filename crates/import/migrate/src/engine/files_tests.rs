@@ -243,12 +243,13 @@ fn a_webdav_drive_comes_over_through_the_provider_files_mounts_it_with() {
     )
     .unwrap();
     let named = registry::named("nextcloud").unwrap();
+    let photos = key_named(&*source, "Photos");
     let drive = clouds::Drive::of(source, named).unwrap();
 
     let dir = tempfile::tempdir().unwrap();
     let place = Place::at(&dir.path().join("state"));
     let folder = dir.path().join("Acme/Nextcloud");
-    let review = chosen("nextcloud", &["Photos"], 2);
+    let review = chosen("nextcloud", &[photos.as_str()], 2);
     let journal = bring(
         &place,
         "nextcloud",
@@ -280,8 +281,8 @@ fn a_google_doc_comes_over_as_the_office_file_drive_exports() {
     use cloud_source_gdrive::fake::{FakeDrive, SOURCE_TOKEN};
     let server = FakeDrive::start();
     let root = server.root_id();
-    server.put_file(&root, "budget.csv", b"a,b\n1,2\n");
-    server.put_native(&root, "Plan", "application/vnd.google-apps.document");
+    let budget = server.put_file(&root, "budget.csv", b"a,b\n1,2\n");
+    let plan = server.put_native(&root, "Plan", "application/vnd.google-apps.document");
     let mut account = accounts::Account::new("drive", accounts::cloud_types::GOOGLE_DRIVE);
     account.config = serde_json::json!({
         accounts::cloud_types::MOUNT_CONFIG_KEY: server.config(),
@@ -300,7 +301,7 @@ fn a_google_doc_comes_over_as_the_office_file_drive_exports() {
     let dir = tempfile::tempdir().unwrap();
     let place = Place::at(&dir.path().join("state"));
     let folder = dir.path().join("Acme/Google Drive");
-    let review = chosen("gdrive", &["budget.csv", "Plan.docx"], 1);
+    let review = chosen("gdrive", &[budget.as_str(), plan.as_str()], 1);
     bring(
         &place,
         "gdrive",
@@ -321,4 +322,233 @@ fn a_google_doc_comes_over_as_the_office_file_drive_exports() {
         std::fs::read(folder.join("budget.csv")).unwrap(),
         b"a,b\n1,2\n"
     );
+}
+
+/// The key of the item named `name` at the top of `source`.
+fn key_named(source: &dyn cloud_source::CloudSource, name: &str) -> String {
+    source
+        .list(&source.root())
+        .unwrap()
+        .into_iter()
+        .find(|item| item.name == name)
+        .map(|item| item.id.as_str().to_owned())
+        .unwrap_or_else(|| panic!("the drive holds no {name}"))
+}
+
+/// A Nextcloud drive holding `files`, read as the connected account `account`.
+fn nextcloud(account: &str, files: &[(&str, &str)]) -> cloud_source_dav::fake::FakeDav {
+    use cloud_source_dav::fake::{FakeDav, PASSWORD, USER};
+    let server = FakeDav::nextcloud();
+    for (path, body) in files {
+        server.put(path, body.as_bytes());
+    }
+    let mut kept = accounts::Account::new(account, accounts::cloud_types::NEXTCLOUD);
+    kept.config = server.account_config();
+    kept.config["use_files"] = true.into();
+    let source = clouds::open_with(
+        &kept,
+        Arc::new(cloud_source::StaticCredential(
+            cloud_source::Credential::Basic {
+                username: USER.into(),
+                password: zeroize::Zeroizing::new(PASSWORD.into()),
+            },
+        )),
+    )
+    .unwrap();
+    clouds::FAKES
+        .lock()
+        .unwrap()
+        .insert(account.to_owned(), source);
+    server
+}
+
+/// The keys and names a review's page lists.
+fn listed(page: &Value) -> Vec<(String, String)> {
+    page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            (
+                item["key"].as_str().unwrap().to_owned(),
+                item["name"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn key_of(page: &Value, name: &str) -> String {
+    listed(page)
+        .into_iter()
+        .find(|(_, named)| named == name)
+        .map(|(key, _)| key)
+        .unwrap_or_else(|| panic!("{name} is not listed: {page}"))
+}
+
+#[test]
+fn a_drive_is_reviewed_a_folder_and_a_page_at_a_time() {
+    let _server = nextcloud(
+        "nc-pages",
+        &[
+            ("readme.txt", "hello"),
+            ("Notes/todo.md", "- [ ] move"),
+            ("Photos/2026/a.jpg", "a"),
+            ("Photos/2026/b.jpg", "b"),
+            ("Photos/2026/c.jpg", "c"),
+            ("Photos/2026/d.jpg", "d"),
+            ("Photos/2026/e.jpg", "e"),
+        ],
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let place = Place::at(&dir.path().join("state"));
+    let named = registry::named("nextcloud").unwrap();
+    super::tests::test_env::with_cx(&place, dir.path(), |cx| {
+        let page = |within: Option<&str>, cursor: Option<&str>, limit: Option<usize>| {
+            clouds::review(
+                cx,
+                named,
+                clouds::Page {
+                    account: Some("nc-pages"),
+                    within,
+                    cursor,
+                    limit,
+                },
+            )
+            .unwrap()
+        };
+        let top = page(None, None, None);
+        let names: Vec<String> = listed(&top).into_iter().map(|(_, name)| name).collect();
+        assert_eq!(names, ["Notes", "Photos", "readme.txt"], "folders first");
+        assert_eq!(top["path"].as_array().unwrap().len(), 1, "{top}");
+        assert_eq!(top["path"][0]["name"], named.title);
+        assert_eq!(top["items"][2]["kind"], "file");
+        assert_eq!(top["items"][2]["size"], 5);
+        assert!(top["next"].is_null());
+
+        let photos = page(Some(&key_of(&top, "Photos")), None, None);
+        let year = key_of(&photos, "2026");
+        let crumbs: Vec<&str> = photos["path"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|crumb| crumb["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(crumbs, [named.title, "Photos"]);
+
+        let mut seen = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let at = page(Some(&year), cursor.as_deref(), Some(2));
+            assert!(listed(&at).len() <= 2, "{at}");
+            seen.extend(listed(&at).into_iter().map(|(_, name)| name));
+            match at["next"].as_str() {
+                Some(next) => cursor = Some(next.to_owned()),
+                None => break,
+            }
+        }
+        assert_eq!(seen, ["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"]);
+        let refused = clouds::review(
+            cx,
+            named,
+            clouds::Page {
+                cursor: Some("later"),
+                ..clouds::Page::default()
+            },
+        );
+        assert!(refused.is_err(), "a cursor no page answered is refused");
+    });
+}
+
+#[test]
+fn a_nested_choice_lands_in_its_destination_and_a_second_start_copies_only_what_failed() {
+    let _server = nextcloud(
+        "nc-choice",
+        &[
+            ("readme.txt", "hello"),
+            ("Notes/todo.md", "- [ ] move"),
+            ("Photos/2026/beach.jpg", "jpeg"),
+            ("Photos/2026/hill.jpg", "jpeg too"),
+        ],
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let place = Place::at(&dir.path().join("state"));
+    let named = registry::named("nextcloud").unwrap();
+    let workspace = dir.path().join("Acme");
+    let landing = workspace.join("Trips/Imported");
+    super::tests::test_env::with_cx(&place, dir.path(), |cx| {
+        let page = |within: Option<&str>| {
+            clouds::review(
+                cx,
+                named,
+                clouds::Page {
+                    account: Some("nc-choice"),
+                    within,
+                    ..clouds::Page::default()
+                },
+            )
+            .unwrap()
+        };
+        let top = page(None);
+        let notes = key_of(&top, "Notes");
+        let year = key_of(&page(Some(&key_of(&top, "Photos"))), "2026");
+        let hill = key_of(&page(Some(&year)), "hill.jpg");
+        let chosen =
+            clouds::choose(cx, named, &[notes.clone(), hill.clone()], false, true).unwrap();
+        assert_eq!(
+            chosen["chosen"],
+            serde_json::json!([notes.as_str(), hill.as_str()])
+        );
+        let destination = clouds::destination(named, Some("/Trips/Imported/")).unwrap();
+        assert_eq!(destination, "Trips/Imported");
+        assert!(clouds::destination(named, Some("Trips/../..")).is_err());
+        clouds::keep_destination(&place, named, &destination).unwrap();
+
+        // The hill cannot be written where it goes: it fails alone, and the notes come over.
+        std::fs::create_dir_all(landing.join("hill.jpg/in-the-way")).unwrap();
+        let review = place.review("nextcloud").unwrap().unwrap();
+        let land = |id: &str| {
+            let mut told = Told::default();
+            land_as(
+                &place,
+                "nextcloud",
+                &Invocation {
+                    id: id.into(),
+                    title: "Bring files".into(),
+                },
+                &mut Recorded::default(),
+                &mut told,
+                |lander| {
+                    clouds::land(
+                        cx,
+                        named,
+                        &review,
+                        &Sink::Folder(workspace.join(named.title)),
+                        lander,
+                    )
+                },
+            )
+        };
+        assert!(land("first").is_err());
+        let journal = place.journal("nextcloud").unwrap();
+        assert_eq!(journal.destination.as_deref(), Some("Trips/Imported"));
+        assert_eq!(journal.failed.len(), 1, "{:?}", journal.failed);
+        assert_eq!(journal.failed[0].key, hill);
+        assert_eq!(journal.failed[0].name, "hill.jpg");
+        assert_eq!(files_under(&landing), ["Notes/todo.md"]);
+
+        std::fs::remove_dir_all(landing.join("hill.jpg")).unwrap();
+        let again = land("second").unwrap();
+        assert_eq!(
+            again.brought.get("files"),
+            Some(&1),
+            "only the hill is copied"
+        );
+        assert_eq!(again.already_there, 1, "the notes are there already");
+        assert!(again.failed.is_empty());
+        assert_eq!(files_under(&landing), ["Notes/todo.md", "hill.jpg"]);
+        assert!(
+            !workspace.join(named.title).exists(),
+            "nothing lands in the folder named after the drive"
+        );
+    });
 }

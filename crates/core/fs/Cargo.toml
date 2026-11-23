@@ -23,7 +23,7 @@ path = "src/lib.rs"
 [features]
 default = ["filesystem", "tree-sync"]
 # External licensed simulator; never enabled by ordinary filesystem tests.
-rystic-tests = ["filesystem", "dep:tilo-cloud-files"]
+rystic-tests = ["filesystem"]
 # The document-media capability over the content store, without the mount.
 document-media = ["dep:runtime-fs", "dep:tilo-net", "dep:serde_json", "dep:fs-protocol", "dep:thiserror"]
 # Keeping a workspace's tree records converged with a peer's, over that peer's own document
@@ -95,8 +95,6 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Where this login's services bind their sockets: the daemon dials the
 # session's collaboration broker, the same path the launcher hands apps.
 tilo-paths.workspace = true
-# The opt-in simulator test exercises the same independent-import engine as Files.
-tilo-cloud-files = { version = "0.1.0", path = "../../integrations/tilo-cloud-files", optional = true }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 anyhow.workspace = true
 bytes.workspace = true

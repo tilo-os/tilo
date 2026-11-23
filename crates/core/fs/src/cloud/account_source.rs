@@ -34,17 +34,6 @@ pub struct AccountsWatch {
     stop: Arc<AtomicBool>,
 }
 
-impl AccountsWatch {
-    /// A watch of accounts that never change, for a source that tells the same accounts until
-    /// asked anew.
-    #[must_use]
-    pub fn still() -> Self {
-        Self {
-            stop: Arc::new(AtomicBool::new(false)),
-        }
-    }
-}
-
 impl Drop for AccountsWatch {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);

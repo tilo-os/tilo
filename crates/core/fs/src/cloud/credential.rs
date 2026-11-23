@@ -164,10 +164,6 @@ pub enum ToMount {
         id: u64,
         request: FileRequest,
     },
-    /// Uses the ordinary reply pipe; never transports credentials.
-    PrepareImport {
-        id: u64,
-    },
 }
 
 /// Serialise a message as one line. The caller writes it to the pipe and

@@ -29,7 +29,7 @@ use serde_json::{Value, json};
 use super::size;
 
 use super::Lander;
-use super::state::{Item, Place, Review};
+use super::state::{Item, Place, Problem, Review};
 
 pub const HOME: &str = "home";
 
@@ -55,7 +55,7 @@ pub trait Tree: Sync {
     ///
     /// # Errors
     /// The item could not be read at all.
-    fn files(&self, key: &str) -> Result<(Vec<Entry>, Vec<String>)>;
+    fn files(&self, key: &str) -> Result<(Vec<Entry>, Vec<Problem>)>;
 
     /// Write `entry`'s bytes into `to`, a new file here.
     ///
@@ -89,7 +89,7 @@ impl Local {
 }
 
 impl Tree for Local {
-    fn files(&self, key: &str) -> Result<(Vec<Entry>, Vec<String>)> {
+    fn files(&self, key: &str) -> Result<(Vec<Entry>, Vec<Problem>)> {
         let root = self.folder(key);
         let named = root.file_name().map_or_else(
             || key.to_owned(),
@@ -118,7 +118,7 @@ fn walk_local(
     dir: &Path,
     named: &str,
     found: &mut Vec<Entry>,
-    unread: &mut Vec<String>,
+    unread: &mut Vec<Problem>,
 ) -> Result<()> {
     let meta =
         std::fs::symlink_metadata(dir).with_context(|| format!("reading {}", dir.display()))?;
@@ -139,7 +139,11 @@ fn walk_local(
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(error) => {
-                unread.push(format!("{}: {error}", dir.display()));
+                unread.push(Problem {
+                    key: dir.to_string_lossy().into_owned(),
+                    name: named.clone(),
+                    why: error.to_string(),
+                });
                 continue;
             }
         };
@@ -385,7 +389,21 @@ struct Counts {
     copied: AtomicUsize,
     already: AtomicUsize,
     bytes: AtomicU64,
-    failed: Mutex<Vec<String>>,
+    failed: Mutex<Vec<Problem>>,
+}
+
+impl Counts {
+    /// `entry` did not come over, for `error`.
+    fn fail(&self, entry: &Entry, error: &anyhow::Error) {
+        self.failed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Problem {
+                key: entry.id.clone(),
+                name: entry.path.clone(),
+                why: format!("{error:#}"),
+            });
+    }
 }
 
 /// Bring the chosen items of `review` from `tree` into `sink`, as the lander's invocation.
@@ -402,6 +420,8 @@ pub fn land(
     let started = Instant::now();
     let mut total_bytes = 0_u64;
     let mut total_files = 0_usize;
+    let mut failed = Vec::new();
+    let mut left_out = Vec::new();
     for item in review
         .chosen()
         .into_iter()
@@ -410,17 +430,27 @@ pub fn land(
         if lander.stopping() {
             return Err(super::Stopped.into());
         }
-        let (entries, unread) = tree
-            .files(&item.key)
-            .with_context(|| format!("reading {}", item.title))?;
-        for problem in unread {
-            lander.say(&format!("left out (unreadable): {problem}"));
+        // An item that cannot be read at all fails alone: the others still come over.
+        let (entries, unread) = match tree.files(&item.key) {
+            Ok(found) => found,
+            Err(error) => {
+                failed.push(Problem {
+                    key: item.key.clone(),
+                    name: item.title.clone(),
+                    why: format!("{error:#}"),
+                });
+                continue;
+            }
+        };
+        for problem in &unread {
+            lander.say(&format!("left out: {}: {}", problem.name, problem.why));
         }
+        left_out.extend(unread);
         let counts = match sink {
             Sink::Folder(root) => copy_into(tree, &entries, root, place, lander)?,
             Sink::Upload(under) => upload(tree, &entries, under, lander)?,
         };
-        let failed = std::mem::take(
+        let failed_here = std::mem::take(
             &mut *counts
                 .failed
                 .lock()
@@ -428,20 +458,22 @@ pub fn land(
         );
         total_bytes = total_bytes.saturating_add(counts.bytes.load(Ordering::Relaxed));
         total_files = total_files.saturating_add(counts.copied.load(Ordering::Relaxed));
-        if !failed.is_empty() {
-            bail!(
-                "{} of {}'s files did not come over (start again to retry them):\n  {}",
-                failed.len(),
-                item.title,
-                failed
-                    .iter()
-                    .take(20)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join("\n  ")
-            );
+        if failed_here.is_empty() {
+            lander.note([format!("folder:{}", item.key)])?;
         }
-        lander.note([format!("folder:{}", item.key)])?;
+        failed.extend(failed_here);
+    }
+    let said = failed
+        .iter()
+        .take(20)
+        .map(|problem| format!("{}: {}", problem.name, problem.why))
+        .collect::<Vec<_>>()
+        .join("\n  ");
+    let count = failed.len();
+    lander.journal.left_out = left_out;
+    lander.journal.failed = failed;
+    if count > 0 {
+        bail!("{count} did not come over (start again to retry only them):\n  {said}");
     }
     let elapsed = started.elapsed();
     // The rate in whole bytes a second: a size to read, not a float's rounding of one.
@@ -603,9 +635,7 @@ fn copy_one(
         }
         Err(error) => {
             let _ = std::fs::remove_file(&to);
-            if let Ok(mut failed) = counts.failed.lock() {
-                failed.push(format!("{}: {error:#}", entry.path));
-            }
+            counts.fail(entry, &error);
         }
     }
 }
@@ -636,9 +666,7 @@ fn upload(
                     std::fs::create_dir_all(dir)?;
                 }
                 if let Err(error) = tree.copy_to(entry, &to) {
-                    if let Ok(mut failed) = counts.failed.lock() {
-                        failed.push(format!("{}: {error:#}", entry.path));
-                    }
+                    counts.fail(entry, &error);
                     continue;
                 }
             }

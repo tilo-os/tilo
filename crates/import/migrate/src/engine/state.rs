@@ -158,6 +158,28 @@ pub struct Journal {
     /// exactly those once the workspace took the run back.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub runs: std::collections::BTreeMap<String, BTreeSet<String>>,
+    /// What the last run could not bring, each by the source's key for it: `start` again copies
+    /// these and nothing the workspace already has.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<Problem>,
+    /// What the last run left out because the source cannot give it: a document it cannot
+    /// export, a folder it would not list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left_out: Vec<Problem>,
+    /// The workspace folder the last run's files went into, as a path inside the workspace's
+    /// files (`Google Drive/Trip`), which Files opens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
+}
+
+/// One thing a run could not bring, and why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Problem {
+    /// The source's key for it: a drive's item id, a path on this computer.
+    pub key: String,
+    /// Its name as a person reads it: its path from what was chosen.
+    pub name: String,
+    pub why: String,
 }
 
 /// Where a workspace's migrations keep what they know, field by field for each source: its

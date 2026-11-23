@@ -23,8 +23,8 @@ use tilo_actions::remote::{
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, Reservation,
 };
 use tilo_actions::{
-    ActionFailure, ActionKind, ActionOutput, ActionParam, ActionSpec, EncodedAction,
-    ExecutionMode, InvocationId, InvocationUpdate, OperationKind, ParamType, ResourceSpec,
+    ActionFailure, ActionKind, ActionOutput, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
+    InvocationId, InvocationUpdate, OperationKind, ParamType, ResourceSpec,
 };
 use tilo_lock::MutexRecover as _;
 use zeroize::Zeroizing;
@@ -128,13 +128,35 @@ fn declared() -> Vec<Declared> {
         Declared {
             id: "review",
             label: "Review",
-            description: "List what a source holds, with counts, keeping what was chosen.",
+            description: "List what a source holds, with counts, keeping what was chosen. A \
+                          cloud drive is listed a folder and a page at a time.",
             params: vec![
                 source(),
                 ActionParam::optional(
                     "profile",
                     ParamType::Text,
                     "The Thunderbird profile, when this device has several.",
+                ),
+                ActionParam::optional(
+                    "account",
+                    ParamType::Text,
+                    "A cloud drive: the connected account to read, by its id.",
+                ),
+                ActionParam::optional(
+                    "within",
+                    ParamType::Text,
+                    "A cloud drive: the folder to list, by the key a review listed it under; \
+                     its top when not given.",
+                ),
+                ActionParam::optional(
+                    "cursor",
+                    ParamType::Text,
+                    "A cloud drive: where the page starts, the `next` the page before answered.",
+                ),
+                ActionParam::optional(
+                    "limit",
+                    ParamType::Integer,
+                    "A cloud drive: how many items the page lists at most.",
                 ),
             ],
             execution: ExecutionMode::Background { cancellable: false },
@@ -145,7 +167,19 @@ fn declared() -> Vec<Declared> {
             description: "Choose what of a reviewed source comes over, or what stays.",
             params: vec![
                 source(),
-                ActionParam::required(
+                ActionParam::optional(
+                    "keys",
+                    ParamType::Array,
+                    "Items by the key a review lists them under, of any depth for a cloud \
+                     drive: a folder brings everything under it, and `path:Work/Essay.docx` \
+                     names an item by its path in the drive.",
+                ),
+                ActionParam::optional(
+                    "account",
+                    ParamType::Text,
+                    "A cloud drive: the connected account to read, by its id.",
+                ),
+                ActionParam::optional(
                     "items",
                     ParamType::Array,
                     "Items by the key the review lists; for home, also a folder by its path.",
@@ -170,6 +204,18 @@ fn declared() -> Vec<Declared> {
                     "yes",
                     ParamType::Boolean,
                     "The person said yes to connecting the chosen mail accounts.",
+                ),
+                ActionParam::optional(
+                    "account",
+                    ParamType::Text,
+                    "A cloud drive: the connected account to read, by its id.",
+                ),
+                ActionParam::optional(
+                    "destination",
+                    ParamType::Text,
+                    "A cloud drive: the workspace folder its files go into, by its path in the \
+                     workspace's files (Documents/Trip); a folder named after the drive when \
+                     not given.",
                 ),
             ],
             execution: ExecutionMode::Background { cancellable: true },
@@ -241,7 +287,10 @@ impl Migrations {
     }
 
     /// The action `request` names and its arguments, admitted against its parameters.
-    fn admit(&self, request: &InvokeRequest) -> Result<(String, Map<String, Value>), ActionCallError> {
+    fn admit(
+        &self,
+        request: &InvokeRequest,
+    ) -> Result<(String, Map<String, Value>), ActionCallError> {
         let address = &request.target.address;
         if request.target.provider != PROVIDER || address.resource != self.resource {
             return Err(ActionCallError::UnknownAction);
@@ -360,6 +409,13 @@ impl ActionProvider for Migrations {
     }
 }
 
+/// The cloud drive `source` names, when it names one: its review, choice and destination take a
+/// drive's own shapes.
+fn cloud(source: &str) -> Result<Option<&'static engine::registry::Row>> {
+    let row = engine::registry::named(source)?;
+    Ok((row.engine == engine::registry::Engine::Cloud).then_some(row))
+}
+
 /// One step, running on its own thread.
 struct Running {
     id: InvocationId,
@@ -438,22 +494,53 @@ impl Running {
                     secret_file: None,
                 },
             ),
-            "review" => engine::review(&cx, source()?, text("profile")),
+            "review" => match cloud(source()?)? {
+                Some(row) => engine::clouds::review(
+                    &cx,
+                    row,
+                    engine::clouds::Page {
+                        account: text("account"),
+                        within: text("within"),
+                        cursor: text("cursor"),
+                        limit: arguments
+                            .get("limit")
+                            .and_then(Value::as_u64)
+                            .and_then(|limit| usize::try_from(limit).ok()),
+                    },
+                ),
+                None => engine::review(&cx, source()?, text("profile")),
+            },
             "choose" => {
-                let items: Vec<String> = arguments
-                    .get("items")
-                    .and_then(Value::as_array)
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_owned)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                engine::choose(&cx, source()?, &items, flag("leave_out"), flag("only"))
+                let items: Vec<String> = ["keys", "items"]
+                    .iter()
+                    .filter_map(|name| arguments.get(*name).and_then(Value::as_array))
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect();
+                let (leave_out, only) = (flag("leave_out"), flag("only"));
+                match cloud(source()?)? {
+                    Some(row) => {
+                        if let Some(account) = text("account") {
+                            engine::clouds::keep_account(&place, row, account)?;
+                        }
+                        engine::clouds::choose(&cx, row, &items, leave_out, only)
+                    }
+                    None => engine::choose(&cx, source()?, &items, leave_out, only),
+                }
             }
-            "start" => self.start(&cx, source()?, flag("yes")),
+            "start" => {
+                if let Some(row) = cloud(source()?)? {
+                    if let Some(account) = text("account") {
+                        engine::clouds::keep_account(&place, row, account)?;
+                    }
+                    if let Some(given) = text("destination") {
+                        let destination = engine::clouds::destination(row, Some(given))?;
+                        engine::clouds::keep_destination(&place, row, &destination)?;
+                    }
+                }
+                self.start(&cx, source()?, flag("yes"))
+            }
             "status" => engine::status(&cx, text("source")),
             "undo" => {
                 let run = text("run").ok_or_else(|| anyhow!("undo takes a run"))?;

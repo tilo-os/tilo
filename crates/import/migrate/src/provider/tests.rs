@@ -194,7 +194,10 @@ fn a_profile_comes_over_through_the_devices_actions() {
     assert_eq!(value(&started)["state"], "complete", "{started:?}");
     assert_eq!(value(&started)["brought"]["contacts"], 2, "{started:?}");
     let landed = device.recorded.lock().expect("recorded").actions.len();
-    assert!(landed > 0, "the contacts landed through the workspace's actions");
+    assert!(
+        landed > 0,
+        "the contacts landed through the workspace's actions"
+    );
 
     // A second run finds everything there and adds nothing.
     let again = run(&migrations, "start", json!({"source": "thunderbird"}));
@@ -246,4 +249,101 @@ fn a_step_of_another_device_or_provider_is_unknown() {
     other.target.address = tilo_actions::ActionAddress::new(super::resource(&[8; 32]), "sources");
     let refused = answered(migrations.invoke(&caller(), other));
     assert!(refused.is_err(), "{refused:?}");
+}
+
+/// The key of the item named `name` on the page `page` answered.
+fn key_of(page: &Value, name: &str) -> String {
+    page["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["name"] == name)
+        .and_then(|item| item["key"].as_str())
+        .unwrap_or_else(|| panic!("{name} is not listed: {page}"))
+        .to_owned()
+}
+
+#[test]
+fn a_drive_is_paged_chosen_at_any_depth_and_given_a_destination_through_the_actions() {
+    use cloud_source_dav::fake::{FakeDav, PASSWORD, USER};
+    let server = FakeDav::nextcloud();
+    for (path, body) in [
+        ("Notes/todo.md", "- [ ] move"),
+        ("Photos/2026/beach.jpg", "jpeg"),
+        ("Photos/2026/hill.jpg", "jpeg too"),
+        ("Photos/2026/sea.jpg", "jpeg three"),
+    ] {
+        server.put(path, body.as_bytes());
+    }
+    let mut account = accounts::Account::new("nc-provider", accounts::cloud_types::NEXTCLOUD);
+    account.config = server.account_config();
+    account.config["use_files"] = true.into();
+    let drive = crate::engine::clouds::open_with(
+        &account,
+        Arc::new(cloud_source::StaticCredential(
+            cloud_source::Credential::Basic {
+                username: USER.into(),
+                password: zeroize::Zeroizing::new(PASSWORD.into()),
+            },
+        )),
+    )
+    .expect("the fake drive opens");
+    crate::engine::clouds::FAKES
+        .lock()
+        .expect("fakes")
+        .insert("nc-provider".into(), drive);
+    let (_, migrations) = device();
+
+    let top = run(
+        &migrations,
+        "review",
+        json!({"source": "nextcloud", "account": "nc-provider"}),
+    );
+    let top = value(&top);
+    let photos = key_of(top, "Photos");
+    let notes = key_of(top, "Notes");
+    let year = run(
+        &migrations,
+        "review",
+        json!({"source": "nextcloud", "within": photos}),
+    );
+    let year = key_of(value(&year), "2026");
+    let first = run(
+        &migrations,
+        "review",
+        json!({"source": "nextcloud", "within": year, "limit": 2}),
+    );
+    let first = value(&first);
+    assert_eq!(first["items"].as_array().expect("items").len(), 2);
+    assert_eq!(first["path"][1]["key"], json!(photos), "{first}");
+    let next = first["next"].as_str().expect("a second page").to_owned();
+    let second = run(
+        &migrations,
+        "review",
+        json!({"source": "nextcloud", "within": year, "cursor": next, "limit": 2}),
+    );
+    let sea = key_of(value(&second), "sea.jpg");
+    assert!(value(&second)["next"].is_null());
+
+    let chosen = run(
+        &migrations,
+        "choose",
+        json!({"source": "nextcloud", "keys": [notes, sea], "only": true}),
+    );
+    assert_eq!(value(&chosen)["chosen"], json!([notes, sea]));
+
+    let refused = run(
+        &migrations,
+        "start",
+        json!({"source": "nextcloud", "destination": "../elsewhere"}),
+    );
+    assert!(
+        matches!(refused, InvocationUpdate::Failed { .. }),
+        "a destination outside the workspace is refused: {refused:?}"
+    );
+    let status = run(&migrations, "status", json!({"source": "nextcloud"}));
+    let status = value(&status);
+    assert_eq!(status["chosen"], json!([notes, sea]));
+    assert_eq!(status["failed"], json!([]));
+    assert_eq!(status["left_out"], json!([]));
 }

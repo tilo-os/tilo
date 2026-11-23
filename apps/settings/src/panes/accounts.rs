@@ -234,10 +234,6 @@ pub enum AccountsEffect {
         #[param("The account's id")]
         account: String,
     },
-    /// Recover an interrupted Files mode change after closing the connection form.
-    #[effect(kind = "outside")]
-    #[effect(row, job, idempotent, label = "accounts-recover-mode", on = AccountRow)]
-    RecoverCloudMode { account: String },
     #[effect(kind = "outside")]
     LinkService {
         #[param("The connector's app id")]
@@ -412,9 +408,6 @@ fn answer_model(
         AccountsEffect::ResumeSync { account } => {
             return cloud(app, model, CloudRequest::Resume { account }, cx);
         }
-        AccountsEffect::RecoverCloudMode { account } => {
-            return recover_mode(app, model, account, cx);
-        }
         AccountsEffect::TestAccount { account } => return test_account(app, model, &account, cx),
     }
     Ok(Effected::done())
@@ -431,18 +424,6 @@ fn submit_account_form(model: &mut AccountsPane) -> Result<(), String> {
     }
     model.command(AccountViewCommand::Submit);
     Ok(())
-}
-
-fn recover_mode(
-    app: &SettingsApp,
-    model: std::cell::RefMut<'_, AccountsPane>,
-    account: String,
-    cx: &mut EffectCx<Settings>,
-) -> EffectAnswer {
-    if model.sign_in.is_some() {
-        return Err("Close the account connection form before recovering its mode change".into());
-    }
-    cloud(app, model, CloudRequest::RecoverImport { account }, cx)
 }
 
 fn test_account(
@@ -614,7 +595,7 @@ impl AccountsArea {
         }
         if let Some(model) = self.model.get()
             && let Ok(mut pane) = model.try_borrow_mut()
-            && pane.poll()
+            && (pane.poll() | pane.poll_copies(&self.remote))
         {
             self.shown.set(self.shown.get().wrapping_add(1));
         }
@@ -681,9 +662,6 @@ impl AccountsArea {
                             },
                             [("account", account())],
                         );
-                } else if model.can_recover_cloud_mode(&view) {
-                    bindings =
-                        bindings.bind(AccountsEffect::RECOVER_CLOUD_MODE, [("account", account())]);
                 }
                 bindings = bindings
                     .bind(AccountsEffect::SIGN_IN_AGAIN, [("account", account())])
@@ -860,6 +838,8 @@ pub struct AccountsPane {
     cloud: CloudMounts,
     browser_removal_error: Option<String>,
     browser_removal_pending: bool,
+    /// The drives being copied into the workspace once, through the device's migrations.
+    copies: Vec<cloud_signin::CopyOnce>,
     /// The session, where Settings runs in one: an email account's password goes to the
     /// workspace's vault through it, never into this device's credentials.
     session_secrets: Option<ui::collaboration::browser_service_sessions::Client>,
@@ -954,6 +934,7 @@ impl AccountsPane {
             calendar_baseline: None,
             browser_removal_error: None,
             browser_removal_pending: false,
+            copies: Vec::new(),
             session_secrets: None,
             changed: false,
             linked: None,
@@ -1078,7 +1059,6 @@ impl AccountsPane {
             | AccountsEffect::SyncNow { account }
             | AccountsEffect::PauseSync { account }
             | AccountsEffect::ResumeSync { account }
-            | AccountsEffect::RecoverCloudMode { account }
             | AccountsEffect::ConnectNextcloudCalendars { account } => Some(account),
             _ => None,
         }
@@ -1217,7 +1197,7 @@ impl AccountsPane {
     }
 
     fn close_sign_in(&mut self) {
-        // Keep the daemon's Import preparation alive until metadata is durable.
+        // A sign-in being saved finishes first: its account is on its way to the store.
         if self.sign_in_saving {
             return;
         }
@@ -1233,10 +1213,6 @@ impl AccountsPane {
             return;
         };
         let (completed, changed) = flow.poll();
-        if let Some(id) = flow.take_saved() {
-            self.publish_signed_in_id(id);
-            return;
-        }
         if changed {
             self.changed = true;
         }
@@ -1269,18 +1245,18 @@ impl AccountsPane {
         }
         match saved {
             Ok(account) => {
-                // A Sync-to-Import change keeps the mount frozen until its mode is saved; the
-                // hold is completed before the account is published as signed in.
-                if let Some(flow) = self.sign_in.as_mut()
-                    && current
+                // A drive connected to be copied in once, or switched from Sync to it, is
+                // copied into the workspace now that its mode is kept.
+                if current
+                    && let Some(copy) = self
+                        .sign_in
+                        .as_ref()
+                        .and_then(|flow| flow.copy_once(&account))
                 {
-                    flow.finish_async(account.id);
-                    if let Some(id) = flow.take_saved() {
-                        self.publish_signed_in_id(id);
-                    }
-                } else {
-                    self.publish_signed_in(account);
+                    self.copies.retain(|going| going.account != copy.account);
+                    self.copies.push(copy);
                 }
+                self.publish_signed_in(account);
             }
             Err(error) => {
                 if current && let Some(flow) = self.sign_in.as_mut() {
@@ -2114,8 +2090,8 @@ impl AccountsPane {
 
     /// What a row offers for the account's calendars and synced files:
     /// Nextcloud's calendars, then pausing or resuming a mounted account's
-    /// sync (`paused` is `None` without a mount), or recovering an account
-    /// whose files mode was lost, which says so in `details`.
+    /// sync (`paused` is `None` without a mount); a drive being copied into the workspace says
+    /// how far in `details`.
     fn cloud_row_entries(
         &self,
         view: &AccountView,
@@ -2133,14 +2109,9 @@ impl AccountsPane {
         }
         if let Some(paused) = paused {
             entries.extend(sync_entries(&view.id, paused));
-        } else if self.can_recover_cloud_mode(view) {
-            details.push(t("accounts-recover-mode-description"));
-            entries.push(AccountEntry::new(
-                t("accounts-recover-mode"),
-                AccountsEffect::RecoverCloudMode {
-                    account: view.id.clone(),
-                },
-            ));
+        }
+        if let Some(copy) = self.copies.iter().find(|copy| copy.account == view.id) {
+            details.push(copy.shown());
         }
         entries
     }
@@ -2193,16 +2164,6 @@ impl AccountsPane {
             },
         ));
         actions
-    }
-
-    fn can_recover_cloud_mode(&self, view: &AccountView) -> bool {
-        (view.kind.is_cloud_storage()
-            || matches!(view.kind, AccountKind::Nextcloud | AccountKind::WebDav))
-            && self.cloud.mount(&view.id).is_none()
-            && self
-                .sync_statuses
-                .get(&accounts::AccountId::from(view.id.as_str()))
-                .is_some_and(|status| status.health == accounts::AccountSyncHealth::Error)
     }
 
     #[allow(
@@ -3639,6 +3600,16 @@ impl AccountsPane {
                 .sign_in
                 .as_ref()
                 .is_some_and(cloud_signin::SignInFlow::busy)
+    }
+
+    /// Move each drive's copy on through `remote`; whether a row's account says something new.
+    pub(crate) fn poll_copies(&mut self, remote: &ui::RemoteActions) -> bool {
+        let mut changed = false;
+        for copy in &mut self.copies {
+            changed |= copy.poll(remote);
+        }
+        self.changed |= changed;
+        changed
     }
 }
 
