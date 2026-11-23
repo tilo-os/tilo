@@ -39,6 +39,9 @@ export PATH="$tools:$PATH"
 export TILO_APPIMAGE_RUNTIME="$cache/type2-runtime-20251108-$arch"
 # A job has no FUSE device: the AppImage tools run from their extracted tree.
 export APPIMAGE_EXTRACT_AND_RUN=1
+# linuxdeploy's own strip predates the `.relr.dyn` sections Fedora's libraries carry and refuses
+# them; the libraries ship as Fedora built them.
+export NO_STRIP=1
 export TILO_REQUIRE_NATIVE_PACKAGES=1
 
 # A release tag ships the migration capture service beside the installer, signed by its own
