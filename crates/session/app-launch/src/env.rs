@@ -256,8 +256,12 @@ pub fn desktop_variables() -> [(&'static str, &'static str); 3] {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
+    /// A session started from a build under test, with the person's variables, the catalog it
+    /// verified and the document-media socket it serves.
     fn environment() -> SessionEnvironment {
         SessionEnvironment::reading(|name| match name {
             "TILO_APPS_DATA_DIR" => Some("/home/you/.local/share/tilo/apps".into()),
@@ -269,6 +273,14 @@ mod tests {
             "TILO_SYSTEM_INTERFACES" => {
                 Some("/src/tilo/os/usr/share/tilo/system-interfaces.toml".into())
             }
+            // The catalog the session verified, which a package installed
+            // outside the build directory cannot find beside its executable.
+            "TILO_FONT_CATALOG" => Some("/var/tmp/fonts".into()),
+            "TILO_FONT_ASSET_CACHE" => Some("/var/tmp/artifacts".into()),
+            "TILO_REQUIRE_FONTS" | "TILO_LAUNCHER_DEBUG_STDERR" => Some("1".into()),
+            // The media socket this session serves, which the launcher falls
+            // back off when it is not handed one.
+            "TILO_FS_BLOB_SOCKET" => Some("/tmp/run/fs-blobs.sock".into()),
             "HOME" => Some("/home/you".into()),
             "RUST_LOG" => Some("warn,tilo_ui=debug".into()),
             // Not on the allowlist: it describes the session's own
@@ -279,13 +291,14 @@ mod tests {
     }
 
     #[test]
-    fn a_package_starts_with_the_persons_variables_and_the_sessions_displays() {
+    fn a_package_launch_is_told_the_sessions_own_variables_displays_and_language() {
         let mut session = environment();
         session.wayland_socket = Some(PathBuf::from("/run/user/1000/wayland-2"));
         session.x11_display = Some(":7".into());
         session.session_bus = Some("unix:path=/run/user/1000/tilo/bus".into());
         let variables = session.variables();
         for (name, value) in [
+            // The person's variables, their account, and their locale.
             ("TILO_APPS_DATA_DIR", "/home/you/.local/share/tilo/apps"),
             ("TILO_IDENTITY_ROOT", "/home/you/.local/share/tilo/identity"),
             (
@@ -299,6 +312,16 @@ mod tests {
             ),
             ("HOME", "/home/you"),
             ("RUST_LOG", "warn,tilo_ui=debug"),
+            // The catalog the session verified.
+            ("TILO_FONT_CATALOG", "/var/tmp/fonts"),
+            ("TILO_FONT_ASSET_CACHE", "/var/tmp/artifacts"),
+            ("TILO_REQUIRE_FONTS", "1"),
+            // The media socket this session serves, and the switch a
+            // developer's session keeps its apps' output with.
+            ("TILO_FS_BLOB_SOCKET", "/tmp/run/fs-blobs.sock"),
+            ("TILO_LAUNCHER_DEBUG_STDERR", "1"),
+            // The compositor, its runtime directory, the workspace's display
+            // and the person's bus.
             ("WAYLAND_DISPLAY", "wayland-2"),
             ("XDG_RUNTIME_DIR", "/run/user/1000"),
             ("DISPLAY", ":7"),
@@ -319,117 +342,32 @@ mod tests {
             !variables.contains_key("TILO_WORKSPACE_ID"),
             "a workspace is chosen per launch, never inherited"
         );
-    }
-
-    /// A developer's session that asks the launcher to keep its apps' own output
-    /// (`TILO_LAUNCHER_DEBUG_STDERR`) hands that to every launcher it starts: an app that ends
-    /// with no window and no word says why in its data home. A session that does not ask hands
-    /// nothing.
-    #[test]
-    fn a_session_that_keeps_its_apps_output_tells_their_launchers() {
-        let keeping = SessionEnvironment::reading(|name| {
-            (name == "TILO_LAUNCHER_DEBUG_STDERR").then(|| "1".into())
-        });
-        assert_eq!(
-            keeping
-                .variables()
-                .get("TILO_LAUNCHER_DEBUG_STDERR")
-                .map(String::as_str),
-            Some("1")
-        );
         assert!(
-            !SessionEnvironment::reading(|_| None)
-                .variables()
-                .contains_key("TILO_LAUNCHER_DEBUG_STDERR")
+            !variables.contains_key("XAUTHORITY"),
+            "a workspace display authenticates no one"
         );
-    }
 
-    /// The document-media socket a session serves its apps is the session's own, and every
-    /// app it starts must be told it: the launcher falls back to the installed
-    /// `/run/tilo/fs-blobs.sock` when it is not handed one, and a session started from a build
-    /// under test then hands its apps a daemon of another build, whose wire they do not speak.
-    #[test]
-    fn a_package_is_told_the_session_s_own_document_media_socket() {
-        let socket = "/tmp/run/fs-blobs.sock";
-        let session = SessionEnvironment::reading(|name| match name {
-            "TILO_FS_BLOB_SOCKET" => Some(socket.into()),
-            _ => None,
-        });
+        // A host application's launcher plans from the same displays.
+        let env = session.host_launch_env();
         assert_eq!(
-            session
-                .variables()
-                .get("TILO_FS_BLOB_SOCKET")
-                .map(String::as_str),
-            Some(socket),
-            "an app reads its content through the socket this session serves"
+            env.wayland_socket.as_deref(),
+            Some(Path::new("/run/user/1000/wayland-2"))
         );
-    }
+        assert_eq!(env.x11_display.as_deref(), Some(":7"));
+        assert!(env.files.is_empty() && env.urls.is_empty());
 
-    tilo_test_env::scenario! {
-        fn a_launch_is_told_the_sessions_catalog_and_displays;
+        // A session that names no display and asks for none of it hands on
+        // none of it.
+        let bare = SessionEnvironment::reading(|_| None);
+        let variables = bare.variables();
+        assert!(!variables.contains_key("DISPLAY"));
+        assert!(!variables.contains_key("XAUTHORITY"));
+        assert!(!variables.contains_key("TILO_FS_BLOB_SOCKET"));
+        assert!(!variables.contains_key("TILO_LAUNCHER_DEBUG_STDERR"));
 
-        phase a_package_is_told_the_catalog_the_session_verified;
-        // A package installed outside the build directory finds the catalog the
-        // session verified, not one beside an executable that has none.
-        {
-            let session = SessionEnvironment::reading(|name| match name {
-                "TILO_FONT_CATALOG" => Some("/var/tmp/fonts".into()),
-                "TILO_FONT_ASSET_CACHE" => Some("/var/tmp/artifacts".into()),
-                "TILO_REQUIRE_FONTS" => Some("1".into()),
-                _ => None,
-            });
-            let variables = session.variables();
-            for (name, value) in [
-                ("TILO_FONT_CATALOG", "/var/tmp/fonts"),
-                ("TILO_FONT_ASSET_CACHE", "/var/tmp/artifacts"),
-                ("TILO_REQUIRE_FONTS", "1"),
-            ] {
-                assert_eq!(
-                    variables.get(name).map(String::as_str),
-                    Some(value),
-                    "{name}"
-                );
-            }
-        }
-
-        phase the_workspace_display_is_handed_on_and_no_cookie_is;
-        {
-            let mut session = environment();
-            session.x11_display = Some(":7".into());
-            let variables = session.variables();
-            assert_eq!(variables.get("DISPLAY").map(String::as_str), Some(":7"));
-            assert!(
-                !variables.contains_key("XAUTHORITY"),
-                "a workspace display authenticates no one"
-            );
-
-            let session = environment();
-            let variables = session.variables();
-            assert!(!variables.contains_key("DISPLAY"));
-            assert!(!variables.contains_key("XAUTHORITY"));
-        }
-
-        phase a_host_launch_takes_the_same_displays;
-        {
-            let session = SessionEnvironment {
-                wayland_socket: Some("/run/user/1000/wayland-3".into()),
-                x11_display: Some(":9".into()),
-                ..SessionEnvironment::default()
-            };
-            let env = session.host_launch_env();
-            assert_eq!(
-                env.wayland_socket.as_deref(),
-                Some(std::path::Path::new("/run/user/1000/wayland-3"))
-            );
-            assert_eq!(env.x11_display.as_deref(), Some(":9"));
-            assert!(env.files.is_empty() && env.urls.is_empty());
-        }
-    }
-
-    /// The language the person chose reaches an app as its messages' locale, over the locale the
-    /// session was started in, and the device's other categories stay as they were.
-    #[test]
-    fn an_app_speaks_the_language_the_person_chose() {
+        // The language the person chose reaches an app as its messages'
+        // locale, over the locale the session was started in, and the device's
+        // other categories stay as they were.
         let mut variables = BTreeMap::from([
             ("LANG".to_owned(), "en_US.UTF-8".to_owned()),
             ("LC_ALL".to_owned(), "en_GB.UTF-8".to_owned()),

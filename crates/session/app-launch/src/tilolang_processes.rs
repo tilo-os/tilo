@@ -920,8 +920,8 @@ mod tests {
 
     const NOTES: &str = "so.tilo.notes";
 
-    /// The directory of `app`'s documents of `workspace` in the store a device's home keeps apps'
-    /// own data in, made: where an earlier version of the app wrote what a conversion reads.
+    /// The dirs of `app`'s documents of `workspace` in the store a device's home keeps apps' own
+    /// data in, made: where an earlier version of the app wrote what a conversion reads.
     fn earlier_documents(home: &Path, workspace: &str, app: &str) -> PathBuf {
         let root = launcher::appdir::host_app_dir(
             home,
@@ -935,30 +935,42 @@ mod tests {
         directory
     }
 
-    /// A process reads what an earlier version of its app kept in its own workspace, and nothing
-    /// of another workspace's or another app's: the session grants the one directory.
+    fn key(workspace: &str, app: &str) -> HostKey {
+        HostKey {
+            workspace: workspace.to_owned(),
+            app: app.to_owned(),
+            runtime: "tilolang@1".to_owned(),
+            app_runtime: "tilo@1".to_owned(),
+        }
+    }
+
+    fn processes(data_home: PathBuf) -> Arc<Processes> {
+        Processes::with(
+            data_home,
+            Box::new(|_, _, _, _| Command::new("true")),
+            Box::new(|_, _| Err("no package store here".to_owned())),
+        )
+    }
+
+    /// A process reads what an earlier version of its app kept of the person's workspace, and
+    /// nothing of another workspace's or another app's: the session grants the one directory.
     #[test]
     fn a_process_reads_only_its_apps_documents_of_the_persons_workspace() {
         const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000e1";
         const ELSEWHERE: &str = "7a110d00-0000-4000-8000-0000000000e2";
         const ANOTHER_APP: &str = "so.tilo.chat";
         let home = tempfile::tempdir().expect("a device's home");
-        let processes = Processes::with(
-            home.path().to_path_buf(),
-            Box::new(|_, _, _, _| Command::new("true")),
-            Box::new(|_, _| Err("no package store here".to_owned())),
+        let processes = processes(home.path().to_path_buf());
+        assert!(
+            processes.earlier(&key(WORKSPACE, NOTES)).is_none(),
+            "nothing is granted where the app kept nothing"
         );
+
         let kept = earlier_documents(home.path(), WORKSPACE, NOTES);
         let elsewhere = earlier_documents(home.path(), ELSEWHERE, NOTES);
         let another = earlier_documents(home.path(), WORKSPACE, ANOTHER_APP);
-        let key = HostKey {
-            workspace: WORKSPACE.to_owned(),
-            app: NOTES.to_owned(),
-            runtime: "tilolang@1".to_owned(),
-            app_runtime: "tilo@1".to_owned(),
-        };
         let (granted, under) = processes
-            .earlier(&key)
+            .earlier(&key(WORKSPACE, NOTES))
             .expect("the app kept something in this workspace");
         assert_eq!(granted, kept, "its app's documents of its own workspace");
         assert_eq!(
@@ -973,125 +985,31 @@ mod tests {
                 other.display()
             );
         }
-        // A workspace the app kept nothing in grants nothing: the process reads no empty store.
-        let absent = HostKey {
-            workspace: "7a110d00-0000-4000-8000-0000000000e3".to_owned(),
-            ..key
-        };
-        assert!(processes.earlier(&absent).is_none());
-    }
-
-    /// Processes running in each workspace of `running`, behind its socket, each with two windows of
-    /// Notes.
-    fn running(running: Vec<(&str, OwnedFd)>) -> Arc<Processes> {
-        let processes = Processes::with(
-            std::env::temp_dir(),
-            Box::new(|_, _, _, _| Command::new("true")),
-            Box::new(|_, _| Err("no package store here".to_owned())),
-        );
-        for (workspace, socket) in running {
-            let key = HostKey {
-                workspace: workspace.to_owned(),
-                app: NOTES.to_owned(),
-                runtime: "tilolang@1".to_owned(),
-                app_runtime: "tilo@1".to_owned(),
-            };
-            let process = Host {
-                socket: Arc::new(socket),
-                instances: HashMap::from([(7, NOTES.to_owned()), (8, NOTES.to_owned())]),
-                generation: 1,
-                builds: HashMap::new(),
-            };
-            processes.running().insert(key, process);
-        }
-        processes
-    }
-
-    /// Every process running says on its socket what the person's formats now are, so the instances it
-    /// runs write their weeks and times again; a process that is not running hears nothing.
-    #[test]
-    fn a_formats_change_is_said_on_the_socket_of_every_host_running() {
-        let (ours, theirs) = runtime_portal::process_link::pair().unwrap();
-        let (idle_ours, idle_theirs) = runtime_portal::process_link::pair().unwrap();
-        let processes = running(vec![("7a110d00-0000-4000-8000-0000000000f1", ours)]);
-
-        let before = ui::format::region::current();
-        let sunday = ui::format::region::RegionFormats {
-            first_day: ui::format::region::FirstDayOfWeek::Sunday,
-            ..before
-        };
-        ui::format::region::install(sunday);
-        let locale = runtime_portal::process_link::Locale {
-            formats: ui::format::region::current(),
-            language: ui::i18n::preferred_language().unwrap_or_default(),
-        };
-        processes.locale_changed(&locale);
-        let handed = ToProcess::receive(&theirs).unwrap();
-        ui::format::region::install(before);
-        let Some(ToProcess::Locale(locale)) = handed else {
-            panic!("a runtime process's socket carries the formats as formats: {handed:?}");
-        };
-        assert_eq!(
-            locale.formats, sunday,
-            "the week the person starts on reaches the process its instances run in"
-        );
-        // The session keeps no other process's socket: nothing was said on it, so its end is all the
-        // process would hear.
-        drop(idle_ours);
         assert!(
-            ToProcess::receive(&idle_theirs).unwrap().is_none(),
-            "a process that is not running is not told"
-        );
-    }
-
-    /// When the workspace's policy changes, every process running in it is told what the person may
-    /// now do in each app it runs, so the windows already open follow; a process of another
-    /// workspace hears nothing.
-    #[test]
-    fn a_policy_change_is_said_for_each_app_on_the_sockets_of_the_workspaces_hosts() {
-        const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000f2";
-        let (ours, theirs) = runtime_portal::process_link::pair().unwrap();
-        let (other_ours, other_theirs) = runtime_portal::process_link::pair().unwrap();
-        let processes = running(vec![
-            (WORKSPACE, ours),
-            ("7a110d00-0000-4000-8000-0000000000f3", other_ours),
-        ]);
-
-        let mut policy = tilo_action_policy::WorkspacePolicy::new(WORKSPACE, "bob");
-        policy
-            .members
-            .insert("ada".to_owned(), tilo_action_policy::Role::Viewer);
-        let workspace = crate::workspace::Workspace {
-            policy: Some(policy),
-            person: "ada".to_owned(),
-            ..crate::workspace::Workspace::new(WORKSPACE, std::env::temp_dir())
-        };
-        processes.policy_changed(&workspace);
-        let handed = ToProcess::receive(&theirs).unwrap();
-        let Some(ToProcess::Access(said)) = handed else {
-            panic!("the workspace's process is told the person's access: {handed:?}");
-        };
-        assert_eq!(said.app, NOTES);
-        // What a launched Notes reads of the person's authority, as it reads back off the socket.
-        let expected = crate::authority::access(&workspace, NOTES).unwrap();
-        let expected = serde_json::from_slice(&serde_json::to_vec(&expected).unwrap()).unwrap();
-        assert_eq!(said.access, Some(expected));
-        drop(processes);
-        assert!(
-            ToProcess::receive(&theirs).unwrap().is_none(),
-            "said once for the app, however many of its windows are open"
+            processes.earlier(&key(WORKSPACE, "so.tilo.mail")).is_none(),
+            "another app's process is granted none of it"
         );
         assert!(
-            ToProcess::receive(&other_theirs).unwrap().is_none(),
-            "a process of another workspace is not told"
+            processes
+                .earlier(&key("7a110d00-0000-4000-8000-0000000000e3", NOTES))
+                .is_none(),
+            "nor is Notes' process of another workspace"
         );
     }
 
-    /// In a development session, a reinstall of an app a process runs reaches that process's socket once,
-    /// as the module that verified; a reinstall that does not verify reaches it not at all.
+    /// What changed reaches every process it is about, once, and no other: the person's formats
+    /// and language, a reinstall that verified, and the workspace's policy — each said on the
+    /// socket of the process running where it changed.
     #[test]
-    fn a_verified_later_build_is_handed_once_to_the_host_running_the_app() {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one flow through what a session tells its running processes, which is what it proves"
+    )]
+    fn what_changed_reaches_the_processes_it_is_about_once_and_no_others() {
         use runtime_portal::process_link::Module;
+        const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000f1";
+        const ELSEWHERE: &str = "7a110d00-0000-4000-8000-0000000000f3";
+        const REINSTALLED: &str = "7a110d00-0000-4000-8000-0000000000f4";
         let module = |wasm: &[u8]| Module {
             wasm: wasm.to_vec(),
             ..Module::default()
@@ -1112,36 +1030,74 @@ mod tests {
             }),
         );
         let (ours, theirs) = runtime_portal::process_link::pair().unwrap();
-        let key = HostKey {
-            workspace: "7a110d00-0000-4000-8000-0000000000f4".to_owned(),
-            app: NOTES.to_owned(),
-            runtime: "tilolang@1".to_owned(),
-            app_runtime: "tilo@1".to_owned(),
-        };
-        let build = Build {
+        let (other_ours, other_theirs) = runtime_portal::process_link::pair().unwrap();
+        let (build_ours, build_theirs) = runtime_portal::process_link::pair().unwrap();
+        let (idle_ours, idle_theirs) = runtime_portal::process_link::pair().unwrap();
+        let old = Build {
             module: hash(&module(b"old").encode()),
         };
-        let builds = HashMap::from([(NOTES.to_owned(), build)]);
-        let instances = HashMap::from([(7, NOTES.to_owned())]);
-        let socket = Arc::new(ours);
-        let process = Host {
-            socket,
-            instances,
-            generation: 1,
-            builds,
-        };
-        processes.running().insert(key, process);
+        for (workspace, socket, builds) in [
+            (WORKSPACE, ours, HashMap::new()),
+            (ELSEWHERE, other_ours, HashMap::new()),
+            (
+                REINSTALLED,
+                build_ours,
+                HashMap::from([(NOTES.to_owned(), old)]),
+            ),
+        ] {
+            let process = Host {
+                socket: Arc::new(socket),
+                instances: HashMap::from([(7, NOTES.to_owned()), (8, NOTES.to_owned())]),
+                generation: 1,
+                builds,
+            };
+            processes.running().insert(key(workspace, NOTES), process);
+        }
 
-        // The build the process runs is installed still; then a later one, twice; then one that
-        // does not verify.
+        // Every process running says what the person's formats now are, so the instances it runs
+        // write their weeks and times again; a process that is not running hears nothing.
+        let before = ui::format::region::current();
+        let sunday = ui::format::region::RegionFormats {
+            first_day: ui::format::region::FirstDayOfWeek::Sunday,
+            ..before
+        };
+        ui::format::region::install(sunday);
+        let locale = runtime_portal::process_link::Locale {
+            formats: ui::format::region::current(),
+            language: ui::i18n::preferred_language().unwrap_or_default(),
+        };
+        processes.locale_changed(&locale);
+        let handed = ToProcess::receive(&theirs).unwrap();
+        ui::format::region::install(before);
+        let Some(ToProcess::Locale(locale)) = handed else {
+            panic!("a runtime process's socket carries the formats as formats: {handed:?}");
+        };
+        assert_eq!(
+            locale.formats, sunday,
+            "the week the person starts on reaches the process its instances run in"
+        );
+        drop(idle_ours);
+        assert!(
+            ToProcess::receive(&idle_theirs).unwrap().is_none(),
+            "a process that is not running is not told"
+        );
+        for socket in [&other_theirs, &build_theirs] {
+            assert!(
+                matches!(ToProcess::receive(socket), Ok(Some(ToProcess::Locale(_)))),
+                "every process running is told the formats, wherever it works"
+            );
+        }
+
+        // In a development session, a reinstall of an app a process runs reaches that process's
+        // socket once, as the module that verified; a reinstall that does not verify reaches it
+        // not at all.
         processes.reinstalled();
         *installed.lock().unwrap() = Some(module(b"new"));
         processes.reinstalled();
         processes.reinstalled();
         *installed.lock().unwrap() = None;
         processes.reinstalled();
-
-        let handed = ToProcess::receive(&theirs).unwrap();
+        let handed = ToProcess::receive(&build_theirs).unwrap();
         let Some(ToProcess::Build {
             build: later,
             module: fd,
@@ -1154,12 +1110,42 @@ mod tests {
         let mapping = tilo_render_protocol::shm::Mapping::map_sealed(&fd, true, len, len).unwrap();
         let handed = Module::decode(mapping.get(0, len).unwrap()).unwrap();
         assert_eq!(handed, module(b"new"), "the module that verified");
+
+        // When the workspace's policy changes, every process running in it is told what the
+        // person may now do in each app it runs, so the windows already open follow.
+        let mut policy = tilo_action_policy::WorkspacePolicy::new(WORKSPACE, "bob");
+        policy
+            .members
+            .insert("ada".to_owned(), tilo_action_policy::Role::Viewer);
+        let workspace = crate::workspace::Workspace {
+            policy: Some(policy),
+            person: "ada".to_owned(),
+            ..crate::workspace::Workspace::new(WORKSPACE, std::env::temp_dir())
+        };
+        processes.policy_changed(&workspace);
+        let handed = ToProcess::receive(&theirs).unwrap();
+        let Some(ToProcess::Access(said)) = handed else {
+            panic!("the workspace's process is told the person's access: {handed:?}");
+        };
+        assert_eq!(said.app, NOTES);
+        // What a launched Notes reads of the person's authority, as it reads back off the socket.
+        let expected = crate::authority::access(&workspace, NOTES).unwrap();
+        let expected = serde_json::from_slice(&serde_json::to_vec(&expected).unwrap()).unwrap();
+        assert_eq!(said.access, Some(expected));
+
+        // Each was said once, however many of its windows are open, and a process of another
+        // workspace or of no workspace heard none of it.
         drop(processes);
-        let after = ToProcess::receive(&theirs).unwrap();
-        assert!(
-            after.is_none(),
-            "handed once, and a build that does not verify not at all"
-        );
+        for (socket, what) in [
+            (&theirs, "the workspace's own process"),
+            (&other_theirs, "a process of another workspace"),
+            (&build_theirs, "a process where nothing changed"),
+        ] {
+            assert!(
+                ToProcess::receive(socket).unwrap().is_none(),
+                "{what} is told once, or not at all"
+            );
+        }
     }
 
     /// A process that ended without saying why is reported by how it ended and what it last wrote.
@@ -1181,61 +1167,6 @@ mod tests {
         assert_eq!(
             seen_end(&exited, &VecDeque::new()),
             "it exited with status 3 without saying why; it wrote no error output"
-        );
-    }
-
-    /// A process of an app is granted, read-only, what that app kept of its workspace in the store
-    /// its windows and the native app it replaced wrote: only that app's documents of that
-    /// workspace, and nothing where it kept none.
-    #[test]
-    fn a_process_reads_what_its_app_kept_of_its_workspace_and_nothing_else() {
-        let home = tempfile::tempdir().unwrap();
-        let processes = Processes::with(
-            home.path().to_path_buf(),
-            Box::new(|_, _, _, _| Command::new("true")),
-            Box::new(|_, _| Err("no package store here".to_owned())),
-        );
-        let workspace = uuid::Uuid::new_v4().to_string();
-        let key = |workspace: &str, app: &str| HostKey {
-            workspace: workspace.to_owned(),
-            app: app.to_owned(),
-            runtime: "tilolang@1".to_owned(),
-            app_runtime: "tilo@1".to_owned(),
-        };
-        assert!(
-            processes.earlier(&key(&workspace, NOTES)).is_none(),
-            "nothing is granted where the app kept nothing"
-        );
-        let data = launcher::appdir::host_app_dir(
-            home.path(),
-            &launcher::appdir::workspace_slug(Some(&workspace)),
-            NOTES,
-        )
-        .join(".local/share");
-        let kept = app_state::workspace_index_directory(&data, NOTES, &workspace).unwrap();
-        std::fs::create_dir_all(kept.join(app_state::DOCUMENTS_DIR)).unwrap();
-        let (dir, under) = processes
-            .earlier(&key(&workspace, NOTES))
-            .expect("what Notes kept of the workspace");
-        assert_eq!(dir, kept);
-        assert_eq!(
-            under,
-            std::path::Path::new(NOTES)
-                .join("workspaces")
-                .join(&workspace),
-            "seen where the store that wrote it kept it"
-        );
-        assert!(
-            processes
-                .earlier(&key(&workspace, "so.tilo.mail"))
-                .is_none(),
-            "another app's process is granted none of it"
-        );
-        assert!(
-            processes
-                .earlier(&key(&uuid::Uuid::new_v4().to_string(), NOTES))
-                .is_none(),
-            "nor is Notes' process of another workspace"
         );
     }
 }

@@ -1750,11 +1750,12 @@ mod tests {
         }
     }
 
-    /// An app the session ends on the person's ask is reported as asked to end: the session
-    /// tells it apart from a crash, so the place its window was closes quietly.
+    /// The session ends its apps: the one it ended on the person's ask is reported as asked to
+    /// end, so the place its window was closes quietly, and one still running when the session
+    /// goes ends with it.
     #[cfg(target_os = "linux")]
     #[test]
-    fn an_app_the_session_ends_is_reported_as_asked() {
+    fn the_sessions_apps_end_with_it_as_asked_or_not() {
         let mut spawner = Spawner::default();
         let quiet = spawner
             .start(&shell("exit 0", BTreeMap::new()))
@@ -1780,21 +1781,16 @@ mod tests {
             "a signal is how the ask reaches the app: {:?}",
             ended[1].end
         );
-    }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn an_app_still_running_ends_with_the_spawner_that_started_it() {
-        let mut spawner = Spawner::default();
+        // The one that ended is reaped and forgotten: the drop signals only
+        // what is still running.
         let running = spawner
             .start(&shell("exec sleep infinity", BTreeMap::new()))
             .expect("starts");
-        let ended = spawner
+        let exited = spawner
             .start(&shell("exit 0", BTreeMap::new()))
             .expect("starts");
-        // The one that ended is reaped and forgotten: the drop signals only
-        // what is still running.
-        assert_eq!(events(&spawner, 1)[0].id, ended.id);
+        assert_eq!(events(&spawner, 1)[0].id, exited.id);
 
         drop(spawner);
         tilo_test_env::exited("the app its session no longer runs", running.pid);
