@@ -4945,6 +4945,9 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/installer-cycle/**"]
+# A failed run keeps what the guest and its installer said: the serial tail
+# before the install begins and the installer's console state.
+evidence = ["/target/installer-cycle/**"]
 cache = false
 git = true
 timeout_secs = 10800

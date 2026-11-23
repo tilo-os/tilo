@@ -118,6 +118,9 @@ fi
 export TILO_BOOT_WAIT_SECS="${TILO_BOOT_WAIT_SECS:-1800}"
 
 phase=installer
+# The one-time recovery key is generated as the install begins: the live
+# installer's serial before that point is safe to keep, and after it is not.
+install_started=
 browser_fixture_server=""
 copy_evidence() {
   local label="$1"
@@ -125,12 +128,24 @@ copy_evidence() {
   # Never make a raw live-installer serial stream an uploadable artifact, even
   # if a future service configuration begins mirroring that stdout to console.
   if [ "$label" = installer ]; then
-    printf 'withheld: live-installer serial may contain the one-time recovery key\n' \
-      > "$out/installer-serial-withheld.txt"
+    if [ -n "$install_started" ]; then
+      printf 'withheld: live-installer serial may contain the one-time recovery key\n' \
+        > "$out/installer-serial-withheld.txt"
+    elif [ -f "$run/serial.log" ]; then
+      tail -n 200 "$run/serial.log" > "$out/installer-serial-tail.txt"
+    else
+      printf 'no installer serial log was written\n' > "$out/installer-serial-tail.txt"
+    fi
   elif [ -f "$run/serial.log" ]; then
     cp -f "$run/serial.log" "$out/$label-serial.log"
   fi
   [ ! -f "$run/qemu.log" ] || cp -f "$run/qemu.log" "$out/$label-qemu.log"
+  # The installer's own answer on its console, as it stood when the run
+  # failed: why a screen was missing rather than only that it was.
+  if [ -n "${console:-}" ] && [ -S "$console" ]; then
+    python3 "$dev_dir/installer-console.py" --socket "$console" state-dump --pretty \
+      > "$out/$label-console-state.json" 2>&1 || true
+  fi
   "$vm" status > "$out/$label-vm-status.txt" 2>&1 || true
 }
 scrub_artifact_secrets() {
@@ -579,6 +594,8 @@ field "$out/03-review.json" /options/hostname | grep -Eqi 'cycle.?tilo' \
 "$vm" shot 03-review >/dev/null && cp -f "$run/03-review.png" "$out/03-review.png" || true
 
 # Exact destructive confirmation -> recovery-key promise -> Begin Install.
+# From the begin on, the serial may carry the recovery key.
+install_started=1
 # Prepared alongside formats only partition 4; guided alongside confirms the
 # reviewed free-space operation with the whole disk because it appends p4+p5.
 # `begin` is published with a typed-phrase confirmation contract: the phrase
