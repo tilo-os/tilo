@@ -270,7 +270,8 @@ impl Core {
         })
     }
 
-    fn bind_state(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+    /// `bind: name`, or with `at` `bind: name.at(i)`: the place `at` of the list the state holds.
+    fn bind_state(&self, a: &Args<'_>, at: Option<usize>) -> HResult<Option<Wasm>> {
         let node = self.node_index(a.h(0)?)?;
         let key = self.state_key(a.h(1)?)?;
         let (name, ty) = self
@@ -283,7 +284,7 @@ impl Core {
                 Ok,
             )?;
         let binding = Binding {
-            target: BindTarget::State { key, name, ty },
+            target: BindTarget::State { key, name, ty, at },
             author: self.module_of_frame()?,
         };
         self.with_view(|vs| {
@@ -677,7 +678,12 @@ impl Core {
             Imp::StateGet => self.state_get(a),
             Imp::StateAt => self.state_at(a),
             Imp::ArgAt => self.arg_at(a),
-            Imp::UiBindState => self.bind_state(a),
+            Imp::UiBindState => self.bind_state(a, None),
+            Imp::UiBindStateAt => {
+                let at = usize::try_from(a.long(2)?)
+                    .or_else(|_| trap("`bind:` takes a place in a list from 0"))?;
+                self.bind_state(a, Some(at))
+            }
             Imp::ActSet => self.act_set(a),
             Imp::ActThen => self.act_then(a),
             Imp::ActChoose => self.act_choose(a, CHOOSE_ACTION),

@@ -1156,10 +1156,19 @@ impl ViewInstance {
                 let (_, f) = self.bound_field(target, field).ok()?;
                 self.core.read_value(target, &f, None).ok()
             }
-            BindTarget::State { key, .. } => {
+            BindTarget::State { key, at, .. } => {
                 let stored = self.core.view_states.borrow().get(key).cloned();
-                let value = stored.or_else(|| self.live.state_seen(key))?;
-                Some(crate::host_res::unboxed(value))
+                let value = stored.or_else(|| self.live.state_seen(key));
+                match at {
+                    // A place the list does not reach yet holds nothing typed.
+                    Some(at) => Some(match value {
+                        Some(Value::List(items)) => {
+                            items.get(*at).cloned().unwrap_or_else(|| Value::text(""))
+                        }
+                        _ => Value::text(""),
+                    }),
+                    None => Some(crate::host_res::unboxed(value?)),
+                }
             }
         }
     }
@@ -1208,6 +1217,38 @@ impl ViewInstance {
             .view_states
             .borrow_mut()
             .write(key.clone(), stored);
+        Ok(EditOutcome::Applied)
+    }
+
+    /// An edit of a control bound to the place `at` of a list of texts the view state holds
+    /// (`bind: typed.at(i)`): that place takes the text, and a list that does not reach it yet
+    /// grows to it with empty texts, so each row of a form types into its own place whatever
+    /// order they are typed in.
+    fn edit_state_at(
+        &self,
+        key: &StateKey,
+        at: usize,
+        value: &Value,
+    ) -> Result<EditOutcome, RuntimeError> {
+        let Value::Text(text) = value else {
+            return Err(RuntimeError::BadArgs(format!(
+                "a {} does not fit a place of a List<Text>",
+                value.kind_name()
+            )));
+        };
+        let stored = self.core.view_states.borrow().get(key).cloned();
+        let mut items = match stored.or_else(|| self.live.state_seen(key)) {
+            Some(Value::List(items)) => items,
+            _ => Vec::new(),
+        };
+        if items.len() <= at {
+            items.resize(at + 1, Value::text(""));
+        }
+        items[at] = Value::Text(text.clone());
+        self.core
+            .view_states
+            .borrow_mut()
+            .write(key.clone(), Value::List(items));
         Ok(EditOutcome::Applied)
     }
 
@@ -1287,7 +1328,12 @@ impl ViewInstance {
         let view_module = binding.author;
         let (target, field_id) = match binding.target {
             BindTarget::Field { target, field } => (target, field),
-            BindTarget::State { key, ty, .. } => return self.edit_state(&key, &ty, value),
+            BindTarget::State {
+                key, ty, at: None, ..
+            } => return self.edit_state(&key, &ty, value),
+            BindTarget::State {
+                key, at: Some(at), ..
+            } => return self.edit_state_at(&key, at, value),
         };
         let (pkg, field) = self.bound_field(&target, &field_id)?;
         // A control hands over what it shows, and the field takes it as its type holds it: a case

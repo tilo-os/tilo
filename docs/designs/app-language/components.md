@@ -59,6 +59,11 @@ view contact_row(c: Contact) {
   `ui.Slider(value: volume, label: .some("Volume")) { on change(v): device.set_volume(sound, v) }`.
   The same `value:` shows a read-only `ui.BlockEditor`'s text (`ui.BlockEditor(x.notes)`) and a
   row's trailing figure (`ui.ListRow(title: c.name, value: "12")`).
+- A form a view builds from a list binds each row's control to its own place of one
+  `List<Text>` of view state: `state typed: List<Text> = []` and
+  `ui.TextInput(bind: typed.at(i))` for the row `i`. Each place holds what was typed there,
+  whatever order the rows are typed in, and the action the form submits takes the whole list:
+  `on press: join(n, typed)`.
 - A box bound to a value writes that field when it is pressed, unless the view names what a
   press means: `ui.Checkbox(bind: t.done) { on check: check(t) }` and
   `row(t.title, checkbox: t.done, check: check(t))` show the field and run the app's action,

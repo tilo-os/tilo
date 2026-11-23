@@ -247,6 +247,7 @@ imports! {
     (UiOn, "ui_on", "iii", ""),
     (UiAnchor, "ui_anchor", "ii", ""),
     (UiBindState, "ui_bind_state", "ii", ""),
+    (UiBindStateAt, "ui_bind_state_at", "iil", ""),
     (StateGet, "state_get", "ii", "i"),
     (ActSet, "act_set", "ii", "i"),
     (ActThen, "act_then", "ii", "i"),

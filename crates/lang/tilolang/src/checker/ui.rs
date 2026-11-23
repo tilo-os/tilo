@@ -1123,6 +1123,45 @@ impl Checker<'_> {
             }
             names
         };
+        // `bind: typed.at(i)`: the place `i` of a list of texts the view holds, so each row of a
+        // form a view builds from a list types into its own place.
+        if let ExprKind::Call { callee, args, .. } = &value.kind
+            && let ExprKind::Field { base, name } = &callee.kind
+            && name.name == "at"
+            && let ExprKind::Ident(n) = &base.kind
+            && let Some(state) = self.state_named(n)
+        {
+            if state.ty != Ty::List(Box::new(Ty::Text)) || !takes(&Ty::Text) {
+                let t = self.show(&state.ty);
+                self.err(
+                    "E062",
+                    value.span,
+                    format!("`bind: {n}.at(i)` binds a place of view state of type List<Text> to a control that takes Text; `{n}` is {t}"),
+                );
+                return None;
+            }
+            let [
+                ast::Arg {
+                    name: None,
+                    value: at,
+                },
+            ] = args.as_slice()
+            else {
+                self.err(
+                    "E062",
+                    value.span,
+                    format!("`bind: {n}.at(i)` takes one place in the list, as `{n}.at(i)`"),
+                );
+                return None;
+            };
+            let at = self.expr(at, Some(&Ty::Int));
+            self.emit(Stmt::Eval(Ex::host(
+                Imp::UiBindStateAt,
+                vec![node.clone(), Ex::str(&state.id), at],
+                Ty::Unit,
+            )));
+            return Some(Ty::Text);
+        }
         if let ExprKind::Ident(n) = &value.kind
             && let Some(state) = self.state_named(n)
         {

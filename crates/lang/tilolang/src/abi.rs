@@ -267,6 +267,7 @@ imports! {
     UiOn = "ui_on" ([H, H, H] -> []);
     UiAnchor = "ui_anchor" ([H, H] -> []);
     UiBindState = "ui_bind_state" ([H, H] -> []);
+    UiBindStateAt = "ui_bind_state_at" ([H, H, I64] -> []);
     StateGet = "state_get" ([H, H] -> [H]);
     ActSet = "act_set" ([H, H] -> [H]);
     ActThen = "act_then" ([H, H] -> [H]);

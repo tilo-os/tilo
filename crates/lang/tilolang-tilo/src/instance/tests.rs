@@ -21,6 +21,7 @@ tilo_test_env::scenario! {
                 key: crate::runtime::StateKey::view("w", MemberId::person("me").into(), "draft"),
                 name: "draft".to_owned(),
                 ty: "Text".to_owned(),
+                at: None,
             },
             author: crate::runtime::ModuleHash(String::new()),
         };

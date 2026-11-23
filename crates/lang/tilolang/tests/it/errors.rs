@@ -943,3 +943,25 @@ tilo_test_env::scenario! {
         }
     }
 }
+
+tilo_test_env::scenario! {
+    /// E062: `bind: typed.at(i)` binds a place of a `List<Text>` of view state to a control that
+    /// takes text, with the place by position.
+    fn bind_at_e062;
+
+    phase a_place_binds_only_a_list_of_texts;
+    {
+        let form = |state: &str, bind: &str| {
+            format!(
+                "type Desk {{\n    name: Text\n}}\n\nview form(d: Desk) {{\n    state typed: {state}\n    ui.TextInput(bind: {bind})\n}}\n"
+            )
+        };
+        expect("E062", &form("List<Int> = []", "typed.at(0)"));
+        expect("E062", &form("Text = \"\"", "typed.at(0)"));
+        expect("E062", &form("List<Text> = []", "typed.at(place: 0)"));
+        assert!(
+            !codes(&form("List<Text> = []", "typed.at(0)")).contains(&"E062".to_owned()),
+            "a place of a list of texts binds a text input"
+        );
+    }
+}

@@ -49,6 +49,9 @@ pub enum BindTarget {
         key: StateKey,
         name: String,
         ty: String,
+        /// The place in the list the state holds that the control edits (`bind: name.at(i)`),
+        /// for a control of each row of a list.
+        at: Option<usize>,
     },
 }
 

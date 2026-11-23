@@ -472,4 +472,97 @@ action add(l: Tasks, title: Text) {
         assert_eq!(show_all.len(), 1, "{}", dump(&tree));
         assert_eq!(text_prop(show_all[0], "label"), "Show all 8");
     }
+
+    const JOIN: &str = r#"app so.tilo.join "Join"
+
+type Network {
+    name: Text
+    asks: List<Text> = []
+    answered: List<Text> = []
+    keys: List<Text> = []
+}
+
+view join_form(n: Network) {
+    state typed: List<Text> = []
+    stack {
+        for i in n.asks.map((a, i) -> i) {
+            ui.TextInput(bind: typed.at(i), placeholder: n.asks.at(i) ?? "")
+        }
+        ui.ShortcutRecorder(bind: typed.at(n.asks.len()), label: "Shortcut")
+        ui.Button("Join") {
+            on press: join(n, typed)
+        }
+    }
+}
+
+action join(n: Network, answers: List<Text>) (label: "Join") {
+    n.answered = answers
+}
+
+action ask(n: Network, what: Text) {
+    n.asks.insert(what)
+}
+"#;
+
+    /// A form a view builds from a list: each row's control types into its own place of one
+    /// `List<Text>` of view state (`bind: typed.at(i)`), in whatever order the person types,
+    /// and the action the form submits takes the whole list.
+    #[test]
+    fn each_row_of_a_form_types_into_its_own_place_of_a_list() {
+        let app = App::compile(JOIN, &[]);
+        let rt = runtime(&app);
+        let n = rt.create("Network").unwrap();
+        for what in ["User name", "Password", "Domain"] {
+            rt.invoke_action(
+                &me(),
+                (
+                    app.action("ask").as_str(),
+                    vec![Value::resource(&n), Value::text(what)],
+                ),
+            )
+            .unwrap();
+        }
+        let mut view = rt
+            .open_view(&me(), &app.view("join_form"), vec![Value::resource(&n)])
+            .unwrap();
+        let inputs: Vec<String> = of_kind(view.tree(), "ui.TextInput")
+            .iter()
+            .map(|i| i.key.clone())
+            .collect();
+        assert_eq!(inputs.len(), 3, "{}", dump(view.tree()));
+        let chord = of_kind(view.tree(), "ui.ShortcutRecorder")[0].key.clone();
+        assert_eq!(
+            view.bound_value(&inputs[1]),
+            Some(Value::text("")),
+            "a place nobody typed into holds nothing"
+        );
+        // Typed out of order: the last field first, then the chord after every field.
+        view.edit(&inputs[2], &Value::text("analytical")).unwrap();
+        view.edit(&chord, &Value::text("Ctrl+Shift+K")).unwrap();
+        view.edit(&inputs[0], &Value::text("ada")).unwrap();
+        view.edit(&inputs[1], &Value::text("engine")).unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(view.bound_value(&inputs[0]), Some(Value::text("ada")));
+        assert_eq!(
+            view.bound_value(&inputs[2]),
+            Some(Value::text("analytical"))
+        );
+        assert_eq!(view.bound_value(&chord), Some(Value::text("Ctrl+Shift+K")));
+        // Typing again changes only its own place.
+        view.edit(&inputs[1], &Value::text("difference engine"))
+            .unwrap();
+        let button = of_kind(view.tree(), "ui.Button")[0].key.clone();
+        view.press(&button).unwrap();
+        assert_eq!(
+            rt.read(&n, "answered").unwrap(),
+            Value::List(
+                ["ada", "difference engine", "analytical", "Ctrl+Shift+K"]
+                    .map(Value::text)
+                    .to_vec()
+            )
+        );
+        // A number is no text: the edit is refused and the place keeps what it held.
+        assert!(view.edit(&inputs[0], &Value::Int(7)).is_err());
+        assert_eq!(view.bound_value(&inputs[0]), Some(Value::text("ada")));
+    }
 }

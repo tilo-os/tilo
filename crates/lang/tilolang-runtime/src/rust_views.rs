@@ -229,6 +229,7 @@ impl RustNode {
                     key: crate::view_state::StateKey::view(window, viewer.clone(), name.clone()),
                     name: name.clone(),
                     ty: "Text".to_owned(),
+                    at: None,
                 },
                 author: author.clone(),
             }),
