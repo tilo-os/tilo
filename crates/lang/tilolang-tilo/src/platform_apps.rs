@@ -86,6 +86,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("battery", "Battery", "power:battery"),
     ("power", "Power", "power"),
     ("displays", "Displays", "session:displays"),
+    ("screen", "Screen", "session:screen"),
     ("notifications", "Notifications", "session:notifications"),
     ("osd", "Osd", "session:osd"),
     ("vpn", "Vpn", "vpn"),

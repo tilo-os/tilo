@@ -688,6 +688,11 @@ choice!(crate::widget::ButtonRole, "ButtonRole", {
     Bar => "bar",
 });
 
+choice!(crate::a11y::Politeness, "Politeness", {
+    Polite => "polite",
+    Assertive => "assertive",
+});
+
 choice!(crate::widget::ControlSize, "ControlSize", {
     Small => "small",
     Regular => "regular",

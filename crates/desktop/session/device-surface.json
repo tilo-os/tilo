@@ -2099,6 +2099,86 @@
       ]
     },
     {
+      "kind": "screen",
+      "label": "Screen",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "output",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "connector",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "name",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "x",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "y",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "width",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "height",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "scale",
+          "stored": "value",
+          "type": "float",
+          "readonly": true
+        },
+        {
+          "path": "primary",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "identify",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "identify_number",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "identify_name",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        }
+      ]
+    },
+    {
       "kind": "notifications",
       "label": "Notifications",
       "version": 1,

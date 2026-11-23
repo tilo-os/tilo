@@ -5651,6 +5651,14 @@
           "name": "shows_bar",
           "doc": "Show the bar for as long as the content overflows, not only while it is scrolled: a card held to a height whose words go on below it, so the person sees there is more.",
           "type": "bool"
+        },
+        {
+          "name": "keep",
+          "doc": "Keep the descendant that names itself this (`Widget::kept_in_view`) in view when the one that is named changes: the front strip of a row a person pans, brought into view as they move between windows.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
         }
       ],
       "parts": [
@@ -6572,6 +6580,21 @@
           "name": "truncate",
           "doc": "It elides at the width it is given rather than wrapping wider, so its box may shrink to nothing and what does not fit ends in an ellipsis: a title in a narrow card.",
           "type": "bool"
+        },
+        {
+          "name": "live",
+          "doc": "What it says is announced when it changes instead of only read on the way past: a line a person is told without looking (a notice passing, a status that moved). `polite` waits for a pause, `assertive` interrupts; unset, it is read without announcing.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Politeness",
+                "cases": [
+                  "polite",
+                  "assertive"
+                ]
+              }
+            }
+          }
         }
       ],
       "semantics": {
@@ -7757,6 +7780,14 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "keep",
+          "doc": "The name a scroll view around this window keeps in view (`scroll(..., keep:)`): the front strip of a row, which comes into view as the person moves between windows. Unset, the window asks for nothing.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
         }
       ],
       "parts": [

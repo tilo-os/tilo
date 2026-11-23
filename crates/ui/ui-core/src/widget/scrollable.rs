@@ -106,6 +106,15 @@ pub struct Scrollable {
     glide: crate::virtual_viewport::ScrollGlide,
     /// The motion toward what [`Self::scroll_into_view`] was asked to show.
     scroll_to: crate::motion::ScrollTo,
+    /// The name of the descendant to keep in view (`Widget::kept_in_view`), and the name it
+    /// last brought into view: a change of the kept one glides to it, at the pace
+    /// [`crate::motion::ScrollTo`] sets from the person's recent input, and what stays the same
+    /// leaves where the person put it.
+    keep: Option<String>,
+    /// The descendant that named itself the one to keep in view last, by its place in the tree:
+    /// a different widget naming it (the front strip changing) is what brings it into view, so a
+    /// person panning the row between changes keeps where they put it.
+    kept: Option<usize>,
     /// Device pixels per logical pixel on the display the last input came
     /// from: glides and jumps step in whole ones.
     device_scale: f64,
@@ -323,6 +332,8 @@ impl Scrollable {
             viewport_h: 0.0,
             glide: crate::virtual_viewport::ScrollGlide::new(),
             scroll_to: crate::motion::ScrollTo::new(),
+            keep: None,
+            kept: None,
             device_scale: 1.0,
             motion: crate::tokens::EffectiveMotion::default(),
             fade_drawn: Cell::new(1.0),
@@ -910,6 +921,20 @@ impl Scrollable {
         self.reveal_id = Some(id.into());
     }
 
+    /// Keep the descendant that names itself `name` ([`Widget::kept_in_view`]) in view: when
+    /// the one that is named changes (the front strip of a row, as the person moves between
+    /// windows), the content moves the least it takes to show it, gliding at the pace
+    /// [`crate::motion::ScrollTo`] sets from the person's recent input. A scroll between changes
+    /// leaves the content where the person put it.
+    pub fn keep_in_view(&mut self, name: impl Into<String>) {
+        let name = name.into();
+        if self.keep.as_deref() != Some(name.as_str()) {
+            self.keep = Some(name);
+            self.kept = None;
+            self.scroll_unplaced = true;
+        }
+    }
+
     /// Show the content rect at `x`, `y` (`w` by `h`, in content
     /// coordinates), moving as little as it takes. A jump the person's hand
     /// or key just asked for moves there ([`crate::motion::ScrollTo`]): it
@@ -978,6 +1003,56 @@ impl Scrollable {
         self.move_by(tx - self.offset_x, ty - self.offset_y);
         self.scroll_to
             .land(vello::kurbo::Vec2::new(f64::from(tx), f64::from(ty)));
+        let clip = self.content_viewport_rect();
+        let origin = self.content_origin();
+        if let (Some(child), Some(node)) = (&mut self.child, self.child_node) {
+            crate::widget::with_layout_clip(clip, || {
+                child.apply_layout(taffy, node, origin);
+            });
+        }
+    }
+
+    /// Show the descendant that names itself the one to keep in view, when that name changed:
+    /// the front strip of a row, as the person moves between windows. It moves the least it
+    /// takes, at the pace [`crate::motion::ScrollTo`] sets from the person's recent input.
+    fn keep_asked(&mut self, taffy: &TaffyTree<()>) {
+        /// A widget's place in the tree, as a number: its address without the metadata of its
+        /// trait object, so the scroll knows the one it keeps changed.
+        #[allow(
+            clippy::ptr_as_ptr,
+            reason = "a widget's identity is its address: the cast drops the trait object's metadata"
+        )]
+        fn identity(widget: &dyn Widget) -> usize {
+            std::ptr::from_ref(widget) as *const () as usize
+        }
+        fn kept(widget: &dyn Widget, name: &str) -> Option<(usize, Rect)> {
+            if widget.kept_in_view() == Some(name) {
+                return Some((identity(widget), widget.get_rect()));
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| kept(child, name))
+        }
+        let Some(name) = self.keep.clone() else {
+            return;
+        };
+        let Some((identity, rect)) = self
+            .child
+            .as_ref()
+            .and_then(|child| kept(child.as_ref(), &name))
+        else {
+            // The one it keeps has not been placed yet: the layout that places it asks again.
+            return;
+        };
+        if self.kept == Some(identity) {
+            return;
+        }
+        self.kept = Some(identity);
+        let viewport = self.content_viewport_rect();
+        let x = f32_of_f64(rect.x0 - viewport.x0) + self.offset_x;
+        let y = f32_of_f64(rect.y0 - viewport.y0) + self.offset_y;
+        self.scroll_into_view(x, y, f32_of_f64(rect.width()), f32_of_f64(rect.height()));
         let clip = self.content_viewport_rect();
         let origin = self.content_origin();
         if let (Some(child), Some(node)) = (&mut self.child, self.child_node) {
@@ -1574,6 +1649,7 @@ impl Widget for Scrollable {
             }
         }
         self.reveal_asked(taffy);
+        self.keep_asked(taffy);
         let scrollable_now = self.vbar_active() || self.hbar_active();
         // Content that has just begun to overflow is something to scroll, not
         // something the person did: an overlay bar appears when they scroll

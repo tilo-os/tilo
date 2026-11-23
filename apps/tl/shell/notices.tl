@@ -24,7 +24,10 @@ view notices() {
             header: {
                 row(gap: .related, align: .center, wrap: true) {
                     ui.Text("Notifications", role: .heading)
-                    ui.Text(unread_line(), role: .caption, secondary: true)
+                    // How many are waiting changes as notices arrive while the person is
+                    // elsewhere: it is announced politely, so a reader hears it without having
+                    // to come back to the centre.
+                    ui.Text(unread_line(), role: .caption, secondary: true, live: .polite)
                     spacer
                     if not all.is_empty() {
                         ui.Button("Clear all", icon: .trash, size: .small) {

@@ -365,6 +365,9 @@ d-x42tiiqe = Workspace
 
 d-dvberkpa = Row
 
+d-ssbg6dg6 = Display
+    .doc = The display this device shows the strip on, by its id (`device.screen.output`): each part of the shell draws its own display's strips.
+
 d-7ekq6qgi = Width
     .doc = Its width in per-mille of its row's usable width (333 narrow, 667 normal, 1000 wide).
 
@@ -388,6 +391,8 @@ d-s6rivl3a = Canvas hugs
     .doc = Whether `canvas_height` is the most it takes: what it shows is as tall as what it holds up to it (a thing found where the person clicked).
 
 d-pznsxbgq = Shell
+
+d-w25t6rl7-filter-display = Display
 
 d-w25t6rl7-filter-width = Width
 
@@ -833,6 +838,17 @@ d-ztflhbbf-name = Name
 
 d-ztflhbbf-width = Width
 
+d-nynnosmh = A strip on
+    .doc = Adds a strip named `name` to `row` at `width`, shown on `display`, and returns its key.
+
+d-nynnosmh-row = Row
+
+d-nynnosmh-name = Name
+
+d-nynnosmh-width = Width
+
+d-nynnosmh-display = Display
+
 d-chvuqgur = A note place
     .doc = Adds a place showing the note at `index` of the notebook to `strip`, and returns its key.
 
@@ -1091,6 +1107,7 @@ d-7ugeomrq = Report picker
     .w-nothing-is-open-to-report-about-2 = Nothing is open to report about.
     .w-click-the-window-that-isn-t-2 = Click the window that isn't working, or drag over it.
     .w-cancel = Cancel
+d-dk2iupmd = Identify card
 
 d-lcq7ufsf = History
     .w-clear = Clear

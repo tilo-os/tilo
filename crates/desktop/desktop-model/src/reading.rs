@@ -42,6 +42,10 @@ pub struct LayoutStripReading {
     pub key: String,
     pub workspace: String,
     pub row: String,
+    /// The display this device shows the strip on, by its id ([`crate::partition::Display::id`]):
+    /// a shell draws the strips of the display its part stands on, and no other's.
+    #[serde(default)]
+    pub display: i64,
     /// Its width in per-mille of its row's usable width.
     pub width: i64,
     pub maximized: bool,
@@ -232,6 +236,7 @@ pub fn of(
                     key: group.id.to_string(),
                     workspace: workspace.id().to_string(),
                     row: row.id.0.to_string(),
+                    display: tree.outputs.display_of(group.id).map_or(0, i64::from),
                     width: i64::from(group.width.permille()),
                     maximized: group.maximized,
                     active: Some(group.active_tab)

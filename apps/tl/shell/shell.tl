@@ -140,6 +140,8 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
                 pass_notice()
             }
         }
+        // Which screen is which, on each screen, for the moment after Settings was asked.
+        identify_card()
     }
 }
 
@@ -351,7 +353,10 @@ view bar_on_edge(s: Shell, traditional: Bool) {
 /// `traditional` is the desktop style's chrome: its bar lists the focused window's commands
 /// whatever the chrome's own preset, so `top_bar` draws `traditional_bar`.
 view top_bar(traditional: Bool) {
-    if traditional or bar_is_traditional(shell) {
+    // A display that is not the one in use carries the compact bar, whichever style the person
+    // picked: its traditional bar lists the focused window's commands, which are the commands of
+    // the window the person is working in, on the display they are working on.
+    if (traditional or bar_is_traditional(shell)) and on_primary() {
         traditional_bar()
     } else {
         bar()

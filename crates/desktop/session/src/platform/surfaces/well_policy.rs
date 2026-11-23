@@ -67,6 +67,9 @@ pub trait WindowModel {
     fn relayout(&self);
     /// The outputs the windows stand on, as the compositor knows them now.
     fn cover(&self, _outputs: &[LayoutRect]) {}
+    /// The monitors the compositor holds and the one made primary: the desktop reconciles its
+    /// partition from them, so its strips know their display before a window is placed.
+    fn monitors(&self, _monitors: &[(LayoutRect, String)], _primary: Option<&str>) {}
     /// How the desktop reads touchpad gestures: `None` leaves every one to the
     /// clients.
     fn gesture_config(&self) -> Option<GestureConfig> {
@@ -189,8 +192,8 @@ impl WellPolicy {
         window: &WindowInfo,
         outputs: &[LayoutRect],
     ) -> (i32, i32) {
-        if let Some(size) = tab
-            .and_then(|key| self.wells.well(key))
+        if let Some(size) = self
+            .well_for(window, tab)
             .filter(|well| well.width() >= 1.0 && well.height() >= 1.0)
         {
             return (extent(size.width()), extent(size.height()));
@@ -198,10 +201,22 @@ impl WellPolicy {
         initial_extent(window, outputs)
     }
 
+    /// The well of `window`'s tab `key`: the one the part drawing `window`'s display laid out,
+    /// so a strip two displays' parts both drew places the window on its own display. A window
+    /// on a desktop of one display, or one whose display is not yet known, reads any part's.
+    fn well_for(&self, window: &WindowInfo, tab: Option<&str>) -> Option<ui::kurbo::Rect> {
+        let key = tab?;
+        self.desktop
+            .policy()
+            .display_of(window.id)
+            .and_then(|display| self.wells.well_on(&display.to_string(), key))
+            .or_else(|| self.wells.well(key))
+    }
+
     /// The room the well of tab `key` leaves a window that opened with no well (the frame has
     /// not laid out): off the output.
-    fn place_of(&self, tab: Option<&str>) -> Option<LayoutPoint> {
-        let well = tab.and_then(|key| self.wells.well(key))?;
+    fn place_of(&self, window: &WindowInfo, tab: Option<&str>) -> Option<LayoutPoint> {
+        let well = self.well_for(window, tab)?;
         if well.width() < 1.0 || well.height() < 1.0 {
             return None;
         }
@@ -287,6 +302,10 @@ impl WellPolicy {
 }
 
 impl WindowPolicy for WellPolicy {
+    fn monitors(&mut self, monitors: &[(LayoutRect, String)], primary: Option<&str>) {
+        self.desktop.monitors(monitors, primary);
+    }
+
     fn initial_size(&mut self, window: &WindowInfo, outputs: &[LayoutRect]) -> Option<(i32, i32)> {
         self.desktop.cover(outputs);
         let tab = self.tab(window);
@@ -305,7 +324,7 @@ impl WindowPolicy for WellPolicy {
         self.desktop.cover(outputs);
         let tab = self.tab(window);
         self.pending.retain(|id| *id != window.id);
-        self.place_of(tab.as_deref())
+        self.place_of(window, tab.as_deref())
             .unwrap_or_else(|| LayoutPoint::from((OFFSTAGE, 0)))
     }
 
@@ -346,7 +365,7 @@ impl WindowPolicy for WellPolicy {
                 self.desktop.policy().set_app_id(window.id, app_id);
             }
             let tab = self.tab(window);
-            let Some(well) = tab.as_deref().and_then(|key| self.wells.well(key)) else {
+            let Some(well) = self.well_for(window, tab.as_deref()) else {
                 // No well on screen: the window waits off it, with the size it has.
                 placement.push(WindowPlacement {
                     id: window.id,

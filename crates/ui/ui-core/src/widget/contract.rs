@@ -317,6 +317,14 @@ pub trait Widget {
         None
     }
 
+    /// The name the scroll view around this widget keeps in view, when it is the one a view
+    /// marked ([`Scrollable::keep_in_view`](crate::widget::Scrollable::keep_in_view)): the front
+    /// strip of a row its person pans, so a change of the front brings it into view rather than
+    /// leaving the person to find it.
+    fn kept_in_view(&self) -> Option<&str> {
+        None
+    }
+
     /// Downcast to the concrete widget, for hosts and tests that reach a known widget through `dyn
     /// Widget`.
     fn as_any(&self) -> Option<&dyn std::any::Any> {

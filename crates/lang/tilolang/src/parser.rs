@@ -1879,6 +1879,13 @@ impl<'a> Parser<'a> {
             self.expect(&Tok::Gt)?;
         }
         let params = self.params()?;
+        // What a screen reader calls the window this view fills (`window "Desktop shell"`).
+        let window = if matches!(self.peek(), Tok::Ident(name) if name == "window") {
+            self.bump();
+            Some(self.plain_string("a window name after `window`")?)
+        } else {
+            None
+        };
         let body_start = self.span();
         let body = self.ui_block()?;
         let end = Span::new(self.prev_end(), self.prev_end());
@@ -1889,6 +1896,7 @@ impl<'a> Parser<'a> {
             template: false,
             type_params,
             params,
+            window,
             body,
             body_span: body_start.to(end),
             span: start.to(end),

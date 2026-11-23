@@ -31,9 +31,18 @@ use crate::widget::{TaffyTreeExt, Widget};
 /// none installed, a well reports nowhere and costs one thread-local read.
 #[derive(Clone, Default)]
 pub struct Wells {
-    placed: Rc<RefCell<BTreeMap<String, Rect>>>,
+    /// Every well, keyed by the part that laid it out and the place it stands for: a shell
+    /// drawing several displays lays one place out on each, so the part is what tells the two
+    /// apart. A handle with no part keys its wells by the place alone.
+    placed: Rc<RefCell<BTreeMap<WellKey, Rect>>>,
     generation: Rc<std::cell::Cell<u64>>,
+    /// The part this handle's wells belong to (a display's id, as the shell names its parts):
+    /// empty for a handle that is not a part's.
+    part: Rc<String>,
 }
+
+/// A well by the part that laid it out and the place it stands for.
+type WellKey = (String, String);
 
 impl Wells {
     /// A handle with no well on it.
@@ -42,23 +51,74 @@ impl Wells {
         Self::default()
     }
 
-    /// Where the well of place `place` stands, in the layout's logical coordinates, as of the
-    /// last layout that placed it.
+    /// This handle as `part`'s: what it places is the well that part laid out, so two parts
+    /// drawing one place keep both wells instead of the last one winning.
     #[must_use]
-    pub fn well(&self, place: &str) -> Option<Rect> {
-        self.placed.borrow().get(place).copied()
+    pub fn for_part(&self, part: impl Into<String>) -> Self {
+        Self {
+            placed: Rc::clone(&self.placed),
+            generation: Rc::clone(&self.generation),
+            part: Rc::new(part.into()),
+        }
     }
 
-    /// Every well on screen, by place, as of the last layout.
+    /// The part this handle's wells belong to.
+    #[must_use]
+    pub fn part(&self) -> &str {
+        &self.part
+    }
+
+    /// Where the well of place `place` stands, in the layout's logical coordinates, as of the
+    /// last layout that placed it. A handle that is not a part's answers the most recent part
+    /// that placed it; a part's answers its own.
+    #[must_use]
+    pub fn well(&self, place: &str) -> Option<Rect> {
+        if !self.part.is_empty() {
+            return self.well_on(&self.part, place);
+        }
+        let placed = self.placed.borrow();
+        placed
+            .get(&(String::new(), place.to_owned()))
+            .or_else(|| {
+                placed
+                    .iter()
+                    .find(|((_, held), _)| held == place)
+                    .map(|(_, rect)| rect)
+            })
+            .copied()
+    }
+
+    /// Where `part`'s well of place `place` stands: the well that display's shell laid out.
+    #[must_use]
+    pub fn well_on(&self, part: &str, place: &str) -> Option<Rect> {
+        self.placed
+            .borrow()
+            .get(&(part.to_owned(), place.to_owned()))
+            .copied()
+    }
+
+    /// Every well on screen, by place, as of the last layout: this part's while it is one's.
     #[must_use]
     pub fn wells(&self) -> BTreeMap<String, Rect> {
-        self.placed.borrow().clone()
+        let placed = self.placed.borrow();
+        placed
+            .iter()
+            .filter(|((part, _), _)| self.part.is_empty() || part.as_str() == self.part.as_str())
+            .map(|((_, place), rect)| (place.clone(), *rect))
+            .collect()
     }
 
     /// Whether any well stands on a tree at all: empty after a layout that placed none.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.placed.borrow().is_empty()
+        let placed = self.placed.borrow();
+        if self.part.is_empty() {
+            placed.is_empty()
+        } else {
+            !placed
+                .keys()
+                .any(|(part, _)| part.as_str() == self.part.as_str())
+        }
     }
 
     /// Moves with every layout that placed a well, so a reader of [`Self::well`] knows whether
@@ -68,32 +128,39 @@ impl Wells {
         self.generation.get()
     }
 
-    /// Record `rect` as the well of `place`.
+    /// Record `rect` as the well of `place`, on this handle's part.
     pub fn place(&self, place: &str, rect: Rect) {
+        let key = ((*self.part).clone(), place.to_owned());
         let mut placed = self.placed.borrow_mut();
-        if placed.get(place).copied() == Some(rect) {
+        if placed.get(&key).copied() == Some(rect) {
             return;
         }
-        placed.insert(place.to_owned(), rect);
+        placed.insert(key, rect);
         self.generation.set(self.generation.get().wrapping_add(1));
     }
 
-    /// Forget the well of `place`: it left the screen (its place scrolled away, or the shell
-    /// shows another workspace and does not draw it).
+    /// Forget the well of `place` on this handle's part: it left the screen (its place scrolled
+    /// away, or the shell shows another workspace and does not draw it).
     pub fn remove(&self, place: &str) {
-        if self.placed.borrow_mut().remove(place).is_some() {
+        let key = ((*self.part).clone(), place.to_owned());
+        if self.placed.borrow_mut().remove(&key).is_some() {
             self.generation.set(self.generation.get().wrapping_add(1));
         }
     }
 
-    /// Forget every well: a layout that placed none leaves nothing on screen.
+    /// Forget every well this handle's part placed: a layout that placed none leaves nothing on
+    /// screen for that part. A handle that is not a part's forgets every well.
     pub fn clear(&self) {
         let mut placed = self.placed.borrow_mut();
-        if placed.is_empty() {
-            return;
+        let before = placed.len();
+        if self.part.is_empty() {
+            placed.clear();
+        } else {
+            placed.retain(|(part, _), _| part.as_str() != self.part.as_str());
         }
-        placed.clear();
-        self.generation.set(self.generation.get().wrapping_add(1));
+        if placed.len() != before {
+            self.generation.set(self.generation.get().wrapping_add(1));
+        }
     }
 }
 
@@ -289,6 +356,24 @@ impl Widget for WindowWell {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+
+    /// Two parts of a shell drawing one strip's place keep both wells, each by its own display:
+    /// the window policy places each window by the well on the display it stands on, rather than
+    /// by whichever part laid it out last.
+    #[test]
+    fn a_place_on_two_parts_keeps_a_well_on_each() {
+        let wells = super::Wells::new();
+        let first = wells.for_part("0");
+        let second = wells.for_part("1");
+        let on_first = vello::kurbo::Rect::new(0.0, 0.0, 400.0, 300.0);
+        let on_second = vello::kurbo::Rect::new(1280.0, 0.0, 1680.0, 300.0);
+        first.place("place", on_first);
+        second.place("place", on_second);
+        assert_eq!(wells.well_on("0", "place"), Some(on_first));
+        assert_eq!(wells.well_on("1", "place"), Some(on_second));
+        assert_eq!(first.well("place"), Some(on_first));
+        assert_eq!(second.well("place"), Some(on_second));
+    }
 
     use taffy::{AvailableSpace, FlexDirection, NodeId, Size, Style, TaffyTree};
 

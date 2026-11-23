@@ -1901,6 +1901,21 @@ action a_strip(a: Layout, row: Text, name: Text, width: Int) -> Text {
     s.key
 }
 
+/// Adds a strip named `name` to `row` at `width`, shown on `display`, and returns its key.
+action a_strip_on(a: Layout, row: Text, name: Text, width: Int, display: Int) -> Text {
+    let s = a.strips.insert(
+        LayoutStrip(
+            key: "s-{row}-{name}",
+            workspace: "w-Main",
+            row: row,
+            width: width,
+            display: display,
+            shell: "so.tilo.shell.strips",
+        ),
+    )
+    s.key
+}
+
 /// Adds a place showing the note at `index` of the notebook to `strip`, and returns its key.
 action a_note_place(a: Layout, strip: Text, index: Int) -> Text {
     let chosen = notes.notebook.notes.take(index + 1)
@@ -2115,6 +2130,95 @@ scenario "a window alone in the shell" -> Layout {
     let one = a_strip(a, row, "Note", 1000)
     a_note_place(a, one, 0)
     a.front = one
+    a
+}
+
+/// Two displays: each display's part draws its own display's strips, and the display in use
+/// carries the whole bar while the other carries the compact one. This is the display in use,
+/// its strip the front one.
+scenario "two displays, the one in use" -> Layout {
+    let v = viewing
+    v.style = "so.tilo.shell:strips"
+    let a = root Layout
+    stage(
+        device.screen,
+        device.Screen(
+            output: 0,
+            connector: "eDP-1",
+            name: "Built-in",
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 800,
+            scale: 1.0,
+            primary: true,
+        ),
+    )
+    let row = a_workspace(a, "Main")
+    let here = a_strip_on(a, row, "Here", 667, 0)
+    a_note_place(a, here, 0)
+    let there = a_strip_on(a, row, "There", 667, 1)
+    a_note_place(a, there, 1)
+    a.front = here
+    a
+}
+
+/// Two displays, the one that is not in use: its own strip, and the compact bar it carries.
+scenario "two displays, the other one" -> Layout {
+    let v = viewing
+    v.style = "so.tilo.shell:strips"
+    let a = root Layout
+    stage(
+        device.screen,
+        device.Screen(
+            output: 1,
+            connector: "HDMI-A-1",
+            name: "Studio monitor",
+            x: 1280,
+            y: 0,
+            width: 2560,
+            height: 1440,
+            scale: 1.0,
+            primary: false,
+        ),
+    )
+    let row = a_workspace(a, "Main")
+    let here = a_strip_on(a, row, "Here", 667, 0)
+    a_note_place(a, here, 0)
+    let there = a_strip_on(a, row, "There", 667, 1)
+    a_note_place(a, there, 1)
+    a.front = there
+    a
+}
+
+/// A display saying which one it is, after Settings was asked: its number, the one its tile
+/// carries on Settings' canvas, beside the name Settings gives it, in the display's bottom-left
+/// corner for the moment the answer stands.
+scenario "which screen is which" -> Layout {
+    let v = viewing
+    v.style = "so.tilo.shell:strips"
+    let a = root Layout
+    stage(
+        device.screen,
+        device.Screen(
+            output: 1,
+            connector: "HDMI-A-1",
+            name: "Studio monitor",
+            x: 1280,
+            y: 0,
+            width: 2560,
+            height: 1440,
+            scale: 1.0,
+            primary: false,
+            identify: true,
+            identify_number: 2,
+            identify_name: "Studio monitor",
+        ),
+    )
+    let row = a_workspace(a, "Main")
+    let here = a_strip_on(a, row, "Here", 667, 1)
+    a_note_place(a, here, 0)
+    a.front = here
     a
 }
 

@@ -123,6 +123,9 @@ type LayoutStrip (origin: session.layout_strip) {
     key: Text merge register
     workspace: Text merge register
     row: Text merge register
+    /// The display this device shows the strip on, by its id (`device.screen.output`): each part of
+    /// the shell draws its own display's strips.
+    display: Int
     /// Its width in per-mille of its row's usable width (333 narrow, 667 normal, 1000 wide).
     width: Int
     maximized: Bool

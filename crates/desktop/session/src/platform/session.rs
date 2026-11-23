@@ -2161,6 +2161,16 @@ impl Session {
     /// Bring the displays in line with the person's layout and the way up
     /// the device is held, and advance a change waiting for their answer.
     pub(crate) fn follow_displays(&mut self) -> Result<(), Error> {
+        // The desktop's partition follows the outputs every pass: a display added, moved or
+        // taken away gives its strips a display before any window is placed, and a monitor that
+        // went hands its windows to the nearest one left, whether the shell's own views run this
+        // pass or not.
+        let outputs = self.compositor.outputs();
+        crate::shell::reconcile_displays(
+            &self.shared.handle,
+            &outputs,
+            self.compositor.primary_monitor().as_deref(),
+        );
         // The panel follows the light in the room while the person asked for
         // it, and the displays are warmed to what the night light shows now;
         // a new output takes both with the displays' layout.

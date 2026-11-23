@@ -21,6 +21,11 @@ pub struct ScrollProps {
     /// Show the bar for as long as the content overflows, not only while it is scrolled: a card
     /// held to a height whose words go on below it, so the person sees there is more.
     pub shows_bar: bool,
+    /// Keep the descendant that names itself this (`Widget::kept_in_view`) in view when the one
+    /// that is named changes: the front strip of a row a person pans, brought into view as they
+    /// move between windows.
+    #[component(data)]
+    pub keep: Option<String>,
     /// What scrolls.
     #[component(part(default))]
     pub content: Option<Element>,
@@ -35,6 +40,7 @@ impl Described for Scrollable {
             across,
             both,
             shows_bar,
+            keep,
             content,
         } = props;
         let mut scroll = if both {
@@ -49,6 +55,9 @@ impl Described for Scrollable {
         }
         if shows_bar {
             scroll = scroll.always_visible();
+        }
+        if let Some(keep) = keep {
+            scroll.keep_in_view(keep);
         }
         match content {
             Some(content) => scroll.with_child(content),
@@ -68,6 +77,9 @@ impl Described for Scrollable {
         if props.shows_bar == self.overlay {
             self.overlay = !props.shows_bar;
             self.bar_dirty = true;
+        }
+        if let Some(keep) = &props.keep {
+            self.keep_in_view(keep.clone());
         }
         props.follow_end == self.follow_end && same_axis
     }

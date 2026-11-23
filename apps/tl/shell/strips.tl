@@ -22,9 +22,11 @@ fn places_of(a: Layout, strip: Text) -> List<LayoutPlace> {
     a.places.filter(p -> p.strip == strip)
 }
 
-/// The strips the row `row` holds, in the document's order.
+/// The strips the row `row` holds on the display this part draws on, in the document's order: a
+/// shell over several displays draws each display's own strips, so every window stands on the
+/// display the person put it on rather than on all of them.
 fn strips_of(a: Layout, row: Text) -> List<LayoutStrip> {
-    a.strips.filter(s -> s.row == row)
+    a.strips.filter(s -> s.row == row and s.display == device.screen.output)
 }
 
 /// The rows of the workspace `workspace`, in the document's order.
@@ -41,7 +43,7 @@ fn strip_in_front(a: Layout) -> Text {
 /// The strips maximized: each shows alone, filling the shell, the others behind
 /// it. Empty while none is.
 fn maximized_strips(a: Layout) -> List<LayoutStrip> {
-    a.strips.filter(s -> s.maximized)
+    a.strips.filter(s -> s.maximized and s.display == device.screen.output)
 }
 
 /// The style switch: every style every installed package offers, the one in use lit, so a
@@ -272,7 +274,10 @@ view rows_of_the_shell(a: Layout, held: LayoutRow, lists: Bool) {
                 ui.EmptyState("No window here yet", inline: true)
             }
         } else {
-            scroll(axis: .horizontal, fill) {
+            // The front strip is kept in view: a person who moves between windows (a press on a
+            // window, a key that brings another forward) is shown the strip they moved to, at
+            // the pace the motion sets from their recent input, rather than left to pan for it.
+            scroll(axis: .horizontal, keep: "front", fill) {
                 row(gap: .group, align: .stretch, fill) {
                     for s in strips {
                         row_window(a, s, lists)
@@ -322,6 +327,7 @@ view strip_window(a: Layout, s: LayoutStrip, lists: Bool) {
             name: window_name(shown),
             glyph: window_glyph(shown),
             focused: in_front,
+            keep: if in_front { "front" } else { "" },
             lists_actions: lists_the_shown(shown),
             carries: window_resource(shown),
             fill,

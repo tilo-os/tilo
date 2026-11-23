@@ -2279,3 +2279,80 @@ impl Widget for FocusedField {
         self.rect
     }
 }
+
+/// A 100 px block that asks a scroll view around it to keep it in view, by `name`.
+struct Kept {
+    rect: Rect,
+    name: &'static str,
+}
+
+impl Widget for Kept {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let style = Style {
+            size: Size::from_lengths(100.0, 100.0),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+    }
+
+    fn name(&self) -> &'static str {
+        "Kept"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn kept_in_view(&self) -> Option<&str> {
+        Some(self.name)
+    }
+}
+
+/// A scroll view keeps the descendant that names itself in view when that name changes: the
+/// row of strips shows the front one as the person moves between windows, without waiting to be
+/// panned there, and a second layout with the same name leaves it where it is.
+#[test]
+fn a_scroll_keeps_the_named_descendant_in_view() {
+    let mut row = crate::widget::Row::new().no_wrap();
+    for index in 0..8 {
+        row = row.push(Box::new(Kept {
+            rect: Rect::ZERO,
+            name: if index == 7 { "front" } else { "" },
+        }));
+    }
+    let mut scroll = Scrollable::new_horizontal().with_child(Box::new(row));
+    scroll.keep_in_view("front");
+    let mut taffy = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    let node = scroll.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+    taffy
+        .compute_layout(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(400.0),
+                height: taffy::AvailableSpace::Definite(400.0),
+            },
+        )
+        .unwrap();
+    scroll.apply_layout(&taffy, node, Point::ZERO);
+    let moved = scroll.offset_x();
+    assert!(
+        moved > 0.0,
+        "the scroll moves to show the one kept in view, not left at {moved}"
+    );
+    scroll.apply_layout(&taffy, node, Point::ZERO);
+    assert_eq!(
+        scroll.offset_x(),
+        moved,
+        "the same one kept in view leaves the content where it is"
+    );
+}

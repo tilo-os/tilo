@@ -520,6 +520,9 @@ pub struct ViewDecl {
     /// passes.
     pub type_params: Vec<Ident>,
     pub params: Vec<Param>,
+    /// `window "Desktop shell"`: what assistive technology knows the window this view fills by,
+    /// when it is the view a whole window shows. A view that names none is known by its name.
+    pub window: Option<String>,
     pub body: Vec<UiStmt>,
     pub body_span: Span,
     pub span: Span,

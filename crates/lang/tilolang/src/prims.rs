@@ -97,7 +97,7 @@ pub const PRIMS: &[Prim] = &[
     prim_of("secondary", &[], &[]),
     prim_of("layers", &[], &[]),
     // A column that scrolls: down, sideways (`axis: .horizontal`) or both ways.
-    prim_of("scroll", &[], &["axis", "across", "both"]),
+    prim_of("scroll", &[], &["axis", "across", "both", "keep"]),
     prim_of("spacer", &[], &[]),
     prim_of("fragment", &[], &[]),
     // A button for a declared action, whose label, icon and role are the action's; or a plain

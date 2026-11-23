@@ -482,6 +482,7 @@ decorator_trait! {
         fn name() -> &str;
         fn readable_column() -> Option<crate::widget::arrange::Length>;
         fn test_id() -> Option<&str>;
+        fn kept_in_view() -> Option<&str>;
         fn test_rects() -> Vec<(String, vello::kurbo::Rect)>;
         fn get_rect() -> vello::kurbo::Rect;
         fn paint_bounds() -> vello::kurbo::Rect;

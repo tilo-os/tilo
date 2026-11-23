@@ -1170,6 +1170,10 @@ impl Reconciler {
         } else {
             scroll
         };
+        let mut scroll = scroll;
+        if let Some(keep) = token(node, "keep") {
+            scroll.keep_in_view(keep);
+        }
         Box::new(scroll.with_child(Box::new(inner)))
     }
 
@@ -1694,6 +1698,9 @@ impl Reconciler {
                 let kept = scroll
                     .child_mut()
                     .is_some_and(|content| self.reconcile_children(content, old_node, new_node));
+                if let Some(keep) = token(new_node, "keep") {
+                    scroll.keep_in_view(keep);
+                }
                 // A surface the person pans (a strip deck) shows what just arrived on it: a
                 // card put on a canvas, or the window of a place just placed, comes into view.
                 if kept {

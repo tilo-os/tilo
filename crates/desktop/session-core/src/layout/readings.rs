@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
 use tilo_actions::ResourceSpec;
 use tilo_desktop_model::reading::SHELL;
 use tilo_desktop_model::{GroupId, Layout as Tree, Tab, TabId, TileContent};
@@ -13,6 +14,39 @@ pub use tilo_desktop_model::reading::{
     LayoutRecentReading, LayoutRefReading, LayoutRowReading, LayoutStripReading,
     LayoutWorkspaceReading,
 };
+
+/// The display one of the shell's parts draws on, as that part reads it: its id in the device's
+/// layout, what a person calls it, where it stands, the scale it draws at, whether it is the
+/// display in use, and what Settings says it is while the person asked which screen is which.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LayoutDisplayReading {
+    /// The display's id on this device, as the layout's strips name it: `0` at the first.
+    pub id: i64,
+    /// The connector the compositor knows it by (`eDP-1`, `HDMI-A-1`).
+    pub connector: String,
+    /// What a person calls it: the panel, the monitor's own name, else its connector.
+    pub name: String,
+    /// Where it stands in the device's logical layout.
+    pub x: i64,
+    pub y: i64,
+    pub width: i64,
+    pub height: i64,
+    /// The scale it draws at.
+    pub scale: f64,
+    /// Whether it is the display the person made primary (the only one, on a device with one).
+    pub primary: bool,
+    /// Whether the person asked Settings which screen is which, so this display is saying so: its
+    /// number and name stand on it for a moment.
+    #[serde(default)]
+    pub identify: bool,
+    /// The number Settings gives it on its placement canvas, while it is saying so: `0` when it
+    /// says nothing.
+    #[serde(default)]
+    pub identify_number: i64,
+    /// What Settings calls it on that canvas, while it is saying so: empty when it says nothing.
+    #[serde(default)]
+    pub identify_name: String,
+}
 
 /// The person's layout as a shell's views read it: what [`Layout::reading`] answers and
 /// [`Layout::resources`] publishes a resource of.
@@ -25,6 +59,8 @@ pub type RowReading = LayoutRowReading;
 pub type StripReading = LayoutStripReading;
 /// A place of [`Reading`].
 pub type PlaceReading = LayoutPlaceReading;
+/// The display a part stands on, as that part reads it.
+pub type DisplayReading = LayoutDisplayReading;
 
 /// The resources the session publishes now, by id: what a place made from a resource takes its app
 /// and view from. The session hands it the API's tree each time it changes, and never reads it

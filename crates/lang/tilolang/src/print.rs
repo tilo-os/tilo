@@ -1142,7 +1142,12 @@ impl Printer<'_> {
                     if v.template { "template " } else { "" },
                     v.name.name
                 );
-                self.head(&lead, &v.params, "", &[], " {", param_text);
+                let window = v
+                    .window
+                    .as_ref()
+                    .map(|name| format!(" window {}", quote(name)))
+                    .unwrap_or_default();
+                self.head(&lead, &v.params, &window, &[], " {", param_text);
                 self.ui_body(&v.body);
                 self.line("}");
             }

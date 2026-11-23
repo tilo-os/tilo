@@ -92,7 +92,7 @@ fn internal(outputs: &[OutputInfo]) -> Option<&str> {
 /// What a person calls `output` : the panel by its role, a monitor by the model its EDID names, and
 /// a monitor that names none by its role too — its connector is how the machine knows it, not what
 /// a person calls it.
-fn display_name(output: &OutputInfo) -> String {
+pub(crate) fn display_name(output: &OutputInfo) -> String {
     if built_in(&output.name) {
         t("session-display-builtin")
     } else if output.label.is_empty() || output.label == output.name {
@@ -255,6 +255,46 @@ pub const BRIGHTNESS_STEP: f32 = 0.1;
 #[must_use]
 pub fn surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<Reading, DisplaysAction>("displays", "Displays")
+}
+
+/// The display one of the shell's parts draws on, as that part reads it: its id, what a person
+/// calls it, where it stands, the scale it draws at, and whether it is primary. The session
+/// publishes it per part (`session:screen`), so a shell's view knows which display it is and
+/// draws that display's strips and bar.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct Screen {
+    /// The display's id in this device's layout (`.id` is every resource's own id, so the
+    /// display's is named for what it is).
+    pub output: i64,
+    /// The connector the compositor knows it by.
+    pub connector: String,
+    /// What a person calls it.
+    pub name: String,
+    pub x: i64,
+    pub y: i64,
+    pub width: i64,
+    pub height: i64,
+    /// The scale it draws at.
+    pub scale: f64,
+    /// Whether it is the display the person made primary (the only one, on a device with one).
+    pub primary: bool,
+    /// Whether the person asked Settings which screen is which, so this display is saying so: its
+    /// number and name stand on it for a moment.
+    #[serde(default)]
+    pub identify: bool,
+    /// The number Settings gives it on its placement canvas, while it is saying so: `0` when it
+    /// says nothing.
+    #[serde(default)]
+    pub identify_number: i64,
+    /// What Settings calls it on that canvas, while it is saying so: empty when it says nothing.
+    #[serde(default)]
+    pub identify_name: String,
+}
+
+/// The part's display, as a view reads it.
+#[must_use]
+pub fn screen_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<Screen, tilo_resource::NoEffect>("screen", "Screen")
 }
 
 /// What the displays resource offers: the modes, the display sheet,

@@ -61,6 +61,10 @@ pub const SHELL_FILES: &[(&str, &str)] = &[
         include_str!("../../../../apps/tl/shell/history.tl"),
     ),
     (
+        "identify.tl",
+        include_str!("../../../../apps/tl/shell/identify.tl"),
+    ),
+    (
         "launcher.tl",
         include_str!("../../../../apps/tl/shell/launcher.tl"),
     ),
@@ -588,6 +592,7 @@ fn strip_fields(s: &LayoutStripReading) -> Vec<(&'static str, Value)> {
         ("key", text(&s.key)),
         ("workspace", text(&s.workspace)),
         ("row", text(&s.row)),
+        ("display", Value::Int(s.display)),
         ("width", Value::Int(s.width)),
         ("maximized", Value::Bool(s.maximized)),
         ("active", text(&s.active)),

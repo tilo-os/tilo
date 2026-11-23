@@ -38,7 +38,15 @@ impl SessionLink {
             self.want_packages(wanted);
         }
         self.readings.borrow_mut().insert(id.to_owned(), fresh);
-        self.readings_fresh.borrow_mut().insert(id.to_owned());
+        let at = self
+            .readings_generation
+            .borrow()
+            .get(id)
+            .copied()
+            .unwrap_or(0);
+        self.readings_generation
+            .borrow_mut()
+            .insert(id.to_owned(), at.wrapping_add(1));
         true
     }
 
@@ -70,7 +78,8 @@ impl SessionLink {
             return false;
         }
         *self.published.borrow_mut() = Some(published);
-        self.published_fresh.set(true);
+        self.published_generation
+            .set(self.published_generation.get().wrapping_add(1));
         true
     }
 
@@ -91,7 +100,8 @@ impl SessionLink {
             return false;
         }
         *self.packages.borrow_mut() = packages;
-        self.packages_fresh.set(true);
+        self.packages_generation
+            .set(self.packages_generation.get().wrapping_add(1));
         true
     }
 
@@ -310,16 +320,26 @@ fn held_here(app: &str) -> bool {
 }
 
 impl SessionOrigin {
-    /// Hand the runtime the readings the session published since the last poll: the views
-    /// composed over those resources run again. Whether any reading was new.
+    /// Hand the runtime the readings the session published since this part last read them: the
+    /// views composed over those resources run again. Whether any reading was new.
     pub(super) fn poll_readings(&self, cx: &OriginCx<'_>) -> bool {
-        let fresh = std::mem::take(&mut *self.link.readings_fresh.borrow_mut());
+        let generations = self.link.readings_generation.borrow().clone();
+        let mut seen = self.readings_seen.borrow_mut();
         let mut moved = false;
         let readings = self.link.readings.borrow();
-        for id in fresh {
-            let Some((ty, reading)) = readings.get(&id) else {
+        for (id, generation) in generations {
+            if seen.get(&id).copied().unwrap_or(0) >= generation {
+                continue;
+            }
+            // The display a part draws on is that part's own reading: the session publishes it
+            // to this runtime, never through the shared layout every part draws.
+            let own = (id == tilo_session_core::shell::SCREEN_RESOURCE)
+                .then(|| self.screen.borrow().clone())
+                .flatten();
+            let Some((ty, held)) = readings.get(&id) else {
                 continue;
             };
+            let reading = own.unwrap_or_else(|| held.clone());
             let Some(target) = ResourceRef::parse_id(&id, ty.clone()) else {
                 tracing::error!(id, "a place names no resource id");
                 continue;
@@ -327,6 +347,41 @@ impl SessionOrigin {
             match cx.host.runtime().set_reading(&target, &reading.to_string()) {
                 Ok(changed) => moved |= changed,
                 Err(error) => tracing::error!(id, %error, "a place's reading was refused"),
+            }
+            if id == tilo_session_core::shell::SCREEN_RESOURCE {
+                self.screen_seen.set(self.screen_generation.get());
+            }
+            seen.insert(id, generation);
+        }
+        // A display told to this part since its last poll: its screen reading again, even while
+        // the session's shared reading of the resource has not moved.
+        let screen = self.screen_generation.get();
+        if screen > self.screen_seen.get() {
+            let told = self.screen.borrow().clone();
+            if told.is_none() {
+                // The display went: there is nothing to tell this part, and its view draws
+                // nothing until another display is its.
+                self.screen_seen.set(screen);
+            }
+            if let Some(reading) = told
+                && let Some((ty, _)) = readings.get(tilo_session_core::shell::SCREEN_RESOURCE)
+                && let Some(target) =
+                    ResourceRef::parse_id(tilo_session_core::shell::SCREEN_RESOURCE, ty.clone())
+            {
+                self.screen_seen.set(screen);
+                match cx.host.runtime().set_reading(&target, &reading.to_string()) {
+                    Ok(changed) => moved |= changed,
+                    Err(error) => tracing::error!(%error, "the part's display was refused"),
+                }
+                seen.insert(
+                    tilo_session_core::shell::SCREEN_RESOURCE.to_owned(),
+                    self.link
+                        .readings_generation
+                        .borrow()
+                        .get(tilo_session_core::shell::SCREEN_RESOURCE)
+                        .copied()
+                        .unwrap_or(0),
+                );
             }
         }
         moved
@@ -337,9 +392,11 @@ impl SessionOrigin {
     /// costs the shell nothing. Whether a package came or went.
     pub(super) fn poll_packages(&mut self, cx: &OriginCx<'_>) -> bool {
         let mut moved = self.poll_published(cx);
-        if !self.link.packages_fresh.replace(false) {
+        let generation = self.link.packages_generation.get();
+        if generation <= self.packages_seen.get() {
             return moved;
         }
+        self.packages_seen.set(generation);
         let wanted = self.link.packages.borrow().clone();
         let gone: Vec<String> = self
             .loaded
@@ -406,9 +463,11 @@ impl SessionOrigin {
     /// declares ([`tilolang_tilo::runtime::published`]): a view's action of one is sent to the app
     /// publishing it, the same path another app's declared action takes. Whether it changed.
     fn poll_published(&self, cx: &OriginCx<'_>) -> bool {
-        if !self.link.published_fresh.replace(false) {
+        let generation = self.link.published_generation.get();
+        if generation <= self.published_seen.get() {
             return false;
         }
+        self.published_seen.set(generation);
         let published = self.link.published.borrow().clone().unwrap_or_default();
         cx.host.runtime().set_published_actions(published);
         true

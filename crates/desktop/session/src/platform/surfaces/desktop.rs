@@ -40,6 +40,37 @@ struct Desktop {
 }
 
 impl Desktop {
+    /// The monitors the compositor holds, and the one the person made primary: told before any
+    /// window is placed, so the desktop knows how many displays it spreads over (and its strips
+    /// which display each is shown on) even while there is no window to place.
+    fn set_monitors(&mut self, monitors: &[(LayoutRect, String)], primary: Option<&str>) {
+        monitors.clone_into(&mut self.monitors);
+        self.primary = primary.map(str::to_owned);
+        let Some(bounds) = monitors
+            .iter()
+            .map(|(rect, _)| *rect)
+            .reduce(LayoutRect::merge)
+        else {
+            return;
+        };
+        let displays: Vec<Output> = monitors
+            .iter()
+            .map(|(rect, monitor)| Output {
+                primary: primary == Some(monitor.as_str()),
+                monitor: monitor.clone(),
+                rect: ui::kurbo::Rect::new(
+                    f64::from(rect.loc.x.saturating_sub(bounds.loc.x)),
+                    f64::from(rect.loc.y.saturating_sub(bounds.loc.y)),
+                    f64::from(rect.loc.x.saturating_sub(bounds.loc.x)) + f64::from(rect.size.w),
+                    f64::from(rect.loc.y.saturating_sub(bounds.loc.y)) + f64::from(rect.size.h),
+                ),
+            })
+            .collect();
+        if self.policy.set_displays(&displays) {
+            self.surface.relayout();
+        }
+    }
+
     /// Cover `outputs`' bounding box, the surface laid out against it.
     fn cover(&mut self, outputs: &[LayoutRect]) {
         let Some(bounds) = outputs.iter().copied().reduce(LayoutRect::merge) else {
@@ -413,6 +444,10 @@ impl super::well_policy::WindowModel for ShellDesktop {
 
     fn cover(&self, outputs: &[LayoutRect]) {
         self.desktop.borrow_mut().cover(outputs);
+    }
+
+    fn monitors(&self, monitors: &[(LayoutRect, String)], primary: Option<&str>) {
+        self.desktop.borrow_mut().set_monitors(monitors, primary);
     }
 
     fn gesture_config(&self) -> Option<GestureConfig> {
@@ -873,6 +908,327 @@ impl WindowFollowers {
         if let Some(observer) = &self.observer {
             observer.closed(id);
         }
+    }
+}
+
+impl StripPolicy {
+    /// Tell `observer` the process of each window the compositor maps, as the
+    /// desktop gives it a place: the app's API opens to it from then on.
+    pub fn set_window_mapped(&mut self, observer: Rc<dyn Fn(u32)>) {
+        self.followers.set_window_mapped(observer);
+    }
+
+    /// Follow the windows the compositor opens and closes with `observer`:
+    /// how a session learns which programs the person runs.
+    pub fn observe_windows(&mut self, observer: std::sync::Arc<dyn WindowObserver>) {
+        self.followers.observe_windows(observer);
+    }
+
+    /// Send every pointer sample and touch to `samples` too, wherever they
+    /// go: the chrome that keeps out of the way until reached for.
+    pub fn with_samples(&mut self, samples: Rc<RefCell<dyn PointerSamples>>) {
+        self.samples = Some(samples);
+    }
+
+    /// Name apps with `names`, the session's: the installed package's
+    /// localised name, else the machine's desktop entry, else the registry's.
+    /// A tab opens with the name of its app, never with the app's id.
+    pub fn reads_app_names(&mut self, names: Rc<dyn Fn(&str) -> String>) {
+        self.desktop.borrow_mut().policy.reads_app_names(names);
+    }
+
+    /// Give `window` its tab, once, and lay the desktop out so its place
+    /// is known.
+    fn map(&mut self, window: &WindowInfo, outputs: &[LayoutRect]) {
+        {
+            let mut desktop = self.desktop.borrow_mut();
+            desktop.cover(outputs);
+            if self.mapped.contains(&window.id) {
+                return;
+            }
+            let mapped = desktop.policy.map(Window {
+                id: window.id,
+                app_id: window.app_id.clone(),
+                title: window.title.clone(),
+                parent: window.parent,
+                min_size: window.min_size,
+                max_size: window.max_size,
+                pid: window.pid,
+                tag: window.tag.clone(),
+            });
+            if let Err(error) = mapped {
+                tracing::warn!(%error, window = window.id, "the desktop has no strip to open a window in");
+                return;
+            }
+            self.mapped.push(window.id);
+            for missed in desktop.policy.take_missed_holds() {
+                tracing::warn!(
+                    window = missed.window,
+                    held = missed.held,
+                    "the tab held for a window's launch left the layout before the window mapped: it took another"
+                );
+            }
+            desktop.surface.relayout();
+            // A window launched into a workspace not in front goes there once its tab is made.
+            desktop.policy.carry_launched();
+        }
+        self.followers.mapped(window);
+    }
+}
+
+impl WindowPolicy for StripPolicy {
+    /// Focus follows the pointer onto another display: to the window last
+    /// focused there, else to none, so the next window opens there.
+    fn pointer_moved(&mut self, x: f64, y: f64) {
+        if let Some(samples) = &self.samples {
+            samples.borrow_mut().moved(x, y);
+        }
+        let mut desktop = self.desktop.borrow_mut();
+        let (ox, oy) = desktop.surface.placement().origin;
+        let (x, y) = (x - f64::from(ox), y - f64::from(oy));
+        let handle = desktop.policy.handle().clone();
+        let under = handle.read(|tree| {
+            if !tree.is_partitioned() {
+                return None;
+            }
+            tree.outputs
+                .displays
+                .iter()
+                .find(|d| x >= d.x && x < d.x + d.width && y >= d.y && y < d.y + d.height)
+                .map(|d| d.id)
+        });
+        if let Some(display) = under
+            && handle.focused_display() != Some(display)
+            && handle.focus_display(display)
+        {
+            desktop.surface.relayout();
+        }
+    }
+
+    fn pointer_pressed(&mut self, x: f64, y: f64) {
+        if let Some(samples) = &self.samples {
+            samples.borrow_mut().pressed(x, y);
+        }
+    }
+
+    fn touch(&mut self, touch: TouchSample) -> bool {
+        self.samples
+            .as_ref()
+            .is_some_and(|samples| samples.borrow_mut().touch(touch))
+    }
+
+    fn monitors(&mut self, monitors: &[(LayoutRect, String)], primary: Option<&str>) {
+        self.desktop.borrow_mut().set_monitors(monitors, primary);
+    }
+
+    fn overlay(&self, window: &WindowInfo) -> bool {
+        self.desktop.borrow().policy.draws_card(window.id)
+    }
+
+    /// A card's window takes no focus: the person works in the workspace it
+    /// floats over, and the card is a view of the activity, not a place to
+    /// type.
+    fn focus_on_map(&mut self, window: &WindowInfo) -> bool {
+        !self.desktop.borrow().policy.draws_card(window.id)
+    }
+
+    fn initial_size(&mut self, window: &WindowInfo, outputs: &[LayoutRect]) -> Option<(i32, i32)> {
+        self.map(window, outputs);
+        if !self.pending.contains(&window.id) {
+            self.pending.push(window.id);
+        }
+        // A dialog picks its own size, and a card the size its app asked for.
+        if let Some(size) = self.desktop.borrow().policy.card_size(window.id) {
+            return Some(size);
+        }
+        let rect = self.desktop.borrow().shown(window.id)?;
+        Some((rect.size.w, rect.size.h))
+    }
+
+    fn place(
+        &mut self,
+        window: &WindowInfo,
+        size: (i32, i32),
+        outputs: &[LayoutRect],
+    ) -> LayoutPoint {
+        self.map(window, outputs);
+        self.pending.retain(|id| *id != window.id);
+        let desktop = self.desktop.borrow();
+        desktop
+            .shown(window.id)
+            .map(|rect| rect.loc)
+            .or_else(|| desktop.floating(window.id, size))
+            .unwrap_or_else(|| LayoutPoint::from((OFFSTAGE, 0)))
+    }
+
+    fn arrange(
+        &mut self,
+        windows: &[(WindowInfo, LayoutRect)],
+        outputs: &[LayoutRect],
+    ) -> Option<Vec<WindowPlacement>> {
+        // A launched window whose tab came with the last layout goes to its own workspace.
+        self.desktop.borrow_mut().policy.carry_launched();
+        // A window the compositor lists has shown its buffer.
+        self.pending
+            .retain(|id| !windows.iter().any(|(window, _)| window.id == *id));
+        let gone: Vec<u64> = self
+            .mapped
+            .iter()
+            .copied()
+            .filter(|id| {
+                !self.pending.contains(id) && !windows.iter().any(|(window, _)| window.id == *id)
+            })
+            .collect();
+        {
+            let mut desktop = self.desktop.borrow_mut();
+            desktop.cover(outputs);
+            for id in &gone {
+                desktop.policy.unmap(*id);
+            }
+            for (window, _) in windows {
+                if let Some(title) = &window.title {
+                    desktop.policy.retitle(window.id, title);
+                }
+                if let Some(app_id) = &window.app_id {
+                    desktop.policy.set_app_id(window.id, app_id);
+                }
+            }
+            if !gone.is_empty() {
+                desktop.surface.relayout();
+            }
+        }
+        self.mapped.retain(|id| !gone.contains(id));
+        for id in &gone {
+            self.followers.gone(*id);
+        }
+        for (window, _) in windows {
+            self.map(window, outputs);
+        }
+        // A tab is never narrower than the smallest width of a window in it: a fixed-size
+        // window shows whole, and the strip scrolls to it.
+        if self.desktop.borrow_mut().policy.honour_minimum_widths(
+            windows
+                .iter()
+                .map(|(window, _)| (window.id, window.min_size)),
+        ) {
+            self.desktop.borrow_mut().surface.relayout();
+        }
+        let desktop = self.desktop.borrow();
+        let placement = desktop.policy.placement();
+        let origin = desktop.surface.placement().origin;
+        let of = |rects: &[(u64, ui::kurbo::Rect)], window: u64| {
+            rects
+                .iter()
+                .find(|(id, _)| *id == window)
+                .map(|(_, rect)| layout_rect(*rect, origin))
+        };
+        // The desktop decides which window covers its display: one that asked for it and was
+        // given it back (the window's own control, its menu, a key) is told so.
+        let covering = desktop.policy.covering_window();
+        Some(
+            windows
+                .iter()
+                .map(|(window, current)| {
+                    if let Some(rect) = of(&placement.shown, window.id) {
+                        return WindowPlacement {
+                            id: window.id,
+                            location: rect.loc,
+                            size: Some((rect.size.w, rect.size.h)),
+                            clip: of(&placement.clips, window.id),
+                            fullscreen: Some(covering == Some(window.id)),
+                        };
+                    }
+                    let size = (current.size.w, current.size.h);
+                    WindowPlacement {
+                        id: window.id,
+                        location: desktop
+                            .floating(window.id, size)
+                            .unwrap_or_else(|| LayoutPoint::from((OFFSTAGE, 0))),
+                        size: None,
+                        clip: None,
+                        fullscreen: None,
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    fn withdrawn(&mut self, window: &WindowInfo) {
+        self.pending.retain(|id| *id != window.id);
+        self.mapped.retain(|id| *id != window.id);
+        self.followers.gone(window.id);
+        let mut desktop = self.desktop.borrow_mut();
+        desktop.policy.unmap(window.id);
+        desktop.surface.relayout();
+    }
+
+    fn focus_on_click(&mut self, window: &WindowInfo) -> bool {
+        let mut desktop = self.desktop.borrow_mut();
+        // Focus moves on the surface's next pass: run it, so the window's
+        // place and focus are known when the compositor asks.
+        if desktop.policy.focus(window.id) {
+            desktop.surface.relayout();
+        }
+        true
+    }
+
+    fn focused(&mut self) -> Option<u64> {
+        self.desktop.borrow().policy.focused()
+    }
+
+    /// The keyboard waits for the window in front of the person while it has not shown: one the
+    /// shell placed that has drawn nothing yet, or the one a launch is bringing to the place.
+    fn keyboard_awaits_window(&mut self) -> bool {
+        let desktop = self.desktop.borrow();
+        match desktop.policy.focused() {
+            Some(window) => self.pending.contains(&window),
+            None => desktop.policy.awaits_launched_window(),
+        }
+    }
+
+    fn activate(&mut self, window: &WindowInfo, fresh: bool) -> bool {
+        let mut desktop = self.desktop.borrow_mut();
+        if fresh {
+            // What the person just did opened it: bring it forward.
+            if desktop.policy.focus(window.id) {
+                desktop.surface.relayout();
+            }
+        } else if desktop.policy.ask_attention(window.id) {
+            desktop.surface.relayout();
+        }
+        fresh
+    }
+
+    fn gesture(&mut self, gesture: &GestureEvent) -> bool {
+        let config = self.desktop.borrow().gesture_config;
+        let desktop = &self.desktop;
+        self.gestures.take(gesture, config, |asked| {
+            desktop.borrow_mut().gestures.push(asked);
+        })
+    }
+
+    fn take_close_requests(&mut self) -> Vec<u64> {
+        self.desktop.borrow_mut().policy.take_closed()
+    }
+
+    /// A window's own asking. A tab has no free geometry: the strip lays it
+    /// out, so a move or a resize asks for nothing. Covering the display is
+    /// the desktop's either way, the strip filling or the whole display, and
+    /// the compositor is told the desktop took it rather than covering the
+    /// window itself.
+    fn request(&mut self, window: &WindowInfo, request: &WindowRequest) -> bool {
+        let mut desktop = self.desktop.borrow_mut();
+        let answered = match request {
+            WindowRequest::Maximize(on) => desktop.policy.set_maximized(window.id, *on),
+            WindowRequest::Fullscreen { on, .. } => desktop.policy.set_fullscreen(window.id, *on),
+            WindowRequest::Move | WindowRequest::Resize(_) | WindowRequest::Minimize => {
+                return false;
+            }
+        };
+        if answered {
+            desktop.surface.relayout();
+        }
+        false
     }
 }
 

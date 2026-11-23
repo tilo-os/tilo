@@ -26,6 +26,10 @@ pub struct TextProps {
     /// It elides at the width it is given rather than wrapping wider, so its box may shrink to
     /// nothing and what does not fit ends in an ellipsis: a title in a narrow card.
     pub truncate: bool,
+    /// What it says is announced when it changes instead of only read on the way past: a line a
+    /// person is told without looking (a notice passing, a status that moved). `polite` waits for
+    /// a pause, `assertive` interrupts; unset, it is read without announcing.
+    pub live: Option<crate::a11y::Politeness>,
 }
 
 impl Described for Text {
@@ -39,6 +43,7 @@ impl Described for Text {
             secondary,
             lines,
             truncate,
+            live,
         } = props;
         let mut text = Self::new("").with_role(role).with_id(key);
         if numeric {
@@ -46,6 +51,9 @@ impl Described for Text {
         }
         if secondary {
             text = text.dimmed();
+        }
+        if let Some(live) = live {
+            text = text.with_live(live);
         }
         text = text
             .with_lines(lines.and_then(|lines| u32::try_from(lines).ok()))
@@ -68,6 +76,7 @@ impl Described for Text {
         if props.role != self.role
             || props.numeric != numeric
             || props.secondary != self.dimmed
+            || props.live != self.live
             || lines != self.max_lines()
             || props.truncate != self.truncates()
         {

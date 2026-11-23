@@ -88,6 +88,7 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         tilo_system_service::update_surface(),
         tilo_system_service::time_zone_surface(),
         crate::displays::surface(),
+        crate::displays::screen_surface(),
         crate::notifications::surface(),
         crate::osd::surface(),
         crate::controls::night_light_surface(),
@@ -187,6 +188,56 @@ pub(crate) struct Shell {
     theme: ui::Theme,
 }
 
+/// Reconcile the desktop's display partition with the outputs the compositor holds: a display
+/// added, moved or taken away gives its strips a display even before any window is placed, and a
+/// monitor that went hands its windows to the nearest one left. A mirror is one display, as the
+/// desktop lays them: an output sharing a rectangle shows the same.
+pub(crate) fn reconcile_displays(
+    handle: &tilo_desktop_surface::DesktopHandle,
+    outputs: &[tilo_compositor::OutputInfo],
+    primary: Option<&str>,
+) {
+    let mut displays: Vec<tilo_desktop_model::Display> = Vec::new();
+    for (index, output) in outputs.iter().filter(|output| output.enabled).enumerate() {
+        let Some((x, y, width, height)) = output.rect else {
+            continue;
+        };
+        let rect = ui::kurbo::Rect::new(
+            f64::from(x),
+            f64::from(y),
+            f64::from(x) + f64::from(width),
+            f64::from(y) + f64::from(height),
+        );
+        if displays.iter().any(|display| {
+            let shared = ui::kurbo::Rect::new(
+                display.x,
+                display.y,
+                display.x + display.width,
+                display.y + display.height,
+            )
+            .intersect(rect);
+            shared.width() > 0.0 && shared.height() > 0.0
+        }) {
+            continue;
+        }
+        let Ok(id) = u32::try_from(index) else {
+            break;
+        };
+        displays.push(tilo_desktop_model::Display {
+            id,
+            monitor: output.monitor.clone(),
+            x: f64::from(x),
+            y: f64::from(y),
+            width: f64::from(width),
+            height: f64::from(height),
+            primary: primary == Some(output.monitor.as_str()),
+        });
+    }
+    // The partition gives every group without a display one in the same pass: the display in use,
+    // else the primary, so a strip placed since the last pass learns the display it stands on.
+    handle.set_displays(&displays);
+}
+
 impl Shell {
     /// The shell over every output of `compositor` , published on `surfaces` . The screen's views
     /// report their wells to `wells` , the handle the window policy places every window by
@@ -233,11 +284,11 @@ impl Shell {
             theme,
         };
         shell.person = shell.lists.person.clone();
-        shell.follow_outputs(compositor, surfaces);
+        shell.follow_outputs(compositor, surfaces, &[]);
         // The styles every installed package offers, before the first frame draws the
         // switch: a shell that starts already knows what its person may pick (shell.md §6).
         shell.refresh_styles();
-        shell.follow_deadline();
+        shell.follow_deadline(None);
         Ok(shell)
     }
 
@@ -255,15 +306,29 @@ impl Shell {
     /// keeps its place with the compositor and the API, drawing and offering nothing, and stands
     /// again when that display comes back, so unplugging and replugging makes no new part. Cheap
     /// when nothing changed, which is what every frame runs.
-    fn follow_outputs(&mut self, compositor: &mut Compositor, surfaces: &mut Surfaces) {
-        let outputs = displays::placed(&compositor.outputs());
+    fn follow_outputs(
+        &mut self,
+        compositor: &mut Compositor,
+        surfaces: &mut Surfaces,
+        identify: &[tilo_desktop::display_identify::Label],
+    ) {
+        let info = compositor.outputs();
+        reconcile_displays(
+            &self.lists.handle,
+            &info,
+            compositor.primary_monitor().as_deref(),
+        );
+        let screens = self.screens(&info, identify);
+        let outputs = displays::placed(&info);
         for (name, part) in &self.parts {
             if !outputs.iter().any(|shown| &shown.connector == name) {
                 part.borrow_mut().set_display(None, 1.0);
+                part.borrow_mut().set_screen(None);
             }
         }
         let fullscreen = compositor.fullscreen_outputs();
         for output in &outputs {
+            let screen = screens.get(&output.connector).cloned();
             if let Some((_, part)) = self
                 .parts
                 .iter()
@@ -273,6 +338,7 @@ impl Shell {
                     Some((output.connector.clone(), output.part_rect())),
                     output.scale,
                 );
+                part.borrow_mut().set_screen(screen);
                 part.borrow_mut().set_fullscreen(fullscreen.clone());
                 continue;
             }
@@ -283,8 +349,64 @@ impl Shell {
                 output.part_rect(),
                 output.scale,
                 &fullscreen,
+                screen,
             );
         }
+    }
+
+    /// The display each output draws on, by connector, as that display's part reads it: its id
+    /// in this device's layout, what a person calls it, where it stands, its scale and whether
+    /// it is primary. The layout's own partition names the id and the primary display, so a
+    /// part and its strips agree on which display they are.
+    ///
+    /// `identify` is what the displays say while the person asked Settings which screen is which:
+    /// each one's number and the name Settings gives it, by the monitor the shell follows it by.
+    fn screens(
+        &self,
+        outputs: &[tilo_compositor::OutputInfo],
+        identify: &[tilo_desktop::display_identify::Label],
+    ) -> std::collections::BTreeMap<String, tilo_session_core::shell::LayoutDisplayReading> {
+        let (ids, primary) = self.lists.handle.read(|tree| {
+            let ids: std::collections::BTreeMap<String, u32> = tree
+                .outputs
+                .displays
+                .iter()
+                .map(|display| (display.monitor.clone(), display.id))
+                .collect();
+            (ids, tree.outputs.primary())
+        });
+        outputs
+            .iter()
+            .filter_map(|output| {
+                let (x, y, width, height) = output.rect?;
+                let id = ids.get(&output.monitor).copied().unwrap_or(0);
+                // What Settings says this display is, while the person asked: the same number its
+                // tile carries there, and the same name.
+                let saying = identify
+                    .iter()
+                    .find(|label| label.monitor == output.monitor);
+                Some((
+                    output.name.clone(),
+                    tilo_session_core::shell::LayoutDisplayReading {
+                        id: i64::from(id),
+                        connector: output.name.clone(),
+                        name: displays::display_name(output),
+                        x: i64::from(x),
+                        y: i64::from(y),
+                        width: i64::from(width),
+                        height: i64::from(height),
+                        scale: output.scale,
+                        // A device with one display has no partition to name a primary: that
+                        // display is the primary.
+                        primary: primary.is_none_or(|primary| primary == id),
+                        identify: saying.is_some(),
+                        identify_number: saying
+                            .map_or(0, |label| i64::try_from(label.number).unwrap_or_default()),
+                        identify_name: saying.map(|label| label.name.clone()).unwrap_or_default(),
+                    },
+                ))
+            })
+            .collect()
     }
 
     /// Make the shell's part on `output` (its connector name and logical rectangle), sharing the
@@ -297,6 +419,7 @@ impl Shell {
         rect: (i32, i32, u32, u32),
         scale: f64,
         fullscreen: &[String],
+        screen: Option<tilo_session_core::shell::LayoutDisplayReading>,
     ) {
         let wake = compositor.waker();
         let mut part = ShellPart::new(
@@ -316,6 +439,7 @@ impl Shell {
         );
         part.set_theme(self.theme.clone());
         part.set_display(Some((output.to_owned(), rect)), scale);
+        part.set_screen(screen);
         part.set_fullscreen(fullscreen.to_vec());
         // The windows the views picture, each display's own: the reading's window keys stand for
         // the tabs of the workspace in front, and a window whose app holds secrets is left out, so
@@ -335,8 +459,11 @@ impl Shell {
 
     /// Wake every part at the instant the shell has something to draw of its own (the switcher's
     /// panel coming up while Alt is held), so nothing draws or polls in between.
-    pub(crate) fn follow_deadline(&self) {
-        let deadline = self.lists.next_deadline();
+    pub(crate) fn follow_deadline(&self, also: Option<ui::time::Instant>) {
+        let deadline = match (self.lists.next_deadline(), also) {
+            (Some(listed), Some(also)) => Some(listed.min(also)),
+            (listed, also) => listed.or(also),
+        };
         for (_, part) in &self.parts {
             part.borrow_mut().set_deadline(deadline);
         }
@@ -376,8 +503,13 @@ impl Shell {
     /// Follow the displays as they come and go, and a window taking one for itself: a part is made
     /// or dropped per output, and a part on a display a fullscreen window owns steps aside. Cheap
     /// when nothing changed, which is what every frame runs.
-    pub(crate) fn follow_displays(&mut self, compositor: &mut Compositor, surfaces: &mut Surfaces) {
-        self.follow_outputs(compositor, surfaces);
+    pub(crate) fn follow_displays(
+        &mut self,
+        compositor: &mut Compositor,
+        surfaces: &mut Surfaces,
+        identify: &[tilo_desktop::display_identify::Label],
+    ) {
+        self.follow_outputs(compositor, surfaces, identify);
     }
 
     /// The outputs' bounding box `(x, y, w, h)` , as a screen-edge reading names them: every output
@@ -1853,7 +1985,10 @@ impl crate::Session {
         let recoveries = shell.take_view_recoveries();
         let notices = Rc::clone(&self.shared.notifications);
         Self::follow_view_failures(&notices, shell, failures, recoveries);
-        shell.follow_deadline();
+        // What the displays say while the person asked Settings which screen is which: each
+        // part's own number and name, and the frame that takes them away.
+        let identify = self.numbers.saying();
+        shell.follow_deadline(self.numbers.deadline());
         let layout = self.shared.layout_reading();
         shell.publish_readings(&self.shared.services.borrow());
         shell.follow_places(&layout, &mut self.shared.services.borrow_mut());
@@ -1876,7 +2011,7 @@ impl crate::Session {
         Self::follow_shell_record(shell, &self.shared);
         // One part per display: a display plugged in, taken away or taken by a fullscreen window
         // moves its part.
-        shell.follow_displays(&mut self.compositor, &mut self.shared.published);
+        shell.follow_displays(&mut self.compositor, &mut self.shared.published, &identify);
         if !shell.has_asks() {
             return Ok(());
         }
@@ -1932,7 +2067,7 @@ impl crate::Session {
         // What ran may have asked the session in turn (a menu, a sheet).
         self.settle()?;
         if let Some(shell) = self.shell.as_mut() {
-            shell.follow_deadline();
+            shell.follow_deadline(self.numbers.deadline());
         }
         // The shell's places are what the outside services keeping its records in step are due
         // for: each workspace with a place of an app's records has that app's connector, and one

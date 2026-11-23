@@ -20,6 +20,9 @@ pub const OVERLAYS: &str = "desktop:overlays";
 pub const PEEK_SURFACE: &str = "peek";
 /// The resource the session publishes of its displays.
 pub const DISPLAYS_RESOURCE: &str = "session:displays";
+/// The resource the session publishes per part: the display that part draws on. Each part's own
+/// reading (its view runs on that part's runtime), so what a shell draws is its display's.
+pub const SCREEN_RESOURCE: &str = "session:screen";
 
 /// The shell's own record: the package's named root `shell` (`root shell: Shell`), reached in
 /// its views as `shell`.
@@ -30,10 +33,9 @@ pub const SHELL_APP: &str = "so.tilo.shell";
 
 /// The layout's readings: what the person arranged.
 pub use crate::layout::{
-    LayoutPersonReading, LayoutPlaceReading, LayoutQueryReading, LayoutReading,
-    LayoutRecentReading, LayoutRefReading, LayoutRowReading, LayoutStripReading,
-    LayoutWorkspaceReading,
-};
+    LayoutDisplayReading, LayoutPersonReading, LayoutPlaceReading, LayoutQueryReading,
+    LayoutReading, LayoutRecentReading, LayoutRefReading, LayoutRowReading, LayoutStripReading,
+    LayoutWorkspaceReading,};
 
 /// What a shell asked of the session: an invocation on the action API, its arguments as any caller's
 /// reach it (a list as a list, a map as an object).

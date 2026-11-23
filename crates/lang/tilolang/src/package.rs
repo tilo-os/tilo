@@ -460,6 +460,7 @@ fn row_views(
             // declared view, to another package's marked call — a template's qualified body — and
             // the call would read the row's item and key instead of the view's parameters.
             name: v.id.clone(),
+            window: None,
             doc: String::new(),
             params: params_meta(&v.params, app),
             anchors: Vec::new(),
@@ -786,6 +787,7 @@ fn build_meta(
                     meta.views.push(ViewMeta {
                         id: v.id.clone(),
                         name: v.name.clone(),
+                        window: None,
                         doc: String::new(),
                         params: params_meta(&v.params, app),
                         anchors: Vec::new(),
@@ -820,6 +822,7 @@ fn build_meta(
                 meta.views.push(ViewMeta {
                     id: c.id.clone(),
                     name: c.name.clone(),
+                    window: v.window.clone(),
                     doc: doc(&v.doc),
                     params: params_meta(&c.params, app),
                     anchors,

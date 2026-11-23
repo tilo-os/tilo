@@ -574,6 +574,7 @@ mod tests {
             let mut meta = alone("Note editor");
             meta.views.push(ViewMeta {
                 id: "editor~row0".to_owned(),
+                window: None,
                 row_of: Some("editor".to_owned()),
                 ..alone("Note editor").views[0].clone()
             });
@@ -663,6 +664,7 @@ mod tests {
         meta.views.push(ViewMeta {
             id: "editor".to_owned(),
             name: name.to_owned(),
+            window: None,
             doc: String::new(),
             params: Vec::new(),
             anchors: Vec::new(),

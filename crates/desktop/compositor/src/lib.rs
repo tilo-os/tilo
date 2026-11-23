@@ -1797,6 +1797,13 @@ impl Compositor {
         self.data.state.fullscreen_monitors()
     }
 
+    /// The monitor the person made primary, while it is lit: the display a shell tells apart from
+    /// the others, whatever order the outputs come in.
+    #[must_use]
+    pub fn primary_monitor(&self) -> Option<String> {
+        self.data.state.primary_monitor()
+    }
+
     /// The outputs as Settings reads them: each one's connector, modes,
     /// scale, place and what its sink and the pipeline driving it can do.
     /// Updated by [`Compositor::publish_displays`], which the loop runs on

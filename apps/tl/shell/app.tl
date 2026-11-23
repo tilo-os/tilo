@@ -24,7 +24,7 @@ default view shell_settings for Shell
 /// was: the session marks the style `loads: false` with why, and raises a notice naming it
 /// (`shell.md` §6, "Nothing can lock a person out"). Fixing the package flips it back, and the
 /// shell shows the chosen style again without a restart.
-view shell_view(a: Layout) {
+view shell_view(a: Layout) window "Desktop shell" {
     let chosen = style_of(viewing)
     layers {
         // A secondary press on the shell, where nothing of it took the press, is the workspaces'
@@ -111,12 +111,17 @@ view clock() {
 view bar() {
     let s = shell
     let roomy = space.width_class == .expanded or space.width_class == .wide
+    // The display in use carries the whole bar; each other display carries the compact one, as
+    // the desktop's own bars do: what a person reaches for where their work is (the sounds, the
+    // connection, the charge, the notices, the people) stays where they work.
+    let compact = not on_primary()
     let nobody = device.overlays.ask == "" and (space.compact or frames_style())
     ui.DragRun(axis: .horizontal, name: "Top bar") {
         on drop(moved: BarPart, at: Int): place_part(s, moved, at)
         for part in s.bar_parts {
             if part.shown
                 and (space.wide or not part_gives_way(part, roomy))
+                and (not compact or part_keeps_compact(part.kind))
                 and not (part.kind == .people and nobody)
                 and (not frames_style() or canvas_keeps(part)) {
                 ui.DragItem(
@@ -133,6 +138,25 @@ view bar() {
             }
         }
     }
+}
+
+/// Whether the part draws the display in use: the one the person made primary. A view drawn
+/// with no display reading (a shot, a test) is the display in use, so a shell that is not told
+/// which display it stands on draws the whole bar rather than a compact one.
+fn on_primary() -> Bool {
+    return device.screen.connector == "" or device.screen.primary
+}
+
+/// Whether a part stays on a display that is not the one in use: a compact bar keeps what a
+/// glance needs anywhere (the system's menu, the workspace, the strip, the time and the gap
+/// that spreads them), and gives up what serves the person where they work (the window's menus,
+/// the sounds, the connection, the charge, the notices, the people and the running work).
+fn part_keeps_compact(kind: BarPartKind) -> Bool {
+    return kind == .menu
+        or kind == .workspace
+        or kind == .strip
+        or kind == .clock
+        or kind == .spacer
 }
 
 /// Whether the canvas's bar keeps a part (`canvas.md` §7, "The canvas is the whole screen"): the

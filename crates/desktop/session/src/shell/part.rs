@@ -18,7 +18,7 @@
 //! nothing.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
 use serde_json::Value as Json;
@@ -157,29 +157,32 @@ const EXCHANGES: usize = 8;
 /// of its loop ([`SessionLink::serve`]); the origin reads and writes the rest.
 #[derive(Default)]
 pub struct SessionLink {
-    /// The person's layout the session last published, and whether the origin has taken
-    /// it in.
+    /// The person's layout the session last published.
     layout: RefCell<Option<LayoutReading>>,
-    layout_fresh: Cell<bool>,
-    /// What waits for the person's yes, as the session last read it, and whether the origin has
-    /// taken it in.
+    /// How often the session published the layout. Every part applies each generation once: a
+    /// part reads it on its own runtime, so a second display's part never misses one the first
+    /// part took.
+    layout_generation: Cell<u64>,
+    /// What waits for the person's yes, as the session last read it, and how often it was
+    /// published: every part applies each generation once, as with the layout.
     asking: RefCell<Vec<AskedReading>>,
-    asking_fresh: Cell<bool>,
+    asking_generation: Cell<u64>,
     /// The readings of the resources the places name, by their session id: each with its type
     /// as the shell's runtime names another app's (`<app>#<Type>`) and its JSON.
     readings: RefCell<BTreeMap<String, (String, serde_json::Value)>>,
-    /// The resources whose readings arrived and the origin has not handed the runtime yet.
-    readings_fresh: RefCell<BTreeSet<String>>,
+    /// How often each resource's reading was published, by id: every part applies each
+    /// generation once, for the same reason.
+    readings_generation: RefCell<BTreeMap<String, u64>>,
     /// The packages of the apps whose resources the places show, by app id: each its compiled
     /// module, which the shell's runtime loads to draw those resources through their app's
     /// own views, and unloads once no place shows that app.
     packages: RefCell<BTreeMap<String, std::sync::Arc<[u8]>>>,
-    packages_fresh: Cell<bool>,
+    packages_generation: Cell<u64>,
     /// The verbs the session's resources publish that no loaded package declares, by resource
     /// and verb ([`tilolang_tilo::runtime::published`]): what the shell's runtime sends to the app
     /// publishing them. `None` until the session publishes one.
     published: RefCell<Option<tilolang_tilo::runtime::published::Published>>,
-    published_fresh: Cell<bool>,
+    published_generation: Cell<u64>,
     /// The resources a view composed in a place read before their readings came in, by id,
     /// each with its type: what the session publishes next ([`SessionLink::take_wanted`]).
     wanted: RefCell<BTreeMap<String, String>>,
@@ -214,7 +217,8 @@ impl SessionLink {
             return false;
         }
         *self.layout.borrow_mut() = Some(reading);
-        self.layout_fresh.set(true);
+        self.layout_generation
+            .set(self.layout_generation.get().wrapping_add(1));
         true
     }
 
@@ -225,7 +229,8 @@ impl SessionLink {
             return false;
         }
         *self.asking.borrow_mut() = questions;
-        self.asking_fresh.set(true);
+        self.asking_generation
+            .set(self.asking_generation.get().wrapping_add(1));
         true
     }
 
@@ -287,6 +292,19 @@ pub struct SessionOrigin {
     /// The packages of other apps loaded into the shell's runtime, by app id: each the module
     /// the session handed for it.
     loaded: BTreeMap<String, std::sync::Arc<[u8]>>,
+    /// The layout generation this part applied last, and each reading's: what a part has read of
+    /// what the session published, so a second display's part reads every one too.
+    layout_seen: Cell<u64>,
+    asking_seen: Cell<u64>,
+    readings_seen: RefCell<BTreeMap<String, u64>>,
+    packages_seen: Cell<u64>,
+    published_seen: Cell<u64>,
+    /// The display this part draws on, as this part's own reading (`session:screen`), and how
+    /// often it was told one: the part's views draw its display's strips and bar, so they read
+    /// their own.
+    screen: RefCell<Option<serde_json::Value>>,
+    screen_generation: Cell<u64>,
+    screen_seen: Cell<u64>,
 }
 
 impl SessionOrigin {
@@ -297,7 +315,26 @@ impl SessionOrigin {
             link,
             layout: LayoutWriter::default(),
             asking: AskingWriter::default(),
+            layout_seen: Cell::new(0),
+            asking_seen: Cell::new(0),
+            readings_seen: RefCell::new(BTreeMap::new()),
+            packages_seen: Cell::new(0),
+            published_seen: Cell::new(0),
+            screen: RefCell::new(None),
+            screen_generation: Cell::new(0),
+            screen_seen: Cell::new(0),
         }
+    }
+
+    /// This part stands on `display`: its views read it as their own (`device.screen`), so what
+    /// they draw is that display's strips and bar.
+    pub fn set_screen(&mut self, display: Option<serde_json::Value>) {
+        if *self.screen.borrow() == display {
+            return;
+        }
+        *self.screen.borrow_mut() = display;
+        self.screen_generation
+            .set(self.screen_generation.get().wrapping_add(1));
     }
 }
 
@@ -305,9 +342,11 @@ impl SessionOrigin {
     /// Write the person's layout into the shell's `Layout` root, when the session
     /// published one the origin has not written yet. Whether anything was written.
     fn poll_layout(&mut self, cx: &OriginCx<'_>) -> bool {
-        if !self.link.layout_fresh.replace(false) {
+        let generation = self.link.layout_generation.get();
+        if generation <= self.layout_seen.get() {
             return false;
         }
+        self.layout_seen.set(generation);
         let Some(reading) = self.link.layout.borrow().clone() else {
             return false;
         };
@@ -317,9 +356,11 @@ impl SessionOrigin {
     /// Write what waits for the person's yes into the shell's `Asking` root, when the session
     /// read questions the origin has not written yet. Whether anything was written.
     fn poll_asking(&mut self, cx: &OriginCx<'_>) -> bool {
-        if !self.link.asking_fresh.replace(false) {
+        let generation = self.link.asking_generation.get();
+        if generation <= self.asking_seen.get() {
             return false;
         }
+        self.asking_seen.set(generation);
         self.asking.write(cx, &self.link.asking.borrow())
     }
 }
@@ -336,11 +377,19 @@ impl Origin for SessionOrigin {
     }
 
     fn due(&self) -> bool {
-        self.link.layout_fresh.get()
-            || self.link.asking_fresh.get()
-            || self.link.packages_fresh.get()
-            || self.link.published_fresh.get()
-            || !self.link.readings_fresh.borrow().is_empty()
+        self.link.layout_generation.get() > self.layout_seen.get()
+            || self.link.asking_generation.get() > self.asking_seen.get()
+            || self.link.packages_generation.get() > self.packages_seen.get()
+            || self.link.published_generation.get() > self.published_seen.get()
+            || self.screen_generation.get() > self.screen_seen.get()
+            || self
+                .link
+                .readings_generation
+                .borrow()
+                .iter()
+                .any(|(id, generation)| {
+                    *generation > self.readings_seen.borrow().get(id).copied().unwrap_or(0)
+                })
     }
 
     fn poll(&mut self, cx: &OriginCx<'_>) -> Polled {
@@ -543,6 +592,12 @@ pub struct ShellPart {
     /// workspace reads its pictures from that one's, and the session lends the store of the
     /// workspace in front each pass.
     content_workspace: String,
+    /// The wells the shell's views report into, as the session handed them: each part installs
+    /// its own view of the one handle, keyed by the display it draws on, so two parts drawing
+    /// one strip's well do not race for it.
+    wells: Option<ui::widget::Wells>,
+    /// The display this part draws on, as its views read it and its wells are keyed.
+    screen: Option<tilo_session_core::shell::LayoutDisplayReading>,
 }
 
 /// Which of the compositor's windows a view's window key names, if it may be pictured.
@@ -596,6 +651,21 @@ impl ShellPart {
             size: (1, 1),
             scale,
         };
+        // What a screen reader calls the shell's window: the name the view it fills declares
+        // (`window "Desktop shell"`), or the shell's own when the view names none.
+        let window_name = packages
+            .iter()
+            .rev()
+            .find(|package| package.meta.app == app)
+            .and_then(|package| {
+                package
+                    .meta
+                    .views
+                    .iter()
+                    .find(|view| view.name == "shell_view")
+            })
+            .and_then(|view| view.window.clone())
+            .unwrap_or_else(|| "Desktop shell".to_owned());
         tilo_app_window::i18n::ensure();
         let (app_end, window_end) = pair();
         let mut instance = Instance::new(
@@ -627,9 +697,8 @@ impl ShellPart {
         let window = AppWindow::part(Box::new(window_end));
         // The whole screen lies under the windows, which stand in its wells; the bar rides over
         // them.
-        let mut widgets =
-            WidgetSurface::new(Box::new(window), placement, true).named("Desktop shell");
-        widgets.install_wells(wells);
+        let mut widgets = WidgetSurface::new(Box::new(window), placement, true).named(window_name);
+        widgets.install_wells(wells.clone());
         let mut part = Self {
             widgets,
             instance,
@@ -648,6 +717,8 @@ impl ShellPart {
             deadline: None,
             content: None,
             content_workspace: String::new(),
+            wells,
+            screen: None,
         };
         if seed {
             part.seed();
@@ -987,6 +1058,49 @@ impl ShellPart {
         self.output = output;
         self.output_scale = scale;
         self.place();
+    }
+
+    /// Tell the part the display it draws on, as its views read it (`device.screen`): its id,
+    /// name, rectangle, scale and whether it is primary. The part's wells are keyed by the same
+    /// id, so a strip two parts draw cannot place its window twice. `None`: the display went.
+    pub fn set_screen(&mut self, display: Option<tilo_session_core::shell::LayoutDisplayReading>) {
+        if self.screen == display {
+            return;
+        }
+        let id = display.as_ref().map(|display| display.id);
+        if display.is_none()
+            && let Some(wells) = &self.wells
+            && let Some(gone) = &self.screen
+        {
+            // The display went: what its part laid out stands nowhere now, so the policy places
+            // no window there.
+            wells.for_part(gone.id.to_string()).clear();
+        }
+        self.screen = display.clone();
+        self.widgets.install_wells(
+            self.wells
+                .clone()
+                .map(|wells| wells.for_part(id.map(|id| id.to_string()).unwrap_or_default())),
+        );
+        let reading = display.map(|display| {
+            serde_json::json!({
+                "output": display.id,
+                "connector": display.connector,
+                "name": display.name,
+                "x": display.x,
+                "y": display.y,
+                "width": display.width,
+                "height": display.height,
+                "scale": display.scale,
+                "primary": display.primary,
+                "identify": display.identify,
+                "identify_number": display.identify_number,
+                "identify_name": display.identify_name,
+            })
+        });
+        self.origin.borrow_mut().set_screen(reading);
+        // What it draws is another display's now: the next frame draws it again.
+        self.again = true;
     }
 
     /// Whether the display the part stood on went, and it stands nowhere now.

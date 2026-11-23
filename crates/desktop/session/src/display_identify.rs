@@ -10,10 +10,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use settings_store::display_identify::{IdentifyRequest, display_names, display_numbers};
 use settings_store::hardware::DisplayHardwareSnapshot;
 use tilo_compositor::OutputInfo;
+use settings_store::display_identify::{IdentifyRequest, IDENTIFY_MS, display_names, display_numbers};
 use tilo_session_core::desktop::host::chrome::{Ask, Label};
+use ui::time::{Duration, Instant};
 
 /// The Identify answers this session has given, and the shell's end of them: what the bar reads each
 /// pass.
@@ -23,6 +24,9 @@ pub(crate) struct Numbers {
     ask: Rc<RefCell<Option<Ask>>>,
     /// The request answered last, so one press of Identify shows the cards once.
     answered: Option<u64>,
+    /// When the displays stop saying which one they are: the moment the request was answered and
+    /// the cards stood.
+    until: Option<Instant>,
 }
 
 impl Numbers {
@@ -41,6 +45,7 @@ impl Numbers {
     ) {
         let Some(request) = IdentifyRequest::load() else {
             *self.ask.borrow_mut() = None;
+            self.until = None;
             return;
         };
         if self.answered == Some(request.requested_unix_ms) {
@@ -58,6 +63,32 @@ impl Numbers {
             id: request.requested_unix_ms,
             labels,
         });
+        self.until = Some(ui::time::now() + Duration::from_millis(IDENTIFY_MS));
+    }
+
+    /// What each display says while it says it: its number and the name Settings gives it, by the
+    /// monitor the shell follows it by. Empty before anything was asked, and once the moment has
+    /// passed.
+    pub(crate) fn saying(&self) -> Vec<Label> {
+        if !self.up() {
+            return Vec::new();
+        }
+        self.ask
+            .borrow()
+            .as_ref()
+            .map_or_else(Vec::new, |ask| ask.labels.clone())
+    }
+
+    /// When the displays stop saying which one they are, while they are saying it: the frame that
+    /// takes it away.
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        let until = self.until?;
+        (ui::time::now() < until).then_some(until)
+    }
+
+    /// Whether it is the moment the person asked which screen is which.
+    fn up(&self) -> bool {
+        self.deadline().is_some()
     }
 }
 

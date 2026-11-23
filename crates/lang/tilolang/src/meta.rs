@@ -814,6 +814,10 @@ pub struct ViewMeta {
     /// The view's name as declared: what its window is called and what a screen reader says. A loop
     /// body takes its view's name, never a binding's.
     pub name: String,
+    /// What assistive technology knows the window this view fills by, when the view names one
+    /// (`window "Desktop shell"`): a whole screen's window is not its name in the code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
     pub doc: String,
     pub params: Vec<ParamMeta>,
     pub anchors: Vec<AnchorMeta>,

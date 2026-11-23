@@ -75,6 +75,11 @@ pub struct WindowFrameProps {
     /// its own bar ([`ui.DragSource`](super::drag_source::DragSource), `shell.md` §8.1). Empty
     /// leaves the bar no source, as a foreign window's bar has nothing to carry.
     pub carries: Option<String>,
+    /// The name a scroll view around this window keeps in view (`scroll(..., keep:)`): the front
+    /// strip of a row, which comes into view as the person moves between windows. Unset, the
+    /// window asks for nothing.
+    #[component(data)]
+    pub keep: Option<String>,
     /// A press on the window's bar, where nothing on it took the press: the person reaching for
     /// the window, which the shell answers by bringing it forward with the keyboard in it.
     #[component(event(press))]
@@ -150,6 +155,8 @@ pub struct WindowFrame {
     carries: Option<String>,
     /// A press on the bar that may become a drag.
     lift: Option<Lift>,
+    /// The name the scroll view around it keeps in view, as the view set it.
+    keep: Option<String>,
     /// What a press on the bar does.
     press: crate::widget::Press,
     /// Where the pointer last was, in the frame's logical coordinates.
@@ -243,6 +250,7 @@ impl Described for WindowFrame {
             controls,
             tabs,
             carries,
+            keep,
             press,
             body,
         } = props;
@@ -298,6 +306,7 @@ impl Described for WindowFrame {
             },
             carries,
             lift: None,
+            keep,
             press: crate::widget::Press::of(press),
             cursor: Point::ZERO,
         }
@@ -317,6 +326,7 @@ impl Described for WindowFrame {
         self.focused = props.focused;
         self.lists_actions = props.lists_actions;
         self.carries = props.carries;
+        self.keep = props.keep;
         self.press = crate::widget::Press::of(props.press);
         true
     }
@@ -873,6 +883,10 @@ impl Decorator for WindowFrame {
     /// one that just arrived into view.
     fn test_id(&self) -> Option<&str> {
         (!self.key.is_empty()).then_some(self.key.as_str())
+    }
+
+    fn kept_in_view(&self) -> Option<&str> {
+        self.keep.as_deref()
     }
 
     /// The frame is a group named for the window, and what it holds is read inside it.
