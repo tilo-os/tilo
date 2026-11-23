@@ -24,14 +24,14 @@ const IMAP: &str = "imap://imap.example.test:993";
 const SMTP: &str = "smtp://smtp.example.test:465";
 const AGENT: &str = "scout";
 
-/// The caller a turn's tools act as: `AGENT`, certified by `person`'s `device`, on a turn of
-/// theirs in `workspace`.
-fn on_turn(person: [u8; 32], device: [u8; 32], workspace: &str) -> Caller {
+/// The caller a turn's tools act as: `AGENT` under its own approved key `device`, the
+/// roster entry `created_at` names, on a turn of `person`'s in `workspace`.
+fn on_turn(person: [u8; 32], device: [u8; 32], created_at: i64, workspace: &str) -> Caller {
     Caller::delegated_agent(AGENT, person, device)
         .in_workspace(workspace)
         .named("Scout")
         .in_agent_session("agent-session:test")
-        .on_roster(0, person)
+        .on_roster(created_at, person)
         .on_roster_turn(tilo_action_policy::turn::Turn::new(
             "conversation-1",
             "message-1",
@@ -167,13 +167,14 @@ async fn a_use_on_a_server_asks_the_person_where_their_device_hears_it_and_their
     let server_device = enrol(&ada, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&ada, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (served, actions) = crate::harness::hosted::serving_documents_with_actions(
+    let served = crate::harness::hosted::start(
         &ada,
         &server_device,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
+    let actions = served.roster.actions.clone();
     let workspaces = served.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let workspace_id = WorkspaceId::parse(&workspace).unwrap();
@@ -182,6 +183,8 @@ async fn a_use_on_a_server_asks_the_person_where_their_device_hears_it_and_their
     let page = Browser::open_at(&served, &browser, &server_device, &workspace).await;
     let acts_for = hex::encode(person);
     make_agent(&page, &workspaces, &workspace, &acts_for, None).await;
+    // Its person approves it, so its turn asks the workspace under its own key.
+    served.approving(&workspace, &[AGENT]).await;
     let governor = workspaces.governor().clone();
     workspaces
         .prepare_application(&workspace, &governor, &crate::common::catalogue(), CHAT, "")
@@ -215,11 +218,18 @@ async fn a_use_on_a_server_asks_the_person_where_their_device_hears_it_and_their
     let reference = kept.value.unwrap()["reference"].clone();
 
     // A turn of their agent needs the account. The server asks them first and uses nothing.
-    let device = workspaces
-        .person_device(workspace_id, person)
+    let device = served
+        .server
+        .agent_link()
+        .roster_session_device(&served.roster.sessions, workspace_id, AGENT, &person)
         .await
-        .expect("a device of theirs the workspace admits");
-    let caller = on_turn(person, device, &workspace);
+        .expect("the agent joined under its approved key");
+    let created_at = workspaces
+        .hosted_roster_agent(workspace_id, AGENT, &person, None)
+        .await
+        .expect("the agent's roster entry")
+        .created_at;
+    let caller = on_turn(person, device, created_at, &workspace);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &caller,
@@ -362,12 +372,10 @@ async fn a_use_on_a_server_asks_the_person_where_their_device_hears_it_and_their
 
     // The leave their answer wrote stands for the next use: it asks nothing and is made.
     let next = add_mail("news@example.test", &reference);
+    let second = workspaces.use_for_turn(&turn, &next, json!({})).await;
     assert!(
-        matches!(
-            workspaces.use_for_turn(&turn, &next, json!({})).await,
-            Ok(TurnUse::Done(_))
-        ),
-        "the second use is not asked about"
+        matches!(second, Ok(TurnUse::Done(_))),
+        "the second use is not asked about: {second:?}"
     );
     assert_eq!(
         proved.lock().unwrap().clone(),
