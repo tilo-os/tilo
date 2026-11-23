@@ -519,11 +519,308 @@ def hover(session: Session, selector: str, deadline: float = 20.0) -> dict:
     return target
 
 
+# --- a person's other devices -----------------------------------------------------------------
+
+# The sheet a device of the person's is added from, and what its requester prints for the person
+# to compare with what the device they already have shows.
+SHOW_PAIR_DEVICE = ("session:invite", "show-pair-device")
+PAIRING_CODE = "Pairing code: "
+
+
+def devices_of(spec: dict) -> list[dict]:
+    """The devices a walk names, in order, each `{"name", "session_args"?}`: `"devices":
+    ["laptop", "phone"]`, or an entry as an object where one device starts differently (the
+    laptop with two displays). The first is the device every op runs on unless it says
+    otherwise; a walk naming none has one device, and its name is empty."""
+    named = spec.get("devices") or []
+    return [entry if isinstance(entry, dict) else {"name": entry} for entry in named] \
+        or [{"name": ""}]
+
+
+def session_args_of(spec: dict, variant: str, device: str | None = None) -> list[str] | None:
+    """How a device's session starts in `variant`: the version's own arguments (the tilolang
+    shell's `--shell screen`), then the device's (`--output` for a second display). `device`
+    is the first device when None."""
+    entries = devices_of(spec)
+    entry = next((e for e in entries if e["name"] == device), None) if device else entries[0]
+    args = list(spec[variant].get("session_args") or []) + list((entry or {}).get("session_args")
+                                                                or [])
+    return args or None
+
+
+# Where a walk's devices hear each other: the sessions are beside each other on this host's
+# loopback, and the network a check's machine has carries no multicast between them (as the
+# session's own multi-device tests start their devices, crates/session/session/tests/common).
+LAN_NETWORKS_ENV = "TILO_LAN_NETWORKS"
+# What a walk of several devices' sessions say: why a join or a sync did not land is the finding.
+DEVICES_LOG = ("warn,tilo::launch_latency=info,tilo::join_flow=debug,tilo_session::layout=info,"
+               "tilo_peer_state=debug,tilo_session::workspaces=debug,"
+               "tilo_session::person_resources=debug,tilo_endpoint_reachability=debug,"
+               "tilo_network_actor=debug,tilo_session::sync=debug")
+
+
+def devices_env(spec: dict) -> dict | None:
+    """The environment each device's session of the walk starts with: None for a walk of one.
+    A further device is named as the walk names it when it pairs (`phone`); the first is the
+    machine's own."""
+    if len(devices_of(spec)) < 2:
+        return None
+    return {LAN_NETWORKS_ENV: "127.0.0.1", "RUST_LOG": os.environ.get("RUST_LOG", DEVICES_LOG)}
+
+
+def split_on(op: dict, default: str | None) -> tuple[str | None, dict]:
+    """The device an op runs on and the op without that word: `{"on": "phone", "must": [...]}`
+    runs `must` on the phone, an op saying nothing runs on the step's device (`default`, the
+    step's own `"on"`), and None means the first device."""
+    if "on" not in op:
+        return default, op
+    rest = {key: value for key, value in op.items() if key != "on"}
+    return op["on"], rest
+
+
+def at_path(value, path: str):
+    """What `path` names in an action's answer: dotted keys and list places
+    (`layout.displays.0.rect`), `[key=value]` for the first entry of a list whose
+    field reads so (`devices[label=phone].id`), and `#len` at the end for how many a
+    list or map holds. None where the answer has no such place."""
+    path, _, measure = path.partition("#")
+    at = value
+    for part in filter(None, path.split(".")):
+        key, _, test = part.partition("[")
+        if key:
+            if isinstance(at, dict):
+                at = at.get(key)
+            elif isinstance(at, list) and key.isdigit() and int(key) < len(at):
+                at = at[int(key)]
+            else:
+                return None
+        if test:
+            field, _, wanted = test.rstrip("]").partition("=")
+            if not isinstance(at, list):
+                return None
+            at = next((item for item in at if isinstance(item, dict)
+                       and str(item.get(field)) == wanted), None)
+    if measure == "len":
+        return len(at) if isinstance(at, (list, dict)) else None
+    return at
+
+
+def choices_of(row: dict) -> dict:
+    """The first answer a catalogue row's action offers for each parameter that offers some: its
+    schema's `enum`, or the `const` of its first `oneOf`. What a person picks from a list, the
+    walk picks the first of."""
+    found = {}
+    for param in (row.get("action") or {}).get("params") or []:
+        schema = param.get("schema") or {}
+        offered = schema.get("enum") or [o.get("const") for o in schema.get("oneOf") or []
+                                         if isinstance(o, dict) and "const" in o]
+        if offered:
+            found[param["name"]] = offered[0]
+    return found
+
+
+def filled(arg, kept: dict):
+    """`arg` with each `{name}` a walk kept replaced by its value: a string that is
+    only `{name}` becomes the value itself (a revision stays a number), one that
+    names it among other words gets it as text."""
+    if isinstance(arg, str):
+        for name, value in kept.items():
+            if arg == f"{{{name}}}":
+                return value
+        for name, value in kept.items():
+            arg = arg.replace(f"{{{name}}}", value if isinstance(value, str)
+                              else json.dumps(value))
+        return arg
+    if isinstance(arg, dict):
+        return {key: filled(inner, kept) for key, inner in arg.items()}
+    if isinstance(arg, list):
+        return [filled(inner, kept) for inner in arg]
+    return arg
+
+
+class Devices:
+    """The person's devices a walk drives: one headless session each, of the same person, on
+    this host. The first is the walk's own session; each further one is a session on a state
+    of its own, with its own device key, enrolled as the person's next device the way a person
+    adds one (the shell's Add a device sheet, its link, the pairing code approved on the first
+    device), and shown the workspace the first one is in. They meet over the local network, as
+    two devices of one person on one network do."""
+
+    def __init__(self, first: str, session: Session):
+        self.order = [first]
+        self.sessions: dict[str, Session] = {first: session}
+        self.joining: subprocess.Popen | None = None
+        # What fell short of making the devices one person's in one workspace: every step after
+        # it says what that leaves out, so the walk goes on and this is kept in its report.
+        self.trouble: list[str] = []
+        # How long each further device took to become the person's and come up, by phase
+        # (`prepare`, `pair`, `start`, `meet`), in milliseconds: what a walk of devices waits.
+        self.took: dict[str, dict[str, int]] = {}
+
+    def lap(self, name: str, phase: str, began: float) -> float:
+        now = time.monotonic()
+        self.took.setdefault(name, {})[phase] = round((now - began) * 1000)
+        return now
+
+    @property
+    def first(self) -> str:
+        return self.order[0]
+
+    def session(self, name: str | None) -> Session:
+        name = self.first if name in (None, "") else name
+        if name not in self.sessions:
+            raise Failed(f"the step names a device the walk has not: {name!r} "
+                         f"(it has {', '.join(self.order)})")
+        return self.sessions[name]
+
+    def further(self) -> list[str]:
+        return self.order[1:]
+
+    def add(self, name: str, state: Path, *, apps: str, tapps: list[Path], out: Path, tag: str,
+            session_args: list[str] | None, env: dict | None = None) -> Session:
+        """Enroll `name` as the person's next device and start its session on `state`, which
+        `prepare_state` has made: the first device shows the link, the new device's requester
+        takes it and prints its code, the person approves that code on the first device, and
+        the new device's session starts as that person, in the workspace the first one shows."""
+        first = self.sessions[self.first]
+        logs = out / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        began = time.monotonic()
+        first.invoke(SHELL, *SHOW_PAIR_DEVICE, {})
+        until_value("the Add a device sheet's Copy link", lambda: control(first, "Copy link"), 15)
+        first.click_named("Copy link")
+        link = until_value("the device link on the clipboard",
+                           lambda: (first.state_dump() or {}).get("clipboard"), 10)
+        if not str(link).startswith("tilo://pair-device?"):
+            raise Failed("Add a device did not copy a device link")
+        # The link stays out of every log and argument: it is read from a private file.
+        link_file = state / "device-link"
+        link_file.touch(mode=0o600)
+        link_file.write_text(link)
+        said = logs / f"pair-{tag}.log"
+        try:
+            with said.open("w") as log:
+                self.joining = subprocess.Popen(
+                    [str(BUILD / "bin/tilo-session"), "--pair-device-link-file", str(link_file)],
+                    stdout=log, stderr=subprocess.STDOUT,
+                    env={**os.environ, "HOSTNAME": name,
+                         "XDG_CONFIG_HOME": str(state / "config"),
+                         "TILO_IDENTITY_ROOT": str(state / "identity")})
+
+            def code() -> str | None:
+                text = said.read_text(errors="replace")
+                if self.joining.poll() not in (None, 0):
+                    raise Failed(f"the {name} could not pair: {text.strip()[-2000:]}")
+                for line in text.splitlines():
+                    if line.startswith(PAIRING_CODE):
+                        return line[len(PAIRING_CODE):].strip()
+                return None
+
+            shown = until_value(f"the {name} to show a pairing code", code, 20)
+            approve = f"Approve {name} with code {shown}"
+            until_value(f"{approve!r} on the {self.first}", lambda: control(first, approve), 20)
+            first.click_named(approve)
+            if self.joining.wait(timeout=30) != 0:
+                raise Failed(f"the {name} did not finish pairing: {said.read_text()[-2000:]}")
+        finally:
+            if self.joining is not None and self.joining.poll() is None:
+                self.joining.kill()
+                self.joining.wait()
+            self.joining = None
+            link_file.unlink(missing_ok=True)
+        root = "identity/user-identity/pubkey.bin"
+        if (state / root).read_bytes() != (first.state / root).read_bytes():
+            raise Failed(f"the {name} joined as a different person")
+        began = self.lap(name, "pair", began)
+        session = Session(state)
+        session.start(apps=apps, fresh=True, out=logs, tag=tag, tapps=tapps,
+                      session_args=session_args, env=env)
+        began = self.lap(name, "start", began)
+        self.order.append(name)
+        self.sessions[name] = session
+        # The sheet the person added the device from is closed, as they close it.
+        try:
+            first.key("Escape")
+        except Failed:
+            pass
+        try:
+            self.show_same_workspace(name)
+            self.lap(name, "meet", began)
+        except Failed as error:
+            self.lap(name, "meet", began)
+            self.trouble.append(f"{name}: {error}")
+            # What each device holds of the person, where they did not meet: their identity's
+            # files (which of them founds the person's own workspace) and their workspaces.
+            for device, at in ((self.first, first), (name, session)):
+                identity = at.state / "config/tilo/identity"
+                held = ((at.state_dump() or {}).get("held_workspaces")) if at.running() else None
+                self.trouble.append(
+                    f"{device}: identity holds {sorted(p.name for p in identity.iterdir()) if identity.is_dir() else None}; "
+                    f"holds the workspaces {json.dumps(held)}")
+            print(f"  the {name} is not in the {self.first}'s workspace: {error}", file=sys.stderr)
+        return session
+
+    def show_same_workspace(self, name: str) -> str:
+        """Bring the workspace the first device shows to the front on `name`, as the person
+        picks it there: a workspace that arrived from their list stands behind the one the
+        device made for itself."""
+        first, other = self.sessions[self.first], self.sessions[name]
+
+        def front(session: Session) -> str | None:
+            return ((session.state_dump() or {}).get("workspace_tree") or {}).get("active")
+
+        workspace = until_value(f"the workspace the {self.first} shows", lambda: front(first), 30)
+
+        def held() -> bool:
+            tree = (other.state_dump() or {}).get("workspace_tree") or {}
+            return any(w.get("id") == workspace for w in tree.get("workspaces") or [])
+
+        until_value(f"the {name} to hold the {self.first}'s workspace", held, 60, 0.25)
+        if front(other) != workspace:
+            other.invoke(SHELL, "desktop:chrome", "switch-workspace", {"workspace": workspace})
+            until_value(f"the {name} to show the {self.first}'s workspace",
+                        lambda: front(other) == workspace, 30)
+        return workspace
+
+    def stop(self) -> None:
+        """Stop every further device's session; the first is the walk's to stop."""
+        for name in self.further():
+            self.sessions[name].stop()
+
+
+def start_devices(spec: dict, variant: str, session: Session, state: Path, out: Path,
+                  apps: str, tapps: list[Path]) -> Devices | None:
+    """The person's further devices the walk names, each paired to the first device's session
+    `session` and started, or None for a walk of one device. Each device's state sits beside the
+    first one's (`state-tl` and `state-tl-phone`)."""
+    entries = devices_of(spec)
+    if len(entries) < 2:
+        return None
+    devices = Devices(entries[0]["name"], session)
+    try:
+        for entry in entries[1:]:
+            name = entry["name"]
+            began = time.monotonic()
+            own = state.parent / f"{state.name}-{name}"
+            prepare_state(own, apps, build=False)
+            devices.lap(name, "prepare", began)
+            devices.add(name, own, apps=apps, tapps=tapps, out=out, tag=f"{variant}-{name}",
+                        session_args=session_args_of(spec, variant, name),
+                        env=devices_env(spec))
+            print(f"==> {variant}: the {name} paired and up in "
+                  f"{round((time.monotonic() - began) * 1000)} ms", file=sys.stderr)
+    except BaseException:
+        devices.stop()
+        raise
+    return devices
+
+
 class Walk:
     """One version's walk: its session, its steps and what each one found."""
 
     def __init__(self, spec: dict, variant: str, out: Path, state: Path,
-                 discover: bool = False, session: Session | None = None):
+                 discover: bool = False, session: Session | None = None,
+                 devices: Devices | None = None):
         self.spec = spec
         self.variant = variant
         self.v = spec[variant]
@@ -552,6 +849,16 @@ class Walk:
         self.served: dict = {}
         # The pages a `serve` step put on this machine's loopback.
         self.pages: ThreadingHTTPServer | None = None
+        # The person's further devices, where the walk names them (`"devices"`): a family's
+        # are started once with its session, a walk of its own starts them after its own.
+        self.devices = devices
+        # The device the op being run is on (None: the first), and each device's appearance
+        # action, which is that device's own.
+        self.device: str | None = None
+        self.step_on: str | None = None
+        self.appearances: dict[str, dict | None] = {}
+        # What an op kept of an answer (`op_use`'s `keep`), for the ops after it.
+        self.kept: dict = {}
 
     def targets(self) -> list[dict]:
         """The controls the desktop offers now, as the walk records them where a
@@ -653,12 +960,33 @@ class Walk:
     # -- the ops a step file may name ------------------------------------------------------
 
     def op(self, op: dict) -> dict:
-        """One op of a step, as the step file writes it, and what it found."""
+        """One op of a step, as the step file writes it, and what it found. An op saying
+        `"on": "phone"` (or every op of a step saying it) runs on that device of the walk's:
+        each op acts on `self.session`, which is that device's session while it runs."""
+        device, op = split_on(op, self.step_on)
         (name, value), = op.items()
         handler = getattr(self, f"op_{name}", None)
         if handler is None:
             raise Failed(f"the step names an op this walk has no way to do: {name!r}")
-        return handler(value) or {}
+        if device in (None, "") or (self.devices is not None and device == self.devices.first):
+            return handler(value) or {}
+        if self.devices is None:
+            raise Failed(f"the op names the device {device!r}, and the walk names no devices")
+        return self.on_device(device, lambda: handler(value) or {})
+
+    def on_device(self, device: str, run):
+        """`run()` with `device`'s session as the walk's: what it presses, reads and shoots is
+        that device's. The first device's session and appearance action are back after."""
+        own, own_appearance = self.session, self.appearance
+        self.appearances[self.devices.first] = own_appearance
+        self.session = self.devices.session(device)
+        self.appearance = self.appearances.get(device)
+        self.device = device
+        try:
+            return run()
+        finally:
+            self.appearances[device] = self.appearance
+            self.session, self.appearance, self.device = own, own_appearance, None
 
     def op_launch(self, value) -> dict:
         """Open the app, waiting for its window unless the value says not to."""
@@ -1298,6 +1626,171 @@ class Walk:
                     pass
             log.close()
         self.services.clear()
+    def published_row(self, value: dict) -> dict | None:
+        """The first action the desktop lists that `value` names: its `action` (the operation),
+        and where given the `kind` of resource it acts on, the start of that resource's address
+        (`resource`), its application (`app`), words the catalogue finds it by (`about`) and the
+        label its resource reads exactly (`label`, the row a person sees: `trip-plan.txt`). A row
+        stands on an instance a person cannot name in advance (an entry, a transfer, a device),
+        so it is found by what it is, never by its id."""
+        for row in self.session.actions(value.get("about") or ""):
+            at = address(row)
+            if at is None or at[1] != value["action"]:
+                continue
+            action = row.get("action") or {}
+            kind = action.get("resource_kind") or (row.get("resource") or {}).get("kind") or ""
+            if value.get("kind") not in (None, kind):
+                continue
+            if value.get("app") not in (None, row.get("app_id")):
+                continue
+            if not at[0].startswith(value.get("resource") or ""):
+                continue
+            if value.get("label") not in (None, (row.get("resource") or {}).get("label")):
+                continue
+            return row
+        return None
+
+    def op_use(self, value) -> dict:
+        """Run the action `value` names by what it is (`published_row`), once the desktop lists
+        it, and fail the step when it is refused or never listed: `{"kind":
+        "files.nearby-transfer", "action": "accept-nearby", "args": {...}}`. In the args,
+        `{resource}` is the address of the resource the action stands on, `{id}` the part of
+        it after its kind (`nearby-transfer:7f3a` gives `7f3a`), `{choice:param}` the first
+        answer the action offers for its parameter `param` (a folder to save to), and `{name}` what an earlier
+        op kept. `"keep": {"name": "path"}` keeps what the answer reads at each path
+        (`at_path`), for a later op on any device; `"expect": {"path": value}` is what it must
+        read there, and a path kept or expected that the answer lacks fails the step."""
+        value = pick(value, self.variant)
+        row = until_value(f"{value.get('kind') or ''}#{value['action']} to be published",
+                          lambda: self.published_row(value), float(value.get("within", 30)))
+        resource = address(row)[0]
+        kept = {**self.kept, "resource": resource, "id": resource.split(":", 1)[-1],
+                **{f"choice:{name}": choice for name, choice in choices_of(row).items()}}
+        args = filled(pick(value.get("args"), self.variant), kept) if "args" in value else None
+        answer = self.session.invoke_row(row, args)
+        if isinstance(answer, dict) and ("Failed" in answer or "Refused" in answer):
+            raise Failed(f"{resource}#{value['action']} answered {json.dumps(answer)[:500]}")
+        found = {"did": f"{resource}#{value['action']}"}
+        try:
+            found["value"] = value_of(answer)
+        except Failed:
+            pass
+        for name, path in (value.get("keep") or {}).items():
+            at = at_path(found.get("value"), path)
+            if at is None:
+                raise Failed(f"the answer of #{value['action']} has nothing at {path!r}: "
+                             f"{json.dumps(found.get('value'))[:1500]}")
+            self.kept[name] = at
+        wrong = {path: at_path(found.get("value"), path)
+                 for path, wanted in (value.get("expect") or {}).items()
+                 if at_path(found.get("value"), path) != filled(wanted, self.kept)}
+        if wrong:
+            raise Failed(f"the answer of #{value['action']} reads {json.dumps(wrong)}, not "
+                         f"{json.dumps({k: value['expect'][k] for k in wrong})}")
+        return found
+
+    def op_published(self, value) -> dict:
+        """The desktop lists the action `value` names (`published_row`) within its patience
+        (`"within"`, ten seconds): what a person can reach from the palette or a row's menu
+        now, such as an incoming transfer's Save."""
+        value = pick(value, self.variant)
+        row = until_value(f"{value.get('kind') or ''}#{value['action']} to be published",
+                          lambda: self.published_row(value), float(value.get("within", 10)))
+        return {"published": f"{address(row)[0]}#{value['action']}",
+                "label": (row.get("action") or {}).get("action_label")}
+
+    def op_has_file(self, value) -> dict:
+        """The device holds a file named `name` whose bytes are `text`'s, anywhere in its own
+        state: where a file sent to it or synced to it landed. The first such file is kept as
+        evidence; one of that name with other bytes is the step's failure, named."""
+        name, wanted = value["name"], value["text"].encode()
+        root = self.session.state
+        seen: list[str] = []
+
+        def found() -> Path | None:
+            seen.clear()
+            for path in root.rglob(name):
+                if not path.is_file() or "nearby-transfers" in path.parts:
+                    continue
+                try:
+                    if path.read_bytes() == wanted:
+                        return path
+                except OSError:
+                    continue
+                seen.append(str(path.relative_to(root)))
+            return None
+
+        try:
+            path = until_value(f"{name} with its bytes on this device", found,
+                               float(value.get("within", 30)), 0.25)
+        except Failed:
+            raise Failed(f"no {name} with the bytes sent on this device"
+                         + (f"; with other bytes at {seen}" if seen else "")) from None
+        return {"has_file": str(path.relative_to(root))}
+
+    def op_push_edge(self, value) -> dict:
+        """Push the pointer past this device's screen edge toward the screen of another device
+        of the person's that the shared layout puts beside it, as a person moving their mouse
+        does: against the edge, a little past it, until the pointer goes on there
+        (`shared_input.driving` names that device). `{"within": s}` is the patience. Which
+        device and which edge are what this device's own state says, never assumed."""
+        patience = float(value.get("within", 20)) if isinstance(value, dict) else 20.0
+
+        def shared() -> dict:
+            return (self.session.state_dump() or {}).get("shared_input") or {}
+
+        def arranged():
+            shown = [d for d in shared().get("displays") or [] if d.get("online")]
+            here = next((d for d in shown if d.get("local")), None)
+            there = next((d for d in shown if not d.get("local")), None)
+            return (here, there) if here and there else None
+
+        here, there = until_value("this device's layout to place another device's screen "
+                                  "beside its own", arranged, patience)
+        x, y, w, h = here["rect"]
+        tx, ty, tw, th = there["rect"]
+        lx, ly, lw, lh = here["local_rect"]
+        middle = (lx + lw / 2, ly + lh / 2)
+
+        def edge(by: float) -> tuple[float, float]:
+            if tx >= x + w:
+                return lx + lw - 1 + by, middle[1]
+            if tx + tw <= x:
+                return lx - by, middle[1]
+            if ty >= y + h:
+                return middle[0], ly + lh - 1 + by
+            return middle[0], ly - by
+
+        def move(by: float) -> None:
+            px, py = edge(by)
+            self.session.control({"op": "pointer_move", "x": px, "y": py})
+
+        # The first push past the edge asks the other device for its input; once it lent it,
+        # pushes past the edge without coming back go on there (resting on the edge again
+        # starts the count over, as it keeps a pointer that only brushes the edge here).
+        device = there.get("device")
+
+        def lent():
+            if device in (shared().get("leases") or []):
+                return True
+            move(0.0)
+            move(10.0)
+            return None
+
+        def crossed():
+            move(10.0)
+            return shared().get("driving")
+
+        try:
+            until_value(f"{device} to lend this device its input", lent, patience, 0.5)
+            driving = until_value(f"the pointer to go on to {device}'s screen",
+                                  crossed, patience, 0.1)
+        except Failed as error:
+            said = {key: shared().get(key) for key in ("leases", "driving", "pointer",
+                                                        "pointer_shown")}
+            raise Failed(f"{error}; this device's shared input reads {json.dumps(said)}") \
+                from None
+        return {"driving": driving, "toward": there.get("device")}
 
     def op_windows(self, value) -> dict:
         """How many windows the desktop holds must be `value` (or at least
@@ -1658,7 +2151,7 @@ class Walk:
         """Write the step's fixture file where a person's file chooser reaches
         it, and record its path: a Markdown file the app imports."""
         name, text = value["name"], value["text"]
-        folder = self.state / "home"
+        folder = self.session.state / "home"
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / name
         path.write_text(text)
@@ -1773,6 +2266,7 @@ class Walk:
             ops = ops[self.variant]
         self.catalogued = None
         self.frames_seen = {}
+        self.step_on = step.get("on")
         try:
             for op in ops:
                 record["ops"].append({**op, "found": self.op(op)})
@@ -1781,6 +2275,12 @@ class Walk:
             if step.get("shot", True):
                 name = f"{index:02d}-{step['id']}"
                 record["shot"] = self.shot(name)
+                if self.devices is not None:
+                    # Each further device is shot too: what reached it is the step's point.
+                    record["device_shots"] = {
+                        device: self.on_device(device, lambda device=device: self.shot(
+                            f"{name}-{device}"))
+                        for device in self.devices.further()}
                 if dark:
                     record["shot_dark"] = self.theme_shot(name, True)
                     self.set_dark(False)
@@ -1828,8 +2328,14 @@ class Walk:
             began = time.monotonic()
             self.session.start(apps=apps_of(spec, self.variant),
                                fresh=True, out=self.out / "logs", tag=self.variant,
-                               tapps=tapps, session_args=self.v.get("session_args"),
-                               env=session_env(self.state))
+                               tapps=tapps, session_args=session_args_of(spec, self.variant),
+                               env={**session_env(self.state), **devices_env(spec)})
+            try:
+                self.devices = start_devices(spec, self.variant, self.session, self.state,
+                                             self.out, apps_of(spec, self.variant), tapps)
+            except BaseException:
+                self.session.stop()
+                raise
             started = round((time.monotonic() - began) * 1000)
             print(f"==> {self.variant}: session up in {started} ms", file=sys.stderr)
         began = time.monotonic()
@@ -1841,12 +2347,23 @@ class Walk:
                      "session_start_ms": started,
                      "walk_ms": round((time.monotonic() - began) * 1000),
                      "steps": self.steps}
+            if self.devices is not None:
+                found["devices_ms"] = self.devices.took
+                if self.devices.trouble:
+                    found["devices_trouble"] = self.devices.trouble
             try:
                 if self.discover:
                     found["actions"] = [a for a in self.session.actions("")
                                         if address(a) and self.v.get("id") in (None, a.get("app_id"))]
                     found["state"] = self.session.state_dump()
                     found["windows"] = self.session.windows()
+                    if self.devices is not None:
+                        found["devices"] = {
+                            device: self.on_device(device, lambda: {
+                                "actions": [a for a in self.session.actions("") if address(a)],
+                                "state": self.session.state_dump(),
+                                "windows": self.session.windows()})
+                            for device in self.devices.further()}
             except Failed:
                 pass
             if self.mail is not None:
@@ -1855,6 +2372,8 @@ class Walk:
                 self.mail.stop()
                 self.mail = None
             if not self.shared:
+                if self.devices is not None:
+                    self.devices.stop()
                 self.session.stop()
             self.stop_services()
         return found
@@ -1862,7 +2381,13 @@ class Walk:
     def reset(self) -> None:
         """Leave the desktop as a fresh sign-in shows it, for the family's next
         walk: every window closed, nothing over the desktop, no notification
-        held, the light theme."""
+        held, the light theme. Every device of the walk's is left so."""
+        if self.devices is not None:
+            for device in self.devices.further():
+                self.on_device(device, self.reset_one)
+        self.reset_one()
+
+    def reset_one(self) -> None:
         for _ in range(2):
             try:
                 self.session.key("Escape")
@@ -2313,6 +2838,7 @@ def main() -> int:
             prepare_state(state, apps, build=False)
             first = mine[0][1]
             session = None
+            devices = None
             started = 0
             if family:
                 packages = []
@@ -2326,15 +2852,20 @@ def main() -> int:
                 session = Session(state)
                 began = time.monotonic()
                 session.start(apps=apps, fresh=True, out=out / "logs", tag=variant, tapps=tapps,
-                              session_args=first[variant].get("session_args"),
-                              env=session_env(state))
+                              session_args=session_args_of(first, variant),
+                              env={**session_env(state), **devices_env(first)})
+                try:
+                    devices = start_devices(first, variant, session, state, out, apps, tapps)
+                except BaseException:
+                    session.stop()
+                    raise
                 started = round((time.monotonic() - began) * 1000)
                 print(f"==> {name}: the {variant} session up in {started} ms", file=sys.stderr)
             try:
                 for index, (path, spec) in enumerate(mine):
                     print(f"==> {path.stem}: walking the {variant} version", file=sys.stderr)
                     walk = Walk(spec, variant, out_of[path.stem], state,
-                                discover=options.discover, session=session)
+                                discover=options.discover, session=session, devices=devices)
                     found = walk.walk()
                     if family:
                         found["session_start_ms"] = started
@@ -2346,6 +2877,8 @@ def main() -> int:
                         except Failed as error:
                             print(f"  reset after {path.stem} fell short: {error}", file=sys.stderr)
             finally:
+                if devices is not None:
+                    devices.stop()
                 if session is not None:
                     session.stop()
         verdict = 0

@@ -101,6 +101,19 @@ later step), `serve` (a stand-in, and test pages on this machine's loopback),
 --discover` keeps every step's controls and the desktop's actions in `walk.json`,
 for naming the control that is really there.
 
+**Several devices of one person.** A walk naming `"devices": ["laptop", "phone"]` runs a
+headless session per device on the same host, each on its own state and device key. The first
+device is the walk's own session; each further one is added the way a person adds a device:
+the first shows Add a device, the new device's requester takes the link and prints its code,
+the code is approved on the first device, and the new device starts as that person and is
+shown the first device's workspace. They find each other on the host's loopback. Every op
+runs on the first device unless it says `{"on": "phone", "must": [...]}` or its step says
+`"on": "phone"`, and every step is shot on each device. An entry such as `{"name": "laptop",
+"session_args": ["--output", "B=1280x720"]}` starts that device differently. `use` runs an
+action found by what it acts on (`kind`, `label`, `action`) rather than by an instance's id,
+and `keep` holds a value from its answer for a later op on any device (`{revision}`);
+`has_file` finds a file a device was sent or synced in its own state.
+
 **The baseline** is `app-walks/baseline/<walk>.json`: per version, per step,
 whether main walked it, how long it took and the controls it drew, and the t run
 that keeps main's shots. `scripts/headless-examples/walk.sh WALK --write-baseline` on main writes it;

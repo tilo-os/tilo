@@ -47,6 +47,7 @@ def named_variants(spec):
 
 def from_key(ops):
     for op in ops:
+        _device, op = walk.split_on(op, None)
         (name, value), = op.items()
         yield name, value
 
@@ -85,10 +86,25 @@ class TheStepFiles(unittest.TestCase):
         for family in walk.checks():
             members = walk.family_of(family)
             for variant in walk.VARIANTS:
-                starts = {json.dumps(spec[variant].get("session_args")) for _p, spec in members
-                          if variant in spec}
+                starts = {json.dumps([walk.session_args_of(spec, variant, d["name"])
+                                      for d in walk.devices_of(spec)])
+                          for _p, spec in members if variant in spec}
                 with self.subTest(family=family, variant=variant):
                     self.assertLessEqual(len(starts), 1)
+
+    def test_every_device_a_step_names_is_one_the_walk_has(self):
+        """An op on a device the walk never paired would fail on the run, after minutes of
+        start: the step file is held to its own `devices` here."""
+        for path, spec in steps():
+            names = {d["name"] for d in walk.devices_of(spec)}
+            for step in spec["steps"]:
+                ops = step.get("ops") or []
+                listed = [op for each in ops.values() for op in each] \
+                    if isinstance(ops, dict) else ops
+                said = [step.get("on")] + [op.get("on") for op in listed]
+                for device in filter(None, said):
+                    with self.subTest(walk=path.stem, step=step["id"], device=device):
+                        self.assertIn(device, names - {""})
 
     def test_every_op_is_one_the_driver_has(self):
         driver = [name[len("op_"):] for name in dir(walk.Walk) if name.startswith("op_")]
@@ -371,6 +387,116 @@ class ReadingWhatAnAppHolds(unittest.TestCase):
 
     def test_a_read_answer_that_names_no_words_is_missing_them(self):
         self.assertEqual(walk.held_in(None, ["Buy milk"]), ["Buy milk"])
+
+
+class OpsOnAnotherDevice(unittest.TestCase):
+    """Every op runs on the walk's first device unless it, or its step, names another: the
+    one place a device is picked is `Walk.op`, which hands the op that device's session."""
+
+    class Session:
+        def __init__(self, name, targets=()):
+            self.name = name
+            self.found = [{"name": n, "rect": [0, 0, 10, 10]} for n in targets]
+            self.state = Path("/nonexistent") / name
+
+        def targets(self):
+            return self.found
+
+    def walk_of(self, spec=None):
+        laptop = self.Session("laptop", ["Files"])
+        phone = self.Session("phone", ["Accept"])
+        spec = spec or {"devices": ["laptop", "phone"], "rust": {}, "steps": []}
+        devices = walk.Devices("laptop", laptop)
+        devices.order.append("phone")
+        devices.sessions["phone"] = phone
+        return walk.Walk(spec, "rust", Path("/nonexistent"), Path("/nonexistent"),
+                         session=laptop, devices=devices), laptop, phone
+
+    def test_an_op_runs_on_the_first_device_unless_it_names_another(self):
+        walked, laptop, _phone = self.walk_of()
+        self.assertEqual(walked.op({"must": ["Files"]}), {"saw": ["Files"]})
+        self.assertEqual(walked.op({"on": "phone", "must": ["Accept"]}), {"saw": ["Accept"]})
+        with self.assertRaises(walk.Failed):
+            walked.op({"on": "phone", "must": {"see": ["Files"], "within": 0}})
+        self.assertIs(walked.session, laptop)
+
+    def test_the_first_device_is_the_walk_s_own_and_the_rest_are_further(self):
+        walked, laptop, phone = self.walk_of()
+        self.assertEqual(walked.devices.first, "laptop")
+        self.assertEqual(walked.devices.further(), ["phone"])
+        self.assertIs(walked.devices.session(None), laptop)
+        self.assertIs(walked.devices.session("phone"), phone)
+
+    def test_a_step_on_a_device_runs_each_op_there_unless_one_names_the_first(self):
+        walked, laptop, _phone = self.walk_of()
+        walked.step_on = "phone"
+        self.assertEqual(walked.op({"must": ["Accept"]}), {"saw": ["Accept"]})
+        self.assertEqual(walked.op({"on": "laptop", "must": ["Files"]}), {"saw": ["Files"]})
+        self.assertIs(walked.session, laptop)
+
+    def test_each_device_keeps_its_own_appearance_action(self):
+        walked, _laptop, _phone = self.walk_of()
+        walked.appearance = {"provider": "laptop's"}
+
+        def finds():
+            self.assertIsNone(walked.appearance)
+            walked.appearance = {"provider": "phone's"}
+
+        walked.on_device("phone", finds)
+        self.assertEqual(walked.appearance, {"provider": "laptop's"})
+        walked.on_device("phone", lambda: self.assertEqual(walked.appearance,
+                                                           {"provider": "phone's"}))
+
+    def test_a_device_the_walk_has_not_is_refused_by_name(self):
+        walked, laptop, _phone = self.walk_of()
+        with self.assertRaisesRegex(walk.Failed, "tablet"):
+            walked.op({"on": "tablet", "must": ["Files"]})
+        self.assertIs(walked.session, laptop)
+        alone = walk.Walk({"rust": {}, "steps": []}, "rust", Path("/nonexistent"),
+                          Path("/nonexistent"), session=laptop)
+        with self.assertRaisesRegex(walk.Failed, "names no devices"):
+            alone.op({"on": "phone", "must": ["Files"]})
+
+    def test_a_device_starts_with_its_version_s_arguments_then_its_own(self):
+        spec = {"devices": [{"name": "laptop", "session_args": ["--output", "B=1280x720"]},
+                            "phone"],
+                "rust": {}, "tl": {"session_args": ["--shell", "screen"]}}
+        self.assertEqual(walk.session_args_of(spec, "tl"),
+                         ["--shell", "screen", "--output", "B=1280x720"])
+        self.assertEqual(walk.session_args_of(spec, "tl", "phone"), ["--shell", "screen"])
+        self.assertIsNone(walk.session_args_of(spec, "rust", "phone"))
+        self.assertEqual(walk.devices_of({"rust": {}}), [{"name": ""}])
+
+
+class KeepingWhatAnAnswerSaid(unittest.TestCase):
+    ANSWER = {"devices": [{"label": "laptop", "id": "a1"}, {"label": "phone", "id": "b2"}],
+              "layout": {"revision": 7, "displays": [{"rect": [0, 0, 1920, 1080]}]}}
+
+    def test_a_path_reads_keys_places_and_the_entry_a_field_names(self):
+        self.assertEqual(walk.at_path(self.ANSWER, "layout.revision"), 7)
+        self.assertEqual(walk.at_path(self.ANSWER, "layout.displays.0.rect"), [0, 0, 1920, 1080])
+        self.assertEqual(walk.at_path(self.ANSWER, "devices[label=phone].id"), "b2")
+        self.assertEqual(walk.at_path(self.ANSWER, "devices#len"), 2)
+
+    def test_a_place_the_answer_lacks_is_none(self):
+        self.assertIsNone(walk.at_path(self.ANSWER, "devices[label=tablet].id"))
+        self.assertIsNone(walk.at_path(self.ANSWER, "layout.displays.3"))
+        self.assertIsNone(walk.at_path(self.ANSWER, "layout.revision.x"))
+
+    def test_a_kept_value_fills_args_keeping_its_type_when_alone(self):
+        kept = {"rev": 7, "phone": "b2"}
+        self.assertEqual(walk.filled({"revision": "{rev}", "display": "{phone}/edid",
+                                      "xs": ["{rev}"]}, kept),
+                         {"revision": 7, "display": "b2/edid", "xs": [7]})
+
+
+class PickingWhatAnActionOffers(unittest.TestCase):
+    def test_the_first_answer_offered_per_parameter(self):
+        row = {"action": {"params": [
+            {"name": "destination", "schema": {"type": "string", "enum": ["a1", "b2"]}},
+            {"name": "mode", "schema": {"oneOf": [{"const": "copy"}, {"const": "move"}]}},
+            {"name": "note", "schema": {"type": "string"}}]}}
+        self.assertEqual(walk.choices_of(row), {"destination": "a1", "mode": "copy"})
 
 
 class AValuePerVersion(unittest.TestCase):
