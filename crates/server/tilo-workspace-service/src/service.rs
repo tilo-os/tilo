@@ -332,7 +332,6 @@ impl ServiceSessions {
             holder: Arc::new(std::sync::RwLock::new(crate::workspaces::HolderClaim {
                 label: cfg.label.clone(),
                 cloud: cfg.rented,
-                moderates: std::collections::BTreeSet::new(),
             })),
             member: cfg.member.clone(),
             surfaces: Arc::clone(&cfg.surfaces),

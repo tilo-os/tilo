@@ -16,7 +16,6 @@ pub(crate) use super::fixtures::{
 mod access_projection;
 pub(crate) mod admission_cost;
 #[cfg(feature = "agents")]
-pub(crate) mod bots;
 mod host_address;
 mod invitation_read;
 pub(crate) mod large_document;

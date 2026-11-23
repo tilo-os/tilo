@@ -113,7 +113,7 @@ async fn a_refusal_between_two_steps_is_asked_again_and_no_step_is_done_twice() 
     let events = WorkspaceEvents::start(
         workspaces.clone(),
         None,
-        std::sync::Arc::new(tilo_server::workspace_bots::installed::EventRunner),
+        std::sync::Arc::new(tilo_server::event_runner::EventRunner),
     );
     let first = write_to_agent(&actions, &workspaces, &workspace, (&root, &browser), ASK).await;
     let asked = Arc::new(Mutex::new(Vec::new()));
@@ -188,7 +188,7 @@ async fn a_provider_that_stays_down_ends_the_turn_saying_what_it_had_done() {
     let events = WorkspaceEvents::start(
         workspaces.clone(),
         None,
-        std::sync::Arc::new(tilo_server::workspace_bots::installed::EventRunner),
+        std::sync::Arc::new(tilo_server::event_runner::EventRunner),
     );
     let first = write_to_agent(&actions, &workspaces, &workspace, (&root, &browser), ASK).await;
     let asked = Arc::new(Mutex::new(Vec::new()));

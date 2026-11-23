@@ -581,7 +581,6 @@ impl CertificationProtocol {
         now_ns: u64,
     ) -> Result<([u8; 32], String), String> {
         if proposal.delegate.agent_id().is_some_and(str::is_empty)
-            || proposal.delegate.installation().is_some_and(str::is_empty)
             || proposal.scope.workspaces.is_empty()
         {
             return Err("a delegate proposal names its delegate and workspaces".into());

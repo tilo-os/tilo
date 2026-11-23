@@ -187,7 +187,7 @@ impl Theirs {
             events: WorkspaceEvents::start_with(
                 workspaces.clone(),
                 Assistant::answering(vec![]),
-                std::sync::Arc::new(crate::workspace_bots::installed::EventRunner),
+                std::sync::Arc::new(crate::event_runner::EventRunner),
             ),
             workspace: workspace.to_owned(),
             cert: cert.clone(),
@@ -262,7 +262,7 @@ impl Theirs {
 async fn a_members_assistant_sets_an_event_up_and_another_member_reads_and_changes_it() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    let server = event_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let theirs = Theirs::on(&workspaces, &workspace, &cert);
@@ -361,7 +361,7 @@ async fn a_members_assistant_sets_an_event_up_and_another_member_reads_and_chang
 async fn a_viewer_reads_the_workspaces_events_and_changes_none() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    let server = event_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let theirs = Theirs::on(&workspaces, &workspace, &cert);
@@ -401,10 +401,10 @@ async fn a_viewer_reads_the_workspaces_events_and_changes_none() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_bot_and_a_non_member_set_nothing_up_and_reach_no_event() {
+async fn an_events_run_and_a_non_member_set_nothing_up_and_reach_no_event() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    let server = event_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let theirs = Theirs::on(&workspaces, &workspace, &cert);
@@ -440,11 +440,11 @@ async fn a_bot_and_a_non_member_set_nothing_up_and_reach_no_event() {
         let offered = theirs.offered(&other).await;
         assert!(!offered.contains("\"set-up\""), "{offered}");
     }
-    // Neither does a bot, whoever installed it.
-    let bot =
+    // Neither does an event's own run, whoever set it up.
+    let run =
         Caller::bot(GREETER.to_owned(), cert.user_public_key, [5; 32]).in_workspace(&workspace);
     assert!(matches!(
-        theirs.take(&bot, workspace_events::LIST, json!({})).await,
+        theirs.take(&run, workspace_events::LIST, json!({})).await,
         Err(ActionCallError::UnknownAction)
     ));
     assert_eq!(theirs.listed().await, vec![made], "nothing of it changed");
@@ -454,7 +454,7 @@ async fn a_bot_and_a_non_member_set_nothing_up_and_reach_no_event() {
 async fn an_event_is_changed_paused_and_removed_by_a_member() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    let server = event_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let theirs = Theirs::on(&workspaces, &workspace, &cert);
@@ -583,14 +583,14 @@ where
 async fn a_reminder_the_assistant_set_up_fires_once_also_when_the_host_starts_again() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    let server = event_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let assistant = Assistant::answering(vec![]);
     let events = WorkspaceEvents::start_with(
         workspaces.clone(),
         assistant.clone(),
-        std::sync::Arc::new(crate::workspace_bots::installed::EventRunner),
+        std::sync::Arc::new(crate::event_runner::EventRunner),
     );
     let theirs = as_their_agent(&cert, &workspace);
     let me = as_person(&cert, &workspace);
@@ -652,7 +652,7 @@ async fn a_reminder_the_assistant_set_up_fires_once_also_when_the_host_starts_ag
     let events = WorkspaceEvents::start_with(
         workspaces.clone(),
         assistant.clone(),
-        std::sync::Arc::new(crate::workspace_bots::installed::EventRunner),
+        std::sync::Arc::new(crate::event_runner::EventRunner),
     );
     let kept = listed(&events, &workspace, &cert, &me).await;
     assert_eq!(kept.len(), 1, "{kept:?}");
@@ -666,7 +666,7 @@ async fn a_reminder_the_assistant_set_up_fires_once_also_when_the_host_starts_ag
 async fn a_paused_event_fires_nothing_and_a_refused_run_says_why() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    let server = event_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let assistant = Assistant::answering(vec![Err(HostStepError::Refused(
@@ -675,7 +675,7 @@ async fn a_paused_event_fires_nothing_and_a_refused_run_says_why() {
     let events = WorkspaceEvents::start_with(
         workspaces.clone(),
         assistant.clone(),
-        std::sync::Arc::new(crate::workspace_bots::installed::EventRunner),
+        std::sync::Arc::new(crate::event_runner::EventRunner),
     );
     let theirs = as_their_agent(&cert, &workspace);
 

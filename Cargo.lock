@@ -4246,40 +4246,23 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
- "chat",
- "collab-types",
  "davey",
  "discord",
  "discord-wire",
- "ed25519-dalek 3.0.0",
  "fake-discord",
  "futures-util",
  "getrandom 0.4.3",
- "hex",
- "iroh",
  "opus",
  "percent-encoding",
  "serde",
  "serde_json",
  "tempfile",
- "tilo-agent-session",
- "tilo-app",
- "tilo-automation",
- "tilo-automerge",
- "tilo-automerge-fork",
- "tilo-automerge-isolate",
  "tilo-clock",
  "tilo-connector",
- "tilo-live",
  "tilo-net",
- "tilo-reference",
  "tilo-seal",
  "tilo-secrets",
- "tilo-server",
- "tilo-server-protocol",
  "tilo-test-env",
- "tilo-user-identity",
- "tilo-workspace-service",
  "tokio",
  "tokio-rustls",
  "tokio-websockets",
@@ -17694,7 +17677,6 @@ dependencies = [
  "tilo-app",
  "tilo-app-id",
  "tilo-app-package",
- "tilo-automation",
  "tilo-canonical-json",
  "tilo-caps",
  "tilo-files",
@@ -20336,27 +20318,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-moderation"
-version = "0.1.0"
-dependencies = [
- "agent-provider-config",
- "moderation-model",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-action-policy",
- "tilo-actions",
- "tilo-moderation",
- "tilo-net",
- "tilo-resource",
- "tilo-secrets",
- "tokio",
- "workspace-hack",
- "zeroize",
-]
-
-[[package]]
 name = "tilo-native-media"
 version = "0.1.0"
 dependencies = [
@@ -21717,7 +21678,6 @@ name = "tilo-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "app-cli",
  "base64 0.22.1",
  "blake3",
  "bounded-command",
@@ -21727,7 +21687,6 @@ dependencies = [
  "collab-types",
  "collaboration",
  "crc32fast",
- "discord",
  "ed25519-dalek 3.0.0",
  "feed-rs",
  "fs-content",
@@ -21778,9 +21737,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
- "tilo-bot-directory",
  "tilo-clock",
- "tilo-connector",
  "tilo-content",
  "tilo-crypto",
  "tilo-delivery-protocol",
@@ -21795,7 +21752,6 @@ dependencies = [
  "tilo-live",
  "tilo-lock",
  "tilo-mcp",
- "tilo-moderation",
  "tilo-net",
  "tilo-paths",
  "tilo-peer-state",
@@ -29252,7 +29208,6 @@ dependencies = [
  "tilo-model-engine",
  "tilo-model-gateway",
  "tilo-model-guest",
- "tilo-moderation",
  "tilo-native-media",
  "tilo-nearby-service",
  "tilo-net",

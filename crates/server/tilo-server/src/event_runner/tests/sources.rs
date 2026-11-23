@@ -75,7 +75,7 @@ impl Hers {
         WorkspaceEvents::start_with(
             self.workspaces.clone(),
             assistant.clone(),
-            std::sync::Arc::new(crate::workspace_bots::installed::EventRunner),
+            std::sync::Arc::new(crate::event_runner::EventRunner),
         )
     }
 

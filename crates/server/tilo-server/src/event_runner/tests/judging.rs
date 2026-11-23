@@ -57,7 +57,7 @@ pub(super) async fn keeps_an_assistant(
 
 /// A person's own program: at `at_ms`, ask their model [`QUESTION`] about
 /// the moment, and keep what it answered for the next run.
-fn keeping_what_was_judged(at_ms: i64) -> installed::InstalledBot {
+fn keeping_what_was_judged(at_ms: i64) -> Program {
     use tilo_automation::{Binding, Step, StepKind};
     at_a_moment(
         at_ms,
@@ -128,8 +128,8 @@ async fn judged_once(
     person: &str,
     at_ms: i64,
     state: std::path::PathBuf,
-) -> (installed::BotRunner, Vec<tilo_automation::InvocationReport>) {
-    let mut runner = member_runner(
+) -> (ProgramRunner, Vec<tilo_automation::InvocationReport>) {
+    let mut runner = program_runner(
         workspaces,
         workspace,
         cert,
@@ -170,7 +170,7 @@ fn said(call: &Asked, message: usize) -> String {
 async fn a_judgement_is_answered_by_its_workspaces_own_model_with_its_own_key() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server_taking_part(scratch.path(), &key, &cert).await;
+    let server = event_server_taking_part(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
@@ -242,7 +242,7 @@ async fn a_judgement_is_answered_by_its_workspaces_own_model_with_its_own_key() 
 async fn a_judgements_cost_is_on_its_persons_assistants_day_and_a_refusal_is_said_in_words() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server_taking_part(scratch.path(), &key, &cert).await;
+    let server = event_server_taking_part(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();

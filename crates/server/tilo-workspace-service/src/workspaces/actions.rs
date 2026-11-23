@@ -160,25 +160,11 @@ pub(crate) const PUBLISH: &str = "publish";
 pub(crate) const UNPUBLISH: &str = "unpublish";
 /// Whether the workspace is public, and with which listing.
 pub(crate) const PUBLICATION: &str = "publication";
-/// Asking the workspace's holder to run a bot from the directory.
-pub(crate) const REQUEST_BOT: &str = "request-bot";
-/// Taking back the workspace's request for a bot: its holder stops and
-/// uninstalls it.
-pub(crate) const WITHDRAW_BOT_REQUEST: &str = "withdraw-bot-request";
 /// No longer choosing which version of an app the workspace runs
 /// (`install-app`, the governance action of that name, chooses one).
 pub(crate) const UNINSTALL_APP: &str = "uninstall-app";
 /// Hand the workspace's holder a piece of an app version's package file.
 pub(crate) const UPLOAD_APP_FILE: &str = "upload-app-file";
-/// Giving the holder a secret a requested bot's connector needs (a Discord
-/// bot token): kept in the holder's secret store for that connector, never in
-/// the workspace's governance, a record or a log.
-pub(crate) const SET_CONNECTOR_SECRET: &str = "set-connector-secret";
-/// The connector secrets a workspace member may give its holder, by connector and
-/// purpose.
-const CONNECTOR_SECRETS: [(&str, &str); 1] = [("so.tilo.discord", "bot-token")];
-/// Most bytes a connector secret takes.
-const MAX_CONNECTOR_SECRET: usize = 512;
 
 /// How long an invitation stays redeemable when the caller does not say.
 const DEFAULT_INVITATION_HOURS: u64 = 7 * 24;
@@ -216,7 +202,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 30] = [
+const VERBS: [Verb; 27] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -372,27 +358,6 @@ const VERBS: [Verb; 30] = [
         check: governance::SETTINGS,
         kind: ActionKind::Read,
         params: Vec::new,
-    },
-    Verb {
-        id: REQUEST_BOT,
-        label: "Add a bot",
-        check: governance::INSTALL_BOT,
-        kind: roles::GOVERNANCE_KIND,
-        params: bot_request_params,
-    },
-    Verb {
-        id: WITHDRAW_BOT_REQUEST,
-        label: "Remove a bot",
-        check: governance::UNINSTALL_BOT,
-        kind: roles::GOVERNANCE_KIND,
-        params: bot_entry_params,
-    },
-    Verb {
-        id: SET_CONNECTOR_SECRET,
-        label: "Give a bot's connector its secret",
-        check: governance::INSTALL_BOT,
-        kind: ActionKind::Outside,
-        params: connector_secret_params,
     },
     Verb {
         id: governance::INSTALL_APP,
@@ -586,36 +551,6 @@ fn call_params() -> Vec<ActionParam> {
         ),
     ]
 }
-
-fn bot_entry_param() -> ActionParam {
-    ActionParam::required(
-        "entry",
-        ParamType::Text,
-        "The bot's entry in the registry's directory, such as so.tilo.bots.standup.",
-    )
-}
-
-fn bot_request_params() -> Vec<ActionParam> {
-    vec![
-        bot_entry_param(),
-        ActionParam::required(
-            "version",
-            ParamType::Text,
-            "The listed version the workspace's host runs.",
-        ),
-        ActionParam::optional(
-            "inputs",
-            ParamType::Object,
-            "The bot's settings, by name, such as a bridge's guild and server; never a secret.",
-        ),
-        ActionParam::optional(
-            "program",
-            ParamType::Text,
-            "A developer's own program for the entry, run instead of the listed one; `version` names the build.",
-        ),
-    ]
-}
-
 fn app_param() -> ActionParam {
     ActionParam::required("app", ParamType::Text, "The app, such as so.tilo.notes.")
 }
@@ -679,26 +614,6 @@ fn key_params() -> Vec<ActionParam> {
         ParamType::Text,
         "The key's grant, as the workspace lists it: the key itself or one it minted.",
     )]
-}
-
-fn connector_secret_params() -> Vec<ActionParam> {
-    vec![
-        ActionParam::required(
-            "app",
-            ParamType::Text,
-            "The connector the secret is for, such as so.tilo.discord.",
-        ),
-        ActionParam::required(
-            "purpose",
-            ParamType::Text,
-            "What the secret is, such as bot-token.",
-        ),
-        ActionParam::required("secret", ParamType::Secret, "The secret itself."),
-    ]
-}
-
-fn bot_entry_params() -> Vec<ActionParam> {
-    vec![bot_entry_param()]
 }
 
 fn publish_params() -> Vec<ActionParam> {
@@ -964,44 +879,6 @@ fn arguments_of(request: &InvokeRequest) -> Map<String, Value> {
     }
 }
 
-/// Keep the secret a requested bot's connector needs in this holder's store
-/// for that connector, where its worker asks for it. Only the secrets a
-/// connector is known to take are kept; the caller already holds the
-/// workspace's right to install bots (the verb's check).
-fn connector_secret(args: &Args) -> Result<Value, ActionCallError> {
-    let app = args.required_text("app")?;
-    let purpose = args.required_text("purpose")?;
-    let secret = args.required_text("secret")?.trim();
-    let (_, purpose) = CONNECTOR_SECRETS
-        .iter()
-        .copied()
-        .find(|(known_app, known_purpose)| *known_app == app && *known_purpose == purpose)
-        .ok_or_else(|| {
-            ActionCallError::invalid_request(format!("{app} takes no secret named {purpose}"))
-        })?;
-    if secret.is_empty() || secret.len() > MAX_CONNECTOR_SECRET {
-        return Err(ActionCallError::invalid_request(
-            "the secret is empty or too long",
-        ));
-    }
-    #[cfg(feature = "agents")]
-    {
-        // Where the holder's connectors read it.
-        tilo_secrets::SecretStore::for_app(app)
-            .item(purpose, "default")
-            .put_blocking(secret.as_bytes())
-            .map_err(|error| {
-                ActionCallError::refused(format!("the host could not keep the secret: {error}"))
-            })?;
-        Ok(json!({ "kept": true }))
-    }
-    #[cfg(not(feature = "agents"))]
-    {
-        let _ = purpose;
-        Err(ActionCallError::refused("this host runs no connectors"))
-    }
-}
-
 /// An invocation's typed arguments.
 struct Args(Map<String, Value>);
 
@@ -1022,28 +899,6 @@ impl Args {
             Some(Value::String(text)) => Ok(Some(text)),
             Some(_) => Err(ActionCallError::invalid_request(format!(
                 "`{name}` must be text"
-            ))),
-        }
-    }
-
-    /// An object of text values, by name; empty when absent.
-    fn text_map(
-        &self,
-        name: &str,
-    ) -> Result<std::collections::BTreeMap<String, String>, ActionCallError> {
-        match self.0.get(name) {
-            None | Some(Value::Null) => Ok(std::collections::BTreeMap::new()),
-            Some(Value::Object(object)) => object
-                .iter()
-                .map(|(key, value)| match value {
-                    Value::String(text) => Ok((key.clone(), text.clone())),
-                    _ => Err(ActionCallError::invalid_request(format!(
-                        "`{name}.{key}` must be text"
-                    ))),
-                })
-                .collect(),
-            Some(_) => Err(ActionCallError::invalid_request(format!(
-                "`{name}` must be an object of text"
             ))),
         }
     }
@@ -2016,11 +1871,9 @@ impl Workspaces {
             server::MACHINE_ADMIT => Box::pin(self.machine_admit(call)).await,
             WAIT_LIST | UNLIST | MAIL_INVITATION => self.governance_wait_list(action, call).await,
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
-            REQUEST_BOT | WITHDRAW_BOT_REQUEST => self.governance_bots(action, call).await,
             governance::INSTALL_APP | UNINSTALL_APP => self.governance_apps(action, call).await,
             governance::CALL => self.call_action(call).await,
             UPLOAD_APP_FILE => self.upload_app_piece(call.workspace, call.args),
-            SET_CONNECTOR_SECRET => connector_secret(call.args),
             KEYS => self.governance_keys(call).await,
             REVOKE_KEY => self.governance_revoke_key(call).await,
             _ => self.governance_members(action, call).await,
@@ -2146,41 +1999,6 @@ impl Workspaces {
                 .map_err(|error| ActionCallError::refused(error.to_string())),
             _ => Ok(listed(self.listing(workspace).await)),
         }
-    }
-
-    /// The bots the workspace asks its host to run: asking for one, and taking
-    /// the request back.
-    async fn governance_bots(
-        &self,
-        action: &str,
-        call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionCallError> {
-        use tilo_peer_state::workspace_membership::{BotRequest, WorkspaceMembershipCommand};
-        let GovernanceCall {
-            workspace,
-            device,
-            request_id,
-            args,
-        } = call;
-        let entry = args.required_text("entry")?.to_owned();
-        let command = if action == REQUEST_BOT {
-            WorkspaceMembershipCommand::RequestBot(BotRequest {
-                entry,
-                version: args.required_text("version")?.to_owned(),
-                inputs: args.text_map("inputs")?,
-                program: args.text("program")?.map(str::to_owned),
-            })
-        } else {
-            WorkspaceMembershipCommand::WithdrawBotRequest { entry }
-        };
-        command
-            .validate()
-            .map_err(ActionCallError::invalid_request)?;
-        let done = self
-            .ask_for_bot(workspace, device, request_id, command)
-            .await
-            .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        Ok(json!({ "generation": done.generation }))
     }
 
     /// The version of an app the workspace runs: choosing one, and taking the

@@ -142,7 +142,6 @@ fn holders(peer: &StatePeer) -> Vec<Holder> {
                 },
                 reads: payload.holds_keys,
                 cloud: payload.cloud,
-                moderates: payload.moderates,
             })
         })
         .collect();

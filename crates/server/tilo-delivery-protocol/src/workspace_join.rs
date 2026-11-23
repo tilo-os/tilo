@@ -109,10 +109,6 @@ pub struct WorkspaceDeviceHintV1 {
     /// whose operator can read what the machine holds.
     #[serde(default)]
     pub cloud: bool,
-    /// Whether the holder has a moderation agent for this workspace: one a
-    /// person who governs it may turn on, which decides reports filed in Chat.
-    #[serde(default)]
-    pub moderates: bool,
     /// The workspace this endpoint serves.
     pub workspace_id: WorkspaceId,
     /// Exact Iroh service address the guest dials.

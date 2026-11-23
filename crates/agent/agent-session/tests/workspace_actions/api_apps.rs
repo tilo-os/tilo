@@ -1,6 +1,6 @@
-//! A developer's key installs a version of an app, and asks the workspace for a
-//! bot, through the action API: `workspace/apps#upload-app-file`,
-//! `workspace/apps#install-app` and `workspace/apps#request-bot` over
+//! A developer's key installs a version of an app through the action API:
+//! `workspace/apps#upload-app-file`,
+//! `workspace/apps#install-app` over
 //! `POST /v1/workspaces/{workspace}/resources/…/actions/…`, the same path
 //! `tilo-app push` takes. The workspace decides like any of its governance, and
 //! every member reads the version it uses from it.
@@ -110,30 +110,6 @@ async fn a_key_installs_an_app_version_and_asks_for_a_bot_through_the_action_api
     assert_eq!(running.len(), 1);
     assert_eq!(running[0].release.version, "2.0.0-dev.1");
     assert_eq!(running[0].release.file.as_deref(), Some(file.as_str()));
-
-    // Asking for a bot from the directory goes the same way: the workspace
-    // keeps the request for its server to start.
-    let asked = client
-        .act(
-            &workspace,
-            "workspace/apps",
-            "request-bot",
-            &json!({
-                "entry": "so.tilo.bots.standup",
-                "version": "1.2.0",
-            }),
-            "ask the workspace's server to start a bot",
-        )
-        .await
-        .unwrap();
-    assert_eq!(asked["status"], "ok", "{asked}");
-    let requests = workspaces.bot_requests(&workspace).await.unwrap();
-    assert!(
-        requests
-            .iter()
-            .any(|request| request.request.entry == "so.tilo.bots.standup"),
-        "{requests:?}"
-    );
 
     // Taking the version back is the same path, and leaves the workspace with
     // no version of the app.

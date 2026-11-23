@@ -287,11 +287,6 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     ) -> Option<tilo_actions::remote::ResourceViewLocator> {
         None
     }
-    /// Whether the bot installed as `installation` in `workspace` may show
-    /// other names on what it writes. Absence refuses.
-    fn bot_personas(&self, _workspace: WorkspaceId, _installation: &str) -> bool {
-        false
-    }
     /// Where the workspaces' Terminal sessions run their shells on this
     /// host ([`WorkspaceShell`]). Absence leaves a session's `run` to the
     /// device running the session.

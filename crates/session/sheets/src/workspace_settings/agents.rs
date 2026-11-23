@@ -1,6 +1,5 @@
 //! The Agents tab: the agents admitted to the workspace, each with what it
-//! may do and the way to review or take that back, and the workspace's
-//! bots apart from them.
+//! may do and the way to review or take that back.
 //!
 //! Reviewing an agent shows, in the tab's place, what it may do app by
 //! app: Allow, Ask first or Deny for reading, changes and outside effects,
@@ -11,7 +10,7 @@ use ui::peniko::Color;
 use ui::tokens::{PresenceHue, Rhythm};
 use ui::widget::{
     Button, ButtonRole, ChipStyle, Column, Container, ControlSize, Dropdown, Element, EmptyState,
-    ListRow, Row, Section, Segment, TextInput, Toggle, ToggleGroup, Tone,
+    ListRow, Row, Section, Segment, TextInput, ToggleGroup, Tone,
 };
 
 use super::general::{button, buttons, caption};
@@ -41,32 +40,6 @@ pub struct Agent {
     /// The model it plans with, as the row's quiet fact; empty for a service,
     /// which has none.
     pub model: String,
-}
-
-/// One of the workspace's bots.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Bot {
-    pub name: String,
-    /// Its entry in the bot directory, for a bot a member asked the
-    /// workspace's host for: what Remove takes back. Otherwise the room's
-    /// operator runs it and it is not removed here.
-    pub entry: Option<String>,
-    /// Whether it runs yet, and from which version.
-    pub detail: String,
-}
-
-/// The moderation agent of the workspace's server, which a person who
-/// governs the workspace turns on or off.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Moderation {
-    pub name: String,
-    /// What it does, in one line.
-    pub detail: String,
-    pub on: bool,
-    /// Whether the person may turn it: only someone who may grant may.
-    pub switchable: bool,
-    /// What the row says of it where it cannot be turned: On or Off.
-    pub state: String,
 }
 
 /// What an agent's answer for one kind of action is, at one app.
@@ -198,27 +171,14 @@ pub struct Agents {
     /// The models a new agent may plan with, from the person's Settings.
     pub models: Vec<ModelChoice>,
     /// Whether the person may make, review the controls of, and retire
-    /// agents and bots.
+    /// agents.
     pub manage: bool,
     pub header: String,
     pub agents: Vec<Agent>,
     pub review_label: String,
     pub retire_label: String,
-    /// What the tab says with neither agents nor bots: title and detail.
+    /// What the tab says with no agents: title and detail.
     pub empty: (String, String),
-    /// Whether the tab shows the workspace's bots: a host that finds no bot to add (a page)
-    /// leaves them to the computers that do.
-    pub offers_bots: bool,
-    pub bots_header: String,
-    /// What a bot is, in one line, so it is no second unexplained concept.
-    pub bots_help: String,
-    pub add_bot: String,
-    pub bot_tag: String,
-    pub remove_bot: String,
-    pub bots: Vec<Bot>,
-    /// The moderation agent, where the workspace's server offers one.
-    pub moderation: Option<Moderation>,
-    pub bots_empty: String,
     /// Why the controls do not take input, for someone who may not use them.
     pub footnote: Option<String>,
     /// The agent being reviewed, shown in the roster's place.
@@ -241,7 +201,7 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
         groups.push(intro(&agents.intro, Icon::Sparkles));
     }
     groups.push(new_agent(agents, parts));
-    if agents.agents.is_empty() && agents.bots.is_empty() && agents.moderation.is_none() {
+    if agents.agents.is_empty() {
         let (title, detail) = &agents.empty;
         groups.push(Box::new(
             EmptyState::new(title.clone())
@@ -250,19 +210,14 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
                 .inline(),
         ));
     } else {
-        if !agents.agents.is_empty() {
-            groups.push(Box::new(Section::titled(
-                agents.header.clone(),
-                agents
-                    .agents
-                    .iter()
-                    .map(|agent| agent_row(agents, agent, parts))
-                    .collect(),
-            )));
-        }
-        if agents.offers_bots {
-            groups.push(bots(agents, parts));
-        }
+        groups.push(Box::new(Section::titled(
+            agents.header.clone(),
+            agents
+                .agents
+                .iter()
+                .map(|agent| agent_row(agents, agent, parts))
+                .collect(),
+        )));
     }
     if let Some(note) = &agents.footnote {
         groups.push(caption(note));
@@ -412,69 +367,6 @@ fn agent_row(agents: &Agents, agent: &Agent, parts: &Parts) -> Element {
         row = row.value(agent.model.clone());
     }
     Box::new(row.trailing(controls))
-}
-
-/// The workspace's bots: what they are in one line, Add a bot, and a row for
-/// each.
-fn bots(agents: &Agents, parts: &Parts) -> Element {
-    let mut items: Vec<Element> = vec![
-        caption(&agents.bots_help),
-        buttons(vec![
-            button(parts, "ws-bots-add", &agents.add_bot, || {
-                WorkspaceSettingsEffect::AddBot
-            })
-            .with_enabled(agents.manage),
-        ]),
-    ];
-    if let Some(moderation) = &agents.moderation {
-        items.push(moderation_row(moderation, parts));
-    }
-    if agents.bots.is_empty() && agents.moderation.is_none() {
-        items.push(caption(&agents.bots_empty));
-    }
-    for bot in &agents.bots {
-        let mut row = ListRow::new(format!("ws-bots-bot-{}", bot.name), bot.name.clone())
-            .avatar(bot.name.clone(), bot.name.clone())
-            .secondary(bot.detail.clone())
-            .tags(&[(agents.bot_tag.as_str(), ChipStyle::Neutral)]);
-        if let Some(entry) = &bot.entry {
-            let bot_entry = entry.clone();
-            row = row.trailing(Box::new(
-                button(
-                    parts,
-                    &format!("ws-bots-remove-{entry}"),
-                    &agents.remove_bot,
-                    move || WorkspaceSettingsEffect::RemoveBot {
-                        bot: bot_entry.clone(),
-                    },
-                )
-                .role(ButtonRole::Destructive)
-                .control_size(ControlSize::Small)
-                .with_enabled(agents.manage),
-            ));
-        }
-        items.push(Box::new(row));
-    }
-    Box::new(Section::titled(agents.bots_header.clone(), items))
-}
-
-/// The moderation agent's row: what it does, and its switch for someone who may turn it, else
-/// whether it is on.
-fn moderation_row(moderation: &Moderation, parts: &Parts) -> Element {
-    let row = ListRow::new("ws-bots-moderation", moderation.name.clone())
-        .icon(Icon::Shield)
-        .secondary(moderation.detail.clone());
-    if !moderation.switchable {
-        return Box::new(row.value(moderation.state.clone()));
-    }
-    let press = parts.clone();
-    // The switch stands where the workspace's grant does; a press asks the shell to change it.
-    let switch = Toggle::from_state(&ui::LocalState::new(moderation.on))
-        .with_accessible_name(&moderation.name)
-        .on_view("ws-bots-moderation-switch", move |on| {
-            press.ask(WorkspaceSettingsEffect::SetModeration { on });
-        });
-    Box::new(row.trailing(Box::new(switch)))
 }
 
 /// One agent's review in the roster's place: Back, then each app's
@@ -796,35 +688,6 @@ pub(super) fn sample() -> Agents {
             "No agents yet".to_owned(),
             "Add an agent to have it work here.".to_owned(),
         ),
-        offers_bots: true,
-        bots_header: "Bots".to_owned(),
-        bots_help: "Bots run small programs here on their own: on a schedule, when something changes, or as a bridge to a service like Discord.".to_owned(),
-        add_bot: "Add a bot".to_owned(),
-        bot_tag: "Bot".to_owned(),
-        remove_bot: "Remove".to_owned(),
-        bots: vec![
-            Bot {
-                name: "Standup".to_owned(),
-                entry: Some("so.tilo.bots.standup".to_owned()),
-                detail: "Running version 1.2".to_owned(),
-            },
-            // One the workspace's host runs from its own choice: it is
-            // named here and not a member's to remove.
-            Bot {
-                name: "Greeter".to_owned(),
-                entry: None,
-                detail: "Running".to_owned(),
-            },
-        ],
-        moderation: Some(Moderation {
-            name: "Moderation".to_owned(),
-            detail: "Answers reports in Chat, and can restrict someone and undo their messages."
-                .to_owned(),
-            on: true,
-            switchable: true,
-            state: "On".to_owned(),
-        }),
-        bots_empty: "No bots yet.".to_owned(),
         footnote: None,
         review: None,
     }

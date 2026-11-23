@@ -647,7 +647,7 @@ async fn a_task_goes_on_when_the_automation_it_waits_for_comes() {
     let automations = WorkspaceEvents::start(
         given.workspaces.clone(),
         None,
-        std::sync::Arc::new(tilo_server::workspace_bots::installed::EventRunner),
+        std::sync::Arc::new(tilo_server::event_runner::EventRunner),
     );
     let set_up = |name: &str, at_ms: i64, instruction: &str| {
         on_automations(

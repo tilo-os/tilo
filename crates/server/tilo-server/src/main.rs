@@ -42,8 +42,6 @@ use tilo_user_identity::RevocationList;
 tilo_agent_session::app_worker!();
 
 #[cfg(feature = "agents")]
-mod persistent_moderation;
-#[cfg(feature = "agents")]
 mod persistent_workspace_cli;
 #[cfg(feature = "web")]
 mod web_cli;
@@ -195,8 +193,6 @@ fn cmd_run(path: &Path, #[cfg(feature = "web")] web: web_cli::WebArgs) -> anyhow
         let server = tilo_server::daemon::Server::start(cfg, identity).await?;
         #[cfg(feature = "web")]
         let _web = web_cli::serve(server, &web, &state_root).await?;
-        #[cfg(feature = "agents")]
-        let public_moderation = persistent_moderation::follow_published(server)?;
         let addr = server.node_addr();
         tracing::info!(?addr, "server online");
         // Best-effort sd_notify (silently no-ops outside systemd).
@@ -204,10 +200,6 @@ fn cmd_run(path: &Path, #[cfg(feature = "web")] web: web_cli::WebArgs) -> anyhow
         // Park until Ctrl-C / SIGTERM.
         wait_for_shutdown().await?;
         let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
-        #[cfg(feature = "agents")]
-        if let Some(moderation) = public_moderation {
-            moderation.abort();
-        }
         #[cfg(feature = "web")]
         hosted.shutdown().await;
         #[cfg(not(feature = "web"))]

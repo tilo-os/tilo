@@ -1,4 +1,4 @@
-//! The desktop's half of a workspace's governance: the name, people, bots and saved shortcuts the
+//! The desktop's half of a workspace's governance: the name, people and saved shortcuts the
 //! shell's workspaces show, projected from the governance this device holds, and the shell the
 //! grants are written into.
 
@@ -98,12 +98,12 @@ pub(crate) fn govern(
 }
 
 impl crate::Shared {
-    /// Who each workspace on the shell has in it, which bots it runs and which shortcuts it saved,
-    /// as the workspace's own governance here says: who it was shared with, in what part, when each
-    /// was admitted, the bots it runs or asks its host for, and its shortcuts as each saver's own
-    /// device wrote them. The shell keeps no roster of its own — its workspaces carry the
-    /// governance's people, bots and shortcuts as a projection, which is what the People, Agents and
-    /// Shortcuts surfaces, the broker, the trigger host and every other reader of them read.
+    /// Who each workspace on the shell has in it and which shortcuts it saved, as the workspace's
+    /// own governance here says: who it was shared with, in what part, when each was admitted, and
+    /// its shortcuts as each saver's own device wrote them. The shell keeps no roster of its own —
+    /// its workspaces carry the governance's people and shortcuts as a projection, which is what
+    /// the People and Shortcuts surfaces, the broker, the trigger host and every other reader of
+    /// them read.
     /// Nothing of a workspace's state reaches this device without the engine admitting it, so a
     /// revision that has not moved has nothing to show. A workspace the shell shows that it did not
     /// show before is projected all the same: what it holds was here before the shell showed it,
@@ -140,18 +140,17 @@ impl crate::Shared {
                     changed |= workspace.named_as(&name);
                 }
                 let Ok(policy) = engine.policy(&workspace.id().to_string()) else {
-                    // A workspace whose governance this device does not hold keeps the people,
-                    // bots and shortcuts the shell has of it.
+                    // A workspace whose governance this device does not hold keeps the people
+                    // and shortcuts the shell has of it.
                     continue;
                 };
                 changed |= membership::project(workspace, &policy);
                 if let Ok(people) = engine.people(&workspace.id().to_string()) {
                     changed |= membership::project_names(workspace, &people);
                 }
-                let Ok((bots, shortcuts, sandbox)) =
+                let Ok((shortcuts, sandbox)) =
                     engine.owner().with_current(workspace.id(), |view| {
                         Ok((
-                            view.peer().governance().workspace_bots(),
                             view.peer().workspace().workspace_shortcuts(),
                             view.peer().governance().governed_sandbox().ok(),
                         ))
@@ -161,10 +160,6 @@ impl crate::Shared {
                 };
                 if let Some(sandbox) = sandbox {
                     changed |= project_sandbox(workspace, sandbox);
-                }
-                if workspace.bots != bots {
-                    workspace.bots = bots;
-                    changed = true;
                 }
                 // A shortcut deleted in the workspace is absent from what it holds, so the shell's
                 // list is the workspace's, never the two merged.

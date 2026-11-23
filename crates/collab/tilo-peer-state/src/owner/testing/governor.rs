@@ -71,7 +71,6 @@ pub fn holding_hint(
         runs_work: false,
         label: String::new(),
         cloud: false,
-        moderates: false,
         workspace_id,
         endpoint_addr,
         user_public_key: cert.user_public_key,

@@ -751,13 +751,10 @@ impl ActionService {
             refusal_of(&error)
         })?;
         // The device is its own actor when its person delegated it: an
-        // agent is the agent, a bot the bot, never the person.
+        // agent is the agent, never the person.
         let caller = match &authority.acting.by {
             Actor::Member(MemberId::Agent(agent)) => {
                 Caller::delegated_agent(agent.clone(), certificate.user_public_key, source)
-            }
-            Actor::Member(MemberId::Bot(installation)) => {
-                Caller::bot(installation.clone(), certificate.user_public_key, source)
             }
             _ => Caller::authenticated(certificate.user_public_key, source),
         };
@@ -1164,7 +1161,7 @@ fn refusal_of(error: &crate::MembershipError) -> tilo_actions::remote::ActionCal
 /// to: that agent, for the person, held to what both the person and the agent's grants allow,
 /// under the id the person's device gives an agent of that client
 /// ([`tilo_actions::remote::device_agent_id`]). The claim only narrows, so the device's word is
-/// taken for it; a caller that is already not the person (an agent's or a bot's own device)
+/// taken for it; a caller that is already not the person (an agent's own device)
 /// hands nothing on.
 fn handed(
     caller: Caller,

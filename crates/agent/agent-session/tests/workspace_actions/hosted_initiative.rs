@@ -182,7 +182,7 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
     let (initiative, _events) = Initiative::start(
         workspaces.clone(),
         Some(actions.clone()),
-        std::sync::Arc::new(tilo_server::workspace_bots::installed::EventRunner),
+        std::sync::Arc::new(tilo_server::event_runner::EventRunner),
     );
 
     // The person writes to their assistant, and the server owes it a turn. The assistant acts as
@@ -348,7 +348,7 @@ async fn the_model_of_a_hosted_turn_proposes_through_the_tools_its_turn_has() {
     let (initiative, events) = Initiative::start(
         workspaces.clone(),
         Some(actions.clone()),
-        std::sync::Arc::new(tilo_server::workspace_bots::installed::EventRunner),
+        std::sync::Arc::new(tilo_server::event_runner::EventRunner),
     );
 
     // The person asks, and the server answers the turn with what its agents are given: the
@@ -451,7 +451,7 @@ async fn what_the_servers_own_services_answer_reaches_the_model_of_a_turn() {
     let (initiative, events) = Initiative::start(
         workspaces.clone(),
         Some(actions.clone()),
-        std::sync::Arc::new(tilo_server::workspace_bots::installed::EventRunner),
+        std::sync::Arc::new(tilo_server::event_runner::EventRunner),
     );
 
     write_to_agent(
@@ -676,7 +676,7 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
     let (initiative, events) = Initiative::start_with(
         workspaces.clone(),
         hands.clone(),
-        std::sync::Arc::new(tilo_server::workspace_bots::installed::EventRunner),
+        std::sync::Arc::new(tilo_server::event_runner::EventRunner),
     );
     let steps = (initiative.before())(hands.clone());
 

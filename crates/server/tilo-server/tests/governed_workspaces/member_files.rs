@@ -11,9 +11,7 @@ use std::time::{Duration, Instant};
 
 use super::*;
 use neighbour_wire::content::{PIECE_PATIENCE_MS, PIECES_PER_ANSWER};
-use tilo_server::workspace_bots::attachments::{
-    AttachmentLimits, Referenced, WorkspaceAttachments,
-};
+use tilo_server::chat_attachments::{AttachmentLimits, Referenced, WorkspaceAttachments};
 
 /// A workspace where Alice's laptop hosts a Lounge, her home device keeps the
 /// members' files, and Bob's phone is in it with `workspace`'s id.

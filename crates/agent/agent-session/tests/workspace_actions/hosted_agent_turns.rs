@@ -1442,7 +1442,7 @@ async fn what_a_persons_events_answer_reaches_the_model_of_a_turn() {
     let events = WorkspaceEvents::start(
         workspaces.clone(),
         None,
-        std::sync::Arc::new(tilo_server::workspace_bots::installed::EventRunner),
+        std::sync::Arc::new(tilo_server::event_runner::EventRunner),
     );
 
     write_to_agent(

@@ -29,7 +29,6 @@ mod acting;
 mod admission;
 pub mod agent_answers;
 pub mod authorship;
-pub mod bot;
 mod decide;
 pub mod describe;
 pub mod earlier;

@@ -69,6 +69,8 @@ pub mod apple_push;
 pub mod browser_actions;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod certification;
+#[cfg(feature = "agents")]
+pub mod chat_attachments;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod content;
 #[cfg(feature = "web")]
@@ -78,6 +80,8 @@ pub mod daemon;
 #[cfg(feature = "web")]
 pub mod entry;
 #[cfg(feature = "agents")]
+pub mod event_runner;
+#[cfg(feature = "agents")]
 pub mod hosted_browser;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod kept_content;
@@ -85,10 +89,6 @@ pub mod kept_content;
 pub mod linux_devices;
 #[cfg(feature = "agents")]
 pub mod machine_agents;
-#[cfg(feature = "agents")]
-pub mod moderation;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod public_avatars;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod servers;
 #[cfg(not(target_arch = "wasm32"))]
@@ -97,8 +97,6 @@ pub mod state_lock;
 pub mod web;
 #[cfg(feature = "web")]
 pub mod web_push;
-#[cfg(feature = "agents")]
-pub mod workspace_bots;
 pub mod workspace_join;
 mod workspace_keys;
 

@@ -530,20 +530,6 @@ workspace-settings-create-agent = Create
 workspace-settings-cancel = Cancel
 workspace-settings-agents-empty-title = No agents yet
 workspace-settings-agents-empty-detail = An agent works alongside you here, with the access you allow it.
-workspace-settings-bots-header = Bots
-workspace-settings-bots-help = Bots run small programs here on their own: on a schedule, when something changes, or as a bridge to a service like Discord.
-workspace-settings-add-bot = Add a bot
-workspace-settings-bots-empty = No bots run in this workspace
-workspace-settings-bot-tag = Bot
-workspace-settings-bot-starting = Starting
-workspace-settings-bot-paused = Paused
-workspace-settings-bot-running = Running
-workspace-settings-bot-version = Version { $version }
-workspace-settings-moderation = Moderation
-workspace-settings-moderation-detail = Answers reports in Chat, and can restrict someone and undo their messages.
-workspace-settings-moderation-on = On
-workspace-settings-moderation-off = Off
-workspace-settings-remove-bot = Remove
 workspace-settings-agents-header = Agents
 workspace-settings-retire-agent = Remove
 workspace-settings-agent-name = Name
@@ -566,7 +552,7 @@ workspace-settings-agent-access-workspaces-effects = Creating, branching, enteri
 workspace-settings-agent-access-members = Members and settings
 # The governance actions of kind outside (tilo_action_policy::roles::governance::ALL) and the
 # verbs the workspace's server publishes beside them.
-workspace-settings-agent-access-members-effects = Inviting and removing people, their roles and bans, and the workspace's settings and bots.
+workspace-settings-agent-access-members-effects = Inviting and removing people, their roles and bans, and the workspace's settings.
 workspace-settings-agent-access-set-here = Set here
 workspace-settings-agent-access-reset = Use defaults
 workspace-settings-agent-access-always = { $count } always allowed
@@ -754,7 +740,6 @@ launchpad-keyboard-hint = Arrow keys move, Enter opens, Super+N shows every app
 
 # Moved from the shell catalogue with the code that uses them
 people-panel-agent-tag = Agent
-people-panel-bot-tag = Bot
 people-panel-viewing = Viewing { $title }
 people-panel-in-app = In { $app }
 # Someone nobody named: the one fact that tells them apart from every other unnamed person here.

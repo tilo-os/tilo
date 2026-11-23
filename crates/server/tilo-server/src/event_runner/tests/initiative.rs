@@ -22,7 +22,7 @@ use tilo_agent_session::bot::host_steps::{
     HostStepError as StepError, HostSteps as Steps, StepCause,
 };
 
-use super::bot_server;
+use super::event_server;
 use super::*;
 use crate::WorkspaceId;
 use tilo_workspace_service::agents::events::{Authority, WorkspaceEvents};
@@ -200,7 +200,7 @@ fn started(workspaces: &Workspaces, assistant: &Arc<Assistant>) -> (Initiative, 
     Initiative::start_with(
         workspaces.clone(),
         assistant.clone(),
-        std::sync::Arc::new(crate::workspace_bots::installed::EventRunner),
+        std::sync::Arc::new(crate::event_runner::EventRunner),
     )
 }
 
@@ -213,7 +213,7 @@ async fn a_look_that_finds_nothing_new_asks_no_model_and_writes_nothing() {
     use crate::workspaces::person_model::scripted::{Reply, ScriptedProvider};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    let server = event_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     // Whatever asks a model on this server is seen here.
@@ -351,7 +351,7 @@ async fn the_look_rounds_own_day_holds_and_only_its_person_raises_it() {
     use crate::workspaces::person_model::{Interaction, ProviderProtocol};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = super::bot_server_taking_part(scratch.path(), &key, &cert).await;
+    let server = super::event_server_taking_part(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let models = ScriptedProvider::answering([Reply::text("Looked.").costing(600_000)]);
@@ -498,7 +498,7 @@ async fn the_look_rounds_own_day_holds_and_only_its_person_raises_it() {
 async fn the_look_round_is_one_of_its_persons_events_with_their_switch_and_rhythm() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    let server = event_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let assistant = Assistant::answering(vec![]);
@@ -523,12 +523,12 @@ async fn the_look_round_is_one_of_its_persons_events_with_their_switch_and_rhyth
             .await
             .is_some()
     );
-    let bot =
+    let run =
         Caller::bot(GREETER.to_owned(), cert.user_public_key, [5; 32]).in_workspace(&workspace);
     for other in [
         as_another(&workspace),
         as_another(&workspace).delegated_to("scout"),
-        bot,
+        run,
     ] {
         for action in [workspace_initiative::READ, workspace_initiative::TURN_ON] {
             let answer = ask(&initiative, &workspace, &other, action, json!({}));
@@ -657,7 +657,7 @@ async fn the_look_round_is_one_of_its_persons_events_with_their_switch_and_rhyth
 async fn the_server_looks_when_the_look_round_fires_and_hands_other_events_on_as_they_are() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    let server = event_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let assistant = Assistant::answering(vec![]);
@@ -844,7 +844,7 @@ async fn what_the_assistant_and_its_server_did_themselves_is_not_news_to_a_look(
 async fn what_a_look_found_and_nothing_took_is_said_and_still_new_at_the_next_look() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    let server = event_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     // Nothing takes the first instruction handed over, as on a server that
@@ -980,7 +980,7 @@ fn refused_for(answer: &Result<Value, ActionCallError>, why: &str) -> bool {
 async fn a_kind_its_person_turned_down_twice_is_not_proposed_a_third_time() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    let server = event_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let assistant = Assistant::answering(vec![]);
@@ -1058,7 +1058,7 @@ async fn a_kind_its_person_turned_down_twice_is_not_proposed_a_third_time() {
 async fn only_its_person_gives_the_nod_and_always_lets_a_kind_start_alone() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    let server = event_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let assistant = Assistant::answering(vec![]);
@@ -1159,7 +1159,7 @@ async fn only_its_person_gives_the_nod_and_always_lets_a_kind_start_alone() {
 async fn a_proposed_event_is_set_up_only_once_its_person_accepted_it_from_what_the_server_kept() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    let server = event_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let assistant = Assistant::answering(vec![]);
@@ -1240,7 +1240,7 @@ async fn a_proposed_event_is_set_up_only_once_its_person_accepted_it_from_what_t
 async fn another_member_reads_and_stops_the_workspaces_look_round() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    let server = event_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let assistant = Assistant::answering(vec![]);

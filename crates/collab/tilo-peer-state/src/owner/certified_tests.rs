@@ -59,7 +59,6 @@ fn actual_redemption_at(
         runs_work: false,
         label: String::new(),
         cloud: false,
-        moderates: false,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),

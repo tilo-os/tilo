@@ -47,17 +47,12 @@ impl PageAgents {
         let review = self.review.borrow().clone();
         self.handle.read(|tree| {
             let names = PeopleNames::of(tree, &self.person, None);
-            sheet::Agents {
-                // A bot is added from the Store on a computer: a page finds none.
-                offers_bots: false,
-                ..self.agents.pane(
-                    tree,
-                    &self.person,
-                    (&names, &Directory::default()),
-                    false,
-                    review.as_deref(),
-                )
-            }
+            self.agents.pane(
+                tree,
+                &self.person,
+                (&names, &Directory::default()),
+                review.as_deref(),
+            )
         })
     }
 
@@ -169,7 +164,6 @@ mod tests {
         let state = WorkspaceSettingsState::default();
         let pane = agents.pane();
         assert!(pane.manage);
-        assert!(!pane.offers_bots, "a page adds no bot");
         assert!(listed(&agents).is_empty());
 
         assert!(agents.ask(

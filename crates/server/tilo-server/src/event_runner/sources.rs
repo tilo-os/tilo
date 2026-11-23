@@ -32,7 +32,7 @@ use tilo_automation::dispatch::{Armed, Event, Firer, Firing, SourceEvent};
 use tilo_automation::source_change::{self, Failure, Found, Seen};
 use tilo_web_search::{FetchError, FetchLimits};
 
-use super::{BotRunner, Ended};
+use super::{Ended, ProgramRunner};
 use crate::workspaces::MailListening;
 
 /// The most one look downloads: a fifth of what an agent's read of a page
@@ -234,7 +234,7 @@ impl Outside {
     }
 }
 
-impl BotRunner {
+impl ProgramRunner {
     /// Have the looks at sources outside reach a server on this machine: a
     /// test's own, which the fetch refuses.
     #[cfg(test)]
@@ -269,7 +269,7 @@ impl BotRunner {
     /// idle wait ends at.
     async fn looked_firings(&mut self, now_ms: i64) -> Vec<Firing> {
         let shortcut = Arc::clone(&self.shortcut);
-        let installation = self.bot.installation.clone();
+        let installation = self.program.id.clone();
         let armed = [Armed {
             firer: Firer::Bot {
                 installation: &installation,
@@ -441,7 +441,7 @@ impl BotRunner {
         {
             Ok(assistant) => assistant,
             Err(error) => {
-                tracing::warn!(installation = %self.bot.installation, %error, "the assistant a program hands its person's mail to could not be read; it looks again");
+                tracing::warn!(installation = %self.program.id, %error, "the assistant a program hands its person's mail to could not be read; it looks again");
                 if let Some(mail) = self.mail.as_mut() {
                     mail.again = true;
                 }
@@ -452,7 +452,7 @@ impl BotRunner {
             return firings;
         };
         let hands_over = assistant.is_some();
-        let installation = self.bot.installation.clone();
+        let installation = self.program.id.clone();
         let armed = [Armed {
             firer: Firer::Bot {
                 installation: &installation,

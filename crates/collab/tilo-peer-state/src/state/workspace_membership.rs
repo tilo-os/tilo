@@ -64,68 +64,6 @@ impl StatePeer {
         }
     }
 
-    /// Apply a bot command (install, renew, uninstall, pause, resume,
-    /// appearance, adopt); `None` for every other command.
-    fn apply_bot_command(
-        &mut self,
-        caller: &DeviceCert,
-        command: &WorkspaceMembershipCommand,
-        key: &dyn DeviceSigner,
-        now: SystemTime,
-    ) -> Option<Result<bool, String>> {
-        match command {
-            WorkspaceMembershipCommand::InstallBot(install) => {
-                Some(self.apply_install_bot(caller, install, key, now))
-            }
-            WorkspaceMembershipCommand::RenewBot(renewal) => {
-                Some(self.apply_renew_bot(caller, renewal, key, now))
-            }
-            WorkspaceMembershipCommand::UninstallBot { installation } => {
-                Some(self.apply_uninstall_bot(caller, installation.as_str(), key, now))
-            }
-            WorkspaceMembershipCommand::PauseBot { installation } => Some(self.apply_bot_flag(
-                caller,
-                installation.as_str(),
-                roles::governance::PAUSE_BOT,
-                |row| !std::mem::replace(&mut row.paused, true),
-                key,
-                now,
-            )),
-            WorkspaceMembershipCommand::ResumeBot { installation } => Some(self.apply_bot_flag(
-                caller,
-                installation.as_str(),
-                roles::governance::RESUME_BOT,
-                |row| std::mem::replace(&mut row.paused, false),
-                key,
-                now,
-            )),
-            WorkspaceMembershipCommand::SetBotAppearance {
-                installation,
-                appearance,
-            } => {
-                let appearance = *appearance;
-                Some(self.apply_bot_flag(
-                    caller,
-                    installation.as_str(),
-                    roles::governance::SET_BOT_APPEARANCE,
-                    move |row| std::mem::replace(&mut row.appearance, appearance) != appearance,
-                    key,
-                    now,
-                ))
-            }
-            WorkspaceMembershipCommand::AdoptBot(adoption) => {
-                Some(self.apply_adopt_bot(caller, adoption, key, now))
-            }
-            WorkspaceMembershipCommand::RequestBot(request) => {
-                Some(self.apply_request_bot(caller, request, key, now))
-            }
-            WorkspaceMembershipCommand::WithdrawBotRequest { entry } => {
-                Some(self.apply_withdraw_bot_request(caller, entry, key, now))
-            }
-            _ => None,
-        }
-    }
-
     /// Make `change` to the workspace's members, signed by `key`, the caller's
     /// own device: what it writes is admitted as far as the caller's grants
     /// reach where they made it (`workspace::membership`), here as on every
@@ -390,9 +328,6 @@ impl PeerWorkspaceMut<'_> {
         self.peer
             .certificate(&caller.device_public_key, now)
             .map_err(|error| error.to_string())?;
-        if let Some(outcome) = self.peer.apply_bot_command(caller, command, key, now) {
-            return outcome;
-        }
         if let Some(outcome) = self.peer.apply_app_command(caller, command, key, now) {
             return outcome;
         }

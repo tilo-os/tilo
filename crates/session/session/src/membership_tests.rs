@@ -4,8 +4,6 @@
 
 tilo_automerge_isolate::test_worker!();
 
-use std::collections::BTreeMap;
-
 use ed25519_dalek::SigningKey;
 use pollster::FutureExt as _;
 use tilo_action_policy::{Change, Grantee, Role, WorkspacePolicy};
@@ -661,10 +659,6 @@ fn a_governed_session() -> GovernedSession {
 
 /// [`a_governed_session`] whose session serves its apps' broker, so this computer's own device
 /// changes the workspace through the session it runs.
-fn a_governed_session_serving() -> GovernedSession {
-    governed_session(Some(private_directory()))
-}
-
 fn governed_session(served: Option<tempfile::TempDir>) -> GovernedSession {
     governed_session_seeded(served, |_, _, _| ())
 }
@@ -1040,60 +1034,6 @@ fn session_keeping(state: &std::path::Path) -> crate::Session {
     session
 }
 
-/// A bot a member asks the workspace's host for is listed in the settings sheet, and Remove
-/// there takes the request back through the workspace: the sheet stops listing it and the host
-/// stops being asked for it.
-#[test]
-fn a_bot_the_sheet_removes_is_no_longer_asked_of_the_host() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = a_governed_session_serving();
-    let entry = "so.tilo.bots.standup";
-    let workspace_id = session.workspace_id;
-    let cert = session.cert.clone();
-    change_governance(
-        session.session(),
-        workspace_id,
-        &cert,
-        &WorkspaceMembershipCommand::RequestBot(
-            tilo_peer_state::workspace_membership::BotRequest {
-                entry: entry.to_owned(),
-                version: "1.2.0".to_owned(),
-                inputs: BTreeMap::default(),
-                program: None,
-            },
-        ),
-    );
-    let mut app = settings_sheet(&mut session);
-    // The bots a member asks for are listed on the Agents tab, beside the agents themselves.
-    app.effect(
-        &tilo_sheets::workspace_settings::WorkspaceSettingsEffect::ShowTab {
-            tab: "agents".to_owned(),
-        },
-    )
-    .expect("show the agents");
-    session.frames();
-    app.settle();
-    the_sheet_lists_bot(&mut session, entry, true);
-    press(&mut app, &format!("ws-bots-remove-{entry}"));
-    session.frames();
-    the_sheet_lists_bot(&mut session, entry, false);
-    let asks = session
-        .session()
-        .shared
-        .engine
-        .as_ref()
-        .expect("this device holds the workspace")
-        .owner()
-        .with_current(workspace_id, |view| {
-            Ok(view.peer().governance().bot_requests())
-        })
-        .expect("the workspace's governance");
-    assert!(
-        asks.is_empty(),
-        "the workspace no longer asks its host for the bot: {asks:?}"
-    );
-}
-
 /// A person another device of the workspace took in is on this session's copy of it, in the part
 /// the workspace gives them, when the session comes back: the People tab shows the workspace's
 /// people, not only those this session put there.
@@ -1390,29 +1330,6 @@ fn change_people(
             change: change.clone(),
         },
     );
-}
-
-/// Run frames until the sheet lists the bot whose entry is `entry` , or stops listing it.
-#[track_caller]
-fn the_sheet_lists_bot(session: &mut GovernedSession, entry: &str, listed: bool) {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let shows = session
-            .settings()
-            .agents
-            .bots
-            .iter()
-            .any(|bot| bot.entry.as_deref() == Some(entry));
-        if shows == listed {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the sheet never {} the bot {entry}",
-            if listed { "listed" } else { "dropped" }
-        );
-        session.frames();
-    }
 }
 
 /// Run frames until the session shows `person` in `expected` 's part of the workspace.

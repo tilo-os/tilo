@@ -176,7 +176,6 @@ async fn a_keeper_names_itself_and_its_rented_machine_in_the_address_it_signs() 
     .unwrap();
     assert_eq!(hint.label, "tilo.sh");
     assert!(hint.cloud, "a rented machine says its provider can read it");
-    assert!(!hint.moderates, "no moderation agent yet");
 
     let listed = workspaces
         .keeping_devices(&created.workspace)
@@ -190,16 +189,12 @@ async fn a_keeper_names_itself_and_its_rented_machine_in_the_address_it_signs() 
     // Its person renames it in their admin workspace: every workspace it
     // holds names it by the new name from then on.
     workspaces.name_holder("Kitchen NAS").await;
-    // And it has a moderation agent for the workspace, for a person who
-    // governs it to turn on.
-    workspaces.offer_moderation(&created.workspace).await;
     let renamed = WorkspaceDeviceHintV1::from_transport_hint(
         &workspaces.hosts(&created.workspace).await.unwrap()[0],
     )
     .unwrap();
     assert_eq!(renamed.label, "Kitchen NAS");
     assert!(renamed.cloud, "a name does not change the machine under it");
-    assert!(renamed.moderates, "it says it has a moderation agent");
     keeper.shutdown().await;
     endpoint.close().await;
 }

@@ -156,7 +156,7 @@ impl Server {
         person: &str,
         (when, only_if): (&str, Option<&str>),
         assistant: &Arc<Assistant>,
-    ) -> installed::BotRunner {
+    ) -> ProgramRunner {
         let definition = Definition {
             id: name.to_owned(),
             name: name.to_owned(),
@@ -169,22 +169,16 @@ impl Server {
         }
         .checked()
         .unwrap();
-        let bot = installed::InstalledBot {
-            installation: definition.id.clone(),
-            entry: "event".into(),
-            name: definition.name.clone(),
+        let program = Program {
+            id: definition.id.clone(),
             program: definition.program_text().unwrap(),
             inputs: definition.inputs(),
-            installed_at_ms: 1,
-            release: String::new(),
         };
-        let runner = installed::BotRunner::new(
+        let runner = ProgramRunner::new(
             self.workspaces.clone(),
             self.workspace.clone(),
             self.workspaces.governor().clone(),
-            ed25519_dalek::SigningKey::from_bytes(&rand::random()),
-            bot,
-            std::collections::BTreeMap::new(),
+            program,
             self.state.join(format!("{name}.json")),
         )
         .unwrap();
@@ -200,14 +194,14 @@ impl Server {
         person: &str,
         when: (&str, Option<&str>),
         assistant: &Arc<Assistant>,
-    ) -> installed::BotRunner {
+    ) -> ProgramRunner {
         let mut runner = self.event(name, person, when, assistant);
         runner.reach_fixtures();
         runner
     }
 
     /// Move the clock `secs` seconds on and let `event` take one pass.
-    async fn after(&self, secs: u64, event: &mut installed::BotRunner) {
+    async fn after(&self, secs: u64, event: &mut ProgramRunner) {
         self.clock.set(
             self.clock
                 .now_ms()

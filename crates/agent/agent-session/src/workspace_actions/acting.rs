@@ -31,8 +31,8 @@ impl Worker {
         claimed
     }
 
-    /// The appearance `request` may show: only a bot whose installation
-    /// allows it, and only on a record's own actions.
+    /// The appearance `request` may show: none, as no caller may show
+    /// another name.
     pub(super) fn admit_appearance(
         &self,
         workspace_id: WorkspaceId,
@@ -46,7 +46,7 @@ impl Worker {
         let admitted = tilo_actions::appearance::admit(
             caller,
             appearance,
-            |installation| link.is_some_and(|link| link.bot_personas(workspace_id, installation)),
+            |_| false,
             |hash| link.and_then(|link| link.content_blob(workspace_id, hash)),
         )?;
         if provider_workspace(&request.target.provider).is_some() {

@@ -13,7 +13,7 @@ use tilo_desktop::authority::WorkspaceAuthority as _;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::people::PeopleNames;
 use tilo_desktop::workspace_settings as domain;
-use tilo_desktop_model::{Layout, UserId, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, UserId, Workspace};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_session_core::desktop::i18n::{t, t_args};
 use tilo_sheets::SheetState as _;
@@ -221,10 +221,6 @@ fn show_picked_tab(state: &sheet::WorkspaceSettingsState, fed: &Feeding<'_>, tab
     show(state, fed, tab, review.as_deref());
 }
 
-/// Where a member finds a bot for the workspace: the Store's bots, whose pages ask the workspace's
-/// host to run one.
-const BOTS_LINK: &str = "tilo-store:bots";
-
 /// Carry out what the person asked for in the sheet.
 pub(crate) fn follow(
     state: Option<&sheet::WorkspaceSettingsState>,
@@ -286,7 +282,6 @@ fn ask(
         | sheet::WorkspaceSettingsEffect::SetDocumentAccess { .. }
         | sheet::WorkspaceSettingsEffect::RemoveMember { .. }
         | sheet::WorkspaceSettingsEffect::Grant { .. }
-        | sheet::WorkspaceSettingsEffect::SetModeration { .. }
         | sheet::WorkspaceSettingsEffect::Revoke { .. } => governance_ask(state, fed, effect),
         sheet::WorkspaceSettingsEffect::ReviewActivity => {
             intent(intents, ChromeIntent::ShowActivity(None));
@@ -315,8 +310,6 @@ fn ask(
             show_review(state, fed, Some(&agent));
         }
         sheet::WorkspaceSettingsEffect::EndReview => show_review(state, fed, None),
-        sheet::WorkspaceSettingsEffect::AddBot => add_bot(fed),
-        sheet::WorkspaceSettingsEffect::RemoveBot { bot } => withdraw_bot(state, fed, &bot),
     }
 }
 
@@ -392,11 +385,6 @@ fn governance_ask(
             };
             domain::apply_grant_draft(ws, actor, &draft)
         }),
-        sheet::WorkspaceSettingsEffect::SetModeration { on } => {
-            govern(state, fed, move |ws, actor| {
-                domain::set_moderation(ws, actor, on)
-            });
-        }
         sheet::WorkspaceSettingsEffect::Revoke { grant } => {
             govern(state, fed, move |ws, actor| {
                 domain::apply_revoke(ws, actor, &grant)
@@ -442,64 +430,6 @@ fn dismiss_notice(state: &sheet::WorkspaceSettingsState, fed: &Feeding<'_>) {
 /// Say what the shell does next, for the sheet.
 fn intent(intents: &RefCell<Vec<ChromeIntent>>, what: ChromeIntent) {
     intents.borrow_mut().push(what);
-}
-
-/// Open the Store's bots, where a member finds one and asks the workspace's host to run it, in the
-/// workspace in front.
-fn add_bot(fed: &Feeding<'_>) {
-    let Some(apps) = fed.search.apps() else {
-        tracing::debug!("this session opens no apps: no bot is found");
-        return;
-    };
-    let Some(workspace) = fed.handle.read(|tree| {
-        tree.active_workspace()
-            .map(|workspace| workspace.id().to_string())
-    }) else {
-        return;
-    };
-    if let Err(error) = apps.open_uri(&workspace, BOTS_LINK) {
-        tracing::warn!(%error, "the bot directory does not open");
-    }
-}
-
-/// Take back the workspace's request for the bot at `entry` , as this device: the workspace's host
-/// stops running it from then on. A bot the workspace's host runs from its own choice is not a
-/// member's to remove, and the sheet offers no control for it.
-fn withdraw_bot(state: &sheet::WorkspaceSettingsState, fed: &Feeding<'_>, entry: &str) {
-    let Some(workspace_id) = fed
-        .handle
-        .read(|tree| tree.active_workspace().map(Workspace::id))
-    else {
-        return;
-    };
-    let Some(engine) = governing(fed, workspace_id) else {
-        tracing::debug!("this device holds no governance to withdraw a bot request in");
-        return;
-    };
-    let entry = entry.to_owned();
-    let withdrawn = crate::landing::off_loop(async move {
-        crate::membership::Membership::of(&engine, workspace_id)
-            .withdraw_bot_request(&entry)
-            .await
-    });
-    let state = state.clone();
-    fed.landings.then(withdrawn, move |withdrawn| {
-        if let Err(reason) = answered(withdrawn) {
-            refused(&state, &reason);
-        }
-    });
-}
-
-/// This device's engine, when it holds the governance of `workspace`.
-fn governing(fed: &Feeding<'_>, workspace: WorkspaceId) -> Option<std::sync::Arc<Engine>> {
-    fed.engine
-        .filter(|engine| engine.policy(&workspace.to_string()).is_ok())
-        .cloned()
-}
-
-/// What the workspace answered a change, once it landed.
-fn answered(landed: Option<Result<(), String>>) -> Result<(), String> {
-    landed.unwrap_or_else(|| Err("the change was given up before the workspace answered".into()))
 }
 
 /// Say over the sheet why the workspace refused a change it answered after the pass that asked:
@@ -815,14 +745,7 @@ fn settings(
         }),
         // The workspace's agents are Chat's record, opened when the tab is first shown.
         agents: if tab == sheet::Tab::Agents {
-            // The moderation agent shows where a server keeping the workspace has one.
-            let moderation = workspace.zip(engine).is_some_and(|(workspace, engine)| {
-                engine
-                    .holders(&workspace.id().to_string())
-                    .iter()
-                    .any(|holder| holder.moderates)
-            });
-            agents.pane(tree, person, (&names, apps), moderation, review)
+            agents.pane(tree, person, (&names, apps), review)
         } else {
             sheet::Agents::default()
         },

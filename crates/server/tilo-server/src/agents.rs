@@ -1781,14 +1781,6 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         })
     }
 
-    fn bot_personas(&self, workspace: WorkspaceId, installation: &str) -> bool {
-        self.workspaces.as_ref().is_some_and(|workspaces| {
-            self.host_device
-                .runtime
-                .block_on(workspaces.bot_personas(workspace, installation))
-        })
-    }
-
     /// What the workspace's server keeps ([`crate::workspaces::Workspaces::kept_content`]):
     /// a bridged person's avatar its bots fetched, a file or a feedback
     /// report's picture a member posted. A server keeping no content for the
@@ -1880,7 +1872,7 @@ impl WorkspaceActionsServer {
                 tilo_workspace_service::agents::initiative::Initiative::start(
                     workspaces,
                     Some(self.actions.clone()),
-                    std::sync::Arc::new(crate::workspace_bots::installed::EventRunner),
+                    std::sync::Arc::new(crate::event_runner::EventRunner),
                 )
             })
             .unzip();

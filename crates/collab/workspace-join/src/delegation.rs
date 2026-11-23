@@ -1,13 +1,9 @@
 //! Delegations: a person's root-signed statement that one of their devices
-//! acts for them as an agent or as an installed bot, how it is shown, where
-//! it may act and until when.
+//! acts for them as an agent, how it is shown, where it may act and until
+//! when.
 //!
-//! Agents and bots hold the same kind of delegation, so one verification
-//! rule serves both: the device's certificate root must have signed it,
-//! it must name that device and the workspace, and it must be inside its
-//! window. A bot's additionally names exactly one workspace and lasts at
-//! most 30 days, because the workspace it was installed in is all it may
-//! touch and a bot nobody renews should stop on its own.
+//! The device's certificate root must have signed it, it must name that
+//! device and the workspace, and it must be inside its window.
 
 use collab_types::WorkspaceId;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -19,8 +15,6 @@ use tilo_user_identity::canonical::signing_digest;
 pub const MAX_DELEGATE_TEXT_BYTES: usize = 64;
 pub const MAX_DELEGATED_WORKSPACES: usize = 16;
 pub const MAX_DELEGATED_APPS: usize = 64;
-/// Longest window of a bot delegation.
-pub const MAX_BOT_DELEGATION_NS: u64 = 30 * 24 * 3600 * 1_000_000_000;
 
 /// The signing domain: the root signs the BLAKE3 digest of this tag followed
 /// by the canonical encoding of the unsigned fields, so a delegation's
@@ -37,11 +31,10 @@ pub enum Delegate {
         /// Stable id, 1..=[`MAX_DELEGATE_TEXT_BYTES`] bytes.
         agent_id: String,
     },
-    /// An installed bot.
-    Bot {
-        /// Installation id: a lowercase hyphenated UUID.
-        installation: String,
-    },
+    /// What an installed bot's delegation named, kept in its place so the
+    /// delegations after it read as they were written. Bots are gone: such a
+    /// delegation never verifies.
+    RetiredBot { installation: String },
 }
 
 impl Delegate {
@@ -50,16 +43,7 @@ impl Delegate {
     pub fn agent_id(&self) -> Option<&str> {
         match self {
             Self::Agent { agent_id } => Some(agent_id),
-            Self::Bot { .. } => None,
-        }
-    }
-
-    /// The installation id, when this names a bot.
-    #[must_use]
-    pub fn installation(&self) -> Option<&str> {
-        match self {
-            Self::Bot { installation } => Some(installation),
-            Self::Agent { .. } => None,
+            Self::RetiredBot { .. } => None,
         }
     }
 }
@@ -67,8 +51,7 @@ impl Delegate {
 /// Where a delegate may act.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelegateScope {
-    /// Workspaces it may act in, 1..=[`MAX_DELEGATED_WORKSPACES`]; exactly one
-    /// for a bot.
+    /// Workspaces it may act in, 1..=[`MAX_DELEGATED_WORKSPACES`].
     #[serde(with = "crate::workspace_text::list")]
     pub workspaces: Vec<WorkspaceId>,
     /// App ids; empty means every app in those workspaces.
@@ -79,7 +62,7 @@ pub struct DelegateScope {
 /// `user_public_key` as `delegate`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Delegation {
-    /// The delegating person's root: an agent's person, a bot's installer.
+    /// The delegating person's root.
     pub user_public_key: [u8; 32],
     /// The delegate's certified device key.
     pub device_public_key: [u8; 32],
@@ -195,12 +178,10 @@ impl Delegation {
             Delegate::Agent { agent_id } if !text(agent_id) => {
                 return Err(DelegationError::Invalid("agent id"));
             }
-            Delegate::Bot { installation }
-                if !collab_types::is_bot_installation_id(installation) =>
-            {
-                return Err(DelegationError::Invalid("installation id"));
+            Delegate::Agent { .. } => {}
+            Delegate::RetiredBot { .. } => {
+                return Err(DelegationError::Invalid("a bot's delegation is retired"));
             }
-            _ => {}
         }
         if self.scope.workspaces.is_empty()
             || self.scope.workspaces.len() > MAX_DELEGATED_WORKSPACES
@@ -218,18 +199,6 @@ impl Delegation {
         }
         if self.expires_at_ns <= self.issued_at_ns {
             return Err(DelegationError::Invalid("validity window"));
-        }
-        if let Delegate::Bot { .. } = self.delegate {
-            if self.scope.workspaces.len() != 1 {
-                return Err(DelegationError::Invalid(
-                    "a bot delegation names exactly one workspace",
-                ));
-            }
-            if self.expires_at_ns.saturating_sub(self.issued_at_ns) > MAX_BOT_DELEGATION_NS {
-                return Err(DelegationError::Invalid(
-                    "a bot delegation lasts at most 30 days",
-                ));
-            }
         }
         Ok(())
     }
@@ -356,7 +325,6 @@ mod tests {
 
     const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const OTHER_WORKSPACE: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-    const INSTALLATION: &str = "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6";
     const DAY_NS: u64 = 24 * 3600 * 1_000_000_000;
 
     fn root() -> SigningKey {
@@ -373,14 +341,18 @@ mod tests {
         }
     }
 
-    fn bot(workspaces: &[&str], issued: u64, expires: u64) -> Result<Delegation, DelegationError> {
+    fn scribe(
+        workspaces: &[&str],
+        issued: u64,
+        expires: u64,
+    ) -> Result<Delegation, DelegationError> {
         Delegation::sign(
             &root(),
             [9; 32],
-            Delegate::Bot {
-                installation: INSTALLATION.into(),
+            Delegate::Agent {
+                agent_id: "scribe".into(),
             },
-            "Discord Bridge",
+            "Scribe",
             [88, 101, 242],
             scope(workspaces),
             issued,
@@ -409,7 +381,6 @@ mod tests {
             .verify(&root().verifying_key().to_bytes(), 15)
             .unwrap();
         assert_eq!(decoded.delegate.agent_id(), Some("scribe"));
-        assert_eq!(decoded.delegate.installation(), None);
         assert!(decoded.permits_workspace(WorkspaceId::parse(OTHER_WORKSPACE).unwrap()));
         assert_eq!(
             decoded.verify(&root().verifying_key().to_bytes(), 20),
@@ -419,36 +390,6 @@ mod tests {
             decoded.verify(&[2; 32], 15),
             Err(DelegationError::WrongUser)
         );
-    }
-
-    #[test]
-    fn a_bot_delegation_names_one_workspace_for_at_most_thirty_days() {
-        bot(&[WORKSPACE], DAY_NS, DAY_NS + MAX_BOT_DELEGATION_NS).unwrap();
-        assert_eq!(
-            bot(&[WORKSPACE], DAY_NS, DAY_NS + MAX_BOT_DELEGATION_NS + 1),
-            Err(DelegationError::Invalid(
-                "a bot delegation lasts at most 30 days"
-            ))
-        );
-        assert_eq!(
-            bot(&[WORKSPACE, OTHER_WORKSPACE], DAY_NS, 2 * DAY_NS),
-            Err(DelegationError::Invalid(
-                "a bot delegation names exactly one workspace"
-            ))
-        );
-        let not_uuid = Delegation::sign(
-            &root(),
-            [9; 32],
-            Delegate::Bot {
-                installation: "Discord-Bridge".into(),
-            },
-            "Discord Bridge",
-            [0; 3],
-            scope(&[WORKSPACE]),
-            1,
-            2,
-        );
-        assert_eq!(not_uuid, Err(DelegationError::Invalid("installation id")));
     }
 
     #[test]
@@ -501,10 +442,39 @@ mod tests {
     }
 
     #[test]
+    fn a_retired_bots_delegation_is_never_signed_nor_verified() {
+        let retired = || Delegate::RetiredBot {
+            installation: "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into(),
+        };
+        let refused = Err(DelegationError::Invalid("a bot's delegation is retired"));
+        let signed = Delegation::sign(
+            &root(),
+            [9; 32],
+            retired(),
+            "Bridge",
+            [0; 3],
+            scope(&[WORKSPACE]),
+            1,
+            2,
+        );
+        assert_eq!(signed, refused);
+        // Bytes signed before bots were retired read back, and do not verify.
+        let mut kept = scribe(&[WORKSPACE], 1, 2).unwrap();
+        kept.delegate = retired();
+        kept.signature = root().sign_digest(&kept.digest().unwrap()).unwrap();
+        let read = Delegation::decode(&kept.encode()).unwrap();
+        assert_eq!(read.delegate.agent_id(), None);
+        assert_eq!(
+            read.verify(&root().verifying_key().to_bytes(), 1),
+            refused.map(drop)
+        );
+    }
+
+    #[test]
     fn changing_the_delegate_breaks_the_signature() {
-        let mut delegation = bot(&[WORKSPACE], 1, 2).unwrap();
-        delegation.delegate = Delegate::Bot {
-            installation: "7f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into(),
+        let mut delegation = scribe(&[WORKSPACE], 1, 2).unwrap();
+        delegation.delegate = Delegate::Agent {
+            agent_id: "editor".into(),
         };
         assert_eq!(
             delegation.verify(&root().verifying_key().to_bytes(), 1),
@@ -515,10 +485,10 @@ mod tests {
     #[test]
     fn a_proposal_admits_only_what_it_proposed() {
         let proposal = DelegateProposal {
-            delegate: Delegate::Bot {
-                installation: INSTALLATION.into(),
+            delegate: Delegate::Agent {
+                agent_id: "scribe".into(),
             },
-            label: "Discord Bridge".into(),
+            label: "Scribe".into(),
             color: [88, 101, 242],
             scope: scope(&[WORKSPACE]),
             expires_at_ns: 10 * DAY_NS,
@@ -527,10 +497,10 @@ mod tests {
         proposal.admits(&signed).unwrap();
         let mut other = proposal.clone();
         other.delegate = Delegate::Agent {
-            agent_id: "scribe".into(),
+            agent_id: "editor".into(),
         };
         assert!(other.admits(&signed).is_err());
-        let later = bot(&[WORKSPACE], DAY_NS, 11 * DAY_NS).unwrap();
+        let later = scribe(&[WORKSPACE], DAY_NS, 11 * DAY_NS).unwrap();
         assert!(proposal.admits(&later).is_err());
     }
 }

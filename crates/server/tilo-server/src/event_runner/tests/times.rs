@@ -40,7 +40,7 @@ fn moved(series: &str, day: &str, start: &str) -> String {
 
 /// A person's own program: a quarter of an hour before each entry they filed
 /// under Board, hand their assistant an instruction.
-fn before_board_entries() -> installed::InstalledBot {
+fn before_board_entries() -> Program {
     own_program(
         tilo_automation::TriggerSpec::ResourceTime {
             kind: PERSON_CALENDARS.into(),
@@ -79,7 +79,7 @@ pub(super) async fn person_with_an_assistant(
     scratch: &std::path::Path,
 ) -> (Workspaces, String, DeviceCert, impl Sized) {
     let (key, cert) = governor();
-    let holder = super::bot_server_taking_part(scratch, &key, &cert).await;
+    let holder = super::event_server_taking_part(scratch, &key, &cert).await;
     let workspaces = holder.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let owner = hex::encode(cert.user_public_key);
@@ -95,9 +95,9 @@ async fn waiting(
     assistant: &Arc<Assistant>,
     clock: &Arc<tilo_clock::ManualClock>,
     state: std::path::PathBuf,
-) -> installed::BotRunner {
+) -> ProgramRunner {
     let mut program = carried_out_for(
-        member_runner(workspaces, workspace, cert, before_board_entries(), state).await,
+        program_runner(workspaces, workspace, cert, before_board_entries(), state).await,
         hex::encode(cert.user_public_key),
         assistant,
     );
@@ -106,7 +106,7 @@ async fn waiting(
 }
 
 /// Set the clock to `when` and let the program look once.
-async fn pass(runner: &mut installed::BotRunner, clock: &tilo_clock::ManualClock, when: &str) {
+async fn pass(runner: &mut ProgramRunner, clock: &tilo_clock::ManualClock, when: &str) {
     clock.set(at(when));
     runner.step().await.unwrap();
 }

@@ -1,6 +1,6 @@
 //! Exact-source discovery using the governor's already-owned channel state.
 use super::readings::Governance;
-use super::{GovernedWorkspace, StatePeer, SystemTime, Workspaces};
+use super::{GovernedWorkspace, SystemTime, Workspaces};
 use tilo_action_policy::MemberAccess;
 use tilo_actions::remote::Caller;
 use tilo_agent_session::workspace_actions::{ViewDocument, ViewReadPolicy};
@@ -96,31 +96,7 @@ impl GovernedWorkspace {
     }
 }
 
-/// Whether the bot installed as `installation` may show other names on what
-/// it writes in `peer`'s workspace at `now`: its governed installation row is
-/// live, acting, and allows `Personas`. Any other device, an uninstalled or
-/// moved-away row, or a bot installed to post as itself is refused.
-pub fn bot_shows_personas(peer: &StatePeer, installation: &str, now: SystemTime) -> bool {
-    peer.governance()
-        .installation(installation, now)
-        .is_some_and(|bot| {
-            bot.acting
-                && bot.withdrawn_at_ns.is_none()
-                && bot.installation.appearance == tilo_peer_state::AppearancePolicy::Personas
-        })
-}
-
 impl Workspaces {
-    /// [`bot_shows_personas`] in the workspace of `workspace` governed here;
-    /// false for a workspace not governed here.
-    pub async fn bot_personas(&self, workspace: WorkspaceId, installation: &str) -> bool {
-        self.governing(workspace, |runtime| {
-            bot_shows_personas(runtime.peer, installation, tilo_clock::wall())
-        })
-        .await
-        .unwrap_or(false)
-    }
-
     /// Whether the workspace `workspace` governs here admits `caller`: false
     /// for a workspace it does not govern, and for anyone its governance does
     /// not certify a device for.

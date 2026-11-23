@@ -17,7 +17,7 @@ use tilo_automation::TriggerSpec;
 use tilo_automation::dispatch::{Armed, Event, Firer, Firing, TimeEvent};
 use tilo_automation::resource_time::{self, Answered, Held};
 
-use super::BotRunner;
+use super::ProgramRunner;
 
 /// Whether `trigger` waits on a time a resource holds: nothing a member
 /// writes in the workspace wakes it.
@@ -55,7 +55,7 @@ fn calendar_time(field: &str, occurrence: Value) -> Option<Held> {
     })
 }
 
-impl BotRunner {
+impl ProgramRunner {
     /// The firings of the program's triggers at a time a resource holds
     /// whose moment has come by `now_ms`, each time answered once, and the
     /// next moment to wait for. What was answered is kept with the
@@ -65,7 +65,7 @@ impl BotRunner {
     /// read are looked at again on the next pass, and nothing is answered
     /// or forgotten for them meanwhile.
     pub(super) async fn time_firings(&mut self, now_ms: i64) -> Vec<Firing> {
-        let installation = self.bot.installation.clone();
+        let installation = self.program.id.clone();
         let shortcut = Arc::clone(&self.shortcut);
         let armed = [Armed {
             firer: Firer::Bot {

@@ -19,7 +19,7 @@ path = "src/lib.rs"
 test-support = ["tilo-workspace-service/test-support"]
 # The workspaces' records and roster agents on the host (`--workspace-documents`):
 # tilo-agent-session, which links every web app, as the app-serving protocol.
-agents = ["web", "tilo-workspace-service/agents", "tilo-workspace-service/files", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-workspace-emoji", "dep:collaboration", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-web-search", "dep:feed-rs", "dep:tilo-sheets"]
+agents = ["web", "tilo-workspace-service/agents", "tilo-workspace-service/files", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-workspace-emoji", "dep:collaboration", "dep:chat", "dep:tilo-automation", "dep:ush", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-web-search", "dep:feed-rs", "dep:tilo-sheets"]
 web = ["tilo-workspace-service/device-keys", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac", "dep:ring"]
 
 [[bin]]
@@ -191,23 +191,17 @@ tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 # The shared question sheet's words and pictures: a page draws an agent's
 # question in the same words a native session's sheet does.
 tilo-sheets = { path = "../../session/sheets", optional = true }
-# The persistent workspace's moderation agent and its model provider.
-tilo-moderation = { path = "../../collab/moderation", features = ["host"], optional = true }
 # A persistent public workspace's chat opens with the operator's channels.
 chat = { path = "../../../apps/chat", optional = true, default-features = false }
-discord = { path = "../../../apps/discord", optional = true }
-tilo-connector = { path = "../../integrations/connector", optional = true }
 tilo-automation = { path = "../../collab/automation", optional = true }
 # A source outside that an event waits on is read through the one fetch an
 # agent's own read of a page goes through, and a feed's entries by the parser
 # the Feeds app reads them with.
 tilo-web-search = { path = "../../integrations/tilo-web-search", optional = true }
 feed-rs = { version = "2.4", optional = true }
-tilo-bot-directory = { path = "../../integrations/bot-directory", optional = true }
-app-cli = { path = "../../os/app-cli", optional = true }
 # The admin workspace's record of the person's servers, and its actions.
 tilo-resource = { path = "../../sdk/tilo-resource" }
-# The workspace's emoji, which a bot's program may be told of.
+# The workspace's emoji, which an event's program may be told of.
 tilo-workspace-emoji = { path = "../../platform/tilo-workspace-emoji", optional = true }
 # Who the agents a workspace's host runs are (the workspace's record of its agents), and the
 # tools an agent on a machine of the workspace acts through (the MCP server's agent surface).

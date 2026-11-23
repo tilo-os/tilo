@@ -15,7 +15,7 @@
     reason = "a workspace and its root are the two things this module is about"
 )]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,13 +30,10 @@ use tilo_server_protocol::operator::{self, OperatorCommand, OperatorEvent, hex32
 use tilo_server_protocol::workspaces::Role;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-use crate::web_cli::{WorkspaceArgs, enrol, operator_lines, start_server_lending, web_config};
+use crate::web_cli::{WorkspaceArgs, enrol, operator_lines, start_server, web_config};
 use tilo_server::entry;
 
-mod bots;
-mod discord_sign_in;
 mod http;
-use bots::{offer_sign_in, start_bots};
 
 /// The secret store this host keeps workspace roots in.
 pub(crate) const SECRET_APP: &str = "so.tilo.server";
@@ -223,75 +220,8 @@ pub struct PersistentArgs {
     /// An app authored into the workspace at its first start; repeatable.
     #[arg(long = "seed-app", value_name = "APP_ID")]
     pub seed_apps: Vec<String>,
-    /// What to install at the workspace's first start, approved by the workspace's
-    /// root, with its inputs (`<source> key=value …`); repeatable. The source
-    /// is a bot directory entry, or a program file on this host, which the
-    /// workspace runs under the program's own name.
-    #[arg(long = "bot", value_name = "SPEC")]
-    pub bot_specs: Vec<String>,
-    /// The Discord bot token, mounted from the operator's encrypted
-    /// secrets; kept where the Discord connector's worker asks for it.
-    #[arg(long = "discord-token-file", value_name = "PATH")]
-    pub discord_token_file: Option<PathBuf>,
-    /// The Discord application members sign in with to link their
-    /// account (OAuth 2, `identify`); with the redirect and consent page
-    /// below, the workspace offers "Connect Discord". The workspace's host keeps the
-    /// client secret and trades the code itself.
-    #[arg(long = "discord-client-id", value_name = "ID", requires_all = ["discord_redirect_url", "discord_authorize_url", "discord_client_secret_file"])]
-    pub discord_client_id: Option<String>,
-    /// Where Discord sends the browser back: the workspace host's callback,
-    /// which `--http` serves.
-    #[arg(long = "discord-redirect-url", value_name = "URL")]
-    pub discord_redirect_url: Option<String>,
-    /// Discord's consent page.
-    #[arg(long = "discord-authorize-url", value_name = "URL")]
-    pub discord_authorize_url: Option<String>,
-    /// The application's client secret, mounted from the operator's encrypted
-    /// secrets. The callback trades the code for the account with it, and it
-    /// never leaves this host.
-    #[arg(
-        long = "discord-client-secret-file",
-        value_name = "PATH",
-        requires = "discord_client_id"
-    )]
-    pub discord_client_secret_file: Option<PathBuf>,
-    /// Where Discord's API is (`/api/v10` is appended): Discord's own host
-    /// unless set. The Discord bridge's worker is pointed at it too, so a
-    /// test server serves both the sign-in and the bridge.
-    #[arg(long = "discord-api-base", value_name = "URL")]
-    pub discord_api_base: Option<String>,
-    /// The worker binary of a connector (`APP=PATH`), where it is not
-    /// `<name>-worker` beside this binary; repeatable.
-    #[arg(long = "connector-worker", value_name = "APP=PATH")]
-    pub connector_workers: Vec<String>,
-    /// The model API key the workspace's moderation agent asks with, mounted
-    /// from the operator's encrypted secrets; kept in this host's secret
-    /// store. Without it the workspace has no moderation agent and reports wait
-    /// for its human Moderators. The same model looks over the reports its
-    /// members write in the feedback channel before they send them, asked
-    /// through the workspace, so their pages never hold the key.
-    #[arg(long = "moderation-key-file", value_name = "PATH")]
-    pub moderation_key_file: Option<PathBuf>,
-    /// The model the moderation agent asks.
-    #[arg(
-        long = "moderation-model",
-        value_name = "MODEL",
-        requires = "moderation_key_file"
-    )]
-    pub moderation_model: Option<String>,
-    /// Where avatars of authors a bot bridged out are published.
-    #[arg(
-        long = "public-avatars",
-        value_name = "DIR",
-        requires = "public_avatars_url"
-    )]
-    pub public_avatars: Option<PathBuf>,
-    /// The public URL `--public-avatars` is served at.
-    #[arg(long = "public-avatars-url", value_name = "URL")]
-    pub public_avatars_url: Option<String>,
-    /// Serve the deployment's plain-HTTP routes at this address: the health
-    /// page (`/mode`), the published avatars (`/avatars/<name>`) and Discord's
-    /// sign-in callback (`/discord/callback`), as an ingress publishes them.
+    /// Serve the deployment's plain-HTTP route at this address: the health
+    /// page (`/mode`), as an ingress publishes it.
     /// An address ending in `:0` takes a port the kernel picks, which the
     /// workspace announces once it serves.
     #[arg(long = "http", value_name = "ADDR", requires = "persistent")]
@@ -428,42 +358,6 @@ pub(crate) fn newly_removed(
                 .filter(|root| member.removed && seen.insert(*root))
         })
         .collect()
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct BotSpec {
-    /// The directory entry it is installed from, or the program file.
-    pub entry: String,
-    pub inputs: BTreeMap<String, String>,
-}
-
-pub(crate) fn parse_bot_spec(text: &str) -> anyhow::Result<BotSpec> {
-    let mut words = text.split_whitespace();
-    let entry = words
-        .next()
-        .context("a bot spec names a directory entry or a program file")?
-        .to_owned();
-    let mut inputs = BTreeMap::new();
-    for word in words {
-        let (key, value) = word
-            .split_once('=')
-            .with_context(|| format!("bot input {word:?} is not key=value"))?;
-        ensure!(
-            inputs.insert(key.to_owned(), value.to_owned()).is_none(),
-            "bot input {key} is given twice"
-        );
-    }
-    Ok(BotSpec { entry, inputs })
-}
-
-/// A bot input as the program takes it: a JSON object or list as written
-/// (`context={"link":"…"}`), anything else as text, so an id that looks
-/// like a number stays the text it is.
-fn input_value(text: &str) -> serde_json::Value {
-    serde_json::from_str::<serde_json::Value>(text)
-        .ok()
-        .filter(|value| value.is_object() || value.is_array())
-        .unwrap_or_else(|| serde_json::Value::String(text.to_owned()))
 }
 
 /// `--default-role`: `viewer`, `commenter` or `editor`. A moderator is chosen,
@@ -995,14 +889,12 @@ pub(crate) async fn seed_apps(
 /// when it keeps none.
 fn attachment_limits(
     persistent: &PersistentArgs,
-) -> Option<tilo_server::workspace_bots::attachments::AttachmentLimits> {
+) -> Option<tilo_server::chat_attachments::AttachmentLimits> {
     const MIB: u64 = 1024 * 1024;
-    (persistent.attachment_room_mib > 0).then(|| {
-        tilo_server::workspace_bots::attachments::AttachmentLimits {
-            file_bytes: persistent.attachment_max_mib.saturating_mul(MIB),
-            member_bytes: persistent.attachment_member_mib.saturating_mul(MIB),
-            workspace_bytes: persistent.attachment_room_mib.saturating_mul(MIB),
-        }
+    (persistent.attachment_room_mib > 0).then(|| tilo_server::chat_attachments::AttachmentLimits {
+        file_bytes: persistent.attachment_max_mib.saturating_mul(MIB),
+        member_bytes: persistent.attachment_member_mib.saturating_mul(MIB),
+        workspace_bytes: persistent.attachment_room_mib.saturating_mul(MIB),
     })
 }
 
@@ -1115,70 +1007,6 @@ async fn refound_records(
         );
         let note = "refounded".to_owned();
         mark_settled(workspaces, workspace, cert, "refounded", entry, &note).await?;
-    }
-    Ok(())
-}
-
-/// A workspace the operator lists publicly, and governs, gets its moderation
-/// bot's grant once, when the operator's setup first brings it up: the
-/// operator, as its own person, grants the reading and undoable changes in
-/// Chat the bot moderates by. The decision is noted in the workspace's own
-/// settlement document, so a restart neither grants it again nor takes back a
-/// person's later choice: after that, the switch in the workspace's settings
-/// is the only way to change it. A workspace the operator does not list, or
-/// whose applications another of its holders sets up
-/// (`Workspaces::governs_applications`), is left alone: the grant is part of
-/// that setup, and a copy just handed over may not read what that holder
-/// settled yet, nor be named a holder that writes it.
-pub(crate) async fn settle_moderation(
-    workspaces: &Workspaces,
-    workspace: &str,
-    persistent: &PersistentArgs,
-) -> anyhow::Result<()> {
-    if persistent.listing_description.is_none()
-        || !workspaces
-            .governs_applications(workspace)
-            .await
-            .map_err(|error| anyhow::anyhow!("{error}"))?
-    {
-        return Ok(());
-    }
-    let grant = tilo_action_policy::bot::MODERATION_GRANT;
-    if !settled_in(workspaces, workspace, "moderation")
-        .await?
-        .contains(grant)
-    {
-        if !tilo_server::workspace_bots::enabled(workspaces, workspace)
-            .await
-            .map_err(|error| anyhow::anyhow!("read the workspace's moderation grant: {error}"))?
-        {
-            tilo_server::workspace_bots::enable(workspaces, workspace)
-                .await
-                .map_err(|error| {
-                    anyhow::anyhow!("enable the workspace's moderation bot: {error}")
-                })?;
-        }
-        mark_settled(
-            workspaces,
-            workspace,
-            workspaces.serving_certificate(),
-            "moderation",
-            grant,
-            "granted at start",
-        )
-        .await?;
-    }
-    // Said wherever the grant is present, so a fresh stack's check reads the
-    // same line after a restart; a workspace whose person turned it off says
-    // nothing.
-    if tilo_server::workspace_bots::enabled(workspaces, workspace)
-        .await
-        .map_err(|error| anyhow::anyhow!("read the workspace's moderation grant: {error}"))?
-    {
-        tracing::info!(
-            workspace,
-            "the moderation bot is enabled for this workspace"
-        );
     }
     Ok(())
 }
@@ -1348,21 +1176,6 @@ pub(crate) async fn run(
         .workspace_id_file
         .clone()
         .context("--workspace-id-file")?;
-    let bots = persistent
-        .bot_specs
-        .iter()
-        .map(|spec| parse_bot_spec(spec))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let workers = persistent
-        .connector_workers
-        .iter()
-        .map(|named| {
-            let (app, path) = named
-                .split_once('=')
-                .with_context(|| format!("--connector-worker {named:?} is not APP=PATH"))?;
-            Ok((app.to_owned(), PathBuf::from(path)))
-        })
-        .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
     let state = args.state.clone();
     std::fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
     // The operator's kill switch: the mode file in the state directory wins over the environment,
@@ -1381,36 +1194,6 @@ pub(crate) async fn run(
     let listen = args.web.web.context("a workspace needs --web")?;
     let mut operator = operator_lines()?;
     let store = tilo_secrets::SecretStore::for_app(SECRET_APP);
-    let sign_in = discord_sign_in::SignIn::from_args(&persistent)?;
-    let moderation = persistent
-        .moderation_key_file
-        .as_deref()
-        .map(|key_file| {
-            crate::persistent_moderation::load(
-                &store,
-                key_file,
-                persistent.moderation_model.as_deref(),
-            )
-        })
-        .transpose()?;
-    if let Some(agent) = &moderation {
-        tracing::info!(model = agent.model(), "moderation agent loaded");
-    }
-    // The same model looks over the reports the workspace's members write
-    // before they send them, asked through the workspace on their behalf.
-    let feedback_reviewer = moderation
-        .is_some()
-        .then(|| {
-            crate::persistent_moderation::WorkspaceReviewer::from_store(
-                &store,
-                persistent.moderation_model.as_deref(),
-            )
-        })
-        .transpose()?
-        .map(|reviewer| {
-            std::sync::Arc::new(reviewer)
-                as std::sync::Arc<dyn tilo_agent_session::FeedbackReviewer>
-        });
     let host = host_key(&state)?;
     let server_cert = enrol(
         &root,
@@ -1448,14 +1231,7 @@ pub(crate) async fn run(
         tilo_server::hosted_browser::keep_stand_in(&config.state_root, &root)
             .map_err(anyhow::Error::msg)?;
     }
-    let hosted = start_server_lending(
-        config,
-        identity,
-        &args.web,
-        &state,
-        crate::web_cli::Lent { feedback_reviewer },
-    )
-    .await?;
+    let hosted = start_server(config, identity, &args.web, &state).await?;
     // Everything a start settles and begins, in one place: a step that fails
     // stops the server it was started on before the error goes up (the `match`
     // below).
@@ -1559,7 +1335,6 @@ pub(crate) async fn run(
         }
         settle_strips(&workspaces, &workspace, &server_cert, &persistent.strips).await?;
         ensure_guest_policy(&workspaces, &workspace, &server_cert).await?;
-        settle_moderation(&workspaces, &workspace, &persistent).await?;
         // Members inviting, or not, never lets in anyone the entry does not.
         settled(
             &workspace,
@@ -1628,85 +1403,16 @@ pub(crate) async fn run(
             }
             .to_line()
         );
-        // The moderation agent runs as the workspace's bot for as long as the workspace
-        // does, and looks at reports while a person who governs it has it turned on;
-        // it answers reports left open while it was off or the workspace was down first.
-        if moderation.is_some() {
-            workspaces.offer_moderation(&workspace).await;
-        }
-        let moderator = moderation.map(|agent| {
-            tokio::spawn(
-                tilo_server::workspace_bots::ModerationBot::new(
-                    workspaces.clone(),
-                    workspace.clone(),
-                    server_cert.clone(),
-                    root.clone(),
-                    agent,
-                )
-                .run(),
-            )
-        });
-        // The connectors bots listen to, the operator's and those a member
-        // sets up for a bot they ask for, share one host and keep what they
-        // fetch in the workspace's content.
-        let public = match (&persistent.public_avatars, &persistent.public_avatars_url) {
-            (Some(dir), Some(url)) => Some(
-                tilo_server::public_avatars::PublicAvatars::new(dir.clone(), url)
-                    .with_context(|| format!("prepare {}", dir.display()))?,
-            ),
-            _ => None,
-        };
-        let connector_host = tilo_server::workspace_bots::installed::ConnectorHost::new(
-            workers,
-            // The server's content, where it keeps each workspace's files, uploads
-            // and what its apps made: one store per workspace for everything this
-            // host keeps.
-            hosted.server.content(),
-            public,
-            tilo_server::workspace_bots::discord::Served {
-                avatars_url: persistent.public_avatars_url.clone(),
-                web_entry: args.web.web_entry.clone(),
-                origin: Some(web.origin.clone()),
-                discord_api_base: persistent.discord_api_base.clone(),
-            },
-        );
-        let (mut runners, discord) = start_bots(
-            &workspaces,
-            &workspace,
-            &server_cert,
-            &root,
-            &bots,
-            &connector_host,
-            &persistent,
-            &state,
-        )
-        .await?;
-        if let Some(discord) = &discord {
-            offer_sign_in(discord, &persistent).await;
-        }
-        // The bridge carries the workspace's calls to Discord's voice channels
-        // as the host's own device in the workspace's live session.
-        runners.extend(discord.as_ref().and_then(|discord| {
-            let relay = hosted.server.live_relay()?;
-            Some(tokio::spawn(
-                tilo_server::workspace_bots::discord_voice::VoiceBridge::new(
-                    workspaces.clone(),
-                    workspace.clone(),
-                    server_cert.clone(),
-                    relay,
-                    Arc::clone(discord),
-                )
-                .run(),
-            ))
-        }));
-        // The files members post in the workspace's Chat, kept in the same store
-        // as what the bots fetch, so they stay once their poster left.
-        let posted = connector_host
-            .store(&workspace)
+        // The files members post in the workspace's Chat, kept in the
+        // workspace's content, so they stay once their poster left.
+        let posted = hosted
+            .server
+            .content()
+            .get(&workspace)
             .map_err(|error| anyhow::anyhow!("the workspace's content: {error}"))?;
         let attachments = attachment_limits(&persistent).map(|limits| {
             tokio::spawn(
-                tilo_server::workspace_bots::attachments::WorkspaceAttachments::new(
+                tilo_server::chat_attachments::WorkspaceAttachments::new(
                     workspaces.clone(),
                     workspace.clone(),
                     server_cert.device_public_key,
@@ -1717,23 +1423,6 @@ pub(crate) async fn run(
                 .run(),
             )
         });
-        // Bots the workspaces' members ask for, beside the operator's: one
-        // follower for every workspace this host governs, the Lounge and the
-        // workspaces its people keep of their own, as each of them is made.
-        let requested = tokio::spawn(
-            tilo_server::workspace_bots::requested::Following {
-                workspaces: workspaces.clone(),
-                host: server_cert.clone(),
-                root: root.clone(),
-                state: state.clone(),
-                operator: BTreeMap::from([(
-                    workspace.clone(),
-                    bots.iter().map(|spec| spec.entry.clone()).collect(),
-                )]),
-                connectors: Some(connector_host),
-            }
-            .run(),
-        );
         let context = PersistentWorkspace {
             workspaces,
             workspace,
@@ -1744,12 +1433,7 @@ pub(crate) async fn run(
         // address they bound is announced then, so a deployment can reach a
         // port it let the kernel pick.
         if let Some(management) = &management {
-            management.serve(http::Serving {
-                avatars: persistent.public_avatars.clone(),
-                sign_in,
-                web_entry: args.web.web_entry.clone(),
-                discord: discord.clone(),
-            });
+            management.serve(args.web.web_entry.clone());
             println!(
                 "{}",
                 OperatorEvent::DeploymentRoutes {
@@ -1790,10 +1474,7 @@ pub(crate) async fn run(
             None => None,
         };
         Ok::<Serving, anyhow::Error>(Serving {
-            moderator,
-            runners,
             attachments,
-            requested,
             context,
             management,
             wait_list: page,
@@ -1811,10 +1492,7 @@ pub(crate) async fn run(
         }
     };
     let Serving {
-        moderator,
-        runners,
         attachments,
-        requested,
         context,
         management: _management,
         wait_list,
@@ -1841,13 +1519,8 @@ pub(crate) async fn run(
     };
     // Its agents' turns end first, while everything they work with is still up.
     hosted.finish_turns().await;
-    for runner in moderator
-        .into_iter()
-        .chain(runners)
-        .chain(attachments)
-        .chain(std::iter::once(requested))
-    {
-        runner.abort();
+    if let Some(attachments) = attachments {
+        attachments.abort();
     }
     drop(context);
     hosted.shutdown().await;
@@ -1856,14 +1529,8 @@ pub(crate) async fn run(
 
 /// What a started workspace keeps running until its operator stops it.
 struct Serving {
-    /// The moderation bot, when the operator gave it a model.
-    moderator: Option<tokio::task::JoinHandle<()>>,
-    /// The bots' tasks.
-    runners: Vec<tokio::task::JoinHandle<()>>,
-    /// The task posting the files members keep in the workspace's Chat.
+    /// The task keeping the files members post in the workspace's Chat.
     attachments: Option<tokio::task::JoinHandle<()>>,
-    /// The task following the bots the governed workspaces' members ask for.
-    requested: tokio::task::JoinHandle<()>,
     /// The workspace the operator's loop serves.
     context: PersistentWorkspace,
     /// The deployment's own routes, which stop when dropped.
@@ -2121,7 +1788,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_operators_arguments_name_the_workspace_its_quota_and_its_bots;
+        fn the_operators_arguments_name_the_workspace_and_its_quota;
 
         phase the_workspace_is_named_after_its_directory_capitalized;
         {
@@ -2175,25 +1842,6 @@ mod tests {
             );
         }
 
-        phase a_bot_spec_names_an_entry_and_its_inputs;
-        {
-            let spec = parse_bot_spec("so.tilo.bots.discord-bridge guild=123 mode=live").unwrap();
-            assert_eq!(spec.entry, "so.tilo.bots.discord-bridge");
-            assert_eq!(spec.inputs.get("guild").map(String::as_str), Some("123"));
-            assert_eq!(input_value("123"), serde_json::json!("123"));
-            assert_eq!(
-                input_value(r#"{"link":"https://tilo.so"}"#),
-                serde_json::json!({"link": "https://tilo.so"})
-            );
-            assert!(parse_bot_spec("so.tilo.bots.discord-bridge guild").is_err());
-            assert!(parse_bot_spec("").is_err());
-            assert!(
-                parse_bot_spec("so.tilo.bots.x a=1 a=2")
-                    .unwrap_err()
-                    .to_string()
-                    .contains("twice")
-            );
-        }
     }
 
     #[test]
@@ -2523,81 +2171,6 @@ mod tests {
         )
     }
 
-    /// A workspace the operator lists publicly gets its moderation bot's grant
-    /// at start, and a restart changes nothing; one it does not list is left
-    /// alone.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_public_workspace_is_granted_its_moderation_bot_at_start() {
-        let dir = tempfile::tempdir().unwrap();
-        let (server, workspaces, serving, workspace) = plaza(dir.path()).await;
-        let listed = PersistentArgs {
-            listing_description: Some("A plaza".into()),
-            ..PersistentArgs::default()
-        };
-        settle_moderation(&workspaces, &workspace, &listed)
-            .await
-            .unwrap();
-        assert!(
-            tilo_server::workspace_bots::enabled(&workspaces, &workspace)
-                .await
-                .unwrap(),
-            "the Lounge the operator lists has its moderation bot"
-        );
-        let generation = workspaces.summary(&workspace).await.unwrap().generation;
-        settle_moderation(&workspaces, &workspace, &listed)
-            .await
-            .unwrap();
-        assert_eq!(
-            workspaces.summary(&workspace).await.unwrap().generation,
-            generation,
-            "a restart changes nothing"
-        );
-        let quiet = workspaces.create("Quiet").await.unwrap().workspace;
-        settle_moderation(&workspaces, &quiet, &PersistentArgs::default())
-            .await
-            .unwrap();
-        assert!(
-            !tilo_server::workspace_bots::enabled(&workspaces, &quiet)
-                .await
-                .unwrap(),
-            "an unlisted workspace is not moderated"
-        );
-        // A person who governs turns it off; the next start leaves it off,
-        // because the operator's setup had its one say already.
-        workspaces
-            .remove_workspace_grants(
-                &workspace,
-                &serving,
-                [8; 32],
-                vec![tilo_action_policy::GrantId::new(
-                    tilo_action_policy::bot::MODERATION_GRANT,
-                )],
-            )
-            .await
-            .expect("the person takes the grant back");
-        assert!(
-            !tilo_server::workspace_bots::enabled(&workspaces, &workspace)
-                .await
-                .unwrap()
-        );
-        let off = workspaces.summary(&workspace).await.unwrap().generation;
-        settle_moderation(&workspaces, &workspace, &listed)
-            .await
-            .unwrap();
-        assert!(
-            !tilo_server::workspace_bots::enabled(&workspaces, &workspace)
-                .await
-                .unwrap(),
-            "a restart does not turn the person's off back on"
-        );
-        assert_eq!(
-            workspaces.summary(&workspace).await.unwrap().generation,
-            off,
-            "and writes nothing"
-        );
-        server.shutdown().await;
-    }
-
     /// An owner the operator declares gets in through an entry that takes
     /// people by invitation, and governs the workspace: the declaration is the
     /// workspace's own governance, so it is there before their device arrives
@@ -2796,22 +2369,14 @@ mod tests {
 
     /// A workspace the deployment handed to its owner is still its host's to
     /// settle: after a restart the host, the administrator it stays, writes
-    /// the guests' Deny, members inviting (taken back and given again) and
-    /// the moderation bot's grant as every start does, while the workspace
-    /// stays its owner's, whom a deployment naming someone else does not
-    /// replace.
+    /// the guests' Deny and members inviting (taken back and given again) as
+    /// every start does, while the workspace stays its owner's, whom a
+    /// deployment naming someone else does not replace.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_handed_workspace_takes_its_hosts_settings_after_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let (server, workspaces, server_cert, workspace) = plaza(dir.path()).await;
-        let listed = PersistentArgs {
-            listing_description: Some("A plaza".into()),
-            ..PersistentArgs::default()
-        };
         ensure_guest_policy(&workspaces, &workspace, &server_cert)
-            .await
-            .unwrap();
-        settle_moderation(&workspaces, &workspace, &listed)
             .await
             .unwrap();
         settle_member_invites(&workspaces, &workspace, &server_cert, false)
@@ -2832,9 +2397,6 @@ mod tests {
         );
         for step in 0..2 {
             ensure_guest_policy(&workspaces, &workspace, &server_cert)
-                .await
-                .unwrap_or_else(|error| panic!("start {step}: {error:#}"));
-            settle_moderation(&workspaces, &workspace, &listed)
                 .await
                 .unwrap_or_else(|error| panic!("start {step}: {error:#}"));
             settle_member_invites(&workspaces, &workspace, &server_cert, false)
@@ -2859,77 +2421,9 @@ mod tests {
             );
         }
         assert!(
-            tilo_server::workspace_bots::enabled(&workspaces, &workspace)
-                .await
-                .unwrap()
-        );
-        assert!(
             workspaces.is_owner(&workspace, owner).await,
             "the workspace stays its owner's"
         );
-        server.shutdown().await;
-    }
-
-    /// A server a workspace was handed to holds it and its own person
-    /// administers it, while the device the workspace was made on stays the
-    /// one its governance names to make its base: the grant is part of that
-    /// holder's setup, so the copy enables no moderation bot and notes no
-    /// grant as settled, and its start is not refused for a write it may not
-    /// make.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_holder_that_sets_up_no_applications_leaves_the_moderation_grant_alone() {
-        let made_on = tempfile::tempdir().unwrap();
-        let handed_to = tempfile::tempdir().unwrap();
-        let (server, workspaces, _server_cert, workspace) = plaza(made_on.path()).await;
-        let (copy, copied, copy_cert) = host(handed_to.path()).await;
-        workspaces
-            .attach_server(
-                &workspace,
-                copy_cert.device_public_key,
-                copy.node_addr(),
-                tilo_peer_state::CopyRole::KeyHolder,
-            )
-            .await
-            .unwrap();
-        tilo_test_env::within("the handed copy holds the workspace", async {
-            while !copied.governs_workspace(&workspace).await {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await;
-        assert!(
-            copied.governs_workspace(&workspace).await,
-            "the copy's person administers the workspace they were handed"
-        );
-        assert!(
-            workspaces.governs_applications(&workspace).await.unwrap(),
-            "the device the workspace was made on sets up its applications"
-        );
-        assert!(
-            !copied.governs_applications(&workspace).await.unwrap(),
-            "the copy's person administers it, but another holder sets up its applications"
-        );
-        let listed = PersistentArgs {
-            listing_description: Some("A plaza".into()),
-            ..PersistentArgs::default()
-        };
-        settle_moderation(&copied, &workspace, &listed)
-            .await
-            .expect("the copy leaves the grant to the holder that sets the applications up");
-        assert!(
-            !tilo_server::workspace_bots::enabled(&copied, &workspace)
-                .await
-                .unwrap(),
-            "the copy enables no moderation bot of its own"
-        );
-        assert!(
-            !settled_in(&copied, &workspace, "moderation")
-                .await
-                .unwrap()
-                .contains(tilo_action_policy::bot::MODERATION_GRANT),
-            "and notes no grant as settled"
-        );
-        copy.shutdown().await;
         server.shutdown().await;
     }
 

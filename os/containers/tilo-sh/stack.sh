@@ -226,7 +226,7 @@ and lays out nothing (see docs/testing-tilo-sh.md):
                     mail-stand-in for TILO_SH_MAIL_STAND_IN=1 and
                     fake-model-providers for TILO_SH_FAKE_MODELS=1)
   TILO_SH_LOUNGE    the server's laid-out context, as lounge-context.sh makes it
-                    (bin/, bots/, fonts/, surfaces/, entrypoint.sh)
+                    (bin/, fonts/, surfaces/, entrypoint.sh)
   TILO_SH_SITE      the web entry's laid-out site, as web-entry-context.sh makes
                     it (site/, install.sh): the web builds no bundle then
   TILO_SH_CLI_DIR   a built release of the tilo command (cli-x86_64), which
@@ -418,11 +418,9 @@ use_mode() {
   mode=$1
   if [[ $mode == native || $mode == remote ]]; then
     secrets_path=$state/secrets
-    bots_path=$native/lounge/bots
     api_state=$state/api
   else
     secrets_path=/run/secrets
-    bots_path=/usr/local/share/tilo/bots
     api_state=/state
   fi
 }
@@ -745,19 +743,7 @@ server_env() {
       "TILO_WORKSPACES_OPENAI_API=http://127.0.0.1:$models_port/openai/v1"
     )
   fi
-  # Not here: the moderation and summary model keys (no model is asked
-  # locally), and the Discord bridge's real server unless --discord.
-  if [[ -n ${discord_api:-} ]]; then
-    env+=(
-      TILO_WORKSPACES_DISCORD_CLIENT_ID=1559266815148953650
-      "TILO_WORKSPACES_DISCORD_CLIENT_SECRET_FILE=$secrets_path/discord-client-secret"
-      "TILO_WORKSPACES_DISCORD_AUTHORIZE_URL=$discord_api/oauth2/authorize"
-      "TILO_WORKSPACES_DISCORD_API_BASE=$discord_api"
-      # Production's bridge, on the fake's one server (fake-discord's
-      # GUILD), its bot token the fake's (TOKEN) in the secrets.
-      "TILO_WORKSPACES_BOTS=$bots_path/discord-bridge.json guild=1000 server=Tilo mirror-channels=yes"
-    )
-  fi
+  # Not here: the summary model key (no model is asked locally).
   # TILO_SH_TERMINAL_ON_MACHINE=1: with no VM host, the workspaces' Terminal
   # (a person's and their agents') starts its programs on this machine, as the
   # stack's own user, with the PATH and toolchain of whoever brought it up:
@@ -1634,7 +1620,7 @@ made_from() {
 }
 
 # The server's files as the image's context lays them out (lounge-context.sh,
-# the image's own build step): the programs, the bots, the app surfaces from
+# the image's own build step): the programs, the app surfaces from
 # the apps' history and the product font catalog (lounge-fonts.sh, made again when its sources change).
 # TILO_SH_LOUNGE names a context laid out already, which is what a check hands
 # the stack: laying it out reads the apps' history and the catalog, seconds a

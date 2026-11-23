@@ -46,8 +46,6 @@ pub enum ServiceOperation {
     /// Make a member an administrator, an Editor with the owner's
     /// governance. Only the owner makes or unmakes administrators.
     SetAdministrator,
-    /// Install or renew a bot in a workspace.
-    GovernBot,
     /// Author or prepare a workspace's applications in exact governor ownership.
     AuthorApplications,
     /// Drive the host's personal compute over its control stream.
@@ -143,7 +141,6 @@ impl ServiceOperation {
             Self::PreAdmit => "invitation.pre-admit",
             Self::PutWorkspaceGrants => "workspace.grants.put",
             Self::SetAdministrator => "member.administrator.set",
-            Self::GovernBot => "bot.govern",
             Self::AuthorApplications => "application.author",
             Self::ComputeControl => "compute.control",
             Self::HostWorkspace => "workspace.host",
@@ -241,7 +238,6 @@ impl ServiceOperation {
             | Self::PreAdmit
             | Self::PutWorkspaceGrants
             | Self::SetAdministrator
-            | Self::GovernBot
             | Self::AuthorApplications
             | Self::ComputeControl
             | Self::HostWorkspace
@@ -264,14 +260,13 @@ mod tests {
     use super::ServiceOperation;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
-    const ALL: [ServiceOperation; 26] = [
+    const ALL: [ServiceOperation; 25] = [
         ServiceOperation::CreateWorkspace,
         ServiceOperation::ListWorkspaces,
         ServiceOperation::EnterWorkspace,
         ServiceOperation::PreAdmit,
         ServiceOperation::PutWorkspaceGrants,
         ServiceOperation::SetAdministrator,
-        ServiceOperation::GovernBot,
         ServiceOperation::AuthorApplications,
         ServiceOperation::ComputeControl,
         ServiceOperation::HostWorkspace,

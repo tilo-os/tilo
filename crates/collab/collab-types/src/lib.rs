@@ -159,12 +159,6 @@ pub use stamp::Stamp;
 pub use tilo_action_policy::{MemberId, PersonId, PersonIdError};
 pub use workspace_id::{is_person_workspace, person_workspace, person_workspace_of};
 
-/// Whether an installation can be named in a bot's signed delegation.
-#[must_use]
-pub fn is_bot_installation_id(value: &str) -> bool {
-    value == tilo_action_policy::bot::MODERATION
-        || uuid::Uuid::parse_str(value).is_ok_and(|id| id.hyphenated().to_string() == value)
-}
 pub use validator::{
     DEFAULT_WORKSPACE, InboundState, ValidationError, document_node, validate_admitted_inbound_op,
     validate_replayed_inbound_op,

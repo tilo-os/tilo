@@ -208,20 +208,6 @@ impl<'a> Membership<'a> {
         .await
     }
 
-    /// Take back the workspace's request for the bot whose directory entry is
-    /// `entry`, as this device: the workspace's host stops running it from
-    /// then on.
-    ///
-    /// # Errors
-    /// The workspace refused the request — this device's person does not
-    /// administer it — or this device could not publish it.
-    pub async fn withdraw_bot_request(&self, entry: &str) -> Result<(), String> {
-        self.command(WorkspaceMembershipCommand::WithdrawBotRequest {
-            entry: entry.to_owned(),
-        })
-        .await
-    }
-
     /// Share `node` — one record of the workspace, or one item of it — with its members as `access`
     /// gives, under the share id `share`, as this device: the grants of it that the workspace
     /// admits, bounded by what this person holds at the node.

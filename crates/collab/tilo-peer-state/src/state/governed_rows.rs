@@ -61,8 +61,8 @@ pub(crate) struct GovernedIdentity {
     pub(crate) revocations: Vec<tilo_user_identity::RevocationEntry>,
     pub(crate) admission: Option<RedemptionReceipt>,
     pub(crate) admissions: Vec<RedemptionReceipt>,
-    /// Present when the device is a delegate of its person: an agent, or an
-    /// installed bot ([`super::delegates`]). Absent from every other identity's
+    /// Present when the device is a delegate of its person, an agent
+    /// ([`super::delegates`]). Absent from every other identity's
     /// bytes.
     pub(crate) delegate: Option<GovernedDelegateRow>,
     /// The workspace delegations older builds wrote in this row: it let
@@ -209,15 +209,9 @@ impl Default for GovernedIdentity {
 
 impl GovernedIdentity {
     pub(crate) fn has_admission(&self) -> bool {
-        // The governor admits a bot device itself, so its installation is
-        // its admission; an agent row is not, which keeps other people's
-        // agents out.
-        self.admission.is_some()
-            || !self.admissions.is_empty()
-            || self
-                .delegate
-                .as_ref()
-                .is_some_and(|row| row.installation.is_some())
+        // An agent row is no admission, which keeps other people's agents
+        // out.
+        self.admission.is_some() || !self.admissions.is_empty()
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

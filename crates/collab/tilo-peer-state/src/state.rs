@@ -10,6 +10,7 @@ use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::{
     ArtifactKind, DocumentMutation, Ed25519PublicKey, InboundState, OpKind, Person, Role, SignedOp,
 };
+#[cfg(test)]
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -48,12 +49,9 @@ mod app_versions;
 mod calls;
 pub use app_versions::InstalledApp;
 pub use calls::CallGate;
-mod bot_members;
 pub(crate) mod certificate_renewal;
-mod delegates;
-pub(crate) use bot_members::requests_in as bot_requests_in;
-pub use bot_members::{InstalledBot, RequestedBot};
 mod copies;
+mod delegates;
 mod device_rows;
 pub use copies::{
     COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus, HELD_COPIES_KEY, HeldCopy, HolderCopy,
@@ -537,10 +535,6 @@ pub(crate) fn governed_map(doc: &AutoCommit, key: &str) -> Result<automerge::Obj
 #[cfg(test)]
 #[path = "state/delivery_admission_resource_tests.rs"]
 mod delivery_admission_resource_tests;
-
-#[cfg(test)]
-#[path = "state/bot_members_tests.rs"]
-pub(crate) mod bot_members_tests;
 
 #[cfg(test)]
 #[path = "state/administrators_tests.rs"]

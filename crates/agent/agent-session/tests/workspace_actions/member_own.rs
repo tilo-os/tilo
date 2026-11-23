@@ -220,8 +220,8 @@ async fn a_member_links_their_discord_account_through_the_host() {
     hosted.server.shutdown().await;
 }
 
-/// What the workspace's governor commits itself (connecting the bridge, a bot
-/// completing a link a member started) reaches the workspace actions the host
+/// What the workspace's governor commits itself (connecting a Discord server
+/// to the workspace) reaches the workspace actions the host
 /// runs, which read the workspace through a session of the host's own device.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_hosts_workspace_actions_read_what_the_governor_commits() {
@@ -257,20 +257,40 @@ async fn the_hosts_workspace_actions_read_what_the_governor_commits() {
     );
     assert_eq!(reading["connected"], false, "{reading}");
 
-    tilo_server::workspace_bots::discord::connect(
-        workspaces,
-        &workspace.workspace,
-        &host.cert,
-        &tilo_server::workspace_bots::discord::DiscordLink {
-            guild_id: "1".into(),
-            only_channel: None,
-            name: "Tilo".into(),
-            mirror_channels: false,
-            map_roles: false,
-        },
-    )
-    .await
-    .unwrap();
+    // The governor connects the record to a server as its owner, a commit of
+    // the host's own.
+    let owner_key = hex::encode(host.cert.user_public_key);
+    workspaces
+        .author_application(
+            &workspace.workspace,
+            &host.cert,
+            &crate::common::catalogue(),
+            "so.tilo.discord",
+            "",
+            |doc| {
+                let mut replica = ui::tilo_resource::Replica::<discord::guild::Guild>::from_doc(
+                    std::mem::take(doc),
+                )
+                .as_invoker(&owner_key)
+                .in_app("so.tilo.discord", "Discord");
+                let applied = replica
+                    .apply_confirmed(discord::guild::Guild::CONNECT.with(
+                        discord::guild::guild::Connect {
+                            guild_id: "1".into(),
+                            name: "Tilo".into(),
+                            only_channel: None,
+                            mirror_channels: Some(false),
+                            map_roles: Some(false),
+                        },
+                    ))
+                    .map(drop)
+                    .map_err(|error| error.to_string());
+                std::mem::swap(doc, replica.doc_mut());
+                applied
+            },
+        )
+        .await
+        .unwrap();
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let reading = value(

@@ -60,7 +60,6 @@ tilo-headless-schema = { path = "../../crates/dev/headless-schema" }
 # `tilo-app push`: the workspace's governance actions reached through its
 # action API, as a key of the developer's, as `tilo` reaches it.
 tilo-api = { path = "../../crates/server/tilo-api" }
-tilo-automation = { path = "../../crates/collab/automation" }
 tokio = { workspace = true, features = ["rt"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
