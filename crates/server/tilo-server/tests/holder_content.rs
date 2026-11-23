@@ -386,3 +386,95 @@ async fn a_holder_says_how_much_content_it_lacks_until_it_keeps_it() {
         "the added holder serves what its record names"
     );
 }
+
+/// How many pictures the workspace handed over names that no device keeps:
+/// their addresses go to the server taking it, at about seventy bytes each,
+/// far more than one action frame carries
+/// ([`tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES`]).
+const NOWHERE_KEPT: usize = 60_000;
+
+/// How many of the pictures one write of the record names: a write carries
+/// at most 64 KiB of changes.
+const PER_WRITE: usize = 400;
+
+/// A workspace whose record names far more content than one frame's worth of
+/// addresses, none of which the server handing it over keeps: its files
+/// live on a member's device, as a laptop's do once it signed in. The server
+/// added takes the workspace all the same: it is not held to what the
+/// handing server keeps none of, so the hand-over finishes once the changes
+/// are across, and the content follows from the members that keep it. The
+/// server added says where its store stands two cursors at a time, in pages
+/// as it does for a workspace of many records and authors. Had the list or the
+/// cursors not arrived whole, the server would still lack what they leave
+/// out, and the hand-over would fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_workspace_whose_records_name_more_content_than_a_frame_lists_is_handed_over() {
+    let alice = TestUser::fresh("Alice");
+    let first = alice.enrol("first-server", DeviceCapabilities::member());
+    let second = alice.enrol("second-server", DeviceCapabilities::member());
+    let first_state = tempfile::tempdir().unwrap();
+    let second_state = tempfile::tempdir().unwrap();
+    let a = server(
+        &alice,
+        &first,
+        first_state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let b = server(
+        &alice,
+        &second,
+        second_state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    b.workspaces().unwrap().answer_cursors_in_pages_of(2);
+    let workspace = a
+        .workspaces()
+        .expect("the server holds workspaces")
+        .create_workspace("Lounge", None)
+        .await
+        .unwrap();
+
+    // Pictures no server keeps, each named by reference alone.
+    for write in 0..NOWHERE_KEPT / PER_WRITE {
+        a.workspaces()
+            .unwrap()
+            .author_workspace_document(&workspace.workspace, &first.cert, (PHOTOS, ""), |doc| {
+                for picture in 0..PER_WRITE {
+                    let named = write * PER_WRITE + picture;
+                    let hash = blake3::hash(format!("picture {named}").as_bytes()).to_hex();
+                    doc.put(
+                        ROOT,
+                        format!("photo-{named}"),
+                        format!("blake3:{hash}:4096"),
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    let hint = a
+        .workspaces()
+        .unwrap()
+        .attach_server(
+            &workspace.workspace,
+            second.device_pubkey(),
+            b.node_addr(),
+            CopyRole::KeyHolder,
+        )
+        .await
+        .expect("the server added takes the workspace although no server keeps its pictures");
+    assert!(
+        a.workspaces()
+            .unwrap()
+            .hosts(&workspace.workspace)
+            .await
+            .unwrap()
+            .contains(&hint),
+        "the workspace names the server added among those keeping it"
+    );
+}

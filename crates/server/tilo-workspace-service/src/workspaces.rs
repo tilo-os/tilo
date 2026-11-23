@@ -1000,6 +1000,14 @@ struct WorkspacesInner {
     /// ([`Workspaces::speak_no_catch_up`]).
     #[cfg(any(test, feature = "test-support"))]
     speaks_no_catch_up: std::sync::atomic::AtomicBool,
+    /// The content each device handing a workspace over keeps none of
+    /// itself, as it handed the list in parts ([`Workspaces::keep_absent`]).
+    handed_absent: hosts::HandedAbsent,
+    /// How many cursors an answer of where this device's store stands
+    /// carries, when a test sets it ([`Workspaces::answer_cursors_in_pages_of`]);
+    /// `0` keeps the build's own.
+    #[cfg(any(test, feature = "test-support"))]
+    cursors_per_answer: std::sync::atomic::AtomicUsize,
     /// Whether this server is about to restart and hands its work to the
     /// other holders: it takes and renews no lease ([`Workspaces::drain`]).
     draining: std::sync::atomic::AtomicBool,
@@ -1365,6 +1373,9 @@ impl Workspaces {
                 link_heard_capacity: std::sync::atomic::AtomicUsize::new(0),
                 #[cfg(any(test, feature = "test-support"))]
                 speaks_no_catch_up: std::sync::atomic::AtomicBool::new(false),
+                handed_absent: hosts::HandedAbsent::default(),
+                #[cfg(any(test, feature = "test-support"))]
+                cursors_per_answer: std::sync::atomic::AtomicUsize::new(0),
                 draining: std::sync::atomic::AtomicBool::new(false),
                 store,
                 direct,
