@@ -33,9 +33,11 @@ export {
   KeyExpired,
   KeyRefused,
   KeyRevoked,
-  Refused,
   ProtocolError,
+  Refused,
   SurfaceChanged,
+  Unreachable,
+  UnsupportedVersion,
 } from "./errors.ts";
 export {
   type Action,

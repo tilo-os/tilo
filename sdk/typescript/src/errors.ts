@@ -2,6 +2,7 @@
 
 /** The code of a call made through generated types for another surface. */
 export const SURFACE_CHANGED = "surface_changed";
+export const API_VERSION_UNSUPPORTED = "api_version_unsupported";
 export const KEY_REVOKED = "key_revoked";
 export const KEY_EXPIRED = "key_expired";
 export const INVALID_TOKEN = "invalid_token";
@@ -91,10 +92,31 @@ export class ProtocolError extends Error {
 }
 
 /** The API server could not be reached, or its answer was cut short: worth asking again. */
-export class NetworkError extends ProtocolError {
+export class Unreachable extends ProtocolError {
   constructor(message: string) {
     super(message);
-    this.name = "NetworkError";
+    this.name = "Unreachable";
+  }
+}
+
+/**
+ * The server speaks another major version of the API than this SDK does.
+ * `version` is what its `Tilo-Api-Version` header said; `speaking` is the
+ * major version this SDK speaks.
+ */
+export class UnsupportedVersion extends ProtocolError {
+  readonly version: string;
+  readonly speaking: string;
+
+  constructor(version: string, speaking = "1") {
+    super(
+      `this SDK speaks Tilo API ${speaking}; the server answers ${version}: update tilo-sdk`,
+      null,
+      API_VERSION_UNSUPPORTED,
+    );
+    this.name = "UnsupportedVersion";
+    this.version = version;
+    this.speaking = speaking;
   }
 }
 

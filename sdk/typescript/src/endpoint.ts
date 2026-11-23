@@ -11,9 +11,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import {
   AskPending,
-  NetworkError,
   ProtocolError,
   Refused,
+  Unreachable,
+  UnsupportedVersion,
   refusalOf,
 } from "./errors.ts";
 import {
@@ -214,7 +215,7 @@ export class Endpoint {
           signal: options.signal,
         });
       } catch (error) {
-        if (!(error instanceof NetworkError) || Date.now() >= deadline) {
+        if (!(error instanceof Unreachable) || Date.now() >= deadline) {
           throw error;
         }
         await pause(delayOf(attempt, null));
@@ -417,7 +418,7 @@ export class Endpoint {
           yield event;
         }
       } catch (error) {
-        if (!(error instanceof NetworkError) || (this.signal?.aborted ?? false)) {
+        if (!(error instanceof Unreachable) || (this.signal?.aborted ?? false)) {
           return;
         }
       }
@@ -507,11 +508,7 @@ function versionOf(headers: HeadersLike): void {
   }
   const major = version.split(".")[0]?.trim() ?? version.trim();
   if (major !== API_VERSION) {
-    throw new ProtocolError(
-      `this SDK speaks Tilo API ${API_VERSION}; the server answers ${version}: update tilo-sdk`,
-      null,
-      "api_version_unsupported",
-    );
+    throw new UnsupportedVersion(version, API_VERSION);
   }
 }
 
