@@ -286,7 +286,7 @@ fn a_refusal_names_the_app_as_the_shell_names_it() {
 /// Chat did that on the e2e-ws-branch box, nineteen times, and left nothing anywhere.
 /// `apps` started the app `example.Canvas` as process `id`, `lived` ago, and it ended as `end`
 /// saying `said` on stderr.
-fn canvas_ended(apps: &Apps, id: u64, lived: std::time::Duration, end: End, said: &str) {
+fn canvas_ended(apps: &Apps, id: u64, lived: std::time::Duration, end: End, said: &[&str]) {
     note_launch(apps, id, "example.Canvas", None, None, lived, Got::Arriving);
     apps.state.borrow().spawner.report(Event {
         id,
@@ -296,7 +296,7 @@ fn canvas_ended(apps: &Apps, id: u64, lived: std::time::Duration, end: End, said
         killed: false,
         asked_to_end: false,
         said: OutputTail {
-            stderr: vec![said.to_owned()],
+            stderr: said.iter().map(|line| (*line).to_owned()).collect(),
             stdout: Vec::new(),
             dropped: 0,
         },
@@ -322,7 +322,7 @@ fn an_app_that_ends_without_ever_showing_a_window_could_not_open() {
         apps.attach(desktop.clone());
         let id = u64::try_from(n).unwrap() + 1;
         let lived = std::time::Duration::from_secs(30);
-        canvas_ended(&apps, id, lived, end, "the display refused this app");
+        canvas_ended(&apps, id, lived, end, &["the display refused this app"]);
         apps.follow_ended();
         let shown = texts(&desktop);
         assert!(
@@ -336,6 +336,38 @@ fn an_app_that_ends_without_ever_showing_a_window_could_not_open() {
             "{n}: with what Canvas said: {shown:?}"
         );
     }
+}
+
+/// A launch that failed says the app's own last word, not the launcher's account of how it ended:
+/// "tilo-launcher: … ended: exit status: 1" is nothing a person can act on, so it is no reason the
+/// card gives.
+#[test]
+fn a_launchers_account_of_a_failed_launch_is_not_its_reason() {
+    let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
+    let desktop = shell();
+    apps.attach(desktop.clone());
+    canvas_ended(
+        &apps,
+        1,
+        std::time::Duration::from_secs(1),
+        End::exited(1),
+        &[
+            "the display refused this app",
+            "tilo-launcher: so.tilo.canvas ended: exit status: 1",
+        ],
+    );
+    apps.follow_ended();
+    let shown = texts(&desktop);
+    assert!(
+        shown
+            .iter()
+            .any(|text| text.contains("the display refused this app")),
+        "the app's own reason is what the card says: {shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|text| text.contains("tilo-launcher:")),
+        "the launcher's account is never the reason: {shown:?}"
+    );
 }
 
 /// An app that showed a window and later ended cleanly opened: its end is no notice, even once
