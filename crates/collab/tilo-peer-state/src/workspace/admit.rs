@@ -134,6 +134,10 @@ pub enum WorkspaceRefusal {
     /// writer's own device's slice, or one no such device signed
     /// ([`super::refusal_slices_kept`]).
     RefusalWriter,
+    /// The batch keeps, rewrites or clears a checkpoint check outside its
+    /// writer's own device's slice, or one no such device signed
+    /// ([`super::checkpoint_check_slices_kept`]).
+    CheckpointCheckWriter,
     Coverage(String),
     /// A change erases or lowers the cut of a device's removal
     /// ([`crate::removals::monotonic`]), or of a change that took standing
@@ -168,6 +172,7 @@ impl std::fmt::Display for WorkspaceRefusal {
             }
             Self::ReceiptWriter => f.write_str("effect receipt is not its writer's own"),
             Self::RefusalWriter => f.write_str("write refusal is not its recorder's own"),
+            Self::CheckpointCheckWriter => f.write_str("checkpoint check is not its device's own"),
             Self::ShortcutAuthorship(shortcut) => write!(
                 f,
                 "the shortcut `{shortcut}` names who saved it without their device's proof"
@@ -188,6 +193,7 @@ impl WorkspaceRefusal {
             | Self::Membership(_)
             | Self::ReceiptWriter
             | Self::RefusalWriter
+            | Self::CheckpointCheckWriter
             | Self::ShortcutAuthorship(_) => RefusalReason::Forbidden,
             Self::Malformed(_) | Self::DeclaredWorkspaceMismatch | Self::Coverage(_) => {
                 RefusalReason::Malformed
@@ -487,6 +493,10 @@ fn checked_as(
         );
         if !super::refusal_slices_kept(before, candidate, source.person(), sender.as_ref()) {
             return Err(WorkspaceRefusal::RefusalWriter);
+        }
+        if !super::checkpoint_check_slices_kept(before, candidate, source.person(), sender.as_ref())
+        {
+            return Err(WorkspaceRefusal::CheckpointCheckWriter);
         }
     }
     // Every writer, the owner's devices included: it relays and merges what members

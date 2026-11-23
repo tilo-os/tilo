@@ -201,7 +201,7 @@ impl PeerWorkspaceMut<'_> {
         now: SystemTime,
     ) -> Result<bool, String> {
         let mut candidate = self
-            .own_refusal_candidate(caller, key, now)?
+            .own_row_candidate(caller, key, now)?
             .ok_or("refusal workspace is absent")?;
         if refusal.by != caller.device_public_key {
             return Err("a refusal is its recorder's own verdict".into());
@@ -273,7 +273,7 @@ impl PeerWorkspaceMut<'_> {
         now: SystemTime,
     ) -> Result<bool, String> {
         use automerge::transaction::Transactable as _;
-        let Some(mut candidate) = self.own_refusal_candidate(caller, key, now)? else {
+        let Some(mut candidate) = self.own_row_candidate(caller, key, now)? else {
             return Ok(false);
         };
         let entry = entry_key(app, record, &author);
@@ -420,10 +420,10 @@ impl PeerWorkspaceMut<'_> {
         changes
     }
 
-    /// The workspace as `caller`, this device, writes its own refusals into
-    /// it: under its actor, once its certificate and read permission hold and
-    /// `key` is its own.
-    fn own_refusal_candidate(
+    /// The workspace as `caller`, this device, writes its own rows into it (its refusals, the
+    /// checkpoints it checked): under its actor, once its certificate and read permission hold
+    /// and `key` is its own.
+    pub(super) fn own_row_candidate(
         &self,
         caller: &tilo_user_identity::DeviceCert,
         key: &dyn DeviceSigner,

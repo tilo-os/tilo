@@ -135,6 +135,7 @@ fn founding_rows(
         tilo_desktop_model::projection::WORKSPACE_EFFECT_RECEIPTS_KEY,
         tilo_desktop_model::projection::WORKSPACE_EFFECT_HISTORY_KEY,
         tilo_desktop_model::projection::WORKSPACE_WRITE_REFUSALS_KEY,
+        super::CHECKPOINT_CHECKS_KEY,
         super::invitation_receipts::PARTS_KEY,
         crate::document_import::WORKSPACE_KEY,
         crate::removals::FIELD_V1,

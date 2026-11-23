@@ -1065,6 +1065,7 @@ tilo_test_env::scenario! {
                 .collect::<Vec<_>>()
                 .into(),
             resealed: std::sync::Arc::default(),
+            checkpoint_writes: std::sync::Arc::default(),
         };
         let missing = "32cc8086d6eb9538799a44d9b6e5229f22d7626ef79e2d3ec867898a01224cf1";
 
@@ -2359,8 +2360,12 @@ fn joins_late(f: &Fixture, last: &[NeighbourMsg], whole: &mut AutoCommit) {
     )
     .unwrap();
     fresh.select_exact_admissions().unwrap();
+    // Every device with the record's keys checked its checkpoint, which a device that joins
+    // later then reads without the writes it stands in for.
+    let mut checked = f.replica.clone();
+    checked_by_every_device(f, &mut checked, &keys);
     fresh
-        .receive_from(origin(&f.owner), f.replica.workspace_message(), now)
+        .receive_from(origin(&f.owner), checked.workspace_message(), now)
         .unwrap();
     for piece in last {
         fresh
@@ -2450,11 +2455,11 @@ tilo_test_env::scenario! {
     fn a_change_whose_base_was_lost_is_read_without_it_or_waits;
 
     phase a_change_built_on_one_its_writer_never_sent_is_read_without_it;
-    // A page that held a sealed record's keys before the record itself wrote a change in that moment,
-    // which it let go unsigned and unsent, and its next change, built on the first, was taken: the
-    // record holds a change whose base its own writer never sent, and no device ever will. A reader
-    // reads the record without it rather than refusing the whole record as incomplete, and a member's
-    // own compaction still refuses to fold it away.
+    // A page that held a sealed record's keys before the record itself wrote a change in that
+    // moment, which it let go unsigned and unsent, and its next change, built on the first, was
+    // taken: the record holds a change whose base its own writer never sent, and no device ever
+    // will. A reader reads the record without it rather than refusing the whole record as
+    // incomplete, and a member's own compaction still refuses to fold it away.
     {
         let mut f = fixture();
         let now = f.now;
@@ -2542,8 +2547,8 @@ tilo_test_env::scenario! {
             "{:?}",
             opened.unmerged
         );
-        // Signed and on its way: the host replays it in its writer's order, and the record reads whole
-        // then (as it did before any of this).
+        // Signed and on its way: the host replays it in its writer's order, and the record reads
+        // whole then (as it did before any of this).
         drop(on_its_way);
     }
 
@@ -2602,11 +2607,11 @@ tilo_test_env::scenario! {
 
     phase a_writer_reloaded_after_losing_a_change_reads_without_what_it_built_on_it;
     // A device writes a record under one Automerge writer of its own across reloads, as the shared
-    // desktop does. Its page lost a change and sent the next one, built on it; reloaded, the page read
-    // the record without either and wrote again, numbering its next change as the lost one was
-    // numbered. The stuck write still builds on a change no device will ever send: a reader reads the
-    // record with what the reloaded page wrote, and without the stuck write, after one write and after
-    // two.
+    // desktop does. Its page lost a change and sent the next one, built on it; reloaded, the page
+    // read the record without either and wrote again, numbering its next change as the lost one was
+    // numbered. The stuck write still builds on a change no device will ever send: a reader reads
+    // the record with what the reloaded page wrote, and without the stuck write, after one write
+    // and after two.
     {
         let mut f = fixture();
         let now = f.now;
@@ -3296,9 +3301,9 @@ fn read_refused(
 }
 
 /// A history holding a write the workspace's rules refuse, and its author's follow-up to it,
-/// compacts without them: a device with the key folds what every reader reads, a device without
-/// the key takes the compaction in their place, and the record then reads as before, with nothing left to
-/// name, and takes writes again rather than filling.
+/// compacts without them: a device with the key folds what every reader reads, a device without the
+/// key takes the compaction in their place, and the record then reads as before, with nothing left
+/// to name, and takes writes again rather than filling.
 #[test]
 fn a_history_with_a_refused_write_compacts_without_it_and_takes_writes_again() {
     let mut f = fixture();
@@ -3422,4 +3427,199 @@ fn a_change_forged_into_a_members_sealed_checkpoint_is_not_read() {
         Some("base"),
         "a change forged into a checkpoint is not read"
     );
+    // The checkpoint is read as the writes it stands in for merge, by every reader alike, and no
+    // device with the keys gives its word for it.
+    let opened = f
+        .replica
+        .publication()
+        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
+        .unwrap()
+        .unwrap();
+    let opened = AutoCommit::load(&opened.document).unwrap();
+    assert_eq!(text(&opened, "other").as_deref(), Some("kept"));
+    assert_eq!(text(&opened, "value").as_deref(), Some("base"));
+    let (_, holds) = f
+        .replica
+        .publication()
+        .check_leading_checkpoint((APP, RECORD), &mut |op| open(&keys, op))
+        .expect("the writes it stands in for are here");
+    assert!(
+        !holds,
+        "the forged checkpoint does not hold what its writes merge to"
+    );
+}
+
+/// Every device of `f`'s workspace with the record's keys checks the checkpoint leading `peer`'s
+/// record against the writes it stands in for, and keeps that it did in its own row of the
+/// workspace.
+fn checked_by_every_device(f: &Fixture, peer: &mut StatePeer, keys: &ContentKeys) {
+    let checkers = peer.document_key_holders(APP, RECORD, f.now).unwrap();
+    let devices = [&f.owner, &f.other, &f.editor];
+    assert!(
+        !checkers.is_empty()
+            && checkers.iter().all(|checker| devices
+                .iter()
+                .any(|key| key.verifying_key().to_bytes() == *checker)),
+        "the record's keys are with the fixture's devices"
+    );
+    for key in devices {
+        let device = key.verifying_key().to_bytes();
+        if !checkers.contains(&device) {
+            continue;
+        }
+        let cert = peer
+            .certificates()
+            .into_iter()
+            .find(|cert| cert.device_public_key == device)
+            .unwrap();
+        let (checkpoint, holds) = peer
+            .publication()
+            .check_leading_checkpoint((APP, RECORD), &mut |op| open(keys, op))
+            .expect("the writes the checkpoint stands in for are here");
+        assert!(holds, "the checkpoint holds what its writes merge to");
+        peer.workspace_mut()
+            .record_checkpoint_check(&cert, (APP, RECORD), &checkpoint, key, f.now)
+            .unwrap();
+    }
+}
+
+/// A checkpoint that holds exactly what the writes it stands in for merge to is read, and those
+/// writes stay beside it, where a reader checks it, until every device with the record's keys
+/// checked it: only the next checkpoint drops them then.
+#[test]
+fn an_honest_checkpoint_is_read_and_its_writes_go_once_every_device_with_its_keys_checked_it() {
+    let mut f = fixture();
+    let keys = f.keys();
+    let first = write(
+        &f.replica,
+        &f.other,
+        &keys,
+        &Author::new(&f.replica).edit("other", "kept"),
+        f.now,
+    );
+    let first_write = envelope_of(&first);
+    admit(&mut f.replica, &f.other, first, f.now);
+    let compaction = envelope_of(&mint(&mut f.replica, &keys, &f.owner, f.now).unwrap());
+
+    let read = captured(&f, &f.replica, &keys).unwrap();
+    assert_eq!(text(&read, "other").as_deref(), Some("kept"));
+    let opened = f
+        .replica
+        .publication()
+        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
+        .unwrap()
+        .unwrap();
+    assert_eq!(opened.unmerged, []);
+    assert!(
+        f.replica
+            .publication()
+            .checkpoint_writes(APP, RECORD)
+            .iter()
+            .any(|kept| kept.signature == first_write.signature),
+        "the write stays beside the checkpoint no one checked yet"
+    );
+    let author = compaction.author.as_bytes();
+    assert!(
+        !f.replica
+            .publication()
+            .checkpoint_reached((APP, RECORD), (*author, compaction.seq)),
+        "no store drops a write no device with the keys checked the checkpoint of"
+    );
+
+    let mut checked = f.replica.clone();
+    checked_by_every_device(&f, &mut checked, &keys);
+    assert!(
+        checked
+            .publication()
+            .checkpoint_reached((APP, RECORD), (*author, compaction.seq)),
+        "every device with the keys checked it: a store drops its writes"
+    );
+    f.replica = checked;
+
+    // The next checkpoint folds the checked one, which then leads what is kept: the writes it
+    // stood in for go.
+    let second = write(
+        &f.replica,
+        &f.editor,
+        &keys,
+        &Author::new(&f.replica).edit("second", "written"),
+        f.now,
+    );
+    admit(&mut f.replica, &f.editor, second, f.now);
+    mint(&mut f.replica, &keys, &f.owner, f.now).unwrap();
+    let kept = f.replica.publication().checkpoint_writes(APP, RECORD);
+    assert_eq!(
+        kept.first().map(|op| op.signature),
+        Some(compaction.signature),
+        "the checked checkpoint leads what is kept"
+    );
+    assert!(
+        kept.iter().all(|op| op.signature != first_write.signature),
+        "the write it stood in for is gone"
+    );
+    let read = captured(&f, &f.replica, &keys).unwrap();
+    assert_eq!(text(&read, "other").as_deref(), Some("kept"));
+    assert_eq!(text(&read, "second").as_deref(), Some("written"));
+}
+
+/// A device that takes a record's checkpoint without the writes it stands in for, and that not
+/// every device with the keys checked, does not read it on its word: it asks for its history, and
+/// reads the record once those writes are here.
+#[test]
+fn a_reader_without_a_checkpoints_writes_fetches_them_before_reading_it() {
+    let mut f = fixture();
+    let keys = f.keys();
+    let edit = write(
+        &f.replica,
+        &f.other,
+        &keys,
+        &Author::new(&f.replica).edit("other", "kept"),
+        f.now,
+    );
+    admit(&mut f.replica, &f.other, edit, f.now);
+    let compaction = mint(&mut f.replica, &keys, &f.owner, f.now).unwrap();
+
+    let mut fresh = StatePeer::new(
+        WORKSPACE,
+        f.authority.clone(),
+        vec![],
+        RevocationList::new(),
+        f.now,
+    )
+    .unwrap();
+    fresh.select_exact_admissions().unwrap();
+    fresh
+        .receive_from(origin(&f.owner), f.replica.workspace_message(), f.now)
+        .unwrap();
+    let report = fresh
+        .receive_from_report(origin(&f.owner), compaction, f.now)
+        .unwrap();
+    assert!(
+        matches!(report.primary(), InputDisposition::Accepted(_)),
+        "{:?}",
+        report.primary()
+    );
+    assert!(
+        report.summary().lacks_history,
+        "the device asks for the writes the checkpoint stands in for"
+    );
+    assert!(
+        matches!(
+            captured(&f, &fresh, &keys),
+            Err(crate::PeerDocumentReadError::Incomplete)
+        ),
+        "the checkpoint is not read on its own word"
+    );
+
+    let writes = f.replica.publication().checkpoint_writes(APP, RECORD);
+    assert!(!writes.is_empty());
+    for op in writes {
+        let key = [&f.owner, &f.other, &f.editor]
+            .into_iter()
+            .find(|key| op.author.as_bytes() == &key.verifying_key().to_bytes())
+            .unwrap();
+        admit(&mut fresh, key, message(op), f.now);
+    }
+    let read = captured(&f, &fresh, &keys).unwrap();
+    assert_eq!(text(&read, "other").as_deref(), Some("kept"));
 }

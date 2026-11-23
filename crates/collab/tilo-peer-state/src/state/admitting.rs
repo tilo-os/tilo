@@ -288,6 +288,7 @@ impl StatePeer {
                 covered_snapshot: None,
                 sealed: backend::SealedLog::default(),
                 resealed: std::sync::Arc::default(),
+                checkpoint_writes: std::sync::Arc::default(),
             }
             .into()
         });
@@ -373,6 +374,13 @@ impl StatePeer {
                     && !replayed
                 {
                     return self.admit_sealed(route, candidate, inbound, *envelope);
+                }
+                // A write the record's checkpoint stands in for, which this device took without
+                // it: kept beside the checkpoint, which is read once all of them are here.
+                if candidate.encryption_required
+                    && let Some(kept) = self.keep_checkpoint_write(&route, &envelope)
+                {
+                    return kept;
                 }
                 return Ok(AdmissionReport::new(
                     InputDisposition::RetryLater(MissingPrerequisite::ExactHistoricalEvidence),
@@ -788,11 +796,27 @@ impl StatePeer {
             .compaction_segments(&route, &envelope)
             .map_err(crate::AdmissionError::malformed)?;
         let gathered = !segments.is_empty();
+        // The writes the history's checkpoint stands in for go only once every device with the
+        // record's keys checked it; a device with the record's keys founding the record from
+        // this compaction, and holding none of what it stands in for, asks for them unless every
+        // device with the record's keys checked it.
+        let checked = folded.is_some()
+            && candidate
+                .sealed
+                .first()
+                .filter(|first| super::checkpoints::is_checkpoint(first))
+                .is_some_and(|first| {
+                    self.checkpoint_checked_by_all((&route.app, &route.record), first)
+                });
+        let founding = folded.is_some()
+            && candidate.sealed.is_empty()
+            && !self.checkpoint_settled((&route.app, &route.record), &envelope);
         Self::retain_sealed(
             &mut candidate,
             (&self.core.workspace, &route),
             envelope,
             segments,
+            checked,
         )?;
         let primary = if self.core.exact_selected {
             // The writes the compaction folded are in its snapshot now, and
@@ -830,15 +854,62 @@ impl StatePeer {
             ReceiveOutcome {
                 changed: true,
                 metadata_changed: true,
+                lacks_history: founding,
                 ..Default::default()
             },
         ))
     }
+
+    /// Keep `envelope`, a sealed write the checkpoint leading the record's history stands in for,
+    /// beside it: a device that took the checkpoint without the writes it stands in for asked for
+    /// them ([`super::checkpoints`]), and reads the checkpoint once they are here. Its author,
+    /// route and signature were checked as any write's; it is no history to replay, and changes
+    /// no sequence. `None` when it is no such write, or one kept already.
+    fn keep_checkpoint_write(
+        &mut self,
+        route: &Route,
+        envelope: &SignedOp,
+    ) -> Option<Result<AdmissionReport, AdmissionError>> {
+        // A checkpoint itself is never taken this way: one kept beside the history is either the
+        // one every device with the record's keys checked, which leads it, or one read through its
+        // own writes.
+        if !self.lacks_checkpoint_write(&route.app, &route.record, envelope) {
+            return None;
+        }
+        let document = self.core.documents.get(route)?;
+        let admitted = match DocumentAdmission::from_op(
+            &self.core.workspace,
+            &route.app,
+            &route.record,
+            envelope,
+        ) {
+            Ok(admitted) => admitted,
+            Err(error) => return Some(Err(error.into())),
+        };
+        let mut document = document.clone();
+        document.checkpoint_writes = document
+            .checkpoint_writes
+            .iter()
+            .cloned()
+            .chain([envelope.clone()])
+            .collect();
+        self.core.documents.insert(route.clone(), document);
+        Some(Ok(AdmissionReport::new(
+            InputDisposition::Accepted(admitted),
+            ReceiveOutcome {
+                changed: true,
+                metadata_changed: true,
+                ..Default::default()
+            },
+        )))
+    }
+
     fn retain_sealed(
         candidate: &mut Document,
         (workspace, route): (&str, &Route),
         envelope: SignedOp,
         segments: Vec<SignedOp>,
+        checked: bool,
     ) -> Result<(), AdmissionError> {
         let full = || AdmissionError::HistoryFull;
         if envelope.kind == OpKind::Compaction {
@@ -853,9 +924,18 @@ impl StatePeer {
             if !history.within_bounds() {
                 return Err(full());
             }
-            candidate.fold_sealed(history, |op| {
-                collab_types::sealed_before_reader_sets(&route.app, workspace, &route.record, op)
-            });
+            candidate.fold_sealed(
+                history,
+                |op| {
+                    collab_types::sealed_before_reader_sets(
+                        &route.app,
+                        workspace,
+                        &route.record,
+                        op,
+                    )
+                },
+                checked,
+            );
         } else {
             if !Self::has_room(&candidate.sealed, &envelope) {
                 return Err(full());
@@ -872,7 +952,8 @@ impl StatePeer {
 
     /// Whether the sealed history of `record` of `app` has room for `envelope`, a sealed write of
     /// this device: a write past it is refused until a key holder compacts the history
-    /// ([`crate::PeerPublication::draft_sealed_compaction`]). A write in the clear keeps no sealed history.
+    /// ([`crate::PeerPublication::draft_sealed_compaction`]). A write in the clear keeps no sealed
+    /// history.
     #[must_use]
     pub fn sealed_history_takes(&self, app: &str, record: &str, envelope: &SignedOp) -> bool {
         if envelope.encryption.is_none() || envelope.kind == OpKind::Compaction {

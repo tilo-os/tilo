@@ -83,6 +83,7 @@ pub use device_answers::{
 /// The person's own workspace, as a part of a session reads and writes its documents.
 pub use person_records::{DocumentEdit, PersonDocuments};
 pub use state::CallGate;
+pub use state::{CHECKPOINT_CHECKS_KEY, CheckpointCheck};
 pub use state::ChangeRefused;
 pub use state::DocumentKeysBasis;
 /// A state of a workspace's governance, kept to ask which heads it holds.

@@ -35,35 +35,88 @@ pub(super) struct PeerDocument {
     /// its author signed it, so who wrote what then stays provable. They are never history to
     /// replay or merge again; the compaction that took their place says which they are.
     pub(super) resealed: Arc<[collab_types::SignedOp]>,
+    /// The writes the record's leading checkpoint stands in for, each as its author signed it, in
+    /// the order they left its history: what a device with the record's keys checks the checkpoint
+    /// against before it reads it, and reads in its place when the checkpoint holds anything else
+    /// ([`super::checkpoints`]). They are dropped only once every device with the record's keys has
+    /// checked the checkpoint before them, which then leads them; until then a checkpoint that
+    /// folds this one keeps them too. Never history to replay or merge as writes of their own.
+    pub(super) checkpoint_writes: Arc<[collab_types::SignedOp]>,
 }
 
 impl PeerDocument {
     /// Replace the record's sealed history with `history`, which a compaction made: of the writes
     /// it folds away, those sealed before reader sets are kept as the record's originals
-    /// ([`Self::resealed`]), never dropped.
+    /// ([`Self::resealed`]), never dropped. Every write it folds away is kept beside the new
+    /// checkpoint ([`Self::checkpoint_writes`]): `checked` says whether every device with the
+    /// record's keys checked the checkpoint the history led with, and only then do the
+    /// writes kept before it go, that checkpoint leading what is kept from then on.
     pub(super) fn fold_sealed(
         &mut self,
         history: SealedLog,
         before_reader_sets: impl Fn(&collab_types::SignedOp) -> bool,
+        checked: bool,
     ) {
         let kept: std::collections::HashSet<[u8; 64]> =
             history.iter().map(|op| op.signature.0).collect();
-        let originals: Vec<collab_types::SignedOp> = self
+        let folded: Vec<collab_types::SignedOp> = self
             .sealed
             .iter()
-            .filter(|op| !kept.contains(&op.signature.0) && before_reader_sets(op))
+            .filter(|op| !kept.contains(&op.signature.0))
+            .cloned()
+            .collect();
+        let originals: Vec<collab_types::SignedOp> = folded
+            .iter()
+            .filter(|op| before_reader_sets(op))
             .cloned()
             .collect();
         if !originals.is_empty() {
             self.resealed = self.resealed.iter().cloned().chain(originals).collect();
         }
+        if !folded.is_empty() {
+            let leads = folded
+                .first()
+                .is_some_and(|first| super::checkpoints::is_checkpoint(first));
+            self.checkpoint_writes = if leads && checked {
+                folded.into()
+            } else if leads && self.checkpoint_writes.is_empty() {
+                // A checkpoint not every device with the record's keys checked leads what is kept
+                // only as one they all did: it goes after the writes it folds, which are read in
+                // its place.
+                let (set, writes): (Vec<_>, Vec<_>) = folded.into_iter().partition(|op| {
+                    op.kind == collab_types::OpKind::Compaction
+                        && self
+                            .sealed
+                            .first()
+                            .is_some_and(|first| first.author == op.author && first.seq == op.seq)
+                });
+                writes.into_iter().chain(set).collect()
+            } else {
+                self.checkpoint_writes
+                    .iter()
+                    .cloned()
+                    .chain(folded)
+                    .collect()
+            };
+        }
         self.sealed = history;
     }
 
-    /// Whether the record keeps anything of a sealed history: writes to replay, or originals of
-    /// writes sealed again.
+    /// Whether the record keeps anything of a sealed history: writes to replay, originals of
+    /// writes sealed again, or the writes its checkpoint stands in for.
     pub(super) fn keeps_sealed(&self) -> bool {
-        !self.sealed.is_empty() || !self.resealed.is_empty()
+        !self.sealed.is_empty() || !self.resealed.is_empty() || !self.checkpoint_writes.is_empty()
+    }
+
+    /// What leads the record's entry of the durable sealed histories, before the history itself:
+    /// its originals of writes sealed again, then the writes its checkpoint stands in for
+    /// ([`super::sealed_history::restore`] tells them apart).
+    pub(super) fn kept_beside(&self) -> Vec<collab_types::SignedOp> {
+        self.resealed
+            .iter()
+            .chain(self.checkpoint_writes.iter())
+            .cloned()
+            .collect()
     }
 }
 
@@ -361,12 +414,14 @@ impl StoredDocument {
         &mut self,
         sealed: SealedLog,
         resealed: Arc<[collab_types::SignedOp]>,
+        checkpoint_writes: Arc<[collab_types::SignedOp]>,
     ) -> Result<(), String> {
         self.encoded = Arc::default();
         self.digests = Arc::default();
         let document = Arc::get_mut(&mut self.document).ok_or("restored record is shared")?;
         document.sealed = sealed;
         document.resealed = resealed;
+        document.checkpoint_writes = checkpoint_writes;
         Ok(())
     }
     /// The record's durable encoding as `encode` makes it for `route`,
@@ -424,6 +479,7 @@ impl Clone for PeerDocument {
             covered_snapshot: self.covered_snapshot.clone(),
             sealed: self.sealed.clone(),
             resealed: std::sync::Arc::clone(&self.resealed),
+            checkpoint_writes: std::sync::Arc::clone(&self.checkpoint_writes),
         }
     }
 }

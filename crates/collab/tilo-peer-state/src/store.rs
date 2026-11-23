@@ -26,7 +26,10 @@
 //! opened with ([`Appetite`]), and the compaction an operator asks for
 //! ([`Store::compact`]). A checkpoint supersedes its author's writes up to its
 //! own sequence number and, when it is a sealed compaction, the other
-//! authors' writes of the record it names in the clear. Nothing else is retired
+//! authors' writes of the record it names in the clear. A sealed compaction is
+//! a cache of those writes, never their replacement: they are retired only once
+//! every device with the record's keys checked it against them
+//! ([`Store::unchecked`], [`Store::retire_checked`]). Nothing else is retired
 //! because it looks old, and compaction never retires a frame a device that
 //! told the store what it holds ([`Store::holds`]) still lacks, nor a
 //! lineage's newest checkpoint, which a device that holds none of it starts
@@ -105,6 +108,31 @@ pub struct Retired {
     pub bytes: u64,
 }
 
+/// A sealed compaction a store keeps the writes of until every device with its record's keys
+/// checked it against them ([`Store::unchecked`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UncheckedCheckpoint {
+    /// The app whose record it is.
+    pub app: String,
+    /// The record.
+    pub record: String,
+    /// Who signed it.
+    pub author: [u8; 32],
+    /// Its sequence number.
+    pub seq: u64,
+}
+
+/// A sealed compaction whose writes the store still keeps, with what it names in the clear.
+#[derive(Clone)]
+struct Unchecked {
+    checkpoint: UncheckedCheckpoint,
+    /// Its own author's line and record check: it is never one of the writes it retires.
+    lineage: Lineage,
+    check: [u8; 8],
+    /// Each author with the last write it stands in for.
+    covers: Vec<([u8; 32], u64)>,
+}
+
 /// A device's retained history, one directory of segments per workspace.
 pub struct Store {
     root: PathBuf,
@@ -180,6 +208,9 @@ struct Workspace {
     retired: BTreeSet<(u32, u64)>,
     /// The newest channel governance frame of each route.
     channels: BTreeMap<[u8; 32], Channel>,
+    /// The sealed compactions whose writes are kept until every device with their record's keys
+    /// checked them.
+    unchecked: Vec<Unchecked>,
 }
 
 /// A channel governance frame a store keeps, as its file holds it.
@@ -506,19 +537,41 @@ impl Store {
                     .insert(device, holding(&cursors));
             }
             // A checkpoint's retirements that a crash cut off before they
-            // were synced are made again.
-            let checkpoints: Vec<(WorkspaceId, Lineage, u64)> = held
+            // were synced are made again. A sealed compaction's writes stay
+            // until every device with its record's keys checked it.
+            let checkpoints: Vec<(WorkspaceId, Lineage, Entry)> = held
                 .workspaces
                 .iter()
                 .flat_map(|(workspace, stored)| {
                     stored.lineages.iter().filter_map(|(lineage, entries)| {
                         let newest = newest_checkpoint(entries)?;
-                        (entries.first()?.seq < newest).then_some((*workspace, *lineage, newest))
+                        let entry = entries.iter().rev().find(|entry| {
+                            entry.seq == newest && entry.retention == ContentRetention::Checkpoint
+                        })?;
+                        (entries.first()?.seq < newest).then_some((*workspace, *lineage, *entry))
                     })
                 })
                 .collect();
-            for (workspace, lineage, seq) in checkpoints {
-                retire_before(&store.root, workspace, lineage, seq, &mut held);
+            let mut reading = Reading::default();
+            for (workspace, lineage, entry) in checkpoints {
+                let message = held.workspaces.get(&workspace).and_then(|stored| {
+                    tilo_failure::ignored!(
+                        "a checkpoint that does not read back retires its author's earlier frames by its sequence number",
+                        reading.frame(&store.root, workspace, stored, entry).ok()
+                    )
+                });
+                if let Some(unchecked) = message
+                    .as_ref()
+                    .and_then(|message| Unchecked::of(message, lineage, entry.check))
+                {
+                    held.workspaces
+                        .entry(workspace)
+                        .or_default()
+                        .unchecked
+                        .push(unchecked);
+                    continue;
+                }
+                retire_before(&store.root, workspace, lineage, entry.seq, &mut held);
             }
             retire_to_appetite(&store.root, appetite, &mut held);
             sync_writers(&held)?;
@@ -674,7 +727,15 @@ impl Store {
                 {
                     return Ok(Retained::Duplicate);
                 }
-                if cover && newest_checkpoint(entries).is_some_and(|newest| newest > frame.seq) {
+                // A write a sealed compaction stands in for is kept until every device with
+                // its record's keys checked it: one that fetches it reads it from here.
+                if cover
+                    && newest_checkpoint(entries).is_some_and(|newest| newest > frame.seq)
+                    && !stored
+                        .unchecked
+                        .iter()
+                        .any(|unchecked| unchecked.lineage == frame.lineage)
+                {
                     return Ok(Retained::Covered);
                 }
                 if entries.iter().any(|entry| entry.seq == frame.seq)
@@ -734,13 +795,24 @@ impl Store {
             Vec::new()
         };
         add(&mut held, workspace, frame.lineage, entry);
-        if frame.retention == ContentRetention::Checkpoint {
+        let unchecked = (frame.retention == ContentRetention::Checkpoint)
+            .then(|| Unchecked::of(&frame.message, frame.lineage, check))
+            .flatten();
+        if let Some(unchecked) = unchecked {
             // A sealed compaction names, in the clear, each author and the
-            // highest write it folds, and its author signs that list. Retire
-            // those on the record: a newcomer is sent the checkpoint already
-            // carrying their state, not those writes as well. A frame no
-            // signed coverage names stays, since losing a write costs more
-            // than keeping one.
+            // highest write it folds, and its author signs that list. It is a
+            // cache of those writes, never their replacement: they stay until
+            // every device with the record's keys checked it against them
+            // ([`Self::retire_checked`]).
+            held.workspaces
+                .entry(workspace)
+                .or_default()
+                .unchecked
+                .push(unchecked);
+        } else if frame.retention == ContentRetention::Checkpoint {
+            // A checkpoint retires its own author's earlier frames: a
+            // newcomer is sent the checkpoint already carrying their state,
+            // not those writes as well.
             let retired = retire_covered(&self.root, workspace, &superseded, &mut held);
             tracing::debug!(
                 %retired.frames,
@@ -752,6 +824,74 @@ impl Store {
         drop(held);
         crate::work::frame_written(len);
         Ok(outcome)
+    }
+
+    /// The sealed compactions of `workspace` whose writes the store still keeps: each is retired
+    /// with them once every device with its record's keys checked it ([`Self::retire_checked`]).
+    #[must_use]
+    pub fn unchecked(&self, workspace: WorkspaceId) -> Vec<UncheckedCheckpoint> {
+        self.held
+            .lock_recover()
+            .workspaces
+            .get(&workspace)
+            .map_or_else(Vec::new, |stored| {
+                stored
+                    .unchecked
+                    .iter()
+                    .map(|unchecked| unchecked.checkpoint.clone())
+                    .collect()
+            })
+    }
+
+    /// Retire the writes `checkpoint`, a sealed compaction of `workspace` every device with its
+    /// record's keys checked, stands in for: each author's writes up to the last one it names,
+    /// whenever they arrived. The checkpoint itself stays.
+    pub fn retire_checked(
+        &self,
+        workspace: WorkspaceId,
+        checkpoint: &UncheckedCheckpoint,
+    ) -> Retired {
+        let mut held = self.held.lock_recover();
+        let Some(stored) = held.workspaces.get_mut(&workspace) else {
+            return Retired::default();
+        };
+        let Some(at) = stored
+            .unchecked
+            .iter()
+            .position(|unchecked| &unchecked.checkpoint == checkpoint)
+        else {
+            return Retired::default();
+        };
+        let unchecked = stored.unchecked.remove(at);
+        let own = (unchecked.lineage, unchecked.check);
+        let covered: Vec<(Lineage, u64, [u8; 8])> = unchecked
+            .covers
+            .iter()
+            .flat_map(|(author, through)| {
+                let lineage = Lineage {
+                    record: unchecked.lineage.record,
+                    author: *author,
+                };
+                stored
+                    .lineages
+                    .get(&lineage)
+                    .map_or(&[][..], Vec::as_slice)
+                    .iter()
+                    .filter(move |entry| entry.seq <= *through && (lineage, entry.check) != own)
+                    .map(move |entry| (lineage, entry.seq, entry.check))
+            })
+            .collect();
+        let retired = retire_covered(&self.root, workspace, &covered, &mut held);
+        tracing::debug!(
+            %retired.frames,
+            %retired.bytes,
+            "a checked checkpoint retired the writes it stands in for"
+        );
+        if let Err(error) = sync_writers(&held) {
+            tracing::warn!(%error, "the retirement of checked writes is synced with the next write");
+        }
+        drop(held);
+        retired
     }
 
     /// Whether the store holds `frame` of `workspace` now, byte for byte.
@@ -1835,12 +1975,48 @@ fn newest_checkpoint(entries: &[Entry]) -> Option<u64> {
         .max()
 }
 
+impl Unchecked {
+    /// The sealed compaction `message`, a checkpoint frame, is, kept in the store under `lineage`
+    /// with record check `check`; `None` for any other checkpoint.
+    fn of(message: &NeighbourMsg, lineage: Lineage, check: [u8; 8]) -> Option<Self> {
+        let NeighbourMsg::AppDocument {
+            app_id,
+            document_id,
+            envelope,
+            ..
+        } = message
+        else {
+            return None;
+        };
+        let covers = covers_of(message);
+        if covers.is_empty() {
+            return None;
+        }
+        Some(Self {
+            checkpoint: UncheckedCheckpoint {
+                app: app_id.clone(),
+                record: document_id.clone(),
+                author: *envelope.author.as_bytes(),
+                seq: envelope.seq,
+            },
+            lineage,
+            check,
+            covers,
+        })
+    }
+}
+
 /// What `frame`'s checkpoint signs it supersedes: each author with the
 /// highest sequence number it covers, read from the checkpoint's cleartext
 /// payload without opening it. Empty for a frame that is no sealed
 /// compaction, which supersedes only its own author's earlier frames.
 fn superseded_by(frame: &Frame) -> Vec<([u8; 32], u64)> {
-    let NeighbourMsg::AppDocument { envelope, .. } = &frame.message else {
+    covers_of(&frame.message)
+}
+
+/// [`superseded_by`], of the frame's message.
+fn covers_of(message: &NeighbourMsg) -> Vec<([u8; 32], u64)> {
+    let NeighbourMsg::AppDocument { envelope, .. } = message else {
         return Vec::new();
     };
     collab_types::SealedCompaction::parse(envelope).map_or_else(
@@ -2579,9 +2755,9 @@ mod tests {
             );
         }
 
-        phase a_sealed_compaction_retires_the_frames_it_names_of_every_author;
+        phase a_sealed_compaction_retires_the_frames_it_names_of_every_author_once_checked;
         {
-            let (_dir, store) = open();
+            let (dir, store) = open();
             let author = device(2);
             let other = device(3);
             let unnamed = device(4);
@@ -2606,6 +2782,40 @@ mod tests {
                 &[own[0].clone(), own[1].clone(), theirs[0].clone(), theirs[1].clone()],
             );
             store.retain(workspace(), &compaction).unwrap();
+
+            // The compaction is a cache of the writes it names: they stay, through a restart too,
+            // until every device with the record's keys checked it against them.
+            let checkpoint = UncheckedCheckpoint {
+                app: APP.into(),
+                record: RECORD.into(),
+                author: author.verifying_key().to_bytes(),
+                seq: 2,
+            };
+            assert_eq!(store.unchecked(workspace()), vec![checkpoint.clone()]);
+            let kept = vec![
+                (cursor(compaction.lineage, 2), 1),
+                (cursor(theirs[2].lineage, 3), 1),
+                (cursor(untouched.lineage, 1), 1),
+            ];
+            let mut stands = store.stands(workspace());
+            stands.sort();
+            let mut expected = kept.clone();
+            expected.sort();
+            assert_eq!(stands, expected, "no write the compaction names is retired unchecked");
+            drop(store);
+            let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            assert_eq!(
+                store.unchecked(workspace()),
+                vec![checkpoint.clone()],
+                "a restart keeps the writes of a compaction no one checked yet"
+            );
+            let mut stands = store.stands(workspace());
+            stands.sort();
+            assert_eq!(stands, expected, "a restart retires none of them either");
+
+            let retired = store.retire_checked(workspace(), &checkpoint);
+            assert_eq!(retired.frames, 4, "the four writes it names go once it is checked");
+            assert!(store.unchecked(workspace()).is_empty());
 
             let stands = store.stands(workspace());
             assert_eq!(stands.len(), 3, "one line per author still standing");

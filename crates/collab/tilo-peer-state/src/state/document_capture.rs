@@ -349,12 +349,14 @@ impl StatePeer {
         write: &SignedOp,
         mutation: &collab_types::DocumentMutation,
     ) -> Result<(), OpenedRefusal> {
-        // A compaction is no change of its own: it was decided as a compaction when it was
-        // admitted, and the writes it folds were each decided as themselves before it folded
-        // them. Decided again as a plain write, it would claim the workspace's own compact
-        // action, which no member but its governor holds.
+        // A checkpoint is no write of its own and nothing a reader takes on its writer's word:
+        // it is read against the writes it stands in for, each decided here as itself
+        // ([`super::checkpoints::read_checkpoint`]).
         if write.kind == OpKind::Compaction {
-            return Ok(());
+            return Err(OpenedRefusal::CannotDecide(
+                "a checkpoint is read against the writes it stands in for, never decided as a write"
+                    .into(),
+            ));
         }
         // What a device without the key decided the write by must be what it carries: a write
         // that claims harmless actions to them and carries others is refused here.
@@ -484,8 +486,8 @@ impl StatePeer {
         Ok(capture)
     }
 
-    /// Whether the device `reader` may read the resource at `route` now and, for one read through its
-    /// keys (`sealed`), whether the sealed writes held cover every admitted write: what
+    /// Whether the device `reader` may read the resource at `route` now and, for one read through
+    /// its keys (`sealed`), whether the sealed writes held cover every admitted write: what
     /// [`Self::open_document`] decides before it opens anything, decided without opening it.
     ///
     /// # Errors
@@ -730,7 +732,33 @@ fn open_history<'a>(
             // clear before any of it is merged into what the reader reads. One
             // the workspace's rules refuse is read without, with every write
             // built on it, and named; one this device cannot decide yet is
-            // still arriving.
+            // still arriving. A checkpoint is read against the writes it stands in for: what
+            // they merge to, without those the rules refuse; one whose writes are not here and
+            // that not every device with the record's keys checked waits for them.
+            if op.kind == OpKind::Compaction {
+                let read = super::checkpoints::read_checkpoint(
+                    document,
+                    &mutation,
+                    &mut *open,
+                    &mut |write, mutation| peer.check_opened_write((app, record), write, mutation),
+                    &|checkpoint| peer.checkpoint_settled((app, record), checkpoint),
+                )
+                .map_err(|refusal| match refusal {
+                    super::checkpoints::CheckpointRefusal::Waits => {
+                        PeerDocumentReadError::Incomplete
+                    }
+                    super::checkpoints::CheckpointRefusal::CannotDecide(reason) => {
+                        PeerDocumentReadError::Opening(reason)
+                    }
+                })?;
+                read.refuse_in(&mut opened.refusing);
+                opened.refused.extend(read.refused.iter().cloned());
+                writes.push((index, read.instead.unwrap_or(mutation)));
+                fresh = fresh.saturating_add(1);
+                opened.count = index.saturating_add(1);
+                opened.last = Some(op.signature);
+                continue;
+            }
             match peer.check_opened_write((app, record), op, &mutation) {
                 Ok(()) => {
                     writes.push((index, mutation));

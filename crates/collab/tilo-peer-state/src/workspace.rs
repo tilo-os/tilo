@@ -471,6 +471,49 @@ pub fn refusal_slices_kept(
     person: Option<&[u8; 32]>,
     device: Option<&[u8; 32]>,
 ) -> bool {
+    device_rows_kept(
+        before,
+        after,
+        WRITE_REFUSALS,
+        (person, device),
+        &|bytes, device| {
+            postcard::from_bytes::<neighbour_wire::WriteRefusal>(bytes)
+                .is_ok_and(|refusal| refusal.by == *device && refusal.signed_by(device))
+        },
+    )
+}
+
+/// Whether every checkpoint check `after` adds, replaces or clears against `before` is `person`'s
+/// own device `device`'s: in that device's own row of [`crate::CHECKPOINT_CHECKS_KEY`], and each
+/// check it keeps there signed by it. A check is its device's word that a record's checkpoint
+/// holds what the writes it stands in for merge to, and the writes are dropped once every device
+/// with the record's keys gave it: no device gives it for another.
+#[must_use]
+pub fn checkpoint_check_slices_kept(
+    before: Option<&AutoCommit>,
+    after: &AutoCommit,
+    person: Option<&[u8; 32]>,
+    device: Option<&[u8; 32]>,
+) -> bool {
+    device_rows_kept(
+        before,
+        after,
+        crate::CHECKPOINT_CHECKS_KEY,
+        (person, device),
+        &crate::state::checkpoint_check_kept_by,
+    )
+}
+
+/// Whether every value `after` adds, replaces or clears against `before` under `key`, a map of
+/// rows `{<person>/<device> → {<entry> → bytes}}` each device writes for itself, is in `person`'s
+/// device `device`'s own row, each value kept there one `valid` says that device signed.
+fn device_rows_kept(
+    before: Option<&AutoCommit>,
+    after: &AutoCommit,
+    key: &str,
+    (person, device): (Option<&[u8; 32]>, Option<&[u8; 32]>),
+    valid: &dyn Fn(&[u8], &[u8; 32]) -> bool,
+) -> bool {
     use automerge::patches::PatchAction;
     use automerge::{Prop, Value as Plain};
     let mut after = after.clone();
@@ -514,7 +557,7 @@ pub fn refusal_slices_kept(
                 None
             }
         };
-        if keys.first().map(String::as_str) != Some(WRITE_REFUSALS) {
+        if keys.first().map(String::as_str) != Some(key) {
             // Some other key: other rules decide it. A change to this key's
             // own shape never leaves it, so `nested` false here means it was
             // never this key.
@@ -546,7 +589,7 @@ pub fn refusal_slices_kept(
                     return false;
                 }
             }
-            // One verdict, kept or cleared in the device's own row: a kept
+            // One value, kept or cleared in the device's own row: a kept
             // one is that device's, over exactly its bytes.
             3 => {
                 let Some(Plain::Scalar(value)) = value else {
@@ -555,11 +598,7 @@ pub fn refusal_slices_kept(
                 let ScalarValue::Bytes(bytes) = value.as_ref() else {
                     return false;
                 };
-                let Ok(refusal) = postcard::from_bytes::<neighbour_wire::WriteRefusal>(bytes)
-                else {
-                    return false;
-                };
-                if refusal.by != *device || !refusal.signed_by(device) {
+                if !valid(bytes, device) {
                     return false;
                 }
             }
@@ -571,14 +610,16 @@ pub fn refusal_slices_kept(
 
 /// What one who only reads a workspace may still change in it: their own effect
 /// receipts and history anchors ([`effect_slices_kept`]), their own write
-/// refusals ([`refusal_slices_kept`]), and the membership operations they hold
+/// refusals ([`refusal_slices_kept`]), their own checkpoint checks
+/// ([`checkpoint_check_slices_kept`]), and the membership operations they hold
 /// (the shares they give among them)
 /// — an operation is its author's, and one who only reads hands on what others
 /// signed without admitting it.
-const READER_WRITES: [&str; 4] = [
+const READER_WRITES: [&str; 5] = [
     EFFECT_RECEIPTS,
     EFFECT_HISTORY,
     WRITE_REFUSALS,
+    crate::CHECKPOINT_CHECKS_KEY,
     crate::members::MEMBERS_KEY,
 ];
 

@@ -149,6 +149,29 @@ impl NativeWorkspaceOwner {
                         signed_ops,
                         now,
                     )?;
+                    // The device that drafted the checkpoint checks it as every device with the
+                    // record's keys does, and keeps that it did: the writes it stands in for are
+                    // dropped once every one of them has.
+                    let group = collab_types::reader_group(
+                        workspace,
+                        named.as_deref().unwrap_or(collab_types::EVERY_MEMBER),
+                    )
+                    .ok_or("the record's channel names no group")?;
+                    if let Some((checkpoint, true)) = live
+                        .publication()
+                        .check_leading_checkpoint((app, record_name), &mut |write| {
+                            keys.open(group, write)
+                        })
+                    {
+                        live.workspace_mut().record_checkpoint_check(
+                            candidate.device(),
+                            (app, record_name),
+                            &checkpoint,
+                            signed,
+                            now,
+                        )?;
+                        signed.settled()?;
+                    }
                     record.generation = record
                         .generation
                         .checked_add(1)

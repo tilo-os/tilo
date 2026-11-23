@@ -215,6 +215,7 @@ impl StatePeer {
                 // is never evidence itself: it is gathered into its set.
                 if collab_types::is_compaction_segment(op)
                     || (compaction && self.folds_held(app, document, op))
+                    || self.lacks_checkpoint_write(app, document, op)
                 {
                     Ok(None)
                 } else {
@@ -223,6 +224,40 @@ impl StatePeer {
             }
             None => Ok(None),
         }
+    }
+
+    /// Whether `op` is a sealed write the checkpoint leading the record's history stands in for
+    /// that this device keeps no copy of: one taken in now is kept beside the checkpoint, which a
+    /// device with the record's keys reads once all of them are here ([`super::checkpoints`]). A
+    /// write the checkpoint leading what is kept beside it already stands in for went for good.
+    pub(super) fn lacks_checkpoint_write(&self, app: &str, record: &str, op: &SignedOp) -> bool {
+        if op.kind != collab_types::OpKind::Change || op.encryption.is_none() {
+            return false;
+        }
+        let Some(document) = self.core.documents.get(&Route {
+            app: app.into(),
+            record: record.into(),
+        }) else {
+            return false;
+        };
+        let covers = |checkpoint: Option<&SignedOp>| {
+            checkpoint
+                .filter(|first| super::checkpoints::is_checkpoint(first))
+                .and_then(|first| {
+                    tilo_failure::ignored!(
+                        "a first write that does not parse as a checkpoint stands in for nothing",
+                        collab_types::SealedCompaction::parse(first).ok()
+                    )
+                })
+                .is_some_and(|wrapper| wrapper.covers(op))
+        };
+        covers(document.sealed.first())
+            && !covers(document.checkpoint_writes.first())
+            && !document
+                .checkpoint_writes
+                .iter()
+                .chain(document.sealed.iter())
+                .any(|kept| kept.signature == op.signature)
     }
 
     /// Whether `compaction` folds a write this replica still holds as history:

@@ -264,10 +264,15 @@ impl<'peer> PeerPublication<'peer> {
     ) -> Result<Vec<SignedOp>, String> {
         let rebuilt = match rebuilt {
             Some(rebuilt) => rebuilt,
-            None => merge_sealed(document, open, &mut |write, mutation| {
-                self.peer
-                    .check_opened_write((app, document_id), write, mutation)
-            })?,
+            None => merge_sealed_reading(
+                document,
+                open,
+                &mut |write, mutation| {
+                    self.peer
+                        .check_opened_write((app, document_id), write, mutation)
+                },
+                &|checkpoint| self.peer.checkpoint_settled((app, document_id), checkpoint),
+            )?,
         };
         AutoCommit::load(&rebuilt).map_err(err)?;
         if document.sealed.is_empty() {
@@ -450,6 +455,13 @@ impl PeerPublicationMut<'_> {
             .publication_mut()
             .record_sealed_compaction(app, record, compaction)?;
         let segments = candidate.compaction_segments(&route, compaction)?;
+        let checked = candidate
+            .core
+            .documents
+            .get(&route)
+            .and_then(|document| document.sealed.first())
+            .filter(|first| super::checkpoints::is_checkpoint(first))
+            .is_some_and(|first| candidate.checkpoint_checked_by_all((app, record), first));
         let gathered = !segments.is_empty();
         let workspace = candidate.core.workspace.clone();
         let document = candidate
@@ -473,9 +485,11 @@ impl PeerPublicationMut<'_> {
         if !history.within_bounds() {
             return Err("the record's history exceeds its bound".into());
         }
-        document.fold_sealed(history, |op| {
-            route.sealed_before_reader_sets(&workspace, op)
-        });
+        document.fold_sealed(
+            history,
+            |op| route.sealed_before_reader_sets(&workspace, op),
+            checked,
+        );
         let floors = &mut document.channel.last_seq_per_author;
         for (author, seq) in wrapper
             .covers
@@ -611,9 +625,13 @@ impl PeerPublicationMut<'_> {
         if sealed_under_a_stale_epoch(&compaction, &replaced) {
             return Err("sealed compaction is sealed under a stale epoch".into());
         }
-        holds_every_change(&pieces, &replaced, open, &mut |write, mutation| {
-            candidate.check_opened_write((app, document), write, mutation)
-        })?;
+        holds_every_change(
+            (&pieces, &replaced),
+            candidate.publication().document((app, document))?,
+            open,
+            &mut |write, mutation| candidate.check_opened_write((app, document), write, mutation),
+            &|checkpoint| candidate.checkpoint_settled((app, document), checkpoint),
+        )?;
         candidate.publication_mut().take_sealed_compaction(
             (app, document),
             &compaction,
@@ -634,16 +652,20 @@ pub(crate) const LACKS_HELD_WRITES: &str =
 /// Check that `pieces`, a compaction and the segments it names, hold every change of `replaced`,
 /// the writes a replica holds that the compaction would take the place of: merged over what the
 /// compaction opens to, they change nothing. A write `check` refuses, and every write built on
-/// one, is no change the compaction need hold: every reader leaves it out.
+/// one, is no change the compaction need hold: every reader leaves it out. The checkpoint
+/// `document`, this device's record, leads with is read as every reader reads it
+/// ([`super::checkpoints::read_checkpoint`]), `settled` saying whether every device with the
+/// record's keys checked it.
 ///
 /// # Errors
 /// Something does not open, a write cannot be decided here and now, or a change of `replaced`
 /// is not in the compaction.
 fn holds_every_change(
-    pieces: &[SignedOp],
-    replaced: &[SignedOp],
+    (pieces, replaced): (&[SignedOp], &[SignedOp]),
+    document: &super::Document,
     open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
     check: &mut CheckOpened<'_>,
+    settled: &dyn Fn(&SignedOp) -> bool,
 ) -> Result<(), String> {
     let Some(DocumentMutation::Snapshot(snapshot)) = opened_whole(pieces, open)? else {
         return Err("the sealed compaction does not open to a whole snapshot".into());
@@ -659,6 +681,19 @@ fn holds_every_change(
         let Some(mutation) = transfers.take(*write.author.as_bytes(), &open(write)?)? else {
             continue;
         };
+        if write.kind == OpKind::Compaction {
+            let read = super::checkpoints::read_checkpoint(
+                document,
+                &mutation,
+                &mut *open,
+                &mut *check,
+                settled,
+            )
+            .map_err(|refusal| refusal.to_string())?;
+            read.refuse_in(&mut refused);
+            writes.push((index, read.instead.unwrap_or(mutation)));
+            continue;
+        }
         match check(write, &mutation) {
             Ok(()) => writes.push((index, mutation)),
             Err(super::document_capture::OpenedRefusal::Refused(_)) => refused.refuse(&mutation),
@@ -712,14 +747,25 @@ fn holds_after(
 /// of them out would lose it. The exception is a write `check` refuses, and
 /// every write built on one: every reader leaves those out, so the compaction
 /// folds them away for good. A write `check` cannot decide here and now stops
-/// the compaction.
+/// the compaction. A checkpoint leading the history is read as every reader reads it, never on
+/// its own word ([`super::checkpoints::read_checkpoint`]); none of them counts as checked by every
+/// device with the record's keys.
+#[cfg(test)]
 pub(super) fn merge_sealed(
     document: &super::Document,
     open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
-    check: &mut dyn FnMut(
-        &SignedOp,
-        &DocumentMutation,
-    ) -> Result<(), super::document_capture::OpenedRefusal>,
+    check: &mut CheckOpened<'_>,
+) -> Result<Vec<u8>, String> {
+    merge_sealed_reading(document, open, check, &|_| false)
+}
+
+/// `merge_sealed`, with `settled` saying whether every device with the record's keys checked a
+/// checkpoint, which is then read as itself when the writes it stands in for are not here.
+pub(super) fn merge_sealed_reading(
+    document: &super::Document,
+    open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+    check: &mut CheckOpened<'_>,
+    settled: &dyn Fn(&SignedOp) -> bool,
 ) -> Result<Vec<u8>, String> {
     // One isolated merge of every write, which takes them in causal order
     // whatever order they were admitted in: a merge per write copied the
@@ -733,6 +779,20 @@ pub(super) fn merge_sealed(
         let Some(mutation) = transfers.take(*write.author.as_bytes(), &open(write)?)? else {
             continue;
         };
+        // The checkpoint leading the history is read against the writes it stands in for.
+        if write.kind == OpKind::Compaction {
+            let read = super::checkpoints::read_checkpoint(
+                document,
+                &mutation,
+                &mut *open,
+                &mut *check,
+                settled,
+            )
+            .map_err(|refusal| refusal.to_string())?;
+            read.refuse_in(&mut refused);
+            writes.push((index, read.instead.unwrap_or(mutation)));
+            continue;
+        }
         // A write this device opened is decided as admission decides the same
         // write in the clear, before the compaction folds it in.
         match check(write, &mutation) {
@@ -1001,6 +1061,17 @@ impl RefusedChanges {
         {
             self.0.extend(hashes);
         }
+    }
+
+    /// Leave out `hashes`, changes the workspace's rules refuse, found where another reading
+    /// decided them: what is built on them is left out with them.
+    pub(super) fn extend(&mut self, hashes: impl IntoIterator<Item = automerge::ChangeHash>) {
+        self.0.extend(hashes);
+    }
+
+    /// The changes left out, in no order.
+    pub(super) fn hashes(&self) -> Vec<automerge::ChangeHash> {
+        self.0.iter().copied().collect()
     }
 
     /// `writes` parted into those built on a refused change ([`UnmergedReason::BuiltOnRefused`]),
@@ -1302,31 +1373,35 @@ fn missing_dependencies(
 pub(super) type CheckOpened<'a> = dyn FnMut(&SignedOp, &DocumentMutation) -> Result<(), super::document_capture::OpenedRefusal>
     + 'a;
 
-/// [`merge_sealed`] for reading: every write that opens, passes `check` and merges is in the
+/// `merge_sealed` for reading: every write that opens, passes `check` and merges is in the
 /// record, and the rest are named instead of refusing the whole record. One write that never
 /// arrived, does not open, or that the workspace's rules refuse must not leave a workspace unable
 /// to read its record, and the writes after it are kept, not dropped. A write `check` cannot
 /// decide here and now fails the read: it is still arriving, and leaving it out would read the
 /// record as no other device does.
+#[cfg(test)]
 pub(super) fn open_sealed(
     document: &super::Document,
     open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
     check: &mut CheckOpened<'_>,
 ) -> Result<OpenedDocument, String> {
-    open_sealed_after(document, open, None, check).map(|(opened, _)| opened)
+    open_sealed_after(document, open, None, check, &|_| false).map(|(opened, _)| opened)
 }
 
-/// [`open_sealed`] over what `prior`, an earlier opening of the document, merged: where the
+/// `open_sealed` over what `prior`, an earlier opening of the document, merged: where the
 /// document only took writes since (its base and the history `prior` merged are as they were),
 /// only those are opened and merged, so reading a document its writes keep growing costs the
 /// writes it took, not its whole history each time. Also what this opening merged, for the next one, unless it
 /// left a write out or a write waits for segments: such a write may merge once more arrive, and
-/// only an opening of the whole history takes it in then.
+/// only an opening of the whole history takes it in then. A checkpoint leading the history is
+/// read against the writes it stands in for ([`super::checkpoints::read_checkpoint`]), `settled`
+/// saying whether every device with the record's keys checked it.
 pub(super) fn open_sealed_after(
     document: &super::Document,
     open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
     prior: Option<MergedDocument>,
     check: &mut CheckOpened<'_>,
+    settled: &dyn Fn(&SignedOp) -> bool,
 ) -> Result<(OpenedDocument, Option<MergedDocument>), String> {
     let sealed: Vec<&SignedOp> = document.sealed.iter().collect();
     let base = document.doc.committed_document().get_heads();
@@ -1351,9 +1426,25 @@ pub(super) fn open_sealed_after(
     let mut unmerged = Vec::new();
     let mut writes = Vec::new();
     let mut refused = RefusedChanges::default();
+    // Writes the checkpoint stands in for that the workspace's rules refuse: no write of the
+    // history, so named apart.
+    let mut beside = Vec::new();
     let mut transfers = crate::document_frame::Transfers::default();
     for (index, write) in sealed.iter().enumerate().skip(from) {
         match open(write).and_then(|plain| transfers.take(*write.author.as_bytes(), &plain)) {
+            Ok(Some(mutation)) if write.kind == OpKind::Compaction => {
+                let read = super::checkpoints::read_checkpoint(
+                    document,
+                    &mutation,
+                    &mut *open,
+                    &mut *check,
+                    settled,
+                )
+                .map_err(|refusal| refusal.to_string())?;
+                read.refuse_in(&mut refused);
+                beside.extend(read.refused.iter().cloned());
+                writes.push((index, read.instead.unwrap_or(mutation)));
+            }
             Ok(Some(mutation)) => match check(write, &mutation) {
                 Ok(()) => writes.push((index, mutation)),
                 Err(super::document_capture::OpenedRefusal::Refused(refusal)) => {
@@ -1402,24 +1493,24 @@ pub(super) fn open_sealed_after(
     });
     let opened = OpenedDocument {
         document: saved,
-        unmerged: unmerged
+        unmerged: beside
             .into_iter()
-            .filter_map(|(index, reason)| {
+            .chain(unmerged.into_iter().filter_map(|(index, reason)| {
                 let write = sealed.get(index)?;
                 Some(UnmergedWrite {
                     author: *write.author.as_bytes(),
                     seq: write.seq,
                     reason,
                 })
-            })
+            }))
             .collect(),
     };
     Ok((opened, next))
 }
 
 /// A sealed document as an opening of it left it, every write of its history merged
-/// ([`HeldDocument::opened_over`]): a later opening of the document that only took writes since merges
-/// just those over it.
+/// ([`HeldDocument::opened_over`]): a later opening of the document that only took writes since
+/// merges just those over it.
 pub struct MergedDocument {
     /// The heads of the document's cleartext base it was opened over.
     base: Vec<automerge::ChangeHash>,
@@ -1516,9 +1607,21 @@ impl HeldDocument {
                 unmerged: Vec::new(),
             });
         }
-        open_sealed(&self.document, open, &mut |write, mutation| {
-            self.check(write, mutation)
-        })
+        open_sealed_after(
+            &self.document,
+            open,
+            None,
+            &mut |write, mutation| self.check(write, mutation),
+            &|checkpoint| self.settled(checkpoint),
+        )
+        .map(|(opened, _)| opened)
+    }
+
+    /// Whether every device with the record's keys checked `checkpoint`, which leads the document's
+    /// history: it is then read as itself where the writes it stands in for are not here.
+    fn settled(&self, checkpoint: &SignedOp) -> bool {
+        self.peer
+            .checkpoint_settled((&self.route.app, &self.route.record), checkpoint)
     }
 
     /// Decide `write`, opened as `mutation`, as every reader of the document does.
@@ -1546,9 +1649,13 @@ impl HeldDocument {
         if !self.document.encryption_required {
             return self.opened(open).map(|opened| (opened, None));
         }
-        open_sealed_after(&self.document, open, prior, &mut |write, mutation| {
-            self.check(write, mutation)
-        })
+        open_sealed_after(
+            &self.document,
+            open,
+            prior,
+            &mut |write, mutation| self.check(write, mutation),
+            &|checkpoint| self.settled(checkpoint),
+        )
     }
 
     /// Whether its writes are sealed.

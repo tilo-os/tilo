@@ -530,12 +530,12 @@ impl StatePeer {
         fold_durable_hash(&before, root, &after)
     }
 
-    /// The leaf of `route`'s document `entry` in the documents' tree: the lengths and digests of its
-    /// part of the durable encoding and of its sealed history, made once per state of it.
+    /// The leaf of `route`'s document `entry` in the documents' tree: the lengths and digests of
+    /// its part of the durable encoding and of its sealed history, made once per state of it.
     fn leaf(route: &Route, entry: &backend::StoredDocument) -> Result<[u8; 32], String> {
         let document = entry.digests(|| digest_document(route, entry))?;
         let sealed = if entry.keeps_sealed() {
-            entry.sealed.digested_parts(route, &entry.resealed)?
+            entry.sealed.digested_parts(route, &entry.kept_beside())?
         } else {
             Vec::new()
         };
@@ -800,7 +800,7 @@ impl StatePeer {
             .iter()
             .filter(|(_, entry)| entry.keeps_sealed())
             .map(|(route, entry)| {
-                let mut ops = entry.resealed.to_vec();
+                let mut ops = entry.kept_beside();
                 ops.extend(entry.sealed.iter().cloned());
                 (route.clone(), ops)
             })
@@ -936,6 +936,7 @@ impl StatePeer {
                     covered_snapshot: document.covered_snapshot.map(AcceptedCheckpoint::new),
                     sealed: backend::SealedLog::default(),
                     resealed: std::sync::Arc::default(),
+                    checkpoint_writes: std::sync::Arc::default(),
                 }
                 .into(),
             );
@@ -1045,7 +1046,7 @@ fn encode_document(route: &Route, entry: &Document) -> Result<backend::EncodedDo
         Vec::new(),
     )?;
     let sealed = if entry.keeps_sealed() {
-        Some(entry.sealed.encode_parts(route, &entry.resealed)?)
+        Some(entry.sealed.encode_parts(route, &entry.kept_beside())?)
     } else {
         None
     };

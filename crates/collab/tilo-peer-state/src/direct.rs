@@ -1827,14 +1827,13 @@ impl DirectSync {
             .await
     }
 
-    /// Sync with the device on the other end of `transport` until the link
-    /// ends, whichever side dialled: `dialled` names the device this side
-    /// dialled, and the side that accepted reads it off the transport.
-    /// What a link starts by sending: the dialling device's catch-up, and the channels' governance
-    /// a host hands with it from its store ([`Store::channels`]). The device that accepted the dial hands its replica's catch-up
-    /// with the history the other one asks for ([`Self::answer_store`]), where it is judged as
-    /// history: on the live stream, what it carries that was written more than the live window ago
-    /// was refused as a late frame.
+    /// Sync with the device on the other end of `transport` until the link ends, whichever side
+    /// dialled: `dialled` names the device this side dialled, and the side that accepted reads it
+    /// off the transport. What a link starts by sending: the dialling device's catch-up, and the
+    /// channels' governance a host hands with it from its store ([`Store::channels`]). The device
+    /// that accepted the dial hands its replica's catch-up with the history the other one asks for
+    /// ([`Self::answer_store`]), where it is judged as history: on the live stream, what it carries
+    /// that was written more than the live window ago was refused as a late frame.
     async fn link_catch_up(&self, dialing: bool) -> Result<Vec<Authored>, String> {
         #[cfg_attr(
             target_arch = "wasm32",
@@ -3347,6 +3346,26 @@ impl DirectSync {
         let Ok(workspace) = self.0.replica.id() else {
             return Ok(true);
         };
+        // A sealed compaction's writes go once every device with its record's keys checked it:
+        // the checks reach this device in the workspace's own document, any message later.
+        let unchecked = store.unchecked(workspace);
+        if !unchecked.is_empty() {
+            let checked: Vec<_> = {
+                let replica = self.0.replica.lock();
+                unchecked
+                    .into_iter()
+                    .filter(|checkpoint| {
+                        replica.publication().checkpoint_reached(
+                            (checkpoint.app.as_str(), checkpoint.record.as_str()),
+                            (checkpoint.author, checkpoint.seq),
+                        )
+                    })
+                    .collect()
+            };
+            for checkpoint in &checked {
+                store.retire_checked(workspace, checkpoint);
+            }
+        }
         let Ok(frame) = Frame::of(message) else {
             return Ok(true);
         };
