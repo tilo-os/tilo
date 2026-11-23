@@ -1,7 +1,7 @@
 //! The control socket's own behaviour: what a request waits for, what it is answered, and
 //! what a locked session shows of itself.
 
-use super::state::owner_shown;
+use super::state::{owner_shown, window_rows};
 use super::*;
 
 tilo_test_env::scenario! {
