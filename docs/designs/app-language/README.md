@@ -143,6 +143,16 @@ takes one of the package's roots and the file, and nothing else: that root is th
 is opened into. One action of an app opens a kind of file, so a Markdown file and an archive of
 pages are two actions.
 
+An action that reads the device's files (`uses files`) opens one in the app that opens its kind
+with `File.open(path)` for a folder's entry, or `File.open(file)` for a file it holds — the same
+`File` a chooser gives it. The shell picks the app by the file's first bytes and its name, the one
+decision Files makes, and starts it or brings its window forward. `File.open` answers a `Result`:
+a person is told when nothing on the computer opens the file.
+
+A package that reads the device's files declares the `files.open` capability, which its manifest
+carries: the app opens a file in the app that opens it, as Files does for the person, and the
+session answers no app that does not declare it.
+
 ## Effects
 
 An effect is something a replay cannot compute again: a draw, the time, a service outside

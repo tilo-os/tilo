@@ -47,6 +47,9 @@ pub struct AppLists {
     /// grant is decided on. What decides the reach the device's settings app has of the settings
     /// document.
     pub launchable: Vec<LaunchableApplication>,
+    /// The Tilo apps whose signed manifest declares `files.open`, by package id: the apps, beside
+    /// Files, the tools service opens a file for and lists its kind's apps to.
+    pub files_open: std::collections::BTreeSet<String>,
     /// The person's apps as Files lists them through the `tools` service,
     /// every kind in one list: the same apps as above, with where each came
     /// from and so the one way it leaves the list.
@@ -89,6 +92,7 @@ impl AppLists {
         let named = named(&installed);
         let declared = declared(&installed);
         let resource_kinds = resource_kinds(&installed);
+        let files_open = files_open(&installed);
         // The machine's entries through the memoised scan, which this read starts on the lists'
         // worker: a later ask for an entry's icon or name (`crate::app_icons::entry_icon`) finds it
         // read, or meets the read already under way rather than starting one.
@@ -153,8 +157,16 @@ impl AppLists {
             declared,
             resource_kinds,
             launchable,
+            files_open,
             tools,
         }
+    }
+
+    /// Whether the signed manifest of the Tilo app `app` declares `files.open`: it opens a file in
+    /// the app that opens its kind, as Files opens one for the person.
+    #[must_use]
+    pub fn files_open(&self, app: &str) -> bool {
+        self.files_open.contains(app)
     }
 
     /// Whether the Tilo app `app` is installed here: what the shell offers a card for, and what
@@ -394,6 +406,17 @@ fn machine_search_apps(
                 desktop_entry::EntrySource::Host => HostAppKind::System,
             },
         })
+        .collect()
+}
+
+/// The apps whose signed manifest declares `files.open`, by package id.
+fn files_open(
+    installed: &[app_catalogue::apps::InstalledApp],
+) -> std::collections::BTreeSet<String> {
+    installed
+        .iter()
+        .filter(|app| app.declares_capability(tilo_app_package::manifest::FILES_OPEN))
+        .map(|app| app.app_id.to_string())
         .collect()
 }
 

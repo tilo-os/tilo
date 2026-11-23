@@ -2409,6 +2409,7 @@ fn a_window_opened_with_a_markdown_file_imports_it_into_notes() {
         chooser: None,
         clipboard: None,
         thumbnails: None,
+        tools: None,
     };
     let connection = Connection::new(manager).expect("the connection joined its route");
     let store = ResourceStore::new(Rc::new(connection.port(None)));
@@ -2501,6 +2502,266 @@ fn a_window_opened_with_a_tube_link_shows_the_video_it_names() {
         Value::Text(title) => assert_eq!(title, "The phone that finally lasts a week"),
         other => panic!("a video's title reads as {other:?}"),
     }
+}
+
+/// A package whose action opens the file its window was opened with, in the app that opens its
+/// kind.
+const OPENER: &str = "so.tilo.lang.opener";
+
+/// The opener's source: an action that takes the file it was opened with and opens it again.
+const OPENER_SOURCE: &str = r#"app so.tilo.lang.opener "Opener" (icon: .hash, category: .utility)
+
+type Panel {
+    said: Text = ""
+}
+
+root Panel
+
+default view panel for Panel
+
+view panel(p: Panel) {
+    text(p.said)
+}
+
+action opened(p: Panel, file: File) uses files (opens: ["text/markdown", .md]) {
+    p.said = match File.open(file) {
+        .ok => "opened",
+        .err(why) => why,
+    }
+}
+"#;
+
+/// The opener's package, compiled from [`OPENER_SOURCE`].
+fn opener() -> Bundle {
+    let compiled = tilolang::compile_package(OPENER_SOURCE, &tilolang::IdsLock::new(), &[])
+        .unwrap_or_else(|diagnostics| panic!("the opener compiles: {diagnostics:?}"));
+    Bundle::new(&compiled, [])
+}
+
+/// The session's tools service, answered here over a connection: each request is answered from
+/// `answers` in turn and kept in `asked`, as the session answers one for an app.
+struct ToolsStub {
+    asked: std::sync::Arc<std::sync::Mutex<Vec<runtime_portal::tools::ToolIntent>>>,
+    answers: std::sync::Arc<std::sync::Mutex<Vec<runtime_portal::tools::ToolReply>>>,
+}
+
+impl ToolsStub {
+    /// A stub answering each request with the next of `answers`, in the order given.
+    fn new(answers: Vec<runtime_portal::tools::ToolReply>) -> Self {
+        Self {
+            asked: std::sync::Arc::default(),
+            answers: std::sync::Arc::new(std::sync::Mutex::new(
+                answers.into_iter().rev().collect(),
+            )),
+        }
+    }
+
+    /// Answer `stream`'s requests until it closes, on a thread of its own: what the session's end
+    /// of an app's connection does.
+    fn serve(&self, stream: std::os::unix::net::UnixStream) {
+        let asked = std::sync::Arc::clone(&self.asked);
+        let answers = std::sync::Arc::clone(&self.answers);
+        std::thread::spawn(move || {
+            use std::io::{BufRead as _, BufReader, Write as _};
+            let Ok(mut writing) = stream.try_clone() else {
+                return;
+            };
+            for line in BufReader::new(stream).lines() {
+                let Ok(line) = line else { return };
+                let Ok(request) = serde_json::from_str::<runtime_portal::tools::ToolRequest>(&line)
+                else {
+                    return;
+                };
+                asked
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(request.intent);
+                let reply = answers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .pop()
+                    .unwrap_or_else(|| runtime_portal::tools::ToolReply {
+                        accepted: false,
+                        message: "the test service has no more answers".into(),
+                        ..runtime_portal::tools::ToolReply::default()
+                    });
+                let Ok(mut encoded) = serde_json::to_vec(&reply) else {
+                    return;
+                };
+                encoded.push(b'\n');
+                if writing.write_all(&encoded).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// What it was asked, oldest first.
+    fn asked(&self) -> Vec<runtime_portal::tools::ToolIntent> {
+        self.asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// A listing that offers `app` for a file of the kind asked, or none when `app` is none.
+fn listing(app: Option<&str>) -> runtime_portal::tools::ToolReply {
+    runtime_portal::tools::ToolReply {
+        accepted: true,
+        message: "listed".into(),
+        documents: app
+            .map(|id| runtime_portal::tools::DocumentApp {
+                id: id.to_owned(),
+                name: id.to_owned(),
+                is_default: true,
+                icon: None,
+                source: Some(runtime_portal::tools::AppKind::Tilo),
+                artwork: None,
+            })
+            .into_iter()
+            .collect(),
+        ..runtime_portal::tools::ToolReply::default()
+    }
+}
+
+/// The opener instance, its window opened with `bytes` as `name`, over a tools connection answered
+/// by `stub`: the host, its window, and the stub.
+fn opening_with(stub: &ToolsStub, bytes: &[u8], name: &str) -> (TilolangProcess, Window) {
+    let route = RouteSpec::app(OPENER, uuid::Uuid::new_v4());
+    let broker = Broker::new(route.clone());
+    let sent = broker.sent();
+    let mut manager = CollaborationManager::with_peer_transport(broker);
+    assert!(manager.send(CollabRequest::Hello {
+        app_id: route.app_id.clone(),
+        cluster_id: route.cluster_id,
+        record: None,
+        resource_type: None,
+        handle: Some("ada".to_owned()),
+    }));
+    let _ = manager.poll();
+    let content = tilo_content::ContentStore::memory();
+    let hash = content.put(bytes).unwrap();
+    let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+    stub.serve(ours);
+    let tools = runtime_portal::tools::Service::connect(theirs, route.cluster_id.to_string());
+    let kept = tilolang_process::hosted::Kept {
+        earlier: None,
+        content: Some(content.clone()),
+        chooser: None,
+        clipboard: None,
+        tools: Some(std::sync::Arc::new(tools)),
+    };
+    let connection = Connection::new(manager).expect("the connection joined its route");
+    let store = ResourceStore::new(Rc::new(connection.port(None)));
+    let mut host = TilolangProcess::new(wake());
+    let (window, patches) = Channel::pair().unwrap();
+    let watched = window.as_fd().try_clone_to_owned().unwrap();
+    let mut hosted = Hosted::new(
+        Spec::new(OPENER, route.cluster_id.to_string(), 1, "ada"),
+        connection,
+        (store, content),
+        Arc::new(opener()),
+        &kept,
+        Box::new(ChannelTransport::new(window).unwrap()),
+        (&Rc::new(Phrases::new("en-US")), host.formats()),
+        wake(),
+    );
+    hosted.open_file(runtime_portal::process_link::OpenedFile {
+        hash,
+        name: Some(name.to_owned()),
+    });
+    host.add(hosted, Some(watched));
+    let window = Window::over(ChannelTransport::new(patches).unwrap());
+    drop(sent);
+    (host, window)
+}
+
+/// What the opener's panel says after its action ran.
+fn opener_said(host: &TilolangProcess) -> String {
+    let instance = host.instances().next().expect("the window's instance runs");
+    let live = instance.instance().host().expect("the instance's host");
+    let root = live.root_of(OPENER).expect("the opener's root");
+    match live.runtime().read(&root, "said").unwrap() {
+        Value::Text(said) => said,
+        other => panic!("the panel's said reads as {other:?}"),
+    }
+}
+
+/// `File.open(file)` in an action the window was opened with asks the session which app opens the
+/// file's kind, by the content's bytes and its name, and opens it there: the address travels, as
+/// it does for a file a window hands another app.
+#[test]
+fn a_file_an_action_holds_opens_in_the_app_that_opens_its_kind() {
+    let stub = ToolsStub::new(vec![
+        listing(Some("so.tilo.lang.reader")),
+        runtime_portal::tools::ToolReply {
+            accepted: true,
+            message: "opened".into(),
+            ..runtime_portal::tools::ToolReply::default()
+        },
+    ]);
+    let (mut host, mut window) = opening_with(&stub, b"# Plan\n", "plan.md");
+    settle(&mut host, &mut window);
+    assert_eq!(opener_said(&host), "opened");
+    let asked = stub.asked();
+    assert_eq!(
+        asked.len(),
+        2,
+        "the kind is asked, then the open: {asked:?}"
+    );
+    assert!(
+        matches!(
+            &asked[0],
+            runtime_portal::tools::ToolIntent::DocumentApps { path } if path == "file.md"
+        ),
+        "the kind a Markdown file is, asked by its name: {:?}",
+        asked[0]
+    );
+    match &asked[1] {
+        runtime_portal::tools::ToolIntent::OpenContent { name, hash, app } => {
+            assert_eq!(name, "plan.md");
+            assert_eq!(app, "so.tilo.lang.reader");
+            assert_eq!(hash.len(), 64, "the address of the bytes: {hash}");
+        }
+        other => panic!("the file opens as content in the app that opens its kind: {other:?}"),
+    }
+}
+
+/// A file no app here opens is a failure the action sees, with what to do about it.
+#[test]
+fn a_file_no_app_opens_says_so() {
+    let stub = ToolsStub::new(vec![listing(None)]);
+    let (mut host, mut window) = opening_with(&stub, b"# Plan\n", "plan.md");
+    settle(&mut host, &mut window);
+    assert_eq!(
+        opener_said(&host),
+        "nothing on this computer opens `plan.md`",
+        "the person reads which file nothing opens"
+    );
+    assert_eq!(
+        stub.asked().len(),
+        1,
+        "nothing is opened once nothing opens it"
+    );
+}
+
+/// A session that refuses the open — the app's package did not declare `files.open` — is a failure
+/// the action sees, in the session's own words.
+#[test]
+fn an_open_the_session_refuses_says_why() {
+    let refused = "a file is opened by Files, or by an app that declares files.open";
+    let stub = ToolsStub::new(vec![
+        listing(Some("so.tilo.lang.reader")),
+        runtime_portal::tools::ToolReply {
+            accepted: false,
+            message: refused.into(),
+            ..runtime_portal::tools::ToolReply::default()
+        },
+    ]);
+    let (mut host, mut window) = opening_with(&stub, b"# Plan\n", "plan.md");
+    settle(&mut host, &mut window);
+    assert_eq!(opener_said(&host), refused);
 }
 
 /// The note `target` names stands under, as the instance's runtime reads it.

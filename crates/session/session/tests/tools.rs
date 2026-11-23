@@ -41,12 +41,18 @@ const TERMINAL: &str = "so.tilo.terminal";
 const FILES: &str = "so.tilo.file-explorer";
 /// Another app, with a window of its own beside Notes.
 const CLOCKS: &str = "so.tilo.clocks";
+/// An app that declares `files.open`: it opens a file in the app that opens its kind.
+const TASKS: &str = "so.tilo.tasks";
+/// A tilolang app whose own action opens Markdown files.
+const READER: &str = "so.tilo.reader";
 
-/// Install the packages `(id, name)` in `home` 's own app store.
-fn packages(home: &mut tilo_test_env::TestHome, packages: &[(&str, &str)]) {
+/// Install the packages `(id, name, more)` in `home` 's own app store: `more` continues the
+/// manifest after its `[entrypoint]` fields, so a package declares more keys there or a table of
+/// its own.
+fn packages(home: &mut tilo_test_env::TestHome, packages: &[(&str, &str, &str)]) {
     let store = home.data().join("tilo-apps");
     let mut registry = String::new();
-    for (id, name) in packages {
+    for (id, name, more) in packages {
         let payload = store.join("payload").join(id);
         fs::create_dir_all(payload.join("bin")).unwrap();
         let manifest = payload.join("manifest.toml");
@@ -73,7 +79,8 @@ fn packages(home: &mut tilo_test_env::TestHome, packages: &[(&str, &str)]) {
                  \n\
                  [entrypoint]\n\
                  bin = \"bin/app\"\n\
-                 type = \"gui\"\n",
+                 type = \"gui\"\n\
+                 {more}\n",
                 key = "11".repeat(32),
             ),
         )
@@ -225,6 +232,42 @@ fn ask(home: &tilo_test_env::TestHome, workspace: &str, intent: ToolIntent) -> T
     serde_json::from_str(&answer).expect("a tool reply")
 }
 
+/// Ask the session's tools service from an app's own thread while the session's loop runs: a
+/// request that waits for a pass of the loop would otherwise wait on the thread that makes one.
+fn ask_while_stepping(
+    session: &mut Session,
+    home: &tilo_test_env::TestHome,
+    workspace: String,
+    intent: ToolIntent,
+) -> ToolReply {
+    let asking = {
+        let home = home.runtime().to_owned();
+        std::thread::spawn(move || {
+            let socket = home.join("tilo/services/tools.sock");
+            let mut stream =
+                tilo_files::native::socket::connect(&socket).expect("the tools socket");
+            let request = ToolRequest {
+                protocol: TOOL_PROTOCOL_VERSION,
+                workspace_id: workspace,
+                intent,
+                on_behalf_of: None,
+            };
+            let mut line = serde_json::to_vec(&request).unwrap();
+            line.push(b'\n');
+            stream.write_all(&line).unwrap();
+            let mut reading = BufReader::new(stream);
+            let mut answer = String::new();
+            reading.read_line(&mut answer).unwrap();
+            serde_json::from_str::<ToolReply>(&answer).expect("a tool reply")
+        })
+    };
+    // The pass that answers: frames run until the app's thread has its answer.
+    until(session, "the tools service answers", |_| {
+        asking.is_finished()
+    });
+    asking.join().expect("the asking thread")
+}
+
 /// A window of `app` the compositor mapped.
 fn window(id: u64, app: &str) -> Window {
     Window {
@@ -249,7 +292,7 @@ tilo_test_env::scenario! {
         let _settled = ui::motion::testing::settled();
         let mut home = tilo_test_env::TestHome::new().unwrap();
         let records = home.home().join("starts");
-        packages(&mut home, &[(NOTES, "Notes")]);
+        packages(&mut home, &[(NOTES, "Notes", "")]);
         let launcher = launcher(&home, &records);
         let (mut session, opened) = session(&home, &launcher, None);
         session.step(Duration::from_millis(1)).unwrap();
@@ -301,7 +344,10 @@ tilo_test_env::scenario! {
         let _settled = ui::motion::testing::settled();
         let mut home = tilo_test_env::TestHome::new().unwrap();
         let records = home.home().join("starts");
-        packages(&mut home, &[(NOTES, "Notes"), (CLOCKS, "Clocks")]);
+        packages(
+            &mut home,
+            &[(NOTES, "Notes", ""), (CLOCKS, "Clocks", "")],
+        );
         let launcher = launcher(&home, &records);
         let (mut session, opened) = session(&home, &launcher, None);
         session.step(Duration::from_millis(1)).unwrap();
@@ -366,7 +412,7 @@ tilo_test_env::scenario! {
         let _settled = ui::motion::testing::settled();
         let mut home = tilo_test_env::TestHome::new().unwrap();
         let records = home.home().join("starts");
-        packages(&mut home, &[(NOTES, "Notes")]);
+        packages(&mut home, &[(NOTES, "Notes", "")]);
         let launcher = launcher(&home, &records);
         let mount = home.home().join("Backup");
         fs::create_dir_all(&mount).unwrap();
@@ -416,12 +462,94 @@ tilo_test_env::scenario! {
         assert!(refused.applications.is_empty());
     }
 
+    phase a_file_is_opened_for_files_and_for_an_app_that_declares_files_open;
+    // A file opens in the app that opens its kind: Files opens one for the person, and another app
+    // only when the manifest it was installed with declares `files.open`. The app that opens a
+    // Markdown file is told which, and started.
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        let records = home.home().join("starts");
+        packages(
+            &mut home,
+            &[
+                (
+                    TASKS,
+                    "Tasks",
+                    "\n[capabilities]\nrequired = [\"files.open\"]",
+                ),
+                (
+                    READER,
+                    "Reader",
+                    "runtime = \"tilolang/1\"\n\n[providers]\next = [\"md\"]\nmime = [\"text/markdown\"]",
+                ),
+            ],
+        );
+        let launcher = launcher(&home, &records);
+        let (mut session, opened) = session(&home, &launcher, None);
+        session.step(Duration::from_millis(1)).unwrap();
+        let workspace = front(&session).id().to_string();
+
+        // Files sees the app that opens Markdown.
+        launch_as(&opened, FILES, &workspace);
+        let asking = ask_while_stepping(&mut session, &home, workspace.clone(), ToolIntent::DocumentApps {
+            path: "file.md".into(),
+        });
+        assert!(asking.accepted, "{}", asking.message);
+        assert!(
+            asking.documents.iter().any(|app| app.id == READER),
+            "the app that opens Markdown is listed: {:?}",
+            asking.documents
+        );
+
+        // An app whose package did not declare `files.open` opens nothing and is told why.
+        launch_as(&opened, NOTES, &workspace);
+        let and_not = ask_while_stepping(&mut session, &home, workspace.clone(), ToolIntent::OpenContent {
+            name: "plan.md".into(),
+            hash: "a".repeat(64),
+            app: READER.into(),
+        });
+        assert!(!and_not.accepted, "an app that did not ask opens nothing");
+        assert!(
+            and_not.message.contains("files.open"),
+            "the refusal names what the app's package must declare: {}",
+            and_not.message
+        );
+        assert!(
+            !starts(&records)
+                .iter()
+                .any(|(args, _, _)| args.contains(&format!("--app-id {READER}"))),
+            "nothing opened it"
+        );
+
+        // One that did asks the session to open the file, and it starts the app that opens its
+        // kind.
+        launch_as(&opened, TASKS, &workspace);
+        let asked = ask_while_stepping(&mut session, &home, workspace.clone(), ToolIntent::OpenContent {
+            name: "plan.md".into(),
+            hash: "a".repeat(64),
+            app: READER.into(),
+        });
+        assert!(asked.accepted, "{}", asked.message);
+        // The process starts on the pass that answers: the record is written once it does.
+        until(&mut session, "the app that opens Markdown starts", |_| {
+            starts(&records)
+                .iter()
+                .any(|(args, _, _)| args.contains(&format!("--app-id {READER}")))
+        });
+        let (args, _, _) = started(&records, READER);
+        assert!(
+            args.contains(&format!("--workspace-id {workspace}")),
+            "the app starts in the workspace the caller works in: {args}"
+        );
+    }
+
     phase open_in_terminal_starts_a_terminal_at_the_folder;
     {
         let _settled = ui::motion::testing::settled();
         let mut home = tilo_test_env::TestHome::new().unwrap();
         let records = home.home().join("starts");
-        packages(&mut home, &[(TERMINAL, "Terminal")]);
+        packages(&mut home, &[(TERMINAL, "Terminal", "")]);
         let launcher = launcher(&home, &records);
         let (mut session, opened) = session(&home, &launcher, None);
         session.step(Duration::from_millis(1)).unwrap();

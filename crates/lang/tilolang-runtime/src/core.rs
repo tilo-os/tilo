@@ -30,7 +30,7 @@ use Imp::{
     EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged,
     FileAt, FileBook, FileBookCover, FileBookInfo, FileCopy, FileFiles, FileList, FileMkdir,
     FileMove, FileOfBytes, FileOfText, FilePart, FileReadPath, FileRemove, FileRename, FileRestore,
-    FileSize, FileStat, FileText, FileTrash, FileTrashEntries, FileWatch, FileWrite, FileZip,
+    FileSize, FileStat, FileOpen, FileOpenPath, FileText, FileTrash, FileTrashEntries, FileWatch, FileWrite, FileZip,
     FilterLit,
     Filters, Find, FirstUnseen, FloatAbs, FloatAcos, FloatAsin, FloatAtan, FloatCbrt, FloatCeil,
     FloatCeilTo, FloatClamp, FloatCos, FloatCosh, FloatExp, FloatFloor, FloatFloorTo, FloatFract,
@@ -184,8 +184,9 @@ pub struct Core {
     /// The families text is set in on this device (`Runtime::set_fonts`): what a reading face's
     /// picker offers. Until the host sets one, it offers none.
     pub fonts: RefCell<Option<Box<dyn crate::fonts::FontHost>>>,
-    /// The device's own folders, within the paths the app was granted
-    /// (`Runtime::set_device_files`). Until the host sets one, it reads none.
+    /// The device's own folders, within the paths the app was granted, and the app that opens a
+    /// file's kind (`Runtime::set_device_files`). Until the host sets one, it reads none and
+    /// opens none.
     pub files: RefCell<Option<Box<dyn crate::files::FilesHost>>>,
     /// The person's clipboard (`Runtime::set_clipboard`): what a copy offers and what a paste
     /// reads. Until the host sets one, nothing copies and nothing pastes.
@@ -610,8 +611,9 @@ impl Core {
             SheetNumbers => self.sheet_numbers(a),
             SheetRecords => self.sheet_records(a),
             SheetEntry => self.sheet_entry(a),
-            FileList | FileStat | FileReadPath | FileWatch | FileMkdir | FileWrite | FileRename
-            | FileMove | FileCopy | FileRemove | FileTrash | FileTrashEntries | FileRestore => {
+            FileList | FileStat | FileReadPath | FileWatch | FileOpenPath | FileOpen | FileMkdir
+            | FileWrite | FileRename | FileMove | FileCopy | FileRemove | FileTrash
+            | FileTrashEntries | FileRestore => {
                 self.file_device_import(imp, a)
             }
             ClipboardCopyText | ClipboardCopyImage | ClipboardPasteText | ClipboardPasteImage => {

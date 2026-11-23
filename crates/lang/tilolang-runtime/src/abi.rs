@@ -371,6 +371,8 @@ imports! {
     (FileTrash, "file_trash", "i", "i"),
     (FileTrashEntries, "file_trash_entries", "", "i"),
     (FileRestore, "file_restore", "i", "i"),
+    (FileOpenPath, "file_open_path", "i", "i"),
+    (FileOpen, "file_open", "i", "i"),
     (ActChoose, "act_choose", "ii", "i"),
     (ActChooseFolder, "act_choose_folder", "ii", "i"),
     (ActSave, "act_save", "ii", "i"),

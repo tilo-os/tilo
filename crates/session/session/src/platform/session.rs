@@ -1281,6 +1281,11 @@ impl Session {
             std::sync::Arc::clone(&options.launches),
             options.wake.handle(),
         );
+        // What a tilolang app's `File.open` asks: the app's process is handed a connection to this
+        // service made for that app, which is how it opens a file in the app that opens its kind.
+        if let Some(apps) = &options.launch {
+            apps.lend_tools(tools.clone());
+        }
         let app_wire = start_app_wire(
             &options,
             &live_activities,

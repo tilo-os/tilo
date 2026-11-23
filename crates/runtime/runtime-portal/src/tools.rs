@@ -26,6 +26,8 @@ pub const MAX_APP_ID_BYTES: usize = 512;
 const MAX_DRIVE_ID_BYTES: usize = 64;
 const MAX_PATH_BYTES: usize = 2 * 1024;
 const MAX_CONTAINER_NAME_BYTES: usize = 255;
+const MAX_FILE_NAME_BYTES: usize = 255;
+const MAX_REFERENCE_BYTES: usize = 256;
 use tilo_app_id::apps::TERMINAL as TERMINAL_PACKAGE_ID;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +123,9 @@ pub enum ToolIntent {
     OpenDrive {
         drive: String,
     },
+    /// The apps that open a file here, the one it opens with today first: the file at `path`, or
+    /// the kind name the one decision every caller asks by (`file.md`, `[`document_app_for_with`]`),
+    /// which the shell routes by its extension and reads no file for.
     DocumentApps {
         path: String,
     },
@@ -136,6 +141,15 @@ pub enum ToolIntent {
         app: String,
     },
     UninstallApplication {
+        app: String,
+    },
+    /// Open the file `name` whose bytes the workspace's content store holds under `hash`, in
+    /// `app`, one of the apps that open its type: what `File.open` asks for a file an action
+    /// holds rather than a path it can read. The app reads the same content, so the bytes travel
+    /// as the address a file an app was opened with already has.
+    OpenContent {
+        name: String,
+        hash: String,
         app: String,
     },
 }
@@ -298,8 +312,10 @@ impl ToolIntent {
                 Ok(())
             }
             Self::DocumentApps { path } => {
-                if !is_path(path) {
-                    return Err("invalid document path".into());
+                // A path Files opens, or the kind name the one decision for every caller asks by
+                // (`file.md`): a name is no path, and no file is opened by it.
+                if !is_path(path) && !is_file_name(path) {
+                    return Err("invalid document path or kind".into());
                 }
                 Ok(())
             }
@@ -308,6 +324,18 @@ impl ToolIntent {
                     return Err("invalid document path".into());
                 }
                 if app.as_deref().is_some_and(|app| !is_app(app)) {
+                    return Err("invalid app".into());
+                }
+                Ok(())
+            }
+            Self::OpenContent { name, hash, app } => {
+                if !is_file_name(name) {
+                    return Err("invalid file name".into());
+                }
+                if !is_reference(hash) {
+                    return Err("invalid content address".into());
+                }
+                if !is_app(app) {
                     return Err("invalid app".into());
                 }
                 Ok(())
@@ -371,13 +399,35 @@ impl ToolIntent {
             | Self::OpenApplication { .. }
             | Self::UninstallApplication { .. }
             | Self::DocumentApps { .. }
-            | Self::OpenDocument { .. } => None,
+            | Self::OpenDocument { .. }
+            | Self::OpenContent { .. } => None,
         }
     }
 }
 
 fn is_app(app: &str) -> bool {
     !app.is_empty() && app.len() <= MAX_APP_ID_BYTES && !app.chars().any(char::is_control)
+}
+
+/// A file's name as a folder shows it: no path, and never one of `.`/`..`.
+fn is_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_FILE_NAME_BYTES
+        && name != "."
+        && name != ".."
+        && !name
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '/' | '\\'))
+}
+
+/// The address of content in the workspace's store: what `tilo-content` writes, hex with an
+/// optional sealed key after a dot.
+fn is_reference(hash: &str) -> bool {
+    !hash.is_empty()
+        && hash.len() <= MAX_REFERENCE_BYTES
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 fn is_path(path: &str) -> bool {
@@ -497,6 +547,95 @@ pub fn open_document(path: &str, app: Option<&str>) -> Result<(), String> {
     )
 }
 
+/// A connection to the shell's tools service, held by an app the session runs itself rather than
+/// one its launcher started: the session makes the connection for an app in a workspace and fixes
+/// who asks when it does, so the requests on it name the app they are made for without saying so.
+///
+/// Topics are asked one at a time on one connection: a reply carries no request id.
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct Service {
+    stream: UnixStream,
+    workspace: String,
+    turn: std::sync::Mutex<()>,
+}
+
+#[cfg(unix)]
+impl Service {
+    /// The service over `stream`, the connection the shell made for an app in `workspace`.
+    #[must_use]
+    pub fn connect(stream: UnixStream, workspace: impl Into<String>) -> Self {
+        Self {
+            stream,
+            workspace: workspace.into(),
+            turn: std::sync::Mutex::new(()),
+        }
+    }
+
+    /// Ask `intent`, and answer the shell's reply or why it was not taken.
+    ///
+    /// # Errors
+    ///
+    /// `intent` is not valid, or the shell refused it or stopped answering.
+    pub fn ask(&self, intent: ToolIntent) -> Result<ToolReply, String> {
+        intent.validate()?;
+        let request = ToolRequest {
+            protocol: TOOL_PROTOCOL_VERSION,
+            workspace_id: self.workspace.clone(),
+            intent,
+            on_behalf_of: None,
+        };
+        let reply = exchange(std::os::fd::AsFd::as_fd(&self.stream), &request, &self.turn)?;
+        if reply.accepted {
+            Ok(reply)
+        } else {
+            Err(reply.message)
+        }
+    }
+
+    /// The apps that open the document at `path` here, the one it opens with today first: what
+    /// Files' "Open with" lists and what opening a file starts.
+    ///
+    /// # Errors
+    ///
+    /// Why the session could not answer.
+    pub fn list_document_apps(&self, path: &str) -> Result<Vec<DocumentApp>, String> {
+        self.ask(ToolIntent::DocumentApps {
+            path: path.to_owned(),
+        })
+        .map(|reply| reply.documents)
+    }
+
+    /// Open the document at `path` in `app`, or in the app this workspace opens its type with
+    /// today.
+    ///
+    /// # Errors
+    ///
+    /// Why nothing opened it.
+    pub fn open_document(&self, path: &str, app: Option<&str>) -> Result<(), String> {
+        self.ask(ToolIntent::OpenDocument {
+            path: path.to_owned(),
+            app: app.map(str::to_owned),
+        })
+        .map(drop)
+    }
+
+    /// Open the file `name`, whose bytes the workspace's content store holds under `hash`, in
+    /// `app`.
+    ///
+    /// # Errors
+    ///
+    /// Why nothing opened it.
+    pub fn open_content(&self, name: &str, hash: &str, app: &str) -> Result<(), String> {
+        self.ask(ToolIntent::OpenContent {
+            name: name.to_owned(),
+            hash: hash.to_owned(),
+            app: app.to_owned(),
+        })
+        .map(drop)
+    }
+}
+
 #[cfg(not(unix))]
 fn send_tool_request(
     _intent: ToolIntent,
@@ -510,6 +649,11 @@ fn send_tool_request(
     intent: ToolIntent,
     on_behalf_of: Option<[u8; 16]>,
 ) -> Result<ToolReply, String> {
+    // Every app of a launch shares that one stream and replies carry no request id, so the whole
+    // exchange is one critical section: otherwise concurrent callers interleave frames or read
+    // each other's replies.
+    static EXCHANGE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     let workspace_id = std::env::var("TILO_WORKSPACE_ID")
         .map_err(|_| "This app is not attached to a Tilo workspace".to_string())?;
     let raw_fd: i32 = std::env::var(TOOL_SERVICE_FD_ENV)
@@ -525,7 +669,11 @@ fn send_tool_request(
     };
     // SAFETY: the launcher keeps the service descriptor open for the
     // process's lifetime; it is only borrowed for this exchange.
-    let reply = exchange(unsafe { BorrowedFd::borrow_raw(raw_fd) }, &request)?;
+    let reply = exchange(
+        unsafe { BorrowedFd::borrow_raw(raw_fd) },
+        &request,
+        &EXCHANGE,
+    )?;
     if reply.accepted {
         Ok(reply)
     } else {
@@ -533,15 +681,17 @@ fn send_tool_request(
     }
 }
 
-/// One request and its reply over the process-wide service stream.
+/// One request and its reply over `service`, one at a time under `turn`.
 ///
-/// Every caller shares that one stream and replies carry no request id, so
-/// the whole exchange is one critical section: otherwise concurrent callers
-/// interleave frames or read each other's replies.
+/// The descriptor is duplicated: dropping the per-request stream must not close the connection
+/// the caller holds.
 #[cfg(unix)]
-fn exchange(service: BorrowedFd<'_>, request: &ToolRequest) -> Result<ToolReply, String> {
+fn exchange(
+    service: BorrowedFd<'_>,
+    request: &ToolRequest,
+    turn: &std::sync::Mutex<()>,
+) -> Result<ToolReply, String> {
     use tilo_lock::MutexRecover as _;
-    static EXCHANGE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     let mut encoded =
         serde_json::to_vec(request).map_err(|e| format!("encoding tool request: {e}"))?;
@@ -549,9 +699,7 @@ fn exchange(service: BorrowedFd<'_>, request: &ToolRequest) -> Result<ToolReply,
         return Err("tool request is too large".into());
     }
     encoded.push(b'\n');
-    let _exchange = EXCHANGE.lock_recover();
-    // Duplicate the inherited descriptor: dropping the per-request stream must not
-    // close the process-wide service connection.
+    let _turn = turn.lock_recover();
     let owned = service
         .try_clone_to_owned()
         .map_err(|e| format!("opening the shell tool service: {e}"))?;
@@ -619,18 +767,22 @@ mod tests {
                 answer.write_all(&encoded).unwrap();
             }
         });
+        // One connection, shared by the callers as an app's process shares it: the turn keeps one
+        // caller's frame and reply from meeting another's.
+        let exchange_lock = std::sync::Mutex::new(());
         std::thread::scope(|scope| {
             for caller in 0..8 {
                 let client = &client;
+                let exchange_lock = &exchange_lock;
                 scope.spawn(move || {
-                    for turn in 0..200 {
+                    for round in 0..200 {
                         let request = ToolRequest {
                             protocol: TOOL_PROTOCOL_VERSION,
-                            workspace_id: format!("{caller}-{turn}"),
+                            workspace_id: format!("{caller}-{round}"),
                             intent: ToolIntent::Drives,
                             on_behalf_of: None,
                         };
-                        let reply = exchange(client.as_fd(), &request).unwrap();
+                        let reply = exchange(client.as_fd(), &request, exchange_lock).unwrap();
                         assert_eq!(reply.message, request.workspace_id);
                     }
                 });
@@ -752,9 +904,22 @@ mod tests {
                     .is_err(),
                     "{bad:?}"
                 );
+            }
+            // The one decision every caller opens a file by asks by its kind, not by a path no
+            // file of the person's stands for.
+            let kind = ToolIntent::DocumentApps {
+                path: "file.md".into(),
+            };
+            assert!(
+                kind.validate().is_ok(),
+                "the kind a Markdown file is, asked by its name"
+            );
+            for bad in ["", ".", "..", "a/b", "a\nb"] {
                 assert!(
-                    ToolIntent::DocumentApps { path: bad }.validate().is_err(),
-                    "a listing is bounded like an open"
+                    ToolIntent::DocumentApps { path: bad.into() }
+                        .validate()
+                        .is_err(),
+                    "a listing is bounded like a name: {bad:?}"
                 );
             }
             assert!(
@@ -774,6 +939,60 @@ mod tests {
             assert_eq!(reply.documents.len(), 2);
             assert!(reply.documents[0].is_default);
             assert!(reply.applications.is_empty(), "a list is not another list");
+        }
+
+        phase a_content_open_names_a_file_an_address_and_an_app;
+        {
+            let open = ToolIntent::OpenContent {
+                name: "plan.md".into(),
+                hash: "a".repeat(64),
+                app: "so.tilo.notes".into(),
+            };
+            assert!(open.validate().is_ok());
+            assert_eq!(
+                open.package_id(),
+                None,
+                "the shell routes content, no package opens it"
+            );
+            assert_eq!(
+                serde_json::to_value(&open).unwrap(),
+                serde_json::json!({
+                    "tool": "open_content",
+                    "name": "plan.md",
+                    "hash": "a".repeat(64),
+                    "app": "so.tilo.notes",
+                })
+            );
+            let named = |name: &str, hash: &str, app: &str| ToolIntent::OpenContent {
+                name: name.into(),
+                hash: hash.into(),
+                app: app.into(),
+            };
+            for bad in ["", ".", "..", "a/b", "a\\b", "a\nb"] {
+                assert!(
+                    named(bad, &"a".repeat(64), "so.tilo.notes")
+                        .validate()
+                        .is_err(),
+                    "a file name is no path: {bad:?}"
+                );
+            }
+            for bad in [
+                String::new(),
+                "a/b".to_string(),
+                "a b".to_string(),
+                "a\nb".to_string(),
+                "a".repeat(MAX_REFERENCE_BYTES + 1),
+            ] {
+                assert!(
+                    named("plan.md", &bad, "so.tilo.notes").validate().is_err(),
+                    "an address is bounded: {bad:?}"
+                );
+            }
+            assert!(
+                named("plan.md", &"a".repeat(64), "a\nb")
+                    .validate()
+                    .is_err()
+            );
         }
 
         phase drive_intents_are_shell_routes_with_a_bounded_id;

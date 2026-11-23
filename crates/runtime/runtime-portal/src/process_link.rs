@@ -275,33 +275,6 @@ pub struct InstanceRequest {
     pub link_home: Option<String>,
 }
 
-/// Declares the connections a packet of one shape carries, once: its fields, which the packet
-/// writes and reads in that order, and how many descriptors it carries at most
-/// ([`InstanceFds::CONNECTIONS`]). The link sizes its descriptor buffers from that count, so a
-/// connection added to the list below is one more the buffers hold, never one they leave out.
-macro_rules! connections {
-    ($(#[$doc:meta])* $name:ident {
-        $(
-            $(#[$field_doc:meta])*
-            $field:ident: $ty:ty [with = $with:literal],
-        )*
-    }) => {
-        $(#[$doc])*
-        #[derive(Debug, Serialize, Deserialize)]
-        pub struct $name {
-            $(
-                $(#[$field_doc])*
-                #[serde(with = $with)]
-                pub $field: $ty,
-            )*
-        }
-
-        impl $name {
-            /// The most descriptors a packet of this shape carries: one for each connection, since
-            /// every one of them may be carried.
-            pub const CONNECTIONS: usize = [$(stringify!($field)),*].len();
-        }
-    };
 }
 
 connections! {
@@ -327,6 +300,10 @@ connections! {
         /// `clipboard.paste` reads, since its process holds no display to do either on. `None` on a
         /// session that serves none.
         clipboard: Option<Descriptor> [with = "crate::packet::optional_fd"],
+        /// The instance's connection to the session's tools service, made for this instance: what
+        /// `File.open` asks which app opens a file and starts it. `None` on a session that serves
+        /// none.
+        tools: Option<Descriptor> [with = "crate::packet::optional_fd"],
     }
 }
 
@@ -376,6 +353,7 @@ impl InstanceFds {
                 .as_ref()
                 .map(Descriptor::try_clone)
                 .transpose()?,
+            tools: self.tools.as_ref().map(Descriptor::try_clone).transpose()?,
         })
     }
 }
@@ -821,16 +799,41 @@ mod tests {
             };
             // An instance that shows nothing crosses with no window connection.
             let nothing = InstanceRequest { shows: Shows::Nothing, ..opened.clone() };
-            for (request, window, (origin, content, chooser)) in [
-                (opened.clone(), Some(connection()), (None, None, None)),
-                (opened, Some(connection()), (Some(connection()), Some(connection()), Some(connection()))),
-                (plain.clone(), Some(connection()), (None, None, None)),
-                (plain, Some(connection()), (Some(connection()), Some(connection()), Some(connection()))),
-                (unnamed, Some(connection()), (None, Some(connection()), None)),
-                (nothing, None, (None, None, None)),
+            for (request, window, (origin, content, chooser, tools)) in [
+                (opened.clone(), Some(connection()), (None, None, None, None)),
+                (
+                    opened,
+                    Some(connection()),
+                    (
+                        Some(connection()),
+                        Some(connection()),
+                        Some(connection()),
+                        Some(connection()),
+                    ),
+                ),
+                (plain.clone(), Some(connection()), (None, None, None, None)),
+                (
+                    plain,
+                    Some(connection()),
+                    (
+                        Some(connection()),
+                        Some(connection()),
+                        Some(connection()),
+                        Some(connection()),
+                    ),
+                ),
+                // The clipboard and the tools service are their own connections: each crosses
+                // whether the other does.
+                (unnamed, Some(connection()), (None, Some(connection()), None, Some(connection()))),
+                (nothing, None, (None, None, None, None)),
             ] {
                 let clipboard = chooser.is_some().then(connection);
-                let had = (origin.is_some(), content.is_some(), chooser.is_some());
+                let had = (
+                    origin.is_some(),
+                    content.is_some(),
+                    chooser.is_some(),
+                    tools.is_some(),
+                );
                 ToProcess::Instance {
                     request: Box::new(request.clone()),
                     fds: InstanceFds {
@@ -842,6 +845,7 @@ mod tests {
                         content,
                         chooser,
                         clipboard,
+                        tools,
                     },
                 }
                 .send(&session)
@@ -858,9 +862,14 @@ mod tests {
                     "a window crosses with the instance that draws one"
                 );
                 assert_eq!(
-                    (fds.origin.is_some(), fds.content.is_some(), fds.chooser.is_some()),
+                    (
+                        fds.origin.is_some(),
+                        fds.content.is_some(),
+                        fds.chooser.is_some(),
+                        fds.tools.is_some(),
+                    ),
                     had,
-                    "the instance's own chooser and content store cross with it"
+                    "each connection the session made crosses with the instance"
                 );
                 assert_eq!(
                     fds.clipboard.is_some(),

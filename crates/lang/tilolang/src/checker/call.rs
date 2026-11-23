@@ -2639,14 +2639,16 @@ impl Checker<'_> {
             return Ex::host(Imp::SheetOfFile, vec![named, workbook, format], Ty::File);
         }
         // A folder on this device, within what the app was granted: its entries, one entry, the
-        // bytes a path holds, and a watch that runs an action when the folder changes. They
-        // read the disk, so an action declares `uses files` and a view calls none of them.
+        // bytes a path holds, a watch that runs an action when the folder changes, the open of a
+        // file in the app that opens its kind, and the writes a Files window makes. They read or
+        // change the disk, so an action declares `uses files` and a view calls none of them.
         if matches!(
             name.name.as_str(),
             "list"
                 | "stat"
                 | "read"
                 | "watch"
+                | "open"
                 | "mkdir"
                 | "write"
                 | "rename"
@@ -2679,7 +2681,7 @@ impl Checker<'_> {
                     "E027",
                     name.span,
                     format!(
-                        "`File` has `of_text`, `of_bytes`, `of_sheets`, `at` and `zip`, not `{other}`: a file is made of what an action holds, as `File.of_text(\"Notes.md\", text)`"
+                        "`File` has `of_text`, `of_bytes`, `of_sheets`, `at`, `zip` and `open`, not `{other}`: a file is made of what an action holds, as `File.of_text(\"Notes.md\", text)`"
                     ),
                 );
                 for a in args {
@@ -2728,8 +2730,8 @@ impl Checker<'_> {
     }
 
     /// The `File` calls over a device folder: `File.list(path)`, `File.stat(path)`,
-    /// `File.read(path)` and `File.watch(path, on: action)`. Each reads the disk, so the action
-    /// declaring it says `uses files`; a view calls none.
+    /// `File.read(path)`, `File.watch(path, on: action)` and `File.open(path)`/`File.open(file)`.
+    /// Each reads the disk, so the action declaring it says `uses files`; a view calls none.
     fn file_device_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let method = name.name.as_str();
         let form = match method {
@@ -2737,6 +2739,10 @@ impl Checker<'_> {
             "stat" => "`File.stat(path)`: one entry, or none when nothing is there",
             "read" => "`File.read(path)`: the bytes a path holds",
             "watch" => "`File.watch(path, run)`: one of this package's actions, run when the folder changes",
+            "open" => {
+                "`File.open(path)` or `File.open(file)`: the file at a path, or one an action \
+                 holds, in the app that opens its kind"
+            }
             "mkdir" => "`File.mkdir(path)`: a folder made, within what the app was granted",
             "write" => "`File.write(path, bytes)`: a new file holding those bytes",
             "rename" => "`File.rename(path, name)`: the entry renamed in its own folder",
@@ -2773,6 +2779,24 @@ impl Checker<'_> {
             span,
             &format!("`File.{method}`"),
         );
+        // `File.open` names a path the app was granted, or the file an action holds: both are one
+        // open, decided by the shell from the file's bytes and its name.
+        if method == "open" {
+            let opened = self.expr(&args[0].value, None);
+            let (imp, opened) = if opened.ty.same(&Ty::File) {
+                (Imp::FileOpen, opened)
+            } else {
+                (
+                    Imp::FileOpenPath,
+                    self.coerce(opened, &Ty::Text, args[0].value.span),
+                )
+            };
+            return Ex::host(
+                imp,
+                vec![opened],
+                Ty::Result(Box::new(Ty::Unit), Box::new(Ty::Text)),
+            );
+        }
         let entry = || super::platform::host_ty("FileEntry");
         let trashed = || super::platform::host_ty("TrashEntry");
         let result = |ok: Ty| Ty::Result(Box::new(ok), Box::new(Ty::Text));

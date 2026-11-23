@@ -215,6 +215,17 @@ impl Launches {
         *self.applications.lock_recover() = Some(lists);
     }
 
+    /// Whether the signed manifest of the app `app` declares `files.open`: the ceiling the tools
+    /// service checks before it opens a file for an app that is not Files. An app this device did
+    /// not install, or whose manifest does not declare it, opens none.
+    #[must_use]
+    pub fn declares_files_open(&self, app: &str) -> bool {
+        self.applications
+            .lock_recover()
+            .as_ref()
+            .is_some_and(|lists| lists.latest().files_open(app))
+    }
+
     /// Record that `pid` runs `app` in `workspace` , as this session started it: the app's
     /// connection is admitted from here. A pid whose process cannot be read is recorded by nothing
     /// and starts an app that reaches no service.

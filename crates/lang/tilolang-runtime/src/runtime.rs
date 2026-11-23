@@ -1193,9 +1193,9 @@ impl Runtime {
         *self.core.pdf.borrow_mut() = Box::new(host);
     }
 
-    /// The device's own folders ([`crate::files`]): what `File.list`, `File.stat`, `File.read`
-    /// and `File.watch` reach, within the paths the app was granted. Until it is set, an app
-    /// holds no device files and each call says so.
+    /// The device's own folders ([`crate::files`]): what `File.list`, `File.stat`, `File.read`,
+    /// `File.watch` and `File.open` reach, within the paths the app was granted. Until it is set,
+    /// an app holds no device files and each call says so.
     pub fn set_device_files(&self, host: impl crate::files::FilesHost + 'static) {
         *self.core.files.borrow_mut() = Some(Box::new(host));
     }

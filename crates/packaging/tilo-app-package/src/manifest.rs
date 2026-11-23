@@ -94,6 +94,12 @@ pub const DEFAULT_PLATFORMS: &[Platform] = &[Platform::Linux, Platform::Macos, P
 /// The capability whose origin connector the session hands the workspace's account sign-ins.
 pub const ACCOUNT_SIGN_INS: &str = "account-sign-ins";
 
+/// The capability that lets an app open a file in the app that opens its kind (`File.open`),
+/// beside Files, which opens one for the person. An app that reads the device's folders declares
+/// it (`uses files`), and the session answers a document's apps and its open to an app only when
+/// its signed manifest declares it: the manifest is the ceiling, never the app's request.
+pub const FILES_OPEN: &str = "files.open";
+
 /// `[capabilities]` — host capabilities by name (`network.http`,
 /// `notifications`, `files.save`, ...). A `required` capability that a host
 /// cannot provide stops the launch; an `optional` one degrades.

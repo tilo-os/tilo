@@ -150,6 +150,9 @@ pub struct Instance {
     pub chooser: Option<OwnedFd>,
     /// Its connection to the person's clipboard, when this session serves one.
     pub clipboard: Option<OwnedFd>,
+    /// Its connection to this session's tools service, whose far end answers for this app: what
+    /// `File.open` asks which app opens a file and starts it.
+    pub tools: Option<OwnedFd>,
     /// The record the window was asked to show, by its id.
     pub document: Option<String>,
     /// The item the window opens on, by its anchor.
@@ -367,6 +370,7 @@ impl Processes {
             content: instance.content,
             chooser: instance.chooser,
             clipboard: instance.clipboard,
+            tools: instance.tools,
         };
         let started = self.send(&key, &request, &fds, build)?;
         tracing::info!(

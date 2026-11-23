@@ -439,6 +439,10 @@ imports! {
     FileTrash = "file_trash" ([H] -> [H]);
     FileTrashEntries = "file_trash_entries" ([] -> [H]);
     FileRestore = "file_restore" ([H] -> [H]);
+    // Opening a file in the app that opens its kind: the path the app was granted, or the file an
+    // action holds, by its name and the address of its bytes.
+    FileOpenPath = "file_open_path" ([H] -> [H]);
+    FileOpen = "file_open" ([H] -> [H]);
     ActChoose = "act_choose" ([H, H] -> [H]);
     ActChooseFolder = "act_choose_folder" ([H, H] -> [H]);
     ActSave = "act_save" ([H, H] -> [H]);

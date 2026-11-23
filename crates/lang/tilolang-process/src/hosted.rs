@@ -522,6 +522,9 @@ struct HostPlatform {
     /// The device's preview cache, shared with every other instance of this host and opened the
     /// first time one is asked for.
     thumbnails: Option<std::sync::Arc<std::sync::OnceLock<Arc<thumbnail::ThumbnailService>>>>,
+    /// The session's tools service, over the connection the session made for this instance: what
+    /// `File.open` asks which app opens a file and starts it.
+    tools: Option<std::sync::Arc<runtime_portal::tools::Service>>,
     /// What a person asking for a file is told when the session opened no chooser.
     no_chooser: String,
     /// The member the instance acts for: whose changes a watched folder's action makes.
@@ -783,6 +786,35 @@ impl Platform for HostPlatform {
         crate::files::restore(name)
     }
 
+    /// `File.open`: the shell answers which app opens the file's kind and starts it. A file an
+    /// action holds is read here first, since the decision is made from its bytes and its name;
+    /// the session then opens it as content the app that opens it reads, never as a path this
+    /// sandbox has not.
+    fn open_file(
+        &self,
+        file: &tilolang_tilo::runtime::files::FileTarget<'_>,
+    ) -> Result<(), String> {
+        let Some(tools) = self.tools.as_deref() else {
+            return Err("the shell is not answering which app opens a file".to_owned());
+        };
+        match file {
+            tilolang_tilo::runtime::files::FileTarget::Path(path) => {
+                tools.open_document(path, None)
+            }
+            tilolang_tilo::runtime::files::FileTarget::Content { name, hash } => {
+                let bytes = self
+                    .read_content(hash)
+                    .ok_or_else(|| format!("the content of `{name}` is not on this device"))?;
+                let apps = |kind: &str| tools.list_document_apps(kind);
+                let app = runtime_portal::tools::document_app_for_with(&bytes, name, &apps)?;
+                let Some(app) = app else {
+                    return Err(format!("nothing on this computer opens `{name}`"));
+                };
+                tools.open_content(name, hash, &app.id)
+            }
+        }
+    }
+
     fn waker(&self) -> Waker {
         Arc::clone(&self.wake)
     }
@@ -829,6 +861,9 @@ pub struct Kept {
     /// The device's preview cache, shared with every instance of this host and opened the first
     /// time one is asked for.
     pub thumbnails: Option<std::sync::Arc<std::sync::OnceLock<Arc<thumbnail::ThumbnailService>>>>,
+    /// The session's tools service, over the connection it made for this instance: what
+    /// `File.open` asks which app opens a file and starts it.
+    pub tools: Option<std::sync::Arc<runtime_portal::tools::Service>>,
 }
 
 /// What the actions of the rows a window shows answered, by resource and action: a window asks
@@ -1160,6 +1195,7 @@ impl Hosted {
             chooser: kept.chooser.clone(),
             clipboard: kept.clipboard.clone(),
             thumbnails: kept.thumbnails.clone(),
+            tools: kept.tools.clone(),
             no_chooser: crate::files::NO_CHOOSER.to_owned(),
             person: spec.person.clone(),
             watches: Rc::clone(&watches),

@@ -226,6 +226,16 @@ fn clipboard_of(fd: Option<OwnedFd>) -> Option<Arc<tilo_clipboard::service::Conn
     Some(Arc::new(connected))
 }
 
+/// The session's tools service over the connection it made for this instance, for the app's
+/// workspace: what `File.open` asks which app opens a file and starts it. The session fixed who
+/// asks when it made the connection, so the requests on it name no app.
+fn tools_of(fd: Option<OwnedFd>, workspace: &str) -> Option<Arc<runtime_portal::tools::Service>> {
+    let stream = std::os::unix::net::UnixStream::from(fd?);
+    Some(Arc::new(runtime_portal::tools::Service::connect(
+        stream, workspace,
+    )))
+}
+
 /// One running instance and its window's connection, watched for the window closing.
 struct Running {
     hosted: Hosted,
@@ -253,6 +263,8 @@ struct Opening {
     chooser: Option<Arc<dyn tilo_dialogs::FilePicker>>,
     /// The person's clipboard, over the connection the session opened for this instance.
     clipboard: Option<Arc<tilo_clipboard::service::Connected>>,
+    /// The session's tools service, over the connection it made for this instance.
+    tools: Option<Arc<runtime_portal::tools::Service>>,
     /// When the host was handed the instance, and the stages it reached since, with how long
     /// after: what an instance's launch spends in the host.
     received: std::time::Instant,
@@ -481,6 +493,7 @@ impl TilolangProcess {
             chooser: None,
             clipboard: None,
             thumbnails: Some(Arc::clone(&self.thumbnails)),
+            tools: None,
         }
     }
 
@@ -649,6 +662,7 @@ impl TilolangProcess {
         let (app, instance) = (request.app.clone(), request.instance);
         let reveal = request.reveal.clone();
         let open = request.open.clone();
+        let tools = tools_of(fds.tools, &request.workspace);
         std::thread::Builder::new()
             .name("tilolang-module".into())
             .spawn(move || {
@@ -671,6 +685,7 @@ impl TilolangProcess {
             content: store_of(fds.content),
             chooser: chooser_of(fds.chooser),
             clipboard: clipboard_of(fds.clipboard),
+            tools,
             received: std::time::Instant::now(),
             reached: Vec::new(),
             person_changed: false,
@@ -706,6 +721,7 @@ impl TilolangProcess {
             content: None,
             chooser: None,
             clipboard: None,
+            tools: None,
             received: std::time::Instant::now(),
             reached: Vec::new(),
             person_changed: false,
@@ -887,6 +903,7 @@ impl TilolangProcess {
         kept.chooser = opening.chooser.take();
         kept.clipboard = opening.clipboard.take();
         kept.thumbnails = Some(Arc::clone(&self.thumbnails));
+        kept.tools = opening.tools.take();
         let _scope = self.scope.enter();
         let connection = connection::Connection::new(manager).map_err(AdmitError::Open)?;
         let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(
