@@ -46,12 +46,12 @@
 #      their own page, open on the site since step 1, what each sheet drew
 #      kept beside its answer in WORK/startup/answers.jsonl and their view of
 #      it as WORK/startup/submission-{denied,allowed}-{asked,answered}.png —
-#      then a submission is allowed on a browser paired to them holding none of
-#      their identity, and another allowed and one denied on another browser of
-#      theirs, paired to them by that page and open in the applicant's
-#      workspace while their root's page shows another: the question reaches
-#      that browser, and a denial there is refused to the agent with the
-#      refusal's own code; and
+#      then a submission is allowed on a browser signed in through a ticket,
+#      holding none of their identity, and another allowed and one denied on
+#      another browser of theirs, signed in by that page and open in the
+#      applicant's workspace while their root's page shows another: the
+#      question reaches that browser, and a denial there is refused to the
+#      agent with the refusal's own code; and
 #      a click on the submit button is held and asked once; a key minted with
 #      the scope unticked is asked about the page actions that act on the
 #      page; a reviewer who joined by invitation reads the run in History, and
@@ -428,7 +428,7 @@ if [[ $hosted == 1 ]]; then
     TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
       HOSTED_VISA_PLANS=$plans HOSTED_VISA_ACCOUNT=$vm_account \
       HOSTED_VISA_UNSCOPED_KEY=$plain_key \
-      HOSTED_VISA_SITE=$site HOSTED_VISA_SITE_SERVER=$server \
+      HOSTED_VISA_SITE=$site HOSTED_VISA_SITE_SERVER=$server HOSTED_VISA_TILO=$tilo \
       HOSTED_VISA_PAGE_ASKS=${person_asks:-} HOSTED_VISA_PAGE_ANSWERS=${person_asks:+$work/startup/answers.jsonl} \
       HOSTED_VISA_PAGE_WORKSPACE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("workspace") or "")' "$work/startup.json") \
       sdk_python "$here/integration/hosted-visa.py" "$api" "$key" "$work/hosted" "$form_url" "$1"

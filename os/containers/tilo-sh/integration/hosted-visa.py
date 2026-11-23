@@ -23,12 +23,12 @@ sheet (integration/person.mjs --answer, integration/page_person.py):
   e. a second form instance is submitted: the person is asked exactly once,
      the sheet names the submission, and they allow it; the same call returns,
      and the page shows its receipt and reference (`read-page`); then a third
-     is allowed on a browser of theirs paired to them by their page, which
-     holds none of their identity (`person.mjs --pair-link`): the person is
-     asked on whichever of their devices they are at;
+     is allowed on a browser of theirs signed in through a ticket from their
+     page, which holds none of their identity (`person.mjs --pair`): the
+     person is asked on whichever of their devices they are at;
   e3. the page the person's root is in shows another workspace, and a second
-     browser of theirs, paired to them by that page and holding none of the
-     root, is open in the applicant's: the question reaches that browser, and
+     browser of theirs, signed in by that page and holding none of the root,
+     is open in the applicant's: the question reaches that browser, and
      allowing there releases the submission. A submission they deny there is
      refused to the agent with the refusal's own code (`not_permitted`), and
      the filled page stays unsent;
@@ -97,6 +97,9 @@ UNSCOPED_KEY = os.environ.get("HOSTED_VISA_UNSCOPED_KEY", "")
 # they watch, by the name the shell gives the app that hosts it.
 SITE = os.environ.get("HOSTED_VISA_SITE", "")
 SITE_SERVER = os.environ.get("HOSTED_VISA_SITE_SERVER", "")
+# The `tilo` command the check built, which the browser it signs in runs
+# `tilo device add` with, on a computer that holds none of the person's root.
+TILO = os.environ.get("HOSTED_VISA_TILO", "")
 SHELL_EMAIL = "shell-person@example.invalid"
 # The tile on their shell, by the name the shell gives it: the hosted window is
 # the workspace's Browser, and a shell that names it by the page it shows names
@@ -237,13 +240,14 @@ def check_leaves(question: dict, what: str) -> None:
 
 
 class PairedBrowser(PagePerson):
-    """A second browser of the person's, paired to them by their root page and
-    holding none of it, open in the workspace their agent works in
-    (integration/person.mjs --pair-link --answer). The page their root is in
-    shows another workspace, so what the agent holds is put to this one."""
+    """A second browser of the person's, signed in to them through a ticket by
+    their root's page and holding none of it, open in the workspace their agent
+    works in (integration/person.mjs --pair --answer). The page their root is
+    in shows another workspace, so what the agent holds is put to this one."""
 
-    def __init__(self, link: str, directory: str) -> None:
+    def __init__(self, workspace: str, directory: str) -> None:
         check(bool(SITE and SITE_SERVER), "the check names the site and the server the person's browsers enter through")
+        check(bool(TILO), "the check names the tilo command the browser signs in with (HOSTED_VISA_TILO)")
         Path(directory).mkdir(parents=True, exist_ok=True)
         self.log = Path(directory) / "browser.log"
         self.out = Path(directory) / "browser.out"
@@ -261,20 +265,21 @@ class PairedBrowser(PagePerson):
         self.holder = os.open(asks, os.O_RDWR)
         self.stdout = open(self.out, "w")
         self.stderr = open(self.log, "w")
+        self.workspace = workspace
         self.ran = subprocess.Popen(
-            ["node", str(PERSON_PAGE), SITE, SITE_SERVER, directory, "--pair-link", link,
-             "--answer", asks],
+            ["node", str(PERSON_PAGE), SITE, SITE_SERVER, directory, "--pair", workspace,
+             "--tilo", TILO, "--answer", asks],
             stdout=self.stdout, stderr=self.stderr,
         )
         super().__init__(asks, answers)
         self.stopped = False
-        # Listed before it is waited for: a browser that never paired is
+        # Listed before it is waited for: a browser that never signs in is
         # still this run's to stop.
         BROWSERS.append(self)
-        self.report = self.paired(directory)
+        self.report: dict = {}
 
-    def paired(self, directory: str) -> dict:
-        """The report the browser printed once it was paired and in."""
+    def paired(self) -> dict:
+        """The report the browser printed once it was signed in and in."""
         deadline = time.monotonic() + 420
         while time.monotonic() < deadline:
             try:
@@ -290,11 +295,11 @@ class PairedBrowser(PagePerson):
                     return said
             if self.ran.poll() not in (None, 0):
                 raise AssertionError(
-                    f"the paired browser ended ({self.ran.returncode}): "
+                    f"the signed-in browser ended ({self.ran.returncode}): "
                     f"{self.log.read_text()[-2000:]}"
                 )
             time.sleep(0.2)
-        raise AssertionError(f"the browser was not paired in 420 s (see {self.log})")
+        raise AssertionError(f"the browser was not signed in in 420 s (see {self.log})")
 
     def stop(self) -> None:
         """Its browser goes, as one a person closes does."""
@@ -664,11 +669,13 @@ async def fill_phase(report: dict[str, object]) -> int:
         check("TV-" in json.dumps(receipt), f"the page shows the reference it made ({json.dumps(receipt)[:300]})")
         report["receipt"] = True
 
-        say("e2. a browser the person's page lets in, holding none of their identity, allows a submission there")
-        phone = PairedBrowser(person.join_link(workspace), os.path.join(OUT, "phone"))
+        say("e2. a browser the person signs in through a ticket, holding none of their identity, allows a submission there")
+        phone = PairedBrowser(workspace, os.path.join(OUT, "phone"))
+        person.sign_in(workspace)
+        phone.report = phone.paired()
         check(
             phone.report.get("workspace") == workspace,
-            f"the paired browser is in the agent's workspace ({phone.report.get('workspace')})",
+            f"the signed-in browser is in the agent's workspace ({phone.report.get('workspace')})",
         )
         submit = await fill(page)
         asked = phone.begin("allow", "phone-allowed")
@@ -689,15 +696,17 @@ async def fill_phase(report: dict[str, object]) -> int:
         report["shell_receipt"] = seen
         shell.stop()
 
-        say("e3. the root's page shows another workspace, and the browser the person paired is asked there")
+        say("e3. the root's page shows another workspace, and the browser the person signed in is asked there")
         check(
             PAGE_WORKSPACE and PAGE_WORKSPACE != workspace,
             f"the page holding the person's root shows another workspace ({PAGE_WORKSPACE}), not the agent's ({workspace})",
         )
-        paired = PairedBrowser(person.join_link(workspace), os.path.join(OUT, "paired-browser"))
+        paired = PairedBrowser(workspace, os.path.join(OUT, "paired-browser"))
+        person.sign_in(workspace)
+        paired.report = paired.paired()
         check(
             paired.report.get("workspace") == workspace,
-            f"the paired browser is in the agent's workspace ({paired.report.get('workspace')})",
+            f"the signed-in browser is in the agent's workspace ({paired.report.get('workspace')})",
         )
         report["paired_browser"] = {
             key: paired.report.get(key) for key in ("workspace", "pairedMs", "paired")

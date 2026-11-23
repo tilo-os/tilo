@@ -54,18 +54,21 @@
 //                   `none NAME` waits for a question without answering it, and
 //                   appends {name, answer: "none", shown, askedMs}: a sheet
 //                   that came is `shown`, and one that never did is empty.
-//                   `pair WORKSPACE` makes a link into that workspace on the
-//                   host this page is in, the browser that follows it let in
-//                   here as an agent's link is, and appends {pair: {workspace,
-//                   link, invite, expiresAt}}. `done` (or the FIFO's end) ends
-//                   it.
-//   --pair-link LINK
-//                   this browser is the device that follows LINK: it pairs to
-//                   the person the link names, holding none of their root, and
-//                   is in the workspace it opens; with --answer it answers
-//                   there, with its own device key, as a device of theirs does.
+//                   `pair WORKSPACE` signs a browser of the person's in
+//                   through a ticket: their page, which holds the root, shows
+//                   one bar naming the browser and what certifying it makes
+//                   it, and the person presses Sign in there. It appends
+//                   {pair: {workspace, signedIn, shown}}. `done` (or the
+//                   FIFO's end) ends it.
+//   --pair WORKSPACE
+//                   this browser is a new one of the person's, signed in
+//                   through a ticket (`tilo device add`, run here on a
+//                   computer that holds none of their root): it shows the
+//                   site's sign-in ticket, and once the person's own page
+//                   signs it in it opens WORKSPACE; with --answer it answers
+//                   the questions their agent's hosts put to it there.
 //
-// usage: node person.mjs SITE SERVER OUT_DIR [--invite LINK] [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--answer FIFO] [--pair-link LINK]
+// usage: node person.mjs SITE SERVER OUT_DIR [--invite LINK] [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--answer FIFO] [--pair WORKSPACE]
 //
 // Prints one JSON line: {arrivedMs, joinedMs, workspace, followed, key, entered}.
 // `arrivedMs` is a fresh visitor's entry: from navigating to the site to the
@@ -74,7 +77,7 @@
 // non-zero, saying what never happened, when a step did not. With `--key` it
 // also keeps what the person reads there, in both appearances: the sign-in
 // card they allow, the api's grants page, and the key that page makes.
-import {spawn} from 'node:child_process';
+import {spawn, spawnSync} from 'node:child_process';
 import {appendFileSync, createReadStream, existsSync, mkdirSync, writeFileSync} from 'node:fs';
 import {createInterface} from 'node:readline';
 import {join} from 'node:path';
@@ -87,7 +90,7 @@ const option = name => {
   return at < 0 ? null : rest[at + 1];
 };
 if (!site || !server || !out) {
-  console.error('usage: node person.mjs SITE SERVER OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--answer FIFO]');
+  console.error('usage: node person.mjs SITE SERVER OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--answer FIFO] [--pair WORKSPACE]');
   process.exit(2);
 }
 const invite = option('--invite');
@@ -101,7 +104,7 @@ const typed = option('--type');
 const pageName = option('--page');
 const changes = Number(option('--changes') ?? 1);
 const answerFifo = option('--answer');
-const pairLink = option('--pair-link');
+const pairWorkspace = option('--pair');
 mkdirSync(out, {recursive: true});
 
 const report = {site, server};
@@ -172,33 +175,15 @@ const capture = async name => {
 const memberships = `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')`;
 const entered = `JSON.parse(globalThis.localStorage.getItem('tilo-entered-workspaces') ?? '[]')`;
 
-// A fresh visitor's entry, or a browser a person paired to themselves: the
-// pairing link makes this browser a device of theirs, holding none of their
-// root, in the workspace the link names.
+// The person's arrival, as the site lets them in: through an invitation, or
+// bare. Right after the person is founded, their 24 recovery words are shown
+// once, before the workspace opens. Returns the membership the page kept.
 const began = Date.now();
 let membership = null;
-if (pairLink) {
-  await tab.navigate(pairLink);
-  await until(`document.documentElement.dataset.entry === 'open'`, 'the page pairing this browser');
-  // The page says whose device this becomes before it asks to be let in; the
-  // person paired it to themselves, and goes on.
-  membership = JSON.parse(await until(`(() => {
-    const go = document.querySelector('[data-card="pair-whose"] .tilo-entry-primary');
-    if (go && !go.dataset.pressed) { go.dataset.pressed = '1'; go.click(); }
-    const now = ${memberships};
-    const found = (Array.isArray(now) ? now : Object.values(now)).find(entry => entry?.paired && entry?.workspace);
-    return found ? JSON.stringify(found) : '';
-  })()`, 'this browser being paired to the person'));
-  report.pairedMs = Date.now() - began;
-  report.paired = membership;
-  report.workspace = membership.workspace;
-  console.error(`ok: the browser paired to ${membership.userPublicKey} and was in ${membership.workspace} after ${report.pairedMs} ms`);
-} else {
+const freshArrival = async () => {
   await tab.navigate(invite ?? site);
   // Through an invitation, its card names the workspace and offers Join:
-  // pressed as the newcomer presses it, and the page goes on arriving. Right
-  // after the person is founded, their 24 recovery words are shown once,
-  // before the workspace opens.
+  // pressed as the newcomer presses it, and the page goes on arriving.
   const stage = await until(`(() => {
     if (document.querySelector('[data-card="recovery-words"]')) return 'words';
     if (['done', 'stopped'].includes(document.documentElement.dataset.arrival)) return 'settled';
@@ -227,15 +212,93 @@ if (pairLink) {
   // when a link carried the invitation to a site that names no other server, the server's when it
   // did, one an invitation named for a server reached over iroh.
   const siteOrigin = new URL(site).origin;
-  membership = JSON.parse(await until(`(() => {
+  const kept = JSON.parse(await until(`(() => {
     const kept = ${memberships}[${JSON.stringify(new URL(server).origin)}]
       ?? ${memberships}[${JSON.stringify(siteOrigin)}]
       ?? Object.values(${memberships}).find(entry => entry?.workspace);
     return kept?.workspace ? JSON.stringify(kept) : '';
   })()`, 'joining the Lounge'));
   report.joinedMs = Date.now() - began;
-  report.workspace = membership.workspace;
+  report.workspace = kept.workspace;
   console.error(`ok: a fresh visitor arrived in ${report.arrivedMs} ms and was in the Lounge (${report.workspace}) at ${report.joinedMs} ms`);
+  return kept;
+};
+
+if (pairWorkspace) {
+  // A new browser of the person's, signed in through a ticket: this tab shows
+  // the site's sign-in ticket, a computer that holds none of the person's root
+  // runs `tilo device add` with it, and the person's page, which holds the
+  // root, is asked to sign this browser in (their --answer loop presses Sign
+  // in). It opens as a visitor first: an invitation-only site turns it away to
+  // its wait list, where "Sign in with your agent" is offered; an open site
+  // founds it a guest, whose first screen offers the same.
+  if (!tiloBin) await finish(2, '--pair needs --tilo, the computer that runs `tilo device add`');
+  await tab.navigate(invite ?? site);
+  const met = await until(`(() => {
+    if (document.documentElement.dataset.refusal === 'wait-list') return 'turned away';
+    if (['done', 'stopped'].includes(document.documentElement.dataset.arrival)) {
+      return document.documentElement.dataset.arrival === 'done' ? 'arrived' : 'stopped';
+    }
+    return '';
+  })()`, invite ? 'the page arriving through the invitation' : 'the page arriving', stepLimit(24));
+  if (met === 'stopped') await finish(1, `the page stopped arriving: ${await text()}`);
+  // The workspace this browser was in before it signed in: a guest's Lounge,
+  // or none at all. What the check waits for is the page in another one.
+  const beforeWorkspace = await tab.evaluate(`document.documentElement.dataset.workspace ?? ''`);
+  if (met === 'turned away') {
+    // A visitor the invitation-only entry does not know: its wait list offers
+    // "Sign in with your agent", which asks this tab's host for a sign-in
+    // ticket.
+    await tab.evaluate(`document.getElementById('arrival-sign-in-agent').click(); 1`);
+  } else {
+    // A guest the open entry let in: the first screen offers the sign-in.
+    await until(`document.getElementById('first-screen')?.dataset.signIn === 'ready'`, 'the first screen offering a sign-in');
+    await tab.evaluate(`document.getElementById('first-screen-agent-sign-in').click(); 1`);
+  }
+  // The ticket the page shows, read from what it says: `tilo device add <ticket>`.
+  const prompt = await until(`(() => {
+    const text = (document.body?.innerText || '').replace(/\s+/g, ' ');
+    const said = text.match(/(?:tilo|sh -s) device add (\S+)/);
+    return said ? said[0] : '';
+  })()`, 'the sign-in ticket', stepLimit(6));
+  const ticket = prompt.match(/(?:tilo|sh -s) device add (\S+)/)?.[1];
+  if (!ticket) await finish(1, `the sign-in prompt names no ticket: ${prompt}`);
+  report.signInTicket = ticket;
+  // The computer the sign-in runs on: its own home, holding no root, so
+  // `tilo device add` hands the signing on rather than certifying the tab
+  // itself. The person's page, which holds the root, is asked next.
+  const home = join(out, 'computer');
+  mkdirSync(home, {recursive: true});
+  const added = spawnSync(tiloBin, ['device', 'add', ticket], {
+    env: {...process.env, HOME: home, XDG_STATE_HOME: join(home, 'state'), XDG_CONFIG_HOME: join(home, 'config')},
+    encoding: 'utf8', timeout: 180_000,
+  });
+  if (added.error) await finish(1, `tilo device add did not run: ${added.error.message}`);
+  if (added.status !== 0) await finish(1, `tilo device add failed (${added.status}): ${added.stderr || added.stdout}`);
+  console.error('ok: a computer with no root asked the person to sign this browser in');
+  // Signed in, the tab is let in as the person and opens a workspace of
+  // theirs: what the check waits for is the page in that workspace, not a
+  // guest's Lounge.
+  await until(`(() => {
+    const ws = document.documentElement.dataset.workspace ?? '';
+    return document.documentElement.dataset.arrival === 'done' && !!ws
+      && ws !== ${JSON.stringify(beforeWorkspace)} && !!document.querySelector('#tilo-page [data-p]');
+  })()`, 'the browser signed in as the person', stepLimit(24));
+  report.signedInMs = Date.now() - began;
+  await tab.navigate(`${site.replace(/\/+$/, '')}/w/${pairWorkspace}`);
+  await until(`location.pathname.includes(${JSON.stringify('/w/' + pairWorkspace)})
+    && !!document.querySelector('#tilo-page [data-p]')`, `the browser in the workspace ${pairWorkspace}`, stepLimit(24));
+  membership = JSON.parse(await tab.evaluate(`(() => {
+    const kept = ${memberships};
+    const found = (Array.isArray(kept) ? kept : Object.values(kept)).find(entry => entry?.workspace === ${JSON.stringify(pairWorkspace)});
+    return JSON.stringify(found ?? {workspace: ${JSON.stringify(pairWorkspace)}});
+  })()`));
+  report.pairedMs = Date.now() - began;
+  report.paired = membership;
+  report.workspace = pairWorkspace;
+  console.error(`ok: a browser signed in through a ticket is in ${pairWorkspace} after ${report.pairedMs} ms`);
+} else {
+  membership = await freshArrival();
 }
 
 if (follow) {
@@ -659,11 +722,11 @@ if (answerFifo) {
   console.log(JSON.stringify(report));
   reported = true;
   // Back on the site, where the page holding their root answers what their
-  // agents' hosts ask them: the sheet the workspace's page draws over its app
-  // (`crates/server/tilo-server/src/web/question_sheet.rs`). A browser paired
-  // to them stays where it is, in the workspace the pairing put it in.
-  if (pairLink) {
-    console.error('ok: the paired browser is in its workspace, answering the person\'s questions there');
+  // agents' hosts ask them, on the sheet the workspace's page draws over its
+  // app. A browser signed in to a workspace stays where it is, in the
+  // workspace the check opened it in.
+  if (pairWorkspace) {
+    console.error('ok: the signed-in browser is in its workspace, answering the person\'s questions there');
   } else {
     await tab.navigate(site);
     await until(`document.documentElement.dataset.arrival === 'done'`, 'the page arriving again to answer questions');
@@ -675,21 +738,23 @@ if (answerFifo) {
     if (!answer) continue;
     if (answer === 'done') break;
     if (answer === 'pair') {
-      // A link for a browser of the person's, into `name`'s workspace: the
-      // browser that follows it is let in here, as an agent set up from this
-      // tab is.
-      await until('Boolean(globalThis.tiloIdentity?.connectAgent)', 'the page ready to pair a device', 120_000);
-      const made = await tab.evaluate(`(async () => {
-        try {
-          const made = await globalThis.tiloIdentity.connectAgent({workspace: ${JSON.stringify(name)}});
-          return {link: made.link, invite: made.invite, expiresAt: made.expiresAt};
-        } catch (error) {
-          return {error: String(error?.message ?? error), code: error?.code ?? null};
-        }
-      })()`).catch(error => ({error: String(error?.message ?? error)}));
-      appendFileSync(join(out, 'answers.jsonl'), `${JSON.stringify({pair: {workspace: name, ...made}})}\n`);
-      if (made.link) console.error(`ok: the page made a link into ${name}`);
-      else console.error(`FAIL: the page made no link into ${name}: ${JSON.stringify(made)}`);
+      // A browser of the person's waiting to be signed in through a ticket:
+      // this page holds their root, so their host asks it. One bar names the
+      // browser and what certifying it makes it; the person presses Sign in
+      // there, and the root signs its certificate.
+      const shown = await until(`(() => {
+        const bar = document.getElementById('tilo-sign-in');
+        return bar && !bar.hidden ? bar.innerText.trim() : '';
+      })()`, 'the page asking about the browser signing in', 180_000);
+      const pressed = await tab.evaluate(`(() => {
+        const allow = document.getElementById('tilo-sign-in-allow');
+        if (!allow || allow.disabled) return false;
+        allow.click();
+        return true;
+      })()`);
+      if (!pressed) await finish(1, `the sign-in bar for ${name} has no Sign in button: ${shown}`);
+      appendFileSync(join(out, 'answers.jsonl'), `${JSON.stringify({pair: {workspace: name, signedIn: true, shown}})}\n`);
+      console.error(`ok: the person signed a browser in for ${name}: ${shown}`);
       continue;
     }
     if (!['allow', 'deny', 'none'].includes(answer) || !name) await finish(2, `--answer reads "allow NAME", "deny NAME", "none NAME" or "pair WORKSPACE", not ${JSON.stringify(line)}`);

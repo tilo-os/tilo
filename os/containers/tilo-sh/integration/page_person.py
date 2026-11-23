@@ -9,7 +9,7 @@ and reads what the page records:
     deny NAME    answer the next question, refusing it
     none NAME    answer nothing; record whether a question came
     pair WORKSPACE
-                 make a link a browser of theirs follows into WORKSPACE
+                 sign a browser of theirs in through a ticket; it opens WORKSPACE
 
 Each recorded line carries `shown`: what the sheet drew, as the page's
 accessibility tree names it (the question's title, its detail, its facts),
@@ -81,10 +81,11 @@ class PagePerson:
     def answered(self) -> int:
         return len(self.asked)
 
-    def join_link(self, workspace: str, within: int = 120) -> dict:
-        """The person's page makes a link for a browser of theirs into
-        `workspace`: the browser that follows it is let in there, as an agent
-        set up from that tab is."""
+    def sign_in(self, workspace: str, within: int = 180) -> dict:
+        """The person signs a browser of theirs in through a ticket: the page
+        that holds their root shows the bar naming the browser and what
+        certifying it makes it, the person presses Sign in, and the browser
+        then opens `workspace` (`person.mjs --pair`)."""
         self.begin("pair", workspace)
         deadline = time.monotonic() + within
         while time.monotonic() < deadline:
@@ -92,13 +93,13 @@ class PagePerson:
                 made = said.get("pair") if isinstance(said, dict) else None
                 if isinstance(made, dict) and made.get("workspace") == workspace:
                     self._check(
-                        made.get("link"),
-                        f"the person's page made a link into {workspace} ({made})",
+                        made.get("signedIn") and made.get("shown"),
+                        f"the person's page signed the browser in for {workspace} ({made})",
                     )
                     return made
             time.sleep(0.2)
         raise AssertionError(
-            f"the person's page made no link into {workspace} in {within} s ({self.answers})"
+            f"the person's page signed no browser in for {workspace} in {within} s ({self.answers})"
         )
 
     def _lines(self) -> list[dict]:
