@@ -3056,6 +3056,16 @@ impl Checker<'_> {
                 let files = Ty::Result(Box::new(Ty::File), Box::new(Ty::Text));
                 Ex::host(Imp::FileEncode, vec![r, format, quality], files)
             }
+            // A book the file is, read from an EPUB container: its chapters in reading order,
+            // each beginning with its title as a heading, and what its package says about it
+            // (title, author, language, subject). A file that is not a book, or one damaged or
+            // too long, fails the action that reads it, saying so.
+            (Ty::File, "book") if args.is_empty() => {
+                Ex::host(Imp::FileBook, vec![r], Ty::List(Box::new(Ty::RichText)))
+            }
+            (Ty::File, "book_info") if args.is_empty() => {
+                Ex::host(Imp::FileBookInfo, vec![r], Ty::Map(Box::new(Ty::Text)))
+            }
             // A map read as a value: its keys, the value one key holds, and — in the code that
             // runs — the entry put there or taken out.
             (Ty::Map(t), "get" | "keys" | "put" | "remove") => {

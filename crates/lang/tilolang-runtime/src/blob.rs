@@ -363,6 +363,46 @@ impl Core {
                 };
                 self.result(answer.map(Value::List))
             }
+            // The book a file is: its chapters as rich text, each beginning with its title as a
+            // heading, and what its package says about it. Reading a book is a read of the
+            // content's bytes, like `.text()`: the same bytes always read the same book.
+            Imp::FileBook | Imp::FileBookInfo => {
+                let file = self.file_arg(a.h(0)?)?;
+                let bytes = self
+                    .blobs
+                    .borrow()
+                    .as_ref()
+                    .and_then(|blobs| blobs.read(&file.hash));
+                let Some(bytes) = bytes else {
+                    return trap(format!(
+                        "the content of `{}` is not on this device",
+                        file.name
+                    ));
+                };
+                let book = match tilo_doc_codecs::book::read(&bytes) {
+                    Ok(book) => book,
+                    Err(why) => return trap(format!("`{}` is not a book: {why}", file.name)),
+                };
+                if matches!(imp, Imp::FileBookInfo) {
+                    let facts = [
+                        ("title", book.title),
+                        ("author", book.author),
+                        ("language", book.language),
+                        ("subject", book.subject),
+                    ];
+                    return self.ret_h(Value::Map(
+                        facts
+                            .into_iter()
+                            .map(|(key, value)| (Value::text(key), Value::text(value)))
+                            .collect(),
+                    ));
+                }
+                let mut chapters = Vec::with_capacity(book.chapters.len());
+                for chapter in &book.chapters {
+                    chapters.push(Value::Rich(chapter_rich(chapter)));
+                }
+                self.ret_h(Value::List(chapters))
+            }
             _ => trap("not a file import"),
         }
     }
@@ -475,6 +515,35 @@ fn files_of_list(items: &[Value]) -> HResult<Vec<FileValue>> {
         }
     }
     Ok(files)
+}
+
+/// A chapter read as the rich text a reader shows: its XHTML by the one HTML importer, with its
+/// title as a heading when the chapter does not already begin with that heading, so every
+/// chapter's first block names it and the contents can be read off the text. Paragraphs with no
+/// words are left out: markup puts whitespace between blocks, and the importer keeps it as empty
+/// paragraphs a page should not hold.
+fn chapter_rich(chapter: &tilo_doc_codecs::book::Chapter) -> crate::rich::RichValue {
+    let mut blocks = tilo_doc_codecs::rich::blocks_of_html(&chapter.xhtml).unwrap_or_default();
+    blocks.retain(|block| block.kind != "paragraph" || !block.text.trim().is_empty());
+    let opens_with_title = blocks.first().is_some_and(|block| {
+        block.kind == "heading" && block.text.trim().eq_ignore_ascii_case(chapter.title.trim())
+    });
+    if !opens_with_title && !chapter.title.trim().is_empty() {
+        let mut attrs = std::collections::BTreeMap::new();
+        attrs.insert("level".to_owned(), tilo_doc::snapshot::AttrVal::Int(1));
+        blocks.insert(
+            0,
+            tilo_doc::snapshot::BlockView {
+                id: "chapter-title".to_owned(),
+                kind: "heading".to_owned(),
+                text: chapter.title.clone(),
+                marks: Vec::new(),
+                attrs,
+                children: Vec::new(),
+            },
+        );
+    }
+    crate::rich::RichValue { blocks }
 }
 
 /// The file `name`, of what `held` is: the text or the bytes kept in the content store, the

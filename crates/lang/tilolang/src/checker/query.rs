@@ -932,8 +932,8 @@ impl Checker<'_> {
                     name.span,
                     format!(
                         "a `File` has the fields `name`, `media`, `size`, `url` and `path`, not \
-                         `{other}`; `.text()` reads its content and `.files()` the files an \
-                         archive holds"
+                         `{other}`; `.text()` reads its content, `.files()` the files an archive \
+                         holds, and `.book()` the chapters of an EPUB book"
                     ),
                 );
                 return Ex::error();

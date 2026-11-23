@@ -28,7 +28,7 @@ use Imp::{
     CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday,
     Describe, DescribeRef, DurationText, Earlier, EditField, EntryParts, EnumGetF, EnumGetH,
     EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged,
-    FileAt, FileFiles, FileOfBytes, FileOfText, FilePart, FileSize, FileText, FileZip, FilterLit,
+    FileAt, FileBook, FileBookInfo, FileFiles, FileOfBytes, FileOfText, FilePart, FileSize, FileText, FileZip, FilterLit,
     Filters, Find, FirstUnseen, FloatAbs, FloatAcos, FloatAsin, FloatAtan, FloatCbrt, FloatCeil,
     FloatCeilTo, FloatClamp, FloatCos, FloatCosh, FloatExp, FloatFloor, FloatFloorTo, FloatFract,
     FloatGamma, FloatIsFinite, FloatIsNan, FloatLn, FloatLog2, FloatLog10, FloatMax, FloatMin,
@@ -555,7 +555,9 @@ impl Core {
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
             | WebText | BytesLength | Base64Decode => self.web_import(imp, a),
             PageCall => self.page_import(a),
-            FilePart | FileSize | FileText | FileFiles | SheetFile => self.file_import(imp, a),
+            FilePart | FileSize | FileText | FileFiles | FileBook | FileBookInfo | SheetFile => {
+                self.file_import(imp, a)
+            }
             FileOfText | FileOfBytes | FileAt | FileZip | SheetOfFile => self.file_make(imp, a),
             FileImageInfo | FileCrop | FileTurn | FileResize | FileEncode | FileThumbnail => {
                 self.image_import(imp, a)

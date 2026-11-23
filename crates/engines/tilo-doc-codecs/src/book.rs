@@ -12,7 +12,7 @@
 
 use std::io::Cursor;
 
-use bounded_zip::epub::{self, OpfPackage, join, parent_dir, strip_fragment};
+use bounded_zip::epub::{self, strip_fragment};
 use bounded_zip::{BoundedArchive, ZipLimits};
 
 use crate::format::CodecError;

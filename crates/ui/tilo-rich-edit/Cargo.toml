@@ -35,6 +35,8 @@ rustc-hash.workspace = true
 serde.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+# A reading page sets its words in their script's direction, one run at a time.
+unicode-bidi = "0.3.18"
 
 [build-dependencies]
 tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
