@@ -3,6 +3,7 @@
 //! names. Everything works on the raw text, so a formula keeps its spelling through every
 //! rewrite.
 
+#[cfg(test)]
 use std::collections::HashMap;
 
 use crate::model::{Addr, GridEdit, a1_to_addr, addr_to_a1};
@@ -140,6 +141,7 @@ pub fn references(body: &str) -> Vec<RefSpan> {
 }
 
 /// A colour slot per span, in first-appearance order, so identical references share one.
+#[cfg(test)]
 pub fn ref_color_slots(spans: &[RefSpan]) -> Vec<usize> {
     let mut map: HashMap<&str, usize> = HashMap::new();
     let mut out = Vec::with_capacity(spans.len());
@@ -242,6 +244,7 @@ pub fn remap_sheet_refs(raw: &str, edit: GridEdit, own: bool, named: Option<&str
 
 /// Each reference of a formula: the sheet it names as written (`None` for the formula's own)
 /// and the corners of what it reads. Whole rows and columns reach the last column and row.
+#[cfg(test)]
 pub fn each_reference(raw: &str, mut visit: impl FnMut(Option<&str>, Addr, Addr)) {
     drop(rewrite_refs(raw, &mut |sheet, reference| {
         let (start, end) = reference.corners();
@@ -312,6 +315,7 @@ pub(crate) enum Ref {
 
 impl Ref {
     /// The top-left and bottom-right cells it reads.
+    #[cfg(test)]
     fn corners(&self) -> (Addr, Addr) {
         match self {
             Self::Cell(cell) => (cell.addr, cell.addr),
@@ -343,8 +347,6 @@ pub(crate) enum Moved {
     Kept,
     /// Written anew, after the sheet it names.
     To(String),
-    /// Written anew with the sheet it names: the name and the reference.
-    Whole(String),
     /// `#REF!` in its place and in the place of the sheet it names.
     Gone,
 }
@@ -394,7 +396,6 @@ pub(crate) fn rewrite_refs(
                 out.push_str(prefix.as_deref().unwrap_or_default());
                 out.push_str(&text);
             }
-            Moved::Whole(text) => out.push_str(&text),
             Moved::Gone => out.push_str("#REF!"),
         }
     }

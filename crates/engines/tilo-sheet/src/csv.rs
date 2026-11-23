@@ -10,11 +10,7 @@ use std::collections::HashMap;
 
 use crate::model::Addr;
 
-pub fn parse_csv(text: &str) -> HashMap<Addr, String> {
-    parse_separated(text, ',')
-}
-
-/// [`parse_csv`] of a table whose fields `separator` parts (`'\t'` for TSV).
+/// A table's cells as typed, its fields parted by `separator` (`','` for CSV, `'\t'` for TSV).
 pub fn parse_separated(text: &str, separator: char) -> HashMap<Addr, String> {
     let mut out = HashMap::new();
     let mut row = 0u32;
@@ -86,11 +82,7 @@ fn quote_field(s: &str, separator: char) -> String {
     }
 }
 
-pub fn to_csv(rows: &[Vec<String>]) -> String {
-    to_separated(rows, ',')
-}
-
-/// [`to_csv`] with its fields parted by `separator`.
+/// Rows of texts as one table, its fields parted by `separator` (`','` for CSV, `'\t'` for TSV).
 pub fn to_separated(rows: &[Vec<String>], separator: char) -> String {
     let mut out = String::new();
     for row in rows {
@@ -108,25 +100,25 @@ mod tests {
     #[test]
     fn csv_parses_quotes_and_round_trips_escapes() {
         {
-            let m = parse_csv("a,b,c\n1,2,3");
+            let m = parse_separated("a,b,c\n1,2,3", ',');
             assert_eq!(m.get(&(0, 0)).unwrap(), "a");
             assert_eq!(m.get(&(2, 0)).unwrap(), "c");
             assert_eq!(m.get(&(1, 1)).unwrap(), "2");
         }
 
         {
-            let m = parse_csv("\"hello, world\",x");
+            let m = parse_separated("\"hello, world\",x", ',');
             assert_eq!(m.get(&(0, 0)).unwrap(), "hello, world");
             assert_eq!(m.get(&(1, 0)).unwrap(), "x");
         }
 
         {
             let rows = vec![vec!["a".to_string(), "b,c".to_string()]];
-            assert_eq!(to_csv(&rows), "a,\"b,c\"\n");
+            assert_eq!(to_separated(&rows, ','), "a,\"b,c\"\n");
         }
 
         {
-            let m = parse_csv("\"say \"\"hi\"\"\"");
+            let m = parse_separated("\"say \"\"hi\"\"\"", ',');
             assert_eq!(m.get(&(0, 0)).unwrap(), "say \"hi\"");
         }
     }

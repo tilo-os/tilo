@@ -500,7 +500,7 @@ fn days_in_month(y: i64, m: u32) -> u32 {
 mod tests {
     use super::*;
     use crate::model::{CellFormat, CellValue};
-    use tilo_locale::DateStyle;
+    use tilo_formats::DateStyle;
 
     fn num(n: f64) -> FillCell {
         FillCell::new(num_to_raw(n), CellValue::Number(n), CellFormat::General)

@@ -20,7 +20,9 @@ use tilo_doc::{CellInput, CellType, CellView, SheetView, WorkbookSnapshot};
 use tilo_doc_codecs::xlsx::{CellStyle, cell_styles, date_style_refs, number_format_codes};
 use tilo_doc_codecs::{ParsedSheet, XlsxCodec};
 
-use crate::model::{CellFormat, CellValue, format_number_general};
+use crate::model::{CellFormat, format_number_general};
+#[cfg(test)]
+use crate::model::CellValue;
 use tilo_formats::DateStyle;
 
 /// The most grid slots (rows plus the cells of every row, up to its last
@@ -69,6 +71,7 @@ impl SheetTable {
     /// file stores a live `=SUM(...)`) while also carrying the last computed
     /// value as its cached result; plain cells render through their format so
     /// the file shows what the user saw.
+    #[cfg(test)]
     pub fn from_cells(
         name: &str,
         raw: &std::collections::HashMap<crate::model::Addr, String>,

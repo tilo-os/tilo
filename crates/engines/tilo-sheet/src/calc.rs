@@ -9,7 +9,7 @@ use ironcalc_base::Model;
 use ironcalc_base::expressions::token::Error;
 use ironcalc_base::types::{Cell, FormulaValue, SpillValue};
 
-use crate::model::{Addr, CellValue, FormulaError, a1_to_addr, addr_to_a1};
+use crate::model::{Addr, CellValue, FormulaError, a1_to_addr};
 
 /// Every cell of a workbook as Its sheets' inputs, by sheet.
 pub type Sheets<'a> = &'a [(String, HashMap<Addr, String>)];
@@ -25,6 +25,7 @@ impl crate::Sheet {
 }
 
 /// What each cell of `sheet` computes, the sheet on its own.
+#[cfg(test)]
 pub fn recalculate(raw: &HashMap<Addr, String>) -> HashMap<Addr, CellValue> {
     let sheets = [("Sheet1".to_owned(), raw.clone())];
     evaluate(&sheets, 0)
@@ -156,12 +157,6 @@ fn error_of(error: &Error) -> FormulaError {
 fn zone() -> &'static str {
     static ZONE: OnceLock<String> = OnceLock::new();
     ZONE.get_or_init(|| iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_owned()))
-}
-
-/// A cell's A1 reference, the form the app and the files name a cell by.
-#[must_use]
-pub fn reference(addr: Addr) -> String {
-    addr_to_a1(addr.0, addr.1)
 }
 
 #[cfg(test)]

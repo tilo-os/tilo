@@ -32,5 +32,11 @@ anyhow.workspace = true
 [lints]
 workspace = true
 
+[dev-dependencies]
+# A scenario's cases are the phases of one test (`scenario!`).
+tilo-test-env = { path = "../../../tools/test-env" }
+# An exported `.ods` is read back as the package it is, to check the parts it wrote.
+zip.workspace = true
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }

@@ -666,26 +666,34 @@ pub fn weekday_from_serial(serial: f64) -> u32 {
 
 /// `days_from_civil` inverted, bounded to the range a serial date can mean.
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z.clamp(-4_000_000, 4_000_000);
-    let Ok(day) = jiff::civil::Date::from_unix_epoch_day(i32::try_from(z).unwrap_or(0)) else {
-        return (1970, 1, 1);
-    };
+    // Proleptic Gregorian days to a civil date, bounded first so the arithmetic cannot overflow.
+    let z = z.clamp(-4_000_000, 4_000_000).saturating_add(719_468);
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097); // [0, 146096]
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let day = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
     (
-        i64::from(day.year()),
-        day.month().unsigned_abs().into(),
-        day.day().unsigned_abs().into(),
+        year + i64::from(month <= 2),
+        u32::try_from(month).unwrap_or(1),
+        u32::try_from(day).unwrap_or(1),
     )
 }
 
 /// Days since the Unix epoch for a civil date, with the year bounded first.
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    let y = y.clamp(-10_000_000, 10_000_000);
-    let year = i16::try_from(y).unwrap_or(1970);
-    let month = i8::try_from(m).unwrap_or(1);
-    let day = i8::try_from(d).unwrap_or(1);
-    jiff::civil::Date::new(year, month, day)
-        .map(|date| i64::from(date.to_unix_epoch_day()))
-        .unwrap_or(0)
+    // Proleptic Gregorian civil date to days since 1970-01-01, the year bounded first.
+    let month = i64::from(m.clamp(1, 12));
+    let day = i64::from(d.clamp(1, 31));
+    let year = y.clamp(-10_000_000, 10_000_000) - i64::from(month <= 2);
+    let era = year.div_euclid(400);
+    let yoe = year.rem_euclid(400); // [0, 399]
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146_097 + doe - 719_468
 }
 
 impl Serialize for CellFormat {

@@ -3,12 +3,10 @@
 //! it into the wrong column. In a record's formula `[Header]` is that column's cell in the
 //! record's own row and `{row}` that row's number, so a caller never counts rows.
 
-use std::collections::BTreeMap;
-
 use serde_json::Value;
 
 use crate::Sheet;
-use crate::model::{Addr, CellFormat, a1_to_addr, addr_to_a1, date_to_serial, serial_to_ymd};
+use crate::model::{CellFormat, a1_to_addr, addr_to_a1, date_to_serial, serial_to_ymd};
 
 /// The most cells one write changes.
 pub const MAX_WRITES: usize = 10_000;
@@ -544,12 +542,3 @@ fn stale_row(sheet: &Sheet, columns: &Columns, first: u32, records: &[Value]) ->
     None
 }
 
-/// The cells of a sheet as the app's records see them: each cell's input by address.
-#[must_use]
-pub fn cell_map(sheet: &Sheet) -> BTreeMap<Addr, String> {
-    sheet
-        .cells
-        .iter()
-        .filter_map(|(reference, raw)| Some((a1_to_addr(reference)?, raw.clone())))
-        .collect()
-}

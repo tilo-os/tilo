@@ -294,7 +294,11 @@ mod tests {
                 assert_eq!(r.raw, "0.9");
                 assert_eq!(r.format, CellFormat::Percent);
                 assert_eq!(
-                    crate::model::format_value(&crate::model::CellValue::Number(0.9), r.format),
+                    crate::model::format_value(
+                        &crate::model::CellValue::Number(0.9),
+                        r.format,
+                        &crate::model::LanguageWords::of(""),
+                    ),
                     "90.00%"
                 );
             }

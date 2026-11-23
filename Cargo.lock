@@ -21582,7 +21582,9 @@ dependencies = [
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-formats",
+ "tilo-test-env",
  "workspace-hack",
+ "zip",
 ]
 
 [[package]]

@@ -108,13 +108,18 @@ pub fn apply(book: &Book, change: &Change) -> Result<Vec<Sheet>, String> {
         Change::Format {
             sheet,
             range,
-            format,
+            format: code,
             bold,
-        } => format(&mut sheets, sheet, range, format.as_deref(), *bold)?,
+        } => format(&mut sheets, sheet, range, code.as_deref(), *bold)?,
         Change::SetCells { sheet, start, rows } => {
             write_rows(&mut sheets, sheet, start, rows)?;
         }
         Change::Sum { sheet, range } => sum_columns(&mut sheets, sheet, range)?,
+        // The changes that only insert or delete lines were made by `reshape` above.
+        Change::InsertRows { .. }
+        | Change::DeleteRows { .. }
+        | Change::InsertColumns { .. }
+        | Change::DeleteColumns { .. } => {}
     }
     Ok(sheets)
 }
@@ -451,7 +456,7 @@ fn sort(
 /// Extend the cells of `source` over `target`, as the fill handle does.
 fn fill_range(sheets: &mut [Sheet], name: &str, source: &str, target: &str) -> Result<(), String> {
     let (from, to) = range_of(source)?;
-    let (start, end) = range_of(target)?;
+    let (_, end) = range_of(target)?;
     let (d_cols, d_rows) = (
         i64::from(end.0) - i64::from(to.0),
         i64::from(end.1) - i64::from(to.1),
@@ -568,12 +573,6 @@ fn write_generated(sheet: &mut Sheet, addr: Addr, out: fill::FillOut) {
     } else {
         sheet.formats.insert(reference, out.fmt.as_str());
     }
-}
-
-impl Sheet {
-    /// Keep the sheet's extent at least as large as an area a fill wrote over, so a fill into
-    /// blank cells keeps the cells it wrote.
-    fn fill_extent(&mut self, _start: Addr, _end: Addr) {}
 }
 
 /// Rename `sheet` and rewrite the formulas that read it by its old name.

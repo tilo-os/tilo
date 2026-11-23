@@ -134,14 +134,6 @@ impl Book {
     pub fn words(&self) -> model::LanguageWords {
         model::LanguageWords::of(&self.language)
     }
-
-    /// The sheet `name` (or id) names.
-    fn sheet(&self, name: &str) -> Option<&Sheet> {
-        self.sheets.iter().find(|sheet| {
-            sheet.name == name
-                || crate::refs::fold_sheet(&sheet.name) == crate::refs::fold_sheet(name)
-        })
-    }
 }
 
 /// A sheet's cells as they show, with the extent its window has to hold.
@@ -346,7 +338,7 @@ pub fn import(
             .into_iter()
             .map(|table| {
                 let cells = csv::parse_separated(&table.csv, '\t');
-                Ok(sheet_of(table.name, cells, BTreeMap::new()))
+                Ok(sheet_of(table.name, cells, std::collections::HashMap::new()))
             })
             .collect();
     }
@@ -357,7 +349,11 @@ pub fn import(
             let separator = if format == Format::Tsv { '\t' } else { ',' };
             let cells = csv::parse_separated(text, separator);
             let name = sheet_name(name);
-            Ok(vec![sheet_of(name, cells, BTreeMap::new())])
+            Ok(vec![sheet_of(
+                name,
+                cells,
+                std::collections::HashMap::new(),
+            )])
         }
         Format::Xlsx => {
             let tables = xlsx::parse_xlsx(bytes).map_err(|error| error.to_string())?;
@@ -381,13 +377,13 @@ pub fn export(book: &Book, format: Format) -> Result<Vec<u8>, String> {
         Format::Ods => ods::ods_bytes(&tables(book)).map_err(|error| error.to_string()),
         Format::Csv | Format::Tsv => {
             let separator = if format == Format::Tsv { '\t' } else { ',' };
-            Ok(csv_of(book, separator, &book.words()).into_bytes())
+            Ok(csv_of(book, separator).into_bytes())
         }
     }
 }
 
 /// What a sheet's cells show as rows of text, the form CSV and TSV write.
-fn csv_of(book: &Book, separator: char, words: &dyn tilo_formats::Words) -> String {
+fn csv_of(book: &Book, separator: char) -> String {
     let shown = values(book);
     let Some(sheet) = shown.first() else {
         return String::new();
