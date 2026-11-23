@@ -197,7 +197,7 @@ fn a_keeping_server_answers_a_page_of_a_tl_app_it_serves() {
             .unwrap()
             .workspace;
         let workspace_id = tilo_desktop_model::WorkspaceId::parse(&workspace).unwrap();
-        let caller = Caller::local_person(&keeping.person).in_workspace(&workspace);
+        let caller = Caller::local_person(keeping.person.as_str()).in_workspace(workspace.as_str());
         let daemon = Arc::clone(&keeping.daemon);
         let (opened, pressed) = tokio::task::spawn_blocking(move || {
             let pages = daemon
