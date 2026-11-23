@@ -169,8 +169,6 @@ QUALITY_ONLY_HELPERS = {
     "scripts/scan-secrets.sh": "tools/tests/test_added_line_policy.py",
     "tools/policy/check_workspace_members.py": "tools/tests/test_check_workspace_members.py",
     "tools/policy/check_repository_layout.py": "tools/tests/test_check_repository_layout.py",
-    "tools/policy/check_workflow_actions.py": "tools/tests/test_workflow_actions.py",
-    "tools/policy/check_workflow_timeouts.py": "tools/tests/test_workflow_timeouts.py",
     "tools/policy/check_ui_clock_contract.py": "tools/tests/test_ui_clock_contract.py",
     "tools/policy/check_clock_contract.py": "tools/tests/test_clock_contract.py",
     "tools/policy/judged.py": "tools/tests/test_staged_judgement.py",

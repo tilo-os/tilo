@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Third-party code CI runs is pinned: every remote workflow action names an exact commit, the
-# shared signing preflight binds the KMS key to keys/cosign.pub, and every external asset is an
+# Third-party code CI runs is pinned: the shared signing preflight binds the KMS key to keys/cosign.pub, and every external asset is an
 # immutable, SHA-256-pinned download.
 #
 # Each problem is a finding on stdout, `path: message` about the file that has to change, and
@@ -11,11 +10,6 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 fail=0
 manifest="$repo/os/external-assets/github-assets.tsv"
 
-if python3 "$repo/tools/policy/check_workflow_actions.py"; then
-  printf 'ok    every remote workflow action is pinned to a full commit SHA\n' >&2
-else
-  fail=1
-fi
 
 if python3 "$repo/os/tests/test_require_cosign_authority.py" >/dev/null 2>&1; then
   printf 'ok    the shared signing preflight binds the KMS key to keys/cosign.pub\n' >&2

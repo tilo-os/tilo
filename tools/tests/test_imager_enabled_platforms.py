@@ -1,187 +1,103 @@
-"""Check enabled release jobs and execute the real artifact check without builds."""
+"""The standalone installer's release on t: every platform's downloads are built and
+installed before anything is published, and the real release check refuses an
+incomplete, corrupt or (on a tag) unsigned set."""
 import hashlib
+import os
 from pathlib import Path
 import subprocess
 import tempfile
+import tomllib
 import unittest
 
-import re
-import textwrap
-
 ROOT = Path(__file__).resolve().parents[2]
+ASSETS = ROOT / "tools/ci/imager-release/assets.sh"
+ARCHES = ("x86_64", "aarch64")
 
 
-def section(text, name, indent):
-    """Extract one mapping at the known indentation; fail on missing/ambiguous keys."""
-    matches = list(re.finditer(rf"(?m)^{' ' * indent}{re.escape(name)}:\s*\n", text))
-    if len(matches) != 1:
-        raise AssertionError(f"expected one {name} mapping, got {len(matches)}")
-    lines = text[matches[0].end():].splitlines()
-    result = []
-    for line in lines:
-        if line.strip() and not line.lstrip().startswith("#") and len(line) - len(line.lstrip()) <= indent:
-            break
-        result.append(line)
-    return "\n".join(result)
+def checks():
+    """Every check of t.toml by name, its matrix expanded."""
+    found = {}
+    for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]:
+        arches = check.get("matrix", {}).get("arch", [None])
+        for arch in arches:
+            name = check["name"] if arch is None else check["name"].replace("{arch}", arch)
+            found[name] = check
+    return found
 
 
-def step_script(text, step_id):
-    # Both tested steps use block scalars. Refuse a layout change we cannot read.
-    marker = f"        id: {step_id}\n"
-    if text.count(marker) != 1:
-        raise AssertionError(f"expected one step {step_id}")
-    block = text.split(marker)[1].split("\n      - ")[0]
-    lines = block.split("        run: |\n", 1)[1].splitlines()
-    script = []
-    for line in lines:
-        if line.strip() and not line.startswith("          "):
-            break
-        script.append(line)
-    return textwrap.dedent("\n".join(script)).rstrip() + "\n"
+def release(directory, signed):
+    names = []
+    for arch in ARCHES:
+        names += [f"tilo-installer-linux-{arch}.img.zst"]
+        names += [f"tilo-imager-linux-{arch}.{ext}" for ext in ("AppImage", "tar.gz", "flatpak")]
+        names += [f"tilo-imager-windows-{arch}.{ext}" for ext in ("exe", "zip")]
+        names += [f"tilo-imager-setup-windows-{arch}.exe"]
+        names += [f"tilo-imager-macos-{arch}.{ext}" for ext in ("dmg", "zip")]
+    for name in names:
+        (directory / name).write_bytes(b"fixture")
+        (directory / f"{name}.sha256").write_text(f"{hashlib.sha256(b'fixture').hexdigest()}  {name}\n")
+        if signed:
+            (directory / f"{name}.asc").write_text("signature fixture")
+    (directory / "winget").mkdir()
+    for name in ("Tilo.Imager.installer.yaml", "Tilo.Imager.yaml", "Tilo.Imager.locale.en-US.yaml"):
+        (directory / "winget" / name).write_text("manifest fixture")
 
 
-class EnabledImagerPlatforms(unittest.TestCase):
-    def setUp(self):
-        self.workflow = (ROOT / ".forgejo/workflows/release-imager.yml").read_text()
+def verify(directory, ref=""):
+    environment = {**os.environ, "T_REF": ref}
+    return subprocess.run(["bash", str(ASSETS), "verify", str(directory)],
+                          capture_output=True, text=True, env=environment)
 
-    def test_release_check_requires_every_enabled_platform_artifact(self):
-        with self.subTest(phase='a tag or a full-native dispatch requires both macos architectures'):
-            self.doCleanups()
-            self.setUp()
-            macos = section(self.workflow, "macos", 2)
-            # macOS and Windows need hosts this fleet does not serve, so a
-            # promotion publishes the Linux media and these jobs wait for a
-            # tag or for a dispatch that names them.
-            self.assertIn(
-                "    if: always() && needs.catalog.result == 'success' && github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')",
-                macos,
-            )
-            for arch in ("x86_64", "aarch64"):
-                self.assertIn(f"runner: imager-macos-{arch}", macos)
-            publish = section(self.workflow, "publish", 2)
-            self.assertIn("    needs: [plan, linux, windows, macos]", publish)
-            install = section(self.workflow, "homebrew-install-test", 2)
-            self.assertNotIn("package_kind: cask", install)
-            for runner in ("runner-release", "runner-large-arm64"):
-                self.assertIn(f"runner: {runner}", install)
-            native_casks = section(self.workflow, "homebrew-macos-install-test", 2)
-            self.assertIn("    if: startsWith(github.ref, 'refs/tags/imager-v')", native_casks)
-            for arch in ("x86_64", "aarch64"):
-                self.assertIn(f"runner: imager-macos-{arch}", native_casks)
-            homebrew = section(self.workflow, "homebrew", 2)
-            self.assertIn('TILO_IMAGER_MACOS_ENABLED: "1"', homebrew)
-            site = section(self.workflow, "site-downloads", 2)
-            self.assertIn("    needs: [homebrew-install-test, homebrew-macos-install-test, winget]", site)
-        with self.subTest(phase='real release check accepts linux windows and rejects missing or corrupt'):
-            self.doCleanups()
-            self.setUp()
-            script = step_script(self.workflow, "enabled-assets")
-            with tempfile.TemporaryDirectory() as temp:
-                assets = Path(temp) / "release-assets"
-                assets.mkdir()
-                for arch in ("x86_64", "aarch64"):
-                    names = [f"tilo-installer-linux-{arch}.img.zst"]
-                    names += [f"tilo-imager-linux-{arch}.{ext}" for ext in ("AppImage", "tar.gz", "flatpak")]
-                    names += [f"tilo-imager-windows-{arch}.{ext}" for ext in ("exe", "zip")]
-                    names += [f"tilo-imager-setup-windows-{arch}.exe"]
-                    names += [f"tilo-imager-macos-{arch}.{ext}" for ext in ("dmg", "zip")]
-                    for name in names:
-                        (assets / name).write_bytes(b"fixture")
-                        digest = hashlib.sha256(b"fixture").hexdigest()
-                        (assets / (name + ".sha256")).write_text(f"{digest}  {name}\n")
-                        # This check checks signature presence; real signature verification
-                        # belongs to verify-linux-release.sh and its existing tests.
-                        (assets / (name + ".asc")).write_text("signature fixture")
-                for name in ("Tilo.Imager.installer.yaml", "Tilo.Imager.yaml", "Tilo.Imager.locale.en-US.yaml"):
-                    (assets / name).write_text("manifest fixture")
-                def run():
-                    return subprocess.run(["bash", "-c", script], cwd=temp, capture_output=True, text=True)
-                good = run()
+
+class InstallerRelease(unittest.TestCase):
+    def test_every_platform_is_built_and_installed_before_a_tag_publishes(self):
+        found = checks()
+        for arch in ARCHES:
+            for platform in ("linux", "windows", "macos"):
+                self.assertIn(f"package/{platform}-{arch}", found["release-assets/imager"]["needs"])
+            self.assertIn(f"medium/imager-{arch}", found["release-assets/imager"]["needs"])
+            self.assertIn(f"package/linux-{arch}", found[f"install/linux-{arch}"]["needs"])
+        publish = found["publish-github-release"]
+        self.assertEqual(["tag:imager-v*"], publish["on"])
+        for gate in ("release-assets/imager", "install/linux-x86_64", "install/linux-aarch64",
+                     "wine/windows-x86_64-install", "install/macos-x86_64", "install/macos-aarch64",
+                     "sign/linux-x86_64", "sign/windows-x86_64"):
+            self.assertIn(gate, publish["needs"])
+        for surface in ("publish-winget", "publish-homebrew-tap"):
+            self.assertIn("publish-github-release", found[surface]["needs"])
+            self.assertEqual(["tag:imager-v*"], found[surface]["on"])
+        # Main's newest head builds every download: a break shows the day it happens.
+        for name in ("package/linux-x86_64", "build/windows-x86_64", "release-assets/imager"):
+            self.assertIn("idle", found[name]["on"])
+
+    def test_the_release_check_refuses_what_a_person_should_not_download(self):
+        with tempfile.TemporaryDirectory() as temp:
+            assets = Path(temp)
+            release(assets, signed=False)
+            with self.subTest(phase="main's dry run takes the complete unsigned set"):
+                good = verify(assets)
                 self.assertEqual(0, good.returncode, good.stderr)
-                required = assets / "tilo-imager-windows-aarch64.zip"
+            with self.subTest(phase="a tag refuses an unsigned Linux download"):
+                unsigned = verify(assets, "tag:imager-v1.2.3")
+                self.assertNotEqual(0, unsigned.returncode)
+                self.assertIn("missing release signature", unsigned.stderr)
+            required = assets / "tilo-imager-macos-aarch64.dmg"
+            with self.subTest(phase="a missing download is refused"):
                 required.unlink()
-                missing = run()
+                missing = verify(assets)
                 self.assertNotEqual(0, missing.returncode)
-                self.assertIn("missing release artifact", missing.stderr)
+                self.assertIn("missing release artifact: tilo-imager-macos-aarch64.dmg", missing.stderr)
+            with self.subTest(phase="a download whose bytes changed is refused"):
                 required.write_bytes(b"corrupt")
-                corrupt = run()
+                corrupt = verify(assets)
                 self.assertNotEqual(0, corrupt.returncode)
                 self.assertIn("invalid release digest", corrupt.stderr)
-        with self.subTest(phase='release check explicitly requires every macos artifact'):
-            self.doCleanups()
-            self.setUp()
-            script = step_script(self.workflow, "enabled-assets")
-            for arch in ("x86_64", "aarch64"):
-                for ext in ("dmg", "zip"):
-                    self.assertIn(f"tilo-imager-macos-{arch}.{ext}", script)
-
-    def test_signing_and_publication_are_oidc_broker_only_and_manual_runs_rehearse(self):
-        with self.subTest(phase='release signing and publication are oidc broker only'):
-            self.doCleanups()
-            self.setUp()
-            combined = self.workflow
-            retired_interfaces = (
-                "IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP",
-                "IMAGER_LINUX_SIGNING_KEY_B64",
-                "IMAGER_LINUX_SIGNING_KEY_ID",
-                "IMAGER_WINDOWS_CERT_PFX_B64",
-                "IMAGER_WINDOWS_CERT_PASSWORD",
-                "IMAGER_WINDOWS_SIGNER",
-                "IMAGER_MAC_CERT_P12_B64",
-                "IMAGER_MAC_CERT_PASSWORD",
-                "IMAGER_MAC_SIGNING_IDENTITY",
-                "IMAGER_APPLE_ID",
-                "IMAGER_APPLE_TEAM_ID",
-                "IMAGER_APPLE_APP_PASSWORD",
-                "secrets.HOMEBREW_TAP_TOKEN",
-                "secrets.WINGET_GITHUB_TOKEN",
-                "secrets.SITE_RELEASE_TOKEN",
-            )
-            for interface in retired_interfaces:
-                with self.subTest(interface=interface):
-                    self.assertNotIn(interface, combined)
-
-            signing_brokers = {
-                "linux": "IMAGER_LINUX_CREDENTIAL_BROKER",
-                "windows": "IMAGER_WINDOWS_CREDENTIAL_BROKER",
-                "macos": "IMAGER_MACOS_CREDENTIAL_BROKER",
-            }
-            for job, variable in signing_brokers.items():
-                with self.subTest(job=job):
-                    native = section(self.workflow, job, 2)
-                    self.assertIn(f"vars.{variable}", native)
-                    self.assertIn("enable-openid-connect: true", native)
-                    self.assertIn("release signing is OIDC-broker-only", native)
-                    self.assertNotIn("secrets.", native)
-
-            publication_brokers = {
-                "publish": ("IMAGER_RELEASE_CREDENTIAL_BROKER", "release"),
-                "homebrew": ("IMAGER_HOMEBREW_CREDENTIAL_BROKER", "homebrew"),
-                "winget": ("IMAGER_WINGET_CREDENTIAL_BROKER", "winget"),
-                "site-downloads": ("IMAGER_SITE_CREDENTIAL_BROKER", "site"),
-            }
-            for job, (variable, mode) in publication_brokers.items():
-                with self.subTest(job=job):
-                    publication = section(self.workflow, job, 2)
-                    self.assertIn(f"vars.{variable}", publication)
-                    self.assertIn("enable-openid-connect: true", publication)
-                    self.assertNotIn("secrets.", publication)
-                    self.assertRegex(
-                        publication,
-                        rf"acquire-release-token\.sh\s+\\?\s*{mode}\s+\"\$CREDENTIAL_BROKER\"",
-                    )
-
-        with self.subTest(phase='manual full native dispatch remains a non publishing rehearsal'):
-            self.doCleanups()
-            self.setUp()
-            self.assertIn("full_native:", self.workflow)
-            for job in ("windows", "macos"):
-                native = section(self.workflow, job, 2)
-                self.assertIn("github.event.inputs.full_native == 'true'", native)
-            for job in ("publish", "homebrew", "winget", "site-downloads"):
-                publication = section(self.workflow, job, 2)
-                self.assertIn("if: startsWith(github.ref, 'refs/tags/imager-v')", publication)
-                self.assertNotIn("full_native", publication)
+        with tempfile.TemporaryDirectory() as temp:
+            assets = Path(temp)
+            release(assets, signed=True)
+            with self.subTest(phase="a tag takes the complete signed set"):
+                signed = verify(assets, "tag:imager-v1.2.3")
+                self.assertEqual(0, signed.returncode, signed.stderr)
 
 
 if __name__ == "__main__":

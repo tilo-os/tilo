@@ -4534,12 +4534,55 @@ timeout_secs = 1800
 on = ["schedule:23 */6 * * *", "dispatch"]
 secrets = ["TILO_SITE_TOKEN"]
 
-# ---- The imager release's publication surfaces
+# ---- The standalone installer's release
 #
-# The release's own assets are built by the imager release workflow: this draft translates
-# everything the release does after that, because those scripts are in the tree. Each check
-# runs on the release tag and reads that tag's published assets, which is what the workflow
-# handed these jobs as a downloaded artifact.
+# Every platform's downloads are built and installed by the checks above, on main's newest head.
+# release-assets/imager gathers them, with the installer medium, into the release a person
+# downloads and checks it is complete: on main that is the dry run, on an imager-v* tag it takes
+# the signed outputs. Only a tag publishes: to GitHub releases, then WinGet, the Homebrew tap and
+# the site's downloads.
+
+[[check]]
+name = "sign/linux-{arch}"
+run = "bash tools/ci/linux-imager/sign.sh {arch} /target/linux/{arch}/package /target/linux/{arch}/signed"
+needs = ["package/linux-{arch}"]
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
+outputs = ["/target/linux/{arch}/signed/*"]
+cache = false
+on = ["tag:imager-v*"]
+secrets = ["TILO_LINUX_SIGNING_KEY_ASC", "TILO_LINUX_EXPECTED_FINGERPRINT"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "release-assets/imager"
+run = """set -eu
+version=0.0.0
+case "${T_REF:-}" in tag:imager-v*) version="${T_REF#tag:imager-v}" ;; esac
+bash tools/ci/imager-release/assets.sh gather /target/imager-release/assets "$version"
+"""
+needs = ["package/linux-x86_64", "package/linux-aarch64", "package/windows-x86_64", "package/windows-aarch64", "package/macos-x86_64", "package/macos-aarch64", "medium/imager-x86_64", "medium/imager-aarch64"]
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
+requires = ["arch=x86_64"]
+outputs = ["/target/imager-release/assets/**"]
+on = ["idle", "tag:imager-v*"]
+
+[[check]]
+name = "publish-github-release"
+# Publishes with a stored token, to hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = """set -eu
+export GITHUB_REF_NAME="${T_REF#tag:}" GITHUB_SHA="{commit}"
+apps/imager/packaging/publish-github-release.sh /target/imager-release/assets
+"""
+needs = ["release-assets/imager", "sign/linux-x86_64", "sign/linux-aarch64", "sign/windows-x86_64", "sign/windows-aarch64", "install/linux-x86_64", "install/linux-aarch64", "wine/windows-x86_64-install", "install/macos-x86_64", "install/macos-aarch64"]
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
+env = { TILO_RELEASE_REPOSITORY = "tilo-os/releases" }
+requires = ["arch=x86_64"]
+cache = false
+timeout_secs = 3600
+on = ["tag:imager-v*"]
+secrets = ["GITHUB_RELEASE_TOKEN", "TILO_LINUX_EXPECTED_FINGERPRINT"]
 
 [[check]]
 name = "publish-winget"
@@ -4557,14 +4600,14 @@ python3 apps/imager/packaging/generate-winget.py "$assets" \
 python3 apps/imager/packaging/validate-winget.py "$assets/winget"
 bash apps/imager/packaging/publish-winget.sh "$assets"
 '''
-needs = ["package/windows-x86_64", "package/windows-aarch64"]
+needs = ["package/windows-x86_64", "package/windows-aarch64", "publish-github-release"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 env = { TILO_RELEASE_SERVER = "https://github.com", TILO_RELEASE_REPOSITORY = "tilo-os/releases", TILO_HOMEBREW_TAP_REPOSITORY = "tilo-os/homebrew-tilo", TILO_HOMEBREW_TAP_NAME = "tilo/tilo" }
 requires = ["arch=x86_64"]
 cache = false
 timeout_secs = 3600
 on = ["tag:imager-v*"]
-secrets = ["WINGET_GITHUB_TOKEN"]
+secrets = ["WINGET_GITHUB_TOKEN", "WINGET_GITHUB_USER"]
 
 [[check]]
 name = "publish-homebrew-tap"
@@ -4581,6 +4624,7 @@ for name in tilo-imager-linux-x86_64.tar.gz tilo-imager-linux-aarch64.tar.gz \
 done
 bash apps/imager/packaging/publish-homebrew-tap.sh "$assets"
 '''
+needs = ["publish-github-release"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 env = { TILO_IMAGER_MACOS_ENABLED = "1", TILO_RELEASE_SERVER = "https://github.com", TILO_RELEASE_REPOSITORY = "tilo-os/releases", TILO_HOMEBREW_TAP_REPOSITORY = "tilo-os/homebrew-tilo", TILO_HOMEBREW_TAP_NAME = "tilo/tilo" }
 requires = ["os=linux", "arch=aarch64"]

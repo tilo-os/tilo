@@ -39,7 +39,6 @@ BINARY_INPUTS = {
     "tools/ci/images.toml",
     "tools/ci/python.py",
     "tools/ci/sccache.sh",
-    ".forgejo/actions/restore-cargo-downloads/action.yml",
 }
 PACKAGING_INPUTS = {
     "dist/apps/package-apps.sh",
@@ -71,7 +70,6 @@ VERIFICATION_INPUTS = {
 GLOBAL_INPUTS = BINARY_INPUTS | PACKAGING_INPUTS | VERIFICATION_INPUTS
 GLOBAL_PREFIXES = (".cargo/", "vendor/", "tools/web/wasm-split/")
 FULL_REBUILD_PREFIXES = (
-    ".forgejo/actions/restore-cargo-downloads/",
     "dist/apps/",
     "tools/apps/",
 )

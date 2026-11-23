@@ -55,7 +55,6 @@ rustPlatform.buildRustPackage rec {
         "${repoRoot}/flake.nix"
         "${repoRoot}/flake.lock"
         "${repoRoot}/dist/nix"
-        "${repoRoot}/.forgejo"
         "${repoRoot}/.codex"
       ]);
   };

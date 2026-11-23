@@ -317,7 +317,7 @@ suites = ["tools/ci/test_native_store_autoclear.py"]
 
 [[group]]
 name = "os-workflows"
-inputs = ["os/", ".forgejo/workflows/", "tools/ci/publish/"]
+inputs = ["os/", "tools/ci/publish/"]
 suites = [
   "os/tests/test_ci_fast_images.py",
   "os/containers/tilo-server/test-contract.sh",
@@ -357,7 +357,7 @@ name = "openssl-free"
 # tree resolves the vendored crates' too), the packaging recipes it greps and
 # the build scripts that hold the images' ELF checks.
 inputs = [
-  "os/", ".forgejo/", ".cargo/", "*Cargo.toml", "*Cargo.lock", "rust-toolchain.toml",
+  "os/", ".cargo/", "*Cargo.toml", "*Cargo.lock", "rust-toolchain.toml",
   "crates/*.rs", "crates/*.sh", "apps/*.rs", "apps/*.sh",
   "dist/arch/PKGBUILD", "dist/nix/package.nix", "tools/ci/publish/",
 ]
@@ -493,8 +493,8 @@ suites = ["os/tests/test_project_kernel_crate.py"]
 
 [[group]]
 name = "imager-packaging"
-inputs = ["apps/imager/packaging/", "os/scripts/build-thin-apps.sh", "dist/apps/app-collections.toml", "apps/imager/desktop-catalog.json", "os/dev/probe-release-signer.py", "tools/tests/test_imager_enabled_platforms.py", ".forgejo/workflows/release-imager.yml", "dist/session/vm-e2e/run.py"]
-suites = ["apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_desktop_catalog_release.py", "apps/imager/packaging/test_continuous_release.py", "apps/imager/packaging/test_capture_build_evidence.py", "apps/imager/packaging/test_capture_qualification.py", "apps/imager/packaging/test_capture_release_pipeline.py", "apps/imager/packaging/test_capture_runtime_pins.py", "apps/imager/packaging/test_product_display_name.py", "apps/imager/packaging/test_capture_admission.py", "apps/imager/packaging/test_capture_build_phases.py", "apps/imager/packaging/test_capture_build_script.py", "apps/imager/packaging/test_capture_openpgp.py", "apps/imager/packaging/test_capture_protocol.py", "apps/imager/packaging/test_service_source_assets.py", "apps/imager/packaging/test_target_policy.py"]
+inputs = ["apps/imager/packaging/", "tools/ci/linux-imager/", "tools/ci/imager-release/", "os/scripts/build-thin-apps.sh", "dist/apps/app-collections.toml", "apps/imager/desktop-catalog.json", "os/dev/probe-release-signer.py", "tools/tests/test_imager_enabled_platforms.py", "dist/session/vm-e2e/run.py"]
+suites = ["tools/tests/test_imager_enabled_platforms.py", "apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_desktop_catalog_release.py", "apps/imager/packaging/test_capture_build_evidence.py", "apps/imager/packaging/test_capture_qualification.py", "apps/imager/packaging/test_capture_release_pipeline.py", "apps/imager/packaging/test_capture_runtime_pins.py", "apps/imager/packaging/test_product_display_name.py", "apps/imager/packaging/test_capture_admission.py", "apps/imager/packaging/test_capture_build_phases.py", "apps/imager/packaging/test_capture_build_script.py", "apps/imager/packaging/test_capture_openpgp.py", "apps/imager/packaging/test_capture_protocol.py", "apps/imager/packaging/test_service_source_assets.py", "apps/imager/packaging/test_target_policy.py"]
 
 [[group]]
 name = "native-qualification-storage"

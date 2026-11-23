@@ -51,35 +51,17 @@ assert any(
     for principle in contract["principles"]
 )
 
-imager_workflow = (ROOT / ".forgejo/workflows/release-imager.yml").read_text()
-# The native jobs the fleet serves: the release and large ARM classes.
-for runner, architecture in (
-    ("runner-release", "x86_64"),
-    ("runner-large-arm64", "aarch64"),
-):
-    assert f'{{"arch":"{architecture}","runner":"{runner}"}}' in imager_workflow
-    medium = f"tilo-installer-linux-{architecture}.img.zst"
-    assert f"            {medium}" in imager_workflow
-assert """      - name: Verify the installer-medium release payload
-        run: |
-          set -euo pipefail
-          medium="tilo-installer-linux-${{ matrix.arch }}.img.zst"
-""" in imager_workflow
-assert """            dist/tilo-installer/tilo-installer-linux-${{ matrix.arch }}.img.zst
-            dist/tilo-installer/tilo-installer-linux-${{ matrix.arch }}.img.zst.sha256
-            dist/tilo-installer/catalog-${{ matrix.arch }}.json
-          if-no-files-found: error
-""" in imager_workflow
-assert """            (cd "$(dirname "$path")" && sha256sum --check --strict "$(basename "$path").sha256")""" in imager_workflow
-assert 'tilo-installer-*.asc' in imager_workflow
+# The installer release is t's: each host's downloads come from its package check on both
+# architectures, and the release check requires every one, with the media, before a tag publishes.
+t_checks = {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
+release_check = (ROOT / "tools/ci/imager-release/assets.sh").read_text()
 for host in ("linux", "windows", "macos"):
-    assert f"  {host}:" in imager_workflow
+    assert t_checks[f"package/{host}-{{arch}}"]["matrix"]["arch"] == ["x86_64", "aarch64"]
+assert 'tilo-installer-linux-$arch.img.zst' in release_check
+assert 'tilo-imager-setup-windows-$arch.exe' in release_check
+assert 'apps/imager/packaging/generate-winget.py' in release_check
 windows_host = next(host for host in contract["imager"]["hosts"] if host["os"].startswith("Windows"))
 assert windows_host["architectures"] == ["x86_64", "aarch64"]
-for architecture in windows_host["architectures"]:
-    assert f"runner: imager-windows-{architecture}" in imager_workflow
-    assert f"            tilo-imager-setup-windows-{architecture}.exe" in imager_workflow
-assert "python3 apps/imager/packaging/generate-winget.py release-assets" in imager_workflow
 
 # People follow the Homebrew commands the landing page prints, so those commands
 # have to name the tap the release workflow actually publishes. The contract is

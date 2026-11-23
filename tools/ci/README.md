@@ -99,50 +99,12 @@ publications build from.
 - `changes` reads the commits a push added, and the whole-tree checks (`fmt`,
   `hakari`, `lockfile`, `deny`, `machete`, `policy/{step}`) run
   on the same head, so no push's run stands in for another's.
-- Release and artifact workflows (`release-*.yml`) trigger on a push to
-  `stable` or on a version tag, never on `main`. The whole-tree coverage
+- Release artifacts are built and installed by t on main's newest head when it
+  has room (`package/*`, `install/*`); only a version tag signs and publishes
+  them (`sign/*`, `publish-*`). The whole-tree coverage
   backstop is t's nightly set (`nightly-*`, `nightly-fuzz-*`, `certify`,
   `goldens`, `wasm`), scheduled at 03:00, and the environment publish chains
   run on their own crons; the artifact builds carry their own nightly schedule.
-
-## Forks on GitHub Actions or stock Forgejo
-
-Workflows live in `.forgejo/workflows/` and use only GitHub-compatible syntax
-and actions pinned by commit, so a fork can copy them to `.github/workflows/` or
-run them on a Forgejo instance with stock runners. They need:
-
-- **Runners.** Register runners with the [runner labels](#runner-labels), or
-  replace each `runs-on` label with its hosted equivalent. Forgejo runners map a
-  label to a container image in their `labels:` list. The labels emitted into
-  matrices come from `runner_labels.py`.
-- **Images.** `images.toml` pins the CI images by digest. They are public, so a
-  fork can pull them as they are. To build its own, publish
-  `os/Containerfile.ci-fast` and `os/Containerfile.builder` (t's `image-ci-fast`
-  and `publish-ci-fast`, then `image-ci-builder` and `publish-ci-builder`,
-  through `tools/ci/publish/ci-builder.sh`), change the pins, and set
-  `TILO_CI_REGISTRY`, `TILO_CI_BUILDER_REPOSITORY` and
-  `TILO_CI_REGISTRY_TOKEN_REALM` for the builder lookup.
-- **Artifact actions.** The `actions/upload-artifact` and
-  `actions/download-artifact` v4 pins are Forgejo's builds (tag `forgejo/v4`),
-  since upstream's v4 accepts only GitHub-hosted servers. A copy on GitHub
-  replaces those two commit pins with upstream's v4. A Forgejo instance must
-  resolve `actions/upload-artifact` and `actions/download-artifact` to Forgejo's
-  forks (`code.forgejo.org/forgejo/`), or name the forks in the steps.
-- **Caches, optional.** Cargo downloads use `actions/cache` keyed on
-  `Cargo.lock` under `$CARGO_HOME`. `tools/ci/sccache.sh` enables a compiler
-  cache only when the runner provides one; without it jobs compile cold. Neither
-  changes a result.
-- **Secrets, only for publication.** Jobs that only test need no secret beyond
-  the job token. Image, package and release publication on `stable` need
-  registry, signing and release credentials and are not expected to run in a
-  fork; moving `stable` needs `STABLE_PUSH_TOKEN` (see
-  [Main and `stable`](#main-and-stable)).
-
-Jobs that need more than an unprivileged container:
-
-| Job                  | Needs      |
-| -------------------- | ---------- |
-| `release-imager.yml` | `/dev/kvm` |
 
 The test packages `tools/ci/nested-sandboxes.toml` lists start sandboxes of their own
 (bubblewrap): their tests need a runner that lets an unprivileged process create user
