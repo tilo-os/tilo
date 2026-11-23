@@ -695,7 +695,7 @@ fn a_write_names_its_file_actions_and_the_invoker_that_made_it() {
 }
 
 #[test]
-fn a_lease_has_one_holder_whose_fence_and_replicas_agree() {
+fn a_lease_has_one_device_whose_fence_and_copies_agree() {
     const ME: [u8; 32] = [1; 32];
     const OTHER: [u8; 32] = [2; 32];
     const TTL: u64 = 60_000;

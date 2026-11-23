@@ -453,7 +453,7 @@ impl Siblings for Answers {
 /// them keeps opens the volume, answering its passphrase prompt; every way
 /// the enrolment, the header or the answer can be wrong is refused.
 #[test]
-fn a_volume_enrols_through_the_persons_devices_and_opens_at_boot_with_the_half_they_keep() {
+fn a_volume_joins_through_the_persons_devices_and_opens_at_boot_with_the_half_they_keep() {
     require_capability!(
         Swtpm,
         match Command::new("cryptsetup").arg("--version").output_locked() {

@@ -185,7 +185,7 @@ fn targets(sent: &[test_http::Request]) -> Vec<&str> {
 }
 
 tilo_test_env::scenario! {
-    fn a_person_works_in_a_hosted_workspace_through_the_command;
+    fn a_person_works_in_a_workspace_on_a_server_through_the_command;
 
     phase a_workspace_is_made_branched_listed_and_named;
     {
