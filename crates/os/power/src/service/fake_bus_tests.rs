@@ -1565,61 +1565,73 @@ impl GatedPowerProfiles {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn replacing_the_power_profiles_owner_clears_bridge_before_reading_the_new_daemon() {
-    let bus = tilo_test_env::PrivateBus::start();
-    let _base = serve_base_daemons_on_bus(bus.address()).await;
+async fn serve_gated_profiles_on_bus(
+    address: &str,
+    active: &str,
+    profiles: &[&str],
+) -> (
+    Connection,
+    Arc<std::sync::atomic::AtomicUsize>,
+    tokio::sync::watch::Sender<bool>,
+) {
+    let reads_started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (release_tx, release_rx) = tokio::sync::watch::channel(false);
+    let conn = Builder::address(address)
+        .expect("addr")
+        .serve_at(
+            PROFILES_PATH,
+            GatedPowerProfiles {
+                active: active.to_owned(),
+                profiles: profiles.iter().map(|&name| name.to_owned()).collect(),
+                reads_started: Arc::clone(&reads_started),
+                release: release_rx,
+            },
+        )
+        .expect("gated profiles daemon")
+        .build()
+        .await
+        .expect("gated profiles conn");
+    (conn, reads_started, release_tx)
+}
 
-    let daemon1 = Builder::address(bus.address())
+async fn serve_replaceable_profiles_on_bus(
+    address: &str,
+    active: &str,
+    profiles: &[&str],
+) -> Connection {
+    let conn = Builder::address(address)
         .expect("addr")
         .serve_at(
             PROFILES_PATH,
             FakePowerProfiles {
-                active: "power-saver".into(),
-                profiles: vec!["balanced".into(), "power-saver".into()],
+                active: active.to_owned(),
+                profiles: profiles.iter().map(|&name| name.to_owned()).collect(),
             },
         )
-        .expect("daemon1")
+        .expect("replaceable profiles daemon")
         .build()
         .await
-        .expect("daemon1 conn");
-    let reply1 = daemon1
+        .expect("replaceable profiles conn");
+    let reply = conn
         .request_name_with_flags(
             "net.hadess.PowerProfiles",
             zbus::fdo::RequestNameFlags::AllowReplacement | zbus::fdo::RequestNameFlags::DoNotQueue,
         )
         .await
-        .expect("daemon1 claims bus name allowing replacement");
-    assert_eq!(reply1, zbus::fdo::RequestNameReply::PrimaryOwner);
+        .expect("claim bus name allowing replacement");
+    assert_eq!(reply, zbus::fdo::RequestNameReply::PrimaryOwner);
+    conn
+}
 
-    let reads_started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let (release_tx, release_rx) = tokio::sync::watch::channel(false);
-    let daemon2 = Builder::address(bus.address())
-        .expect("addr")
-        .serve_at(
-            PROFILES_PATH,
-            GatedPowerProfiles {
-                active: "performance".into(),
-                profiles: vec![
-                    "performance".into(),
-                    "balanced".into(),
-                    "power-saver".into(),
-                ],
-                reads_started: Arc::clone(&reads_started),
-                release: release_rx,
-            },
-        )
-        .expect("daemon2")
-        .build()
-        .await
-        .expect("daemon2 conn");
-
-    let observer = Builder::address(bus.address())
+async fn watch_profiles_owner_changes(
+    address: &str,
+) -> (Connection, zbus::fdo::NameOwnerChangedStream) {
+    let watch = Builder::address(address)
         .expect("addr")
         .build()
         .await
-        .expect("observer");
-    let mut owner_stream = zbus::fdo::DBusProxy::builder(&observer)
+        .expect("owner watch");
+    let stream = zbus::fdo::DBusProxy::builder(&watch)
         .cache_properties(zbus::proxy::CacheProperties::No)
         .build()
         .await
@@ -1627,7 +1639,26 @@ async fn replacing_the_power_profiles_owner_clears_bridge_before_reading_the_new
         .receive_name_owner_changed_with_args(&[(0, "net.hadess.PowerProfiles")])
         .await
         .expect("owner stream");
+    (watch, stream)
+}
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replacing_the_power_profiles_owner_clears_bridge_before_reading_the_new_daemon() {
+    let bus = tilo_test_env::PrivateBus::start();
+    let _base = serve_base_daemons_on_bus(bus.address()).await;
+    let daemon1 = serve_replaceable_profiles_on_bus(
+        bus.address(),
+        "power-saver",
+        &["balanced", "power-saver"],
+    )
+    .await;
+    let (daemon2, reads_started, release_tx) = serve_gated_profiles_on_bus(
+        bus.address(),
+        "performance",
+        &["performance", "balanced", "power-saver"],
+    )
+    .await;
+    let (_owner_watch, mut owner_stream) = watch_profiles_owner_changes(bus.address()).await;
     let (bridge, _registry, _wakeups, _state_home, task) =
         spawn_service_on_bus(bus.address()).await;
 
@@ -1640,12 +1671,12 @@ async fn replacing_the_power_profiles_owner_clears_bridge_before_reading_the_new
     })
     .await;
 
-    let observed_snapshots = Arc::new(Mutex::new(Vec::new()));
+    let snapshots = Arc::new(Mutex::new(Vec::new()));
     bridge.on_profiles_change(Arc::new({
         let bridge = bridge.clone();
-        let observed = Arc::clone(&observed_snapshots);
+        let snapshots = Arc::clone(&snapshots);
         move || {
-            observed
+            snapshots
                 .lock()
                 .expect("snapshots")
                 .push(bridge.profiles_snapshot());
@@ -1681,7 +1712,6 @@ async fn replacing_the_power_profiles_owner_clears_bridge_before_reading_the_new
         reads_started.load(Ordering::SeqCst) >= 1
     })
     .await;
-
     assert_eq!(
         bridge.profiles_snapshot(),
         (Vec::new(), None),
@@ -1694,33 +1724,265 @@ async fn replacing_the_power_profiles_owner_clears_bridge_before_reading_the_new
     );
 
     let _ = release_tx.send(true);
+    let expected = (
+        vec![
+            "performance".to_owned(),
+            "balanced".to_owned(),
+            "power-saver".to_owned(),
+        ],
+        Some("performance".to_owned()),
+    );
     eventually("second owner's profile state lands in bridge", || {
-        bridge.profiles_snapshot()
-            == (
-                vec![
-                    "performance".to_owned(),
-                    "balanced".to_owned(),
-                    "power-saver".to_owned(),
-                ],
-                Some("performance".to_owned()),
-            )
+        bridge.profiles_snapshot() == expected
     })
     .await;
-
     assert_eq!(
-        *observed_snapshots.lock().expect("snapshots"),
-        vec![
-            (Vec::new(), None),
-            (
-                vec![
-                    "performance".to_owned(),
-                    "balanced".to_owned(),
-                    "power-saver".to_owned(),
-                ],
-                Some("performance".to_owned()),
-            ),
-        ],
+        *snapshots.lock().expect("snapshots"),
+        vec![(Vec::new(), None), expected],
         "bridge listeners must see the cleared state before the replacement owner's state"
     );
     task.abort();
+}
+
+/// A private `dbus-daemon` whose policy can toggle denial of
+/// `org.freedesktop.DBus.GetNameOwner` via `ReloadConfig` while active
+/// connections stay open.
+struct PolicyBus {
+    daemon: std::process::Child,
+    address: String,
+    socket: std::path::PathBuf,
+    config: std::path::PathBuf,
+    _directory: tempfile::TempDir,
+}
+
+impl PolicyBus {
+    fn render_config(socket: &std::path::Path, deny_get_name_owner: bool) -> String {
+        let deny = if deny_get_name_owner {
+            r#"    <deny send_destination="org.freedesktop.DBus" send_interface="org.freedesktop.DBus" send_member="GetNameOwner"/>"#
+        } else {
+            ""
+        };
+        format!(
+            r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:path={}</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+{deny}
+  </policy>
+</busconfig>
+"#,
+            socket.display()
+        )
+    }
+
+    fn start() -> Self {
+        use std::io::BufRead as _;
+        use tilo_test_env::SpawnUnderEnvLock as _;
+
+        let directory = tempfile::tempdir().expect("bus tempdir");
+        let socket = directory.path().join("bus");
+        let config = directory.path().join("bus.conf");
+        std::fs::write(&config, Self::render_config(&socket, false)).expect("write bus.conf");
+        let mut daemon = std::process::Command::new("dbus-daemon")
+            .arg("--config-file")
+            .arg(&config)
+            .args(["--nofork", "--print-address=1"])
+            .stdout(std::process::Stdio::piped())
+            .spawn_locked()
+            .expect("the session bus needs dbus-daemon, which the builder image installs");
+        let mut address = String::new();
+        std::io::BufReader::new(daemon.stdout.take().expect("dbus-daemon stdout"))
+            .read_line(&mut address)
+            .expect("read bus address");
+        assert!(!address.trim().is_empty(), "dbus-daemon printed no address");
+        Self {
+            daemon,
+            address: address.trim().to_owned(),
+            socket,
+            config,
+            _directory: directory,
+        }
+    }
+
+    fn address(&self) -> &str {
+        &self.address
+    }
+
+    async fn set_deny_get_name_owner(&self, admin: &Connection, deny: bool) {
+        std::fs::write(&self.config, Self::render_config(&self.socket, deny))
+            .expect("rewrite bus.conf");
+        admin
+            .call_method(
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                Some("org.freedesktop.DBus"),
+                "ReloadConfig",
+                &(),
+            )
+            .await
+            .expect("ReloadConfig");
+    }
+}
+
+impl Drop for PolicyBus {
+    fn drop(&mut self) {
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
+        let _ = std::fs::remove_file(&self.socket);
+    }
+}
+
+async fn count_profiles_owner_queries(
+    address: &str,
+    sender: zbus::names::OwnedUniqueName,
+) -> (
+    Arc<std::sync::atomic::AtomicUsize>,
+    tokio::task::JoinHandle<()>,
+) {
+    let tap = Builder::address(address)
+        .expect("addr")
+        .build()
+        .await
+        .expect("tap");
+    let mut tap_stream = zbus::MessageStream::from(&tap);
+    tap.call_method(
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        Some("org.freedesktop.DBus.Monitoring"),
+        "BecomeMonitor",
+        &(
+            &["type='method_call',destination='org.freedesktop.DBus',member='GetNameOwner'"][..],
+            0u32,
+        ),
+    )
+    .await
+    .expect("BecomeMonitor");
+    let owner_queries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let tap_task = tokio::spawn({
+        let owner_queries = Arc::clone(&owner_queries);
+        async move {
+            let _tap = tap;
+            while let Some(Ok(msg)) = tap_stream.next().await {
+                if msg.header().sender() == Some(&*sender)
+                    && msg.body().deserialize::<String>().as_deref()
+                        == Ok("net.hadess.PowerProfiles")
+                {
+                    owner_queries.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }
+    });
+    (owner_queries, tap_task)
+}
+
+async fn wait_for_wakeups_to_settle(wakeups: &AtomicU64, what: &str) {
+    tilo_test_env::within(what, async {
+        loop {
+            let seen = wakeups.load(Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            if seen > 0 && wakeups.load(Ordering::SeqCst) == seen {
+                return;
+            }
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_owner_query_is_retried_until_the_bus_answers() {
+    let bus = PolicyBus::start();
+    let admin = Builder::address(bus.address())
+        .expect("addr")
+        .build()
+        .await
+        .expect("admin");
+    let _base = serve_base_daemons_on_bus(bus.address()).await;
+    let _daemon =
+        serve_profiles_on_bus(bus.address(), "power-saver", &["balanced", "power-saver"]).await;
+
+    let client = Builder::address(bus.address())
+        .expect("addr")
+        .build()
+        .await
+        .expect("client");
+    let client_unique = client.unique_name().cloned().expect("client unique name");
+    let bridge = PowerBridge::new();
+    let registry = InhibitRegistry::new();
+    let state_home = tempfile::tempdir().expect("state home");
+    let mut service =
+        PowerService::with_connection(&client, bridge.clone(), registry, quiet_policy())
+            .await
+            .expect("service");
+    service.history = PowerHistoryWriter::in_state_home(Some(state_home.path().to_path_buf()));
+    let wakeups = service.wakeup_counter();
+    let (owner_queries, tap_task) =
+        count_profiles_owner_queries(bus.address(), client_unique).await;
+
+    bus.set_deny_get_name_owner(&admin, true).await;
+    let probe = PowerProfilesMonitor::with_connection(&admin)
+        .await
+        .expect("probe monitor");
+    assert!(
+        probe.name_owner().await.is_err(),
+        "bus policy must reject GetNameOwner with a bus error"
+    );
+
+    let task = tokio::spawn(async move {
+        let _client = client;
+        service.run().await;
+    });
+
+    wait_for_wakeups_to_settle(&wakeups, "startup loop settles after GetNameOwner fails").await;
+    let queries_after_start = owner_queries.load(Ordering::SeqCst);
+    let wakeups_after_start = wakeups.load(Ordering::SeqCst);
+    assert!(
+        queries_after_start >= 1,
+        "startup must query GetNameOwner for net.hadess.PowerProfiles"
+    );
+    assert_eq!(
+        bridge.profiles_snapshot(),
+        (Vec::new(), None),
+        "startup prime must be discarded while GetNameOwner is failing"
+    );
+    assert_eq!(bridge.active_profile(), None);
+
+    // Keep GetNameOwner denied through the first retry so both start() and
+    // resubscribe_due() must arm a retry on failure.
+    eventually("failed startup GetNameOwner arms a retry", || {
+        owner_queries.load(Ordering::SeqCst) > queries_after_start
+            && wakeups.load(Ordering::SeqCst) > wakeups_after_start
+    })
+    .await;
+    let queries_after_first_retry = owner_queries.load(Ordering::SeqCst);
+    assert_eq!(
+        bridge.profiles_snapshot(),
+        (Vec::new(), None),
+        "a still-failing retry must leave the bridge empty"
+    );
+
+    bus.set_deny_get_name_owner(&admin, false).await;
+    eventually(
+        "retried GetNameOwner discovers the existing owner and primes the bridge",
+        || {
+            bridge.profiles_snapshot()
+                == (
+                    vec!["balanced".to_owned(), "power-saver".to_owned()],
+                    Some("power-saver".to_owned()),
+                )
+        },
+    )
+    .await;
+    assert!(
+        owner_queries.load(Ordering::SeqCst) > queries_after_first_retry,
+        "resubscribe_due must re-query GetNameOwner after a failed retry"
+    );
+
+    task.abort();
+    tap_task.abort();
 }
