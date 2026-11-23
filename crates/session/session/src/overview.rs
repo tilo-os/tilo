@@ -14,7 +14,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use tilo_clock::time::Instant;
+use tilo_clock::time::{Duration, Instant};
 
 use tilo_desktop::window_flight::{WindowFlight, WindowPicture as Flying};
 use tilo_desktop_model::TabId;
@@ -34,6 +34,8 @@ struct Inner {
     flight: WindowFlight,
     /// How far the overview has arrived, or how far it has gone.
     zoom: RefCell<Presence>,
+    /// When the zoom was last stepped while it moved; `None` while it rests.
+    stepped: Cell<Option<Instant>>,
     /// Whether the chrome's overview is open, as it last drew: written by the chrome, read here to
     /// start the zoom.
     open: Rc<Cell<bool>>,
@@ -59,6 +61,7 @@ impl Overview {
             inner: Rc::new(Inner {
                 flight: WindowFlight::new(),
                 zoom: RefCell::new(Presence::closed()),
+                stepped: Cell::new(None),
                 open: Rc::default(),
                 shown: RefCell::default(),
                 surface: Cell::new(None),
@@ -103,7 +106,14 @@ impl Overview {
         let open = inner.open.get();
         {
             let mut zoom = inner.zoom.borrow_mut();
-            let mut show = || zoom.show(open, Zoom::OVERVIEW, inner.motion, input_source(), now);
+            let mut show = || {
+                let turned = zoom.is_open() != open;
+                zoom.show(open, Zoom::OVERVIEW, inner.motion, input_source(), now);
+                if turned {
+                    inner.stepped.set(None);
+                }
+                hold_after_late_frame(&mut zoom, &inner.stepped, now);
+            };
             match inner.surface.get() {
                 Some(surface) => ui::motion::on_surface(surface, show),
                 None => show(),
@@ -202,6 +212,25 @@ impl Overview {
     }
 }
 
+/// The furthest one step moves the zoom: two refreshes of a 60 Hz display.
+const LONGEST_STEP: Duration = Duration::from_millis(34);
+
+/// Hold the moving `zoom` for what the loop took past [`LONGEST_STEP`] since its last step at
+/// `stepped`, and note this step. A machine that draws its desktop on the CPU takes many refreshes
+/// for one frame of the overview, the first one most: the zoom stands where its last frame showed
+/// it instead of arriving in a jump, and is drawn at every step however slowly frames come.
+fn hold_after_late_frame(zoom: &mut Presence, stepped: &Cell<Option<Instant>>, now: Instant) {
+    if let Some(last) = stepped.get()
+        && let Some(late) = now
+            .saturating_duration_since(last)
+            .checked_sub(LONGEST_STEP)
+        && !late.is_zero()
+    {
+        zoom.defer(late);
+    }
+    stepped.set(zoom.is_moving(now).then_some(now));
+}
+
 impl crate::Shared {
     /// The windows the overview pictures as the compositor draws them now: each window's id and the
     /// rect its picture rests at, logical `(x, y, width, height)` , bottom first.
@@ -211,5 +240,65 @@ impl crate::Shared {
             .into_iter()
             .map(|picture| (picture.window, picture.rect))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::tokens::MotionSource;
+
+    /// The overview opened at `start`, its first step taken.
+    fn opened(start: Instant) -> (Presence, Cell<Option<Instant>>) {
+        let mut zoom = Presence::closed();
+        let stepped = Cell::new(None);
+        zoom.show(
+            true,
+            Zoom::OVERVIEW,
+            EffectiveMotion::default(),
+            MotionSource::Pointer,
+            start,
+        );
+        hold_after_late_frame(&mut zoom, &stepped, start);
+        (zoom, stepped)
+    }
+
+    tilo_test_env::scenario! {
+        /// The overview's zoom on a machine that draws slowly.
+        fn the_zoom_is_drawn_at_every_step_however_slowly_frames_come;
+
+        phase a_late_frame_finds_the_zoom_where_the_last_one_left_it;
+        // The first frame of the overview took most of a second to draw on the CPU: the zoom has
+        // moved one step's worth when it is shown, not arrived.
+        {
+            let start = tilo_clock::now();
+            let (mut zoom, stepped) = opened(start);
+            let late = start + Duration::from_millis(870);
+            hold_after_late_frame(&mut zoom, &stepped, late);
+            let progress = zoom.progress(late);
+            assert!(
+                progress > 0.0 && progress < 0.5,
+                "a frame 870 ms on shows the zoom one step on, at {progress}"
+            );
+            assert!(zoom.is_moving(late), "the zoom goes on from there");
+        }
+
+        phase frames_on_time_are_not_held;
+        // A display that draws every refresh shows the zoom on its own clock.
+        {
+            let start = tilo_clock::now();
+            let (mut zoom, stepped) = opened(start);
+            let arrives = zoom.settles_at().expect("the zoom is under way");
+            let mut now = start;
+            while zoom.is_moving(now) {
+                now += Duration::from_millis(16);
+                hold_after_late_frame(&mut zoom, &stepped, now);
+            }
+            assert!(
+                now <= arrives + Duration::from_millis(16),
+                "the zoom arrives on its own clock: {:?} after it was due",
+                now.saturating_duration_since(arrives)
+            );
+        }
     }
 }
