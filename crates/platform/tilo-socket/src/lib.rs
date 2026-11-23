@@ -26,23 +26,22 @@ use std::path::Path;
 pub const MAX_PATH: usize = 107;
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 pub const MAX_PATH: usize = 103;
-/// A named pipe's name is not a socket path: no length of one fits here yet.
-#[cfg(windows)]
+/// A named pipe's name is not a socket path, and a page has neither: no length
+/// of one fits here.
+#[cfg(not(unix))]
 pub const MAX_PATH: usize = 0;
 
-/// A listening local socket; on Windows nothing produces one yet.
+/// A listening local socket; on Windows, and in a page, nothing produces one yet.
 #[cfg(unix)]
 pub type Listener = UnixListener;
-/// A connection to a local service; on Windows nothing produces one yet.
-#[cfg(windows)]
+#[cfg(not(unix))]
 pub struct Listener(std::convert::Infallible);
 #[cfg(unix)]
 pub type Stream = UnixStream;
-#[cfg(windows)]
+#[cfg(not(unix))]
 pub struct Stream(std::convert::Infallible);
 
-/// The refusal a Windows caller reaches: a local service is a named pipe, and
-/// none is wired up yet.
+/// The refusal a caller without local sockets reaches.
 #[cfg(windows)]
 fn unsupported() -> io::Error {
     io::Error::new(
@@ -51,13 +50,19 @@ fn unsupported() -> io::Error {
     )
 }
 
+/// The refusal a page reaches: it has no local socket to reach.
+#[cfg(all(not(unix), not(windows)))]
+fn unsupported() -> io::Error {
+    io::Error::new(io::ErrorKind::Unsupported, "a page has no local socket")
+}
+
 /// Listens on a new socket at `path`, whatever its length.
 pub fn bind(path: &Path) -> io::Result<Listener> {
     #[cfg(unix)]
     {
         reach(path, |short| UnixListener::bind(short))
     }
-    #[cfg(windows)]
+    #[cfg(not(unix))]
     {
         let _ = path;
         Err(unsupported())
@@ -70,7 +75,7 @@ pub fn connect(path: &Path) -> io::Result<Stream> {
     {
         reach(path, |short| UnixStream::connect(short))
     }
-    #[cfg(windows)]
+    #[cfg(not(unix))]
     {
         let _ = path;
         Err(unsupported())
