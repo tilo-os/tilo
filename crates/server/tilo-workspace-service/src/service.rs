@@ -673,6 +673,12 @@ impl WorkspaceService {
             .map(|(_, handler)| handler)
     }
 
+    /// The session stack the service's members connect through.
+    #[must_use]
+    pub const fn sessions(&self) -> &ServiceSessions {
+        &self.sessions
+    }
+
     /// The governance of the workspaces served here.
     #[must_use]
     pub const fn workspaces(&self) -> &crate::workspaces::Workspaces {

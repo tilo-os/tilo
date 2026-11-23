@@ -31,11 +31,6 @@ use tilo_workspace_service::own_device::{self, KeyService};
 use tilo_workspace_service::service::WorkspaceService;
 use tilo_workspace_service::workspaces::{SessionAdmission, Workspaces};
 
-/// Where the service keeps its store, below the device's directory.
-const SERVICE: &str = "service";
-/// Where the key service keeps its sealed group state, below the device's directory.
-const GROUPS: &str = "groups";
-
 /// What the device's workspace service is opened with.
 pub(crate) struct Opening<'a> {
     /// The device's directory: the service's store and the key service's state are below it.
@@ -90,28 +85,20 @@ impl ServiceWorkspaces {
             seal_checks,
             apps,
         } = opening;
-        let keys = KeyService::open(
-            "tilo-device-groups",
-            &dir.join(GROUPS),
-            vault_key(key),
-            Arc::clone(&identity.signer),
-            seal_checks,
-        )
-        .map_err(|error| format!("this device's key service: {error}"))?;
-        let service = own_device::open(
-            dir.join(SERVICE),
+        let own_device::Opened { service, keys } = own_device::open_in(
+            dir,
             own_device::Device {
                 cert: &identity.device_cert,
                 signer: &identity.signer,
             },
+            own_device::vault_key(key),
             endpoint.clone(),
-            keys.groups(),
             governs,
+            seal_checks,
             |config| tilo_workspace_service::service::ServiceConfig { apps, ..config },
         )
         .await
         .map_err(|error| format!("this device's workspace service: {error}"))?;
-        keys.attach(service.workspaces());
         let mut opened = Self::unopened(Arc::new(service), identity, endpoint);
         opened.keys = Some(keys);
         Ok(Arc::new(opened))
@@ -656,15 +643,6 @@ async fn copy_of(
         Some(copy) => Some(copy),
         None => workspaces.governed_copy(workspace).await,
     }
-}
-
-/// The key sealing the device's group state: derived from the device key, which this computer
-/// keeps beside it.
-fn vault_key(key: &SigningKey) -> key_group::VaultKey {
-    key_group::VaultKey::new(blake3::derive_key(
-        "tilo device workspace key vault v1",
-        &key.to_bytes(),
-    ))
 }
 
 impl crate::apps::LaunchGrantsSource for ServiceWorkspaces {

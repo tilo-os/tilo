@@ -92,7 +92,7 @@ pub fn prepare_join(token_text: &str, options: JoinOptions<'_>) -> anyhow::Resul
     let request = Request {
         token: token_text.to_owned(),
         device_public_key: device.verifying_key().to_bytes(),
-        server_node_id: tilo_server_protocol::server_node_id(&device.to_bytes()),
+        server_node_id: device.verifying_key().to_bytes(),
         label: label.chars().take(80).collect(),
         hardware: hardware_summary(),
         kind,
@@ -387,7 +387,7 @@ pub fn pair_device(
     let paths = IdentityPaths::under(identity_root);
     paths.ensure_directories()?;
     let (device, _) = tilo_device_identity::persist::load_or_create_device_key(&paths)?;
-    let server_node_id = tilo_server_protocol::server_node_id(&device.to_bytes());
+    let server_node_id = device.verifying_key().to_bytes();
     let label: String = label.chars().take(80).collect();
     if !tilo_server_protocol::valid_device_label(&label) {
         bail!("home-server label must be a printable single-line name");

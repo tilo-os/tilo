@@ -14,7 +14,6 @@ tilo_test_env::scenario! {
         let device = hex::encode([0x11; 32]);
         let server = Server::new(&device).unwrap();
         assert_eq!(server.device(), [0x11; 32]);
-        assert_eq!(server.endpoint, [0x11; 32], "its endpoint is its device's");
     }
 
     phase a_server_named_by_something_that_is_no_device_key_is_refused;
@@ -26,21 +25,9 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_tilo_servers_requests_come_from_its_endpoint_and_are_its_devices;
-    {
-        // A Tilo server keys its endpoint apart from its device: its requests come
-        // from the endpoint, signed by the device.
-        let server = Server::new(&hex::encode([0x11; 32]))
-            .unwrap()
-            .with_endpoint(&hex::encode(public(4)))
-            .unwrap();
-        assert_eq!(server.device(), [0x11; 32]);
-        assert_eq!(server.endpoint, public(4));
-    }
-
     phase a_login_joined_with_a_ticket_names_the_server_it_takes_work_for;
-    // A profile joined with a ticket serves the server the login was answered with, reached
-    // at the endpoint the ticket named.
+    // A profile joined with a ticket serves the server the login was answered with, where the
+    // ticket named an address it is reached at.
     {
         let server = SigningKey::from_bytes(&[0x55; 32]);
         let endpoint = public(7);
@@ -63,7 +50,7 @@ tilo_test_env::scenario! {
         };
         let found = Server::from_login(Some(&login)).unwrap();
         assert_eq!(found.device(), server.verifying_key().to_bytes());
-        assert_eq!(found.endpoint, endpoint);
+
         assert!(Server::from_login(None).is_none(), "no login, no server");
     }
 

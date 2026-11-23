@@ -2585,7 +2585,8 @@ mod tests {
             "device": NEARBY_DEVICE,
             "label": "Kitchen NAS",
             "endpoint": {
-                "id": hex::encode(tilo_server_protocol::server_node_id(&[0xbb; 32])),
+                // The ed25519 base point: a key that parses, which nothing here signs with.
+                "id": "5866666666666666666666666666666666666666666666666666666666666666",
                 "addrs": [],
             },
         }))

@@ -89,18 +89,16 @@ pub fn keep_introducer(
 
 impl Introducer {
     /// The introducer as `person`'s device approving another hands it: its
-    /// own certificate, and the address its service answers on, which
-    /// follows from its key.
+    /// own certificate, and the address it answers on: its endpoint, keyed by its device key.
     #[must_use]
     pub fn of_device(
         device: tilo_user_identity::DeviceCert,
         device_secret: &ed25519_dalek::SigningKey,
     ) -> Self {
-        let service =
-            iroh_base::SecretKey::from_bytes(&crate::server_node_secret(&device_secret.to_bytes()));
+        let endpoint = iroh_base::SecretKey::from_bytes(&device_secret.to_bytes());
         Self {
             device,
-            endpoint: iroh_base::EndpointAddr::new(service.public()),
+            endpoint: iroh_base::EndpointAddr::new(endpoint.public()),
         }
     }
 

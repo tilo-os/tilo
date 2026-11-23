@@ -78,6 +78,63 @@ pub async fn open(
     }
 }
 
+/// Where a device keeps its workspace service's store, below the device's directory.
+const SERVICE: &str = "service";
+/// Where a device's key service keeps its sealed group state, below the device's directory.
+const GROUPS: &str = "groups";
+
+/// A device's workspace service and the key service beside it, as [`open_in`] opened them.
+pub struct Opened {
+    pub service: WorkspaceService,
+    pub keys: KeyService,
+}
+
+/// The key sealing a device's group state: derived from the device key, which the device keeps
+/// beside it.
+#[must_use]
+pub fn vault_key(key: &ed25519_dalek::SigningKey) -> key_group::VaultKey {
+    key_group::VaultKey::new(blake3::derive_key(
+        "tilo device workspace key vault v1",
+        &key.to_bytes(),
+    ))
+}
+
+/// Open `device`'s workspace service and the key service beside it in the device's directory
+/// `dir`, on `endpoint`, its group state sealed with `vault` ([`vault_key`]) and what the groups'
+/// members seal checked against `seal_checks`. Every device keeps them in this one layout, a
+/// server among them; `governs` and `configure` are as [`open`] takes them.
+///
+/// # Errors
+/// The key service's state or the service's store cannot be opened.
+pub async fn open_in(
+    dir: &std::path::Path,
+    device: Device<'_>,
+    vault: key_group::VaultKey,
+    endpoint: iroh::Endpoint,
+    governs: bool,
+    seal_checks: Arc<dyn tilo_workspace_keys::SealCheckRegistry>,
+    configure: impl FnOnce(ServiceConfig) -> ServiceConfig,
+) -> Result<Opened, ServiceError> {
+    let keys = KeyService::open(
+        "tilo-device-groups",
+        &dir.join(GROUPS),
+        vault,
+        Arc::clone(device.signer),
+        seal_checks,
+    )?;
+    let service = open(
+        dir.join(SERVICE),
+        device,
+        endpoint,
+        keys.groups(),
+        governs,
+        configure,
+    )
+    .await?;
+    keys.attach(service.workspaces());
+    Ok(Opened { service, keys })
+}
+
 /// How long one workspace's member copy is waited for as the device takes it in.
 pub const HOLD_WITHIN: Duration = Duration::from_secs(30);
 

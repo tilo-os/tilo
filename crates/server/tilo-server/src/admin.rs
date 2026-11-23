@@ -40,7 +40,7 @@ enum Cmd {
     /// Print daemon status (config + on-disk state summary).
     Status,
     /// Print the endpoint id a server's device key answers on, from the key file it keeps
-    /// (`host-device.key`), as `server_node_id` derives it.
+    /// (`host-device.key`): the device key's own public key.
     NodeId {
         /// The server's raw 32-byte device key.
         #[arg(long)]
@@ -209,7 +209,7 @@ fn command(config: &std::path::Path, cmd: Cmd) -> anyhow::Result<()> {
             let key = <[u8; 32]>::try_from(bytes.as_slice())
                 .map_err(|_| anyhow::anyhow!("{}: a device key is 32 bytes", key_file.display()))?;
             let key = ed25519_dalek::SigningKey::from_bytes(&key);
-            println!("{}", hex::encode(tilo_server::daemon::server_node_id(&key)));
+            println!("{}", hex::encode(key.verifying_key().to_bytes()));
             Ok(())
         }
         Cmd::RevokeDevice {
