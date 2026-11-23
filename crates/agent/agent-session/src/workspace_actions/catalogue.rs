@@ -49,7 +49,7 @@ impl Worker {
             .or_else(|| {
                 asked
                     .filter(|named| WorkspaceId::parse(named) == Some(workspace_id))
-                    .map(str::to_owned)
+                    .map(|_| workspace_id.to_string())
             })
             .or_else(|| {
                 self.workspaces
@@ -197,13 +197,7 @@ impl Worker {
                     resource_of(provider, cluster_id).ok_or(ActionCallError::UnknownAction)?;
                 if collab_types::workspace_document(&route.app_id, &route.document).is_some() {
                     let (holder, state) = self
-                        .holder_of_workspace_document(
-                            workspace_id,
-                            caller,
-                            cluster_id,
-                            &route,
-                            state,
-                        )
+                        .holder_of_workspace_document(workspace_id, caller, &route, state)
                         .ok_or(ActionCallError::UnknownAction)?;
                     return Ok((vec![holder], state));
                 }

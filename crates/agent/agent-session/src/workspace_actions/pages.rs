@@ -498,7 +498,7 @@ impl Worker {
         });
         // The app's document of the workspace, founded by the person as a window
         // of it would be when the workspace holds none yet.
-        self.open_new(workspace_id, &cluster_id, app.app_id(), Some(&who))
+        self.open_new(workspace_id, app.app_id(), Some(&who))
             .map_err(|outcome| match outcome {
                 crate::record_actions::Outcome::Rejected(error) => refused(error),
                 crate::record_actions::Outcome::Failed(failure) => unavailable(failure.message),

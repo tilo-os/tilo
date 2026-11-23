@@ -141,9 +141,7 @@ fn windows_html(
 impl Worker {
     /// The layout of `workspace_id` as the service holds it now, read as its pages read it.
     fn desktop_layout(&mut self, workspace_id: WorkspaceId) -> Option<AutoCommit> {
-        self.held_layout(workspace_id, &workspace_id.to_string())
-            .ok()
-            .flatten()
+        self.held_layout(workspace_id).ok().flatten()
     }
 
     /// One window of the layout as the page lists it: its record's page when the workspace's
@@ -319,8 +317,7 @@ impl Worker {
         let app = pressed
             .and_then(|id| id.checked_sub(FIRST_OPEN))
             .and_then(|at| held.apps.get(usize::try_from(at).ok()?).copied());
-        let named = workspace_id.to_string();
-        let layout = crate::workspace_documents::desktop_route(&named);
+        let layout = crate::workspace_documents::desktop_route(&workspace_id.to_string());
         self.refresh(
             workspace_id,
             Needs::Read {
@@ -332,7 +329,7 @@ impl Worker {
         if let Some(tab) = window {
             self.close_on_layout(workspace_id, &caller, tab)?;
         } else if let Some(app) = app {
-            self.place_window(workspace_id, &caller, (&named, app, ""), None)
+            self.place_window(workspace_id, &caller, (app, ""), None)
                 .map_err(outcome_refusal)?;
         }
         let (html, windows) = self.desktop_windows(workspace_id);
