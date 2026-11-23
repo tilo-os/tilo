@@ -5,9 +5,10 @@ use std::sync::Arc;
 
 use runtime_collab::wire::Reply;
 use runtime_collab::wire::shell::{
-    DocumentWritten, SHELL_MAGIC, ShellCall, ShellRead, ShellReply, ShellWrite, VOUCH_MAGIC,
+    DocumentWritten, SHELL_MAGIC, ShellCall, ShellReply, ShellWrite, VOUCH_MAGIC,
 };
-use tilo_peer_state::workspace_documents::{DocumentRead, DocumentWriting};
+use tilo_actions::remote::{Caller, ReceiptStatus, RemoteActionMessage, ResourceReads as _};
+use tilo_peer_state::workspace_documents::DocumentWriting;
 
 use crate::apps::shell::{ShellCaller, ShellServices};
 
@@ -119,20 +120,6 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
     let shell = shell.ok_or("this connection is not the person's shell")?;
     let services = Arc::clone(&shell.services);
     let reply = match call {
-        ShellCall::Read {
-            workspace,
-            app,
-            resource,
-            since,
-        } => {
-            let documents = Arc::clone(&services.documents);
-            let read = tokio::task::spawn_blocking(move || {
-                documents.read(&workspace, &app, &resource, since.as_deref())
-            })
-            .await
-            .map_err(|_| "the read stopped before it answered".to_owned())??;
-            ShellReply::Read(read_on_wire(read))
-        }
         ShellCall::Readable {
             workspace,
             app,
@@ -147,14 +134,6 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
                 .map_err(|_| "the read stopped before it answered".to_owned())?,
             )
         }
-        ShellCall::Listing { workspace } => {
-            ShellReply::Listing(services.documents.listing(&workspace)?)
-        }
-        ShellCall::Holds {
-            workspace,
-            app,
-            resource,
-        } => ShellReply::Is(services.documents.holds(&workspace, &app, &resource)),
         ShellCall::Workspaces => ShellReply::Workspaces(services.documents.workspaces()),
         call @ ShellCall::Write { .. } => write(&services, call).await?,
         ShellCall::Served {
@@ -178,14 +157,75 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
         | ShellCall::KeepsReceipts { .. }
         | ShellCall::Authorizes { .. }) => kept(&services.workspaces, call).await,
         ShellCall::Vouch(vouch) => vouch_for(&services, vouch)?,
-        ShellCall::Invoke { request } => {
-            let request = serde_json::from_str(&request)
-                .map_err(|error| format!("the invocation does not read: {error}"))?;
-            let settled = services.actions.invoke(&shell.caller, request).await;
-            ShellReply::Invoked(settled.map(|value| value.to_string()))
+        ShellCall::Invoke { workspace, message } => {
+            let message = serde_json::from_str(&message)
+                .map_err(|error| format!("the call does not read: {error}"))?;
+            ShellReply::Invoked(dispatched(&shell, workspace, message).await)
         }
     };
     Ok(Reply::Shell(reply))
+}
+
+/// A call of the device's one dispatch, as the shell's person on this device: a read of
+/// resources, answered by the device's one resource reader as every device of theirs reads; a
+/// typed action of a resource, by the provider that applies it; any other action as the shell's
+/// own asks are answered.
+async fn dispatched(
+    shell: &Shell,
+    workspace: Option<String>,
+    message: RemoteActionMessage,
+) -> Result<String, String> {
+    let workspaces = &shell.services.workspaces;
+    let device = workspaces.device_cert();
+    if shell.caller.person != device.user_public_key {
+        return Err("this device acts for its own person only".to_owned());
+    }
+    let person = Caller::authenticated(device.user_public_key, device.device_public_key);
+    match message {
+        RemoteActionMessage::ResourceRead {
+            correlation, read, ..
+        } => {
+            let caller = person.in_workspace(read.workspace.clone());
+            let answered = workspaces
+                .resource_reads()
+                .answer_read(&caller, correlation, read)
+                .await;
+            match answered {
+                Some(RemoteActionMessage::ResourceReading { result, .. }) => {
+                    result.map_err(|error| error.to_string())
+                }
+                _ => Err("the read stopped before it answered".to_owned()),
+            }
+        }
+        RemoteActionMessage::Invoke(request)
+            if tilo_actions::remote::is_resource_provider(&request.target.provider) =>
+        {
+            let workspace =
+                workspace.ok_or("a resource's action is asked in the workspace that keeps it")?;
+            let caller = person.in_workspace(workspace);
+            let receipt = workspaces
+                .providers()
+                .invoke(&caller, request)
+                .ok_or("this device applies no action of that resource")?
+                .await
+                .ok_or("the action stopped before it answered")?
+                .map_err(|error| error.to_string())?;
+            match receipt.status {
+                ReceiptStatus::Completed { output } => serde_json::to_string(&output)
+                    .map_err(|error| format!("the answer does not encode: {error}")),
+                ReceiptStatus::Rejected { error } => Err(error.to_string()),
+                ReceiptStatus::Failed { error } => Err(error.message),
+                status => Err(format!("the action did not settle: {status:?}")),
+            }
+        }
+        RemoteActionMessage::Invoke(request) => shell
+            .services
+            .actions
+            .invoke(&shell.caller, request)
+            .await
+            .map(|value| value.to_string()),
+        _ => Err("the shell asks reads and actions of the dispatch, and nothing else".to_owned()),
+    }
 }
 
 /// A [`ShellCall::Write`], written as the device.
@@ -386,33 +426,6 @@ async fn vault(
             .remove_workspace_account(&workspace, &account)
             .await
             .map(|forgot| forgot.to_string()),
-    }
-}
-
-/// `read` as the wire carries it.
-fn read_on_wire(read: DocumentRead) -> ShellRead {
-    match read {
-        DocumentRead::Whole {
-            revision,
-            heads,
-            bytes,
-        } => ShellRead::Whole {
-            revision,
-            heads,
-            bytes,
-        },
-        DocumentRead::Changes {
-            revision,
-            heads,
-            bytes,
-        } => ShellRead::Changes {
-            revision,
-            heads,
-            bytes,
-        },
-        DocumentRead::Unchanged(revision) => ShellRead::Unchanged(revision),
-        DocumentRead::Absent => ShellRead::Absent,
-        DocumentRead::Pending => ShellRead::Pending,
     }
 }
 

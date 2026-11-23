@@ -399,8 +399,19 @@ impl Session {
                 search.place_soon(needle, None, layout::canvas_find_within(), done);
             })
         };
-        // The agents each workspace keeps, read from its record of them.
-        let records = crate::engine_records::EngineRecords::new(options.wake.handle());
+        // The shell link the device's daemon handed this session when it started it: the
+        // session's own reads and writes go there, the workspace resources it shows itself are
+        // followed there, and its apps are vouched for on it.
+        let daemon_link =
+            tilo_session_client::daemon_documents::inherited_link(tilo_rt::app().handle());
+        if let Err(reason) = &daemon_link {
+            tracing::error!(%reason, "this session reads and writes no workspace");
+        }
+        let (document_reads, writes, daemon_writes, daemon) =
+            crate::broker_services::session_documents(
+                daemon_link.clone(),
+                tilo_rt::app().handle().clone(),
+            );
         // What a text that names an app's type does when the text names nothing held: ask that
         // app, through the search action its package tags `outside:<origin>.search` (shell.md §8,
         // "Finding what to place"; search.md §7, "Who indexes"). The app's own action runs the
@@ -479,8 +490,9 @@ impl Session {
         // Where each workspace's folder on this computer stands, as the files daemon says it over
         // the tree socket: what the shell shows, so a person knows what reached the server.
         let folders = tilo_workspace_service::files::Folders::new(options.wake.handle());
+        // The agents each workspace keeps, followed where the workspace keeps them.
         let agents = Rc::new(crate::agents::Agents::new(
-            records.clone(),
+            daemon.clone(),
             options.wake.handle(),
         ));
         // The one send every sender runs: a person's box, an agent, a script, and the canvas.
@@ -670,17 +682,6 @@ impl Session {
         // Where this device's own workspace service is installed, and what its roles read from:
         // every role here reads what its workspaces hold through it.
         let workspace_service = tilo_workspace_service::service::ServiceSlot::default();
-        // The shell link the device's daemon handed this session when it started it: the
-        // session's own reads and writes go there, and its apps are vouched for on it.
-        let daemon_link =
-            tilo_session_client::daemon_documents::inherited_link(tilo_rt::app().handle());
-        if let Err(reason) = &daemon_link {
-            tracing::error!(%reason, "this session reads and writes no workspace");
-        }
-        let (document_reads, writes, daemon_writes) = crate::broker_services::session_documents(
-            daemon_link.clone(),
-            tilo_rt::app().handle().clone(),
-        );
         // A write the daemon takes to a layout or a view has it read again off the loop.
         desktops.follow_writes(daemon_writes.clone());
         let engine = crate::options::open_engine(&options, &handle);
@@ -757,28 +758,15 @@ impl Session {
             continuity.clone(),
             engine.clone(),
             beside,
-            Some(peer_documents.clone()),
+            Some(peer_documents),
             (workspace_service.clone(), &changes),
         );
-        // The records the session itself writes are the workspaces' own, and its writes reach this
-        // device's apps as a member's do. Search finds the records the workspaces hold, and
-        // brings one here, through them.
-        if let Some(view) = &view {
-            records.attach(
-                std::sync::Arc::clone(view),
-                engine.as_ref().and_then(|engine| engine.service_root()),
-                document_reads.clone(),
-                writes.clone(),
-                &changes,
-                Some(peer_documents),
-            );
-            if let Some(found) = &options.search.records {
-                found.read_from(
-                    document_reads.clone(),
-                    records.clone(),
-                    options.person.clone(),
-                );
-            }
+        // Search finds the resources the workspaces hold, and brings one here through the
+        // index's action at the daemon.
+        if view.is_some()
+            && let Some(found) = &options.search.records
+        {
+            found.read_from(document_reads.clone(), daemon.clone());
         }
         // The content the workspaces' records reference: kept beside their
         // records under this session's state, and asked of the workspace's
@@ -1550,7 +1538,7 @@ impl Session {
         services
             .borrow_mut()
             .add(Box::new(crate::contacts::Contacts::new(
-                records.clone(),
+                daemon.clone(),
                 handle.clone(),
                 &options.person,
                 options.wake.handle(),
@@ -1699,8 +1687,12 @@ impl Session {
             file_picker.clone(),
             Rc::clone(&services),
         );
-        let workspace_tabs =
-            crate::workspace_settings::WorkspaceTabs::new(&records, options.wake.handle());
+        let workspace_tabs = crate::workspace_settings::WorkspaceTabs::new(
+            &daemon,
+            engine.as_ref().and_then(|engine| engine.service_root()),
+            document_reads.clone(),
+            options.wake.handle(),
+        );
         let directory_store = Rc::new(crate::directory::Store::default());
         let clipboard = Rc::new(crate::clipboard::Clipboard::new(options.wake.handle()));
         // The shell's own fields copy and paste through the shell's clipboard, as apps do.
@@ -1822,7 +1814,7 @@ impl Session {
             files_access: Some(std::sync::Arc::clone(&document_content)),
             workspace_tabs,
             agents,
-            records,
+            daemon,
             directory,
             invite,
             inviting,
@@ -1866,7 +1858,7 @@ impl Session {
             joins: Rc::default(),
             document_reads,
             document_writes: writes,
-            held_stores: crate::engine_records::held_stores(workspace_service),
+            held_stores: crate::app_stores::held_stores(workspace_service),
             app_stores: RefCell::default(),
             desktops,
             notes,
@@ -1877,7 +1869,7 @@ impl Session {
             clipboard,
             layout,
             underway: busy,
-            settings: crate::settings_sync::SettingsSync::new(),
+            settings: crate::person_settings::PersonSettings::default(),
             overview,
             dictation,
             emoji,
@@ -2544,11 +2536,11 @@ impl Session {
         self.app_wire.as_ref().and_then(AppWire::agent_broker)
     }
 
-    /// The session's copy of `record` of `app` in `workspace` as it is stored: what a test reads
-    /// back of Chat's records the session itself writes (its agents, its emoji).
+    /// `record` of `app` in `workspace` as the workspace holds it: what a test reads back of
+    /// Chat's resources the session changes (its agents, its emoji).
     #[must_use]
     pub fn stored_record(&self, app: &str, workspace: &str, record: &str) -> Option<Vec<u8>> {
-        self.shared.records.stored(app, workspace, record)
+        self.read_resource(workspace, app, record).ok().flatten()
     }
 
     /// This device's action service, which the person's other devices ask it through: a test

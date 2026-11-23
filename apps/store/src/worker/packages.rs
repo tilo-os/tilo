@@ -190,6 +190,8 @@ impl AppPackages {
                         joined: false,
                         after: None,
                         wait_ms: None,
+                        document: false,
+                        listing: false,
                     },
                 ));
                 self.device = Some(device);

@@ -51,24 +51,9 @@ pub struct Vouch {
 /// What a shell asks of the device's documents and actions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShellCall {
-    /// `app`'s `resource` of `workspace`, whole, or only what changed after the heads `since`.
-    Read {
-        workspace: String,
-        app: String,
-        resource: String,
-        since: Option<Vec<[u8; 32]>>,
-    },
     /// Whether `app`'s `resource` of `workspace` reads now: held here, nothing it waits for still
     /// on its way.
     Readable {
-        workspace: String,
-        app: String,
-        resource: String,
-    },
-    /// Every document `workspace` holds, by its app and route.
-    Listing { workspace: String },
-    /// Whether the device holds anything of `app`'s `resource` in `workspace`.
-    Holds {
         workspace: String,
         app: String,
         resource: String,
@@ -95,10 +80,17 @@ pub enum ShellCall {
         workspace: String,
         documents: Vec<(String, String)>,
     },
-    /// Invoke an action as the shell's person on this device: a workspace's key access and
-    /// membership (`RemoteActionTarget::workspace_governance`) or the host's own operations. The request is
-    /// `tilo_actions::remote::InvokeRequest` as JSON.
-    Invoke { request: String },
+    /// A call of the device's one action dispatch, as the shell's person on this device: a
+    /// `tilo_actions::remote::RemoteActionMessage` as JSON. A `ResourceRead` reads resources of
+    /// the workspaces the device keeps, as the person's device reads them anywhere, follows
+    /// included; an `Invoke` runs a typed action of a resource of `workspace`, a workspace's key
+    /// access and membership action (`RemoteActionTarget::workspace_governance`) or one of the
+    /// host's own operations.
+    Invoke {
+        /// The workspace an action of one of its resources is asked in.
+        workspace: Option<String>,
+        message: String,
+    },
     /// The documents the device took a write to since this connection last asked, waited for
     /// until there is one: the device's own writes, its apps' and every other device's alike.
     Writes,
@@ -208,12 +200,8 @@ impl std::fmt::Debug for VaultAnswer {
 /// The daemon's answer to a [`ShellCall`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShellReply {
-    /// A [`ShellCall::Read`].
-    Read(ShellRead),
-    /// A [`ShellCall::Readable`], [`ShellCall::Holds`] or [`ShellCall::KeepsReceipts`].
+    /// A [`ShellCall::Readable`] or [`ShellCall::KeepsReceipts`].
     Is(bool),
-    /// A [`ShellCall::Listing`]: `(app, route)` of each document.
-    Listing(Vec<(String, String)>),
     /// A [`ShellCall::Workspaces`].
     Workspaces(Vec<String>),
     /// A [`ShellCall::Write`]: the write as the workspace took it, or why it took none, as
@@ -223,8 +211,8 @@ pub enum ShellReply {
     /// refused one. `None` when the workspace has no serving device to ask: one the device keeps
     /// itself.
     Served(Option<Result<(), String>>),
-    /// A [`ShellCall::Invoke`] once it settled: the value the action answered, as JSON, or why it
-    /// failed.
+    /// A [`ShellCall::Invoke`] once it settled: the value the action answered, or the readings a
+    /// read answered, as JSON; or why it failed.
     Invoked(Result<String, String>),
     /// A [`ShellCall::Writes`]: each document written, as its workspace, app and record (`""` for
     /// the app's primary). `None` when the device took more than it kept told, so the shell reads
@@ -245,24 +233,6 @@ pub enum ShellReply {
     Receipted(Result<(), String>),
     /// A [`ShellCall::Authorizes`]: allowed, or why not.
     Authorized(Result<(), String>),
-}
-
-/// What the device holds of one document, as `tilo_peer_state::workspace_documents::DocumentRead`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ShellRead {
-    Whole {
-        revision: [u8; 32],
-        heads: Vec<[u8; 32]>,
-        bytes: Vec<u8>,
-    },
-    Changes {
-        revision: [u8; 32],
-        heads: Vec<[u8; 32]>,
-        bytes: Vec<u8>,
-    },
-    Unchanged([u8; 32]),
-    Absent,
-    Pending,
 }
 
 /// A document the device took a write to.

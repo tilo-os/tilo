@@ -16,14 +16,10 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use tilo_action_policy::{MemberAccess, WorkspacePolicy};
-use tilo_app::framework::WorkspaceResource;
+use tilo_action_policy::WorkspacePolicy;
 use tilo_app::tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents as Record};
-use ui::permissions::{LivePermissions, PermissionContext};
-use ui::resource::workspace::WorkspaceResources;
 
-/// How this session names a record it opened, where the record's history is told.
-const SESSION_APP: (&str, &str) = ("tilo-session", "Workspace settings");
+use crate::followed_resource::FollowedResource;
 
 /// An agent the person sitting here keeps.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,48 +80,40 @@ impl Roster {
 /// The workspaces' agents, read from each workspace's record of them.
 pub(crate) struct Agents {
     roster: Arc<Roster>,
-    /// The workspaces' records, as the workspace holds them.
-    records: crate::engine_records::EngineRecords,
-    /// Wakes the session's loop when a change to a record lands.
-    wake: ui::WakeScope,
-    /// Each workspace's records and its agents record, opened here and kept at the grants they were
-    /// opened with.
+    /// The device's daemon, where each workspace's list of its agents is read.
+    daemon: tilo_session_client::daemon_documents::DaemonShell,
+    /// Wakes the session's loop when a list moved.
+    wake: tilo_service::Wake,
+    /// Each workspace's list of its agents, followed here at the grants it was followed with.
     open: RefCell<BTreeMap<String, Opened>>,
 }
 
 struct Opened {
-    /// The grants the record was opened with: a workspace whose grants changed has it opened again,
-    /// so its people's reads follow.
+    /// The grants it was followed with: a workspace whose grants changed has it followed again.
     policy: WorkspacePolicy,
-    records: WorkspaceResources,
-    /// `None` until it opens: the workspace's agents record, opened once and kept.
-    record: Option<WorkspaceResource<Record>>,
+    followed: FollowedResource<Record>,
 }
 
-/// What a workspace's record of its agents is to a reader this pass.
+/// What a workspace's list of its agents is to a reader this pass.
 enum Held {
-    /// The workspace holds no agents record: this reads one, never writes one.
+    /// The workspace has no list of its agents: this reads one, never writes one.
     None,
-    /// The record could not be opened or read now: what it says is not known this pass.
+    /// It is not read yet: what it says is not known this pass.
     Unknown,
-    Open(WorkspaceResource<Record>),
+    Open(FollowedResource<Record>),
 }
 
 impl Agents {
-    /// The workspaces' agents in the workspaces' copy of them (`records`), waking the session's loop through `wake`
-    /// when a change lands.
+    /// The workspaces' agents, read at the device's `daemon`, waking the session's loop through
+    /// `wake` when a list moved.
     pub(crate) fn new(
-        records: crate::engine_records::EngineRecords,
+        daemon: tilo_session_client::daemon_documents::DaemonShell,
         wake: tilo_service::Wake,
     ) -> Self {
-        let mut scope = ui::WakeScope::new();
-        if let Err(error) = scope.bind(move |_| wake()) {
-            tracing::warn!(%error, "the workspaces' agents are not woken");
-        }
         Self {
             roster: Arc::default(),
-            records,
-            wake: scope,
+            daemon,
+            wake,
             open: RefCell::default(),
         }
     }
@@ -175,9 +163,7 @@ impl Agents {
                 Held::Unknown => continue,
                 Held::Open(record) => record,
             };
-            let Some(state) = record.try_get() else {
-                continue;
-            };
+            let state = record.get();
             spend.retain(|(held, _), _| held != workspace);
             let mut named = Vec::new();
             // Every agent the workspace's list names, retired ones too: a retired agent takes
@@ -248,8 +234,9 @@ impl Agents {
             .map(|agent| (agent.id.0.clone(), agent.name.clone()))
     }
 
-    /// The workspace's agents record, opened here where it is not, at the grants the pass read: a
-    /// workspace that keeps none is given none, so one nobody set an agent up in costs no record.
+    /// The workspace's list of its agents, followed here where it is not, at the grants the pass
+    /// read: a workspace that keeps none is given none, so one nobody set an agent up in costs no
+    /// list.
     fn record(&self, workspace: &str, policy: &WorkspacePolicy, person: &str) -> Held {
         let mut open = self.open.borrow_mut();
         if open
@@ -260,37 +247,17 @@ impl Agents {
         }
         let opened = open.entry(workspace.to_owned()).or_insert_with(|| Opened {
             policy: policy.clone(),
-            records: self.records.in_workspace(
-                workspace,
-                ui::permissions::MemberId::person(person.to_owned()),
+            followed: FollowedResource::follow(
+                &self.daemon,
+                (workspace, OWNER, &collab_types::workspace_document_id(KIND)),
+                person,
+                Some(policy.clone()),
+                Arc::clone(&self.wake),
             ),
-            record: None,
         });
-        if opened.record.is_none() {
-            let id = collab_types::workspace_document_id(KIND);
-            match opened.records.holds_resource(OWNER, &id, KIND) {
-                Ok(false) => return Held::None,
-                Ok(true) => {}
-                Err(error) => {
-                    tracing::warn!(%error, %workspace, "the workspace's agents are not read");
-                    return Held::Unknown;
-                }
-            }
-            let permissions = PermissionContext::from_access(MemberAccess::person(
-                policy.clone(),
-                person.to_owned(),
-            ))
-            .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
-            opened.record = WorkspaceResource::<Record>::open(
-                &opened.records,
-                OWNER,
-                SESSION_APP,
-                Some(LivePermissions::fixed(permissions)),
-                Some(self.wake.handle()),
-            );
-        }
-        match &opened.record {
-            Some(record) => Held::Open(record.clone()),
+        match opened.followed.held() {
+            Some(true) => Held::Open(opened.followed.clone()),
+            Some(false) => Held::None,
             None => Held::Unknown,
         }
     }
@@ -302,9 +269,6 @@ impl crate::Shared {
     /// is read from the workspace's own record of them, as the broker admits an agent's session on,
     /// and its actions are admitted as the grants of the person it acts for say.
     pub(crate) fn feed_agents(&self) {
-        // What moved in the workspaces' records, and what this session wrote into them, before
-        // anything here reads them.
-        self.records.replicate();
         let workspaces: Vec<(String, tilo_action_policy::WorkspacePolicy)> =
             self.handle.read(|tree| {
                 tree.workspaces
@@ -370,101 +334,5 @@ pub(crate) fn agent_recipient(kept: Option<(String, String)>) -> ui::floating_su
     match kept {
         Some((id, name)) => Recipient::found(RecipientKind::Agent, id, name),
         None => Recipient::new_agent(crate::i18n::t("session-agent-name")),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use tilo_broker_core::services::AgentRoster as _;
-    use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-
-    /// The person at the shell, who owns its workspace.
-    const PERSON: &str = "ada";
-    /// The workspace in front of them, where nobody set an agent up yet.
-    const STUDIO: &str = "8b0e8f5e-6c1f-4f4e-9d4a-1f2e3d4c5b6a";
-
-    /// A headless session at a shell whose one workspace is the person's, its passes run until the
-    /// shell stands.
-    fn session(state: &std::path::Path) -> crate::Session {
-        let mut session = crate::Session::headless(
-            crate::Options {
-                person: PERSON.to_owned(),
-                presentation: ui::headless::fixture_runner_inputs,
-                collab: false,
-                state: Some(state.to_path_buf()),
-                ..crate::Options::default()
-            },
-            &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
-        )
-        .expect("a session");
-        let mut studio = Workspace::new(
-            WorkspaceId::parse(STUDIO).expect("a workspace id"),
-            "Studio",
-        );
-        studio.set_owner(PERSON);
-        session.handle().replace_tree(Layout {
-            active: studio.id(),
-            workspaces: vec![studio],
-            ..Layout::default()
-        });
-        for _ in 0..4 {
-            session.step(Duration::from_millis(1)).expect("a frame");
-        }
-        session
-    }
-
-    /// The MCP server tells a connection it may join as soon as the session answers it the
-    /// person's agent member for its client, and the connection joins the broker on a thread of
-    /// its own, at once. So the answer itself lists the member where the broker reads who works
-    /// in the workspace: a member this call added to the workspace's record is the person's in
-    /// the broker's roster when the call returns, with no pass of the session in between. On a
-    /// machine no agent worked on, that is the first client the person approves.
-    #[test]
-    fn a_clients_agent_member_is_listed_for_the_broker_when_the_mcp_server_answers() {
-        let _settled = ui::motion::testing::settled();
-        let _home = tilo_test_env::TestHome::new().expect("a home");
-        let state = tempfile::tempdir().expect("a state directory");
-        let session = session(state.path());
-        let roster = session.shared.agents.roster();
-        assert!(
-            roster.listed(STUDIO).is_empty(),
-            "nobody set an agent up in this workspace yet"
-        );
-
-        // Before any pass: what the MCP server answers is all the broker has when the
-        // connection joins.
-        let (member, name) = session
-            .shared
-            .mcp_member(STUDIO, "claude-code")
-            .expect("the person's agent member for the client is added");
-        let acts_for = roster.acts_for(STUDIO, &member);
-        assert!(
-            acts_for
-                .as_deref()
-                .is_some_and(|acts_for| acts_for == PERSON),
-            "the broker lists the member {member} as the person's before its client is told it \
-             may join: {acts_for:?}"
-        );
-
-        // The same client again is the same member, found and still listed: no second one.
-        assert_eq!(
-            session.shared.mcp_member(STUDIO, "claude-code"),
-            Ok((member.clone(), name))
-        );
-        assert_eq!(
-            roster.listed(STUDIO).len(),
-            1,
-            "one member for the client, whichever connection it comes in on"
-        );
-
-        // The passes that follow read the record again and keep the one listing: the member the
-        // MCP server answered for stays the broker's, and no second row for it appears.
-        session.shared.feed_agents();
-        let listed = roster.listed(STUDIO);
-        assert_eq!(listed.len(), 1, "one member after the pass: {listed:?}");
-        assert_eq!(listed[0].id, member);
-        assert_eq!(listed[0].acts_for, PERSON);
     }
 }

@@ -120,6 +120,25 @@ pub trait ResourceReads: Send + Sync {
         })
     }
 
+    /// The resources of `workspace` that `caller` may read now: `app`'s, or every app's where
+    /// `app` is empty, each decided as its read would be. What a reader that keeps every resource
+    /// of a workspace (an index, search) reads before it reads each.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::read`]; a provider that lists nothing answers [`ActionCallError::Unavailable`].
+    fn list(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        app: &str,
+    ) -> Result<Vec<ResourceAddress>, ActionCallError> {
+        let _ = (caller, workspace, app);
+        Err(ActionCallError::Unavailable {
+            reason: RESOURCE_READS_UNAVAILABLE.into(),
+        })
+    }
+
     /// The device's store's answer to `read`, a read command of the store's wire (a resource, a
     /// page of a query, a count, a content), asked of the resources the app `app` keeps in
     /// `address`'s workspace as `caller` may read them now, decided as [`Self::read`] is. The command
@@ -380,6 +399,16 @@ fn serve_readings(
 ) -> super::Pending<Result<String, ActionCallError>> {
     let (answer, answered) = super::pending();
     let caller = caller.clone();
+    if read.listing {
+        // Without a thread the completer goes with the closure: the caller hears the read dropped.
+        let _ = std::thread::Builder::new()
+            .name("resource-listing".into())
+            .spawn(move || {
+                answer.complete(listing(reads.as_ref(), &caller, &read.workspace, &read.app));
+            });
+        return answered;
+    }
+    let document = read.document;
     let deadline = super::wait::deadline(read.wait_ms.unwrap_or(0));
     let ask = [ResourceAsk {
         address: ResourceAddress {
@@ -402,6 +431,9 @@ fn serve_readings(
                     deadline,
                 )
                 .and_then(|readings| {
+                    if document {
+                        return Ok(readings.documents().to_string());
+                    }
                     readings
                         .readable()
                         .map(|answer| answer.to_string())
@@ -412,7 +444,49 @@ fn serve_readings(
     answered
 }
 
+/// The resources of `workspace` `caller` may read of `app` (every app's, empty), as a listing
+/// answers them: `{"records": [{"app", "record"}]}`.
+fn listing(
+    reads: &dyn ResourceReads,
+    caller: &Caller,
+    workspace: &str,
+    app: &str,
+) -> Result<String, ActionCallError> {
+    let listed: Vec<serde_json::Value> = reads
+        .list(caller, workspace, app)?
+        .into_iter()
+        .map(|address| serde_json::json!({"app": address.app, "record": address.record}))
+        .collect();
+    Ok(serde_json::json!({ "records": listed }).to_string())
+}
+
 impl ResourceReadings {
+    /// The readings as a reader that keeps the documents is answered: as [`Self::readable`], with
+    /// each document `{"record", "document"}`, whole, in hex. A reading a provider publishes
+    /// itself, which is no document, is answered as [`Self::readable`] answers it.
+    ///
+    /// # Panics
+    /// Never: a reading's JSON always encodes.
+    #[must_use]
+    pub fn documents(self) -> serde_json::Value {
+        let records: Vec<serde_json::Value> = self
+            .records
+            .into_iter()
+            .map(|(record, copy)| match copy {
+                None => serde_json::json!({"record": record, "arriving": true}),
+                Some(ResourceCopy::Absent) => serde_json::json!({"record": record, "absent": true}),
+                Some(ResourceCopy::Document(bytes)) => {
+                    serde_json::json!({"record": record, "document": hex::encode(bytes)})
+                }
+                Some(copy) => serde_json::json!({
+                    "record": record,
+                    "value": copy.readable().unwrap_or(serde_json::Value::Null),
+                }),
+            })
+            .collect();
+        serde_json::json!({"revision": self.revision, "records": records})
+    }
+
     /// The readings as every reader is answered: `{"revision", "records": [...]}`, each record
     /// `{"record", "value"}` ([`ResourceCopy::readable`], a document or a reading alike),
     /// `{"record", "absent": true}` for one the workspace holds none of, or `{"record",

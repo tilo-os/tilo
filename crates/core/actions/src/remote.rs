@@ -1841,6 +1841,14 @@ pub struct ResourceReadRequest {
     /// How long to wait for a write past `after`, at most [`MAX_REMOTE_WAIT`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_ms: Option<u32>,
+    /// Answer each resource as its document, whole, rather than as every reader reads it: what a
+    /// reader that merges or hydrates the resource itself reads ([`ResourceReadings::documents`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub document: bool,
+    /// Answer the resources of `workspace` the caller may read rather than one: `app`'s, or every
+    /// app's where `app` is empty ([`ResourceReads::list`]). `record` is not read then.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub listing: bool,
 }
 
 impl RemoteActionMessage {

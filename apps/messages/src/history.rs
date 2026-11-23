@@ -395,6 +395,8 @@ impl HistoryView {
             joined: true,
             after: None,
             wait_ms: None,
+            document: false,
+            listing: false,
         };
         Ok(cx.read_resource(read, move |(), readings, cx| {
             then(direct_page(route, (&me, &peer), &readings?), cx)

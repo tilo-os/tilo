@@ -209,3 +209,76 @@ pub fn duplicate(doc: &mut AutoCommit, origin: &DocumentCheckout) -> DocumentChe
     reference(doc, &copy.id, &copy.kind);
     copy
 }
+
+/// The action that names a resource in an app's workspace index ([`reference`]).
+pub const REFERENCE: &str = "reference";
+
+/// The type an app's workspace index is published as: the owner of every app's index.
+pub const KIND: &str = "tilo.index";
+
+/// One entry of an app's workspace index: the type of the resource, and what people call it.
+#[derive(tilo_resource::Model, Default)]
+pub struct Entry {
+    pub kind: String,
+    pub name: Option<String>,
+}
+
+/// An app's workspace index as its owner publishes it: the resources the workspace has, at
+/// [`INDEX`] as [`reference`] and [`set_name`] write them.
+#[derive(tilo_resource::Model, Default)]
+pub struct Index {
+    #[model(rename = "tilo:records")]
+    pub records: tilo_resource::Map<Entry>,
+}
+
+#[tilo_resource::resource(kind = "tilo.index")]
+impl Index {
+    /// Name `id` in the app's index as a resource of the type `kind`: what the app's windows do
+    /// when they open a resource the workspace does not have yet, and what bringing one here from
+    /// another workspace does.
+    #[action]
+    pub fn reference(
+        &mut self,
+        #[param("The resource")] id: String,
+        #[param("The type of resource it is")] kind: String,
+    ) -> Result<(), tilo_resource::Refusal> {
+        let record = DocumentId::parse(&id)
+            .ok_or_else(|| tilo_resource::Refusal::new(format!("`{id}` is no resource")))?;
+        let kind = ResourceType::new(kind);
+        if !kind.is_valid() {
+            return Err(tilo_resource::Refusal::new(format!(
+                "`{}` is no resource type",
+                kind.as_str()
+            )));
+        }
+        match self
+            .records
+            .get(record.as_str())
+            .map(|entry| entry.kind.clone())
+        {
+            // Naming a resource again is not itself an edit; a type that was renamed follows.
+            Some(held) if held == kind.as_str() => {}
+            Some(_) => {
+                if let Some(entry) = self.records.get_mut(record.as_str()) {
+                    entry.kind = kind.as_str().to_owned();
+                }
+            }
+            None => {
+                self.records.insert(
+                    record.as_str(),
+                    Entry {
+                        kind: kind.as_str().to_owned(),
+                        name: None,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The index's type, as its owner publishes it: what applies its action to any app's index.
+#[must_use]
+pub fn kind() -> tilo_resource::ResourceKind {
+    tilo_resource::ResourceKind::of::<Index>()
+}

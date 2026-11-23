@@ -28,10 +28,15 @@ struct Daemon {
 impl Daemon {
     /// Invoke `request` on the daemon, answered with its output once it settled.
     async fn invoke(self: Arc<Self>, request: InvokeRequest) -> Result<serde_json::Value, String> {
-        let request = serde_json::to_string(&request).map_err(|error| error.to_string())?;
+        let message =
+            serde_json::to_string(&tilo_actions::remote::RemoteActionMessage::Invoke(request))
+                .map_err(|error| error.to_string())?;
         let reply = self
             .client
-            .call(ShellCall::Invoke { request })
+            .call(ShellCall::Invoke {
+                workspace: None,
+                message,
+            })
             .await
             .map_err(|error| error.to_string())?;
         let ShellReply::Invoked(update) = reply else {

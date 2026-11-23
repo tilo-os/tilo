@@ -124,6 +124,31 @@ impl Providers {
             .cloned()
     }
 
+    /// Hand `request`, a call made on this device as `caller`, to the provider it names: the one
+    /// registered under that name, the one applying the typed actions of the resource it names
+    /// (registered under [`tilo_actions::remote::RESOURCE_PROVIDER`]), or the one registered for
+    /// its app. `None` when none is.
+    #[must_use]
+    pub fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
+        let provider = request.target.provider.as_str();
+        let named = self.0.provided.read_recover().get(provider).cloned();
+        let registered = named
+            .or_else(|| {
+                self.0
+                    .provided
+                    .read_recover()
+                    .get(tilo_actions::remote::RESOURCE_PROVIDER)
+                    .filter(|resources| resources.answers.serves(provider))
+                    .cloned()
+            })
+            .or_else(|| self.get(provider))?;
+        Some(registered.answers.invoke(caller, request))
+    }
+
     /// Every registered provider.
     #[must_use]
     pub fn all(&self) -> Vec<Registered> {

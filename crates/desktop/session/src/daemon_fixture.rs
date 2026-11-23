@@ -39,6 +39,7 @@ pub(crate) struct TestDaemon {
     reads: Arc<dyn DeviceDocuments>,
     writes: Arc<dyn DeviceWrites>,
     feed: tilo_session_client::daemon_documents::DaemonWritesFeed,
+    shell: tilo_session_client::daemon_documents::DaemonShell,
     view: Arc<WorkspaceView>,
     _dir: tempfile::TempDir,
 }
@@ -56,6 +57,11 @@ impl TestDaemon {
             .block_on(test_host(&dir.path().join("host"), &key, &cert))
             .expect("the runtime runs");
         let workspaces = host.workspaces().clone();
+        // The daemon runs the typed actions of the workspace resources the session changes, as
+        // the device's runtime does.
+        runtime
+            .block_on(async { tilo_workspace_service::resource_actions::register(&workspaces) })
+            .expect("the runtime runs");
         let links = Arc::new(ShellLinks::default());
         let services = ProcessServices {
             shell: Some(Arc::new(ShellServices {
@@ -104,6 +110,7 @@ impl TestDaemon {
             reads,
             writes,
             feed: tilo_session_client::daemon_documents::DaemonWritesFeed::start(&shell),
+            shell,
             view,
             _dir: dir,
         }
@@ -163,6 +170,11 @@ impl TestDaemon {
     /// The session's writes of those documents, on its link: the daemon signs and seals them.
     pub(crate) fn writes(&self) -> Arc<dyn DeviceWrites> {
         Arc::clone(&self.writes)
+    }
+
+    /// The session's link to the daemon: where its reads are followed and its actions run.
+    pub(crate) fn shell(&self) -> tilo_session_client::daemon_documents::DaemonShell {
+        self.shell.clone()
     }
 
     /// How the person's workspaces stand, as the session's view reads them: each workspace

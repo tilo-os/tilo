@@ -80,6 +80,9 @@ pub mod metrics;
 mod own_workspaces;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod payloads;
+/// The typed actions of the workspace resources the person's shell changes.
+#[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
+pub mod resource_actions;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod registry;
 #[cfg(not(target_arch = "wasm32"))]

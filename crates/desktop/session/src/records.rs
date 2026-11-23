@@ -123,20 +123,26 @@ impl Records {
     }
 
     /// Read the workspaces' documents from this device's workspace service `reads` from now on,
-    /// as the change stream says they move, and name a record brought here through the session's
-    /// copies of them (`named` ) as `person` . The session's index of what apps hold answers for
-    /// their content ([`crate::resource_index`]): the records are offered by name.
+    /// as the change stream says they move, and name a resource brought here in its app's index
+    /// through the index's own action at the device's daemon (`daemon`), which runs it as the
+    /// person. The session's index of what apps hold answers for their content
+    /// ([`crate::resource_index`]): the resources are offered by name.
     #[cfg(target_os = "linux")]
     pub(crate) fn read_from(
         &self,
         reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
-        named: crate::engine_records::EngineRecords,
-        person: String,
+        daemon: tilo_session_client::daemon_documents::DaemonShell,
     ) {
         let held = crate::platform::records::Held::over(reads, self.changes.clone());
         *self.reading.borrow_mut() = Some(reading(Arc::new(held), &self.changes, None));
         *self.bring.borrow_mut() = Some(Box::new(move |workspace, package, record| {
-            named.reference(workspace, package, record, &person)
+            match daemon.invoke_blocking(workspace, reference(package, record)) {
+                Ok(_) => true,
+                Err(error) => {
+                    tracing::warn!(%error, package, "a resource was not brought here");
+                    false
+                }
+            }
         }));
     }
 
@@ -216,6 +222,30 @@ impl Records {
             .map_or_else(Arc::default, |reading| {
                 reading.following(&self.changes, &Watch::Any)
             })
+    }
+}
+
+/// The action naming `record` in `package`'s index of a workspace.
+#[cfg(target_os = "linux")]
+fn reference(package: &str, record: &DocumentCheckout) -> tilo_actions::remote::InvokeRequest {
+    use ui::resource::index;
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("id".to_owned(), record.id.as_str().into());
+    arguments.insert("kind".to_owned(), record.kind.as_str().into());
+    tilo_actions::remote::InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: format!("{}:{package}:", tilo_actions::remote::RESOURCE_PROVIDER),
+            address: tilo_actions::ActionAddress::new(index::KIND, index::REFERENCE),
+        },
+        argument: tilo_actions::remote::InvokeArgument::Json(arguments),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
     }
 }
 
@@ -400,21 +430,15 @@ fn resource_document(store: &dyn DurableStore, record: &Held) -> Option<automerg
 pub(crate) mod testing {
     use std::sync::Arc;
 
-    use ui::permissions::MemberId;
-    use ui::resource::{DocumentId, ResourceType};
+    use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
 
-    use crate::engine_records::EngineRecords;
-
-    /// Who writes the indexes and brings the records here.
-    const PERSON: &str = "ada";
-    /// The kind of every app's own record in these tests: the record that keeps its index.
+    /// The type of every app's own resource in these tests: the one that keeps its index.
     const OWN: &str = "notes.notebook";
 
     pub(crate) struct Device {
         service: crate::daemon_fixture::TestDaemon,
-        records: EngineRecords,
         changes: crate::platform::records::Changes,
-        /// Search's records of this device, until a test takes them.
+        /// Search's view of this device, until a test takes it.
         found: std::cell::RefCell<Option<super::Records>>,
         _state: tempfile::TempDir,
     }
@@ -430,36 +454,25 @@ pub(crate) mod testing {
             }
             let found = super::Records::of(state.path().join("data"));
             let changes = found.changes();
-            let reads = service.reads();
-            let records = EngineRecords::new(Arc::new(|| {}));
-            records.attach(
-                service.view(),
-                None,
-                Arc::clone(&reads),
-                service.writes(),
-                &changes,
-                None,
-            );
-            found.read_from(reads, records.clone(), PERSON.to_owned());
+            found.read_from(service.reads(), service.shell());
             Self {
                 service,
-                records,
                 changes,
                 found: std::cell::RefCell::new(Some(found)),
                 _state: state,
             }
         }
 
-        /// Search's records of this device, read where the workspaces hold them, bringing a record
-        /// here through the session's copies, as the session reads and brings them. Taken once.
+        /// Search's view of this device, read where the workspaces hold it, bringing a resource
+        /// here through the daemon, as the session reads and brings them. Taken once.
         pub(crate) fn search(&self) -> super::Records {
             self.found
                 .borrow_mut()
                 .take()
-                .expect("search's records, taken once")
+                .expect("search's view, taken once")
         }
 
-        /// The session's one stream of record changes, which every write here notes.
+        /// The session's one stream of resource changes.
         pub(crate) fn changes(&self) -> crate::platform::records::Changes {
             self.changes.clone()
         }
@@ -469,27 +482,75 @@ pub(crate) mod testing {
             self.service.workspaces().clone()
         }
 
+        /// Write `app`'s `id` of `workspace` as `edit` changes it, as this device writes it: what
+        /// the workspace holds of it changed, or `found` when it holds nothing of it yet.
+        fn write(
+            &self,
+            workspace: &str,
+            (app, id): (&str, &str),
+            found: impl FnOnce() -> automerge::AutoCommit,
+            edit: impl FnOnce(&mut automerge::AutoCommit),
+        ) {
+            use tilo_peer_state::workspace_documents::{DocumentRead, DocumentWriting};
+            let held = match self.service.reads().read(workspace, app, id, None) {
+                Ok(DocumentRead::Whole { bytes, .. }) => {
+                    Some(automerge::AutoCommit::load(&bytes).expect("the workspace's copy loads"))
+                }
+                Ok(DocumentRead::Absent) => None,
+                other => panic!(
+                    "the workspace does not read {app}'s {id:?}: {:?}",
+                    other.err()
+                ),
+            };
+            let founding = held.is_none();
+            let mut doc = held.unwrap_or_else(found);
+            let heads = if founding {
+                Vec::new()
+            } else {
+                doc.get_heads()
+            };
+            edit(&mut doc);
+            let changes = if founding {
+                doc.save()
+            } else {
+                doc.save_after(&heads)
+            };
+            tilo_rt::app()
+                .block_on(self.service.writes().write(
+                    workspace,
+                    &changes,
+                    DocumentWriting {
+                        app,
+                        document: id,
+                        readers: None,
+                        founding,
+                        snapshot: founding,
+                        sealed: None,
+                    },
+                ))
+                .expect("the runtime runs")
+                .expect("the workspace takes the write");
+        }
+
         /// Keep `doc` as `app`'s `record` of `workspace`, written into the workspace as a service of
-        /// the session writes it, once the session's copies next replicate ([`Self::until`]). A
-        /// record the workspace holds no copy of is founded with `initialize`, as `doc` was.
+        /// the session writes it.
         pub(crate) fn keep(
             &self,
             workspace: &str,
             (app, record): (&str, &str),
-            mut doc: automerge::AutoCommit,
-            initialize: &dyn Fn(&mut automerge::AutoCommit) -> Result<(), String>,
+            doc: automerge::AutoCommit,
+            _initialize: &dyn Fn(&mut automerge::AutoCommit) -> Result<(), String>,
         ) {
-            let held = collab_types::document::identity::identity(&doc)
-                .expect("the record says what it is");
-            let stored = self
-                .records
-                .in_workspace(workspace, MemberId::person(PERSON.to_owned()))
-                .open_resource_at(app, record, held.kind.as_str(), initialize)
-                .expect("the record opens in the workspace");
-            stored
-                .merge_peer_document(doc.save())
-                .expect("the record takes what it holds");
-            stored.flush();
+            let bytes = doc.save();
+            self.write(
+                workspace,
+                (app, record),
+                || automerge::AutoCommit::load(&bytes).expect("the resource loads"),
+                |held| {
+                    held.load_incremental(&bytes)
+                        .expect("the resource takes what it holds");
+                },
+            );
         }
 
         /// What reads the documents of the workspaces this device's service holds.
@@ -499,44 +560,44 @@ pub(crate) mod testing {
             self.service.reads()
         }
 
-        /// `app`'s index of `workspace` names `rows` (id, kind, name) and nothing else, written as
+        /// `app`'s index of `workspace` names `rows` (id, type, name) and nothing else, written as
         /// its windows write it and taken by the workspace.
         pub(crate) fn name(&self, app: &str, workspace: &str, rows: &[(&str, &str, Option<&str>)]) {
-            let index = self
-                .records
-                .in_workspace(workspace, MemberId::person(PERSON.to_owned()))
-                .open_primary(app, OWN, &|_| Ok(()))
-                .expect("the app's own record");
-            index
-                .edit(false, |doc| {
+            self.write(
+                workspace,
+                (app, ""),
+                || {
+                    let mut doc = automerge::AutoCommit::new();
+                    let checkout = DocumentCheckout::new(
+                        DocumentId::package_primary(),
+                        ResourceType::new(OWN),
+                    );
+                    ui::resource::genesis(&mut doc, &checkout, workspace, |_| Ok(()))
+                        .expect("the app's own resource is made");
+                    doc
+                },
+                |doc| {
                     for held in ui::resource::index::references(doc) {
                         ui::resource::index::unreference(doc, &held.id);
                     }
                     for (id, kind, name) in rows {
-                        let id = DocumentId::parse(id).expect("a record id");
+                        let id = DocumentId::parse(id).expect("a resource id");
                         ui::resource::index::reference(doc, &id, &ResourceType::new(*kind));
                         ui::resource::index::set_name(doc, &id, *name);
                     }
-                    Ok(())
-                })
-                .expect("the index is written");
-            index.flush();
+                    doc.commit();
+                },
+            );
             let mut named: Vec<String> = rows.iter().map(|row| row.0.to_owned()).collect();
             named.sort();
-            let started = std::time::Instant::now();
-            while self.names(app, workspace) != named {
-                assert!(
-                    started.elapsed() < tilo_test_env::hang_bound(),
-                    "the workspace's index names {:?}, not {named:?}; the session's copy names {:?}",
-                    self.names(app, workspace),
-                    index.read(ui::resource::index::references),
-                );
-                self.records.replicate();
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
+            assert_eq!(
+                self.names(app, workspace),
+                named,
+                "the workspace's index names the rows"
+            );
         }
 
-        /// The records `app`'s index of `workspace` names, as the workspace holds it.
+        /// The resources `app`'s index of `workspace` names, as the workspace holds it.
         pub(crate) fn names(&self, app: &str, workspace: &str) -> Vec<String> {
             let Ok(tilo_peer_state::workspace_documents::DocumentRead::Whole { bytes, .. }) =
                 self.service.reads().read(workspace, app, "", None)
@@ -553,7 +614,7 @@ pub(crate) mod testing {
             named
         }
 
-        /// Replicate the session's copies until `done`.
+        /// Wait until `done`.
         pub(crate) fn until(&self, done: impl Fn() -> bool) {
             let started = std::time::Instant::now();
             while !done() {
@@ -561,7 +622,6 @@ pub(crate) mod testing {
                     started.elapsed() < tilo_test_env::hang_bound(),
                     "the workspace never took what the session wrote"
                 );
-                self.records.replicate();
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
         }

@@ -13,10 +13,7 @@ pub enum Holder {
     Device,
 }
 
-/// The largest serialized value of the person's the device fabric carries.
-/// An app's entry in [`APP_PERSONAL_SECTION`] is one value, so its whole
-/// object must fit.
-pub const MAX_PERSONAL_VALUE_BYTES: usize = 64 * 1024;
+pub use settings_model::person::MAX_PERSONAL_VALUE_BYTES;
 
 pub const SECTIONS: &[(&str, Holder)] = &[
     ("accessibility", Holder::Person),

@@ -31,27 +31,30 @@ use super::{Directory, agents, emoji};
 pub(crate) use agents::Agents as AgentsTab;
 pub(crate) use emoji::Emoji as EmojiTab;
 
-/// The workspace's own records the sheet reads: its agents and its emoji,
+/// The workspace's own resources the sheet reads: its agents and its emoji,
 /// both kept by Chat for every app of the workspace.
 pub(crate) struct WorkspaceTabs {
     pub(crate) agents: AgentsTab,
     pub(crate) emoji: EmojiTab,
-    /// The workspaces' records, as this device's workspace service holds them: the documents a
+    /// The workspaces' resources, as this device's daemon reads them for the person: the ones a
     /// rule of the workspace's can reach.
-    pub(crate) records: crate::engine_records::EngineRecords,
+    pub(crate) documents: std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
 }
 
 impl WorkspaceTabs {
-    /// The two records, kept in the workspaces' copy of them (`records`), waking the session's loop through `wake` when a
-    /// change lands.
+    /// The two resources, followed through the device's daemon, waking the session's loop
+    /// through `wake` when a change lands; `service_root` is where this device's service keeps
+    /// what the agents tab reads of the models it runs.
     pub(crate) fn new(
-        records: &crate::engine_records::EngineRecords,
+        daemon: &tilo_session_client::daemon_documents::DaemonShell,
+        service_root: Option<std::path::PathBuf>,
+        documents: std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
         wake: tilo_service::Wake,
     ) -> Self {
         Self {
-            agents: AgentsTab::new(std::rc::Rc::new(records.clone()), wake.clone()),
-            emoji: EmojiTab::new(records.clone(), wake),
-            records: records.clone(),
+            agents: AgentsTab::new(daemon.clone(), service_root, wake.clone()),
+            emoji: EmojiTab::new(daemon.clone(), wake),
+            documents,
         }
     }
 }
@@ -746,7 +749,7 @@ fn settings(
                 person,
                 apps,
                 engine.filter(|_| tab == sheet::Tab::Permissions),
-                &records.records,
+                &*records.documents,
             )
         }),
         // The workspace's agents are Chat's record, opened when the tab is first shown.
@@ -1044,7 +1047,7 @@ fn permissions(
     person: &UserId,
     apps: &dyn domain::AppDirectory,
     engine: Option<&Engine>,
-    held: &crate::engine_records::EngineRecords,
+    held: &dyn tilo_peer_state::workspace_documents::DeviceDocuments,
 ) -> sheet::Permissions {
     let listed = domain::listed_permissions(ws, apps, person);
     let manage = ws.may_administer(person);
@@ -1145,14 +1148,17 @@ fn document_access(
     person: &UserId,
     apps: &dyn domain::AppDirectory,
     engine: Option<&Engine>,
-    held: &crate::engine_records::EngineRecords,
+    held: &dyn tilo_peer_state::workspace_documents::DeviceDocuments,
 ) -> sheet::DocumentAccess {
     let workspace = ws.id().to_string();
     // The workspace's records as its copy here holds them, that this device reads: not its own
     // documents, nor a person's private record, which only its person's grant reaches.
     let documents = engine.map_or_else(Vec::new, |engine| {
         let reads = engine.document_read_policy(ws.id());
-        let mut documents = held.listing(&workspace);
+        let mut documents = held.listing(&workspace).unwrap_or_else(|error| {
+            tracing::warn!(%error, %workspace, "the workspace's resources are not listed");
+            Vec::new()
+        });
         documents.retain(|(app, document_id)| {
             collab_types::workspace_document(app, document_id).is_none()
                 && !tilo_action_policy::roles::is_private_record(app, document_id)

@@ -124,6 +124,8 @@ fn record_of(app: &str) -> ResourceReadRequest {
         joined: false,
         after: None,
         wait_ms: None,
+        document: false,
+        listing: false,
     }
 }
 
@@ -319,6 +321,8 @@ fn a_read_that_waits_is_answered_when_its_wait_ends() {
         ResourceReadRequest {
             after: Some(at.clone()),
             wait_ms: Some(5_000),
+            document: false,
+            listing: false,
             ..record_of(TASKS)
         },
     );
@@ -341,6 +345,8 @@ fn a_read_that_waits_is_answered_when_its_wait_ends() {
         ResourceReadRequest {
             after: Some(at),
             wait_ms: Some(u32::MAX),
+            document: false,
+            listing: false,
             ..record_of(TASKS)
         },
     );

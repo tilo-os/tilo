@@ -6,6 +6,7 @@
 //! document, the toolkit reads and draws it.
 
 mod device_class;
+pub mod person;
 mod schema;
 pub mod text_assistance;
 pub mod theme;

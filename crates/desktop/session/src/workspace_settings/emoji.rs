@@ -1,10 +1,9 @@
 //! The Emoji tab: the workspace's own emoji, which every app of the workspace draws for `:name:` .
-//! They are one record of the workspace, kept by Chat ([`tilo_app::tilo_workspace_emoji::OWNER`])
-//! and opened here the way every app of the workspace opens it ([`WorkspaceResource`]): in the store
-//! this device's apps keep, as the person sitting here. Adding and removing are the record's own
-//! actions, decided by the workspace's grants on Chat's node — the decision the app windows and the
-//! action broker take — so the tab, the apps and the person's other devices hold the one record,
-//! and the tab decides nothing of its own.
+//! They are one resource of the workspace, kept by Chat ([`tilo_app::tilo_workspace_emoji::OWNER`])
+//! and followed here through the device's daemon ([`FollowedResource`]), as the person sitting
+//! here. Adding and removing are the resource's own actions, which the daemon runs as the person
+//! and decides by the workspace's grants on Chat's node, so the tab, the apps and the person's
+//! other devices see the one resource, and the tab decides nothing of its own.
 //! The picture is chosen in the session's own file chooser ([`FilePickerState`]) and added from what
 //! it answers, as a window's emoji picker adds one.
 
@@ -12,23 +11,20 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tilo_action_policy::MemberAccess;
-use tilo_app::framework::WorkspaceResource;
 use tilo_app::tilo_workspace_emoji::{
     EmojiImage, OWNER, WorkspaceEmoji as Record, workspace_emoji as actions,
 };
 use tilo_desktop::people::PeopleNames;
 use tilo_desktop::workspace_settings::{self as domain, emoji_pane};
 use tilo_desktop_model::{Layout, UserId, Workspace};
+use tilo_session_client::daemon_documents::DaemonShell;
 use tilo_session_core::desktop::i18n::{t, t_args};
 use tilo_sheets::SheetState as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerState, FileRequest, FileType};
 use tilo_sheets::workspace_settings as sheet;
-use ui::permissions::{LivePermissions, PermissionContext};
 use ui::workspace_emoji::{CustomEmoji, Small, WorkspaceEmoji, make_small};
 
-/// How workspace settings' history names where a change came from.
-const SETTINGS_APP: (&str, &str) = ("tilo-session", "Workspace settings");
+use crate::followed_resource::FollowedResource;
 
 /// The record's action adding an emoji.
 const ADD: &str = emoji_pane::ADD;
@@ -46,14 +42,12 @@ const PICTURES: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
 
 /// The workspace's emoji as the Emoji tab holds them.
 pub(crate) struct Emoji {
-    /// The workspace's records as the workspace holds them: the copy Chat and every app of the
-    /// workspace read.
-    records: crate::engine_records::EngineRecords,
-    /// Wakes the session's loop when another replica's change arrives, and when the image tools a
-    /// chosen picture waits for are in.
-    wake: ui::WakeScope,
-    /// The record, once the tab showed it: the workspace, the person and the grants it was opened
-    /// for.
+    /// The device's daemon, where the emoji are read and their actions run.
+    daemon: DaemonShell,
+    /// Wakes the session's loop when a change to the emoji arrives.
+    wake: tilo_service::Wake,
+    /// The emoji, once the tab showed them: the workspace, the person and the grants they were
+    /// followed for.
     open: RefCell<Option<Open>>,
     /// What the tab last drew: the record's revision and what this said of it. The tab is shown
     /// again at each change.
@@ -68,15 +62,14 @@ pub(crate) struct Emoji {
     requests: Cell<u64>,
 }
 
-/// The record as the tab opened it.
+/// The emoji as the tab follows them.
 struct Open {
     workspace: String,
     person: ui::permissions::MemberId,
-    /// The grants it was opened with: they decide its actions, so a workspace whose grants changed
-    /// opens the record again.
+    /// The grants they were followed with: a workspace whose grants changed has them followed
+    /// again.
     policy: tilo_action_policy::WorkspacePolicy,
-    /// `None` where the record could not be opened here.
-    record: Option<WorkspaceResource<Record>>,
+    record: FollowedResource<Record>,
 }
 
 /// What the tab drew at one frame.
@@ -87,19 +80,12 @@ struct Seen {
 }
 
 impl Emoji {
-    /// The workspace's emoji in the workspaces' copy of them (`records`), waking the session's loop through
+    /// The workspace's emoji as the device's daemon reads them, waking the session's loop through
     /// `wake` when a change lands.
-    pub(crate) fn new(
-        records: crate::engine_records::EngineRecords,
-        wake: tilo_service::Wake,
-    ) -> Self {
-        let mut scope = ui::WakeScope::new();
-        if let Err(error) = scope.bind(move |_| wake()) {
-            tracing::warn!(%error, "the workspace's emoji are not woken");
-        }
+    pub(crate) fn new(daemon: DaemonShell, wake: tilo_service::Wake) -> Self {
         Self {
-            records,
-            wake: scope,
+            daemon,
+            wake,
             open: RefCell::default(),
             shown: RefCell::default(),
             notice: RefCell::default(),
@@ -212,7 +198,7 @@ impl Emoji {
         else {
             return false;
         };
-        let revision = open.record.as_ref().map_or(0, WorkspaceResource::revision);
+        let revision = open.record.revision();
         let now = Seen {
             revision,
             version: self.version.get(),
@@ -220,13 +206,13 @@ impl Emoji {
         self.shown.borrow().as_ref() != Some(&now)
     }
 
-    /// The record of `workspace` as `person` , opened here when it is not yet, and opened again
-    /// when the workspace's grants changed, so its decisions follow them.
+    /// The emoji of `workspace` as `person`, followed here when they are not yet, and followed
+    /// again when the workspace's grants changed, so what the tab offers follows them.
     fn record(
         &self,
         workspace: Option<&Workspace>,
         person: &UserId,
-    ) -> Option<WorkspaceResource<Record>> {
+    ) -> Option<FollowedResource<Record>> {
         let workspace = workspace?;
         let workspace_id = workspace.id().to_string();
         let author = ui::permissions::MemberId::person(person.clone());
@@ -237,21 +223,16 @@ impl Emoji {
                 && open.policy == workspace.policy
         });
         if let Some(open) = current {
-            return open.record.clone();
+            return Some(open.record.clone());
         }
         drop(held);
-        let context = PermissionContext::from_access(MemberAccess::person(
-            workspace.policy.clone(),
-            person.clone(),
-        ))
-        .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
-        let records = self.records.in_workspace(&workspace_id, author.clone());
-        let record = WorkspaceResource::<Record>::open(
-            &records,
-            OWNER,
-            SETTINGS_APP,
-            Some(LivePermissions::fixed(context)),
-            Some(self.wake.handle()),
+        let id = collab_types::workspace_document_id(tilo_app::tilo_workspace_emoji::KIND);
+        let record = FollowedResource::<Record>::follow(
+            &self.daemon,
+            (&workspace_id, OWNER, &id),
+            person.as_str(),
+            Some(workspace.policy.clone()),
+            Arc::clone(&self.wake),
         );
         *self.open.borrow_mut() = Some(Open {
             workspace: workspace_id,
@@ -259,13 +240,13 @@ impl Emoji {
             policy: workspace.policy.clone(),
             record: record.clone(),
         });
-        record
+        Some(record)
     }
 
     /// How `person` may remove an emoji `added_by` added: their own by the plain removal, anyone's
     /// as a moderator, when the grants let them.
     fn would_remove(
-        record: &WorkspaceResource<Record>,
+        record: &FollowedResource<Record>,
         added_by: &tilo_app::tilo_resource::MemberId,
         me: &tilo_app::tilo_resource::MemberId,
     ) -> Option<emoji_pane::Removal> {
@@ -363,7 +344,7 @@ impl Emoji {
         let refusal = record
             .invoke(&removal)
             .err()
-            .map(|error| emoji_pane::EmojiNotice::not_removed(name, error.to_string()));
+            .map(|error| emoji_pane::EmojiNotice::not_removed(name, error));
         self.say(refusal);
     }
 

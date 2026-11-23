@@ -1,50 +1,39 @@
-//! The Agents tab: who works in the workspace, held in Chat's list of the workspace's agents.
-//! An agent is a workspace record of its own kind ([`tilo_app::tilo_workspace_agent::KIND`]), kept
-//! by Chat ([`tilo_app::tilo_workspace_agent::OWNER`]) and opened here the way every app of the
-//! workspace opens it ([`WorkspaceResource`]), to read, as the person sitting here. Making,
-//! naming, bounding and retiring an agent are the record's own actions, which only the workspace's
-//! service carries out ([`Host::change`]), decided there by the workspace's grants on the record's
-//! node — so the tab, the CLI, agents and the person's other devices change the one record the
-//! same way, and the tab neither decides nor writes anything of its own.
-//! What an agent may do, app by app, is still the workspace's grants: the tab reads them beside the
-//! record. An agent a person admitted to the workspace before records were is made one of the
-//! record's when a member's tab opens it ([`Agents::settle`]), under the id its grants name, so
-//! the roster, the name a person reads and the search find the agents that worked here.
-//! The agents are the workspace's, not any one member's: their model and what they may spend a day
-//! are the record's, and whoever the workspace's grants let change the record chooses them.
+//! The Agents tab: who works in the workspace, held in the workspace's list of its agents.
+//! An agent is a workspace resource of its own type ([`tilo_app::tilo_workspace_agent::KIND`]),
+//! kept by Assistant ([`tilo_app::tilo_workspace_agent::OWNER`]) and followed here through the
+//! device's one read, as every app of the workspace reads it ([`FollowedResource`]). Making,
+//! naming, bounding and retiring an agent are the workspace's own actions (`workspace/agents`),
+//! which only the workspace's service carries out ([`AgentsChange`]), decided there by the
+//! workspace's grants — so the tab, the CLI, agents and the person's other devices change the one
+//! list the same way, and the tab neither decides nor writes anything of its own.
+//! What an agent may do, app by app, is still the workspace's grants: the tab reads them beside
+//! the list. An agent a person admitted to the workspace before the list named it is added to it
+//! when a member's tab follows it ([`Agents::settle`]), under the id its grants name, so the
+//! roster, the name a person reads and the search find the agents that worked here.
+//! The agents are the workspace's, not any one member's: their model and what they may spend a
+//! day are the list's, and whoever the workspace's grants let change it chooses them.
 
 use std::cell::RefCell;
-use std::rc::Rc;
 
 use tilo_action_policy::agent_answers::AnswerScope;
 use tilo_action_policy::{ActionKind, Answer, MemberId};
-use tilo_app::framework::WorkspaceResource;
 use tilo_app::tilo_workspace_agent::{
-    Agent, Bound, OWNER, WorkspaceAgents as Record, workspace_agents as actions,
+    Agent, Bound, KIND, OWNER, WorkspaceAgents as Record, workspace_agents as actions,
 };
 use tilo_desktop::people::PeopleNames;
 use tilo_desktop::workspace_settings::{self as domain, agent_access};
 use tilo_desktop_model::{Layout, UserId, Workspace};
 use tilo_resource::Id;
+use tilo_session_client::daemon_documents::DaemonShell;
 use tilo_session_core::desktop::i18n::{t, t_args};
 use tilo_sheets::workspace_settings as sheet;
-use ui::permissions::LivePermissions;
-use ui::resource::workspace::WorkspaceResources;
 
-/// How workspace settings' history names where a change came from.
-const SETTINGS_APP: (&str, &str) = ("tilo-session", "Workspace settings");
-/// Whether this is a page: a page keeps no model settings of its own, so it offers no model to
-/// choose for an agent.
-const ON_A_PAGE: bool = cfg!(target_arch = "wasm32");
-
-/// How long a change the tab asks of the workspace's service may take before the tab says it did
-/// not happen.
-const CHANGE_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+use crate::followed_resource::FollowedResource;
 
 /// One change of a workspace's record of its agents, as the tab and the session ask the
 /// workspace for it: the actions its governance tree publishes under `workspace/agents`, the only
 /// way the record changes.
-pub enum AgentsChange {
+pub(crate) enum AgentsChange {
     /// Make an agent.
     Create(actions::CreateAgent),
     /// Change one: any of the record's actions but making and retiring.
@@ -82,88 +71,34 @@ impl AgentsChange {
     }
 }
 
-/// Where the tab opens the workspace's records, and what it knows of the person there: a
-/// computer's copy of its workspaces, or a page's.
-pub trait Host {
-    /// The records of `workspace` as `person` opens them, and the grants that decide their
-    /// actions where this host knows them.
-    fn open(
-        &self,
-        workspace: &Workspace,
-        person: &UserId,
-    ) -> (WorkspaceResources, Option<LivePermissions>);
-
-    /// Whether `person` looks after `workspace`'s agents: makes, bounds and retires them.
-    fn manages(&self, workspace: &Workspace, person: &UserId) -> bool;
-
-    /// The models `workspace` keeps for its agents where this host reads them: the providers
-    /// its agents answer on and the default they use. Empty where it reads none, as a page.
-    fn models(&self, _workspace: &Workspace) -> agent_provider_config::ProviderConfig {
-        agent_provider_config::ProviderConfig::default()
+impl AgentsChange {
+    /// This change as the workspace's governance action it is, asked as the person.
+    fn request(self, workspace: &str) -> tilo_actions::remote::InvokeRequest {
+        let (operation, arguments) = self.call();
+        tilo_actions::remote::InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget::workspace_governance(
+                workspace, operation,
+            ),
+            argument: tilo_actions::remote::InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        }
     }
-
-    /// Ask the workspace for `change` of its record of its agents, as the person this device is:
-    /// the one way the tab changes the record, admitted there by the workspace's grants. Answers
-    /// the agent's id for one made.
-    fn change(
-        &self,
-        workspace: &Workspace,
-        change: AgentsChange,
-    ) -> tilo_actions::remote::Pending<Result<String, String>>;
-
-    /// Take in what the workspace's service holds of the record now, once a change was made.
-    fn took(&self, workspace: &Workspace);
 }
 
-/// A computer's copy of its workspaces: their records, decided by the grants the workspace's
-/// governance keeps here.
-#[cfg(target_os = "linux")]
-impl Host for crate::engine_records::EngineRecords {
-    fn open(
-        &self,
-        workspace: &Workspace,
-        person: &UserId,
-    ) -> (WorkspaceResources, Option<LivePermissions>) {
-        use ui::permissions::PermissionContext;
-        let context = PermissionContext::from_access(tilo_action_policy::MemberAccess::person(
-            workspace.policy.clone(),
-            person.clone(),
-        ))
-        .with_policy_time_sampler(std::sync::Arc::new(|| Ok(tilo_clock::unix_now())));
-        let records = self.in_workspace(
-            &workspace.id().to_string(),
-            ui::permissions::MemberId::person(person.clone()),
-        );
-        (records, Some(LivePermissions::fixed(context)))
-    }
-
-    fn manages(&self, workspace: &Workspace, person: &UserId) -> bool {
-        use tilo_desktop::authority::WorkspaceAuthority as _;
-        workspace.may_administer(person)
-    }
-
-    /// The models this computer's workspace service keeps for `workspace`: the ones its agents
-    /// here answer on, and where this computer's Agent models pane links its choice.
-    fn models(&self, workspace: &Workspace) -> agent_provider_config::ProviderConfig {
-        self.service_root().map_or_else(Default::default, |root| {
-            tilo_workspace_service::workspaces::this_computer::workspace_models_at(
-                &root,
-                &workspace.id().to_string(),
-            )
-        })
-    }
-
-    fn change(
-        &self,
-        workspace: &Workspace,
-        change: AgentsChange,
-    ) -> tilo_actions::remote::Pending<Result<String, String>> {
-        self.change_agents(&workspace.id().to_string(), change)
-    }
-
-    fn took(&self, workspace: &Workspace) {
-        self.took_agents(&workspace.id().to_string());
-    }
+/// The agent's id a change answered, for one made.
+fn made(answer: &serde_json::Value) -> String {
+    answer
+        .get("agent")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// What the tab made of one of the sheet's asks.
@@ -178,31 +113,31 @@ pub(crate) enum Answered {
 
 /// The workspace's agents as the Agents tab holds them.
 pub(crate) struct Agents {
-    /// The workspace's records as the workspace holds them: the copy Chat and every app of the
-    /// workspace read.
-    host: Rc<dyn Host>,
-    /// Wakes the session's loop when another replica's change arrives.
-    wake: ui::WakeScope,
-    /// The record, once the tab showed it: the workspace, the person and the grants it was opened
-    /// for.
+    /// The device's daemon, where the workspace's list of its agents is read and changed.
+    daemon: DaemonShell,
+    /// Where this computer's own workspace service keeps what it keeps of its workspaces: the
+    /// models it keeps for each workspace's agents.
+    service_root: Option<std::path::PathBuf>,
+    /// Wakes the session's loop when the list moved.
+    wake: tilo_service::Wake,
+    /// The list, once the tab showed it: the workspace, the person and the grants it was followed
+    /// at.
     open: RefCell<Option<Open>>,
     /// What the tab last drew: the list's revision. The tab is shown again at each change.
     shown: RefCell<Option<Seen>>,
-    /// The record whose admitted agents this device was last brought in step
-    /// with: its workspace and revision.
-    #[cfg(target_os = "linux")]
+    /// The list whose admitted agents this device was last brought in step with: its workspace
+    /// and revision.
     settled: RefCell<Option<(String, u64)>>,
 }
 
-/// The record as the tab opened it.
+/// The list as the tab follows it.
 struct Open {
     workspace: String,
     person: UserId,
-    /// The grants it was opened with: they decide its actions, so a workspace whose grants changed
-    /// opens the record again.
+    /// The grants it was followed at: they decide what the tab offers, so a workspace whose
+    /// grants changed follows it again.
     policy: tilo_action_policy::WorkspacePolicy,
-    /// `None` where the record could not be opened here.
-    record: Option<WorkspaceResource<Record>>,
+    record: FollowedResource<Record>,
 }
 
 /// What the tab drew at one frame.
@@ -221,7 +156,7 @@ struct May {
 /// the tab lists, and this device's apps and Settings.
 #[derive(Clone, Copy)]
 struct Review<'a> {
-    record: &'a WorkspaceResource<Record>,
+    record: &'a FollowedResource<Record>,
     workspace: &'a Workspace,
     apps: &'a dyn domain::AppDirectory,
     names: &'a PeopleNames,
@@ -229,21 +164,35 @@ struct Review<'a> {
 }
 
 impl Agents {
-    /// The workspace's agents in the records `host` opens, waking the session's loop through
-    /// `wake` when a change lands.
-    pub(crate) fn new(host: Rc<dyn Host>, wake: tilo_service::Wake) -> Self {
-        let mut scope = ui::WakeScope::new();
-        if let Err(error) = scope.bind(move |_| wake()) {
-            tracing::warn!(%error, "the workspace's agents are not woken");
-        }
+    /// The workspace's agents, read and changed at the device's `daemon`, waking the session's
+    /// loop through `wake` when the list moved. `service_root` is where this computer's own
+    /// workspace service keeps the models its agents answer on.
+    pub(crate) fn new(
+        daemon: DaemonShell,
+        service_root: Option<std::path::PathBuf>,
+        wake: tilo_service::Wake,
+    ) -> Self {
         Self {
-            host,
-            wake: scope,
+            daemon,
+            service_root,
+            wake,
             open: RefCell::default(),
             shown: RefCell::default(),
-            #[cfg(target_os = "linux")]
             settled: RefCell::default(),
         }
+    }
+
+    /// The models this computer's workspace service keeps for `workspace`: the ones its agents
+    /// here answer on, and where this computer's Agent models pane links its choice.
+    fn models(&self, workspace: &Workspace) -> agent_provider_config::ProviderConfig {
+        self.service_root
+            .as_deref()
+            .map_or_else(Default::default, |root| {
+                tilo_workspace_service::workspaces::this_computer::workspace_models_at(
+                    root,
+                    &workspace.id().to_string(),
+                )
+            })
     }
 
     /// The Agents tab as it stands for `person` : the agents that work in the workspace from Chat's
@@ -265,9 +214,12 @@ impl Agents {
             revision: record.revision(),
         });
         let may = May {
-            manage: self.host.manages(workspace, person),
+            manage: {
+                use tilo_desktop::authority::WorkspaceAuthority as _;
+                workspace.may_administer(person)
+            },
         };
-        let config = self.host.models(workspace);
+        let config = self.models(workspace);
         Self::pane_of(workspace, &record, (names, apps, &config), may, review)
     }
 
@@ -300,7 +252,7 @@ impl Agents {
     /// The tab as `workspace` stands for the person `record` is opened as.
     fn pane_of(
         workspace: &Workspace,
-        record: &WorkspaceResource<Record>,
+        record: &FollowedResource<Record>,
         (names, apps, config): (
             &PeopleNames,
             &dyn domain::AppDirectory,
@@ -354,9 +306,7 @@ impl Agents {
             name: t("workspace-settings-agent-name"),
             model: t("workspace-settings-agent-model"),
             model_default: t("workspace-settings-agent-model-default-choice"),
-            // A page keeps no models of its own: nothing to choose.
             models: agent_access::agent_models(config, "")
-                .filter(|_| !ON_A_PAGE)
                 .map(|models| {
                     models
                         .offered
@@ -489,8 +439,7 @@ impl Agents {
             reset: t("workspace-settings-agent-access-reset"),
             custom: t("workspace-settings-agent-access-set-here"),
             apps: Self::access_apps(&rows),
-            // A page runs no agent, so it offers no model of its own to choose.
-            models: (!ON_A_PAGE).then_some(models),
+            models: Some(models),
             limit: Some(limit),
             use_model: t("workspace-settings-agent-model-use"),
             in_use: t("workspace-settings-agent-model-in-use"),
@@ -525,25 +474,20 @@ impl Agents {
         else {
             return false;
         };
-        // A record that could not be opened yet (one the workspace has not delivered to a page)
-        // is asked for again, until it opens.
-        let Some(record) = open.record.as_ref() else {
-            return true;
-        };
+        let record = &open.record;
         self.shown.borrow().as_ref()
             != Some(&Seen {
                 revision: record.revision(),
             })
     }
 
-    /// The record of `workspace` as `person`, opened here when it is not yet,
-    /// and opened again when the workspace's grants changed, so its decisions
-    /// follow them.
+    /// The list of `workspace` as `person`, followed here when it is not yet, and followed again
+    /// when the workspace's grants changed, so what the tab offers follows them.
     fn record(
         &self,
         workspace: Option<&Workspace>,
         person: &UserId,
-    ) -> Option<WorkspaceResource<Record>> {
+    ) -> Option<FollowedResource<Record>> {
         let workspace = workspace?;
         let workspace_id = workspace.id().to_string();
         let held = self.open.borrow();
@@ -552,17 +496,20 @@ impl Agents {
                 && open.person == *person
                 && open.policy == workspace.policy
         });
-        if let Some(record) = current.and_then(|open| open.record.clone()) {
-            return Some(record);
+        if let Some(open) = current {
+            return Some(open.record.clone());
         }
         drop(held);
-        let (records, permissions) = self.host.open(workspace, person);
-        let record = WorkspaceResource::<Record>::open(
-            &records,
-            OWNER,
-            SETTINGS_APP,
-            permissions,
-            Some(self.wake.handle()),
+        let record = FollowedResource::follow(
+            &self.daemon,
+            (
+                &workspace_id,
+                OWNER,
+                &collab_types::workspace_document_id(KIND),
+            ),
+            person,
+            Some(workspace.policy.clone()),
+            std::sync::Arc::clone(&self.wake),
         );
         *self.open.borrow_mut() = Some(Open {
             workspace: workspace_id,
@@ -570,7 +517,7 @@ impl Agents {
             policy: workspace.policy.clone(),
             record: record.clone(),
         });
-        record
+        Some(record)
     }
 
     /// Take up what the record owes this device while the tab is up: one
@@ -590,7 +537,7 @@ impl Agents {
             .filter(|open| open.workspace == workspace_id)
             .filter(|open| open.person == *person)
             .filter(|open| open.policy == workspace.policy)
-            .and_then(|open| open.record.clone());
+            .map(|open| open.record.clone());
         drop(held);
         let Some(record) = record else {
             return;
@@ -616,7 +563,7 @@ impl Agents {
     fn record_admitted(
         &self,
         workspace: &Workspace,
-        record: &WorkspaceResource<Record>,
+        record: &FollowedResource<Record>,
         config: &agent_provider_config::ProviderConfig,
     ) {
         let state = record.get();
@@ -656,15 +603,20 @@ impl Agents {
             // Asked of the workspace's service off the loop: the next pass reads what it wrote.
             // Until it does, or where the workspace's grants refuse the person, the tab still
             // lists the agent from its grants.
-            drop(self.host.change(
-                workspace,
-                AgentsChange::Create(actions::CreateAgent {
-                    name,
-                    id: Some(agent.clone()),
-                    model,
-                    mcp_client: None,
-                }),
-            ));
+            let request = AgentsChange::Create(actions::CreateAgent {
+                name,
+                id: Some(agent.clone()),
+                model,
+                mcp_client: None,
+            })
+            .request(&workspace.id().to_string());
+            let daemon = self.daemon.clone();
+            self.daemon.runtime().spawn(async move {
+                let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
+                if let Err(refusal) = daemon.dispatch(None, &message).await {
+                    tracing::debug!(%refusal, "an admitted agent is not on the list yet");
+                }
+            });
         }
     }
 
@@ -904,15 +856,15 @@ impl Agents {
     /// service did not answer in time.
     fn ask(&self, workspace: Option<&Workspace>, change: AgentsChange) -> Result<String, String> {
         let workspace = workspace.ok_or_else(|| t("workspace-settings-agents-unavailable"))?;
-        let answer = self
-            .host
-            .change(workspace, change)
-            .wait_timeout(CHANGE_WAIT)
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| Err(t("workspace-settings-agents-unavailable")))?;
-        self.host.took(workspace);
-        Ok(answer)
+        let message = tilo_actions::remote::RemoteActionMessage::Invoke(
+            change.request(&workspace.id().to_string()),
+        );
+        let answer = self.daemon.dispatch_blocking(None, &message)?;
+        // What it wrote shows at once, not once the follow next reads it.
+        if let Some(open) = self.open.borrow().as_ref() {
+            open.record.refresh();
+        }
+        Ok(made(&answer))
     }
 }
 
@@ -978,7 +930,7 @@ fn limit_summary(limit_micros: Option<u64>) -> String {
 fn added_by(
     names: &PeopleNames,
     workspace: &Workspace,
-    record: &WorkspaceResource<Record>,
+    record: &FollowedResource<Record>,
     made_by: &str,
 ) -> String {
     if made_by == record.me().id() {

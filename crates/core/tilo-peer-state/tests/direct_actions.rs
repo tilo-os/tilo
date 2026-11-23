@@ -788,6 +788,8 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
                     joined: false,
                     after: None,
                     wait_ms: None,
+                    document: false,
+                    listing: false,
                 },
             },
             placement: None,

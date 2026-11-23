@@ -190,6 +190,11 @@ tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host",
 # is kept as, and the verbs that change it.
 tilo-resource = { path = "../tilo-resource" }
 tilo-workspace-agent = { path = "../../sdk/tilo-workspace-agent" }
+# The workspace resources the person's shell changes through their typed actions: a
+# workspace's emoji and contact directory, and the person's settings.
+tilo-workspace-emoji = { path = "../../sdk/tilo-workspace-emoji" }
+tilo-contact-directory = { path = "../../integrations/tilo-contact-directory" }
+settings-model = { path = "../../sdk/settings-model" }
 # A person's region and formats, kept as the `locale` settings section reads them.
 tilo-formats = { path = "../../ui/tilo-formats" }
 # The agents a device runs ([features] agents): what people ask them (the

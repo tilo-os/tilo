@@ -167,11 +167,12 @@ pub(crate) fn session_documents(
     Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
     Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
     tilo_session_client::daemon_documents::DaemonWritesFeed,
+    tilo_session_client::daemon_documents::DaemonShell,
 ) {
     let (documents, writes, shell) =
         tilo_session_client::daemon_documents::on_daemon(link, runtime);
     let feed = tilo_session_client::daemon_documents::DaemonWritesFeed::start(&shell);
-    (documents, writes, feed)
+    (documents, writes, feed, shell)
 }
 
 /// The apps' resources in the device's one store, which the daemon keeps, read over the shell's

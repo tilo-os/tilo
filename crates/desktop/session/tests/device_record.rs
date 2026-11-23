@@ -38,6 +38,8 @@ fn listed(device: &Device) -> Vec<Value> {
             joined: false,
             after: None,
             wait_ms: None,
+            document: false,
+            listing: false,
         },
     });
     let RemoteActionMessage::ResourceReading {

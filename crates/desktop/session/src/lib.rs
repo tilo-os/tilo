@@ -95,6 +95,8 @@ mod app_names;
 #[cfg(target_os = "linux")]
 mod app_sheets;
 #[cfg(target_os = "linux")]
+mod app_stores;
+#[cfg(target_os = "linux")]
 pub mod app_tabs;
 #[cfg(target_os = "linux")]
 mod app_tiers;
@@ -208,8 +210,6 @@ pub mod drives;
 #[cfg(target_os = "linux")]
 mod emoji;
 #[cfg(target_os = "linux")]
-mod engine_records;
-#[cfg(target_os = "linux")]
 mod engine_write;
 #[cfg(target_os = "linux")]
 mod env;
@@ -223,6 +223,8 @@ mod file_clipboard;
 pub mod files_daemon;
 #[cfg(target_os = "linux")]
 pub mod firstboot;
+#[cfg(target_os = "linux")]
+mod followed_resource;
 #[cfg(target_os = "linux")]
 mod formats;
 #[cfg(target_os = "linux")]
@@ -329,6 +331,8 @@ pub mod parts;
 mod pass;
 pub mod people;
 #[cfg(target_os = "linux")]
+mod person_settings;
+#[cfg(target_os = "linux")]
 pub(crate) use tilo_workspace_service::workspaces::PersonResources;
 #[cfg(target_os = "linux")]
 pub mod portal_link;
@@ -336,6 +340,8 @@ pub mod portal_link;
 mod power;
 #[cfg(target_os = "linux")]
 pub use power::system_service;
+#[cfg(target_os = "linux")]
+mod media_controls;
 #[cfg(target_os = "linux")]
 mod press_outside;
 #[cfg(target_os = "linux")]
@@ -354,8 +360,6 @@ mod ready;
 pub mod recovery;
 #[cfg(target_os = "linux")]
 mod render;
-#[cfg(target_os = "linux")]
-mod media_controls;
 #[cfg(target_os = "linux")]
 mod resource_index;
 #[cfg(target_os = "linux")]
@@ -380,8 +384,6 @@ mod services;
 #[cfg(target_os = "linux")]
 pub mod session_package;
 #[cfg(target_os = "linux")]
-mod settings_sync;
-#[cfg(target_os = "linux")]
 mod setup;
 #[cfg(target_os = "linux")]
 mod shared;
@@ -392,8 +394,6 @@ mod shared_input;
 #[cfg(target_os = "linux")]
 mod sheets;
 #[cfg(target_os = "linux")]
-mod speakers;
-#[cfg(target_os = "linux")]
 pub mod shell;
 #[cfg(target_os = "linux")]
 mod shell_document;
@@ -401,6 +401,8 @@ mod shell_document;
 mod shortcut_guide;
 #[cfg(target_os = "linux")]
 mod sockets;
+#[cfg(target_os = "linux")]
+mod speakers;
 #[cfg(target_os = "linux")]
 pub mod startup;
 pub mod status;

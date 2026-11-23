@@ -991,6 +991,56 @@ async fn shell_asks(
         .unwrap_or_else(|error| panic!("the daemon answers its shell: {error:?}"))
 }
 
+/// A read of `app`'s `resource` of `workspace`, whole.
+#[cfg(unix)]
+fn resource_read(
+    workspace: &str,
+    app: &str,
+    resource: &str,
+) -> tilo_actions::remote::ResourceReadRequest {
+    tilo_actions::remote::ResourceReadRequest {
+        workspace: workspace.to_owned(),
+        app: app.to_owned(),
+        record: resource.to_owned(),
+        joined: false,
+        after: None,
+        wait_ms: None,
+        document: true,
+        listing: false,
+    }
+}
+
+/// `app`'s `resource` of `workspace` as the shell reads it through the dispatch, whole: `None`
+/// while the workspace has none of it.
+#[cfg(unix)]
+async fn shell_reads(
+    shell: &runtime_collab::ShellClient,
+    workspace: &str,
+    app: &str,
+    resource: &str,
+) -> Option<Vec<u8>> {
+    use runtime_collab::wire::shell::{ShellCall, ShellReply};
+    let message = tilo_actions::remote::RemoteActionMessage::ResourceRead {
+        correlation: 0,
+        on_behalf_of: None,
+        read: resource_read(workspace, app, resource),
+    };
+    let ShellReply::Invoked(Ok(readings)) = shell_asks(
+        shell,
+        ShellCall::Invoke {
+            workspace: None,
+            message: serde_json::to_string(&message).unwrap(),
+        },
+    )
+    .await
+    else {
+        panic!("the daemon answers the shell's read");
+    };
+    let readings: serde_json::Value = serde_json::from_str(&readings).unwrap();
+    let document = readings["records"][0]["document"].as_str()?;
+    Some(hex::decode(document).unwrap())
+}
+
 #[cfg(unix)]
 #[test]
 #[allow(
@@ -1000,7 +1050,7 @@ async fn shell_asks(
 )]
 fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_the_account_does() {
     use automerge::ReadDoc as _;
-    use runtime_collab::wire::shell::{ShellCall, ShellRead, ShellReply};
+    use runtime_collab::wire::shell::{ShellCall, ShellReply};
     use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
     let runtime = || {
         tokio::runtime::Builder::new_current_thread()
@@ -1047,18 +1097,9 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
         );
         // A write the shell sends with no keys: the daemon seals it with the group's keys and
         // signs it as the device. It waits while the device takes the keys in.
-        let ShellReply::Is(holds) = shell_asks(
-            &shell,
-            ShellCall::Holds {
-                workspace: workspace.clone(),
-                app: DESKTOP_APP.to_owned(),
-                resource: DESKTOP_DOCUMENT.to_owned(),
-            },
-        )
-        .await
-        else {
-            panic!("the daemon says whether it holds the layout");
-        };
+        let holds = shell_reads(&shell, &workspace, DESKTOP_APP, DESKTOP_DOCUMENT)
+            .await
+            .is_some();
         let mut layout = automerge::AutoCommit::new();
         automerge::transaction::Transactable::put(&mut layout, automerge::ROOT, "front", "shell")
             .unwrap();
@@ -1092,19 +1133,9 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
             neighbour_wire::peer_handle(&session.workspaces.device_cert().device_public_key),
             "the shell's write is signed as this device"
         );
-        let ShellReply::Read(ShellRead::Whole { bytes, .. }) = shell_asks(
-            &shell,
-            ShellCall::Read {
-                workspace: workspace.clone(),
-                app: DESKTOP_APP.to_owned(),
-                resource: DESKTOP_DOCUMENT.to_owned(),
-                since: None,
-            },
-        )
-        .await
-        else {
-            panic!("the shell reads back the layout it wrote");
-        };
+        let bytes = shell_reads(&shell, &workspace, DESKTOP_APP, DESKTOP_DOCUMENT)
+            .await
+            .expect("the shell reads back the layout it wrote");
         let read = automerge::AutoCommit::load(&bytes).unwrap();
         assert_eq!(
             read.get(automerge::ROOT, "front")
@@ -1236,11 +1267,16 @@ async fn shell_helper(role: &str) {
         signed: None,
     };
     let asks = [
-        ShellCall::Read {
-            workspace: workspace.clone(),
-            app: "so.tilo.desktop".to_owned(),
-            resource: String::new(),
-            since: None,
+        ShellCall::Invoke {
+            workspace: None,
+            message: serde_json::to_string(
+                &tilo_actions::remote::RemoteActionMessage::ResourceRead {
+                    correlation: 0,
+                    on_behalf_of: None,
+                    read: resource_read(&workspace, "so.tilo.desktop", ""),
+                },
+            )
+            .unwrap(),
         },
         ShellCall::Write {
             workspace: workspace.clone(),
@@ -1252,7 +1288,11 @@ async fn shell_helper(role: &str) {
             changes: automerge::AutoCommit::new().save(),
         },
         ShellCall::Invoke {
-            request: serde_json::to_string(&membership).unwrap(),
+            workspace: None,
+            message: serde_json::to_string(&tilo_actions::remote::RemoteActionMessage::Invoke(
+                membership,
+            ))
+            .unwrap(),
         },
     ];
     for ask in asks {

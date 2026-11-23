@@ -103,9 +103,6 @@ impl Session {
         if let Some(app_wire) = &self.app_wire {
             app_wire.link.serve(&mut services);
         }
-        // What the answers wrote (an agent's record of its work) reaches the workspace in this
-        // pass, not in the next one's.
-        self.shared.records.write();
         // A follow of a reading reads again once what the services publish moved.
         #[cfg(target_os = "linux")]
         self.shared
@@ -709,9 +706,11 @@ impl Session {
         // member is them: what they set here is written there first, and what they set there
         // reaches the document this session reads.
         if let Some(view) = &self.shared.view {
-            self.shared
-                .settings
-                .sync(&self.shared.records, &view.person());
+            self.shared.settings.sync(
+                &self.shared.daemon,
+                &view.person(),
+                &self.shared.wake_handle,
+            );
         }
         // What was handed to an agent, and what was sent since the last look, by a box, an agent
         // or a script.

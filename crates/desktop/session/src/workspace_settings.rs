@@ -1,18 +1,15 @@
 //! Workspace settings: what the sheet shows of the workspace in front, and what the person's
-//! choices there change, on a computer and on a page, whose Agents tab is [`PageAgents`].
+//! choices there change.
 
 use tilo_desktop::workspace_settings as domain;
 
+#[cfg(target_os = "linux")]
 mod agents;
 #[cfg(target_os = "linux")]
 mod emoji;
-mod page;
 #[cfg(target_os = "linux")]
 mod shell;
 
-pub(crate) use agents::AgentsChange;
-pub use agents::Host as AgentsSource;
-pub use page::PageAgents;
 #[cfg(target_os = "linux")]
 pub(crate) use shell::*;
 

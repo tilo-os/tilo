@@ -1,4 +1,4 @@
-//! The workspace's contact directory as a session service: one record every member reads and
+//! The workspace's contact directory as a session service: one resource every member reads and
 //! changes, published as `contacts:tilo.contacts.identities`.
 //!
 //! Contacts keeps the directory (`tilo_contact_directory`) and every app of the workspace opens
@@ -14,74 +14,57 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use tilo_action_policy::{MemberAccess, WorkspacePolicy};
+use tilo_action_policy::WorkspacePolicy;
 use tilo_actions::{ActionAddress, ActionInvoker, ApiError, ResourceSpec};
-use tilo_app::framework::WorkspaceResource;
 use tilo_contact_directory::ContactDirectory;
 use tilo_desktop_surface::DesktopHandle;
-use tilo_resource::{Resource as _, SharedResource as _};
+use tilo_resource::Resource as _;
 use tilo_service::{Service, Started};
-use ui::permissions::{LivePermissions, PermissionContext};
-use ui::resource::workspace::WorkspaceResources;
+use tilo_session_client::daemon_documents::DaemonShell;
 
-use crate::engine_records::EngineRecords;
+use crate::followed_resource::FollowedResource;
 
-/// The resource the directory is published as: the kind itself, under the app that keeps it, as
-/// the session publishes every workspace record's app.
+/// The resource the directory is published as: the type itself, under the app that keeps it, as
+/// the session publishes every workspace resource's app.
 pub(crate) const RESOURCE: &str = "contacts:tilo.contacts.identities";
 /// The label a reader sees for it.
 const LABEL: &str = "Contacts";
-/// How this session names itself in the record's history.
-const SESSION_APP: (&str, &str) = ("tilo-session", "Contacts");
 
 /// The workspace's contact directory, as this session publishes it.
 pub(crate) struct Contacts {
-    /// The workspaces' records, as the workspace holds them.
-    records: EngineRecords,
+    /// The device's daemon, where the directory is read and its actions run.
+    daemon: DaemonShell,
     /// The layout, where the workspace the person is in and its grants are read.
     handle: DesktopHandle,
-    /// Who sits here: whose steps the changes are, and whose grants are read.
+    /// Who sits here: whose changes they are, and whose grants are read.
     person: String,
-    /// Wakes the session's loop when a change to the record lands.
-    wake: ui::WakeScope,
-    /// Each workspace's directory, opened here and kept at the grants it was opened with.
-    open: RefCell<BTreeMap<String, Opened>>,
-    /// The resource published last, and the revision of the reading it was built at.
+    /// Wakes the session's loop when a change to the directory lands.
+    wake: tilo_service::Wake,
+    /// Each workspace's directory, followed from the first read and kept at the grants it was
+    /// followed with: a workspace whose grants changed has it followed again.
+    open: RefCell<BTreeMap<String, (WorkspacePolicy, FollowedResource<ContactDirectory>)>>,
+    /// The resource published last, and the reading it was built at.
     published: RefCell<Option<(u64, ResourceSpec)>>,
-    /// The revision of the reading last published, so a move is told once.
+    /// The reading last published, so a move is told once.
     seen: Cell<u64>,
-}
-
-struct Opened {
-    /// The grants the record was opened with: a workspace whose grants changed has it opened
-    /// again, so its people's reads follow.
-    policy: WorkspacePolicy,
-    records: WorkspaceResources,
-    /// `None` until it opens: the workspace's directory, opened once and kept.
-    record: Option<WorkspaceResource<ContactDirectory>>,
 }
 
 impl Contacts {
     /// The workspace's directory, read and changed as the person `person` wherever `handle` says
     /// they are, waking the session's loop through `wake` when a change lands.
     pub(crate) fn new(
-        records: EngineRecords,
+        daemon: DaemonShell,
         handle: DesktopHandle,
         person: &str,
         wake: tilo_service::Wake,
     ) -> Self {
-        let mut scope = ui::WakeScope::new();
-        if let Err(error) = scope.bind(move |_| wake()) {
-            tracing::warn!(%error, "the workspace's contacts are not woken");
-        }
         Self {
-            records,
+            daemon,
             handle,
             person: person.to_owned(),
-            wake: scope,
+            wake,
             open: RefCell::new(BTreeMap::new()),
             published: RefCell::new(None),
             seen: Cell::new(0),
@@ -96,78 +79,57 @@ impl Contacts {
         })
     }
 
-    /// The directory of the workspace the person is in, opened where it is not, at that
-    /// workspace's grants. `None` where the workspace keeps none or cannot be read now.
-    fn record(&self) -> Option<WorkspaceResource<ContactDirectory>> {
+    /// The directory of the workspace the person is in, followed where it is not, at that
+    /// workspace's grants. `None` where the workspace keeps none or it was not read yet.
+    fn directory(&self) -> Option<FollowedResource<ContactDirectory>> {
         let (workspace, policy) = self.workspace()?;
         let mut open = self.open.borrow_mut();
         if open
             .get(&workspace)
-            .is_some_and(|opened| opened.policy != policy)
+            .is_some_and(|(followed, _)| *followed != policy)
         {
             open.remove(&workspace);
         }
-        let opened = open.entry(workspace.clone()).or_insert_with(|| Opened {
-            policy: policy.clone(),
-            records: self.records.in_workspace(
-                &workspace,
-                ui::permissions::MemberId::person(self.person.clone()),
-            ),
-            record: None,
-        });
-        if opened.record.is_none() {
+        let (_, followed) = open.entry(workspace.clone()).or_insert_with(|| {
             let id = collab_types::workspace_document_id(ContactDirectory::KIND);
-            match opened.records.holds_resource(
-                ContactDirectory::OWNER,
-                &id,
-                ContactDirectory::KIND,
-            ) {
-                Ok(false) => return None,
-                Ok(true) => {}
-                Err(error) => {
-                    tracing::warn!(%error, %workspace, "the workspace's contacts are not read");
-                    return None;
-                }
-            }
-            let permissions =
-                PermissionContext::from_access(MemberAccess::person(policy, self.person.clone()))
-                    .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
-            opened.record = WorkspaceResource::<ContactDirectory>::open(
-                &opened.records,
-                ContactDirectory::OWNER,
-                SESSION_APP,
-                Some(LivePermissions::fixed(permissions)),
-                Some(self.wake.handle()),
+            let followed = FollowedResource::follow(
+                &self.daemon,
+                (&workspace, ContactDirectory::OWNER, &id),
+                &self.person,
+                Some(policy.clone()),
+                std::sync::Arc::clone(&self.wake),
             );
-        }
-        opened.record.clone()
+            (policy, followed)
+        });
+        (followed.held() == Some(true)).then(|| followed.clone())
     }
 
     /// What the directory reads as now: its people, labels and hints, as a view of another
     /// language reads the record. `None` where the workspace keeps none.
     fn reading(&self) -> Option<Value> {
-        let record = self.record()?;
+        let directory = self.directory()?;
         Some(tilo_resource::read::reading::<ContactDirectory>(
-            &record.get(),
+            &*directory.get(),
         ))
     }
 
     /// The reading as the record's resource publishes it: its actions, each the directory's own.
     fn resource(&self) -> ResourceSpec {
-        let Some(record) = self.record() else {
+        let Some(directory) = self.directory() else {
             return tilo_resource::resource::unreadable_parts::<ContactDirectory>(
                 RESOURCE,
                 LABEL,
                 "the workspace's contacts are not read here now",
             );
         };
-        let revision = record.revision();
+        let revision = directory.revision();
         if let Some((at, published)) = self.published.borrow().as_ref()
             && *at == revision
         {
             return published.clone();
         }
-        let published = tilo_resource::publish::<ContactDirectory>(RESOURCE, LABEL, &record.get());
+        let published =
+            tilo_resource::publish::<ContactDirectory>(RESOURCE, LABEL, &*directory.get());
         *self.published.borrow_mut() = Some((revision, published.clone()));
         published
     }
@@ -184,19 +146,21 @@ impl Contacts {
         if resource != RESOURCE {
             return Err(ApiError::Unknown(address));
         }
-        let record = self.record().ok_or_else(|| ApiError::Unavailable {
+        let directory = self.directory().ok_or_else(|| ApiError::Unavailable {
             code: "unavailable".to_owned(),
             reason: "the workspace's contacts are not read here now".to_owned(),
         })?;
-        let action = tilo_resource::resource::build_action::<ContactDirectory>(
+        // The arguments are bound here first, so a call that cannot bind says why before it
+        // reaches the daemon.
+        tilo_resource::resource::build_action::<ContactDirectory>(
             action,
             arguments,
             tilo_resource::origin_now_ms(),
         )
         .map_err(ApiError::InvalidArguments)?;
-        record
-            .act_as(invoker, &action)
-            .map_err(|error| ApiError::Failed(error.to_string()))?;
+        directory
+            .invoke_as(invoker, action, arguments.clone())
+            .map_err(ApiError::Failed)?;
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
 }
@@ -241,10 +205,10 @@ impl Service for Contacts {
 
     /// What moved in the directory, from this device or another: the reading is published again.
     fn poll(&mut self) -> bool {
-        let Some(record) = self.record() else {
+        let Some(directory) = self.directory() else {
             return false;
         };
-        let revision = record.revision();
+        let revision = directory.revision();
         let was = self.seen.replace(revision);
         was != revision
     }

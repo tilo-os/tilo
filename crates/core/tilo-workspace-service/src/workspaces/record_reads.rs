@@ -185,6 +185,18 @@ impl RecordReads {
     }
 }
 
+impl Workspaces {
+    /// This device's reader of the resources of the workspaces it keeps, for a caller this device
+    /// holds a certificate of there: what the person's shell reads through.
+    #[must_use]
+    pub fn resource_reads(&self) -> Arc<RecordReads> {
+        Arc::new(RecordReads::of_device(
+            Some(WeakWorkspaces(Arc::downgrade(&self.inner))),
+            None,
+        ))
+    }
+}
+
 impl ResourceReads for RecordReads {
     fn read(
         &self,
@@ -215,6 +227,35 @@ impl ResourceReads for RecordReads {
             reason: error.to_string(),
         })?;
         Ok(bytes.map_or(ResourceCopy::Absent, ResourceCopy::Document))
+    }
+
+    /// The resources of `workspace` the device `caller` holds a certificate for there may read:
+    /// `app`'s, or every app's where `app` is empty, each decided as its read is.
+    fn list(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        app: &str,
+    ) -> Result<Vec<ResourceAddress>, ActionCallError> {
+        let workspaces = self
+            .workspaces
+            .as_ref()
+            .and_then(WeakWorkspaces::upgrade)
+            .ok_or_else(refused)?;
+        let certificate = Self::certificate(&workspaces, caller, workspace).ok_or_else(refused)?;
+        let listed = workspaces
+            .own_listing(workspace)
+            .map_err(|reason| ActionCallError::Unavailable { reason })?;
+        Ok(listed
+            .into_iter()
+            .filter(|(of, _)| app.is_empty() || of == app)
+            .map(|(app, record)| ResourceAddress {
+                workspace: workspace.to_owned(),
+                app,
+                record,
+            })
+            .filter(|address| Self::may_read(&workspaces, &certificate, address).is_ok())
+            .collect())
     }
 
     fn answer_read(

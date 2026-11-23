@@ -11,7 +11,8 @@
 use std::sync::Arc;
 
 use runtime_collab::ShellClient;
-use runtime_collab::wire::shell::{DocumentWritten, ShellCall, ShellRead, ShellReply, ShellWrite};
+use runtime_collab::wire::shell::{DocumentWritten, ShellCall, ShellReply, ShellWrite};
+use tilo_actions::remote::{InvokeRequest, RemoteActionMessage, ResourceReadRequest};
 use tilo_peer_state::owner::{AppWrite, WriteRefusal};
 use tilo_peer_state::workspace_documents::{
     DeviceDocuments, DeviceWrites, DocumentRead, DocumentServing, DocumentWrite, DocumentWriting,
@@ -99,6 +100,69 @@ impl DaemonShell {
             .map_err(|_| "the daemon's connection stopped before it answered".to_owned())?
     }
 
+    /// What carries the connection's frames: where a follower of a read waits.
+    #[must_use]
+    pub fn runtime(&self) -> &tokio::runtime::Handle {
+        &self.inner.runtime
+    }
+
+    /// Ask the device's one dispatch `message` as the person, in `workspace` where it is an
+    /// action of one of its resources: the readings a read answers, or the value an action
+    /// answered, as JSON.
+    ///
+    /// # Errors
+    /// As [`Self::ask`], or the dispatch refused it, saying why.
+    pub async fn dispatch(
+        &self,
+        workspace: Option<&str>,
+        message: &RemoteActionMessage,
+    ) -> Result<serde_json::Value, String> {
+        let call = dispatched(workspace, message)?;
+        answered(self.ask(call).await?)
+    }
+
+    /// [`Self::dispatch`] from a thread that is not the runtime's.
+    ///
+    /// # Errors
+    /// As [`Self::dispatch`].
+    pub fn dispatch_blocking(
+        &self,
+        workspace: Option<&str>,
+        message: &RemoteActionMessage,
+    ) -> Result<serde_json::Value, String> {
+        let call = dispatched(workspace, message)?;
+        answered(self.ask_blocking(call)?)
+    }
+
+    /// The readings of `read`, as the device reads them for the person.
+    ///
+    /// # Errors
+    /// As [`Self::dispatch`].
+    pub async fn read(&self, read: ResourceReadRequest) -> Result<serde_json::Value, String> {
+        self.dispatch(None, &read_message(read)).await
+    }
+
+    /// [`Self::read`] from a thread that is not the runtime's.
+    ///
+    /// # Errors
+    /// As [`Self::dispatch`].
+    pub fn read_blocking(&self, read: ResourceReadRequest) -> Result<serde_json::Value, String> {
+        self.dispatch_blocking(None, &read_message(read))
+    }
+
+    /// Run `request`, a typed action of a resource of `workspace`, as the person, from a thread
+    /// that is not the runtime's: the value it answered.
+    ///
+    /// # Errors
+    /// As [`Self::dispatch`]; a refusal says why.
+    pub fn invoke_blocking(
+        &self,
+        workspace: &str,
+        request: InvokeRequest,
+    ) -> Result<serde_json::Value, String> {
+        self.dispatch_blocking(Some(workspace), &RemoteActionMessage::Invoke(request))
+    }
+
     /// The documents the device took a write to since this connection last asked, waited for
     /// until there is one; `None` when it took more than it kept told.
     ///
@@ -120,6 +184,81 @@ impl Inner {
             error => format!("the device's daemon: {error}"),
         })
     }
+}
+
+/// `message` as the shell link carries it.
+fn dispatched(workspace: Option<&str>, message: &RemoteActionMessage) -> Result<ShellCall, String> {
+    Ok(ShellCall::Invoke {
+        workspace: workspace.map(str::to_owned),
+        message: serde_json::to_string(message)
+            .map_err(|error| format!("a call does not encode: {error}"))?,
+    })
+}
+
+/// The JSON the dispatch answered with, or why it refused.
+fn answered(reply: ShellReply) -> Result<serde_json::Value, String> {
+    match reply {
+        ShellReply::Invoked(answer) => serde_json::from_str(&answer?)
+            .map_err(|error| format!("the dispatch's answer does not read: {error}")),
+        other => Err(unexpected(&other)),
+    }
+}
+
+/// `read` as the dispatch takes it.
+const fn read_message(read: ResourceReadRequest) -> RemoteActionMessage {
+    RemoteActionMessage::ResourceRead {
+        correlation: 0,
+        on_behalf_of: None,
+        read,
+    }
+}
+
+/// A read of `app`'s `resource` of `workspace`, whole, as it stands now.
+fn whole(workspace: &str, app: &str, resource: &str) -> ResourceReadRequest {
+    ResourceReadRequest {
+        workspace: workspace.to_owned(),
+        app: app.to_owned(),
+        record: resource.to_owned(),
+        joined: false,
+        after: None,
+        wait_ms: None,
+        document: true,
+        listing: false,
+    }
+}
+
+/// What one resource of `readings` is: its document whole, `Absent`, or `Pending` while it is on
+/// its way.
+///
+/// # Errors
+/// The readings name no resource, or its document does not read.
+pub fn document_read(readings: &serde_json::Value) -> Result<DocumentRead, String> {
+    let resource = readings["records"]
+        .get(0)
+        .ok_or("the read answered no resource")?;
+    if resource["absent"].as_bool() == Some(true) {
+        return Ok(DocumentRead::Absent);
+    }
+    if resource["arriving"].as_bool() == Some(true) {
+        return Ok(DocumentRead::Pending);
+    }
+    let bytes = resource["document"]
+        .as_str()
+        .ok_or("the read answered no document")
+        .and_then(|hex| hex::decode(hex).map_err(|_| "a document's bytes do not read"))?;
+    let mut doc = automerge::AutoCommit::load(&bytes)
+        .map_err(|error| format!("a document does not read: {error}"))?;
+    let heads = doc.get_heads().iter().map(|head| head.0).collect();
+    let revision = readings["revision"].as_str().unwrap_or_default();
+    let revision = hex::decode(revision)
+        .ok()
+        .and_then(|revision| <[u8; 32]>::try_from(revision).ok())
+        .unwrap_or_else(|| *blake3::hash(revision.as_bytes()).as_bytes());
+    Ok(DocumentRead::Whole {
+        revision,
+        heads,
+        bytes,
+    })
 }
 
 fn unexpected(reply: &ShellReply) -> String {
@@ -165,38 +304,9 @@ impl DeviceDocuments for DaemonDocuments {
         resource: &str,
         since: Option<&[[u8; 32]]>,
     ) -> Result<DocumentRead, String> {
-        let reply = self.0.ask_blocking(ShellCall::Read {
-            workspace: workspace.to_owned(),
-            app: app.to_owned(),
-            resource: resource.to_owned(),
-            since: since.map(<[[u8; 32]]>::to_vec),
-        })?;
-        match reply {
-            ShellReply::Read(read) => Ok(match read {
-                ShellRead::Whole {
-                    revision,
-                    heads,
-                    bytes,
-                } => DocumentRead::Whole {
-                    revision,
-                    heads,
-                    bytes,
-                },
-                ShellRead::Changes {
-                    revision,
-                    heads,
-                    bytes,
-                } => DocumentRead::Changes {
-                    revision,
-                    heads,
-                    bytes,
-                },
-                ShellRead::Unchanged(revision) => DocumentRead::Unchanged(revision),
-                ShellRead::Absent => DocumentRead::Absent,
-                ShellRead::Pending => DocumentRead::Pending,
-            }),
-            other => Err(unexpected(&other)),
-        }
+        // A read answers the document whole, whatever the reader holds of it already.
+        let _ = since;
+        document_read(&self.0.read_blocking(whole(workspace, app, resource))?)
     }
 
     fn readable(&self, workspace: &str, app: &str, resource: &str) -> bool {
@@ -209,21 +319,30 @@ impl DeviceDocuments for DaemonDocuments {
     }
 
     fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
-        match self.0.ask_blocking(ShellCall::Listing {
-            workspace: workspace.to_owned(),
-        })? {
-            ShellReply::Listing(listing) => Ok(listing),
-            other => Err(unexpected(&other)),
-        }
+        let mut listing = whole(workspace, "", "");
+        listing.listing = true;
+        let listed = self.0.read_blocking(listing)?;
+        Ok(listed["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|listed| {
+                Some((
+                    listed["app"].as_str()?.to_owned(),
+                    listed["record"].as_str()?.to_owned(),
+                ))
+            })
+            .collect())
     }
 
     fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {
-        let asked = self.0.ask_blocking(ShellCall::Holds {
-            workspace: workspace.to_owned(),
-            app: app.to_owned(),
-            resource: resource.to_owned(),
-        });
-        answered_is(asked, resource)
+        match self.read(workspace, app, resource, None) {
+            Ok(read) => !matches!(read, DocumentRead::Absent),
+            Err(error) => {
+                tracing::warn!(resource, %error, "the daemon did not say");
+                false
+            }
+        }
     }
 
     fn workspaces(&self) -> Vec<String> {

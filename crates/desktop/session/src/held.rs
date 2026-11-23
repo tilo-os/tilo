@@ -14,7 +14,7 @@ impl Session {
     /// them the workspace's ids.
     #[must_use]
     pub fn apps_kept_in_workspace(&self) -> bool {
-        *self.shared.app_stores.borrow() == crate::engine_records::AppStores::Kept
+        *self.shared.app_stores.borrow() == crate::app_stores::AppStores::Kept
     }
 
     /// Where keeping the resources of the apps the session's services run over in the workspace
@@ -87,6 +87,14 @@ impl Session {
         app: &str,
         record: &str,
     ) -> Result<Option<Vec<u8>>, String> {
-        self.shared.records.whole(workspace, app, record)
+        use tilo_peer_state::workspace_documents::DocumentRead;
+        match self
+            .shared
+            .document_reads
+            .read(workspace, app, record, None)?
+        {
+            DocumentRead::Whole { bytes, .. } => Ok(Some(bytes)),
+            _ => Ok(None),
+        }
     }
 }

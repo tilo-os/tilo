@@ -176,9 +176,10 @@ pub(crate) struct Shared {
     /// admits an agent's session on.
     #[cfg(target_os = "linux")]
     pub(crate) agents: std::rc::Rc<crate::agents::Agents>,
-    /// The workspaces' records the session reads and writes itself — Chat's agents and emoji — as the workspace holds them: replicated with the engine as either moves.
+    /// The device's daemon on the session's shell link: where the workspace resources the session
+    /// reads itself are followed, and their typed actions run.
     #[cfg(target_os = "linux")]
-    pub(crate) records: crate::engine_records::EngineRecords,
+    pub(crate) daemon: tilo_session_client::daemon_documents::DaemonShell,
     /// The agents the person admitted at its MCP server, as the session and the bar show them.
     #[cfg(target_os = "linux")]
     pub(crate) agent_sessions: std::sync::Arc<crate::agent_sessions::AgentSessions>,
@@ -360,10 +361,10 @@ pub(crate) struct Shared {
     /// The store of a workspace this device's own service holds, once it is open: where the apps
     /// the session runs itself keep their resources, as the apps' windows do.
     #[cfg(target_os = "linux")]
-    pub(crate) held_stores: crate::engine_records::HeldStores,
+    pub(crate) held_stores: crate::app_stores::HeldStores,
     /// Where moving the apps' resources into the workspace stands.
     #[cfg(target_os = "linux")]
-    pub(crate) app_stores: RefCell<crate::engine_records::AppStores>,
+    pub(crate) app_stores: RefCell<crate::app_stores::AppStores>,
     /// The workspaces' shared desktops, as their records hold them: what each
     /// device that shows a workspace puts on its own session, and what this one
     /// writes back.
@@ -401,7 +402,7 @@ pub(crate) struct Shared {
     pub(crate) underway: Rc<Cell<tilo_session_core::layout::Busy>>,
     /// The person's settings, kept in step with their other devices.
     #[cfg(target_os = "linux")]
-    pub(crate) settings: crate::settings_sync::SettingsSync,
+    pub(crate) settings: crate::person_settings::PersonSettings,
     /// The overview's pictures and the clock they fly on, which its panel
     /// in the chrome draws with.
     pub(crate) overview: crate::overview::Overview,
