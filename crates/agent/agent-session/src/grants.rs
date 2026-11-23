@@ -460,7 +460,7 @@ impl AgentSupervisor {
                     created_at,
                     requester,
                 )
-                .map_err(refused)?;
+                .map_err(ActionCallError::refused)?;
             Ok(ActionOutput {
                 value: Some(serde_json::json!({"grant": agent, "pairingCode": pairing_code})),
                 resources: Vec::new(),
@@ -660,7 +660,8 @@ impl AgentSupervisor {
             &caller.clone().in_workspace(workspace.to_string()),
             request,
             || {
-                self.revoke(caller, id, workspace).map_err(refused)?;
+                self.revoke(caller, id, workspace)
+                    .map_err(ActionCallError::refused)?;
                 Ok(ActionOutput {
                     value: Some(serde_json::json!({})),
                     resources: Vec::new(),
@@ -920,10 +921,6 @@ fn grant_proposal(
         },
         expires_at_ns: now_ns.saturating_add(request.expires_in_secs.saturating_mul(1_000_000_000)),
     })
-}
-
-fn refused(reason: String) -> ActionCallError {
-    ActionCallError::Refused { reason }
 }
 
 #[cfg(test)]
