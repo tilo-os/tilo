@@ -7661,6 +7661,7 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/host-assurance/**"]
+evidence = ["/target/host-assurance/**"]
 cache = false
 git = true
 timeout_secs = 10800
@@ -7711,6 +7712,7 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/host-assurance/**"]
+evidence = ["/target/host-assurance/**"]
 cache = false
 git = true
 timeout_secs = 1800
@@ -7727,6 +7729,7 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/host-assurance/**"]
+evidence = ["/target/host-assurance/**"]
 cache = false
 git = true
 timeout_secs = 2700
@@ -7743,6 +7746,7 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/host-assurance/**"]
+evidence = ["/target/host-assurance/**"]
 cache = false
 git = true
 timeout_secs = 5400
@@ -7759,6 +7763,7 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/host-assurance/**"]
+evidence = ["/target/host-assurance/**"]
 cache = false
 git = true
 timeout_secs = 2700
@@ -7775,6 +7780,7 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/host-assurance/**"]
+evidence = ["/target/host-assurance/**"]
 cache = false
 git = true
 timeout_secs = 2700
@@ -7791,6 +7797,7 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/host-assurance/**"]
+evidence = ["/target/host-assurance/**"]
 cache = false
 git = true
 timeout_secs = 3600
