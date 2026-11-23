@@ -171,7 +171,9 @@ pub(crate) struct EngineVersion {
     pub(crate) keys: u64,
     /// Writes another device made that landed in this device's workspace service, which the
     /// engine's own revision does not count: the layouts and views this session shows are read
-    /// from the service, so a landing is a record to read again.
+    /// from the service, so a landing is a record to read again. Only until the reads follow the
+    /// service's writes ([`Layouts::version`]): each write then asks for the one record it reached,
+    /// and a message or a presence written elsewhere reads no layout again.
     pub(crate) landed: u64,
 }
 
@@ -1077,6 +1079,22 @@ impl Layouts {
         }
     }
 
+    /// Where the workspaces' documents stand for the layouts and views read here: the engine's
+    /// [`EngineVersion`], without the writes that landed once the reads follow the service's
+    /// writes, which ask for the records they reached themselves.
+    pub(crate) fn version(&self, engine: &Engine) -> EngineVersion {
+        let mut version = EngineVersion::of(engine);
+        if self
+            .reading
+            .borrow()
+            .as_ref()
+            .is_some_and(reads::Reads::follows_writes)
+        {
+            version.landed = 0;
+        }
+        version
+    }
+
     /// A number that moves whenever a layout is read or written here.
     pub(crate) fn moved(&self) -> u64 {
         self.moved.get()
@@ -1166,7 +1184,7 @@ impl Layouts {
     /// Fold the layout of every workspace in the engine's copy into `tree`.
     fn follow_layout(&self, engine: &Engine, device: &str, tree: &mut Layout) -> bool {
         let salt = tree.salt;
-        let at = EngineVersion::of(engine);
+        let at = self.version(engine);
         let mut changed = false;
         for workspace in &mut tree.workspaces {
             let workspace_id = workspace.id();
@@ -1371,7 +1389,7 @@ impl Layouts {
             return false;
         };
         let route = Route::view(&person);
-        let at = EngineVersion::of(engine);
+        let at = self.version(engine);
         let held: Vec<WorkspaceId> = tree.workspaces.iter().map(Workspace::id).collect();
         let mut changed = false;
         for workspace_id in held {

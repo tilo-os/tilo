@@ -100,10 +100,11 @@ impl Shared {
         // Every workspace this device holds has had its record read, and
         // nothing of the workspaces moved since: there is nothing to read,
         // lay out or write.
-        if self.desktops.settled(
-            crate::layout::EngineVersion::of(engine),
-            &self.handle.read(Clone::clone),
-        ) {
+        let version = self.desktops.version(engine);
+        if self
+            .handle
+            .read(|tree| self.desktops.settled(version, tree))
+        {
             return;
         }
         // What the records hold, folded into a copy of the shell: what this device opened or moved
