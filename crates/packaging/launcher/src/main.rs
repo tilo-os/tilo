@@ -625,7 +625,7 @@ fn dispatch_command(
     }
 }
 
-/// Run the tilolang host the session started, on the socket it handed over as this process's stdin.
+/// Run the tilolang host the session started, on the link it handed over.
 fn tilolang_process(
     runtime: String,
     app_runtime: String,
@@ -634,12 +634,9 @@ fn tilolang_process(
     page: bool,
 ) -> ExitCode {
     use launcher::run::tilolang_process::{ProcessLaunch, launch_tilolang_process};
-    let socket = match take_stdin() {
-        Ok(socket) => socket,
-        Err(error) => {
-            eprintln!("tilo-launcher: the tilolang host's socket: {error}");
-            return ExitCode::FAILURE;
-        }
+    let Some(socket) = runtime_portal::process_link::take() else {
+        eprintln!("tilo-launcher: the tilolang host was handed no link");
+        return ExitCode::FAILURE;
     };
     let page = match page.then(|| Ok::<_, std::io::Error>((take_fd(3)?, take_fd(4)?))) {
         None => None,
@@ -681,20 +678,6 @@ fn take_fd(fd: std::os::fd::RawFd) -> std::io::Result<std::os::fd::OwnedFd> {
     // it to this process alone, at this number.
     let taken = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
     std::os::unix::net::UnixStream::from(taken.try_clone()?).peer_addr()?;
-    Ok(taken)
-}
-
-/// What the session handed over as this process's stdin, moved off it: stdin is `/dev/null` from
-/// here on, so nothing this process starts inherits it.
-fn take_stdin() -> std::io::Result<std::os::fd::OwnedFd> {
-    use std::os::fd::{AsFd as _, AsRawFd as _};
-    let taken = std::io::stdin().as_fd().try_clone_to_owned()?;
-    let null = std::fs::File::open("/dev/null")?;
-    // SAFETY: both are descriptors this process owns; replacing descriptor 0 closes the handed
-    // one there in one step.
-    if unsafe { libc::dup2(null.as_raw_fd(), 0) } == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
     Ok(taken)
 }
 
@@ -1081,18 +1064,21 @@ fn report_launch_result(
             // How the app ended, said where its output goes: a signal leaves no exit code of its own,
             // and is folded into 1 below.
             if !status.success() {
+                // A sandbox this computer cannot make ends every app the same way: said by its
+                // own exit code, so whoever started the app names the cause. The cause and how to
+                // fix it come first, how the app ended last.
+                let refusal = launcher::user_namespaces::refusal().ok().flatten();
+                if let Some(refusal) = &refusal {
+                    for line in refusal.to_string().lines() {
+                        eprintln!("{}{line}", launcher::SAYS);
+                    }
+                }
                 eprintln!(
-                    "tilo-launcher: {} ended: {status}",
+                    "{}{} ended: {status}",
+                    launcher::SAYS,
                     app_id.unwrap_or("the app")
                 );
-                // A sandbox this computer cannot make ends every app the same way: said by its
-                // own exit code, so whoever started the app names the cause.
-                if let Ok(Some(refusal)) = launcher::user_namespaces::refusal() {
-                    eprintln!(
-                        "tilo-launcher: this computer allows no user namespaces, which every app's \
-                         sandbox is made in"
-                    );
-                    eprintln!("tilo-launcher: {refusal}");
+                if refusal.is_some() {
                     return exit_code(launcher::user_namespaces::EXIT_NO_USER_NAMESPACES);
                 }
             }

@@ -48,7 +48,6 @@ struct Paths {
     config: PathBuf,
     runtime: PathBuf,
     identity_socket: PathBuf,
-    tree_socket: PathBuf,
     /// The storage socket alone, so Settings can be handed this directory
     /// without the blob socket in `runtime`.
     storage: PathBuf,
@@ -69,10 +68,6 @@ fn paths(env: &dyn Fn(&str) -> Option<OsString>) -> Result<Paths> {
         config: base("XDG_CONFIG_HOME", ".config").join("tilo"),
         runtime: runtime_dir.join("tilo/files-workspace"),
         identity_socket: runtime_dir.join("tilo/services/identity.sock"),
-        tree_socket: runtime_dir.join(format!(
-            "tilo/services/{}.sock",
-            tilo_fs::tree_sync::remote::SOCKET
-        )),
         storage: runtime_dir.join("tilo/files-storage"),
     };
     for path in [&paths.state, &paths.identity, &paths.config, &paths.runtime] {
@@ -95,7 +90,7 @@ fn command(_args: &PrimaryArgs, env: &dyn Fn(&str) -> Option<OsString>) -> Resul
     // from, nothing starts, so the desktop never shows an empty workspace.
     // This production check validates the existing certificate and key; it
     // never creates credentials.
-    workspace_startup::inspect(&paths.state, &paths.tree_socket)?.require_existing()?;
+    workspace_startup::inspect(&paths.state, &super::tree_socket()?)?.require_existing()?;
     let person = existing_person(&IdentityPaths::under(&paths.identity))?;
     eprintln!(
         "Files mount starts as this device's identity, certified for person {}",

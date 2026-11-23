@@ -24,8 +24,6 @@ collab-types = { path = "../../collab/collab-types" }
 fs-protocol = { path = "../../system/fs-protocol" }
 hex.workspace = true
 libc.workspace = true
-# A task's programs run in a tilolang host started for them: its api, and the sealed blob its apps
-# arrive in.
 serde.workspace = true
 serde_json.workspace = true
 tilo-action-policy = { path = "../../collab/action-policy" }
