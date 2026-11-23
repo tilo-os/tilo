@@ -10,7 +10,7 @@ use tilo_action_policy::{Change, Grantee, Role, WorkspacePolicy};
 use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_network_actor::DeviceIdentity;
-use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
+use tilo_peer_state::owner::testing::{self, workspace::TestWorkspace};
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 use tilo_session_client::engine::Engine;
 use tilo_session_client::membership::{Membership, project};
@@ -116,7 +116,7 @@ fn workspace_signed_through(
         crate::platform::membership_check::of_this_session(),
     )
     .expect("this device's engine opens");
-    let governor = TestGovernor::empty_interactive(cert.clone(), person_key.clone(), WORKSPACE)
+    let governor = TestWorkspace::empty_interactive(cert.clone(), person_key.clone(), WORKSPACE)
         .expect("this device governs its workspace");
     let mut governor = testing::enroll_into(governor, engine.owner(), &person_key, &cert)
         .expect("this device's workspace is its own");
@@ -229,7 +229,7 @@ fn the_owner_admitted_ada() -> TwoSessions {
     let a_root = SigningKey::from_bytes(&[51; 32]);
     let a_key = SigningKey::from_bytes(&[52; 32]);
     let a_cert = testing::certificate(&a_root, &a_key, "The owner's laptop");
-    let governor = TestGovernor::empty_interactive(a_cert.clone(), a_key.clone(), WORKSPACE)
+    let governor = TestWorkspace::empty_interactive(a_cert.clone(), a_key.clone(), WORKSPACE)
         .expect("the workspace's owner governs it");
     let a_state = tempfile::TempDir::new().expect("a state directory");
     let a_engine = Engine::open(
@@ -667,7 +667,7 @@ fn governed_session(served: Option<tempfile::TempDir>) -> GovernedSession {
 /// the workspace has both devices in it.
 fn governed_session_seeded(
     served: Option<tempfile::TempDir>,
-    seed: impl FnOnce(&mut TestGovernor, &tilo_user_identity::DeviceCert, &SigningKey),
+    seed: impl FnOnce(&mut TestWorkspace, &tilo_user_identity::DeviceCert, &SigningKey),
 ) -> GovernedSession {
     let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
     let (identity, cert, key) = provisioned_identity(&mut home);
@@ -1069,7 +1069,7 @@ fn the_people_another_device_admits_are_on_this_shells_people() {
         .expect("this computer's engine opens");
         the_fixture_governs(&engine, workspace_id);
         let governor =
-            TestGovernor::empty_interactive(cert.clone(), key.clone(), &workspace_id.to_string())
+            TestWorkspace::empty_interactive(cert.clone(), key.clone(), &workspace_id.to_string())
                 .expect("this computer's device governs the workspace");
         let mut governor = testing::enroll_into(governor, engine.owner(), &key, &cert)
             .expect("the workspace is this computer's");
@@ -1242,7 +1242,7 @@ fn a_second_device(
     cert: &tilo_user_identity::DeviceCert,
     key: &SigningKey,
     now: tilo_clock::time::SystemTime,
-    seed: impl FnOnce(&mut TestGovernor, &tilo_user_identity::DeviceCert, &SigningKey),
+    seed: impl FnOnce(&mut TestWorkspace, &tilo_user_identity::DeviceCert, &SigningKey),
 ) -> (Engine, tilo_user_identity::DeviceCert, SigningKey, String) {
     let her_key = SigningKey::from_bytes(&[0x72; 32]);
     let her = testing::certificate(&SigningKey::from_bytes(&[0x71; 32]), &her_key, "ada");
@@ -1265,7 +1265,7 @@ fn a_second_device(
     // from here, and admits her device into it.
     the_fixture_governs(&mine, workspace_id);
     let governor =
-        TestGovernor::empty_interactive(cert.clone(), key.clone(), &workspace_id.to_string())
+        TestWorkspace::empty_interactive(cert.clone(), key.clone(), &workspace_id.to_string())
             .expect("this computer's device governs the workspace");
     let mut governor = testing::enroll_into(governor, mine.owner(), key, cert)
         .expect("the workspace is this computer's");

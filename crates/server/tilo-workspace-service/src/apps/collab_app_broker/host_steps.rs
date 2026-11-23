@@ -482,12 +482,8 @@ pub(crate) mod signed_test_support {
             let owner = Arc::new(
                 tilo_peer_state::owner::open_file(&directory.path().join("native.json")).unwrap(),
             );
-            tilo_peer_state::owner::testing::enroll_interactive_governor(
-                &owner,
-                &key,
-                &certificate,
-            )
-            .unwrap();
+            tilo_peer_state::owner::testing::enroll_interactive(&owner, &key, &certificate)
+                .unwrap();
             let publisher = PeerPublisher::with_optional_owner_commit(
                 None,
                 Arc::new(NativeOwnerReceipts { owner }),

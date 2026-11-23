@@ -100,7 +100,9 @@ pub(crate) struct StoredWorkspace {
     /// This device's own frames a peer has not been sent yet, oldest first:
     /// what makes a write durable here before any peer holds it, and sends it
     /// when one links. A frame is sent once and a peer that took it drops a
-    /// second copy.
+    /// second copy. This list goes once this device's writes are kept in the
+    /// device's frame store ([`crate::store::Store`]), whose `holds` and whose
+    /// link answers say what each peer has.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub frames: Vec<FrameToSend>,
 }

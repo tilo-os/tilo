@@ -7,9 +7,8 @@
 )]
 use crate::owner::{
     NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner,
-    VerifiedNativeEnrollmentIntent, WorkspaceId, publication,
+    VerifiedNativeEnrollmentIntent, WorkspaceId,
 };
-use crate::owner_commit::OwnerCommitRequest;
 use crate::{SeedDocument, SeedState, StatePeer, TransportOrigin, join, seed_workspace};
 use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
@@ -19,7 +18,7 @@ use tilo_automation::Shortcut;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
-pub mod governor;
+pub mod workspace;
 
 /// The record at `path` as the disk holds it: the index and one file per
 /// workspace, sorted by path.
@@ -84,79 +83,92 @@ pub fn start_resource(
     key: &SigningKey,
     now: SystemTime,
 ) {
-    let message = owner
+    let envelope = owner
         .with_current(workspace, |view| {
-            view.peer().clone().publication_mut().publish_document(
+            let message = view.peer().clone().publication_mut().publish_document(
                 app,
                 record,
                 AutoCommit::new().save(),
                 key,
                 now,
-            )
+            )?;
+            let NeighbourMsg::AppDocument { envelope, .. } = message else {
+                return Err("a record's founding write is a document write".to_owned());
+            };
+            Ok(*envelope)
         })
         .unwrap();
     owner
-        .commit_document(publication::request(&message).unwrap(), now)
+        .admit_writes(
+            workspace,
+            vec![crate::owner::WorkspaceDocumentWrite {
+                app: app.to_owned(),
+                document: record.to_owned(),
+                readers: None,
+                envelope,
+            }],
+            now,
+        )
         .unwrap();
 }
 
 /// A new workspace `owner` holds as `certificate`'s device, its person its owner: the workspace's
-/// governor signs with the device's own key, as the device's own workspace service does for a
+/// device signs with its own key, as the device's own workspace service does for a
 /// workspace it founds, and admits the device as its member.
 ///
 /// # Errors
-/// The governor refused the device.
+/// The device holding the workspace refused this one.
 pub fn founded(
     owner: &NativeWorkspaceOwner,
     certificate: &DeviceCert,
     key: &SigningKey,
 ) -> Result<WorkspaceId, String> {
     let workspace = WorkspaceId::new();
-    enroll_interactive_governor_in(owner, key, certificate, &workspace.to_string())?;
+    enroll_interactive_in(owner, key, certificate, &workspace.to_string())?;
     Ok(workspace)
 }
 
 /// Enroll an empty interactive workspace through the real signed join protocol.
 /// This helper neither seeds application records nor grants capabilities.
-pub fn enroll_interactive_governor(
+pub fn enroll_interactive(
     owner: &NativeWorkspaceOwner,
     key: &SigningKey,
     certificate: &DeviceCert,
-) -> Result<governor::TestGovernor, String> {
-    enroll_interactive_governor_in(owner, key, certificate, WORKSPACE)
+) -> Result<workspace::TestWorkspace, String> {
+    enroll_interactive_in(owner, key, certificate, WORKSPACE)
 }
 
-/// [`enroll_interactive_governor`] into `workspace`.
-pub fn enroll_interactive_governor_in(
+/// [`enroll_interactive`] into `workspace`.
+pub fn enroll_interactive_in(
     owner: &NativeWorkspaceOwner,
     key: &SigningKey,
     certificate: &DeviceCert,
     workspace: &str,
-) -> Result<governor::TestGovernor, String> {
-    let governor =
-        governor::TestGovernor::empty_interactive(certificate.clone(), key.clone(), workspace)?;
-    enroll_into(governor, owner, key, certificate)
+) -> Result<workspace::TestWorkspace, String> {
+    let fixture =
+        workspace::TestWorkspace::empty_interactive(certificate.clone(), key.clone(), workspace)?;
+    enroll_into(fixture, owner, key, certificate)
 }
 
-/// Enroll `certificate`'s device into the workspace `governor` already holds, as
-/// the workspace's devices [`enroll_interactive_governor`] make one for: what a
+/// Enroll `certificate`'s device into the workspace `fixture` already holds, as
+/// the workspace's devices [`enroll_interactive`] make one for: what a
 /// workspace whose other devices are already in it admits this one into.
 pub fn enroll_into(
-    mut governor: governor::TestGovernor,
+    mut fixture: workspace::TestWorkspace,
     owner: &NativeWorkspaceOwner,
     key: &SigningKey,
     certificate: &DeviceCert,
-) -> Result<governor::TestGovernor, String> {
+) -> Result<workspace::TestWorkspace, String> {
     let endpoint = iroh_base::EndpointAddr::new(
         iroh_base::EndpointId::from_bytes(&certificate.device_public_key).unwrap(),
     );
-    let hint = governor.hint(endpoint);
+    let hint = fixture.hint(endpoint);
     let now = tilo_clock::wall();
     let now_ns = ns(now).unwrap();
     // One workspace admits more than one device: each asks with an id of its own.
     let mut request_id = [0_u8; 32];
     request_id[..8].copy_from_slice(&certificate.device_public_key[..8]);
-    let invitation = governor.issue(
+    let invitation = fixture.issue(
         vec![hint.clone()],
         join::Role::Editor,
         Some(certificate.user_public_key),
@@ -170,7 +182,7 @@ pub fn enroll_into(
         now_ns,
     )
     .unwrap();
-    let response = governor.handle(
+    let response = fixture.handle(
         certificate.device_public_key,
         join::JoinTransportRequest::Challenge(join::JoinChallengeRequest {
             signed_invitation: invitation,
@@ -179,7 +191,7 @@ pub fn enroll_into(
         }),
     );
     let join::JoinTransportResponse::Challenge(response) = response else {
-        return Err("actual governor challenge refused".into());
+        return Err("the workspace refused the challenge".into());
     };
     let complete = join::JoinCompleteRequest {
         proof: join::sign_join_proof(response.challenge, key).unwrap(),
@@ -193,20 +205,20 @@ pub fn enroll_into(
     )
     .unwrap();
     let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
-    let response = governor.handle(
+    let response = fixture.handle(
         certificate.device_public_key,
         join::JoinTransportRequest::Complete(complete),
     );
     let join::JoinTransportResponse::Complete(bootstrap) = response else {
-        return Err("actual governor enrollment refused".into());
+        return Err("the workspace refused the enrollment".into());
     };
     if !bootstrap.records.is_empty() {
-        return Err("empty governor supplied seeded application records".into());
+        return Err("the fixture supplied seeded application records".into());
     }
     owner
         .install(&finalize(intent, pending, bootstrap)?, now)
         .map_err(|error| error.to_string())?;
-    Ok(governor)
+    Ok(fixture)
 }
 pub fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
     certificate_with(root, key, label, DeviceCapabilities::primary())
@@ -428,7 +440,7 @@ pub fn governed_fixture_at(now: SystemTime) -> (RawFixture, StatePeer, SigningKe
     );
     let messages = peer
         .publication_mut()
-        .durable_bootstrap_messages(&governor_key, now, 1)
+        .bootstrap_messages(&governor_key, now)
         .unwrap();
     let bootstrap = join::JoinBootstrap {
         version: 1,
@@ -549,45 +561,17 @@ pub fn pending_id(
 pub fn ns(now: SystemTime) -> Result<u64, String> {
     crate::owner::enrollment::ns(now)
 }
-/// The exact bytes of every original outgoing entry.
-pub fn entries(view: &NativeCommittedView) -> Result<Vec<Vec<u8>>, String> {
-    Ok(publication::state(view)?
-        .entries
-        .iter()
-        .map(|entry| entry.bytes.clone())
-        .collect())
-}
-pub fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
-    publication::prepare(request)
-}
-pub fn request(message: &NeighbourMsg) -> Result<OwnerCommitRequest, String> {
-    publication::request(message)
-}
-/// `(timestamp_ns, channel, incremental)` as the owner records them.
-pub fn metadata(message: &NeighbourMsg) -> Result<(u64, [u8; 32], bool), String> {
-    publication::metadata(message)
-}
 /// What a record keeps of one workspace.
 pub struct Stored {
     pub peer: Vec<u8>,
-    pub governor: DeviceCert,
     pub device: DeviceCert,
-    pub projection: Vec<Vec<u8>>,
 }
 #[must_use]
 pub fn stored(storage: &NativeAuthorityStorage, workspace: WorkspaceId) -> Option<Stored> {
     let record = storage.workspaces.get(&workspace)?;
     Some(Stored {
         peer: record.peer.to_vec(),
-        governor: record.workspace_host.clone(),
         device: record.device.clone(),
-        projection: record
-            .publication
-            .as_ref()?
-            .projection
-            .iter()
-            .map(|entry| entry.bytes.clone())
-            .collect(),
     })
 }
 

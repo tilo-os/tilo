@@ -8,7 +8,7 @@ use std::path::Path;
 
 use ed25519_dalek::SigningKey;
 use tilo_peer_state::TransportOrigin;
-use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
+use tilo_peer_state::owner::testing::{self, workspace::TestWorkspace};
 use tilo_session_client::engine::Engine;
 use tilo_user_identity::DeviceCert;
 
@@ -239,7 +239,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
             .delete(workspace_id)
             .expect("the second device lets go of the workspace its shell founded");
         let governor =
-            TestGovernor::empty_interactive(first.clone(), first_key.clone(), &workspace)
+            TestWorkspace::empty_interactive(first.clone(), first_key.clone(), &workspace)
                 .expect("the first device governs the workspace");
         let governor = testing::enroll_into(governor, first_engine.owner(), &first_key, &first)
             .expect("the workspace is the first device's");

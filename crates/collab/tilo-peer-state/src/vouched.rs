@@ -10,8 +10,8 @@ use crate::StatePeer;
 use crate::join::{JoinTransportResponse, Role};
 use crate::owner::stored::{StoredVouch, StoredWorkspace};
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner};
-use tilo_desktop_model::WorkspaceId;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
+use tilo_desktop_model::WorkspaceId;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 use web_time::SystemTime;
 
@@ -164,6 +164,8 @@ impl NativeWorkspaceOwner {
             peer: peer.durable_layout()?.into(),
             generation: 1,
             continuity: 0,
+            publication: None,
+            frames: Vec::new(),
         };
         self.publish_workspace(workspace, NativeCommittedView::new(peer, record), None)?;
         Ok(true)
@@ -251,6 +253,8 @@ impl NativeWorkspaceOwner {
             peer: peer.durable_layout()?.into(),
             generation: 1,
             continuity: 0,
+            publication: None,
+            frames: Vec::new(),
         };
         self.publish_workspace(workspace, NativeCommittedView::new(peer, record), None)?;
         Ok(true)

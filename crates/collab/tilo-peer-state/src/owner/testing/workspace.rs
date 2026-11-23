@@ -1,10 +1,9 @@
-//! A workspace's governor and its certified host, as a test's issuing side.
+//! One device holding a workspace, as a test's issuing side.
 //!
-//! It governs one workspace with a Chat document, lets its host (another device
-//! of the owner) issue invitations, and answers the join exchange the way a certified
-//! host does: the challenge binds the authenticated endpoint, completion
-//! admits the member and returns the workspace's full checkpoint. Its outgoing
-//! publications are that checkpoint, re-signed on every mutation and refresh.
+//! It holds one workspace (with a Chat document, when it starts one), issues
+//! invitations as itself, and answers the join exchange the way any device of
+//! the workspace does: the challenge binds the authenticated endpoint,
+//! completion admits the member and returns the workspace's state.
 use crate::{
     GovernedAccess, SeedDocument, SeedState, StatePeer, TransportOrigin,
     join::{
@@ -25,27 +24,17 @@ use collab_types::WorkspaceId;
 /// Longest a join challenge stays open.
 const CHALLENGE_NS: u64 = 60_000_000_000;
 
-pub struct TestGovernor {
+pub struct TestWorkspace {
     peer: StatePeer,
     cert: DeviceCert,
-    governor_key: SigningKey,
-    host: DeviceCert,
-    host_key: SigningKey,
-    /// The host is a dedicated certified host, not the governor itself.
+    key: SigningKey,
     workspace_id: WorkspaceId,
     generation: u64,
-    outgoing: Vec<Vec<u8>>,
-    /// What the last commit published: the whole checkpoint after
-    /// [`Self::refresh_checkpoint`], only what changed after
-    /// [`Self::commit_changes`].
-    changes: Vec<(Vec<u8>, Retention)>,
-    /// The peer as last published, the baseline of the next commit.
-    published: Option<StatePeer>,
     invitations: Vec<Vec<u8>>,
     challenges: Vec<(JoinChallenge, DeviceCert)>,
     completions: BTreeMap<[u8; 32], JoinBootstrap>,
-    /// The instant the governor treats as now, once a test pins it;
-    /// otherwise it follows the wall clock.
+    /// The instant the fixture treats as now, once a test pins it; otherwise it
+    /// follows the wall clock.
     clock: Option<SystemTime>,
 }
 
@@ -86,29 +75,27 @@ fn ns(now: SystemTime) -> u64 {
     crate::owner::enrollment::ns(now).unwrap()
 }
 
-impl Default for TestGovernor {
+impl Default for TestWorkspace {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl TestGovernor {
-    /// A fresh workspace, governor and host, each under new keys.
+impl TestWorkspace {
+    /// A fresh workspace under a new device key, with one Chat record.
     #[must_use]
     pub fn new() -> Self {
         let now = tilo_clock::wall();
         let person = SigningKey::from_bytes(&random());
-        let governor_key = SigningKey::from_bytes(&random());
-        let governor = certificate(&person, &governor_key, "Governor");
-        let host_key = SigningKey::from_bytes(&random());
-        let host = certificate(&person, &host_key, "Certified host");
+        let key = SigningKey::from_bytes(&random());
+        let device = certificate(&person, &key, "Device");
         let workspace = uuid::Builder::from_random_bytes(random()).into_uuid();
         let workspace_id = WorkspaceId::from(workspace);
         let workspace = workspace.to_string();
         let mut peer = StatePeer::new(
             &workspace,
-            governor.clone(),
-            vec![governor.clone()],
+            device.clone(),
+            vec![device.clone()],
             tilo_user_identity::RevocationList::new(),
             now,
         )
@@ -131,8 +118,8 @@ impl TestGovernor {
             SeedState {
                 workspace_changes: seed_workspace(
                     &workspace,
-                    &governor,
-                    std::slice::from_ref(&governor),
+                    &device,
+                    std::slice::from_ref(&device),
                 )
                 .unwrap(),
                 documents: vec![SeedDocument {
@@ -142,54 +129,44 @@ impl TestGovernor {
                     bytes: chat.save(),
                 }],
             },
-            &governor_key,
+            &key,
             now,
         )
         .unwrap();
         peer.select_exact_admissions().unwrap();
-        peer.admit_certificate(host.clone(), &governor_key, now)
-            .unwrap();
-        let mut governor = Self {
+        Self {
             peer,
-            cert: governor,
-            governor_key,
-            host,
-            host_key,
+            cert: device,
+            key,
             workspace_id,
             generation: 0,
-            outgoing: Vec::new(),
-            changes: Vec::new(),
-            published: None,
             invitations: Vec::new(),
             challenges: Vec::new(),
             completions: BTreeMap::new(),
             clock: None,
-        };
-        governor.refresh_checkpoint().unwrap();
-        governor
+        }
     }
 
-    /// Empty interactive workspace governed by the fixture session's actual
-    /// root-certified device identity. Unlike `new`, this installs no app
-    /// records, messages, agents or separately pinned delivery host.
+    /// An empty workspace held by the fixture session's actual root-certified
+    /// device. Unlike `new`, this installs no app records, messages or agents.
     pub fn empty_interactive(
-        governor: DeviceCert,
-        governor_key: SigningKey,
+        device: DeviceCert,
+        key: SigningKey,
         workspace: &str,
     ) -> Result<Self, String> {
-        tilo_user_identity::verify_device_cert(&governor).map_err(|error| error.to_string())?;
-        if governor.device_public_key != governor_key.verifying_key().to_bytes()
-            || !governor.capabilities.can_own_workspaces
+        tilo_user_identity::verify_device_cert(&device).map_err(|error| error.to_string())?;
+        if device.device_public_key != key.verifying_key().to_bytes()
+            || !device.capabilities.can_own_workspaces
         {
-            return Err("interactive fixture ownership cannot govern this workspace".into());
+            return Err("the fixture's device cannot hold this workspace".into());
         }
         let now = tilo_clock::wall();
         let workspace_id = WorkspaceId::parse(workspace)
             .ok_or_else(|| "the fixture's workspace is not a workspace id".to_string())?;
         let mut peer = StatePeer::new(
             workspace,
-            governor.clone(),
-            vec![governor.clone()],
+            device.clone(),
+            vec![device.clone()],
             tilo_user_identity::RevocationList::new(),
             now,
         )?;
@@ -197,34 +174,27 @@ impl TestGovernor {
             SeedState {
                 workspace_changes: seed_workspace(
                     workspace,
-                    &governor,
-                    std::slice::from_ref(&governor),
+                    &device,
+                    std::slice::from_ref(&device),
                 )?,
                 documents: Vec::new(),
             },
-            &governor_key,
+            &key,
             now,
         )?;
         peer.select_exact_admissions()
             .map_err(|error| error.to_string())?;
-        let mut fixture = Self {
+        Ok(Self {
             peer,
-            cert: governor.clone(),
-            host: governor,
-            host_key: governor_key.clone(),
-            governor_key,
+            cert: device,
+            key,
             workspace_id,
             generation: 0,
-            outgoing: Vec::new(),
-            changes: Vec::new(),
-            published: None,
             invitations: Vec::new(),
             challenges: Vec::new(),
             completions: BTreeMap::new(),
             clock: None,
-        };
-        fixture.refresh_checkpoint()?;
-        Ok(fixture)
+        })
     }
 
     #[must_use]
@@ -239,26 +209,20 @@ impl TestGovernor {
     pub fn workspace_id(&self) -> WorkspaceId {
         self.workspace_id
     }
+    /// The device this workspace is held on.
     #[must_use]
-    pub fn workspace_host(&self) -> &DeviceCert {
+    pub fn device(&self) -> &DeviceCert {
         &self.cert
     }
+    /// Its signing key.
     #[must_use]
-    pub fn governor_key(&self) -> &SigningKey {
-        &self.governor_key
-    }
-    #[must_use]
-    pub fn host(&self) -> &DeviceCert {
-        &self.host
-    }
-    #[must_use]
-    pub fn host_key(&self) -> &SigningKey {
-        &self.host_key
+    pub fn key(&self) -> &SigningKey {
+        &self.key
     }
 
     /// Answer every later exchange as of `now` instead of the wall clock, so
     /// a test whose other side runs on a fixed instant agrees with the
-    /// governor on what has expired however long the test machine takes.
+    /// fixture on what has expired however long the test machine takes.
     pub fn pin_clock(&mut self, now: SystemTime) {
         self.clock = Some(now);
     }
@@ -267,13 +231,13 @@ impl TestGovernor {
         self.clock.unwrap_or_else(SystemTime::now)
     }
 
-    /// The host's signed hint that it serves the workspace at `endpoint_addr`.
+    /// This device's signed hint that it serves the workspace at `endpoint_addr`.
     #[must_use]
     pub fn hint(&self, endpoint_addr: iroh_base::EndpointAddr) -> TransportHint {
-        holding_hint(&self.host, &self.host_key, self.workspace_id, endpoint_addr)
+        holding_hint(&self.cert, &self.key, self.workspace_id, endpoint_addr)
     }
 
-    /// The host's signed invitation for `role`, redeemable until
+    /// This device's signed invitation for `role`, redeemable until
     /// `expires_at_ns` through `transport`.
     pub fn issue(
         &mut self,
@@ -286,7 +250,7 @@ impl TestGovernor {
         let signed = join::issue_invitation(
             join::InviteGrant {
                 workspace_id: self.workspace_id,
-                issuer: self.host.clone(),
+                issuer: self.cert.clone(),
                 role,
                 nonce: random(),
                 recipient_user_public_key,
@@ -294,31 +258,46 @@ impl TestGovernor {
                 expires_at_ns,
                 transport,
             },
-            &self.host_key,
+            &self.key,
         )
         .unwrap();
         self.invitations.push(signed.clone());
         signed
     }
 
-    /// The workspace's current publications, oldest first; every one a checkpoint.
-    pub fn outgoing(&self) -> impl Iterator<Item = (&[u8], Retention)> {
-        self.outgoing
-            .iter()
-            .map(|bytes| (bytes.as_slice(), Retention::Checkpoint))
+    /// Every message a device starting from nothing needs from this one: the
+    /// workspace as it stands and a checkpoint of each record, encoded.
+    pub fn outgoing(&self) -> Vec<(Vec<u8>, Retention)> {
+        self.changes()
+    }
+
+    /// The same messages, as what a device that has some of the workspace lacks.
+    pub fn changes(&self) -> Vec<(Vec<u8>, Retention)> {
+        let now = self.now();
+        self.peer
+            .clone()
+            .publication_mut()
+            .bootstrap_messages(&self.key, now)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|message| {
+                let (_, retention) = neighbour_wire::retention(&message, false)?;
+                Some((postcard::to_stdvec(&message).ok()?, retention))
+            })
+            .collect()
     }
 
     pub fn governed_access(&self, now: SystemTime) -> Result<GovernedAccess, String> {
         self.peer.governance().governed_access(now)
     }
 
-    /// The ids of the grants naming the agent `agent` in this governor's
+    /// The ids of the grants naming the agent `agent` in this fixture's
     /// admitted workspace policy.
     pub fn agent_grants(&self, agent: &str) -> Result<Vec<String>, String> {
         let workspace = self
             .peer
             .admitted_workspace()
-            .ok_or("governor workspace policy is absent")?;
+            .ok_or("fixture workspace policy is absent")?;
         let (_, policy) = crate::workspace::extract_governed_fields(workspace);
         let agent = tilo_action_policy::Grantee::agent(agent);
         Ok(policy
@@ -345,101 +324,59 @@ impl TestGovernor {
         let mut candidate = self.peer.clone();
         candidate.governance_mut().put_governed_grants(
             std::slice::from_ref(&grant),
-            &self.host_key,
+            &self.key,
             now,
         )?;
         self.peer = candidate;
-        self.refresh_checkpoint()
+        self.advance();
     }
 
-    /// What the last commit published, oldest first, each with its
-    /// retention: the whole checkpoint after [`Self::refresh_checkpoint`],
-    /// what changed after [`Self::commit_changes`].
-    pub fn changes(&self) -> impl Iterator<Item = (&[u8], Retention)> {
-        self.changes
-            .iter()
-            .map(|(bytes, retention)| (bytes.as_slice(), *retention))
-    }
-
-    /// The candidate peer of the next commit and its generation.
-    fn next_commit(&self) -> Result<(StatePeer, u64), String> {
-        let candidate = self.peer.clone();
-        let admitted_generation = candidate
-            .admitted_workspace()
-            .map(crate::durability::entries)
-            .transpose()?
-            .unwrap_or_default()
-            .values()
-            .map(|receipt| receipt.generation)
-            .max()
-            .unwrap_or(0);
-        let generation = self
-            .generation
-            .max(admitted_generation)
-            .checked_add(1)
-            .ok_or("fixture checkpoint generation exhausted")?;
-        Ok((candidate, generation))
-    }
-
-    /// Re-sign the workspace's full checkpoint at the next generation.
-    pub fn refresh_checkpoint(&mut self) -> Result<(), String> {
+    /// Let `member`'s device sign into the workspace a delegation of their own
+    /// work to `server`, letting it use none of their vault items, and publish
+    /// it with the server named as a holder of its own: what every device
+    /// reads as their work given to that server, until `expires_at_ns`.
+    pub fn delegate_work(
+        &mut self,
+        member: (&DeviceCert, &SigningKey),
+        server: (&DeviceCert, &SigningKey),
+        grants: Vec<tilo_action_policy::Grant>,
+        expires_at_ns: u64,
+    ) -> Result<(), String> {
         let now = self.now();
-        let (mut candidate, generation) = self.next_commit()?;
-        let messages = candidate.publication_mut().durable_bootstrap_messages(
-            &self.governor_key,
-            now,
-            generation,
-        )?;
-        self.outgoing = messages
-            .iter()
-            .map(|message| postcard::to_stdvec(message).map_err(|error| error.to_string()))
-            .collect::<Result<_, _>>()?;
-        self.changes = self
-            .outgoing
-            .iter()
-            .map(|bytes| (bytes.clone(), Retention::Checkpoint))
-            .collect();
-        self.published = Some(candidate.clone());
+        let endpoint = iroh_base::EndpointAddr::new(
+            iroh_base::EndpointId::from_bytes(&server.0.device_public_key)
+                .map_err(|error| error.to_string())?,
+        );
+        let hint = holding_hint(server.0, server.1, self.workspace_id, endpoint);
+        let mut candidate = self.peer.clone();
+        candidate
+            .governance_mut()
+            .author_keeping_device(&hint, &self.key, now)?;
+        let delegation = collab_types::work_delegation::WorkDelegation::sign(
+            member.1,
+            member.0.user_public_key,
+            server.0.device_public_key,
+            self.workspace(),
+            None,
+            grants,
+            Vec::new(),
+            (ns(now).saturating_sub(1), expires_at_ns),
+        )
+        .map_err(|error| error.to_string())?;
+        candidate
+            .workspace_mut()
+            .author_work_delegation(&delegation, member.1, now)?;
         self.peer = candidate;
-        self.generation = generation;
+        self.advance();
         Ok(())
     }
 
-    /// Commit what the governor admitted since its last publication as a
-    /// workspace host does between checkpoints: the governance changes and every
-    /// changed record, retained after the last publication, instead of the
-    /// workspace's whole checkpoint re-signed. Each checkpoint replaces its
-    /// lineage on the server, a few fsyncs; a governor that re-signed one per
-    /// admitted edit queued more of them than a loaded runner's disk keeps
-    /// up with. The first commit is a whole checkpoint.
-    pub fn commit_changes(&mut self) -> Result<(), String> {
-        let Some(before) = self.published.clone() else {
-            return self.refresh_checkpoint();
-        };
-        let now = self.now();
-        let (mut candidate, generation) = self.next_commit()?;
-        let messages = candidate.publication_mut().durable_mutation_messages(
-            &before,
-            &self.governor_key,
-            now,
-            generation,
-        )?;
-        self.changes = messages
-            .iter()
-            .map(|message| {
-                let (_, retention) = neighbour_wire::retention(message, false)
-                    .ok_or("a committed change has no retention channel")?;
-                let bytes = postcard::to_stdvec(message).map_err(|error| error.to_string())?;
-                Ok::<_, String>((bytes, retention))
-            })
-            .collect::<Result<_, _>>()?;
-        self.published = Some(candidate.clone());
-        self.peer = candidate;
-        self.generation = generation;
-        Ok(())
+    /// Move the fixture on one generation, as a change of its workspace does.
+    fn advance(&mut self) {
+        self.generation = self.generation.saturating_add(1);
     }
 
-    /// Admit `message` from `origin` into the governor's peer.
+    /// Admit `message` from `origin` into the fixture's peer.
     pub fn receive(
         &mut self,
         origin: TransportOrigin,
@@ -454,7 +391,7 @@ impl TestGovernor {
             .peer
             .receive_from(origin, message, now)
             .map_err(|error| error.to_string())?;
-        tracing::debug!(?id, ?outcome, "native fixture governor admission");
+        tracing::debug!(?id, ?outcome, "native fixture admission");
         Ok(())
     }
 
@@ -578,19 +515,16 @@ impl TestGovernor {
         let mut candidate = self.peer.clone();
         candidate
             .governance_mut()
-            .admit_invited_member(&redemption, &self.host_key, now)?;
-        let previous = std::mem::replace(&mut self.peer, candidate);
-        if let Err(error) = self.refresh_checkpoint() {
-            self.peer = previous;
-            return Err(error);
-        }
+            .admit_invited_member(&redemption, &self.key, now)?;
+        self.peer = candidate;
+        self.advance();
         let bootstrap = JoinBootstrap {
             version: 1,
             invite_id: redemption.join().invite_id(),
             device_cert: cert,
             role: redemption.join().grant().role,
             workspace_id: self.workspace_id,
-            host: self.host.clone(),
+            host: self.cert.clone(),
             certified_roster: self.peer.certificates(),
             revocations: self.peer.revocations(),
             records: self.peer.rows(),
@@ -609,68 +543,40 @@ impl TestGovernor {
 
 #[cfg(test)]
 mod empty_interactive_tests {
-    use super::{TestGovernor, certificate};
+    use super::{TestWorkspace, certificate};
     use ed25519_dalek::SigningKey;
     use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 
     tilo_test_env::scenario! {
-        fn the_test_governor_follows_native_ownership_without_seeding_apps;
+        fn the_fixture_holds_its_workspace_as_one_device;
 
-        phase checkpoint_refresh_follows_admitted_native_receipts;
-        {
-            let mut governor = TestGovernor::new();
-            let key = governor.governor_key().clone();
-            let publisher = governor.workspace_host().device_public_key;
-            let messages = governor
-                .peer()
-                .clone()
-                .publication_mut()
-                .durable_bootstrap_messages(&key, tilo_clock::wall(), 20)
-                .unwrap();
-            for message in messages {
-                governor
-                    .receive(
-                        crate::TransportOrigin::RetainedNativePublication { publisher },
-                        message,
-                    )
-                    .unwrap();
-            }
-            governor.refresh_checkpoint().unwrap();
-            let receipts =
-                crate::durability::entries(governor.peer().admitted_workspace().unwrap()).unwrap();
-            assert!(
-                !receipts.is_empty(),
-                "the signed cut must carry actual document receipts"
-            );
-            assert!(receipts.values().all(|receipt| receipt.generation > 20));
-        }
-
-        phase empty_interactive_preserves_certified_ownership_without_seeding_apps_or_host_bits;
+        phase empty_interactive_holds_the_workspace_it_founded_as_its_own_device;
         {
             let signing_identity = SigningKey::from_bytes(&[91; 32]);
             let key = SigningKey::from_bytes(&[92; 32]);
             let cert = certificate(&signing_identity, &key, "Fixture session");
             let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string();
-            let governor = TestGovernor::empty_interactive(cert.clone(), key, &workspace).unwrap();
-            assert_eq!(governor.workspace_host(), &cert);
-            assert!(governor.peer().rows().is_empty());
+            let workspace_fixture =
+                TestWorkspace::empty_interactive(cert.clone(), key, &workspace).unwrap();
+            assert_eq!(workspace_fixture.device(), &cert);
+            assert!(workspace_fixture.peer().rows().is_empty());
             let endpoint = iroh_base::EndpointAddr::new(
                 iroh_base::EndpointId::from_bytes(
                     &SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes(),
                 )
                 .unwrap(),
             );
-            let hint = governor.hint(endpoint);
+            let hint = workspace_fixture.hint(endpoint);
             let (payload, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).unwrap();
             assert!(payload.holds_keys);
             assert_eq!(payload.device_certificate, cert);
             assert!(
-                TestGovernor::empty_interactive(cert, SigningKey::from_bytes(&[94; 32]), &workspace)
+                TestWorkspace::empty_interactive(cert, SigningKey::from_bytes(&[94; 32]), &workspace)
                     .is_err()
             );
         }
 
-        phase empty_interactive_governor_redeems_its_actual_session_ownership_without_app_seed;
+        phase empty_interactive_answers_a_real_join_without_app_seed;
         {
             use crate::join::{
                 self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest,
@@ -678,8 +584,8 @@ mod empty_interactive_tests {
             };
             let key = SigningKey::from_bytes(&[92; 32]);
             let cert = certificate(&SigningKey::from_bytes(&[91; 32]), &key, "Fixture session");
-            let mut governor =
-                TestGovernor::empty_interactive(cert.clone(), key.clone(), super::super::WORKSPACE)
+            let mut workspace_fixture =
+                TestWorkspace::empty_interactive(cert.clone(), key.clone(), super::super::WORKSPACE)
                     .unwrap();
             let endpoint = iroh_base::EndpointAddr::new(
                 iroh_base::EndpointId::from_bytes(
@@ -690,14 +596,14 @@ mod empty_interactive_tests {
             let expiry = super::ns(tilo_clock::wall())
                 .checked_add(60_000_000_000)
                 .unwrap();
-            let invitation = governor.issue(
-                vec![governor.hint(endpoint)],
+            let invitation = workspace_fixture.issue(
+                vec![workspace_fixture.hint(endpoint)],
                 Role::Editor,
                 Some(cert.user_public_key),
                 Some("Fixture session".into()),
                 expiry,
             );
-            let response = governor.handle(
+            let response = workspace_fixture.handle(
                 cert.device_public_key,
                 JoinTransportRequest::Challenge(JoinChallengeRequest {
                     signed_invitation: invitation,
@@ -709,7 +615,7 @@ mod empty_interactive_tests {
                 panic!("actual session challenge refused: {response:?}");
             };
             let proof = join::sign_join_proof(response.challenge, &key).unwrap();
-            let response = governor.handle(
+            let response = workspace_fixture.handle(
                 cert.device_public_key,
                 JoinTransportRequest::Complete(JoinCompleteRequest { proof }),
             );

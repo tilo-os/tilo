@@ -457,7 +457,7 @@ mod tests {
     use tilo_broker_core::route::CrdtRoute;
     use tilo_content::hash_bytes;
     use tilo_network_actor::DeviceIdentity;
-    use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
+    use tilo_peer_state::owner::testing::{self, workspace::TestWorkspace};
     use tilo_user_identity::DeviceCert;
 
     use super::*;
@@ -527,7 +527,7 @@ mod tests {
             );
             // This device makes the workspace, and the other device of the person joins it: the device
             // certified in the workspace is the one that acts.
-            let governor = TestGovernor::empty_interactive(cert.clone(), key.clone(), WORKSPACE)
+            let governor = TestWorkspace::empty_interactive(cert.clone(), key.clone(), WORKSPACE)
                 .expect("this device governs its workspace");
             let governor = testing::enroll_into(governor, engine.owner(), key, cert)
                 .expect("this device's workspace is its own");

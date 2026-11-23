@@ -77,8 +77,7 @@ fn fixture() -> Fixture {
         &key,
         "Governor",
     );
-    tilo_peer_state::owner::testing::enroll_interactive_governor(&owner, &key, &certificate)
-        .unwrap();
+    tilo_peer_state::owner::testing::enroll_interactive(&owner, &key, &certificate).unwrap();
     let workspace_id = tilo_peer_state::owner::testing::WORKSPACE;
     let mut workspace = crate::apps::test_support::Workspace::new(
         uuid::Uuid::parse_str(workspace_id).unwrap().into(),

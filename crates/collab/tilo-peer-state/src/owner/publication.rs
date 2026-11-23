@@ -7,7 +7,6 @@
 //! them, and nothing constructs one.
 
 use super::answers::Unanswered;
-use collab_types::SignedOp;
 use serde::{Deserialize, Serialize};
 
 /// Most writes a record kept at its head. This crate's tests keep fewer, so a

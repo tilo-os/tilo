@@ -337,7 +337,5 @@ impl PeerOutboxMut<'_> {
 
 #[cfg(test)]
 mod sealed_renewal_tests;
-#[cfg(test)]
-mod tests;
 
 mod history;

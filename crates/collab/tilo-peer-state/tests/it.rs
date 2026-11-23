@@ -21,8 +21,6 @@ tilo_automerge_isolate::test_worker!();
 
 #[path = "adhoc_group.rs"]
 mod adhoc_group;
-#[path = "bootstrap_growth.rs"]
-mod bootstrap_growth;
 #[path = "direct_actions.rs"]
 mod direct_actions;
 #[path = "direct_held_writes.rs"]
@@ -31,6 +29,8 @@ mod direct_held_writes;
 mod direct_lost_history;
 #[path = "direct_two_devices.rs"]
 mod direct_two_devices;
+#[path = "one_path.rs"]
+mod one_path;
 #[path = "renewed_enrollment.rs"]
 mod renewed_enrollment;
 #[path = "renewed_membership.rs"]

@@ -189,7 +189,7 @@ fn a_workspace_costs_its_own_record() {
 
     // A second person joins a workspace: the record this device keeps of it
     // is what a workspace with two people costs.
-    let _governor = testing::enroll_interactive_governor(&owner, &key, &device).unwrap();
+    let _governor = testing::enroll_interactive(&owner, &key, &device).unwrap();
     let record = read_file(&path).unwrap();
     let joined = workspace(testing::WORKSPACE);
     let joined_bytes = part_bytes(record.workspaces.get(&joined).unwrap())

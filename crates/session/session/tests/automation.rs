@@ -30,7 +30,7 @@ use tilo_automation::{
 use tilo_compositor::InputEvent;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_peer_state::TransportOrigin;
-use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
+use tilo_peer_state::owner::testing::{self, workspace::TestWorkspace};
 use tilo_peer_state::owner::{self, NativeWorkspaceOwner};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
@@ -122,8 +122,8 @@ fn held(state: &Path) -> NativeWorkspaceOwner {
 
 /// Found [`WORKSPACE`] in `owner` as this computer's device — its only member, the person its
 /// owner — and take the checkpoint its host publishes: the workspace every other device joins.
-fn found(owner: &NativeWorkspaceOwner, key: &SigningKey, cert: &DeviceCert) -> TestGovernor {
-    let governor = testing::enroll_interactive_governor_in(owner, key, cert, WORKSPACE)
+fn found(owner: &NativeWorkspaceOwner, key: &SigningKey, cert: &DeviceCert) -> TestWorkspace {
+    let governor = testing::enroll_interactive_in(owner, key, cert, WORKSPACE)
         .expect("this computer founds the workspace it holds");
     take(owner, &governor);
     governor
@@ -131,20 +131,18 @@ fn found(owner: &NativeWorkspaceOwner, key: &SigningKey, cert: &DeviceCert) -> T
 
 /// Take what `governor` published into `owner`, as a device of the workspace admits its host's
 /// frames.
-fn take(owner: &NativeWorkspaceOwner, governor: &TestGovernor) {
-    let host = governor.workspace_host().device_public_key;
+fn take(owner: &NativeWorkspaceOwner, governor: &TestWorkspace) {
+    let host = governor.device().device_public_key;
     take_frames(owner, host, governor.changes());
 }
 
 /// Admit `frames`, published by the device `publisher`, into `owner`'s workspace.
-fn take_frames<'a>(
+fn take_frames(
     owner: &NativeWorkspaceOwner,
     publisher: [u8; 32],
-    frames: impl Iterator<Item = (&'a [u8], Retention)>,
+    frames: impl IntoIterator<Item = (Vec<u8>, Retention)>,
 ) {
-    let frames: Vec<(Vec<u8>, Retention)> = frames
-        .map(|(bytes, retention)| (bytes.to_vec(), retention))
-        .collect();
+    let frames: Vec<(Vec<u8>, Retention)> = frames.into_iter().collect();
     for (bytes, retention) in frames {
         let origin = match retention {
             Retention::Checkpoint => TransportOrigin::RetainedServerDelta(publisher),

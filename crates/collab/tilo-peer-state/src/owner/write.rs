@@ -11,7 +11,6 @@ use crate::AdmissionError;
 use crate::owner::{
     NativeCommittedView, NativeWorkspaceOwner, NeighbourMsg, SystemTime, WorkspaceId, stored,
 };
-use crate::replica::Replica;
 use collab_types::signer::DeviceSigner;
 use std::sync::Arc;
 
@@ -444,7 +443,7 @@ impl NativeWorkspaceOwner {
         signed_turn(signer, |key| {
             let _turn = self.0.mutation.lock();
             let candidate = self.view(workspace)?;
-            let (changed, mut record) = candidate.change(|live, record| {
+            let (changed, record) = candidate.change(|live, record| {
                 live.governance_mut()
                     .drop_names_of_nobody(key, now)
                     .map_err(WriteRefusal::from)?;

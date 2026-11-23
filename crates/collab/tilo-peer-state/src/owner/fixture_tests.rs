@@ -12,7 +12,7 @@ pub(crate) struct Fixture {
     pub(crate) key: SigningKey,
     pub(crate) certificate: DeviceCert,
     pub(crate) now: SystemTime,
-    pub(crate) governor: testing::governor::TestGovernor,
+    pub(crate) workspace: testing::workspace::TestWorkspace,
 }
 
 pub(crate) fn fixture() -> Fixture {
@@ -46,7 +46,7 @@ fn fixture_with(
     let directory = tempfile::tempdir().unwrap();
     let owner = open_file(&directory.path().join("owner.json")).unwrap();
     let certificate = testing::certificate(root, &key, "Governor");
-    let mut governor = testing::governor::TestGovernor::empty_interactive(
+    let mut governor = testing::workspace::TestWorkspace::empty_interactive(
         testing::certificate(&governor_root, &governor_key, "Governor"),
         governor_key,
         testing::WORKSPACE,
@@ -282,7 +282,7 @@ async fn a_member_device_republishes_its_retained_frames_and_a_peer_converges() 
     let origin = |fixture: &Fixture| {
         crate::TransportOrigin::RetainedServerDelta(fixture.certificate.device_public_key)
     };
-    let mut peer = fixture.governor.peer().clone();
+    let mut peer = fixture.workspace.peer().clone();
     let held = peer
         .receive_from_report(origin(&fixture), frames[3].clone(), fixture.now)
         .unwrap();

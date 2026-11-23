@@ -10,13 +10,13 @@ mod answers;
 mod compact;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_store;
+#[cfg(test)]
+#[path = "owner/fixture_tests.rs"]
+pub(crate) mod fixture;
 mod history_content;
 mod history_keys;
 mod journal;
 mod journaled;
-#[cfg(test)]
-#[path = "owner/fixture_tests.rs"]
-pub(crate) mod fixture;
 pub(crate) mod limits;
 mod publication;
 pub mod renewal;
@@ -29,25 +29,24 @@ pub mod testing;
 mod tests;
 pub(crate) mod write;
 
-#[cfg(not(target_arch = "wasm32"))]
-pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_file};
 pub use crate::certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 pub use crate::document_read::{
     CommittedDocument, DocumentChanges, DocumentRead, History, Holding, revision_of_heads,
 };
 pub use crate::draft::{LocalWrite, admit_local_write, draft_local_write};
-pub(crate) use crate::enrollment;
-pub(crate) use crate::vouched;
 pub use crate::enroll;
-pub use stored::{
-    NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus, StoredPendingEnrollment,
-};
-pub use history_keys::SealedHistoryKeys;
+pub(crate) use crate::enrollment;
+#[cfg(not(target_arch = "wasm32"))]
+pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_file};
 #[cfg(not(target_arch = "wasm32"))]
 pub use history_content::HistoryContent;
+pub use history_keys::SealedHistoryKeys;
 #[cfg(not(target_arch = "wasm32"))]
 pub use journaled::{JournalParts, Journaled};
 pub use publication::{ownership_name_between, ownership_run_name};
+pub use stored::{
+    NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus, StoredPendingEnrollment,
+};
 pub use write::{DocumentWrites, WorkspaceDocumentWrite, WriteRefusal};
 
 use crate::replica::Replica;
@@ -135,7 +134,7 @@ pub trait Store: std::any::Any + collab_types::signer::MaybeSendSync {
     fn shows(&self, workspace: WorkspaceId) -> bool;
     /// Make `next` durable, then call `install` before anyone can observe
     /// the new record. Nothing is installed when this fails.
-    fn publish(
+    pub(crate) fn publish(
         &self,
         next: &NativeAuthorityStorage,
         change: Change,
@@ -205,16 +204,16 @@ impl From<crate::AdmissionError> for InstallError {
 }
 
 #[derive(Clone)]
-pub struct NativeWorkspaceOwner(Arc<SharedOwner>);
+pub struct NativeWorkspaceOwner(pub(crate) Arc<SharedOwner>);
 /// Does not keep the owner alive; a host's writer holds one to fence it.
 #[derive(Clone)]
 pub struct WeakNativeWorkspaceOwner(Weak<SharedOwner>);
 struct SharedOwner {
-    store: Arc<dyn Store>,
+    pub(crate) store: Arc<dyn Store>,
     /// The committed record; replaced only inside a publication's `install`.
-    authority: RwLock<NativeAuthorityStorage>,
-    mutation: Mutex<()>,
-    current: RwLock<Current>,
+    pub(crate) authority: RwLock<NativeAuthorityStorage>,
+    pub(crate) mutation: Mutex<()>,
+    pub(crate) current: RwLock<Current>,
     listeners: Mutex<Vec<Weak<dyn NativeFenceObserver>>>,
     /// The channel keys that keep this device's sealed record histories within
     /// their bound ([`NativeWorkspaceOwner::keep_sealed_histories`]).
@@ -222,10 +221,10 @@ struct SharedOwner {
 }
 #[derive(Default)]
 struct Current {
-    workspaces: BTreeMap<WorkspaceId, Arc<NativeCommittedView>>,
-    required: BTreeSet<WorkspaceId>,
-    denied: BTreeSet<WorkspaceId>,
-    fenced: bool,
+    pub(crate) workspaces: BTreeMap<WorkspaceId, Arc<NativeCommittedView>>,
+    pub(crate) required: BTreeSet<WorkspaceId>,
+    pub(crate) denied: BTreeSet<WorkspaceId>,
+    pub(crate) fenced: bool,
 }
 /// Closure-scoped borrowed view of the actual owner publication. It is never an authority DTO.
 ///
@@ -236,7 +235,7 @@ struct Current {
 #[derive(Clone)]
 pub struct NativeCommittedView {
     /// The replica as the last publication made it durable.
-    peer: StatePeer,
+    pub(crate) peer: StatePeer,
     /// This device's live replica, shared with the workspace's direct links.
     replica: Replica,
     record: stored::StoredWorkspace,
@@ -495,7 +494,7 @@ impl SharedOwner {
     /// revocations, or this device's access in them. Its watchers re-check
     /// on that, not on a write to an app record, which wakes the reads of
     /// that record itself.
-    fn publish(
+    pub(crate) fn publish(
         &self,
         next: &NativeAuthorityStorage,
         change: Change,
@@ -885,7 +884,7 @@ impl NativeWorkspaceOwner {
     /// # Errors
     /// The owner is fenced, the record exceeds its bounds, or the publication
     /// could not be made durable.
-    fn publish_workspace(
+    pub(crate) fn publish_workspace(
         &self,
         workspace: WorkspaceId,
         candidate: NativeCommittedView,
@@ -933,7 +932,10 @@ impl NativeWorkspaceOwner {
     }
 
     /// The replica as the record publishes it.
-    fn snapshot(live: &StatePeer, _record: &mut stored::StoredWorkspace) -> Result<StatePeer, String> {
+    fn snapshot(
+        live: &StatePeer,
+        _record: &mut stored::StoredWorkspace,
+    ) -> Result<StatePeer, String> {
         Ok(live.clone())
     }
 

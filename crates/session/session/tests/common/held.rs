@@ -115,11 +115,11 @@ pub fn workspace_held_here(state: &Path, workspace: &str, cert: &DeviceCert, key
         &tilo_session_client::engine::owner_path(state).expect("this device's state directory"),
     )
     .expect("an owner for this device's workspace");
-    let governor = testing::enroll_interactive_governor_in(&owner, key, cert, workspace)
+    let governor = testing::enroll_interactive_in(&owner, key, cert, workspace)
         .expect("this device governs the workspace it hosts");
     // The governor's checkpoint now names this device: the host admits it as the publication a
     // host's own workspace makes.
-    let host = governor.workspace_host().device_public_key;
+    let host = governor.device().device_public_key;
     let frames: Vec<Vec<u8>> = governor
         .outgoing()
         .map(|(bytes, _)| bytes.to_vec())

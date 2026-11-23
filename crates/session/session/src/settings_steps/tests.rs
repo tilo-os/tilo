@@ -76,9 +76,9 @@ fn hold_workspace(state: &Path, device: &ed25519_dalek::SigningKey, cert: &Devic
     )
     .expect("an owner for this device's workspace");
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    let governor = testing::enroll_interactive_governor_in(&owner, device, cert, WORKSPACE)
+    let governor = testing::enroll_interactive_in(&owner, device, cert, WORKSPACE)
         .expect("this device governs the workspace it hosts");
-    let host = governor.workspace_host().device_public_key;
+    let host = governor.device().device_public_key;
     let frames: Vec<Vec<u8>> = governor
         .outgoing()
         .map(|(bytes, _)| bytes.to_vec())

@@ -138,7 +138,7 @@ impl NativeWorkspaceOwner {
             drafted = Some(ops);
             signed.settled()?;
             let record_name = record;
-            let ((), mut record) = candidate.change(|live, record| {
+            let ((), record) = candidate.change(|live, record| {
                 live.publication_mut().admit_sealed_compaction(
                     app,
                     record_name,
@@ -153,7 +153,7 @@ impl NativeWorkspaceOwner {
                 Ok(())
             })?;
             self.publish_document(workspace, &candidate, record, None)?;
-            Ok(())
+            Ok(1)
         })
         .await
     }

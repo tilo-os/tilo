@@ -1,9 +1,9 @@
-use crate::owner::{
-    Change, NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner,
-    PendingEnrollmentId, PendingEnrollmentStatus, VerifiedNativeEnrollment,
-    VerifiedNativeEnrollmentIntent, limits, stored,
-};
 use crate::owner::stored::{StoredPendingEnrollment, StoredWorkspace};
+use crate::owner::{
+    Change, NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, PendingEnrollmentId,
+    PendingEnrollmentStatus, VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent, limits,
+    stored,
+};
 use crate::{NeighbourMsg, StatePeer, TransportOrigin};
 use tilo_desktop_model::WorkspaceId;
 use web_time::SystemTime;
@@ -359,6 +359,8 @@ impl NativeWorkspaceOwner {
             peer: peer.durable_layout()?.into(),
             generation: 1,
             continuity: 0,
+            publication: None,
+            frames: Vec::new(),
         };
         Ok(self.publish_workspace(
             workspace,
