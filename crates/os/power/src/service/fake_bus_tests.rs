@@ -813,15 +813,15 @@ async fn power_profiles_and_active_profile_follow_dbus_signals_live() {
 }
 
 async fn serve_base_daemons_on_bus(address: &str) -> Connection {
-    serve_base_daemons_with_gate(address, None).await
+    serve_base_daemons_with_gate(address, None).await.0
 }
 
 async fn serve_base_daemons_with_gate(
     address: &str,
     inhibit_gate: Option<InhibitGate>,
-) -> Connection {
+) -> (Connection, Shared) {
     let calls = Shared::default();
-    Builder::address(address)
+    let conn = Builder::address(address)
         .expect("addr")
         .serve_at(
             LOGIND_PATH,
@@ -861,7 +861,8 @@ async fn serve_base_daemons_with_gate(
         .expect("upower")
         .build()
         .await
-        .expect("base daemons")
+        .expect("base daemons");
+    (conn, calls)
 }
 
 async fn serve_profiles_on_bus(address: &str, active: &str, profiles: &[&str]) -> Connection {
@@ -1194,6 +1195,46 @@ async fn emit_active_burst(daemon: &Connection, active: &str, count: usize) {
     }
 }
 
+fn lock_held_in(shared: &Shared, index: usize) -> bool {
+    use std::io::Read as _;
+    let calls = calls(shared);
+    let mut byte = [0u8; 1];
+    match (&calls.held[index]).read(&mut byte) {
+        Ok(0) => false,
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => true,
+        other => panic!("unexpected read on an inhibitor fd: {other:?}"),
+    }
+}
+
+async fn wait_idle_sleep_lock_released(base_calls: &Shared, inhibit_before: usize) {
+    let idle_idx = calls(base_calls)
+        .inhibits
+        .iter()
+        .enumerate()
+        .skip(inhibit_before)
+        .find(|(_, request)| request.what == "idle:sleep")
+        .map(|(index, _)| index)
+        .expect("idle:sleep lock");
+    eventually("idle:sleep lock released before next round", || {
+        !lock_held_in(base_calls, idle_idx)
+    })
+    .await;
+}
+
+async fn set_fake_profiles_state(daemon: &Connection, active: &str, profiles: &[String]) {
+    let iface = daemon
+        .object_server()
+        .interface::<_, FakePowerProfiles>(PROFILES_PATH)
+        .await
+        .expect("profiles iface");
+    let mut guard = iface.get_mut().await;
+    guard.active = active.to_owned();
+    guard.profiles = profiles.to_vec();
+}
+
+const NO_OWNER_EXIT_ROUNDS: usize = 6;
+const STALE_OWNER_SWITCH_ROUNDS: usize = 12;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn property_signals_while_power_profiles_has_no_owner_are_ignored() {
     let bus = tilo_test_env::PrivateBus::start();
@@ -1202,7 +1243,7 @@ async fn property_signals_while_power_profiles_has_no_owner_are_ignored() {
         release: Arc::new(Notify::new()),
         sleep_pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
-    let base = serve_base_daemons_with_gate(bus.address(), Some(gate.clone())).await;
+    let (base, base_calls) = serve_base_daemons_with_gate(bus.address(), Some(gate.clone())).await;
     let daemon1 =
         serve_profiles_on_bus(bus.address(), "balanced", &["balanced", "power-saver"]).await;
     let (bridge, registry, wakeups, _state_home, task) = spawn_service_on_bus(bus.address()).await;
@@ -1216,22 +1257,48 @@ async fn property_signals_while_power_profiles_has_no_owner_are_ignored() {
     })
     .await;
 
-    // Hold the service inside logind.Inhibit while daemon1 emits a burst of
-    // PropertiesChanged signals and releases the bus name, so both streams are
-    // ready together when the loop returns to select!.
-    let hold = pause_service_in_inhibit(&registry, &gate, "queue signals across owner exit").await;
-    emit_active_burst(&daemon1, "power-saver", 32).await;
-    daemon1
-        .release_name("net.hadess.PowerProfiles")
-        .await
-        .expect("release daemon1 name");
-    gate.release.notify_one();
-    drop(hold);
+    // Repeat the burst-and-release across several rounds because `select!`
+    // polls ready streams in random order; repeating ensures trailing buffered
+    // signals are exercised after owner exit rather than draining beforehand.
+    for round in 0..NO_OWNER_EXIT_ROUNDS {
+        if round > 0 {
+            let round_profiles = vec![format!("round-{round}"), "power-saver".to_owned()];
+            set_fake_profiles_state(&daemon1, "balanced", &round_profiles).await;
+            daemon1
+                .request_name("net.hadess.PowerProfiles")
+                .await
+                .expect("daemon1 reclaims name");
+            eventually("daemon1 re-primed before next exit round", || {
+                bridge.profiles_snapshot() == (round_profiles.clone(), Some("balanced".to_owned()))
+            })
+            .await;
+        }
+        let inhibit_before = calls(&base_calls).inhibits.len();
+        gate.entered.store(false, Ordering::SeqCst);
+        let hold =
+            pause_service_in_inhibit(&registry, &gate, "queue signals across owner exit").await;
+        let wakeups_before = wakeups.load(Ordering::SeqCst);
+        emit_active_burst(&daemon1, "power-saver", 32).await;
+        daemon1
+            .release_name("net.hadess.PowerProfiles")
+            .await
+            .expect("release daemon1 name");
+        gate.release.notify_one();
+        drop(hold);
 
-    eventually("owner exit clears bridge", || {
-        bridge.profiles_snapshot() == (Vec::new(), None)
-    })
-    .await;
+        eventually("owner exit and queued signals are drained", || {
+            bridge.profiles_snapshot() == (Vec::new(), None)
+                && wakeups.load(Ordering::SeqCst) >= wakeups_before + 33
+        })
+        .await;
+        assert_eq!(bridge.profiles_snapshot(), (Vec::new(), None));
+        assert_eq!(
+            bridge.active_profile(),
+            None,
+            "a PropertiesChanged signal arriving after owner exit must be dropped (round {round})"
+        );
+        wait_idle_sleep_lock_released(&base_calls, inhibit_before).await;
+    }
 
     // Confirm with a later event that the trailing signals left no trace.
     apply_quiet_policy(&bridge, &wakeups).await;
@@ -1241,11 +1308,7 @@ async fn property_signals_while_power_profiles_has_no_owner_are_ignored() {
     })
     .await;
     assert_eq!(bridge.profiles_snapshot(), (Vec::new(), None));
-    assert_eq!(
-        bridge.active_profile(),
-        None,
-        "a PropertiesChanged signal arriving after owner exit must be dropped"
-    );
+    assert_eq!(bridge.active_profile(), None);
 
     // Once a replacement owner takes the name, both its prime and its later
     // property signals apply again.
@@ -1289,6 +1352,102 @@ async fn emit_prepare_for_sleep_burst(base: &Connection, count: usize) {
     }
 }
 
+struct StaleOwnerSwitchRig {
+    base: Connection,
+    base_calls: Shared,
+    gate: InhibitGate,
+    daemon1: Connection,
+    daemon2: Connection,
+    bridge: PowerBridge,
+    registry: InhibitRegistry,
+}
+
+impl StaleOwnerSwitchRig {
+    async fn run_round(&self, round: usize) {
+        let (departing, incoming, incoming_active) = if round.is_multiple_of(2) {
+            (&self.daemon1, &self.daemon2, "performance")
+        } else {
+            (&self.daemon2, &self.daemon1, "balanced")
+        };
+        let initial_profiles = vec![format!("round-{round}-prime"), incoming_active.to_owned()];
+        let final_profiles = vec![format!("round-{round}-drained"), incoming_active.to_owned()];
+        set_fake_profiles_state(incoming, incoming_active, &initial_profiles).await;
+
+        let inhibit_before = calls(&self.base_calls).inhibits.len();
+        self.gate.entered.store(false, Ordering::SeqCst);
+        let _ = self.bridge.drain_signals();
+        let hold = pause_service_in_inhibit(
+            &self.registry,
+            &self.gate,
+            "queue signals across owner change",
+        )
+        .await;
+        emit_active_burst(departing, "power-saver", 28).await;
+        departing
+            .release_name("net.hadess.PowerProfiles")
+            .await
+            .expect("release departing name");
+        incoming
+            .request_name("net.hadess.PowerProfiles")
+            .await
+            .expect("incoming claims bus name");
+
+        // Queue PrepareForSleep(false) signals whose logind inhibit takes a couple
+        // of milliseconds, letting the new owner's prime complete while the
+        // departing owner's buffered PropertiesChanged signals remain queued.
+        self.gate.sleep_pause.store(true, Ordering::SeqCst);
+        emit_prepare_for_sleep_burst(&self.base, 24).await;
+        self.gate.release.notify_one();
+        drop(hold);
+
+        eventually("new owner initial prime lands in bridge", || {
+            self.bridge.profiles_snapshot().0 == initial_profiles
+        })
+        .await;
+        self.gate.sleep_pause.store(false, Ordering::SeqCst);
+
+        // Emit a later Profiles-only signal from the new owner on the same
+        // stream so waiting for it guarantees every queued departing-owner
+        // signal has been drained without overwriting ActiveProfile.
+        let iface = incoming
+            .object_server()
+            .interface::<_, FakePowerProfiles>(PROFILES_PATH)
+            .await
+            .expect("incoming iface");
+        iface.get_mut().await.profiles.clone_from(&final_profiles);
+        iface
+            .get()
+            .await
+            .profiles_changed(iface.signal_emitter())
+            .await
+            .expect("incoming Profiles changed");
+
+        eventually("new owner later Profiles signal reaches bridge", || {
+            self.bridge.profiles_snapshot().0 == final_profiles
+        })
+        .await;
+        assert_eq!(
+            self.bridge.active_profile().as_deref(),
+            Some(incoming_active),
+            "a departed owner's buffered signal must not overwrite the new owner's active profile (round {round})"
+        );
+
+        let mut resumed = 0usize;
+        eventually("round PrepareForSleep signals finish draining", || {
+            resumed = resumed.saturating_add(
+                self.bridge
+                    .drain_signals()
+                    .into_iter()
+                    .filter(|signal| *signal == PowerSignal::ResumedFromSleep)
+                    .count(),
+            );
+            resumed >= 24
+        })
+        .await;
+        wait_idle_sleep_lock_released(&self.base_calls, inhibit_before).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stale_signal_from_departed_owner_does_not_overwrite_new_owner() {
     let bus = tilo_test_env::PrivateBus::start();
@@ -1297,7 +1456,7 @@ async fn stale_signal_from_departed_owner_does_not_overwrite_new_owner() {
         release: Arc::new(Notify::new()),
         sleep_pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
-    let base = serve_base_daemons_with_gate(bus.address(), Some(gate.clone())).await;
+    let (base, base_calls) = serve_base_daemons_with_gate(bus.address(), Some(gate.clone())).await;
     let daemon1 =
         serve_profiles_on_bus(bus.address(), "balanced", &["balanced", "power-saver"]).await;
     let daemon2 = Builder::address(bus.address())
@@ -1328,57 +1487,18 @@ async fn stale_signal_from_departed_owner_does_not_overwrite_new_owner() {
     })
     .await;
 
-    let hold =
-        pause_service_in_inhibit(&registry, &gate, "queue signals across owner handoff").await;
-    emit_active_burst(&daemon1, "power-saver", 28).await;
-    daemon1
-        .release_name("net.hadess.PowerProfiles")
-        .await
-        .expect("release daemon1 name");
-    daemon2
-        .request_name("net.hadess.PowerProfiles")
-        .await
-        .expect("daemon2 claims bus name");
-
-    // Queue PrepareForSleep(false) signals whose logind inhibit takes a couple
-    // of milliseconds, letting daemon2's prime complete while daemon1's
-    // buffered PropertiesChanged signals are still queued on their stream.
-    gate.sleep_pause.store(true, Ordering::SeqCst);
-    emit_prepare_for_sleep_burst(&base, 24).await;
-    gate.release.notify_one();
-    drop(hold);
-
-    eventually("daemon2 initial prime lands in bridge", || {
-        bridge.profiles_snapshot().0 == ["performance", "balanced", "power-saver"]
-    })
-    .await;
-    gate.sleep_pause.store(false, Ordering::SeqCst);
-
-    // Emit a later Profiles-only signal from daemon2 on the same stream so
-    // waiting for it guarantees every queued daemon1 signal has been drained
-    // without overwriting ActiveProfile.
-    let iface2 = daemon2
-        .object_server()
-        .interface::<_, FakePowerProfiles>(PROFILES_PATH)
-        .await
-        .expect("daemon2 iface");
-    iface2.get_mut().await.profiles = vec!["performance".into(), "balanced".into()];
-    iface2
-        .get()
-        .await
-        .profiles_changed(iface2.signal_emitter())
-        .await
-        .expect("daemon2 Profiles changed");
-
-    eventually("daemon2 later Profiles signal reaches bridge", || {
-        bridge.profiles_snapshot().0 == ["performance", "balanced"]
-    })
-    .await;
-    assert_eq!(
-        bridge.active_profile().as_deref(),
-        Some("performance"),
-        "a departed owner's buffered signal must not overwrite the new owner's active profile"
-    );
+    let rig = StaleOwnerSwitchRig {
+        base,
+        base_calls,
+        gate,
+        daemon1,
+        daemon2,
+        bridge,
+        registry,
+    };
+    for round in 0..STALE_OWNER_SWITCH_ROUNDS {
+        rig.run_round(round).await;
+    }
     task.abort();
 }
 
