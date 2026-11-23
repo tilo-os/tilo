@@ -548,11 +548,11 @@ impl Device {
         Ok(listing)
     }
 
-    /// The person's list of their workspaces, read from the record of their own workspace on the
-    /// host through the record API ([`IDENTITY_LIST`]): each workspace by its id and the name they
-    /// last saw it by, in their order. A device reads it from the moment it entered their workspace
-    /// with its ticket, while its own copy still fills in behind; a record still arriving on the
-    /// host is waited for. An agent's grant reads the workspaces its scope reaches.
+    /// The person's list of their workspaces, read from the record of their own workspace through
+    /// the record API ([`IDENTITY_LIST`]) on the device holding it, decided there as every read
+    /// is: each workspace by its id and the name they last saw it by, in their order. A device
+    /// reads it from the moment it entered their workspace with its ticket, while its own copy
+    /// still fills in behind; a record still arriving there is waited for.
     ///
     /// # Errors
     /// The host did not answer or refused, or the list did not arrive on it in time.

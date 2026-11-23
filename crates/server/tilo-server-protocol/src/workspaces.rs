@@ -878,10 +878,10 @@ pub const ENTRY_SCOPE: &str = "workspace.entry";
 /// rather than being sent it.
 pub const IDENTITY_LIST: (&str, &str) = ("so.tilo.identity", "identity.workspaces");
 
-/// The person's list of their workspaces ([`IDENTITY_LIST`]), as a read of that record answers
-/// it through the record API: each workspace by its id and the name the person last saw it by, in
-/// their order. What else a list shows of a workspace is that workspace's own membership record.
-/// An agent's grant reads only the workspaces its scope reaches.
+/// The person's list of their workspaces ([`IDENTITY_LIST`]), as read from that record through
+/// the record API: each workspace by its id and the name the person last saw it by, in their order
+/// (by each entry's `order`, an entry without one last, then by id). What else a list shows of a
+/// workspace is that workspace's own membership record.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonWorkspaces {
     pub workspaces: Vec<ListedWorkspace>,
@@ -915,9 +915,41 @@ impl PersonWorkspaces {
             return Ok(Some(Self::default()));
         }
         let value = record.get("value").ok_or("the read answered no value")?;
-        serde_json::from_value(value.clone())
-            .map(Some)
-            .map_err(|error| format!("the person's list does not read: {error}"))
+        let Some(entries) = value.as_object() else {
+            return Ok(Some(Self::default()));
+        };
+        // The record keeps each workspace under `w:<id>`, with its name and its place.
+        let mut listed: Vec<(f64, ListedWorkspace)> = entries
+            .iter()
+            .filter_map(|(key, entry)| {
+                let workspace = key.strip_prefix("w:")?;
+                WorkspaceId::parse(workspace)?;
+                let name = entry
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                let order = entry
+                    .get("order")
+                    .and_then(serde_json::Value::as_f64)
+                    .filter(|order| order.is_finite())
+                    .unwrap_or(f64::INFINITY);
+                Some((
+                    order,
+                    ListedWorkspace {
+                        workspace: workspace.to_owned(),
+                        name: name.to_owned(),
+                    },
+                ))
+            })
+            .collect();
+        listed.sort_by(|(left_order, left), (right_order, right)| {
+            left_order
+                .total_cmp(right_order)
+                .then_with(|| left.workspace.cmp(&right.workspace))
+        });
+        Ok(Some(Self {
+            workspaces: listed.into_iter().map(|(_, listed)| listed).collect(),
+        }))
     }
 
     /// The revision a record read answered, which the next read of it follows past.

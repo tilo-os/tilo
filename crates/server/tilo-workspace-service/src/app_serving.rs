@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use tilo_actions::remote::{ActionProvider, Caller, Pending, RemoteActionMessage};
+use tilo_actions::remote::{ActionProvider, Caller, Pending, RemoteActionMessage, ResourceReads};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::page::{OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal};
 
@@ -485,9 +485,70 @@ impl Served {
     }
 }
 
+/// The record reads this host's action service answers: each goes whole to the app action
+/// server, whose reader is the device's one ([`ResourceReads`]), deciding it for who asks as it
+/// decides a local app's, an agent's or another device's.
+struct ServedReads(Served);
+
+impl ServedReads {
+    fn whole() -> tilo_actions::remote::ActionCallError {
+        tilo_actions::remote::ActionCallError::Unavailable {
+            reason: "a read goes whole to the device's reader".into(),
+        }
+    }
+}
+
+impl ResourceReads for ServedReads {
+    fn read(
+        &self,
+        _caller: &Caller,
+        _address: &tilo_actions::remote::ResourceAddress,
+    ) -> Result<tilo_actions::remote::ResourceCopy, tilo_actions::remote::ActionCallError> {
+        Err(Self::whole())
+    }
+
+    fn watch(
+        &self,
+        _caller: &Caller,
+        _address: &tilo_actions::remote::ResourceAddress,
+        _wake: &tilo_actions::remote::ResourceWake,
+    ) -> Result<(), tilo_actions::remote::ActionCallError> {
+        Err(Self::whole())
+    }
+
+    fn answer_read(
+        self: Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> Pending<RemoteActionMessage> {
+        let Some(workspace) =
+            WorkspaceId::parse(&read.workspace).or_else(|| Served::workspace_of(caller))
+        else {
+            return Pending::ready(RemoteActionMessage::ResourceReading {
+                correlation,
+                result: Err(tilo_actions::remote::ActionCallError::NotPermitted),
+            });
+        };
+        self.0.later(
+            workspace,
+            caller.clone(),
+            RemoteActionMessage::ResourceRead {
+                correlation,
+                on_behalf_of: None,
+                read,
+            },
+        )
+    }
+}
+
 impl ActionProvider for Served {
     fn serves(&self, _provider: &str) -> bool {
         true
+    }
+
+    fn resource_reads(&self) -> Option<Arc<dyn ResourceReads>> {
+        Some(Arc::new(ServedReads(self.clone())))
     }
 
     fn query(
