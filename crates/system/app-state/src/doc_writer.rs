@@ -102,6 +102,17 @@ impl StoredLoad {
     pub fn document(&self) -> &AutoCommit {
         &self.doc
     }
+
+    /// Whether decoding dropped a torn trailing change: accepting this
+    /// candidate publishes the complete prefix in place of the torn bytes.
+    pub(crate) fn repairs(&self) -> bool {
+        self.repair.is_some()
+    }
+
+    /// The decoded document, for a reader that is not accepting it.
+    pub(crate) fn into_document(self) -> AutoCommit {
+        self.doc
+    }
 }
 
 /// A stored document's bytes as its owner read them, to decode on any thread: how a window
@@ -252,6 +263,12 @@ impl DocOwner {
     /// A failure reading the store.
     pub fn stored(&self) -> Result<Option<durable_store::Stored>, StoreError> {
         Ok(self.store.read(&self.key)?)
+    }
+
+    /// Whether [`Self::accept`] already recorded what the store holds, so a
+    /// writer must continue from that rather than assume a plain read.
+    pub fn has_accepted(&self) -> bool {
+        self.accepted.borrow().is_some()
     }
 
     /// Record that `heads` are exactly what the store durably holds, in

@@ -96,6 +96,9 @@ pub const WORKSPACES_DIR: &str = "workspaces";
 /// Marker in a workspace's directory naming the one document that adopted
 /// it under a new identity.
 const DOCUMENT_SUCCESSOR_CLAIM: &str = "successor-claim";
+/// Times a repairing load re-reads a document that a live shared writer
+/// changed under it before accepting the repaired bytes.
+const REPAIR_ATTEMPTS: usize = 4;
 
 /// Everything that can go wrong opening, reading or writing a store.
 #[derive(Debug, thiserror::Error)]
@@ -433,23 +436,11 @@ impl DocStore {
 
     /// Load the persisted document, or `Ok(None)` on a first launch. A trailing
     /// partially-written chunk (crash during append) is dropped rather than
-    /// failing the load, losing only the last unflushed edit.
+    /// failing the load, losing only the last unflushed edit. The complete
+    /// document is stored in its place before anything appends after it: a
+    /// change written after the torn bytes would not load on the next launch.
     pub fn load(&mut self) -> Result<Option<AutoCommit>, StoreError> {
         self.load_with_completeness(false)
-    }
-
-    /// The document `bytes` are, when a reader on this thread holds it: by the heads the writer
-    /// kept for exactly these bytes, else by the bytes themselves. Never a document these bytes
-    /// are not: a hint names the length and whole digest it was made for.
-    fn held_document(&self, bytes: &[u8]) -> Option<AutoCommit> {
-        let at = self
-            .owner
-            .store()
-            .read_hint(self.owner.key())
-            .as_deref()
-            .and_then(|hint| load_hint::heads_for(hint, bytes))
-            .and_then(|heads| tilo_automerge::shared::held_at(&heads));
-        at.or_else(|| tilo_automerge::shared::held(bytes))
     }
 
     fn load_with_completeness(&mut self, complete: bool) -> Result<Option<AutoCommit>, StoreError> {
@@ -457,9 +448,8 @@ impl DocStore {
             self.has_base = Some(false);
             return Ok(None);
         };
-        let bytes = stored.bytes;
-        self.has_base = Some(!bytes.is_empty());
-        if bytes.is_empty() {
+        self.has_base = Some(!stored.bytes.is_empty());
+        if stored.bytes.is_empty() {
             return if complete {
                 Err(StoreError::EmptyExistingDocument {
                     path: self.document_path().to_path_buf(),
@@ -468,41 +458,44 @@ impl DocStore {
                 Ok(None)
             };
         }
-        // The document these bytes are, when a reader on this thread holds it: the page's replica
-        // that captured a document, the window that loaded it. Its heads are those the writer kept
-        // beside exactly these bytes, so the same document saved another way is still a copy
-        // rather than a load, and bytes a window rewrote are not decoded a second time.
-        if let Some(mut doc) = self.held_document(&bytes) {
-            doc.set_actor(self.actor());
-            self.persisted = doc.get_heads();
-            return Ok(Some(doc));
-        }
-        // The hashes the last full save listed for these exact bytes, if this
-        // device kept them (`load_hint`); never anything a peer sent.
-        let known = self
-            .owner
-            .store()
-            .read_hint(self.owner.key())
-            .and_then(|hint| load_hint::hashes_for(&hint, &bytes));
-        let options = LoadOptions::new().on_partial_load(if complete {
-            OnPartialLoad::Error
-        } else {
-            OnPartialLoad::Ignore
-        });
-        let options = match known.as_deref() {
-            Some(hashes) => options.known_change_hashes(hashes),
-            None => options,
-        };
-        tilo_automerge::shared::note_decoded();
-        let mut doc = AutoCommit::load_with_options(&bytes, options).map_err(|source| {
-            StoreError::Automerge {
-                path: self.document_path().to_path_buf(),
-                source: Box::new(source),
+        // A live shared writer can change the bytes between reading and
+        // accepting the repair; each attempt but the last reads them again.
+        let mut conflict = None;
+        for remaining in (1..=REPAIR_ATTEMPTS).rev() {
+            let loaded = if complete {
+                self.owner.load_complete()?
+            } else {
+                self.owner.load()?
+            };
+            let Some(loaded) = loaded else {
+                self.has_base = Some(false);
+                return Ok(None);
+            };
+            // A torn trailing change is published whole through the owner, so
+            // the store holds a complete document before a writer appends
+            // after it. Bytes that decode whole are only read.
+            if complete || !loaded.repairs() {
+                let mut doc = loaded.into_document();
+                doc.set_actor(self.actor());
+                self.persisted = doc.get_heads();
+                return Ok(Some(doc));
             }
-        })?;
-        doc.set_actor(self.actor());
-        self.persisted = doc.get_heads();
-        Ok(Some(doc))
+            match self.owner.accept(loaded) {
+                Ok(mut doc) => {
+                    self.persisted = doc.get_heads();
+                    return Ok(Some(doc));
+                }
+                Err(error) => {
+                    if remaining == 1 || !matches!(error, StoreError::SourceChanged { .. }) {
+                        return Err(error);
+                    }
+                    conflict = Some(error);
+                }
+            }
+        }
+        // Every attempt either returned or found the stored bytes changed
+        // under it, and the last one reported that conflict.
+        conflict.map_or_else(|| Ok(None), Err)
     }
 
     /// Load a complete existing change graph for checked document admission.
@@ -640,7 +633,10 @@ impl DocStore {
     /// of edits becomes one write. Seed it with the loaded document (see
     /// [`DocWriter::seed`]).
     pub fn writer(self) -> DocWriter {
-        if !self.persisted.is_empty() {
+        // A load that repaired a torn tail accepted the whole document
+        // already, including the repair still on its way to the store; a
+        // plain read leaves what it saw to be adopted here.
+        if !self.persisted.is_empty() && !self.owner.has_accepted() {
             let base = self
                 .owner
                 .stored()
@@ -1240,7 +1236,7 @@ mod tests {
             "refused content cannot become the admitted persisted frontier"
         );
         assert_eq!(fs::read(store.document_path()).unwrap(), torn);
-        let mut doc = store
+        let doc = store
             .load()
             .expect("a torn tail must not fail the load")
             .expect("document still present");
@@ -1249,8 +1245,12 @@ mod tests {
             "hello world",
             "everything committed before the torn append survives"
         );
-        // The recovered document is saved whole over the torn file.
-        store.save(&mut doc).unwrap();
+        // The recovery stored the complete document in place of the torn
+        // bytes, so everything after it loads on the next launch.
+        assert!(
+            store.load_complete().is_ok(),
+            "the recovery load must store the repaired document, not leave the torn tail"
+        );
 
         // A full save is a temp-file rename, so an interrupted one can't be
         // observed: the previous document is intact, and the partial bytes
@@ -1279,6 +1279,55 @@ mod tests {
         assert_eq!(
             text_of(&store.load_or_new(), "note").as_deref(),
             Some("survives")
+        );
+    }
+
+    /// A launch that recovers a torn trailing change must store the repaired
+    /// document before its writer appends anything: an append after the torn
+    /// bytes would be unreadable on the next launch, because Automerge stops
+    /// at the truncated change.
+    #[test]
+    #[serial_test::serial]
+    fn a_recovered_document_writes_after_its_torn_tail_not_into_it() {
+        let _home = scratch_home();
+        let app = "so.tilo.torn-writer";
+        let mut store = DocStore::open_for(app).unwrap();
+        let mut doc = store.new_document();
+        let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
+        doc.splice_text(&body, 0, 0, "kept").unwrap();
+        store.save(&mut doc).unwrap();
+        doc.splice_text(&body, 4, 0, " lost").unwrap();
+        store.append(&mut doc).unwrap();
+        // A crash during that append leaves the last change half-written.
+        let bytes = fs::read(store.document_path()).unwrap();
+        fs::write(store.document_path(), &bytes[..bytes.len() - 3]).unwrap();
+        drop((store, doc));
+
+        let mut store = DocStore::open_for(app).unwrap();
+        let mut doc = store
+            .load()
+            .expect("a torn tail must not fail the load")
+            .expect("document still present");
+        assert_eq!(body_text(&doc), "kept");
+        let mut writer = store.writer();
+        assert!(writer.is_enabled(), "the recovery launch must persist");
+        let body = doc.get(&ROOT, "body").unwrap().unwrap().1;
+        doc.splice_text(&body, 4, 0, " after").unwrap();
+        doc.commit();
+        writer.request(&doc);
+        writer.flush();
+        assert_eq!(writer.last_error(), None, "no write may have failed");
+        drop(writer);
+
+        let mut store = DocStore::open_for(app).unwrap();
+        let loaded = store
+            .load()
+            .expect("the document written after recovery loads")
+            .expect("document still present");
+        assert_eq!(
+            body_text(&loaded),
+            "kept after",
+            "a change written after recovery must be readable on the next launch"
         );
     }
 
