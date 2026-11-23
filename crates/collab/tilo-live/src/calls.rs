@@ -5,23 +5,37 @@
 //! what a device shows in it (its camera, a shared screen, whether its
 //! microphone is off or it hears nothing) rides beside the channel. Who is in a
 //! channel's call is what the devices in it say of themselves, so every device
-//! of the workspace (a desktop, a page) reads the same rosters from its
+//! of the workspace (a desktop, a page) reads the same channels from its
 //! presence board, and no server keeps a call. What a call carries is the
 //! workspace's live session ([`crate::live_session`]): its voice and pictures
 //! are tracks sealed under the channel's keys, which only the workspace's
 //! readers open.
+//!
+//! What a call allows is the workspace's ([`collab_types::calls`]): someone the
+//! owner or a moderator ended the call for, or denied, is not in it. Every
+//! member's live session holds the call to it ([`Gate`]): it neither opens nor
+//! sends the media of someone the call does not let speak, nor opens anything
+//! of it for someone it does not let listen, and the channel lists here leave out
+//! whoever it does not let in.
 
 use std::collections::{BTreeMap, BTreeSet};
+
+pub use collab_types::calls::{CallRule, Directions};
+use collab_types::presence::{Payload, Presence};
 
 use crate::presence::{Call, Device, LiveCall};
 
 /// One device in a call, as its presence says it.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "camera, screen, muted and deafened are each their own flag a person shows in a call"
+)]
 pub struct Caller {
     /// The device.
     pub device: Device,
     /// The person the device is (their root key as hex), once a certificate or the workspace's
-    /// governance named them.
+    /// members list named them.
     pub person: Option<String>,
     /// Its camera is on.
     pub camera: bool,
@@ -43,6 +57,8 @@ pub struct Channel {
     pub channel: String,
     /// What the channel is called, as the people in it say; empty when nobody named it.
     pub name: String,
+    /// What the call allows, as the workspace keeps it.
+    pub rule: CallRule,
     /// The devices in the call, in the order they arrived, this one among them while it is in it.
     pub callers: Vec<Caller>,
 }
@@ -144,12 +160,15 @@ pub struct Own<'a> {
 /// The calls of a workspace, one per channel anyone is in, sorted by channel: what `heard`, its
 /// board's calls ([`crate::presence::Board::calls`]), say of the others, and what `own` says of this
 /// device. `persons` names the person of a device whose presence named none yet (from the
-/// workspace's governance); a device no one names is in the call unnamed.
+/// workspace's members); a device no one names is in the call unnamed. `rules` are what the
+/// workspace's calls allow, by channel: a call lists nobody it lets do nothing (an ended call
+/// nobody), and someone it does not let speak as muted.
 #[must_use]
 pub fn channels(
     heard: &[LiveCall],
     own: Option<Own<'_>>,
     persons: &BTreeMap<Device, String>,
+    rules: &BTreeMap<String, CallRule>,
 ) -> Vec<Channel> {
     let mut channels: BTreeMap<String, Channel> = BTreeMap::new();
     for call in heard {
@@ -204,7 +223,86 @@ pub fn channels(
             bridge: own.call.call.bridge.clone(),
         });
     }
+    for channel in channels.values_mut() {
+        channel.rule = rules.get(&channel.channel).cloned().unwrap_or_default();
+        let rule = &channel.rule;
+        channel
+            .callers
+            .retain(|caller| rule.may(caller.person.as_deref()).any());
+        for caller in &mut channel.callers {
+            let may = rule.may(caller.person.as_deref());
+            caller.muted |= !may.publish;
+            caller.deafened |= !may.subscribe;
+        }
+    }
     channels.into_values().collect()
+}
+
+/// What a workspace's calls allow, set against where each of its devices says it is: what a
+/// live session opens and sends a call's media by ([`crate::live_session::LiveSession`]).
+///
+/// A device's call is what its presence last said ([`Self::said`]); a device that said none is in
+/// no call, and nothing here judges its media. Each device is the person the workspace's
+/// members list names it ([`Self::set`]).
+#[derive(Clone, Debug, Default)]
+pub struct Gate {
+    rules: BTreeMap<String, CallRule>,
+    persons: BTreeMap<Device, String>,
+    channels: BTreeMap<Device, String>,
+}
+
+impl Gate {
+    /// Hold the calls to `rules` (by channel) from now on, each device being the person `persons`
+    /// names.
+    pub fn set(&mut self, rules: BTreeMap<String, CallRule>, persons: BTreeMap<Device, String>) {
+        self.rules = rules;
+        self.persons = persons;
+    }
+
+    /// Take one presence object `device` said (`body` as its presence track carries it; empty
+    /// when it left): the call it says it is in, if it says one.
+    pub fn said(&mut self, device: Device, body: &[u8]) {
+        if body.is_empty() {
+            self.channels.remove(&device);
+            return;
+        }
+        let Some(Presence {
+            payload: Payload::Availability { call, .. },
+            ..
+        }) = Presence::decode(body)
+        else {
+            return;
+        };
+        match call
+            .as_deref()
+            .and_then(|call| Call::decode(call, false, false))
+        {
+            Some(call) => {
+                self.channels.insert(device, call.call.channel);
+            }
+            None => {
+                self.channels.remove(&device);
+            }
+        }
+    }
+
+    /// What `device` may do in the call it says it is in: everything outside a call.
+    #[must_use]
+    pub fn may(&self, device: Device) -> Directions {
+        let Some(channel) = self.channels.get(&device) else {
+            return Directions::BOTH;
+        };
+        self.rules.get(channel).map_or(Directions::BOTH, |rule| {
+            rule.may(self.persons.get(&device).map(String::as_str))
+        })
+    }
+
+    /// Whether `own` opens the call media `sender` sent: the sender may speak in its call, and
+    /// `own` may listen in its own.
+    #[must_use]
+    pub fn opens(&self, sender: Device, own: Device) -> bool {
+        self.may(sender).publish && self.may(own).subscribe
+    }
 }
 
 /// The device a caller's publisher names, as presence writes it (hex).
@@ -267,6 +365,7 @@ mod tests {
             &[call("voice", vec![laptop, phone, page, discord])],
             None,
             &persons,
+            &BTreeMap::new(),
         );
         let [voice] = channels.as_slice() else {
             panic!("one channel: {channels:?}");
@@ -309,6 +408,7 @@ mod tests {
                 call: &own,
             }),
             &BTreeMap::new(),
+            &BTreeMap::new(),
         );
         let [standup] = channels.as_slice() else {
             panic!("one channel: {channels:?}");
@@ -317,6 +417,74 @@ mod tests {
         assert_eq!(standup.callers.len(), 2);
         assert_eq!(standup.screens(), ["ada"]);
         assert_eq!(standup.muted(), ["ada"], "deafened is muted too");
+    }
+
+    /// A call lists nobody once it was ended and leaves out whom it denies; a live session opens
+    /// nothing a denied device sends in it, and nothing of it for a device it denies, while a
+    /// device in another call is not judged by it.
+    #[test]
+    fn a_moderated_call_carries_nobody_it_refuses() {
+        use collab_types::calls::CallChange;
+        let heard = [call(
+            "standup",
+            vec![caller(1, Some("ada")), caller(2, Some("bo"))],
+        )];
+        let bo_out = CallRule::default()
+            .changed(&CallChange::Deny {
+                person: [0xb0; 32],
+                denied: Directions::BOTH,
+            })
+            .unwrap();
+        let mut rules = BTreeMap::new();
+        rules.insert(
+            "standup".to_owned(),
+            CallRule {
+                denied: BTreeMap::from([("bo".to_owned(), Directions::BOTH)]),
+                ..bo_out
+            },
+        );
+        let listed = channels(&heard, None, &BTreeMap::new(), &rules);
+        assert_eq!(listed[0].people(), ["ada"]);
+        rules.insert(
+            "standup".to_owned(),
+            CallRule::default().changed(&CallChange::End).unwrap(),
+        );
+        let listed = channels(&heard, None, &BTreeMap::new(), &rules);
+        assert!(listed[0].callers.is_empty(), "an ended call carries nobody");
+
+        let in_call = |channel: &str| {
+            collab_types::presence::Presence::desktop(
+                "w",
+                Payload::Availability {
+                    state: "available".into(),
+                    call: Some(channel.to_owned()),
+                    camera: false,
+                    screen: false,
+                },
+            )
+            .encode()
+            .unwrap()
+        };
+        let mut gate = Gate::default();
+        gate.set(
+            BTreeMap::from([(
+                "standup".to_owned(),
+                CallRule {
+                    denied: BTreeMap::from([("bo".to_owned(), Directions::BOTH)]),
+                    ..CallRule::default()
+                },
+            )]),
+            BTreeMap::from([([1; 32], "ada".to_owned()), ([2; 32], "bo".to_owned())]),
+        );
+        gate.said([1; 32], &in_call("standup"));
+        gate.said([2; 32], &in_call("standup"));
+        assert!(gate.opens([1; 32], [3; 32]), "Ada is heard");
+        assert!(!gate.opens([2; 32], [3; 32]), "Bo is not");
+        assert!(!gate.opens([1; 32], [2; 32]), "and hears nothing of it");
+        gate.said([2; 32], &in_call("lounge"));
+        assert!(gate.opens([2; 32], [1; 32]), "in another call Bo is heard");
+        gate.said([2; 32], &[]);
+        assert!(gate.opens([2; 32], [1; 32]));
     }
 
     /// The flags a call carries ride in its one text and read back; a text without them is a
@@ -351,12 +519,9 @@ mod tests {
                 bridge: Some("discord".into()),
             },
             deafened: true,
-            ..said.clone()
+            ..said
         };
-        assert_eq!(
-            Call::decode(&bridged.encode(), true, false),
-            Some(bridged.clone())
-        );
+        assert_eq!(Call::decode(&bridged.encode(), true, false), Some(bridged));
         assert_eq!(Call::decode("c_voice", true, false), Some(heard));
         let deaf = Call {
             deafened: true,

@@ -18,6 +18,7 @@
     reason = "in a test these are the assertion, not a hazard; the host lives until the test ends"
 )]
 
+use serde_json::json;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tilo_session_client::{CallFrame, Cmd, Event, Events, InCall, Link, Outbox, TransportPhase};
@@ -494,13 +495,22 @@ impl Caller {
     fn say(&mut self, call: Option<InCall>) {
         self.own.call = call;
         self.board.say(&self.own);
-        self.restate();
+        let frames = self.board.flush(now_ms());
+        self.send(frames);
     }
 
-    /// Say all of this device's presence again: a frame said before the other devices were on the
-    /// live session reached nobody.
+    /// Say what this device's presence owes now, as a desktop's or a page's client does on its
+    /// clock: what changed, and all of it again every few seconds, since a frame said before the
+    /// other devices were on the live session reached nobody.
     fn restate(&mut self) {
-        let frames = self.board.flush(now_ms());
+        let frames = self.board.due(now_ms()).unwrap_or_default();
+        self.send(frames);
+    }
+
+    fn send(&self, frames: Vec<(u32, collab_types::presence::Presence)>) {
+        if frames.is_empty() {
+            return;
+        }
         self.link
             .send(Cmd::Presence(
                 crate::support::workspace(),
@@ -535,7 +545,17 @@ impl Caller {
                 person: self.own.user.as_deref(),
                 call,
             }),
-            &std::collections::BTreeMap::new(),
+            &self
+                .link
+                .workspace_devices(WORKSPACE)
+                .into_iter()
+                .filter_map(|(device, person)| {
+                    let mut key = [0; 32];
+                    hex::decode_to_slice(device, &mut key).ok()?;
+                    Some((key, person))
+                })
+                .collect(),
+            &self.link.call_rules(WORKSPACE),
         )
     }
 
@@ -641,7 +661,7 @@ async fn the_device_takes_part_in_a_call(carrier: Carrier) {
                 voice(caller);
             }
             let met = in_standup(&page)
-                .and(in_standup(&desk))
+                .and_then(|_| in_standup(&desk))
                 .filter(|_| page.heard_voice_of(desk.device) && desk.heard_voice_of(page.device));
             async move { met }
         },
@@ -834,4 +854,253 @@ async fn a_page_in_a_session_asks_its_server_over_the_one_link_it_keeps() {
     );
     session.close();
     ada.stop().await;
+}
+
+/// Ask Ada's host, over `link`, to moderate the call in `channel` as `arguments` say (`operation`
+/// and its own arguments), and answer what the call allows then.
+fn moderate(
+    link: &Link,
+    host: [u8; 32],
+    channel: &str,
+    arguments: &serde_json::Value,
+) -> serde_json::Value {
+    use tilo_actions::remote::{
+        Caller as ActionCaller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+    };
+    let mut arguments = arguments.as_object().cloned().unwrap();
+    arguments.insert("channel".into(), channel.into());
+    let api = tilo_session_actions::SessionActions::new(link, crate::support::workspace(), host);
+    let receipt = tokio::task::block_in_place(|| {
+        api.invoke(
+            &ActionCaller::local_person("test"),
+            InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget::workspace_governance(WORKSPACE, "call"),
+                argument: InvokeArgument::Json(arguments),
+                context: None,
+                confirmation: None,
+                revision: None,
+                wait_ms: None,
+                appearance: None,
+                signed: None,
+            },
+        )
+        .wait_timeout(std::time::Duration::from_secs(30))
+    });
+    match receipt {
+        Ok(Some(Ok(receipt))) => match receipt.status {
+            ReceiptStatus::Completed { output } => output.value.unwrap(),
+            status => panic!("the host did not moderate the call: {status:?}"),
+        },
+        Ok(Some(Err(error))) => panic!("the host refused: {error:?}"),
+        _ => panic!("the host did not answer"),
+    }
+}
+
+/// Whether `caller` lists exactly `devices` in the standup's call.
+fn lists(caller: &Caller, devices: &[[u8; 32]]) -> bool {
+    let channels = caller.channels();
+    let listed: std::collections::BTreeSet<[u8; 32]> = channels
+        .iter()
+        .filter(|channel| channel.channel == "standup")
+        .flat_map(|channel| channel.callers.iter().map(|one| one.device))
+        .collect();
+    listed == devices.iter().copied().collect()
+}
+
+/// Wait until `one` and `other` each list `devices` in the standup's call and, when `heard`, each
+/// hears the voice of the other.
+async fn until_listed(
+    what: &str,
+    (one, other): (&mut Caller, &mut Caller),
+    devices: &[[u8; 32]],
+    heard: bool,
+) {
+    for caller in [&mut *one, &mut *other] {
+        caller.heard.clear();
+    }
+    let met = tokio::time::timeout(
+        std::time::Duration::from_secs(90),
+        wait_for(what, || {
+            for caller in [&mut *one, &mut *other] {
+                caller.listen();
+                caller.restate();
+                caller
+                    .link
+                    .send(Cmd::CallAudio(
+                        crate::support::workspace(),
+                        vec![CallFrame {
+                            timestamp_48k: 960,
+                            opus: vec![0xf8, 0xff, 0xfe],
+                        }],
+                    ))
+                    .unwrap();
+            }
+            let done = lists(one, devices)
+                && lists(other, devices)
+                && (!heard
+                    || (one.heard_voice_of(other.device) && other.heard_voice_of(one.device)));
+            async move { done.then_some(()) }
+        }),
+    )
+    .await;
+    assert!(
+        met.is_ok(),
+        "timed out waiting for {what}: one lists {:?} and heard the other: {}; the other lists {:?} \
+         and heard the first: {}",
+        one.channels(),
+        one.heard_voice_of(other.device),
+        other.channels(),
+        other.heard_voice_of(one.device),
+    );
+}
+
+/// Neither `one` nor `other` hears the other's voice while both keep speaking for a moment: the
+/// call carries none of it.
+async fn unheard((one, other): (&mut Caller, &mut Caller)) {
+    for caller in [&mut *one, &mut *other] {
+        caller.listen();
+        caller.heard.clear();
+    }
+    let heard = tokio::time::timeout(
+        std::time::Duration::from_millis(1_500),
+        wait_for("either to hear the other", || {
+            for caller in [&mut *one, &mut *other] {
+                caller.listen();
+                caller
+                    .link
+                    .send(Cmd::CallAudio(
+                        crate::support::workspace(),
+                        vec![CallFrame {
+                            timestamp_48k: 960,
+                            opus: vec![0xf8, 0xff, 0xfe],
+                        }],
+                    ))
+                    .unwrap();
+            }
+            let heard = one.heard_voice_of(other.device) || other.heard_voice_of(one.device);
+            async move { heard.then_some(()) }
+        }),
+    )
+    .await;
+    assert!(heard.is_err(), "the call carries nobody's voice");
+}
+
+/// Ada owns the workspace and moderates its calls through its published `call` action. She and
+/// Bo meet in the standup; when she ends it both drop out of it and neither hears the other, and
+/// restarting it brings both back. Bo, denied the call, is listed by nobody and heard by nobody
+/// however often his presence says he is in it, and hears nothing of it; let back in, he is in
+/// it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_workspace_moderates_its_calls() {
+    let ada = Ada::start().await;
+    let host = ada.host_device.cert.device_public_key;
+    let keys = live_session_keys();
+    let laptop = ada.laptop_peer(&ada.host_device.cert).await;
+    laptop
+        .send(Cmd::InstallGroupKeys(live_session_route(), keys.clone()))
+        .unwrap();
+    in_workspace(&laptop, crate::support::workspace()).await;
+    let (bo_root, _) = UserIdentity::generate("Bo", 1);
+    let bo_browser = enrol(&bo_root, "browser", DeviceCapabilities::member());
+    let bo = bo_root.verifying_key().to_bytes();
+    crate::support::redeem(
+        &ada.host,
+        crate::support::entry_grant(&ada.host, &ada.root, &ada.host_device, WORKSPACE, bo).await,
+        &bo_browser.cert,
+        &bo_browser.key,
+    )
+    .await;
+    let browser = start_peer(
+        ada.host.iroh(),
+        bo_browser.cert.clone(),
+        ada.host_device.cert.clone(),
+        bo_browser.key.clone(),
+    );
+    browser
+        .send(Cmd::InstallGroupKeys(live_session_route(), keys))
+        .unwrap();
+    browser
+        .send(Cmd::Join(crate::support::workspace()))
+        .unwrap();
+    in_workspace(&browser, crate::support::workspace()).await;
+
+    let mut desk = Caller::new(
+        laptop,
+        ada.laptop.cert.device_public_key,
+        &ada.root.verifying_key().to_bytes(),
+    );
+    let mut page = Caller::new(browser, bo_browser.cert.device_public_key, &bo);
+    desk.say(Some(in_call("standup", false, false)));
+    page.say(Some(in_call("standup", false, false)));
+    let both = [desk.device, page.device];
+    until_listed(
+        "Ada and Bo to meet in the standup",
+        (&mut desk, &mut page),
+        &both,
+        true,
+    )
+    .await;
+
+    let ended = moderate(&desk.link, host, "standup", &json!({"operation": "end"}));
+    assert_eq!(ended["call"]["ended"], true);
+    until_listed(
+        "the ended standup to list nobody",
+        (&mut desk, &mut page),
+        &[],
+        false,
+    )
+    .await;
+    unheard((&mut desk, &mut page)).await;
+
+    moderate(
+        &desk.link,
+        host,
+        "standup",
+        &json!({"operation": "restart"}),
+    );
+    until_listed(
+        "the restarted standup to carry both",
+        (&mut desk, &mut page),
+        &both,
+        true,
+    )
+    .await;
+
+    moderate(
+        &desk.link,
+        host,
+        "standup",
+        &json!({"operation": "deny", "person": hex::encode(bo)}),
+    );
+    // Bo says again that he is in the call: still nobody lists him or hears him.
+    page.say(Some(in_call("standup", true, false)));
+    let ada_alone = [desk.device];
+    until_listed(
+        "the standup to leave Bo out",
+        (&mut desk, &mut page),
+        &ada_alone,
+        false,
+    )
+    .await;
+    unheard((&mut desk, &mut page)).await;
+
+    moderate(
+        &desk.link,
+        host,
+        "standup",
+        &json!({"operation": "allow", "person": hex::encode(bo)}),
+    );
+    until_listed(
+        "Bo to be back in the standup",
+        (&mut desk, &mut page),
+        &both,
+        true,
+    )
+    .await;
+
+    desk.link.close();
+    page.link.close();
+    ada.host.server.shutdown().await;
 }

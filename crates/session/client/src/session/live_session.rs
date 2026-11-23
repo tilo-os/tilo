@@ -555,6 +555,18 @@ impl Task {
                 );
                 continue;
             };
+            let call_rules = self.replicas.call_rules(workspace_id).unwrap_or_default();
+            let call_persons: BTreeMap<[u8; 32], String> = self
+                .replicas
+                .member_devices(workspace_id)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(device, person)| {
+                    let mut key = [0; 32];
+                    hex::decode_to_slice(device, &mut key).ok()?;
+                    Some((key, person))
+                })
+                .collect();
             let members: BTreeSet<[u8; 32]> = key_holders
                 .iter()
                 .map(|device| *device.as_bytes())
@@ -570,6 +582,11 @@ impl Task {
                 continue;
             }
             if let Some(joined) = self.live_sessions.joined_mut(workspace_id) {
+                // What the workspace's calls allow, and whose each device is: whose call media
+                // the live session opens and sends.
+                joined
+                    .live_session
+                    .set_calls(call_rules.clone(), call_persons.clone());
                 let epoch = keys.epoch();
                 if joined.epoch != epoch {
                     joined.epoch = epoch;

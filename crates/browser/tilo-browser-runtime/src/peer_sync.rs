@@ -355,7 +355,30 @@ pub(crate) fn channels(peer: u32, workspace: &str) -> Option<Vec<tilo_live::call
                 call,
             }),
             &persons,
+            &page.handle.call_rules(workspace),
         ))
+    })
+}
+
+/// What the call in `channel` of `workspace` lets this page's person do now, and what the call
+/// allows; nothing for a workspace the page is not in.
+pub(crate) fn allows(
+    peer: u32,
+    workspace: &str,
+    channel: &str,
+) -> Option<(tilo_live::calls::CallRule, tilo_live::calls::Directions)> {
+    PAGES.with_borrow(|pages| {
+        let page = pages.get(&peer)?;
+        page.workspaces
+            .values()
+            .find(|shown| shown.as_str() == workspace)?;
+        let rule = page
+            .handle
+            .call_rules(workspace)
+            .remove(channel)
+            .unwrap_or_default();
+        let may = rule.may(page.client.own().user.as_deref());
+        Some((rule, may))
     })
 }
 

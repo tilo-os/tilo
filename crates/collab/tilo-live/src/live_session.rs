@@ -137,6 +137,10 @@ pub enum LiveError {
     /// The session has ended.
     #[error("the live session has ended")]
     Ended,
+    /// The call this device is in does not let it speak: it was ended, or its person was denied
+    /// it ([`crate::calls::Gate`]).
+    #[error("the call does not let this device speak")]
+    Withheld,
 }
 
 impl From<AdmissionError> for LiveError {
@@ -309,6 +313,9 @@ pub(crate) struct Shared {
     presence_from: Mutex<BTreeMap<[u8; 32], (u64, u64)>>,
     refusals: Mutex<BTreeMap<String, usize>>,
     ended: Mutex<bool>,
+    /// What the workspace's calls allow, and where each device says it is: what call media this
+    /// live session opens and sends.
+    gate: Mutex<crate::calls::Gate>,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// Told once, when the live session ends: what rejoins the scope elsewhere.
     ended_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -378,6 +385,7 @@ impl Shared {
             presence_from: Mutex::new(BTreeMap::new()),
             refusals: Mutex::new(BTreeMap::new()),
             ended: Mutex::new(false),
+            gate: Mutex::default(),
             wake: Mutex::new(None),
             ended_hook: Mutex::new(None),
         }))
@@ -541,7 +549,11 @@ impl Shared {
         }
     }
     fn deliver(&self, heard: Heard) {
+        if self.withheld(&heard) {
+            return;
+        }
         if heard.track == Track::Presence {
+            self.gate.lock_recover().said(heard.sender, &heard.body);
             let left = heard.body.is_empty();
             let mut from = self.presence_from.lock_recover();
             let counts = from.entry(heard.sender).or_default();
@@ -562,6 +574,37 @@ impl Shared {
         self.heard_total.fetch_add(1, Ordering::Relaxed);
         self.wake();
     }
+    /// Whether `heard` is call media the workspace's calls do not let this device open: its sender
+    /// may not speak in its call, or this device may not listen in its own.
+    fn withheld(&self, heard: &Heard) -> bool {
+        if !matches!(
+            heard.track,
+            Track::Audio | Track::Camera(_) | Track::Screen(_)
+        ) {
+            return false;
+        }
+        let opens = self
+            .gate
+            .lock_recover()
+            .opens(heard.sender, self.join.device);
+        if !opens {
+            self.refusals
+                .lock_recover()
+                .entry("withheld by the call".to_owned())
+                .and_modify(|count| *count = count.saturating_add(1))
+                .or_insert(1);
+        }
+        !opens
+    }
+    /// Whether this device may send call media on `track` now ([`LiveError::Withheld`]).
+    fn may_send(&self, track: Track) -> Result<(), LiveError> {
+        if matches!(track, Track::Audio | Track::Camera(_) | Track::Screen(_))
+            && !self.gate.lock_recover().may(self.join.device).publish
+        {
+            return Err(LiveError::Withheld);
+        }
+        Ok(())
+    }
     /// One frame a reader got and this live session could not open, by why.
     fn refused(&self, refusal: &Refusal) {
         self.refusals
@@ -574,6 +617,9 @@ impl Shared {
     /// keyframe when its reader fell behind: a decoder is never handed a
     /// picture whose reference was dropped.
     fn deliver_picture(&self, heard: Heard) {
+        if self.withheld(&heard) {
+            return;
+        }
         let key = (heard.sender, heard.track);
         let keyframe = VideoObject::decode(&heard.body).is_ok_and(|object| object.keyframe);
         let mut demands = self.demands.lock_recover();
@@ -945,6 +991,7 @@ impl LiveSession {
         if track != Track::Audio {
             return self.publish_burst(track, &[(sequence, body)]);
         }
+        self.shared.may_send(track)?;
         let (sealer, mut producer) = self.outlet(track)?;
         let object = VoiceObject::decode(body).map_err(|_| LiveError::Invalid)?;
         let at = object.timestamp;
@@ -987,6 +1034,14 @@ impl LiveSession {
     pub fn publish_burst(&self, track: Track, objects: &[(u32, &[u8])]) -> Result<(), LiveError> {
         if track == Track::Audio {
             return Err(LiveError::Invalid);
+        }
+        self.shared.may_send(track)?;
+        if track == Track::Presence {
+            // What this device says of itself is what the calls hold it to: the call it is in.
+            let mut gate = self.shared.gate.lock_recover();
+            for (_, body) in objects {
+                gate.said(self.shared.join.device, body);
+            }
         }
         let (sealer, producer) = self.outlet(track)?;
         write_group(&producer, &sealer, objects)
@@ -1347,6 +1402,7 @@ impl LiveSession {
         if self.shared.ended() {
             return Err(LiveError::Ended);
         }
+        self.shared.may_send(track)?;
         let name = live::track(track);
         let keys = self.shared.keys.lock_recover().clone();
         let sealer = Sealer::new(
@@ -1386,6 +1442,17 @@ impl LiveSession {
         // A reader that waits for a hold for a device the roster names no
         // longer has nothing left to wait for.
         self.shared.wake_waiting();
+    }
+
+    /// Hold the workspace's calls to `rules` (by channel) from now on, each device being the
+    /// person `persons` names: what call media this live session opens and sends
+    /// ([`crate::calls::Gate`]).
+    pub fn set_calls(
+        &self,
+        rules: BTreeMap<String, crate::calls::CallRule>,
+        persons: BTreeMap<[u8; 32], String>,
+    ) {
+        self.shared.gate.lock_recover().set(rules, persons);
     }
 
     /// Seal and open under `keys` from now on: a channel whose epoch moved,

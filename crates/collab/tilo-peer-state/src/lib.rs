@@ -76,6 +76,7 @@ pub use device_answers::{
 };
 /// The person's own workspace, as a part of a session reads and writes its documents.
 pub use person_records::{DocumentEdit, PersonDocuments};
+pub use state::CallGate;
 pub use state::ChangeRefused;
 pub use state::DocumentKeysBasis;
 /// A state of a workspace's governance, kept to ask which heads it holds.
@@ -88,10 +89,11 @@ pub use state::{
     Lease, LeaseClaim, MAX_HELD_BYTES, MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPUTS, Member,
     MemberId, MemberList, MembershipError, MergedDocument, Missing, NativePublicationCut,
     NotAdmitted, OpenedDocument, OpenedHistory, OpenedWrite, PeerDocumentCapture,
-    PeerDocumentReadError, PeerGovernance, PeerGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPublication, PeerPublicationMut,
-    PeerWorkspace, PeerWorkspaceMut, ReceiveOutcome, RequestedBot, Reseal, RowError, SCHEDULES_KEY,
-    SealCheckpoint, SeedDocument, SeedState, Shortfall, StatePeer, TransportOrigin, UnmergedReason,
-    UnmergedWrite, WORKSPACE_KEEPING_DEVICES_KEY, WaitingForUpdate, committed_document_revision,
+    PeerDocumentReadError, PeerGovernance, PeerGovernanceMut, PeerOutbox, PeerOutboxMut,
+    PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, ReceiveOutcome,
+    RequestedBot, Reseal, RowError, SCHEDULES_KEY, SealCheckpoint, SeedDocument, SeedState,
+    Shortfall, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
+    WORKSPACE_KEEPING_DEVICES_KEY, WaitingForUpdate, committed_document_revision,
     decide_with_surfaces, default_surfaces, holder_role, keeping_devices_of, peer_handle,
     seed_workspace, seed_workspace_at, trigger_mark, unranked, workspace_grants_of,
     workspace_host_actor, workspace_seed,

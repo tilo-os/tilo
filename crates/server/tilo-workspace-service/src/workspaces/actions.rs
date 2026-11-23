@@ -216,7 +216,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 29] = [
+const VERBS: [Verb; 30] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -344,6 +344,13 @@ const VERBS: [Verb; 29] = [
         check: governance::UNBAN,
         kind: roles::GOVERNANCE_KIND,
         params: person_params,
+    },
+    Verb {
+        id: governance::CALL,
+        label: "Moderate a call",
+        check: governance::CALL,
+        kind: roles::GOVERNANCE_KIND,
+        params: call_params,
     },
     Verb {
         id: PUBLISH,
@@ -540,6 +547,44 @@ fn name_params() -> Vec<ActionParam> {
 
 fn person_params() -> Vec<ActionParam> {
     vec![person_param()]
+}
+
+/// What a call's moderator does to it.
+const CALL_OPERATIONS: [&str; 7] = [
+    "start",
+    "end",
+    "restart",
+    "set-directions",
+    "deny",
+    "allow",
+    "show",
+];
+
+fn call_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required("operation", ParamType::Text, "What to do with the call.")
+            .with_choices(CALL_OPERATIONS),
+        ActionParam::required(
+            "channel",
+            ParamType::Text,
+            "The voice channel whose call it is.",
+        ),
+        ActionParam::optional(
+            "publish",
+            ParamType::Boolean,
+            "Start and set-directions: whether everyone may speak; deny: whether the person may no longer speak.",
+        ),
+        ActionParam::optional(
+            "subscribe",
+            ParamType::Boolean,
+            "Start and set-directions: whether everyone may listen; deny: whether the person may no longer listen.",
+        ),
+        ActionParam::optional(
+            "person",
+            ParamType::Text,
+            "Deny and allow: the person, their user public key as 64 hex characters.",
+        ),
+    ]
 }
 
 fn bot_entry_param() -> ActionParam {
@@ -1057,6 +1102,45 @@ impl Args {
                 })
                 .collect(),
             Some(_) => Err(invalid(format!("`{name}` must be a list of text"))),
+        }
+    }
+
+    /// The change a call's moderator asks for, or `None` for `show`.
+    fn call_change(&self) -> Result<Option<collab_types::calls::CallChange>, ActionCallError> {
+        use collab_types::calls::{CallChange, Directions};
+        let directions = || -> Result<Directions, ActionCallError> {
+            Ok(Directions {
+                publish: self.flag_or("publish", true)?,
+                subscribe: self.flag_or("subscribe", true)?,
+            })
+        };
+        Ok(Some(match self.required_text("operation")? {
+            "start" => CallChange::Start {
+                allowed: directions()?,
+            },
+            "end" => CallChange::End,
+            "restart" => CallChange::Restart,
+            "set-directions" => CallChange::SetDirections {
+                allowed: directions()?,
+            },
+            "deny" => CallChange::Deny {
+                person: self.required_key("person")?,
+                denied: directions()?,
+            },
+            "allow" => CallChange::Allow {
+                person: self.required_key("person")?,
+            },
+            "show" => return Ok(None),
+            other => return Err(invalid(format!("no call operation `{other}`"))),
+        }))
+    }
+
+    /// The flag `name`, or `otherwise` when it was not given.
+    fn flag_or(&self, name: &str, otherwise: bool) -> Result<bool, ActionCallError> {
+        match self.0.get(name) {
+            None | Some(Value::Null) => Ok(otherwise),
+            Some(Value::Bool(flag)) => Ok(*flag),
+            Some(_) => Err(invalid(format!("`{name}` must be true or false"))),
         }
     }
 
@@ -1919,12 +2003,37 @@ impl Workspaces {
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
             REQUEST_BOT | WITHDRAW_BOT_REQUEST => self.governance_bots(action, call).await,
             governance::INSTALL_APP | UNINSTALL_APP => self.governance_apps(action, call).await,
+            governance::CALL => self.call_action(call).await,
             UPLOAD_APP_FILE => self.upload_app_piece(call.workspace, call.args),
             SET_CONNECTOR_SECRET => connector_secret(call.args),
             KEYS => self.governance_keys(call).await,
             REVOKE_KEY => self.governance_revoke_key(call).await,
             _ => self.governance_members(action, call).await,
         }
+    }
+
+    /// Moderate one of the workspace's calls, or `show` what it allows: end or restart it, deny a
+    /// person or let them back, or set what everyone in it may do. The change is the caller's,
+    /// decided by their grants on every device that receives it. Answers what the call allows now.
+    async fn call_action(&self, call: GovernanceCall<'_>) -> Result<Value, ActionCallError> {
+        let GovernanceCall {
+            workspace,
+            device,
+            request_id,
+            args,
+        } = call;
+        let channel = args.required_text("channel")?.to_owned();
+        collab_types::calls::validate_channel(&channel).map_err(invalid)?;
+        if let Some(change) = args.call_change()? {
+            self.moderate_call(workspace, device, request_id, &channel, change)
+                .await
+                .map_err(|error| refused(&error))?;
+        }
+        let rule = self
+            .call_rule(workspace, &channel)
+            .await
+            .map_err(|error| refused(&error))?;
+        Ok(json!({ "channel": channel, "call": rule }))
     }
 
     /// The grants this workspace records of the calling person's: each key it

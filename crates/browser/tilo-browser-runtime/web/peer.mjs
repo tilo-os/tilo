@@ -757,7 +757,7 @@ async function connect({
       const hostDevice = hexKey(host.hostCert?.device_public_key);
       // The host bridges this page into a call, so its frames carry the
       // host's device and it is the page's own voice there.
-      voice ??= voiceOptions === false ? undefined : createPeerVoice({peer: () => peer, workspace, device: hostDevice, ...voiceOptions});
+      voice ??= voiceOptions === false ? undefined : createPeerVoice({peer: () => peer, workspace, device: hostDevice, person: userPublicKey, ...voiceOptions});
       actions = hostDevice ? createActions() : undefined;
     }
     publish();

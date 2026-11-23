@@ -442,6 +442,15 @@ impl Replicas {
         .ok()
     }
 
+    /// What each call of `workspace_id` allows, by channel, as the workspace keeps it.
+    pub(crate) fn call_rules(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Option<BTreeMap<String, collab_types::calls::CallRule>> {
+        self.with_workspace(workspace_id, |view| Ok(view.peer().governance().calls()))?
+            .ok()
+    }
+
     /// The workspaces' governance, as the channels' directory reads it.
     pub(crate) fn owner(&self) -> NativeWorkspaceOwner {
         self.owner.clone()

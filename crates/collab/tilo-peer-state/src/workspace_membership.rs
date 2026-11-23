@@ -342,6 +342,13 @@ pub enum WorkspaceMembershipCommand {
         place: MemberPlace,
         name: Option<String>,
     },
+    /// Change what the call in voice channel `channel` allows: end or restart it, deny a person
+    /// or let them back, or set what everyone in it may do. Decided against the caller's own
+    /// grants (`call`) where they made it, on every device that receives it.
+    Call {
+        channel: String,
+        change: collab_types::calls::CallChange,
+    },
 }
 
 /// Where [`WorkspaceMembershipCommand::Place`] puts a person.
@@ -485,6 +492,9 @@ impl WorkspaceMembershipCommand {
         }
         if let Self::UninstallApp { app } = self {
             return validate_app_id(app);
+        }
+        if let Self::Call { channel, .. } = self {
+            return collab_types::calls::validate_channel(channel);
         }
         // Installation ids are checked when they are read; a bot command
         // carries nothing else free-form.

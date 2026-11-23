@@ -123,6 +123,9 @@ impl AppBrokerState {
                         .into(),
                 );
             }
+            WorkspaceMembershipCommand::Call { .. } => {
+                return Err("a call is moderated through the workspace's `call` action".into());
+            }
         };
         self.invoke_workspace_person_action(
             workspace,

@@ -14,6 +14,8 @@ const MEDIA_KEY: &str = "media_policy_v1";
 const KEEPING_DEVICES_KEY: &str = "keeping_devices_v1";
 /// The document key holding how many copies of a workspace its holders keep.
 const COPIES_KEY: &str = crate::state::COPY_POLICY_KEY;
+/// The document key holding what each of a workspace's calls allows.
+const CALLS_KEY: &str = "calls_v1";
 /// The document key holding the app versions a workspace runs.
 const VERSIONS_KEY: &str = "app_versions_v1";
 /// The document keys holding the bots a workspace runs and those it was asked for.
@@ -61,10 +63,13 @@ pub enum GovernanceRow {
     /// kept ([`crate::standing`]): written with that change, by whoever may
     /// make it.
     Standing,
+    /// What each of its calls allows: whether it was ended, what everyone in it may do, and
+    /// whom it denies what.
+    Calls,
 }
 
 impl GovernanceRow {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 14] = [
         Self::Owner,
         Self::Membership,
         Self::Identities,
@@ -78,6 +83,7 @@ impl GovernanceRow {
         Self::Sandbox,
         Self::Removals,
         Self::Standing,
+        Self::Calls,
     ];
 
     /// The digest of this part of `doc`: every value it holds, whatever shape
@@ -124,6 +130,7 @@ impl GovernanceRow {
             Self::Hosts => &[KEEPING_DEVICES_KEY, COPIES_KEY],
             Self::Removals => &[crate::removals::FIELD_V1],
             Self::Standing => &[crate::standing::FIELD_V1],
+            Self::Calls => &[CALLS_KEY],
             Self::Log => &[],
         }
     }
@@ -139,6 +146,7 @@ impl GovernanceRow {
                 Some(governance::SETTINGS)
             }
             Self::Versions => Some(governance::INSTALL_APP),
+            Self::Calls => Some(governance::CALL),
             Self::Owner
             | Self::Membership
             | Self::Identities

@@ -971,6 +971,21 @@ impl Engine {
         })
     }
 
+    /// What the calls of `workspace` allow, by channel, and the person each of its member devices
+    /// is: what a live session holds the workspace's call media to
+    /// ([`tilo_live::live_session::LiveSession::set_calls`]). Nothing for a workspace this device is not in.
+    #[must_use]
+    pub fn call_gate(&self, workspace: &str) -> tilo_peer_state::CallGate {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return (BTreeMap::new(), BTreeMap::new());
+        };
+        self.owner
+            .with_current(workspace, |view| {
+                view.peer().governance().call_gate(tilo_clock::wall())
+            })
+            .unwrap_or_default()
+    }
+
     /// The people of `workspace` and the grants it makes, as its governance records
     /// them: the one source of who shares it, in what part, and what each may do.
     /// # Errors

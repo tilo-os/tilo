@@ -13,7 +13,7 @@ pub(super) struct JsCaller {
     device: String,
     /// The person, empty while nobody named them.
     user: String,
-    /// Every device in a call may speak in it: its voice is the workspace's live session.
+    /// The call lets this device's person speak in it.
     publishes: bool,
     camera: bool,
     /// It shares a screen.
@@ -36,6 +36,8 @@ pub(super) struct JsChannel {
     screens: Vec<String>,
     muted: Vec<String>,
     deafened: Vec<String>,
+    /// The call was ended: nobody is in it until it is restarted.
+    ended: bool,
 }
 
 /// `channels` as the page reads them.
@@ -43,6 +45,7 @@ pub(super) fn js_channels(channels: Vec<tilo_live::calls::Channel>) -> Vec<JsCha
     channels
         .into_iter()
         .map(|channel| JsChannel {
+            ended: channel.rule.ended,
             people: channel.people(),
             cameras: channel.cameras(),
             screens: channel.screens(),
@@ -52,9 +55,9 @@ pub(super) fn js_channels(channels: Vec<tilo_live::calls::Channel>) -> Vec<JsCha
                 .callers
                 .into_iter()
                 .map(|caller| JsCaller {
+                    publishes: channel.rule.may(caller.person.as_deref()).publish,
                     device: hex::encode(caller.device),
                     user: caller.person.unwrap_or_default(),
-                    publishes: true,
                     camera: caller.camera,
                     screen: caller.screen,
                     muted: caller.muted,

@@ -46,6 +46,7 @@ pub mod action_authority;
 pub mod actors;
 pub mod app_surface;
 pub mod artifact;
+pub mod calls;
 pub mod canonical;
 pub mod caps;
 pub mod channel_key;

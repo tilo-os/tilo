@@ -452,10 +452,24 @@ impl ServerCoeditSession {
                         documents_when_opened,
                     });
                 }
-                envelope @ (Envelope::LiveMember { .. } | Envelope::DocumentOpened { .. }) => {
-                    if let Some(inbound) = self.workspace_news(envelope) {
-                        return Some(inbound);
-                    }
+                // What the host tells this session about its workspace: a member joining or
+                // leaving the live session, a record opened. Another workspace's is not news here.
+                Envelope::LiveMember {
+                    workspace_id,
+                    device_public_key,
+                    active,
+                } if workspace_id == self.workspace_id => {
+                    return Some(Inbound::Member {
+                        device: device_public_key,
+                        active,
+                    });
+                }
+                Envelope::DocumentOpened {
+                    workspace_id,
+                    channel,
+                    answer,
+                } if workspace_id == self.workspace_id => {
+                    return Some(Inbound::DocumentOpened { channel, answer });
                 }
                 Envelope::Committed {
                     workspace_id, op, ..
@@ -502,30 +516,6 @@ impl ServerCoeditSession {
                 // keep waiting.
                 _ => {}
             }
-        }
-    }
-
-    /// What the host tells this session about its workspace: a member
-    /// joining or leaving the live session, a record opened, a call's news.
-    /// `None` for another workspace's.
-    fn workspace_news(&self, envelope: Envelope) -> Option<Inbound> {
-        match envelope {
-            Envelope::LiveMember {
-                workspace_id,
-                device_public_key,
-                active,
-            } if workspace_id == self.workspace_id => Some(Inbound::Member {
-                device: device_public_key,
-                active,
-            }),
-            Envelope::DocumentOpened {
-                workspace_id,
-                channel,
-                answer,
-            } if workspace_id == self.workspace_id => {
-                Some(Inbound::DocumentOpened { channel, answer })
-            }
-            _ => None,
         }
     }
 

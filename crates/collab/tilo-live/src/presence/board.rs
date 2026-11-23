@@ -55,6 +55,10 @@ pub struct Point {
 /// A device's call, as its presence carries it to everyone in the workspace:
 /// the channel it is in, and what it sends of the person there.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "camera, screen, muted and deafened are each their own flag a person shows in a call"
+)]
 pub struct Call {
     /// The channel's id and, once someone named it, its name.
     pub call: CallPresence,
@@ -192,6 +196,10 @@ impl LiveCall {
 
 /// Someone in a call, as their device's presence names them.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "camera, screen, muted and deafened are each their own flag a person shows in a call"
+)]
 pub struct LiveCaller {
     /// Their device's publisher.
     pub id: String,

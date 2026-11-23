@@ -167,6 +167,10 @@ struct Shared {
 
 /// The voice channel this device is in.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "camera, screen, muted and deafened are each their own flag a person shows in a call"
+)]
 pub struct OwnCall {
     /// The workspace the call is in.
     pub workspace: String,

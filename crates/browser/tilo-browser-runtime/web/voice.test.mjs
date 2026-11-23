@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {createVoiceCall, GRANT_DEADLINE_MS, GRANT_LOOK_MS, hexOfBytes, NO_GRANT} from './voice.mjs';
+import {createVoiceCall, GRANT_DEADLINE_MS, GRANT_LOOK_MS, NO_GRANT} from './voice.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
 
 const CALL = 'c'.repeat(64);
@@ -424,34 +424,64 @@ test('peer.voice says the page\'s call in its presence, lists the workspace\'s c
   voice.dispose();
 });
 
-test('peer.voice encodes call operation request ids and frame bytes as lowercase hex', async () => {
-  assert.equal(hexOfBytes(Uint8Array.from([0, 15, 255])), '000fff');
-  const calls = [];
+test('peer.voice moderates the workspace\'s calls through its call action, and drops out of a call that was ended or denied this page\'s person', async () => {
+  // What the workspace keeps of the call: its `call` action changes it, and every device reads it.
+  const rule = {ended: false, denied: {}};
+  const asked = [];
   const wasm = {
-    voiceJoin: () => {},
-    voiceLeave: () => {},
-    voiceCalls: () => {},
-    voiceCall: (workspace, operation, request) => calls.push({workspace, operation: JSON.parse(operation), request}),
-    voiceShow: () => {},
-    callAudio: () => {},
-    callPictures: () => {},
-    callShowing: () => {},
-    callPictureRestart: () => {},
+    left: [],
+    channels: [],
+    callJoin: (workspace, channel) => {
+      wasm.channels = [{channel, name: 'Standup', members: grantFor().members, people: [ME, BOB]}];
+    },
+    callLeave: workspace => { wasm.left.push(workspace); wasm.channels = []; },
+    callChannels: () => JSON.stringify(wasm.channels),
+    callShow() {},
+    callAllows: () => {
+      const refused = rule.ended || Boolean(rule.denied[ME]);
+      return JSON.stringify({ended: rule.ended, publish: !refused, subscribe: !refused});
+    },
+    moderateCall: async (workspace, person, json) => {
+      const named = JSON.parse(json);
+      asked.push([workspace, person, named]);
+      if (named.operation === 'end') rule.ended = true;
+      if (named.operation === 'restart') rule.ended = false;
+      if (named.operation === 'deny') rule.denied[named.person] = {publish: true, subscribe: true};
+      if (named.operation === 'allow') delete rule.denied[named.person];
+      return JSON.stringify({channel: named.channel, call: {ended: rule.ended, allowed: {publish: true, subscribe: true}, denied: rule.denied}});
+    },
   };
-  const voice = createPeerVoice({
-    peer: () => wasm,
-    workspace: 'the-workspace',
-    device: HOST,
-    random: bytes => { bytes.set([0, 1, 15, 16, 255, ...Array(11).fill(0xab)]); return bytes; },
-  });
-  const opened = voice.open({app: 'so.tilo.chat', record: 'r', channel: 'general'});
-  const expectedRequest = `00010f10ff${'ab'.repeat(11)}`;
-  assert.deepEqual(calls, [{
-    workspace: 'the-workspace',
-    operation: {kind: 'open', app: 'so.tilo.chat', record: 'r', channel: 'general'},
-    request: expectedRequest,
-  }]);
-  voice.pump(JSON.stringify([{workspace: 'the-workspace', kind: 'callResult', request: expectedRequest, call: {call: CALL, epoch: 1}}]));
-  assert.deepEqual(await opened, {call: CALL, epoch: 1});
+  const voice = createPeerVoice({peer: () => wasm, workspace: 'the-workspace', device: HOST, person: ME, audio: {
+    start: async () => ({play() {}, setMuted: async () => {}, stop: async () => {}, get captureActive() { return false; }}),
+  }});
+  voice.call.join(CALL, {app: 'so.tilo.chat', record: ''});
+  await drain();
+  assert.equal(voice.call.state.phase, 'live');
+
+  assert.deepEqual(await voice.end({call: CALL}), {call: CALL, active: false, allowed: {publish: true, subscribe: true}, denied: {}});
+  assert.deepEqual(asked.at(-1), ['the-workspace', ME, {operation: 'end', channel: CALL}]);
+  await drain();
+  assert.equal(voice.call.state.phase, 'ended', 'an ended call drops this page out of it');
+  assert.match(voice.call.state.reason, /ended/);
+  assert.deepEqual(wasm.left, ['the-workspace'], 'and its presence no longer says it is in it');
+  assert.equal((await voice.open({channel: CALL})).active, false);
+
+  assert.equal((await voice.restart({call: CALL})).active, true);
+  voice.call.join(CALL, {app: 'so.tilo.chat', record: ''});
+  await drain();
+  assert.equal(voice.call.state.phase, 'live', 'a restarted call lets this page back in');
+
+  await voice.deny({call: CALL, person: ME});
+  await drain();
+  assert.equal(voice.call.state.phase, 'ended', 'a person denied the call drops out of it');
+  assert.match(voice.call.state.reason, /denied/);
+  voice.call.join(CALL, {app: 'so.tilo.chat', record: ''});
+  await drain();
+  assert.notEqual(voice.call.state.phase, 'live', 'and cannot join it again');
+
+  await voice.allow({call: CALL, person: ME});
+  voice.call.join(CALL, {app: 'so.tilo.chat', record: ''});
+  await drain();
+  assert.equal(voice.call.state.phase, 'live', 'let back in, the person is in the call again');
   voice.dispose();
 });

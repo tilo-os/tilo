@@ -1800,6 +1800,24 @@ impl WasmPeer {
         )
     }
 
+    /// What the call in `channel` lets this page's person do now, as JSON `{ended, publish,
+    /// subscribe}`: an ended call or a person denied it is refused, and neither direction is
+    /// open. `null` for a workspace the page is not in.
+    #[wasm_bindgen(js_name = callAllows)]
+    pub fn call_allows(&self, workspace: &str, channel: &str) -> String {
+        crate::peer_sync::allows(self.id, workspace, channel).map_or_else(
+            || "null".into(),
+            |(rule, may)| {
+                serde_json::json!({
+                    "ended": rule.ended,
+                    "publish": may.publish,
+                    "subscribe": may.subscribe,
+                })
+                .to_string()
+            },
+        )
+    }
+
     /// What the calls this page is in carry, since the last call, as a JSON array of `{kind:
     /// 'heard', workspace, from, sequence, timestamp48k, opus}` (`opus` in hex), which the app
     /// plays, `{kind: 'picture', workspace, from, source, keyframe, object}` and `{kind:
@@ -2118,6 +2136,66 @@ impl WasmPeer {
         tilo_session_actions::ask(&api, &caller, message)
             .await
             .map_err(|error| js_error(&error))
+    }
+
+    /// Moderate one of the workspace's calls as `person`: `arguments` is the JSON the
+    /// workspace's `call` action takes (`operation` — start, end, restart, set-directions, deny,
+    /// allow or show — the `channel`, and what the operation names). Resolves to what the call
+    /// allows afterwards, `{channel, call}`.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed workspace or arguments, a page with no session with a host, and the
+    /// host's refusal (a person not granted `call`) in its own words.
+    #[wasm_bindgen(js_name = moderateCall)]
+    pub async fn moderate_call(
+        &self,
+        workspace: &str,
+        person: &str,
+        arguments: &str,
+    ) -> Result<String, JsError> {
+        use tilo_actions::remote::{
+            InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
+        };
+        let number = workspace_id(workspace)?;
+        let arguments: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(arguments).map_err(|error| js_error(&error.to_string()))?;
+        let api = crate::peer_sync::actions_of(self.id, number)
+            .ok_or_else(|| js_error("this page holds no session with a host"))?;
+        let caller =
+            tilo_actions::remote::Caller::local_person(person.to_owned()).in_workspace(workspace);
+        let message = RemoteActionMessage::Invoke(InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget::workspace_governance(
+                workspace,
+                tilo_action_policy::roles::governance::CALL,
+            ),
+            argument: InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        });
+        let message =
+            serde_json::to_string(&message).map_err(|error| js_error(&error.to_string()))?;
+        let answer = tilo_session_actions::ask(&api, &caller, &message)
+            .await
+            .map_err(|error| js_error(&error))?;
+        match serde_json::from_str(&answer) {
+            Ok(RemoteActionMessage::Receipt(receipt)) => match receipt.status {
+                ReceiptStatus::Completed { output } => Ok(output
+                    .value
+                    .map(|value| value.to_string())
+                    .unwrap_or_default()),
+                ReceiptStatus::Rejected { error } => Err(js_error(&error.to_string())),
+                ReceiptStatus::Failed { error } => Err(js_error(&error.message)),
+                status => Err(js_error(&format!("the call was not moderated: {status:?}"))),
+            },
+            _ => Err(js_error("the host did not answer")),
+        }
     }
 
     /// Resolves `true` once the workspace's server says a write landed in the workspace's documents

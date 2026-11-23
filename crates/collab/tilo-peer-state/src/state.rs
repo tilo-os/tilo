@@ -45,7 +45,9 @@ pub use facades::{
 };
 pub(crate) use governance_writes::{commit_governance, wall_secs};
 mod app_versions;
+mod calls;
 pub use app_versions::InstalledApp;
+pub use calls::CallGate;
 mod bot_members;
 pub(crate) mod certificate_renewal;
 mod delegates;

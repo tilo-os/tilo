@@ -115,6 +115,17 @@ impl Calls {
         // the session itself published.
         let person = sync.own().user;
         let device = *sync.publisher().as_bytes();
+        // What the calls of the workspaces this device is in allow, and whose each member device
+        // is: whom a channel list leaves out.
+        let mut rules = BTreeMap::new();
+        let mut persons = BTreeMap::new();
+        if let Some(engine) = sync.engine() {
+            for workspace in live_sessions_of(sync).keys() {
+                let (its_rules, its_persons) = engine.call_gate(workspace);
+                rules.extend(its_rules);
+                persons.extend(its_persons);
+            }
+        }
         let channels = tilo_live::calls::channels(
             &live,
             own.map(|call| tilo_live::calls::Own {
@@ -122,7 +133,8 @@ impl Calls {
                 person: person.as_deref(),
                 call,
             }),
-            &BTreeMap::new(),
+            &persons,
+            &rules,
         );
         let rosters: Vec<Roster> = channels.iter().map(roster_of).collect();
         // The other devices of each channel: this one's pictures are never heard back here.

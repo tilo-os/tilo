@@ -1452,6 +1452,49 @@ impl Workspaces {
             .app_versions())
     }
 
+    /// Change what the call in `channel` of `workspace` allows, as `member`, whom the workspace
+    /// must grant `call`: a governed change every member's live session holds the call to.
+    ///
+    /// # Errors
+    /// Refuses a malformed channel, and a member the workspace does not let moderate calls.
+    pub async fn moderate_call(
+        &self,
+        workspace: &str,
+        member: &DeviceCert,
+        request_id: [u8; 32],
+        channel: &str,
+        change: collab_types::calls::CallChange,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        self.govern_as_member(
+            workspace,
+            member,
+            request_id,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Call {
+                channel: channel.to_owned(),
+                change,
+            },
+            governance::CALL,
+            "call",
+        )
+        .await
+    }
+
+    /// What the call in `channel` of `workspace` allows, as the workspace records it now.
+    pub async fn call_rule(
+        &self,
+        workspace: &str,
+        channel: &str,
+    ) -> Result<collab_types::calls::CallRule, CollaborationError> {
+        Ok(self
+            .workspace(workspace)
+            .await?
+            .lock()
+            .await
+            .peer()
+            .governance()
+            .call(channel))
+    }
+
     /// Apply `command` to `workspace` as `member`, whom the workspace must allow the
     /// governance action `check`, and publish it; `tag` names the request
     /// kind in its digest.

@@ -273,6 +273,7 @@ fn row_name(row: GovernanceRow) -> &'static str {
         GovernanceRow::Sandbox => "the capabilities of its apps' sandboxes",
         GovernanceRow::Removals => "the cuts of its devices' removals",
         GovernanceRow::Standing => "the history kept of standing taken away",
+        GovernanceRow::Calls => "what the workspace's calls allow",
     }
 }
 
