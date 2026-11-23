@@ -70,12 +70,12 @@ impl Kind for Applications {
         status.insert("applications_only".to_owned(), true.into());
     }
     fn package(cx: &Context<Self>, directory: &Path) -> io::Result<(PathBuf, String)> {
-        let expected: PortableApplications =
-            serde_json::from_slice(&continuation::private_file::<Self>(
-                &directory.join("expectation.json"),
-                8192,
-            )?)
-            .map_err(|_| failure())?;
+        let expected =
+            serde_json::from_slice::<prepared_setup_model::stored::StoredApplicationsExpectation>(
+                &continuation::private_file::<Self>(&directory.join("expectation.json"), 8192)?,
+            )
+            .map_err(|_| failure())?
+            .0;
         if expected != cx.declaration {
             return Err(failure());
         }

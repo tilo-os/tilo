@@ -20782,6 +20782,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
+ "imager-backend",
  "iroh",
  "launcher",
  "libc",

@@ -39,9 +39,17 @@ struct Receipt {
     current_identity: Option<tilo_identity::enrolled_transport::CurrentDeviceDeclaration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     portable_home: Option<PortableHome>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "prepared_setup_model::stored::deserialize_option_applications"
+    )]
     portable_flatpak: Option<PortableApplications>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "prepared_setup_model::stored::deserialize_option_browser"
+    )]
     browser: Option<BrowserDeclaration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     service_sessions: Option<ServiceSessions>,
@@ -1036,5 +1044,402 @@ mod tests {
             }
         });
         assert!(Imported::decode(&serde_json::to_vec(&flat_apps).unwrap()).is_err());
+    }
+
+    fn write_private_file(path: &Path, bytes: &[u8]) {
+        std::fs::write(path, bytes).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    fn fixture_with_active_identity() -> (tempfile::TempDir, PathBuf, [u8; 32], [u8; 32]) {
+        let home = fixture();
+        let identity = home.path().join(".config/tilo/identity");
+        std::fs::create_dir_all(&identity).unwrap();
+        for part in [".config", ".config/tilo", ".config/tilo/identity"] {
+            std::fs::set_permissions(
+                home.path().join(part),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
+        }
+        tilo_identity::provisioning::create_primary_identity(
+            &identity,
+            "Ada",
+            [10, 40, 60],
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
+        tilo_identity::store::set_active_identity(&identity, "primary").unwrap();
+        let signer = tilo_identity::store::load_from_path(identity.join("primary.json")).unwrap();
+        let digest = Pending::open(home.path()).unwrap().digest();
+        (home, identity, signer.group_public_key(), digest)
+    }
+
+    #[test]
+    fn stored_mine_tip_flat_activated_json_loads_and_sets_session_pending() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
+        let (home, identity, key, digest) = fixture_with_active_identity();
+        env.set("HOME", home.path());
+
+        // Exact wire layout written by `mine-tip` (2026-10-27) in
+        // `crates/session/shell/src/onboarding_prepared.rs` (`Receipt` +
+        // `PortableApplications`, fields serialized in declaration order).
+        let digest_json = serde_json::to_string(&digest).unwrap();
+        let key_json = serde_json::to_string(&key).unwrap();
+        let apps_cipher_json = serde_json::to_string(&[4u8; 32]).unwrap();
+        let apps_manifest_json = serde_json::to_string(&[5u8; 32]).unwrap();
+        let flat_activated = format!(
+            concat!(
+                r#"{{"version":1,"digest":{digest},"identity_public_key":{key},"#,
+                r#""portable_flatpak":{{"schema":1,"#,
+                r#""operation":"11111111-1111-4111-8111-111111111111","#,
+                r#""purpose":"flatpak_applications","#,
+                r#""filename":"applications-11111111-1111-4111-8111-111111111111.sealed","#,
+                r#""setup_binding":"mine-tip-binding","#,
+                r#""sealed_bytes":18,"plaintext_bytes":16,"entries":2,"#,
+                r#""ciphertext_sha256":{cipher},"manifest_sha256":{manifest},"#,
+                r#""limits":{{"plaintext_bytes":1048576,"entries":128,"metadata_bytes":65536}}}}}}"#
+            ),
+            digest = digest_json,
+            key = key_json,
+            cipher = apps_cipher_json,
+            manifest = apps_manifest_json,
+        );
+        let activated_path = state_root(home.path()).join(RECEIPT);
+        write_private_file(&activated_path, flat_activated.as_bytes());
+
+        assert!(
+            !session_pending(&identity),
+            "a device with a 2026-10-27 flat activated.json must not re-enter onboarding"
+        );
+        let pending = Pending::open(home.path()).unwrap();
+        assert!(pending.completed(&identity).unwrap());
+        let loaded = pending.portable_applications(&identity).unwrap().unwrap();
+        assert_eq!(loaded.kind.consumer_protocol, 1);
+        assert_eq!(loaded.kind.manifest_sha256, [5; 32]);
+        assert_eq!(loaded.operation, "11111111-1111-4111-8111-111111111111");
+
+        // Idempotent retry against the flat stored copy succeeds.
+        pending
+            .acknowledge(key, None, Some(loaded.clone()), None, None, None)
+            .unwrap();
+
+        // Newly written activated.json uses the present nested `kind` shape.
+        std::fs::remove_file(&activated_path).unwrap();
+        pending
+            .acknowledge(key, None, Some(loaded), None, None, None)
+            .unwrap();
+        let rewritten: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&activated_path).unwrap()).unwrap();
+        assert!(rewritten["portable_flatpak"].get("schema").is_none());
+        assert!(rewritten["portable_flatpak"].get("purpose").is_none());
+        assert_eq!(
+            rewritten["portable_flatpak"]["kind"]["consumer_protocol"],
+            1
+        );
+        assert!(!session_pending(&identity));
+
+        // Unknown fields on a flat stored copy still fail closed.
+        let bad_flat =
+            flat_activated.replacen(r#""schema":1,"#, r#""schema":1,"unexpected":true,"#, 1);
+        write_private_file(&activated_path, bad_flat.as_bytes());
+        assert!(pending.completed(&identity).is_err());
+        assert!(session_pending(&identity));
+    }
+
+    #[test]
+    fn stored_mine_tip_flat_browser_activated_json_loads_and_tracks_browser_pending() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
+        let (home, identity, key, digest) = fixture_with_active_identity();
+        env.set("HOME", home.path());
+
+        let plan = browser_continuity::Plan::new(
+            "mine-tip-browser-binding".into(),
+            key,
+            vec![
+                browser_continuity::Profile::new(
+                    "a".repeat(64),
+                    browser_continuity::Provider::Chromium,
+                    vec!["browser".into(), "Default".into()],
+                    true,
+                    false,
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        let plan_sha256: [u8; 32] = Sha256::digest(plan.encode().unwrap()).into();
+        let flat_activated = format!(
+            concat!(
+                r#"{{"version":1,"digest":{digest},"identity_public_key":{key},"#,
+                r#""browser":{{"plan":{plan},"payload":{{"schema":1,"#,
+                r#""operation":"22222222-2222-4222-8222-222222222222","#,
+                r#""purpose":"browser_profiles","#,
+                r#""filename":"browser-22222222-2222-4222-8222-222222222222.sealed","#,
+                r#""setup_binding":"mine-tip-browser-binding","#,
+                r#""sealed_bytes":18,"plaintext_bytes":16,"entries":2,"#,
+                r#""ciphertext_sha256":{cipher},"plan_sha256":{plan_hash},"#,
+                r#""limits":{{"plaintext_bytes":1048576,"entries":64,"metadata_bytes":65536}}}}}}}}"#
+            ),
+            digest = serde_json::to_string(&digest).unwrap(),
+            key = serde_json::to_string(&key).unwrap(),
+            plan = serde_json::to_string(&plan).unwrap(),
+            cipher = serde_json::to_string(&[6u8; 32]).unwrap(),
+            plan_hash = serde_json::to_string(&plan_sha256).unwrap(),
+        );
+        let activated_path = state_root(home.path()).join(RECEIPT);
+        write_private_file(&activated_path, flat_activated.as_bytes());
+
+        let pending = Pending::open(home.path()).unwrap();
+        assert!(pending.completed(&identity).unwrap());
+        let loaded = pending.browser(&identity).unwrap().unwrap();
+        assert_eq!(loaded.plan, plan);
+        assert_eq!(loaded.payload.kind.plan_sha256, plan_sha256);
+        // Browser continuation is still unfinished, so session_pending stays true.
+        assert!(session_pending(&identity));
+    }
+
+    fn sample_helper_expectations(
+        binding: &str,
+        key: [u8; 32],
+    ) -> (
+        imager_backend::setup::portable_home_media::Expectation,
+        PortableApplications,
+        BrowserDeclaration,
+    ) {
+        use imager_backend::setup::{
+            browser_transfer, flatpak_transfer::portable as flatpak_portable, portable_home_media,
+            portable_transfer::Limits, prepared_setup::BrowserHandoff,
+        };
+
+        let limits = Limits {
+            plaintext_bytes: 1_048_576,
+            entries: 64,
+            metadata_bytes: 65_536,
+        };
+        let home_op = "10101010-1010-4010-8010-101010101010".to_owned();
+        let home_exp = portable_home_media::Expectation {
+            filename: format!("home-{home_op}.sealed"),
+            operation: home_op,
+            setup_binding: binding.to_owned(),
+            sealed_bytes: 512,
+            plaintext_bytes: 256,
+            entries: 4,
+            ciphertext_sha256: [1; 32],
+            limits,
+            kind: portable_home_media::Home { runtime_sockets: 0 },
+        };
+        let app_op = "11111111-1111-4111-8111-111111111111".to_owned();
+        let apps = flatpak_portable::Expectation {
+            filename: format!("applications-{app_op}.sealed"),
+            operation: app_op,
+            setup_binding: binding.to_owned(),
+            sealed_bytes: 512,
+            plaintext_bytes: 256,
+            entries: 4,
+            ciphertext_sha256: [4; 32],
+            limits,
+            kind: flatpak_portable::Applications {
+                consumer_protocol: 2,
+                manifest_sha256: [5; 32],
+            },
+        };
+        let plan = browser_continuity::Plan::new(
+            binding.to_owned(),
+            key,
+            vec![
+                browser_continuity::Profile::new(
+                    "a".repeat(64),
+                    browser_continuity::Provider::Chromium,
+                    vec!["browser".into(), "Default".into()],
+                    true,
+                    false,
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        let plan_sha256: [u8; 32] = Sha256::digest(plan.encode().unwrap()).into();
+        let browser_op = "22222222-2222-4222-8222-222222222222".to_owned();
+        let browser = BrowserHandoff {
+            plan,
+            payload: browser_transfer::Expectation {
+                filename: format!("browser-{browser_op}.sealed"),
+                operation: browser_op,
+                setup_binding: binding.to_owned(),
+                sealed_bytes: 512,
+                plaintext_bytes: 256,
+                entries: 2,
+                ciphertext_sha256: [6; 32],
+                limits,
+                kind: browser_transfer::Browser { plan_sha256 },
+            },
+        };
+        (home_exp, apps, browser)
+    }
+
+    fn build_real_helper_package(
+        root: &Path,
+        password: &[u8],
+    ) -> (
+        PathBuf,
+        [u8; 32],
+        PortableApplications,
+        BrowserDeclaration,
+        ServiceSessions,
+    ) {
+        use imager_backend::{
+            imager_model::InstallProfile,
+            setup::{
+                portable_transfer::{ExportReview, Purpose},
+                prepared_identity::PreparedIdentity,
+                prepared_setup::{
+                    ApplicationsCarriage, HomeCarriage, IDENTITY_FILE, LIMITS, Manifest,
+                    PortableHomePlan, PortableHomeSelection, PublicInstallProfile,
+                    SERVICE_SESSIONS_FILE, Unit,
+                },
+                service_sessions::PreparedSessions,
+            },
+        };
+        use std::sync::atomic::AtomicBool;
+        use zeroize::Zeroizing;
+
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let staging = root.join("staging");
+        std::fs::create_dir(&staging).unwrap();
+        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let identity = PreparedIdentity::create(
+            &root.join("identity-source"),
+            "Ada",
+            [1, 2, 3],
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
+        identity
+            .export(
+                &staging.join(IDENTITY_FILE),
+                Zeroizing::new(String::from_utf8(password.to_vec()).unwrap()),
+            )
+            .unwrap();
+        let binding = "helper-end-to-end-binding".to_owned();
+        let (artifact, sessions_decl) = PreparedSessions::from_protocol_2_origin_fixture(
+            identity.public_key(),
+            binding.clone(),
+        )
+        .unwrap()
+        .seal(password)
+        .unwrap();
+        assert_eq!(sessions_decl.consumer_protocol, 2);
+        write_private_file(&staging.join(SERVICE_SESSIONS_FILE), artifact.as_bytes());
+
+        let (home_exp, apps, browser) = sample_helper_expectations(&binding, identity.public_key());
+        let mut manifest = Manifest::new(binding, identity.public_key(), Vec::new()).unwrap();
+        let draft = InstallProfile {
+            device_label: "Ada's laptop".into(),
+            ..Default::default()
+        };
+        manifest.install_profile = Some(PublicInstallProfile::from_draft(&draft).unwrap());
+        manifest.units.plan_home(PortableHomePlan {
+            schema: 1,
+            selection: PortableHomeSelection::FullHome,
+            applications: true,
+        });
+        manifest
+            .units
+            .carry_home(HomeCarriage::Sealed(home_exp))
+            .unwrap();
+        manifest
+            .units
+            .insert(Unit::MediumApplications(ApplicationsCarriage::Sealed {
+                expectation: apps.clone(),
+                alone: false,
+            }));
+        manifest.units.insert(Unit::Browser(browser.clone()));
+        manifest
+            .units
+            .insert(Unit::ServiceSessions(sessions_decl.clone()));
+        manifest.write(&staging).unwrap();
+
+        let package = root.join("setup.sealed");
+        ExportReview::review(&staging, &package, Purpose::PreparedSetup, LIMITS)
+            .unwrap()
+            .export(Zeroizing::new(password.to_vec()), &AtomicBool::new(false))
+            .unwrap();
+        (package, identity.public_key(), apps, browser, sessions_decl)
+    }
+
+    #[test]
+    fn helper_run_output_with_applications_browser_and_protocol_2_sessions_decodes_in_session() {
+        use imager_backend::setup::prepared_setup_helper::{HelperAdmissions, run_with_admissions};
+        use std::ffi::OsString;
+
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let password = b"several unrelated installation words";
+        let (package, key, apps, browser, sessions_decl) =
+            build_real_helper_package(&root, password);
+
+        let args: Vec<OsString> = [
+            ("--package", package),
+            ("--quarantine", root.join("quarantine")),
+            ("--identity-dir", root.join("identities")),
+            ("--config-root", root.join("tilo")),
+        ]
+        .into_iter()
+        .flat_map(|(flag, path)| [OsString::from(flag), path.into_os_string()])
+        .collect();
+        let mut saw_service_protocol = None;
+        let mut saw_home = false;
+        let mut saw_apps = false;
+        let mut output = Vec::new();
+        run_with_admissions(
+            args,
+            &mut &password[..],
+            &mut output,
+            HelperAdmissions {
+                home: || {
+                    saw_home = true;
+                    Ok(())
+                },
+                service_protocol: |protocol| {
+                    saw_service_protocol = Some(protocol);
+                    Ok(())
+                },
+                applications: || {
+                    saw_apps = true;
+                    Ok(())
+                },
+            },
+        )
+        .unwrap();
+        assert!(saw_home && saw_apps && saw_service_protocol == Some(2));
+        assert!(output.ends_with(b"\n"));
+
+        // Confirm the producer's wire shape is unchanged before handing its exact bytes to decode.
+        let wire: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert!(wire["portable_flatpak"].get("schema").is_none());
+        assert!(wire["portable_flatpak"].get("purpose").is_none());
+        assert_eq!(wire["portable_flatpak"]["kind"]["consumer_protocol"], 2);
+        assert!(wire["browser"]["payload"].get("schema").is_none());
+        assert!(wire["browser"]["payload"].get("purpose").is_none());
+        assert_eq!(wire["service_sessions"]["consumer_protocol"], 2);
+
+        let decoded = Imported::decode(&output).unwrap();
+        assert_eq!(decoded.identity_public_key, key);
+        assert_eq!(decoded.device_label, "Ada's laptop");
+        assert_eq!(decoded.portable_flatpak.as_ref(), Some(&apps));
+        assert_eq!(decoded.browser.as_ref(), Some(&browser));
+        assert_eq!(decoded.service_sessions.as_ref(), Some(&sessions_decl));
+        assert_eq!(
+            decoded
+                .portable_home
+                .as_ref()
+                .map(|home| (&home.selection, home.applications)),
+            Some((&prepared_setup_model::PortableHomeSelection::FullHome, true))
+        );
     }
 }

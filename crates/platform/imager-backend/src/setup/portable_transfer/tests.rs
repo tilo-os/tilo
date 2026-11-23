@@ -1409,3 +1409,37 @@ fn received_descriptor_refuses_directory_and_wrong_purpose() {
         .is_err()
     );
 }
+
+#[test]
+fn operation_id_rule_matches_staging_model() {
+    let cases = [
+        ("11111111-1111-4111-8111-111111111111", true),
+        ("abcdef01-2345-6789-abcd-ef0123456789", true),
+        ("00000000-0000-0000-0000-000000000001", true),
+        ("00000000-0000-0000-0000-000000000000", false),
+        ("ABCDEF01-2345-6789-ABCD-EF0123456789", false),
+        ("11111111-1111-4111-8111-11111111111A", false),
+        ("11111111111141118111111111111111", false),
+        ("11111111-1111-4111-8111-11111111111", false),
+        ("11111111-1111-4111-8111-1111111111110", false),
+        ("1111111-11111-4111-8111-111111111111", false),
+        ("11111111_1111_4111_8111_111111111111", false),
+        ("11111111-1111-4111-8111-11111111111g", false),
+        (" 1111111-1111-4111-8111-111111111111", false),
+        ("11111111-1111-4111-8111-11111111111\n", false),
+        ("é111111-1111-4111-8111-111111111111", false),
+        ("", false),
+    ];
+    for (value, expected) in cases {
+        assert_eq!(
+            prepared_setup_model::is_operation_id(value),
+            expected,
+            "prepared-setup-model disagreed on {value:?}"
+        );
+        assert_eq!(
+            staging_handoff_model::is_operation_id(value),
+            expected,
+            "staging-handoff-model disagreed on {value:?}"
+        );
+    }
+}

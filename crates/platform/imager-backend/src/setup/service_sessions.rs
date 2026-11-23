@@ -5,7 +5,10 @@ pub mod source;
 use super::account_transfer::{Connector, PasswordSealedAccounts};
 use accounts::person::AccountList;
 use accounts::{Account, AccountId, SecretVault};
-#[cfg(all(target_os = "linux", feature = "installation"))]
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "installation", feature = "test-support")
+))]
 use browser_continuity::sessions::OriginStorage;
 use browser_continuity::sessions::Service;
 #[cfg(target_os = "linux")]
@@ -229,6 +232,52 @@ impl PreparedSessions {
         };
         verify_ciphertext(&declaration, &artifact)?;
         Ok((artifact, declaration))
+    }
+
+    /// Stage one synthetic schema-2 Discord origin session so cross-crate tests can
+    /// seal and import a protocol 2 service session without linking LevelDB.
+    #[cfg(all(target_os = "linux", feature = "test-support"))]
+    pub fn from_protocol_2_origin_fixture(identity: [u8; 32], binding: String) -> io::Result<Self> {
+        let stage = private_stage()?;
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let session = SessionCookies {
+            schema: 2,
+            session_id: session_id.clone(),
+            service: Service::Discord,
+            identity_public_key: identity,
+            setup_binding: binding.clone(),
+            source_snapshot_digest: [9; 32],
+            cookies: Vec::new(),
+            origin_storage: vec![OriginStorage {
+                origin: "https://discord.com".into(),
+                key: "token".into(),
+                value: "\"fixture-discord-origin-session\"".into(),
+                source_snapshot_digest: [9; 32],
+            }],
+        };
+        let chosen = SelectedSession {
+            id: session_id,
+            service: Service::Discord,
+        };
+        let mut secret = account_credentials::service_sessions::service_session_secret(&session)
+            .map_err(|_| invalid())?;
+        let mut record = AccountList::default();
+        let mut vault = SecretVault::open_in(stage.path());
+        let account = account(&chosen, &binding);
+        vault.put(&account.id, &secret);
+        secret.password.zeroize();
+        if let Some(token) = secret.token.as_mut() {
+            token.zeroize();
+        }
+        record.keep(&account).map_err(|_| invalid())?;
+        vault.try_save().map_err(|_| invalid())?;
+        record.stage_in(stage.path()).map_err(|_| invalid())?;
+        Ok(Self {
+            stage,
+            identity,
+            binding,
+            selected: vec![chosen],
+        })
     }
 }
 pub fn transport_binding(binding: &str) -> Vec<u8> {

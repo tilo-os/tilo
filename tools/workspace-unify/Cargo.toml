@@ -846,7 +846,7 @@ doc = false
 "ppv-lite86-0_2_21" = { package = "ppv-lite86", version = "^0.2.21", default-features = false, features = ["simd", "std"] }
 "precomputed-hash-0_1_1" = { package = "precomputed-hash", version = "^0.1.1", default-features = false, features = [] }
 "prefix-trie-0_8_4" = { package = "prefix-trie", version = "^0.8.4", default-features = false, features = ["default", "ipnet"] }
-"prepared-setup-model" = { path = "../../crates/session/prepared-setup-model", default-features = false, features = [] }
+"prepared-setup-model" = { path = "../../crates/session/prepared-setup-model", default-features = false, features = ["default", "receipt"] }
 "presser-0_3_1" = { package = "presser", version = "^0.3.1", default-features = false, features = [] }
 "primal-check-0_3_4" = { package = "primal-check", version = "^0.3.4", default-features = false, features = [] }
 "primefield-0_14_0" = { package = "primefield", version = "^0.14.0", default-features = false, features = [] }
@@ -3501,7 +3501,7 @@ doc = false
 "ppv-lite86-0_2_21" = { package = "ppv-lite86", version = "^0.2.21", default-features = false, features = ["simd", "std"] }
 "precomputed-hash-0_1_1" = { package = "precomputed-hash", version = "^0.1.1", default-features = false, features = [] }
 "prefix-trie-0_8_4" = { package = "prefix-trie", version = "^0.8.4", default-features = false, features = ["default", "ipnet"] }
-"prepared-setup-model" = { path = "../../crates/session/prepared-setup-model", default-features = false, features = [] }
+"prepared-setup-model" = { path = "../../crates/session/prepared-setup-model", default-features = false, features = ["default", "receipt"] }
 "presser-0_3_1" = { package = "presser", version = "^0.3.1", default-features = false, features = [] }
 "primal-check-0_3_4" = { package = "primal-check", version = "^0.3.4", default-features = false, features = [] }
 "primefield-0_14_0" = { package = "primefield", version = "^0.14.0", default-features = false, features = [] }

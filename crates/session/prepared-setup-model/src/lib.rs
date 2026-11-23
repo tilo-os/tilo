@@ -6,8 +6,11 @@
 //! struct refuses unknown fields.
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+#[cfg(feature = "receipt")]
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, fmt::Debug, io};
+#[cfg(feature = "receipt")]
+use std::collections::BTreeSet;
+use std::{fmt::Debug, io};
 
 /// Plaintext chunk size used by the sealed portable archive codec.
 pub const CHUNK: usize = 1024 * 1024;
@@ -22,8 +25,11 @@ pub const BROWSER_MAX_ENTRIES: usize = 128;
 /// Maximum archive metadata bytes carried in one browser transfer.
 pub const BROWSER_MAX_METADATA: usize = 1024 * 1024;
 
+#[cfg(feature = "receipt")]
 const MAX_RECEIPT_ACCOUNTS: usize = 64;
+#[cfg(feature = "receipt")]
 const MAX_RECEIPT_MAIL: usize = 64;
+#[cfg(feature = "receipt")]
 const MAX_SERVICE_SESSIONS_BYTES: u64 = 8 * 1024 * 1024 + 1024;
 
 fn invalid(message: &str) -> io::Error {
@@ -243,6 +249,7 @@ impl UnitKind for Browser {
 /// Sealed browser profiles transfer expectation.
 pub type BrowserExpectation = Expectation<Browser>;
 
+#[cfg(feature = "receipt")]
 impl BrowserExpectation {
     /// Refuse a different setup, identity, selection or authenticated plan digest.
     pub fn validate_plan(&self, plan: &browser_continuity::Plan) -> io::Result<()> {
@@ -262,6 +269,7 @@ impl BrowserExpectation {
 }
 
 /// Selected browser data authenticated with the same identity and setup as installation.
+#[cfg(feature = "receipt")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BrowserHandoff {
@@ -269,6 +277,7 @@ pub struct BrowserHandoff {
     pub payload: BrowserExpectation,
 }
 
+#[cfg(feature = "receipt")]
 impl BrowserHandoff {
     /// Refuse a malformed expectation or a plan that differs from its authenticated digest.
     pub fn validate(&self) -> io::Result<()> {
@@ -324,7 +333,12 @@ impl PortableHomeDeclaration {
     }
 }
 
+const fn default_consumer_protocol() -> u32 {
+    1
+}
+
 /// Public ciphertext-only declaration, authenticated by the prepared setup manifest.
+#[cfg(feature = "receipt")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceSessionsDeclaration {
@@ -339,10 +353,7 @@ pub struct ServiceSessionsDeclaration {
     pub ciphertext_sha256: [u8; 32],
 }
 
-const fn default_consumer_protocol() -> u32 {
-    1
-}
-
+#[cfg(feature = "receipt")]
 #[allow(
     clippy::trivially_copy_pass_by_ref,
     reason = "serde skip_serializing_if passes a reference to the field"
@@ -352,6 +363,7 @@ const fn is_default_consumer_protocol(value: &u32) -> bool {
 }
 
 /// One selected website session in [`ServiceSessionsDeclaration`].
+#[cfg(feature = "receipt")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SelectedSession {
@@ -359,6 +371,7 @@ pub struct SelectedSession {
     pub service: browser_continuity::sessions::Service,
 }
 
+#[cfg(feature = "receipt")]
 impl ServiceSessionsDeclaration {
     /// Refuse unsupported declarations, duplicate IDs/services or oversized ciphertext.
     pub fn validate(&self) -> io::Result<()> {
@@ -425,6 +438,7 @@ pub struct ThunderbirdFolderReceipt {
 /// Generic over the current-device comparison declaration `C` so this crate stays
 /// independent of `tilo-identity`; both producer and consumer instantiate it with
 /// `tilo_identity::enrolled_transport::CurrentDeviceDeclaration`.
+#[cfg(feature = "receipt")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     deny_unknown_fields,
@@ -449,6 +463,7 @@ pub struct PreparedSetupReceipt<C> {
     pub mail: Vec<ThunderbirdImportReceipt>,
 }
 
+#[cfg(feature = "receipt")]
 impl<C> PreparedSetupReceipt<C> {
     /// Validate every carried declaration's bounds and identity binding.
     pub fn validate(&self) -> io::Result<()> {
@@ -476,6 +491,229 @@ impl<C> PreparedSetupReceipt<C> {
     #[must_use]
     pub fn valid(&self) -> bool {
         self.validate().is_ok()
+    }
+}
+
+/// Read-only deserializers for files already written to a person's disk by
+/// earlier builds (2026-10-12 through 2026-10-28, including `mine-tip`) as well
+/// as the present nested `kind` shape. Every accepted shape stays closed under
+/// `deny_unknown_fields`, and writers always emit the present nested shape.
+pub mod stored {
+    use super::{
+        Applications, ApplicationsExpectation, Browser, BrowserExpectation, Home, HomeExpectation,
+        Limits, Purpose, default_consumer_protocol,
+    };
+    use serde::{Deserialize, Deserializer, de};
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct FlatHome {
+        schema: u32,
+        operation: String,
+        purpose: Purpose,
+        filename: String,
+        setup_binding: String,
+        sealed_bytes: u64,
+        plaintext_bytes: u64,
+        entries: usize,
+        runtime_sockets: u64,
+        ciphertext_sha256: [u8; 32],
+        limits: Limits,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct FlatApplications {
+        schema: u32,
+        #[serde(default = "default_consumer_protocol")]
+        consumer_protocol: u32,
+        operation: String,
+        purpose: Purpose,
+        filename: String,
+        setup_binding: String,
+        sealed_bytes: u64,
+        plaintext_bytes: u64,
+        entries: usize,
+        ciphertext_sha256: [u8; 32],
+        manifest_sha256: [u8; 32],
+        limits: Limits,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct FlatBrowser {
+        schema: u32,
+        operation: String,
+        purpose: Purpose,
+        filename: String,
+        setup_binding: String,
+        sealed_bytes: u64,
+        plaintext_bytes: u64,
+        entries: usize,
+        ciphertext_sha256: [u8; 32],
+        plan_sha256: [u8; 32],
+        limits: Limits,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum HomeShape {
+        Current(HomeExpectation),
+        Flat(FlatHome),
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ApplicationsShape {
+        Current(ApplicationsExpectation),
+        Flat(FlatApplications),
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum BrowserShape {
+        Current(BrowserExpectation),
+        Flat(FlatBrowser),
+    }
+
+    /// Read-only parser accepting both the present nested and earlier flat
+    /// on-disk `HomeExpectation` shapes.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct StoredHomeExpectation(pub HomeExpectation);
+
+    impl<'de> Deserialize<'de> for StoredHomeExpectation {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            match HomeShape::deserialize(deserializer)? {
+                HomeShape::Current(current) => Ok(Self(current)),
+                HomeShape::Flat(flat) => {
+                    if flat.schema != 1 || flat.purpose != Purpose::Home {
+                        return Err(de::Error::custom("unsupported home expectation schema"));
+                    }
+                    Ok(Self(HomeExpectation {
+                        operation: flat.operation,
+                        filename: flat.filename,
+                        setup_binding: flat.setup_binding,
+                        sealed_bytes: flat.sealed_bytes,
+                        plaintext_bytes: flat.plaintext_bytes,
+                        entries: flat.entries,
+                        ciphertext_sha256: flat.ciphertext_sha256,
+                        limits: flat.limits,
+                        kind: Home {
+                            runtime_sockets: flat.runtime_sockets,
+                        },
+                    }))
+                }
+            }
+        }
+    }
+
+    /// Read-only parser accepting both the present nested and earlier flat
+    /// on-disk `ApplicationsExpectation` shapes.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct StoredApplicationsExpectation(pub ApplicationsExpectation);
+
+    impl<'de> Deserialize<'de> for StoredApplicationsExpectation {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            match ApplicationsShape::deserialize(deserializer)? {
+                ApplicationsShape::Current(current) => Ok(Self(current)),
+                ApplicationsShape::Flat(flat) => {
+                    if flat.schema != 1 || flat.purpose != Purpose::FlatpakApplications {
+                        return Err(de::Error::custom(
+                            "unsupported applications expectation schema",
+                        ));
+                    }
+                    Ok(Self(ApplicationsExpectation {
+                        operation: flat.operation,
+                        filename: flat.filename,
+                        setup_binding: flat.setup_binding,
+                        sealed_bytes: flat.sealed_bytes,
+                        plaintext_bytes: flat.plaintext_bytes,
+                        entries: flat.entries,
+                        ciphertext_sha256: flat.ciphertext_sha256,
+                        limits: flat.limits,
+                        kind: Applications {
+                            consumer_protocol: flat.consumer_protocol,
+                            manifest_sha256: flat.manifest_sha256,
+                        },
+                    }))
+                }
+            }
+        }
+    }
+
+    /// Read-only parser accepting both the present nested and earlier flat
+    /// on-disk `BrowserExpectation` shapes.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct StoredBrowserExpectation(pub BrowserExpectation);
+
+    impl<'de> Deserialize<'de> for StoredBrowserExpectation {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            match BrowserShape::deserialize(deserializer)? {
+                BrowserShape::Current(current) => Ok(Self(current)),
+                BrowserShape::Flat(flat) => {
+                    if flat.schema != 1 || flat.purpose != Purpose::BrowserProfiles {
+                        return Err(de::Error::custom("unsupported browser expectation schema"));
+                    }
+                    Ok(Self(BrowserExpectation {
+                        operation: flat.operation,
+                        filename: flat.filename,
+                        setup_binding: flat.setup_binding,
+                        sealed_bytes: flat.sealed_bytes,
+                        plaintext_bytes: flat.plaintext_bytes,
+                        entries: flat.entries,
+                        ciphertext_sha256: flat.ciphertext_sha256,
+                        limits: flat.limits,
+                        kind: Browser {
+                            plan_sha256: flat.plan_sha256,
+                        },
+                    }))
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "receipt")]
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct StoredBrowserFields {
+        plan: browser_continuity::Plan,
+        payload: StoredBrowserExpectation,
+    }
+
+    /// Read-only parser accepting a stored browser declaration with either a
+    /// nested or earlier flat `payload`.
+    #[cfg(feature = "receipt")]
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct StoredBrowserDeclaration(pub super::BrowserHandoff);
+
+    #[cfg(feature = "receipt")]
+    impl<'de> Deserialize<'de> for StoredBrowserDeclaration {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            let fields = StoredBrowserFields::deserialize(deserializer)?;
+            Ok(Self(super::BrowserHandoff {
+                plan: fields.plan,
+                payload: fields.payload.0,
+            }))
+        }
+    }
+
+    /// `serde(deserialize_with)` adapter for an optional stored
+    /// `ApplicationsExpectation`.
+    pub fn deserialize_option_applications<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<ApplicationsExpectation>, D::Error> {
+        Option::<StoredApplicationsExpectation>::deserialize(deserializer)
+            .map(|value| value.map(|stored| stored.0))
+    }
+
+    /// `serde(deserialize_with)` adapter for an optional stored browser
+    /// declaration.
+    #[cfg(feature = "receipt")]
+    pub fn deserialize_option_browser<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<super::BrowserHandoff>, D::Error> {
+        Option::<StoredBrowserDeclaration>::deserialize(deserializer)
+            .map(|value| value.map(|stored| stored.0))
     }
 }
 
@@ -525,7 +763,22 @@ mod tests {
         }
     }
 
-    fn sample_browser_handoff(identity: [u8; 32]) -> BrowserHandoff {
+    fn sample_browser_expectation(plan_sha256: [u8; 32]) -> BrowserExpectation {
+        BrowserExpectation {
+            operation: BROWSER_OP.into(),
+            filename: BrowserExpectation::filename(BROWSER_OP).unwrap(),
+            setup_binding: "setup-binding".into(),
+            sealed_bytes: 512,
+            plaintext_bytes: 256,
+            entries: 2,
+            ciphertext_sha256: [6; 32],
+            limits: sample_limits(),
+            kind: Browser { plan_sha256 },
+        }
+    }
+
+    #[cfg(feature = "receipt")]
+    fn sample_browser_declaration(identity: [u8; 32]) -> BrowserHandoff {
         let plan = browser_continuity::Plan::new(
             "setup-binding".into(),
             identity,
@@ -544,20 +797,11 @@ mod tests {
         let plan_sha256: [u8; 32] = Sha256::digest(plan.encode().unwrap()).into();
         BrowserHandoff {
             plan,
-            payload: BrowserExpectation {
-                operation: BROWSER_OP.into(),
-                filename: BrowserExpectation::filename(BROWSER_OP).unwrap(),
-                setup_binding: "setup-binding".into(),
-                sealed_bytes: 512,
-                plaintext_bytes: 256,
-                entries: 2,
-                ciphertext_sha256: [6; 32],
-                limits: sample_limits(),
-                kind: Browser { plan_sha256 },
-            },
+            payload: sample_browser_expectation(plan_sha256),
         }
     }
 
+    #[cfg(feature = "receipt")]
     fn sample_service_sessions(protocol: u32) -> ServiceSessionsDeclaration {
         ServiceSessionsDeclaration {
             schema: 1,
@@ -589,6 +833,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "receipt")]
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     struct StubCurrentDevice {
@@ -635,27 +880,119 @@ mod tests {
             assert_refuses_unknown(&apps.kind);
         }
 
-        let key = [7u8; 32];
-        let browser = sample_browser_handoff(key);
+        let browser = sample_browser_expectation([9; 32]);
         browser.validate().unwrap();
         let browser_json = serde_json::to_value(&browser).unwrap();
-        assert!(browser_json["payload"].get("schema").is_none());
-        assert!(browser_json["payload"].get("purpose").is_none());
+        assert!(browser_json.get("schema").is_none());
+        assert!(browser_json.get("purpose").is_none());
         assert_eq!(
-            browser_json["payload"]["kind"]["plan_sha256"],
-            serde_json::json!(browser.payload.kind.plan_sha256)
+            browser_json["kind"]["plan_sha256"],
+            serde_json::json!(browser.kind.plan_sha256)
         );
         assert_eq!(
-            serde_json::from_value::<BrowserHandoff>(browser_json).unwrap(),
+            serde_json::from_value::<BrowserExpectation>(browser_json).unwrap(),
             browser
         );
         assert_refuses_unknown(&browser);
-        assert_refuses_unknown(&browser.payload);
-        assert_refuses_unknown(&browser.payload.kind);
+        assert_refuses_unknown(&browser.kind);
     }
 
     #[test]
-    fn home_sessions_and_mail_round_trip_and_refuse_unknown_fields() {
+    fn stored_expectation_readers_accept_nested_and_flat_and_refuse_unknown_fields() {
+        let home = sample_home_expectation();
+        assert_eq!(
+            serde_json::from_value::<stored::StoredHomeExpectation>(
+                serde_json::to_value(&home).unwrap()
+            )
+            .unwrap()
+            .0,
+            home
+        );
+        let mut flat_home = serde_json::json!({
+            "schema": 1,
+            "operation": home.operation,
+            "purpose": "home",
+            "filename": home.filename,
+            "setup_binding": home.setup_binding,
+            "sealed_bytes": home.sealed_bytes,
+            "plaintext_bytes": home.plaintext_bytes,
+            "entries": home.entries,
+            "runtime_sockets": home.kind.runtime_sockets,
+            "ciphertext_sha256": home.ciphertext_sha256,
+            "limits": home.limits,
+        });
+        assert_eq!(
+            serde_json::from_value::<stored::StoredHomeExpectation>(flat_home.clone())
+                .unwrap()
+                .0,
+            home
+        );
+        flat_home["extra"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<stored::StoredHomeExpectation>(flat_home).is_err());
+
+        let apps = sample_applications_expectation(1);
+        let mut flat_apps = serde_json::json!({
+            "schema": 1,
+            "operation": apps.operation,
+            "purpose": "flatpak_applications",
+            "filename": apps.filename,
+            "setup_binding": apps.setup_binding,
+            "sealed_bytes": apps.sealed_bytes,
+            "plaintext_bytes": apps.plaintext_bytes,
+            "entries": apps.entries,
+            "ciphertext_sha256": apps.ciphertext_sha256,
+            "manifest_sha256": apps.kind.manifest_sha256,
+            "limits": apps.limits,
+        });
+        assert_eq!(
+            serde_json::from_value::<stored::StoredApplicationsExpectation>(flat_apps.clone())
+                .unwrap()
+                .0,
+            apps
+        );
+        flat_apps["schema"] = serde_json::json!(2);
+        assert!(
+            serde_json::from_value::<stored::StoredApplicationsExpectation>(flat_apps.clone())
+                .is_err()
+        );
+        flat_apps["schema"] = serde_json::json!(1);
+        flat_apps["purpose"] = serde_json::json!("home");
+        assert!(
+            serde_json::from_value::<stored::StoredApplicationsExpectation>(flat_apps.clone())
+                .is_err()
+        );
+        flat_apps["purpose"] = serde_json::json!("flatpak_applications");
+        flat_apps["extra"] = serde_json::json!(1);
+        assert!(
+            serde_json::from_value::<stored::StoredApplicationsExpectation>(flat_apps).is_err()
+        );
+
+        let browser = sample_browser_expectation([9; 32]);
+        let mut flat_browser = serde_json::json!({
+            "schema": 1,
+            "operation": browser.operation,
+            "purpose": "browser_profiles",
+            "filename": browser.filename,
+            "setup_binding": browser.setup_binding,
+            "sealed_bytes": browser.sealed_bytes,
+            "plaintext_bytes": browser.plaintext_bytes,
+            "entries": browser.entries,
+            "ciphertext_sha256": browser.ciphertext_sha256,
+            "plan_sha256": browser.kind.plan_sha256,
+            "limits": browser.limits,
+        });
+        assert_eq!(
+            serde_json::from_value::<stored::StoredBrowserExpectation>(flat_browser.clone())
+                .unwrap()
+                .0,
+            browser
+        );
+        flat_browser["extra"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<stored::StoredBrowserExpectation>(flat_browser).is_err());
+    }
+
+    #[test]
+    fn home_and_mail_round_trip_and_refuse_unknown_fields() {
         let home_plan = PortableHomePlan {
             schema: 1,
             selection: PortableHomeSelection::FullHome,
@@ -684,6 +1021,20 @@ mod tests {
         );
         assert_refuses_unknown(&portable_home);
 
+        let mail = sample_mail_receipt();
+        let mail_json = serde_json::to_value(&mail).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ThunderbirdImportReceipt>(mail_json).unwrap(),
+            mail
+        );
+        assert_refuses_unknown(&mail);
+        assert_refuses_unknown(&mail.accounts[0]);
+        assert_refuses_unknown(&mail.accounts[0].folders[0]);
+    }
+
+    #[cfg(feature = "receipt")]
+    #[test]
+    fn sessions_and_browser_declarations_round_trip_and_refuse_unknown_fields() {
         let sessions_v1 = sample_service_sessions(1);
         sessions_v1.validate().unwrap();
         let v1_json = serde_json::to_value(&sessions_v1).unwrap();
@@ -707,17 +1058,20 @@ mod tests {
         assert_refuses_unknown(&sessions_v2);
         assert_refuses_unknown(&sessions_v2.sessions[0]);
 
-        let mail = sample_mail_receipt();
-        let mail_json = serde_json::to_value(&mail).unwrap();
+        let key = [7u8; 32];
+        let browser = sample_browser_declaration(key);
+        browser.validate().unwrap();
+        let browser_json = serde_json::to_value(&browser).unwrap();
+        assert!(browser_json["payload"].get("schema").is_none());
+        assert!(browser_json["payload"].get("purpose").is_none());
         assert_eq!(
-            serde_json::from_value::<ThunderbirdImportReceipt>(mail_json).unwrap(),
-            mail
+            serde_json::from_value::<BrowserHandoff>(browser_json).unwrap(),
+            browser
         );
-        assert_refuses_unknown(&mail);
-        assert_refuses_unknown(&mail.accounts[0]);
-        assert_refuses_unknown(&mail.accounts[0].folders[0]);
+        assert_refuses_unknown(&browser);
     }
 
+    #[cfg(feature = "receipt")]
     #[test]
     fn prepared_setup_receipt_round_trips_and_refuses_unknown_fields() {
         let key = [7u8; 32];
@@ -737,7 +1091,7 @@ mod tests {
                 applications: true,
             }),
             portable_flatpak: Some(sample_applications_expectation(2)),
-            browser: Some(sample_browser_handoff(key)),
+            browser: Some(sample_browser_declaration(key)),
             mail: vec![sample_mail_receipt()],
         };
         receipt.validate().unwrap();
@@ -774,8 +1128,7 @@ mod tests {
     }
 
     #[test]
-    fn flat_expectation_shapes_and_out_of_bound_receipts_are_refused() {
-        let key = [7u8; 32];
+    fn flat_expectation_shapes_and_out_of_bound_expectations_are_refused() {
         let apps_ciphertext = [4u8; 32];
         let apps_manifest = [5u8; 32];
         let browser_ciphertext = [6u8; 32];
@@ -828,7 +1181,12 @@ mod tests {
         let mut oversized_apps = sample_applications_expectation(1);
         oversized_apps.sealed_bytes = oversized_apps.limits.sealed_bound().unwrap() + 1;
         assert!(!oversized_apps.valid());
+    }
 
+    #[cfg(feature = "receipt")]
+    #[test]
+    fn out_of_bound_sessions_and_mismatched_browser_identity_are_refused() {
+        let key = [7u8; 32];
         let mut bad_sessions = sample_service_sessions(3);
         assert!(!bad_sessions.valid());
         bad_sessions.consumer_protocol = 2;
@@ -846,7 +1204,7 @@ mod tests {
             device_label: String::new(),
             portable_home: None,
             portable_flatpak: None,
-            browser: Some(sample_browser_handoff(key)),
+            browser: Some(sample_browser_declaration(key)),
             mail: Vec::new(),
         };
         assert!(!wrong_browser_identity.valid());

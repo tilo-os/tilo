@@ -287,9 +287,11 @@ impl Kind for Browser {
         status.insert("browser".to_owned(), true.into());
     }
     fn package(cx: &Context<Self>, directory: &Path) -> io::Result<(PathBuf, String)> {
-        let expected: crate::prepared::BrowserPayload =
-            serde_json::from_slice(&private_file(&directory.join("expectation.json"), 24576)?)
-                .map_err(|_| failure())?;
+        let expected = serde_json::from_slice::<
+            prepared_setup_model::stored::StoredBrowserExpectation,
+        >(&private_file(&directory.join("expectation.json"), 24576)?)
+        .map_err(|_| failure())?
+        .0;
         if expected != cx.declaration.payload {
             return Err(failure());
         }

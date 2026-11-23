@@ -117,8 +117,10 @@ impl Kind for Home {
     fn package(cx: &Context<Self>, directory: &Path) -> io::Result<(PathBuf, String)> {
         let receipt =
             continuation::private_file::<Self>(&directory.join("expectation.json"), 16 * 1024)?;
-        let expected: prepared_setup_model::HomeExpectation =
-            serde_json::from_slice(&receipt).map_err(|_| failure())?;
+        let expected =
+            serde_json::from_slice::<prepared_setup_model::stored::StoredHomeExpectation>(&receipt)
+                .map_err(|_| failure())?
+                .0;
         if !expected.valid() || expected.setup_binding != cx.declaration.setup_binding {
             return Err(failure());
         }

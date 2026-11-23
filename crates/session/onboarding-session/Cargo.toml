@@ -79,6 +79,9 @@ tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+imager-backend = { path = "../../platform/imager-backend", features = ["test-support"] }
+
 [lints]
 workspace = true
 
