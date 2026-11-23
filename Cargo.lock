@@ -14334,8 +14334,10 @@ dependencies = [
  "tilo-files",
  "tilo-formats",
  "tilo-lock",
+ "tilo-socket",
  "tilo-test-env",
  "tokio",
+ "windows-sys 0.61.2",
  "wire-frame",
  "workspace-hack",
 ]
@@ -17214,7 +17216,6 @@ dependencies = [
  "ush",
  "uuid",
  "video-editor",
- "video-player",
  "weather",
  "wire-frame",
  "word-processor",
@@ -17280,6 +17281,7 @@ dependencies = [
  "tilo-server-session",
  "tilo-session-actions",
  "tilo-session-client",
+ "tilo-socket",
  "tilo-test-env",
  "tilo-user-identity",
  "tokio",
@@ -17567,8 +17569,10 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-actions",
+ "tilo-content-device",
  "tilo-failure",
  "tilo-formats",
+ "tilo-media",
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-rich-edit",
@@ -19383,7 +19387,6 @@ dependencies = [
  "libc",
  "postcard",
  "rand_core 0.10.0",
- "registry-types",
  "rustix 1.1.6",
  "serde",
  "serde_bytes",
@@ -19747,12 +19750,25 @@ dependencies = [
  "tilo-lock",
  "tilo-paths",
  "tilo-platform-caps",
+ "tilo-projector",
  "tilo-test-env",
  "tracing",
  "url",
  "wasm-bindgen",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-media-controls"
+version = "0.1.0"
+dependencies = [
+ "tilo-media",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
 ]
 
 [[package]]
@@ -20175,7 +20191,6 @@ dependencies = [
  "tilo-rt",
  "tilo-seal",
  "tilo-server-protocol",
- "tilo-server-session",
  "tilo-session-client",
  "tilo-session-core",
  "tilo-test-env",
@@ -20488,6 +20503,13 @@ dependencies = [
  "tracing",
  "workspace-hack",
  "zbus",
+]
+
+[[package]]
+name = "tilo-page-engine"
+version = "0.1.0"
+dependencies = [
+ "tilo-webview",
 ]
 
 [[package]]
@@ -21206,6 +21228,7 @@ dependencies = [
  "tilo-server-protocol",
  "tilo-server-session",
  "tilo-session-client",
+ "tilo-socket",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",
@@ -21702,6 +21725,7 @@ dependencies = [
  "postcard",
  "resvg",
  "rqrr",
+ "runtime-bundle",
  "runtime-collab",
  "runtime-portal",
  "rustix 1.1.6",
@@ -22136,6 +22160,8 @@ version = "0.1.0"
 dependencies = [
  "tempfile",
  "tilo-test-env",
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -23482,6 +23508,7 @@ dependencies = [
  "tilo-files",
  "tilo-formats",
  "tilo-history",
+ "tilo-media",
  "tilo-net",
  "tilo-paths",
  "tilo-recurrence",
@@ -23597,6 +23624,7 @@ dependencies = [
  "tilo-clipboard",
  "tilo-content",
  "tilo-desktop-model",
+ "tilo-dialogs",
  "tilo-font-catalog",
  "tilo-render-protocol",
  "tilo-ui",
@@ -25304,30 +25332,6 @@ dependencies = [
  "tracing",
  "uuid",
  "video-editor",
- "workspace-hack",
-]
-
-[[package]]
-name = "video-player"
-version = "0.1.0"
-dependencies = [
- "fnv",
- "runtime-dylib",
- "serde",
- "serde_json",
- "settings-model",
- "taffy",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-clock",
- "tilo-files",
- "tilo-history",
- "tilo-media",
- "tilo-paths",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tracing",
  "workspace-hack",
 ]
 
@@ -28946,6 +28950,7 @@ dependencies = [
  "tilo-mail-session",
  "tilo-mcp",
  "tilo-media",
+ "tilo-media-controls",
  "tilo-messaging",
  "tilo-messaging-protocol",
  "tilo-messaging-service",
@@ -29218,7 +29223,6 @@ dependencies = [
  "version-compare",
  "version_check",
  "video-editor",
- "video-player",
  "vte",
  "wacore",
  "wacore-appstate",
