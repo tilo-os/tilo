@@ -1,13 +1,13 @@
 //! The metadata the runtime reads is the compiler's own `tilolang.meta` (`PackageMeta`).
 //! This module re-exports it and adds what only the runtime needs: how a field's merge and
-//! type become a [`FieldKind`], and how a type travels through wasm.
+//! type become a [`FieldKind`].
 
 pub use tilolang::meta::{
     ActionMeta, AnchorMeta, DefaultMeta, DefaultViewMeta, EnumMeta, FieldMeta, FnMeta,
     NamedRootMeta, PackageMeta, ParamMeta, ProposalMeta, Reach, StateMeta, TriggerArgMeta,
     TriggerMeta, TriggerWhenMeta, TypeMeta, VariantMeta, ViewMeta,
 };
-pub use tilolang::types::{EffectClass, MergeKind, Ty, TypeKey};
+pub use tilolang::types::{EffectClass, MergeKind, Repr, Ty, TypeKey};
 
 /// Packages are described by the compiler's metadata.
 pub type Meta = PackageMeta;
@@ -26,27 +26,9 @@ pub enum FieldKind {
     Map,
 }
 
-/// How a value of a type is passed to and from wasm.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Repr {
-    I64,
-    F64,
-    Bool,
-    Handle,
-}
-
 /// Parse a type as written in metadata; unqualified record names belong to `app`.
 pub fn parse_ty(text: &str, app: &str) -> Result<Ty, String> {
     Ty::parse_meta(text, app).ok_or_else(|| format!("cannot read the type `{text}`"))
-}
-
-pub fn repr(ty: &Ty) -> Repr {
-    match ty {
-        Ty::Int | Ty::Choice(_) => Repr::I64,
-        Ty::Float | Ty::Length(_) => Repr::F64,
-        Ty::Bool => Repr::Bool,
-        _ => Repr::Handle,
-    }
 }
 
 /// The merge kind of a field of type `ty`.
