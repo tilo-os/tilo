@@ -2,8 +2,6 @@
 
 use super::material;
 use anyhow::{Context as _, Result, bail};
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use tilo_rollback::argv;
 use tilo_rollback::exec::{Runner, require};
@@ -29,14 +27,12 @@ pub fn write_profiles(dir: &Path, networks: &[material::Network]) -> Result<Vec<
             "tilo-unlock-{}.nmconnection",
             network.id.replace(' ', "_")
         ));
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)
-            .with_context(|| format!("could not write {}", path.display()))?;
-        file.write_all(network.keyfile.as_bytes())?;
+        tilo_files::native::atomic::write_regenerable_with_mode(
+            &path,
+            network.keyfile.as_bytes(),
+            0o600,
+        )
+        .with_context(|| format!("could not write {}", path.display()))?;
         written.push(path);
     }
     Ok(written)

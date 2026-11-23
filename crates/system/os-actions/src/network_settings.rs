@@ -1303,8 +1303,7 @@ fn openvpn_settings(
 /// Saves an inline key or certificate as a file only this person reads, where the plugin keeps them;
 /// its path.
 fn save_inline(id: &str, tag: &str, body: &str) -> Result<String, String> {
-    use std::io::Write as _;
-    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+    use std::os::unix::fs::DirBuilderExt as _;
     let data = std::env::var_os("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
         .filter(|dir| dir.is_absolute())
@@ -1319,14 +1318,7 @@ fn save_inline(id: &str, tag: &str, body: &str) -> Result<String, String> {
         .create(&dir)
         .map_err(|error| format!("could not keep the certificates: {error}"))?;
     let path = dir.join(format!("{}-{tag}.pem", interface_name(id)));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&path)
-        .map_err(|error| format!("could not keep the certificates: {error}"))?;
-    file.write_all(body.as_bytes())
+    tilo_files::native::atomic::write_regenerable_with_mode(&path, body.as_bytes(), 0o600)
         .map_err(|error| format!("could not keep the certificates: {error}"))?;
     Ok(path.to_string_lossy().into_owned())
 }
@@ -1899,6 +1891,34 @@ mod tests {
                 "IPsec (strongSwan)"
             );
             assert_eq!(vpn_service_name("com.example.tunnel"), "tunnel");
+        }
+
+        phase openvpn_inline_certificates_keep_existing_directory_mode_and_write_0600_files;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let home = tempfile::tempdir().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_DATA_HOME", home.path());
+            let dir = home.path().join("networkmanagement/certificates/nm-openvpn");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+            const PEM: &str = "-----BEGIN CERTIFICATE-----
+-----END CERTIFICATE-----
+";
+            let written = save_inline("Work", "ca", PEM).unwrap();
+            let path = std::path::Path::new(&written);
+            assert_eq!(
+                std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+                0o755,
+                "existing certificate directory permissions must stay untouched"
+            );
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(std::fs::read_to_string(path).unwrap(), PEM);
         }
     }
 
