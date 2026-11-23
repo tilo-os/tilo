@@ -66,7 +66,7 @@ impl HostStepServices for Transforms {
             .ok_or("this device has not opened its workspaces yet")?
             .workspaces()
             .clone();
-        if !workspaces.runs_agents() {
+        if workspaces.agent_keys().is_none() {
             return Err("this device runs no agents of its workspaces".into());
         }
         let workspace = WorkspaceId::parse(request.workspace)

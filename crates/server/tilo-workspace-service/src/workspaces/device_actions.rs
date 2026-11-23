@@ -642,12 +642,8 @@ impl super::Workspaces {
         self.inner.jobs.agents.read_recover().clone()
     }
 
-    /// Whether this device runs an agent engine.
-    pub(crate) fn runs_agents(&self) -> bool {
-        self.agent_keys().is_some()
-    }
-
     /// This device runs `engine` from now on.
+    #[cfg(any(test, all(feature = "agents", not(target_arch = "wasm32"))))]
     pub(crate) fn run_agents(&self, engine: Arc<dyn crate::work::AgentEngine>) {
         *self.inner.jobs.agents.write_recover() = Some(engine);
     }
