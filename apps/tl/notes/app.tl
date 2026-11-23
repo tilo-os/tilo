@@ -8,7 +8,8 @@ app so.tilo.notes "Notes" (
 
 use so.tilo.lang.discussion as discussion
 
-/// A note: a title, a body, the note it stands under and the tags people gave it.
+/// A note: a title, a body, the note it stands under, the tags people gave it and the
+/// reactions they left on it.
 type Note (untitled: "Untitled") {
     title: Text
     body: RichText
@@ -19,6 +20,12 @@ type Note (untitled: "Untitled") {
     parent: Option<Note>
     pinned: Bool = false
     tags: Set<Text>
+    /// Who reacted to the note, by emoji: the person and agent each pill in its header stands
+    /// for, and whose own reaction a press on it takes back.
+    reactions: Map<Set<Actor>>
+    /// The reactions it had in the native Notes app, each emoji with how many reacted with it:
+    /// who reacted there is not carried, since this app names people only as its own members.
+    reacted: Text = ""
     /// The file the note was imported from, by the address of its content: importing the same
     /// file again opens this note rather than making a second one.
     source: Text = ""
@@ -128,13 +135,17 @@ migration action carry_native_notebook(nb: Notebook) {
         let native = page.rich.get("body") ?? RichText("")
         let markdown = native.markdown
         let body = native.relinked(links: links, sources: picture_sources(markdown, pictures))
+        let reacted = reactions_said(page.lists.get("reactions") ?? [])
         let made = if end == "gone" {
-            nb.set_aside.insert(Note(title: title, body: body), id: page.id)
+            nb.set_aside.insert(Note(title: title, body: body, reacted: reacted), id: page.id)
         } else {
             let parent = if end == "top" {
                 carried.get(page.texts.get("parent") ?? "")
             } else { .none }
-            nb.notes.insert(Note(title: title, body: body, parent: parent), id: page.id)
+            nb.notes.insert(
+                Note(title: title, body: body, parent: parent, reacted: reacted),
+                id: page.id,
+            )
         }
         for tag in page.lists.get("tags") ?? [] {
             if let name = tags.get(tag) { made.tags.add(name) }
@@ -217,6 +228,41 @@ fn chain_end(parents: Map<Text>, id: Text, left: Int) -> Text {
             "top"
         } else if left <= 0 { "circle" } else { chain_end(parents, parent, left - 1) }
     } else { "gone" }
+}
+
+/// The reactions a native page kept, each key naming an emoji and then who reacted with it, as
+/// words: each emoji and how many reacted with it, in the order they were first used. Who
+/// reacted there is not carried, since this app names people only as its own members.
+fn reactions_said(keys: List<Text>) -> Text {
+    said_from(keys.map(k -> emoji_of(k)), 0, [])
+}
+
+/// [`reactions_said`] of `emoji` from the `at`th, past the emoji already `told`.
+fn said_from(emoji: List<Text>, at: Int, told: List<Text>) -> Text {
+    if let e = emoji.at(at) {
+        if told.contains(e) {
+            said_from(emoji, at + 1, told)
+        } else {
+            let here = "{e} {emoji.count(x -> x == e)}"
+            let rest = said_from(emoji, at + 1, [told, [e]].flat_map(x -> x))
+            if rest == "" { here } else { "{here}  {rest}" }
+        }
+    } else { "" }
+}
+
+/// The emoji a native reaction's key names: what stands before its first separator. The key
+/// ends in who reacted, written in hex, after the last one.
+fn emoji_of(key: Text) -> Text {
+    let unhexed = without_hex(key)
+    let separator = unhexed.slice(unhexed.len() - 1, unhexed.len())
+    key.split(separator).first() ?? key
+}
+
+/// `key` without the hex digits it ends in.
+fn without_hex(key: Text) -> Text {
+    if key.len() > 0 and "0123456789abcdef".contains(key.slice(key.len() - 1, key.len())) {
+        without_hex(key.slice(0, key.len() - 1))
+    } else { key }
 }
 
 /// Pins or unpins a note.
@@ -381,6 +427,13 @@ action tag(n: Note, t: Text) (icon: .tag, group: "Tags") {
 /// Untags a note.
 action untag(n: Note, t: Text) (label: "Untag", group: "Tags") {
     n.tags.remove(t)
+}
+
+/// Adds your reaction with an emoji to a note, or takes it back when you had reacted with it: a
+/// press on one of its pills, or the pick of the one its add button opened.
+action react(n: Note, emoji: Text) (icon: .smile_plus, label: "React") {
+    let mine = if let who = n.reactions.get(emoji) { who.any(p -> p == invoker) } else { false }
+    if mine { n.reactions.remove(emoji, invoker) } else { n.reactions.add(emoji, invoker) }
 }
 
 /// Puts a picture in a note, where its words end: the person picks the file, and the note
@@ -956,11 +1009,11 @@ view note_editor(n: Note) {
     }
 }
 
-/// The open note: its title, where it stands and when it was written, its tags as chips, its
-/// body, what links to it and its discussion (its history is the window's, under the window bar's
-/// History). Its body's `[[` writes a link to another of the notebook's notes. Its editor reports
-/// the note's headings — their words and how deep each stands — which the window's map of them is
-/// drawn from, and shows the heading a person chose there.
+/// The open note: its title, where it stands and when it was written, its tags as chips and its
+/// reactions, its body, what links to it and its discussion (its history is the window's, under
+/// the window bar's History). Its body's `[[` writes a link to another of the notebook's notes.
+/// Its editor reports the note's headings — their words and how deep each stands — which the
+/// window's map of them is drawn from, and shows the heading a person chose there.
 template view note_page(
     n: Note,
     headings: State<List<Text>>,
@@ -985,6 +1038,15 @@ template view note_page(
                         }
                     }
                 }
+            }
+            // Who reacted to the note, a pill per emoji: a press is the person's own reaction
+            // with it, and the add button opens the picker. The reactions it had in the native
+            // Notes app stand under them, naming how many reacted with each and no one here.
+            ui.Reactions(reactions: n.reactions) {
+                on toggle(e): react(n, e)
+            }
+            if n.reacted != "" {
+                text("Reacted in the native Notes: {n.reacted}", role: .caption, secondary: true)
             }
         }
         // What `[[` offers: the notebook's notes that hold what is typed in it, asked of the
@@ -1429,6 +1491,11 @@ scenario "a week of notes" {
         ),
     )
     plan.tags.add("planning")
+    let ada = person("Ada")
+    let leo = person("Leo")
+    invoke(react(plan, "🎉"), by: ada, at: 2026-06-29T07:05Z)
+    invoke(react(plan, "🎉"), by: leo, at: 2026-06-29T07:06Z)
+    invoke(react(plan, "🚀"), by: leo, at: 2026-06-29T07:06Z)
     let standups = notebook.notes.insert(
         Note(title: "Standups", body: RichText("Ten minutes, every morning."), parent: plan),
     )

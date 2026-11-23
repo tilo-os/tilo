@@ -121,6 +121,34 @@ fn desk_picture(documents: &[(String, AutoCommit)]) -> Vec<u8> {
     }
 }
 
+/// The fixture's notebook with the reactions the native app kept on one of its pages, keyed as
+/// its `Reactions` field keys them: the emoji, who reacted's persona, and their id in hex.
+fn with_reactions(documents: &[(String, AutoCommit)]) -> Vec<(String, AutoCommit)> {
+    documents
+        .iter()
+        .map(|(id, doc)| {
+            let mut doc = doc.clone();
+            if id.starts_with("derived:part.") {
+                let (_, pages) = doc.get(automerge::ROOT, "pages").unwrap().unwrap();
+                let (_, page) = doc.get(&pages, HANDBOOK).unwrap().unwrap();
+                let (_, fields) = doc.get(&page, "v").unwrap().unwrap();
+                let reactions = doc.put_object(&fields, "reactions", ObjType::Map).unwrap();
+                for (emoji, who) in [("🎉", "ada"), ("🎉", "bob"), ("👍", "ada")] {
+                    let hex = automerge::ActorId::from(who.as_bytes()).to_hex_string();
+                    let key = format!("{emoji}\u{1f}\u{1f}{hex}");
+                    let reaction = doc
+                        .put_object(&reactions, key.as_str(), ObjType::Map)
+                        .unwrap();
+                    doc.put(&reaction, "emoji", emoji).unwrap();
+                    doc.put(&reaction, "by", who).unwrap();
+                }
+                doc.commit();
+            }
+            (id.clone(), doc)
+        })
+        .collect()
+}
+
 /// Ada's workspace with the tilolang Notes on `device`, the native app's `documents` beside it,
 /// and its notebook as the window opens it.
 fn opened(documents: &[(String, AutoCommit)], device: &Device) -> (Replica, ResourceRef) {
@@ -395,6 +423,33 @@ fn a_native_notebook_is_carried_over_once_as_one_change() {
     );
     step(&ada, true);
     assert_carried(&ada, &notebook, &device, &picture);
+}
+
+#[test]
+fn a_native_page_keeps_the_reactions_it_had_as_words() {
+    let documents = with_reactions(&native_documents());
+    let device = Device::default();
+    let (ada, notebook) = opened(&documents, &device);
+    assert_eq!(ada.host.migrate(), 1, "the notebook's migration runs");
+    assert_eq!(ada.commit(), 1);
+    let notes = listed(&ada, &notebook, "notes");
+    let handbook = notes.iter().find(|n| id_of(n) == HANDBOOK).unwrap();
+    assert_eq!(
+        text(&ada, handbook, "reacted"),
+        "🎉 2  👍 1",
+        "each emoji and how many reacted with it, who reacted there not carried"
+    );
+    let setup = notes.iter().find(|n| id_of(n) == SETUP).unwrap();
+    assert_eq!(
+        text(&ada, setup, "reacted"),
+        "",
+        "a page nobody reacted to says nothing of reactions"
+    );
+    assert_eq!(
+        read(&ada, handbook, "reactions"),
+        Value::List(Vec::new()),
+        "the reactions of this notebook are the members' own, and none carried one"
+    );
 }
 
 /// The person of `replica` takes their last step back, or makes it again.

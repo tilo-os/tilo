@@ -32,6 +32,7 @@ __all__ = [
     "AddTextArgs",
     "TagArgs",
     "UntagArgs",
+    "ReactArgs",
     "InsertImageArgs",
     "KeepImageArgs",
     "MoveToArgs",
@@ -86,6 +87,11 @@ UntagArgs = TypedDict("UntagArgs", {
 })
 """The arguments of `untag`."""
 
+ReactArgs = TypedDict("ReactArgs", {
+    "emoji": "str",
+})
+"""The arguments of `react`."""
+
 InsertImageArgs = TypedDict("InsertImageArgs", {
     "image": "Any",
 })
@@ -137,13 +143,15 @@ ImportDroppedArgs = TypedDict("ImportDroppedArgs", {
 
 class Note(Resource):
     """Note — `tl.so.tilo.notes.Note`."""
-    __surface__ = "so.tilo.notes@49e10e65bea2391a"
+    __surface__ = "so.tilo.notes@cd7120a0391e71c9"
     dpj7scfe: str  # title
     olsyp3aw: str  # body
     pmjerv63: dict[str, str]  # images
     ssu2tbnf: Note | None  # parent
     gfk6rqxp: bool  # pinned
     xcpasjg7: list[str]  # tags
+    ddxl7oum: dict[str, list[str]]  # reactions
+    t6igvr56: str  # reacted
     erijxfd3: str  # source
     uquoltho: str  # origin
     eo4enwxh: str  # by
@@ -253,6 +261,14 @@ class Note(Resource):
         """Runs `untag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("untag", items)
 
+    def react(self, *, emoji: str) -> None:
+        """Adds your reaction with an emoji to a note, or takes it back when you had reacted with it: a press on one of its pills, or the pick of the one its add button opened."""
+        return self.action("react", emoji=emoji)
+
+    def react_many(self, items: list[ReactArgs]) -> list[dict[str, Any]]:
+        """Runs `react` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("react", items)
+
     def insert_image(self, *, image: Any) -> None:
         """Puts a picture in a note, where its words end: the person picks the file, and the note keeps the address of its content rather than the picture, and the name it came in as."""
         return self.action("insert_image", image=image)
@@ -279,12 +295,12 @@ class Note(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_child", "pin", "pin_many", "indent", "indent_many", "outdent", "outdent_many", "move_up", "move_up_many", "move_down", "move_down_many", "retitle", "retitle_many", "add_text", "add_text_many", "tag", "tag_many", "untag", "untag_many", "insert_image", "insert_image_many", "keep_image", "keep_image_many", "export_markdown", "export_note"})
+    __actions__ = frozenset({"new_child", "pin", "pin_many", "indent", "indent_many", "outdent", "outdent_many", "move_up", "move_up_many", "move_down", "move_down_many", "retitle", "retitle_many", "add_text", "add_text_many", "tag", "tag_many", "untag", "untag_many", "react", "react_many", "insert_image", "insert_image_many", "keep_image", "keep_image_many", "export_markdown", "export_note"})
 
 
 class Notebook(Resource):
     """Notebook — `tl.so.tilo.notes.Notebook`."""
-    __surface__ = "so.tilo.notes@49e10e65bea2391a"
+    __surface__ = "so.tilo.notes@cd7120a0391e71c9"
     tmqqtkeb: list[Entry[Note]]  # notes
     qgq6mcy7: list[Entry[Note]]  # set_aside
 
@@ -424,5 +440,5 @@ class Notebook(Resource):
 
 class Notes(Resource):
     """Notes — `tl.so.tilo.notes`."""
-    __surface__ = "so.tilo.notes@49e10e65bea2391a"
+    __surface__ = "so.tilo.notes@cd7120a0391e71c9"
 

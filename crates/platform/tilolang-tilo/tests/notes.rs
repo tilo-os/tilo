@@ -389,3 +389,139 @@ tilo_test_env::scenario! {
         }
     }
 }
+
+/// Who reacted with each emoji, as the note's page shows it in its header's strip: the emoji and
+/// who reacted, sorted so the order two replicas group them in does not matter.
+fn reacted_shown(view: &mut ViewInstance) -> Vec<(String, Vec<String>)> {
+    view.poll_patches().unwrap();
+    let strip = view
+        .tree()
+        .first_of_kind("ui.Reactions")
+        .expect("the note's page shows its reactions");
+    assert!(
+        strip.events.contains_key("toggle"),
+        "a pill is a press: {strip:?}"
+    );
+    let Some(Value::Map(entries)) = strip.props.get("reactions") else {
+        panic!("reactions as a map: {:?}", strip.props);
+    };
+    let mut shown: Vec<(String, Vec<String>)> = entries
+        .iter()
+        .map(|(emoji, who)| {
+            let Value::List(who) = who else {
+                panic!("who reacted, as a set: {who:?}");
+            };
+            let who = who
+                .iter()
+                .map(|p| match p {
+                    Value::Actor(p) => p.id().to_owned(),
+                    other => panic!("an actor: {other:?}"),
+                })
+                .collect();
+            (emoji.as_text().unwrap_or_default().to_owned(), who)
+        })
+        .collect();
+    for (_, who) in &mut shown {
+        who.sort();
+    }
+    shown.sort();
+    shown
+}
+
+/// Who reacted with each emoji, as the note's `reactions` field holds it.
+fn reacted_field(ada: &Replica, note: &ResourceRef) -> Vec<(String, Vec<String>)> {
+    let Value::List(entries) = ada.host.runtime().read(note, "reactions").unwrap() else {
+        panic!("the reactions are a map");
+    };
+    let mut held: Vec<(String, Vec<String>)> = entries
+        .into_iter()
+        .map(|entry| {
+            let Value::Tuple(pair) = entry else {
+                panic!("a reaction is its emoji and who: {entry:?}");
+            };
+            let [emoji, who] = pair.as_slice() else {
+                panic!("a reaction is its emoji and who: {pair:?}");
+            };
+            let (Value::Text(emoji), Value::List(who)) = (emoji, who) else {
+                panic!("a reaction is its emoji and who: {pair:?}");
+            };
+            let mut who: Vec<String> = who
+                .iter()
+                .map(|p| match p {
+                    Value::Actor(p) => p.id().to_owned(),
+                    other => panic!("an actor: {other:?}"),
+                })
+                .collect();
+            who.sort();
+            (emoji.clone(), who)
+        })
+        .collect();
+    held.sort();
+    held
+}
+
+#[test]
+fn two_people_react_to_a_note_and_its_page_shows_who_reacted() {
+    let (ada, notebook) = workspace();
+    let plan = note(&ada, &notebook, "Q3 plan");
+    let ben = ada.fork("ben", &[DISCUSSION, NOTES]);
+    let mut ada_page = ada.host.open_resource(&plan, None).unwrap();
+    let mut ben_page = ben.host.open_resource(&plan, None).unwrap();
+    assert!(
+        reacted_shown(&mut ada_page).is_empty(),
+        "no reactions yet, and the strip's add control is offered"
+    );
+
+    // Both react with the same emoji before either hears of the other's, and Ben with another.
+    call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "react",
+        vec![Value::resource(&plan), Value::text("👍")],
+    );
+    ada.commit();
+    call(
+        &ben,
+        "ben",
+        NOTES_APP,
+        "react",
+        vec![Value::resource(&plan), Value::text("👍")],
+    );
+    call(
+        &ben,
+        "ben",
+        NOTES_APP,
+        "react",
+        vec![Value::resource(&plan), Value::text("🎉")],
+    );
+    ben.commit();
+    ada.sync_with(&ben);
+    let both = vec![
+        ("🎉".to_owned(), vec!["ben".to_owned()]),
+        ("👍".to_owned(), vec!["ada".to_owned(), "ben".to_owned()]),
+    ];
+    for view in [&mut ada_page, &mut ben_page] {
+        assert_eq!(reacted_shown(view), both, "neither reaction is lost");
+    }
+    assert_eq!(reacted_field(&ada, &plan), both);
+
+    // Ada's second press takes hers back; Ben's stays, and both replicas show it so.
+    call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "react",
+        vec![Value::resource(&plan), Value::text("👍")],
+    );
+    ada.commit();
+    ada.sync_with(&ben);
+    let bens = vec![
+        ("🎉".to_owned(), vec!["ben".to_owned()]),
+        ("👍".to_owned(), vec!["ben".to_owned()]),
+    ];
+    for view in [&mut ada_page, &mut ben_page] {
+        assert_eq!(reacted_shown(view), bens, "a second press takes yours back");
+    }
+    assert_eq!(reacted_field(&ada, &plan), bens);
+}

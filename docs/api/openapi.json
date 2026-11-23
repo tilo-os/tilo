@@ -30137,6 +30137,7 @@
             "enum": [
               "title",
               "body",
+              "reacted",
               "source",
               "origin",
               "by",
@@ -30329,6 +30330,18 @@
           "t"
         ],
         "description": "Untags a note."
+      },
+      "tl.so.tilo.notes.Note.react.Arguments": {
+        "type": "object",
+        "properties": {
+          "emoji": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "emoji"
+        ],
+        "description": "Adds your reaction with an emoji to a note, or takes it back when you had reacted with it: a\npress on one of its pills, or the pick of the one its add button opened."
       },
       "tl.so.tilo.notes.Note.insert_image.Arguments": {
         "type": "object",
@@ -41236,6 +41249,12 @@
       "resource": "tl.so.tilo.notes.Note",
       "action": "untag",
       "arguments": "#/components/schemas/tl.so.tilo.notes.Note.untag.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
+      "action": "react",
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.react.Arguments"
     },
     {
       "app": "so.tilo.notes",

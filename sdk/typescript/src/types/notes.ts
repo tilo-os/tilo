@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.notes@49e10e65bea2391a";
+export const SURFACE = "so.tilo.notes@cd7120a0391e71c9";
 
 /** The arguments of `pin`. */
 export interface PinArgs {
@@ -65,6 +65,11 @@ export interface TagArgs {
 /** The arguments of `untag`. */
 export interface UntagArgs {
   t: string;
+}
+
+/** The arguments of `react`. */
+export interface ReactArgs {
+  emoji: string;
 }
 
 /** The arguments of `insert_image`. */
@@ -124,6 +129,8 @@ export interface Note extends tilo.Resource {
   ssu2tbnf: Note | null;  // parent
   gfk6rqxp: boolean;  // pinned
   xcpasjg7: string[];  // tags
+  ddxl7oum: Record<string, string[]>;  // reactions
+  t6igvr56: string;  // reacted
   erijxfd3: string;  // source
   uquoltho: string;  // origin
   eo4enwxh: string;  // by
@@ -183,6 +190,12 @@ export interface Note extends tilo.Resource {
   }): Promise<void>;
   /** Runs `untag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   untagMany(items: UntagArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Adds your reaction with an emoji to a note, or takes it back when you had reacted with it: a press on one of its pills, or the pick of the one its add button opened. */
+  react(args: {
+    emoji: string;
+  }): Promise<void>;
+  /** Runs `react` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  reactMany(items: ReactArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Puts a picture in a note, where its words end: the person picks the file, and the note keeps the address of its content rather than the picture, and the name it came in as. */
   insert_image(args: {
     image: unknown;
@@ -203,7 +216,7 @@ export interface Note extends tilo.Resource {
 
 /** The actions `Note` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const NOTE_ACTIONS = ["new_child", "pin", "pinMany", "indent", "indentMany", "outdent", "outdentMany", "move_up", "move_upMany", "move_down", "move_downMany", "retitle", "retitleMany", "add_text", "add_textMany", "tag", "tagMany", "untag", "untagMany", "insert_image", "insert_imageMany", "keep_image", "keep_imageMany", "export_markdown", "export_note"] as const;
+export const NOTE_ACTIONS = ["new_child", "pin", "pinMany", "indent", "indentMany", "outdent", "outdentMany", "move_up", "move_upMany", "move_down", "move_downMany", "retitle", "retitleMany", "add_text", "add_textMany", "tag", "tagMany", "untag", "untagMany", "react", "reactMany", "insert_image", "insert_imageMany", "keep_image", "keep_imageMany", "export_markdown", "export_note"] as const;
 
 /** The `tl.so.tilo.notes.Note` kind at `path`. */
 export function note(ws: tilo.Workspace, path: string): Note {

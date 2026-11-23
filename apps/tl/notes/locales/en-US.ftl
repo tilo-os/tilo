@@ -4,7 +4,7 @@
 d-so-tilo-notes = Notes
 
 d-mavvhka7 = Note
-    .doc = A note: a title, a body, the note it stands under and the tags people gave it.
+    .doc = A note: a title, a body, the note it stands under, the tags people gave it and the reactions they left on it.
     .noun = { $count ->
         [one] note
        *[other] notes
@@ -23,6 +23,12 @@ d-ssu2tbnf = Parent
 d-gfk6rqxp = Pinned
 
 d-xcpasjg7 = Tags
+
+d-ddxl7oum = Reactions
+    .doc = Who reacted to the note, by emoji: the person and agent each pill in its header stands for, and whose own reaction a press on it takes back.
+
+d-t6igvr56 = Reacted
+    .doc = The reactions it had in the native Notes app, each emoji with how many reacted with it: who reacted there is not carried, since this app names people only as its own members.
 
 d-erijxfd3 = Source
     .doc = The file the note was imported from, by the address of its content: importing the same file again opens this note rather than making a second one.
@@ -171,6 +177,11 @@ d-3u3bevec = Untag
 
 d-3u3bevec-t = T
 
+d-jkqp27g7 = React
+    .doc = Adds your reaction with an emoji to a note, or takes it back when you had reacted with it: a press on one of its pills, or the pick of the one its add button opened.
+
+d-jkqp27g7-emoji = Emoji
+
 d-4s5iqnfo = Insert image
     .doc = Puts a picture in a note, where its words end: the person picks the file, and the note keeps the address of its content rather than the picture, and the name it came in as.
     .did = added an image
@@ -239,6 +250,7 @@ d-i653dg7r = Append to note~present
 
 d-akcqjax3 = Notebook
     .w-outline = Outline
+    .w-reacted-in-the-native-notes = Reacted in the native Notes: { $reacted }
     .w-write-something = Write something
 
 d-x4im3xs5 = Notebook head
@@ -263,6 +275,7 @@ d-kdl43aw7 = Notes
 d-xqxkoqbj = Note row
 
 d-6wqou47w = Note editor
+    .w-reacted-in-the-native-notes = Reacted in the native Notes: { $reacted }
     .w-write-something = Write something
 
 d-nki6assy = Note details
