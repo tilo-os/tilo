@@ -22,9 +22,8 @@
 #   artifacts.sha256                 every file above
 #
 # A release identity is TILO_INSTALLER_RELEASE_TAG, TILO_INSTALLER_VERSION and
-# TILO_INSTALLER_CHANNEL, as apps/imager/packaging/package-install-medium.sh reads them. The
-# default is a rehearsal of the tree's commit: it is a valid payload for every producer and
-# verifier, and names no release that could be published.
+# TILO_INSTALLER_CHANNEL, as apps/imager/packaging/package-install-medium.sh reads them; without
+# them it follows the run's ref, as every release step does.
 #
 # With TILO_INSTALLER_TARGET_OCI naming an offline target (installer-medium.sh's own variables
 # beside it), the medium carries that target and is packaged only as a qcow2: the Windows host
@@ -44,14 +43,15 @@ case $arch in x86_64|aarch64) ;; *) die "unknown architecture: $arch" ;; esac
 source_digest=$(tr -d '[:space:]' < "$in/digest")
 [[ $source_digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "$in/digest does not name an image: $source_digest"
 
-if [ -n "${TILO_INSTALLER_RELEASE_TAG:-}" ]; then
-  release_tag=$TILO_INSTALLER_RELEASE_TAG
-else
-  [[ ${T_COMMIT:-} =~ ^[0-9a-f]{40}$ ]] || die "T_COMMIT is not a full commit: ${T_COMMIT:-unset}"
-  release_tag=rehearsal-$T_COMMIT
-fi
-version=${TILO_INSTALLER_VERSION:-0.0.0}
-channel=${TILO_INSTALLER_CHANNEL:-rehearsal}
+# A tag run builds the release it names; any other run builds a dry run whose payload names no
+# release that could be published, and which every producer and verifier still reads.
+case ${T_REF:-} in
+  tag:imager-v*) default_tag=${T_REF#tag:} default_version=${default_tag#imager-v} ;;
+  *) default_tag=imager-v0.0.0 default_version=0.0.0 ;;
+esac
+release_tag=${TILO_INSTALLER_RELEASE_TAG:-$default_tag}
+version=${TILO_INSTALLER_VERSION:-$default_version}
+channel=${TILO_INSTALLER_CHANNEL:-stable}
 [[ $release_tag =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die "release tag is not a release identity: $release_tag"
 
 rm -rf "$out"
