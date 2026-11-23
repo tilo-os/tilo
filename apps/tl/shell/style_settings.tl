@@ -14,6 +14,10 @@
 ///
 /// Opens the chosen style's settings over the shell: what the bar's style menu's entry runs, and
 /// what the REPL or the canvas agent calls too.
+// The styles themselves stand at the top of a style's settings panel (`style_settings_body`), so
+// the canvas — whose bar keeps no switch of its own (`canvas.md` §7) — is one press from every
+// other style, back to the strips included. (A plain comment on purpose: a `///` doc line is part
+// of the app's published surface, which the SDK types and the app catalogue are generated from.)
 action open_style_settings(s: Shell) (icon: .settings, label: "Style settings") {
     s.settings_open = true
 }
@@ -50,6 +54,9 @@ action set_frames_snap(s: Shell, on: Bool) (label: "Snap places to a grid", grou
 /// shows declares, and nothing else, so a style's own settings are its own view and the system
 /// keeps no per-style list (`shell.md` §6: "Nothing in Settings is per style").
 view style_panel() {
+    // The styles stand above the chosen style's settings: that choice belongs to the shell, not
+    // to one style, so a person on the canvas — whose bar keeps no switch of its own — has it
+    // here.
     let s = shell
     // A panel over the shell, set in from its edges as a surface does: what it sets down
     // never sits on the window's own text under it, and a phone's shell keeps a section's gutter.
@@ -102,26 +109,35 @@ view style_sheet() {
 /// What a style sets, in the order its own view writes it: the style it shows now, and nothing
 /// of another style's.
 view style_settings_body() {
+    // The style itself stands above them: the shell's choice, not one style's settings, so
+    // every style's panel offers it — a person on the canvas, whose bar keeps no switch of its
+    // own (`canvas.md` §7), moves to another style and back without leaving the settings they
+    // opened.
     let s = shell
     let chosen = style_of(viewing)
-    if chosen == "so.tilo.shell:desktop" {
-        desktop_style_settings(s)
-    } else if chosen == "so.tilo.shell:strips" {
-        strips_style_settings(s)
-    } else if chosen == "so.tilo.shell:frames" {
-        frames_style_settings(s)
-    } else if chosen == "so.tilo.shell:frameless" {
-        frameless_style_settings(s)
-    } else if let declared = device.styles.offered.find(x -> x.style == chosen) {
-        // A style another package declares: its own settings are its own document's, which the
-        // system cannot read (`shell.md` §6: "A style an agent writes gets settings the same
-        // way: by declaring actions on its own document"). Its description stands here, and
-        // Settings opens it.
-        ui.Text(
-            "{style_label(declared)} comes from {declared.package}, and its settings are its package's own.",
-            role: .caption,
-            secondary: true,
-        )
+    stack(gap: .related) {
+        // The same switch the bar's menu and the viewing's own settings page offer, by the same
+        // `show_style`: one action, whichever of them a person presses.
+        style_switch(viewing)
+        if chosen == "so.tilo.shell:desktop" {
+            desktop_style_settings(s)
+        } else if chosen == "so.tilo.shell:strips" {
+            strips_style_settings(s)
+        } else if chosen == "so.tilo.shell:frames" {
+            frames_style_settings(s)
+        } else if chosen == "so.tilo.shell:frameless" {
+            frameless_style_settings(s)
+        } else if let declared = device.styles.offered.find(x -> x.style == chosen) {
+            // A style another package declares: its own settings are its own document's, which the
+            // system cannot read (`shell.md` §6: "A style an agent writes gets settings the same
+            // way: by declaring actions on its own document"). Its description stands here, and
+            // Settings opens it.
+            ui.Text(
+                "{style_label(declared)} comes from {declared.package}, and its settings are its package's own.",
+                role: .caption,
+                secondary: true,
+            )
+        }
     }
 }
 
@@ -130,16 +146,11 @@ view style_settings_body() {
 /// sets it, so what a person changes stands beside what it changes.
 view desktop_style_settings(s: Shell) {
     stack(gap: .related) {
-        row(gap: .related, align: .center, wrap: true) {
-            ui.Text("Show the top bar")
-            spacer
-            toggle("Show the top bar", bind: s.bar_shown)
-        }
-        row(gap: .related, align: .center, wrap: true) {
-            ui.Text("Show the dock")
-            spacer
-            toggle("Show the dock", bind: s.dock_shown)
-        }
+        // A toggle carries its setting's name beside its switch and the whole row turns it, so the
+        // row is the toggle alone: a text of the name beside it would say the setting twice, and
+        // the two would meet at the panel's width.
+        toggle("Show the top bar", bind: s.bar_shown)
+        toggle("Show the dock", bind: s.dock_shown)
         // Each choice is one strip of the setting's cases, the case it holds filled, and a press
         // runs that setting's own action at the case pressed: one press here and an agent's call
         // change the dock the same way.
@@ -169,24 +180,12 @@ view desktop_style_settings(s: Shell) {
 
 /// The strips style's settings: whether a strip of several places shows its tab bar.
 view strips_style_settings(s: Shell) {
-    stack(gap: .related) {
-        row(gap: .related, align: .center, wrap: true) {
-            ui.Text("Show the tabs of a strip")
-            spacer
-            toggle("Show the tabs of a strip", bind: s.strips_tabs)
-        }
-    }
+    toggle("Show the tabs of a strip", bind: s.strips_tabs)
 }
 
 /// The frames style's settings: whether a place let go on the canvas lands on the grid.
 view frames_style_settings(s: Shell) {
-    stack(gap: .related) {
-        row(gap: .related, align: .center, wrap: true) {
-            ui.Text("Snap places to a grid")
-            spacer
-            toggle("Snap places to a grid", bind: s.frames_snap)
-        }
-    }
+    toggle("Snap places to a grid", bind: s.frames_snap)
 }
 
 /// The frameless style's settings. None of its own yet: it shows each place as its own view and

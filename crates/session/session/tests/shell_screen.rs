@@ -963,6 +963,105 @@ fn an_app_the_shell_opens_stands_on_the_framed_canvas() {
     crate::common::shot(&mut session, "frames-opened-app");
 }
 
+/// The canvas is one of the styles Settings offers, beside the strips: a person opens the shell's
+/// settings from the bar's style menu, presses Frames there, and their shell is the canvas live —
+/// the window they had stands where the layout holds it — then a press on Strips there brings the
+/// strips back with every window kept. A style is one published action (`show_style` on the
+/// person's viewing), so the press and an agent's call switch the same way.
+#[test]
+fn the_styles_settings_offer_the_canvas_and_a_press_there_shows_it_live() {
+    let _settled = ui::motion::testing::settled();
+    crate::common::app_store();
+    let (mut session, _note) = session_at(WIDTH, HEIGHT);
+    until(&mut session, "the bar's controls", |session| {
+        on_screen(session, "Notifications").is_some()
+    });
+    // A window open in the strips, as the person opening an app makes one.
+    session
+        .invoke(
+            CHROME,
+            "open-app",
+            json!({"app": "so.tilo.notes"})
+                .as_object()
+                .expect("an object"),
+        )
+        .expect("the app opens on the shell");
+    let name = crate::common::wait_for(&mut session, "the opened window's place", |session| {
+        let places = crate::common::places(session);
+        let first = places.first()?;
+        on_screen(session, &first.name)
+            .is_some()
+            .then(|| first.name.clone())
+    });
+    let kept: Vec<String> = crate::common::places(&session)
+        .iter()
+        .map(|place| place.key.clone())
+        .collect();
+
+    // The bar's switch menu, and the settings it opens: the styles stand at the top of the panel,
+    // beside the chosen style's own settings, so Settings offers the canvas like every other style.
+    press(&mut session, "Showing Strips");
+    press(&mut session, "Settings for Strips");
+    until(&mut session, "the settings' style switch", |session| {
+        session.shell_control("Strips").is_some() && session.shell_control("Frames").is_some()
+    });
+
+    // A press on Frames in Settings shows the canvas, live.
+    press(&mut session, "Frames");
+    until(&mut session, "the canvas", |session| {
+        on_screen(session, CANVAS).is_some()
+    });
+    // The window kept its place: the layout holds a canvas place for its strip, and its frame
+    // stands on the canvas.
+    let placed = session.handle().read(|tree| {
+        tree.active_workspace().is_some_and(|workspace| {
+            workspace.strips.iter().all(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .all(|group| workspace.layout.place_of(group.id).is_some())
+            })
+        })
+    });
+    assert!(
+        placed,
+        "the windows the strips held stand on the canvas: {:?}",
+        crate::common::places(&session)
+    );
+    let canvas = on_screen(&session, CANVAS).expect("the canvas on screen");
+    let frame = crate::common::wait_for(&mut session, "the window on the canvas", |session| {
+        on_screen(session, &name)
+    });
+    assert!(
+        frame.0 >= canvas.0
+            && frame.1 >= canvas.1
+            && frame.0 + frame.2 <= canvas.0 + canvas.2
+            && frame.1 + frame.3 <= canvas.1 + canvas.3,
+        "the window stands on the canvas: {frame:?} in {canvas:?}"
+    );
+    let after: Vec<String> = crate::common::places(&session)
+        .iter()
+        .map(|place| place.key.clone())
+        .collect();
+    assert_eq!(after, kept, "the canvas kept the windows the strips held");
+    crate::common::shot(&mut session, "styles-settings-canvas");
+
+    // Settings offers the way back: a press on Strips brings the strips, and the window with them.
+    press(&mut session, "Strips");
+    until(&mut session, "the strips again", |session| {
+        on_screen(session, CANVAS).is_none()
+    });
+    let back: Vec<String> = crate::common::places(&session)
+        .iter()
+        .map(|place| place.key.clone())
+        .collect();
+    assert_eq!(back, kept, "the strips kept the windows the canvas held");
+    assert!(
+        on_screen(&session, &name).is_some(),
+        "the window stands in the strips again"
+    );
+}
+
 /// The shell draws the workspace in front and no other. A shell holds every workspace the person is
 /// in — the one it starts from, and one joined through an entry (the dev shell joins the community's
 /// Lounge), or one made here — and it shows one. Before this, the strips drew each workspace's rows

@@ -185,7 +185,11 @@ view levels() {
             row(gap: .related, align: .center) {
                 ui.Icon(.sun)
                 ui.Slider(value: level, label: display.name, fill) {
-                    on change(v): device.set_display_brightness(device.displays, display.connector, v)
+                    on change(v): device.set_display_brightness(
+                        device.displays,
+                        display.connector,
+                        v,
+                    )
                 }
             }
         }
@@ -294,9 +298,7 @@ view network_section() {
                 ) {
                     on activate: if n.secure and not n.known {
                         set(password_for, n.name)
-                    } else {
-                        device.join_wifi(device.network, n.name)
-                    }
+                    } else { device.join_wifi(device.network, n.name) }
                 }
             }
             if password_for != "" {
@@ -317,7 +319,11 @@ view network_section() {
                 }
             }
             if hidden {
-                ui.Text("Join a network that does not broadcast its name", role: .caption, secondary: true)
+                ui.Text(
+                    "Join a network that does not broadcast its name",
+                    role: .caption,
+                    secondary: true,
+                )
                 row(gap: .related, align: .center, wrap: true) {
                     ui.TextInput(bind: hidden_name, placeholder: "Network name", fill)
                     ui.TextInput(bind: hidden_password, placeholder: "Password", fill)
@@ -344,7 +350,12 @@ view network_section() {
                     ) {
                         on activate: device.join_wifi(device.network, s.name)
                         trailing: {
-                            ui.MenuButton("This network", icon: .more_horizontal, icon_only: true, role: .plain) {
+                            ui.MenuButton(
+                                "This network",
+                                icon: .more_horizontal,
+                                icon_only: true,
+                                role: .plain,
+                            ) {
                                 ui.MenuItem(
                                     if s.autoconnect {
                                         "Stop joining by itself"

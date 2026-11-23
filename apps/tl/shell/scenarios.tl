@@ -2034,14 +2034,74 @@ scenario "the strips style's settings" -> Layout {
 
 /// The frames style's own settings, over the canvas they change.
 scenario "the frames style's settings" -> Layout {
+    // The note has its point and size on the canvas, and the styles the session publishes are
+    // staged, so the shot shows the style the panel belongs to standing behind it and the switch
+    // above the settings listing the canvas beside the other three.
+    stage(
+        device.styles,
+        device.Styles(
+            offered: [
+                device.Style(
+                    style: "so.tilo.shell:strips",
+                    package: "so.tilo.shell",
+                    name: "strips",
+                    line: "Strips",
+                    loads: true,
+                    reason: "",
+                ),
+                device.Style(
+                    style: "so.tilo.shell:frames",
+                    package: "so.tilo.shell",
+                    name: "frames",
+                    line: "Frames",
+                    loads: true,
+                    reason: "",
+                ),
+                device.Style(
+                    style: "so.tilo.shell:frameless",
+                    package: "so.tilo.shell",
+                    name: "frameless",
+                    line: "Frameless",
+                    loads: true,
+                    reason: "",
+                ),
+                device.Style(
+                    style: "so.tilo.shell:desktop",
+                    package: "so.tilo.shell",
+                    name: "desktop",
+                    line: "Desktop",
+                    loads: true,
+                    reason: "",
+                ),
+            ],
+        ),
+    )
     stage(settings.agent_models, agent_models())
-    a_style_settings("so.tilo.shell:frames")
+    let a = a_style_settings("so.tilo.shell:frames")
+    if let strip = a.strips.first() {
+        strip.canvas_x = 0
+        strip.canvas_y = 0
+        strip.canvas_width = 1100
+        strip.canvas_height = 1200
+        strip.placed = true
+    }
+    a
 }
 
 /// The frameless style's own settings, over the places they change.
 scenario "the frameless style's settings" -> Layout {
+    // The note has its point on the canvas, so the shot shows the style the panel belongs to
+    // standing behind it.
     stage(settings.agent_models, agent_models())
-    a_style_settings("so.tilo.shell:frameless")
+    let a = a_style_settings("so.tilo.shell:frameless")
+    if let strip = a.strips.first() {
+        strip.canvas_x = 0
+        strip.canvas_y = 0
+        strip.canvas_width = 1100
+        strip.canvas_height = 1200
+        strip.placed = true
+    }
+    a
 }
 
 /// The desktop style's own settings, over the shell they change.
