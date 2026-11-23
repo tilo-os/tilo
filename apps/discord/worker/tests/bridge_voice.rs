@@ -70,6 +70,8 @@ impl Member {
                 },
                 camera: false,
                 screen: false,
+                muted: false,
+                deafened: false,
             }),
             ..Own::default()
         });

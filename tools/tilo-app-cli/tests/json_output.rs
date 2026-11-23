@@ -467,7 +467,7 @@ fn missing_fonts_are_reported_before_any_cargo_quality_command() {
     let dir = tempfile::tempdir().unwrap();
     let checkout = Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
-        .nth(3)
+        .nth(2)
         .unwrap();
     let app = dir.path().join("demo");
     let new = Command::new(tilo_test_env::package_binary!("tilo-app"))

@@ -29454,6 +29454,7 @@ dependencies = [
  "tilo-view",
  "tilo-view-macros",
  "tilo-vision",
+ "tilo-vision-service",
  "tilo-vm",
  "tilo-wake",
  "tilo-wallpapers",

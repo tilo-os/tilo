@@ -45,7 +45,7 @@ const APP_ID: &str = "com.example.hello";
 fn a_generated_app_goes_from_new_to_a_release_awaiting_review() {
     let checkout = Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
-        .nth(3)
+        .nth(2)
         .expect("checkout root")
         .canonicalize()
         .expect("canonical checkout");

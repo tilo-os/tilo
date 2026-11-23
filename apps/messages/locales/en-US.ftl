@@ -174,11 +174,11 @@ messages-endpoint-recipient = The address { $item } is reached at
 messages-endpoint-scope = The account { $item } is reached through
 messages-endpoint-revision = The linked identity of { $item }
 messages-endpoint-removed = Whether { $item } is still linked
-messages-person-account-type-id = The kind of the account { $item }
-messages-person-account-display-name = The name of the account { $item }
-messages-person-account-config = The connection settings of { $item }
-messages-person-account-enabled = Whether { $item } is in use
-messages-person-account-tint = The colour of { $item }
+messages-listed-account-type-id = The kind of the account { $item }
+messages-listed-account-display-name = The name of the account { $item }
+messages-listed-account-config = The connection settings of { $item }
+messages-listed-account-enabled = Whether { $item } is in use
+messages-listed-account-tint = The colour of { $item }
 messages-person-accounts-active = The account in use for a service
 messages-message-drafts-drafts = The unsent words kept for each conversation
 

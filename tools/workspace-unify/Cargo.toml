@@ -4044,6 +4044,7 @@ doc = false
 "tilo-video-render" = { path = "../../crates/media/video-render", default-features = false, features = ["default", "helper"] }
 "tilo-view" = { path = "../../crates/platform/tilo-view", default-features = false, features = [] }
 "tilo-vision" = { path = "../../crates/media/vision", default-features = false, features = [] }
+"tilo-vision-service" = { path = "../../crates/session/vision-service", default-features = false, features = [] }
 "tilo-vm" = { path = "../../tools/tilo-vm", default-features = false, features = [] }
 "tilo-wake" = { path = "../../crates/platform/tilo-wake", default-features = false, features = [] }
 "tilo-wallpapers" = { path = "../../crates/platform/tilo-wallpapers", default-features = false, features = [] }
