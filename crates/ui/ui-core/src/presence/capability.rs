@@ -61,6 +61,18 @@ pub trait PublishesPresence: Widget {
     }
 }
 
+/// How a widget places a byte range of its text: the bands it covers and the caret at its end,
+/// where it wears one.
+pub type WrittenPlacer<'a> = Box<
+    dyn FnMut(
+            &mut crate::text_render::TextRenderer,
+            &tilo_actions::SemanticInteraction,
+            usize,
+            usize,
+        ) -> (Vec<vello::kurbo::Rect>, Option<super::LabeledCaret>)
+        + 'a,
+>;
+
 /// What a widget shows of a write landed in it, for a presence layer to draw
 /// where it stands.
 pub struct WrittenPlace<'a> {
@@ -78,15 +90,7 @@ pub struct WrittenPlace<'a> {
     pub field: Option<&'a str>,
     /// The bands a byte range of [`Self::text`] covers and the caret at its end, where it wears
     /// one, on this widget's geometry.
-    pub place: Box<
-        dyn FnMut(
-                &mut crate::text_render::TextRenderer,
-                &tilo_actions::SemanticInteraction,
-                usize,
-                usize,
-            ) -> (Vec<vello::kurbo::Rect>, Option<super::LabeledCaret>)
-            + 'a,
-    >;
+    pub place: WrittenPlacer<'a>,
 }
 
 /// `widget`'s written place, when it shows one.

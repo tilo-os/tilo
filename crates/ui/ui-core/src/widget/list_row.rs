@@ -292,32 +292,7 @@ impl<'a> ListRowFace<'a> {
     /// Who else is at the item, when the row shows them: the identity its presence dot
     /// stands for ([`ListRow::presence`]).
     
-impl crate::presence::capability::PublishesPresence for ListRow {
-    fn written_place<'a>(
-        &'a self,
-        theme: &'a Theme,
-    ) -> Option<crate::presence::capability::WrittenPlace<'a>> {
-        let field = self.edits.as_ref()?;
-        let item = self.item.as_ref()?;
-        let band = self.text_band();
-        Some(crate::presence::capability::WrittenPlace {
-            region: Some(field.as_str()),
-            block: item.as_str(),
-            text: std::borrow::Cow::Borrowed(self.title.as_str()),
-            edited: None,
-            selected: None,
-            field: None,
-            place: Box::new(move |text, _, start, end| {
-                let mut span = None;
-                self.with_face(|face| {
-                    let (bands, caret) = face.title_span(band, (start, end), text, theme);
-                    span = Some((bands, Some(caret)));
-                });
-                span.unwrap_or_default()
-            }),
-        })
-    }
-}
+
 
 #[cfg(test)]
     pub(crate) fn presence_hue(&self) -> Option<PresenceHue> {
@@ -3427,3 +3402,30 @@ pub use control_row::ControlRow;
 
 mod control_row_component;
 pub use control_row_component::ControlRowProps;
+
+impl crate::presence::capability::PublishesPresence for ListRow {
+    fn written_place<'a>(
+        &'a self,
+        theme: &'a Theme,
+    ) -> Option<crate::presence::capability::WrittenPlace<'a>> {
+        let field = self.edits.as_ref()?;
+        let item = self.item.as_ref()?;
+        let band = self.text_band();
+        Some(crate::presence::capability::WrittenPlace {
+            region: Some(field.as_str()),
+            block: item.as_str(),
+            text: std::borrow::Cow::Borrowed(self.title.as_str()),
+            edited: None,
+            selected: None,
+            field: None,
+            place: Box::new(move |text, _, start, end| {
+                let mut span = None;
+                self.with_face(|face| {
+                    let (bands, caret) = face.title_span(band, (start, end), text, theme);
+                    span = Some((bands, Some(caret)));
+                });
+                span.unwrap_or_default()
+            }),
+        })
+    }
+}
