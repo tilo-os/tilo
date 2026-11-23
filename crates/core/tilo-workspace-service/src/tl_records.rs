@@ -1123,6 +1123,9 @@ pub struct RecordCall<'a> {
     pub viewer: Actor,
     /// Who invokes it, as the API admitted the caller.
     pub invoker: &'a ActionInvoker,
+    /// The caller the API admitted: the record's own authority decides the action for it, an
+    /// agent held to its delegation and to the bound the workspace's list of agents keeps.
+    pub caller: &'a tilo_actions::remote::Caller,
     /// The run the invocation is a step of, as the host stamps it on what it changes.
     pub context: &'a ActionContext,
     /// The action's address in the resource's vocabulary, its resource resolved.
@@ -1211,6 +1214,7 @@ impl crate::workspaces::Workspaces {
             app,
             viewer,
             invoker,
+            caller,
             context,
             address,
             arguments,
@@ -1228,13 +1232,37 @@ impl crate::workspaces::Workspaces {
         } else {
             self.tl_record(workspace, app).map_err(ApiError::Failed)?
         };
-        let policy = self.policy_of(workspace).await.map(Arc::new);
+        let policy = self
+            .policy_of(workspace)
+            .await
+            .map(Arc::new)
+            .ok_or_else(|| ApiError::Failed(format!("{workspace}'s policy does not read here")))?;
+        // The record's own authority decides the action as the caller: this device writes it,
+        // so nothing else stops an agent from doing what its delegation does not give it.
+        let acting = caller.acting();
+        let kept = match acting.agent_id() {
+            Some(agent) => self
+                .kept_bound(workspace, agent, caller.turn().is_some())
+                .await
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let access = Arc::new(
+            tilo_action_policy::MemberAccess::new(Arc::clone(&policy), acting.clone())
+                .granted(caller.granted(&kept)),
+        );
         let (invoker, context) = (invoker.clone(), context.clone());
         let (address, arguments) = (address.clone(), arguments.clone());
         tokio::task::spawn_blocking(move || {
-            Opened::open(record.store(), &packages, viewer, policy)
-                .map_err(ApiError::Failed)?
-                .invoke_published(&address, &arguments, &invoker, &context)
+            Opened::open_with(
+                record.store(),
+                &packages,
+                viewer,
+                Some(access),
+                Some(policy),
+            )
+            .map_err(ApiError::Failed)?
+            .invoke_published(&address, &arguments, &invoker, &context)
         })
         .await
         .map_err(|error| ApiError::Failed(error.to_string()))?

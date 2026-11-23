@@ -119,7 +119,7 @@ impl BuiltInRecords {
         let context: ActionContext = request.context.clone().unwrap_or_default();
         let read = descriptor.kind == OperationKind::View
             || descriptor.contract.kind == tilo_actions::ActionKind::Read;
-        let (workspaces, app) = (self.workspaces.clone(), self.app);
+        let (workspaces, app, caller) = (self.workspaces.clone(), self.app, caller.clone());
         let viewer = super::member(tilo_actions::MemberId::person(person));
         let (done, outcome) = pending();
         self.runtime.spawn(async move {
@@ -130,6 +130,7 @@ impl BuiltInRecords {
                         app,
                         viewer,
                         invoker: &invoker,
+                        caller: &caller,
                         context: &context,
                         address: &descriptor.address,
                         arguments: &arguments,
@@ -226,6 +227,107 @@ mod tests {
     use super::*;
     use crate::workspaces::actions::tests::governed;
     use crate::workspaces::tests::{governor, test_host};
+    use tilo_action_policy::{Answer, KindSet, Rule, TreePath};
+    use tilo_actions::remote::ReceiptStatus;
+
+    const CHAT: &str = "so.tilo.chat";
+
+    fn records(workspaces: &Workspaces) -> BuiltInRecords {
+        BuiltInRecords {
+            workspaces: workspaces.clone(),
+            app: CHAT,
+            runtime: tokio::runtime::Handle::current(),
+        }
+    }
+
+    /// The `write_to` tl Chat offers `caller`, asked to tell `who` the words `body`.
+    fn write_to(
+        records: &BuiltInRecords,
+        caller: &Caller,
+        who: &tilo_actions::MemberId,
+        body: &str,
+    ) -> InvokeRequest {
+        let offered: Vec<_> = records
+            .rows(caller)
+            .into_iter()
+            .filter_map(|row| row.action)
+            .collect();
+        let write_to = offered
+            .iter()
+            .find(|action| action.address.action == "write_to")
+            .unwrap_or_else(|| {
+                panic!(
+                    "Chat's actions are offered: {:?}",
+                    offered.iter().map(|a| &a.address).collect::<Vec<_>>()
+                )
+            });
+        let Ok(serde_json::Value::Object(arguments)) =
+            serde_json::to_value(serde_json::json!({ "who": who, "body": body }))
+        else {
+            panic!("arguments are an object");
+        };
+        InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: format!("{RESOURCE_PROVIDER}:{CHAT}:"),
+                address: write_to.address.clone(),
+            },
+            argument: InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        }
+    }
+
+    /// Run `request` as `caller` through the provider the dispatch hands tl Chat's calls to.
+    async fn run(
+        workspaces: &Workspaces,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        let chat = workspaces
+            .providers()
+            .get("record:so.tilo.chat:")
+            .expect("tl Chat's records are served on this device");
+        let receipt = chat
+            .answers
+            .run(caller, request, Admitted::default())
+            .await
+            .ok_or("the call was dropped")?
+            .map_err(|error| error.to_string())?;
+        match receipt.status {
+            ReceiptStatus::Completed { output } => Ok(output),
+            other => Err(format!("{other:?}")),
+        }
+    }
+
+    /// The versions of the record's resources `write_to` made, as its history lists them.
+    fn written(workspaces: &Workspaces, workspace: &str) -> Vec<serde_json::Value> {
+        let route = DocumentRoute {
+            app_id: CHAT.to_owned(),
+            cluster_id: workspace.to_owned(),
+            document: String::new(),
+        };
+        workspaces
+            .record_changes(workspace, &route)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|version| {
+                version["action"]
+                    .as_str()
+                    .is_some_and(|action| action.contains("write_to"))
+            })
+            .collect()
+    }
+
+    /// Everything `caller` is offered of tl Chat's record, as text to look for words in.
+    fn seen(records: &BuiltInRecords, caller: &Caller) -> String {
+        serde_json::to_string(&records.rows(caller)).unwrap()
+    }
 
     /// tl Chat's record, which no window holds open on a server, is offered to its person and
     /// written as theirs through the provider the dispatch hands a call to: what an agent's
@@ -248,59 +350,150 @@ mod tests {
 
         let caller = Caller::authenticated(owner.user_public_key, owner.device_public_key)
             .in_workspace(workspace.clone());
-        let records = BuiltInRecords {
-            workspaces: workspaces.clone(),
-            app: "so.tilo.chat",
-            runtime: tokio::runtime::Handle::current(),
-        };
-        let offered: Vec<_> = records
-            .rows(&caller)
-            .into_iter()
-            .filter_map(|row| row.action)
-            .collect();
-        let write_to = offered
-            .iter()
-            .find(|action| action.address.action == "write_to")
-            .unwrap_or_else(|| {
-                panic!(
-                    "Chat's actions are offered: {:?}",
-                    offered.iter().map(|a| &a.address).collect::<Vec<_>>()
-                )
-            });
-
-        let Ok(serde_json::Value::Object(arguments)) = serde_json::to_value(serde_json::json!({
-            "who": tilo_actions::MemberId::agent("scout"),
-            "body": "The plan is ready",
-        })) else {
-            panic!("arguments are an object");
-        };
-        let request = InvokeRequest {
-            invocation: tilo_actions::InvocationId::new(),
-            target: tilo_actions::remote::RemoteActionTarget {
-                provider: chat.provider.to_owned(),
-                address: write_to.address.clone(),
-            },
-            argument: InvokeArgument::Json(arguments),
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
-        };
-        let receipt = chat
-            .answers
-            .run(&caller, request, Admitted::default())
+        let request = write_to(
+            &records(&workspaces),
+            &caller,
+            &tilo_actions::MemberId::agent("scout"),
+            "The plan is ready",
+        );
+        let output = run(&workspaces, &caller, request)
             .await
-            .expect("the write is answered")
-            .expect("the write is taken");
-        let tilo_actions::remote::ReceiptStatus::Completed { output } = receipt.status else {
-            panic!("the write lands: {:?}", receipt.status);
-        };
+            .expect("the write lands");
         assert!(
             !output.resources.is_empty(),
             "the conversation it wrote in is named: {output:?}"
+        );
+        server.shutdown().await;
+    }
+
+    /// This device writes a record's changes itself, so the record's own authority is what
+    /// stops an agent: one its delegation does not give a write is refused, and nothing of it
+    /// reaches the store; the same agent with the delegation writes, and the change is stamped
+    /// as the agent's, never as the person's whose device this is.
+    #[tokio::test]
+    async fn an_agent_writes_a_record_only_within_its_delegation_and_as_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces().clone();
+        let (workspace, _, _) = governed(&workspaces).await;
+        register(&workspaces);
+        let person = hex::encode(owner.user_public_key);
+        workspaces
+            .add_agent(
+                &workspace,
+                tilo_actions::MemberId::person(person.clone()),
+                "scout",
+                &person,
+            )
+            .await
+            .expect("the owner adds their agent");
+        let records = records(&workspaces);
+        let ada = Caller::authenticated(owner.user_public_key, owner.device_public_key)
+            .in_workspace(workspace.clone());
+        let scout = |bound: Vec<Rule>| {
+            Caller::delegated_agent("scout", owner.user_public_key, [7; 32])
+                .in_workspace(workspace.clone())
+                .held_to(bound)
+        };
+
+        // Outside its delegation: its bound denies it everything in the workspace.
+        let held = scout(vec![Rule::new(
+            TreePath::workspace(&workspace).rest(),
+            KindSet::ALL,
+            Answer::Deny,
+        )]);
+        let to = tilo_actions::MemberId::person(person.clone());
+        let request = write_to(&records, &held, &to, "Sold the house");
+        let refused = run(&workspaces, &held, request).await;
+        assert!(
+            refused.is_err(),
+            "an agent outside its delegation writes nothing: {refused:?}"
+        );
+        assert!(
+            written(&workspaces, &workspace).is_empty(),
+            "nothing of the refused write reaches the store"
+        );
+        assert!(
+            !seen(&records, &ada).contains("Sold the house"),
+            "nobody reads what was refused"
+        );
+
+        // Within it, the write lands as the agent's.
+        let delegated = scout(Vec::new());
+        let request = write_to(&records, &delegated, &to, "The plan is ready");
+        run(&workspaces, &delegated, request)
+            .await
+            .expect("an agent within its delegation writes");
+        let versions = written(&workspaces, &workspace);
+        assert!(!versions.is_empty(), "the write reaches the store");
+        let agent =
+            serde_json::to_value(super::super::member(tilo_actions::MemberId::agent("scout")))
+                .unwrap();
+        let device_person =
+            serde_json::to_value(super::super::member(tilo_actions::MemberId::person(person)))
+                .unwrap();
+        for version in &versions {
+            assert_eq!(
+                version["who"], agent,
+                "the change is the agent's: {version}"
+            );
+            assert_ne!(
+                version["who"], device_person,
+                "never the device's person's: {version}"
+            );
+        }
+        server.shutdown().await;
+    }
+
+    /// A member reads of tl Chat's record only what they may: a direct conversation between
+    /// two others offers them nothing of it, though the device that serves it holds it all.
+    #[tokio::test]
+    async fn a_member_reads_nothing_of_a_conversation_they_are_not_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces().clone();
+        let (workspace, _, _) = governed(&workspaces).await;
+        register(&workspaces);
+        let records = records(&workspaces);
+
+        let cy_root = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        workspaces
+            .add_member(
+                &workspace,
+                &owner,
+                crate::workspaces::AddMemberRequest {
+                    request_id: [9; 32],
+                    user_public_key: cy_root.verifying_key().to_bytes(),
+                    place: crate::workspaces::MemberPlace::Role(tilo_action_policy::Role::Viewer),
+                    name: Some("Cy".into()),
+                },
+            )
+            .await
+            .expect("the owner adds Cy");
+
+        let ada = Caller::authenticated(owner.user_public_key, owner.device_public_key)
+            .in_workspace(workspace.clone());
+        let request = write_to(
+            &records,
+            &ada,
+            &tilo_actions::MemberId::agent("scout"),
+            "The safe's code is 4711",
+        );
+        run(&workspaces, &ada, request)
+            .await
+            .expect("Ada writes to her agent");
+        assert!(
+            seen(&records, &ada).contains("4711"),
+            "the conversation's own person reads it"
+        );
+
+        let cy = Caller::authenticated(cy_root.verifying_key().to_bytes(), [4; 32])
+            .in_workspace(workspace.clone());
+        assert!(
+            !seen(&records, &cy).contains("4711"),
+            "a member outside the conversation reads nothing of it"
         );
         server.shutdown().await;
     }
