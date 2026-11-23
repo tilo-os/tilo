@@ -31,6 +31,11 @@ type Origin {
 /// (`said_about`).
 type Comment {
     text: RichText
+    /// The comment it answers, if it answers one: a reply stands under the remark it answers.
+    reply_to: Option<Comment> = .none
+    /// Whether what was asked for is done: a remark taken care of folds away, and its author or
+    /// anyone reading it may open it again.
+    resolved: Bool = false
     /// Whether an agent wrote it: its author is the agent, and a reader says so.
     by_agent: Bool = false
     /// Where it was first written, when it was moved here from another tracker.
@@ -87,6 +92,26 @@ action edit(c: Comment, text: RichText = c.text) (icon: .pencil, label: "Edit") 
     c.text = text
 }
 
+/// Answers a comment: the reply stands under the remark it answers, as a conversation's answer
+/// does, and what it is about is what the remark is about.
+action reply(c: Comment, text: RichText) -> Comment (
+    icon: .reply,
+    label: "Reply",
+    did: "replied",
+) {
+    require not text.is_empty() "Write a reply first"
+    comments.items.insert(Comment(text: text, reply_to: c))
+}
+
+/// Marks a comment as taken care of, or opens it again. Whoever may read the thread may resolve
+/// it: resolving says the words were dealt with, not that its author agrees.
+action resolve(c: Comment, resolved: Bool = true) (
+    icon: .circle_check,
+    label: if resolved { "Resolve" } else { "Open again" },
+) {
+    c.resolved = resolved
+}
+
 /// Deletes a comment. Only its author may. The platform takes it back rather than asking first,
 /// and the removal is a version of the comment, so who removed it stays answerable.
 destructive action delete(all: Comments, c: Comment) (icon: .trash, label: "Delete") {
@@ -116,7 +141,7 @@ view thread(about: host.Resource) {
     state editing: Option<Comment> = .none
     state revised: RichText = RichText("")
     let all = comments.items
-    let said = all.filter(c -> created(c)?.from == about)
+    let said = all.filter(c -> created(c)?.from == about and c.reply_to == .none)
     let unread = said.find(c -> not unseen(c).is_empty())
     let spoke = speakers(said)
     section("Discussion") {
@@ -126,7 +151,7 @@ view thread(about: host.Resource) {
                     ui.SectionDivider(tone: .accent)
                 }
             }
-            comment_row(c, spoke, editing, revised)
+            comment_thread(c, all.filter(r -> r.reply_to == .some(c)), spoke, editing, revised)
         }
         std.composer(
             draft,
@@ -134,6 +159,52 @@ view thread(about: host.Resource) {
             comment(comments, draft).made_from(about),
             speakers: spoke,
         )
+    }
+}
+
+/// A comment with what answers it, and the field a person answers it in: its replies stand
+/// under it, a step in, each as a comment's own row. A comment taken care of says so on its
+/// control, which opens it again.
+template view comment_thread(
+    c: Comment,
+    replies: List<Comment>,
+    spoke: List<Actor>,
+    editing: State<Option<Comment>>,
+    revised: State<RichText>,
+) {
+    state answering: Bool = false
+    state answer: RichText = RichText("")
+    stack(gap: .tight) {
+        comment_row(c, spoke, editing, revised)
+        if not replies.is_empty() {
+            stack(gap: .tight, padding: .related) {
+                for r in replies {
+                    comment_row(r, spoke, editing, revised)
+                }
+            }
+        }
+        row(gap: .tight) {
+            ui.Button(
+                if answering { "Cancel" } else { "Reply" },
+                icon: .reply,
+                role: .plain,
+                size: .small,
+            ) {
+                on press: set(answering, not answering)
+            }
+            ui.Button(
+                if c.resolved { "Open again" } else { "Resolve" },
+                icon: .circle_check,
+                role: .plain,
+                size: .small,
+                toggled: c.resolved,
+            ) {
+                on press: resolve(c, not c.resolved)
+            }
+        }
+        if answering {
+            std.composer(answer, "Write a reply", reply(c, answer), speakers: spoke)
+        }
     }
 }
 
