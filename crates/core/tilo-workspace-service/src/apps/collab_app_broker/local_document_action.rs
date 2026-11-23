@@ -418,7 +418,7 @@ pub(super) fn admit(
                 },
                 Some(&request),
             )
-            .map_err(BrokerError::failed)?;
+            .map_err(|refused| BrokerError::failed(refused.to_string()))?;
         drop(admission);
         drop(staged.start(state).await.map_err(BrokerError::failed)?);
         let key = InvocationKey {

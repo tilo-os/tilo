@@ -263,7 +263,7 @@ impl AppBrokerState {
             origin.cloned(),
         )
         .map(super::action_provider::Started::Staged)
-        .map_err(super::action_provider::refusal)
+        .map_err(super::Refusal::into_call_error)
     }
 
     /// The published surface of `workspace`'s governance offering `action` on

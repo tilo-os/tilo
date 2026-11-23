@@ -17,7 +17,7 @@ impl AppBrokerState {
         inputs: InvocationInputs<'_>,
         provenance: AdmissionProvenance<'_>,
         local_report: Option<&runtime_collab::LocalDocumentActionReport>,
-    ) -> Result<StagedJob, String> {
+    ) -> Result<StagedJob, super::asks::Refusal> {
         if local_report.is_some()
             && (!offered
                 .1
@@ -229,9 +229,9 @@ impl AppBrokerState {
         if owner.verified_actor().is_some() && journal.is_none() {
             return Err("action_evidence_unavailable: admission journal unavailable".into());
         }
-        // What this admission is, decided before the confirmation is looked
-        // at: an invocation the caller already had admitted under this id is
-        // answered from its record, never asked for another confirmation.
+        // What this admission is, decided before its ask is looked at: an
+        // invocation the caller already had admitted under this id is answered
+        // from its record, never asked again.
         let id = self
             .invocation_id
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
@@ -303,58 +303,20 @@ impl AppBrokerState {
             }
             return Ok(self.retained_answer(&record));
         }
-        // Where the workspace's grants ask first, the person's confirmation in
-        // the host is the answer: the invocation needs a confirmation token
-        // even when the action itself asks for none.
-        let confirmed = asks
-            || requires_store_approval(&offered.0.app_id, &offered.1.action)
-            || !matches!(
-                offered.1.contract.confirmation,
-                tilo_actions::ConfirmationPolicy::None
-            );
-        if confirmed {
-            let token = confirmation_token.ok_or_else(|| {
-                "action_confirmation_required: request and present a one-use confirmation token"
-                    .to_string()
-            })?;
-            let grant = self
-                .confirmation_grants
-                .lock()
-                .map_err(|_| "the confirmation registry is unavailable".to_string())?
-                .remove(token)
-                .ok_or_else(|| "the confirmation token is unknown or already used".to_string())?;
-            if (requires_store_approval(&offered.0.app_id, &offered.1.action)
-                && grant.host_approved.is_none())
-                || grant.expires < tilo_clock::now()
-                || grant.peer_id != peer_id
-                || grant.resource != offered.1.resource
-                || grant.action != offered.1.action
-                || grant.argument_digest != argument_digest(argument)
-                || grant.actor != *actor.member()
-                || grant.host_approved.as_ref().is_some_and(|binding| {
-                    binding.workspace != offered.0.route.cluster_id
-                        || Some(binding.invocation) != requested.or(authoritative)
-                        || binding.publication != self.approval_publication(&binding.provider)
-                        || match original_request {
-                            Some(request) => {
-                                binding.provider != request.target.provider
-                                    || binding.revision != request.revision
-                            }
-                            None => {
-                                binding.provider != peer_id.to_string()
-                                    || binding
-                                        .revision
-                                        .as_deref()
-                                        .is_some_and(|held| Some(held) != revision)
-                            }
-                        }
-                })
-            {
-                return Err(
-                    "the confirmation token is expired or does not match this invocation".into(),
-                );
-            }
-        }
+        let confirmed = self.asks_first(
+            peer_id,
+            &offered,
+            &super::asks::Asking {
+                request: original_request,
+                caller,
+                argument,
+                actor,
+                token: confirmation_token,
+                invocation: requested.or(authoritative),
+                revision,
+            },
+            asks,
+        )?;
         let (tx, rx) = std::sync::mpsc::channel();
         let mut admitted = invocation_journal::Durable::settled();
         let journal_key = if let Some(journal) = journal.as_mut() {

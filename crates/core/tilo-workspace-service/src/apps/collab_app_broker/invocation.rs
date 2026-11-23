@@ -5,6 +5,9 @@
 use super::*;
 
 mod admit;
+mod asks;
+
+pub(crate) use asks::Refusal;
 
 #[derive(Clone, Debug)]
 pub struct InvocationEnvelope {
@@ -419,7 +422,7 @@ impl AppBrokerState {
         action: &str,
         inputs: InvocationInputs<'_>,
         origin: Option<InvocationCaller>,
-    ) -> Result<StagedJob, String> {
+    ) -> Result<StagedJob, Refusal> {
         let offered = self
             .publishers
             .surfaces
@@ -456,7 +459,7 @@ impl AppBrokerState {
         offered: (PublishedSurface, PublishedAction),
         inputs: InvocationInputs<'_>,
         provenance: AdmissionProvenance<'_>,
-    ) -> Result<StagedJob, String> {
+    ) -> Result<StagedJob, Refusal> {
         self.admit_invocation_from_offered_owned(peer_id, offered, inputs, provenance, None)
     }
     /// The intent an admission of `offered` is recorded with: the exact

@@ -96,9 +96,10 @@ impl AppBrokerState {
             _ => false,
         };
         // Store disclosures must be answered on a trusted host sheet, even
-        // when the publisher's connection is admitted as the person themself.
+        // when the publisher's connection is admitted as the person themself:
+        // admission asks them.
         if requires_store_approval(app, &offered.action) && !approved {
-            return Err(ActionCallError::confirmation_required());
+            return Ok(None);
         }
         let own = actor.direct().then_some(evidence).flatten();
         // Decided from the arguments, without the app's code: a field edit
@@ -111,7 +112,8 @@ impl AppBrokerState {
                 return Ok(None);
             }
         } else if !approved && !confirmation_satisfied(&policy, own) {
-            return Err(ActionCallError::confirmation_required());
+            // Nobody answered for this call yet: admission asks the person.
+            return Ok(None);
         }
         self.mint_confirmation_grant(peer_id, offered, argument, actor)
             .and_then(|token| {

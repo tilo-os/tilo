@@ -425,7 +425,8 @@ fn start_confirmed(
                 context: None,
             },
             None,
-        )?
+        )
+        .map_err(|refused| refused.to_string())?
         .start_blocking(state)
 }
 #[cfg(test)]

@@ -385,7 +385,7 @@ impl AppBrokerState {
                 retained_time: None,
             },
         )
-        .map_err(refusal)
+        .map_err(super::super::Refusal::into_call_error)
     }
 }
 

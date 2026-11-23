@@ -443,7 +443,7 @@ async fn a_held_record_is_admitted_by_its_workspace_whatever_its_verdict_said() 
                 },
             );
             assert_eq!(
-                refused.err().as_deref(),
+                refused.err().map(|refused| refused.to_string()).as_deref(),
                 Some("caller no longer authorized for invocation"),
                 "the stale verdict lets nothing through"
             );

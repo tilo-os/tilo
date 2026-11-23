@@ -357,7 +357,8 @@ mod external_moderation_rpc_tests {
                             None,
                             &binding,
                         ),
-                        Err(tilo_actions::remote::ActionCallError::ConfirmationRequired { .. })
+                        // No token: its admission asks the person.
+                        Ok(None)
                     ));
                     assert!(actor.direct(), "the app's own identity is a direct person");
                     assert!(matches!(
@@ -370,7 +371,8 @@ mod external_moderation_rpc_tests {
                             Some(&tilo_actions::remote::Confirmation::Confirmed),
                             &binding,
                         ),
-                        Err(tilo_actions::remote::ActionCallError::ConfirmationRequired { .. })
+                        // No token: its admission asks the person.
+                        Ok(None)
                     ));
                     for altered in ["missing", "payload", "destination"] {
                         let approval = workspace.state.approval_confirmation(&binding).unwrap();
@@ -422,7 +424,8 @@ mod external_moderation_rpc_tests {
                         );
                         let error = result
                             .err()
-                            .expect("unconfirmed or changed operation must be refused");
+                            .expect("unconfirmed or changed operation must be refused")
+                            .to_string();
                         assert!(error.contains("confirmation"), "{altered}: {error}");
                     }
                     workspace.invoke(980, &offered.resource, action, &exact);
@@ -472,7 +475,8 @@ mod external_moderation_rpc_tests {
                             Some(&tilo_actions::remote::Confirmation::Confirmed),
                             &binding,
                         ),
-                        Err(tilo_actions::remote::ActionCallError::ConfirmationRequired { .. })
+                        // No token: its admission asks the person.
+                        Ok(None)
                     ));
                     // A generic internal/native-task approval is not evidence
                     // that the host showed this external disclosure.
@@ -499,7 +503,8 @@ mod external_moderation_rpc_tests {
                         );
                         let error = result
                             .err()
-                            .expect("Store disclosure always requires a host grant");
+                            .expect("Store disclosure always requires a host grant")
+                            .to_string();
                         assert!(error.contains("confirmation"), "{error}");
                     }
                 }

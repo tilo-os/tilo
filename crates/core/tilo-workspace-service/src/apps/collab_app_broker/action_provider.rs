@@ -566,11 +566,7 @@ pub(super) fn answer_with<T: Send + 'static>(
 }
 
 pub(super) fn refusal(reason: String) -> ActionCallError {
-    if reason.starts_with("action_confirmation_required")
-        || reason.contains("confirmation is required")
-    {
-        ActionCallError::confirmation_required()
-    } else if reason.contains("not allowed") {
+    if reason.contains("not allowed") {
         ActionCallError::NotPermitted
     } else if reason.contains("no longer publishes")
         || reason.contains("unknown application action")
@@ -1857,9 +1853,7 @@ impl AppBrokerState {
             .and_then(|providers| providers.publishing(&request.target))
         {
             let mut request = request.clone();
-            registered
-                .provider
-                .clone_into(&mut request.target.provider);
+            registered.provider.clone_into(&mut request.target.provider);
             return Pending::ready(self.invoke_registered(caller, origin, &registered, &request));
         }
         if is_launchable_provider(&request.target.provider)
@@ -2664,7 +2658,7 @@ impl AppBrokerState {
                 .note_view(&workspace, actor.member(), &app_id);
             Started::Staged(staged)
         })
-        .map_err(refusal)
+        .map_err(super::Refusal::into_call_error)
     }
 
     fn start_workspace_action(
