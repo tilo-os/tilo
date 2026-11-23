@@ -37,6 +37,7 @@ fn card_of(props: MediaCardProps) -> crate::widget::MediaCard {
             size: None,
             justified: false,
             items: DescribedCards::given(vec![props]),
+            select: Default::default(),
         },
     );
     grid.take_card(0).expect("one card")
@@ -129,6 +130,54 @@ tilo_test_env::scenario! {
         let rect = host.root_widget().children()[0].get_rect();
         host.click_at(rect.center().x, rect.center().y);
         assert_eq!(queue.take(), [fired("blue", "activate", None)]);
+    }
+
+    phase a_shift_press_and_a_drag_take_the_range_of_cards_they_cover;
+    {
+        let queue = crate::Intents::default();
+        let parked = |key: &str, item: &str| {
+            Node::new("MediaCard", key, &queue)
+                .prop("item", Value::Resource(item.into()))
+                .prop("title", text(key))
+                .on("activate")
+        };
+        let mut node = Node::new("MediaGrid", "library", &queue)
+            .holding("items", parked("blue", "photo-a"))
+            .holding("items", parked("green", "photo-b"))
+            .on("select");
+        let props = MediaGridProps::from_source(&mut node).expect("reads");
+        let grid = MediaGrid::from_props("library", props);
+        let mut host = harness(grid);
+        let cards = host.root_widget().children();
+        let blue = cards[0].get_rect();
+        let green = cards[1].get_rect();
+        let both = Some(Value::List(vec![
+            Value::Resource("photo-a".into()),
+            Value::Resource("photo-b".into()),
+        ]));
+        // A plain press starts the range at the card it lands on: the card itself opens, as it
+        // does without a range.
+        host.click_at(blue.center().x, blue.center().y);
+        assert_eq!(queue.take(), [fired("blue", "activate", None)]);
+        // A press with shift takes every card from there to the one it lands on, as the view
+        // takes the selection, and does not open the card.
+        host.set_modifiers(&["shift".to_owned()]);
+        host.click_at(green.center().x, green.center().y);
+        assert_eq!(queue.take(), [fired("library", "select", both.clone())]);
+        host.set_modifiers(&[]);
+        // A press held and dragged over the cards takes the ones it sweeps: each change reports
+        // the range it covers, the last one on the way out being the range it took.
+        host.drag_at(
+            (blue.center().x, blue.center().y),
+            (green.center().x, green.center().y),
+        );
+        let fired = queue.take();
+        let last = fired.last().expect("the drag reports the range it took");
+        assert_eq!(*last, fired("library", "select", both));
+        assert!(
+            fired.iter().all(|event| event.event == "select"),
+            "a sweep takes cards, never opens one: {fired:?}"
+        );
     }
 
     phase a_qr_code_re_encodes_a_changed_payload_in_place;

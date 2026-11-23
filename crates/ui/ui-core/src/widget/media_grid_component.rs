@@ -13,7 +13,7 @@ use crate::icons::Icon;
 use crate::pictures::Pictures;
 use crate::tokens::Rhythm;
 use crate::widget::arrange::{Fit, Part, Row, Sizing};
-use crate::widget::media_card::MediaSize;
+use crate::widget::media_card::{CardSlot, MediaSize};
 use crate::widget::virtual_list::{ListModel, ListModelChange};
 use crate::widget::{Element, MediaAspect, MediaCard, MediaGrid, MediaSource, VirtualList};
 
@@ -35,6 +35,11 @@ pub struct MediaGridProps {
     /// library of ten thousand photographs costs the cards on screen.
     #[component(part(default))]
     pub items: DescribedCards,
+    /// A range of its cards was taken: carries the cards it stood on, each by the item it shows,
+    /// in the order they stand. A press with shift takes the cards from the one pressed last to
+    /// the one pressed now; a press held and dragged over the cards takes the ones it sweeps.
+    #[component(event(value = Vec<ResourceId>))]
+    pub select: Event,
 }
 
 /// The cards of a grid: given whole, or a host rendering them as it shows them.
@@ -172,8 +177,16 @@ impl ListModel for Bands {
     }
 }
 
+/// What a grid whose cards a host builds keeps to take a range of them: their items by the
+/// place each stands in, and the place the pointer is over as the card under it says.
+#[derive(Default)]
+struct GridRange {
+    order: Rc<std::cell::RefCell<Vec<Option<ResourceId>>>>,
+    hovered: Rc<Cell<Option<usize>>>,
+}
+
 /// A band of cards as a row: each card the share of the width a column gets.
-fn build_band(bands: &Bands, index: usize, gap: Rhythm) -> Element {
+fn build_band(bands: &Bands, index: usize, gap: Rhythm, range: &GridRange) -> Element {
     let mut line = Row::row().fill_width().gap(gap);
     // The band's cards are read before the rows are borrowed to read them: the range is the
     // band's own, worked out from the same rows.
@@ -197,7 +210,21 @@ fn build_band(bands: &Bands, index: usize, gap: Rhythm) -> Element {
             key: key.clone(),
             ..MediaCardProps::default()
         });
-        let mut part = Part::new(Box::new(card(props)) as Element);
+        // The grid takes a range of its cards by their places: each card says the place it
+        // stands in, and the item it shows is what the range reports.
+        {
+            let mut order = range.order.borrow_mut();
+            let len = order.len();
+            order.resize((at + 1).max(len), None);
+            if let Some(held) = order.get_mut(at) {
+                *held = props.item.clone();
+            }
+        }
+        let card = card(props).slot(CardSlot {
+            hovered: Rc::clone(&range.hovered),
+            index: at,
+        });
+        let mut part = Part::new(Box::new(card) as Element);
         part.fit = Fit::hug().width(Sizing::fill(1.0));
         line = line.push_part(part);
     }
@@ -297,6 +324,7 @@ impl Described for MediaGrid {
             size,
             justified,
             items,
+            select,
         } = props;
         let size = size.unwrap_or_default();
         match items.held {
@@ -309,29 +337,54 @@ impl Described for MediaGrid {
                     columns: Rc::clone(&columns),
                     seen: Cell::new(1),
                 };
+                let range = Rc::new(GridRange::default());
+                let swept = Rc::clone(&range);
                 let gap = Rhythm::Section;
                 let list = VirtualList::new(
                     model,
                     BAND_ESTIMATE,
-                    move |bands: &Bands, index: usize, _key: &usize| build_band(bands, index, gap),
+                    move |bands: &Bands, index: usize, _key: &usize| {
+                        build_band(bands, index, gap, &swept)
+                    },
                 )
                 .filling()
                 .with_id(key);
                 let mut grid = MediaGrid::hosting(Box::new(list));
                 grid.set_size(size);
                 grid.set_columns(columns);
+                grid.set_range(Rc::clone(&range.order), Rc::clone(&range.hovered));
+                grid.set_select(select);
                 grid
             }
             CardsHeld::Given(cards) => {
-                let cards: Vec<MediaCard> = cards.into_iter().map(card).collect();
+                let order: Rc<std::cell::RefCell<Vec<Option<ResourceId>>>> = Rc::default();
+                let hovered: Rc<Cell<Option<usize>>> = Rc::default();
+                *order.borrow_mut() = cards.iter().map(|props| props.item.clone()).collect();
+                let cards: Vec<MediaCard> = cards
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, props)| {
+                        card(props).slot(CardSlot {
+                            hovered: Rc::clone(&hovered),
+                            index,
+                        })
+                    })
+                    .collect();
                 let grid = if justified {
                     MediaGrid::justified(cards)
                 } else {
                     MediaGrid::new(cards)
                 };
-                grid.with_size(size)
+                let mut grid = grid.with_size(size);
+                grid.set_range(order, hovered);
+                grid.set_select(select);
+                grid
             }
-            CardsHeld::Nothing => MediaGrid::new(Vec::new()).with_size(size),
+            CardsHeld::Nothing => {
+                let mut grid = MediaGrid::new(Vec::new()).with_size(size);
+                grid.set_select(select);
+                grid
+            }
         }
     }
 
@@ -341,6 +394,7 @@ impl Described for MediaGrid {
             size,
             justified,
             items,
+            select,
         } = props;
         let cards = match items.held {
             // A host-rendered grid is built again over the rows it is given.
@@ -350,7 +404,22 @@ impl Described for MediaGrid {
         };
         self.set_justified(justified);
         self.set_size(size.unwrap_or_default());
-        self.set_cards(cards.into_iter().map(card).collect());
+        self.set_select(select);
+        let hovered = Rc::clone(&self.hovered);
+        let order = Rc::clone(&self.order);
+        *order.borrow_mut() = cards.iter().map(|props| props.item.clone()).collect();
+        self.set_cards(
+            cards
+                .into_iter()
+                .enumerate()
+                .map(|(index, props)| {
+                    card(props).slot(CardSlot {
+                        hovered: Rc::clone(&hovered),
+                        index,
+                    })
+                })
+                .collect(),
+        );
         true
     }
 }
@@ -471,6 +540,7 @@ mod tests {
                 items: DescribedCards {
                     held: CardsHeld::Rendered(fake_rows(10_000).0),
                 },
+                select: Default::default(),
             },
         );
         assert!(grid.hosted());

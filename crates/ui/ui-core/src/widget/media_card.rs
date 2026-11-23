@@ -21,6 +21,17 @@ use crate::widget::DrawChild;
 use crate::widget::activation::{Activation, Interaction};
 use crate::widget::{Element, TaffyTreeExt, Widget, card_column_width, card_columns};
 
+/// Where a card stands in its grid, and the cell the grid reads the card the pointer is over
+/// from: what a range of cards is taken by.
+#[derive(Clone, Default)]
+pub struct CardSlot {
+    /// The cell the card sets to its own place while the pointer is over it, and back to none as
+    /// the pointer leaves: the grid reads the card a press or a drag lands on.
+    pub hovered: Rc<Cell<Option<usize>>>,
+    /// The card's place in the grid, in the order its cards stand.
+    pub index: usize,
+}
+
 /// The shape of a card's art.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum MediaAspect {
@@ -900,6 +911,8 @@ pub struct MediaCard {
     creator_rect: Rect,
     badges: Vec<OwnedBadge>,
     hover_action: Option<HoverAction>,
+    /// Where it stands in its grid, when its grid takes a range of them.
+    slot: Option<CardSlot>,
     pressed_action: crate::pointer_replay::HeldPress,
     selected: bool,
     activation: Activation,
@@ -934,6 +947,7 @@ impl MediaCard {
             creator_rect: Rect::ZERO,
             badges: Vec::new(),
             hover_action: None,
+            slot: None,
             pressed_action: crate::pointer_replay::HeldPress::default(),
             selected: false,
             activation: Activation::new(id),
@@ -1064,6 +1078,14 @@ impl MediaCard {
     #[must_use]
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    /// Where it stands in its grid, whose range gestures read the card the pointer is over from
+    /// it.
+    #[must_use]
+    pub fn slot(mut self, slot: CardSlot) -> Self {
+        self.slot = Some(slot);
         self
     }
 
@@ -1295,6 +1317,23 @@ impl Widget for MediaCard {
                 ElementState::Pressed => {}
             }
         }
+        if let Some(slot) = &self.slot {
+            match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    if self.rect.contains(ctx.logical(position)) {
+                        slot.hovered.set(Some(slot.index));
+                    } else if slot.hovered.get() == Some(slot.index) {
+                        slot.hovered.set(None);
+                    }
+                }
+                WindowEvent::CursorLeft { .. } => {
+                    if slot.hovered.get() == Some(slot.index) {
+                        slot.hovered.set(None);
+                    }
+                }
+                _ => {}
+            }
+        }
         let exclude: Vec<Rect> = target.filter(|_| shown).into_iter().collect();
         if self
             .activation
@@ -1485,6 +1524,19 @@ pub struct MediaGrid {
     /// rows are bands of this many cards.
     columns: Option<Rc<Cell<usize>>>,
 
+    /// Every card's item, by the place it stands in: what a range of cards reports.
+    order: Rc<std::cell::RefCell<Vec<Option<crate::component::ResourceId>>>>,
+    /// The place of the card the pointer is over, as the card itself says it.
+    hovered: Rc<Cell<Option<usize>>>,
+    /// The card the pointer pressed last, without shift: where a range taken with shift starts.
+    anchor: Cell<Option<usize>>,
+    /// The card the pointer is held on, while it is: where a drag's range starts.
+    pressed: Cell<Option<usize>>,
+    /// The places the drag has swept: the range reported, so a move reports only when it grows.
+    swept: std::cell::RefCell<Vec<usize>>,
+    /// The cards a range took, as the view takes them, in the order they stand.
+    select: crate::component::Event,
+
     dirty: bool,
 }
 
@@ -1513,6 +1565,12 @@ impl MediaGrid {
             rows_height: None,
             inner: None,
             columns: None,
+            order: Rc::default(),
+            hovered: Rc::default(),
+            anchor: Cell::new(None),
+            pressed: Cell::new(None),
+            swept: std::cell::RefCell::new(Vec::new()),
+            select: crate::component::Event::None,
         }
     }
 
@@ -1530,6 +1588,106 @@ impl MediaGrid {
     /// that many cards as it shows it.
     pub(crate) fn set_columns(&mut self, columns: Rc<Cell<usize>>) {
         self.columns = Some(columns);
+    }
+
+    /// The cell the places are kept in, and the one the card the pointer is over is read from:
+    /// what a grid whose cards a host builds registers them through.
+    pub(crate) fn set_range(
+        &mut self,
+        order: Rc<std::cell::RefCell<Vec<Option<crate::component::ResourceId>>>>,
+        hovered: Rc<Cell<Option<usize>>>,
+    ) {
+        self.order = order;
+        self.hovered = hovered;
+    }
+
+    /// The cards a range took, as the view takes them.
+    pub(crate) fn set_select(&mut self, select: crate::component::Event) {
+        self.select = select;
+    }
+
+    /// What a range gesture takes: the cards from `from` to `to`, each by the item it shows, in
+    /// the order they stand.
+    fn take_range(&self, from: usize, to: usize) {
+        let (low, high) = if from <= to { (from, to) } else { (to, from) };
+        let order = self.order.borrow();
+        let picked: Vec<crate::component::Value> = (low..=high)
+            .filter_map(|at| order.get(at).and_then(Option::as_ref))
+            .map(|item| crate::component::Value::Resource(item.0.clone()))
+            .collect();
+        self.select
+            .fire(Some(crate::component::Value::List(picked)));
+    }
+
+    /// A press with shift takes the cards from the one pressed last to the one pressed now; a
+    /// press held and dragged over the cards takes the ones it sweeps. Whether it took the press.
+    fn range_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
+        if self.select.is_none() {
+            return false;
+        }
+        match event {
+            WindowEvent::CursorMoved { .. } => {
+                let (Some(from), Some(to)) = (self.pressed.get(), self.hovered.get()) else {
+                    return false;
+                };
+                // A press that has not left the card it started on is still that card's own
+                // click: it opens rather than sweeping.
+                if to == from {
+                    return false;
+                }
+                let (low, high) = if from <= to { (from, to) } else { (to, from) };
+                let range: Vec<usize> = (low..=high).collect();
+                if *self.swept.borrow() != range {
+                    self.take_range(from, to);
+                    *self.swept.borrow_mut() = range;
+                }
+                false
+            }
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                let Some(from) = self.pressed.take() else {
+                    return false;
+                };
+                let swept = std::mem::take(&mut *self.swept.borrow_mut());
+                let Some(to) = self.hovered.get().or(swept.last().copied()) else {
+                    return false;
+                };
+                if swept.is_empty() {
+                    // A press let go where it started is the card's own: it opens or selects.
+                    return false;
+                }
+                self.take_range(from, to);
+                self.anchor.set(Some(to));
+                *ctx.handled = true;
+                true
+            }
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                let Some(at) = self.hovered.get() else {
+                    return false;
+                };
+                if ctx.modifiers.state().shift_key() {
+                    let from = self.anchor.get().unwrap_or(at);
+                    self.take_range(from, at);
+                    self.anchor.set(Some(at));
+                    self.pressed.set(None);
+                    *self.swept.borrow_mut() = Vec::new();
+                    *ctx.handled = true;
+                    return true;
+                }
+                self.pressed.set(Some(at));
+                self.anchor.set(Some(at));
+                *self.swept.borrow_mut() = Vec::new();
+                false
+            }
+            _ => false,
+        }
     }
 
     /// Whether the grid builds its cards as a host renders them, rather than holding them whole.
@@ -1927,6 +2085,9 @@ impl Widget for MediaGrid {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.range_event(event, ctx) {
+            return;
+        }
         if let Some(inner) = self.inner.as_mut() {
             inner.handle_event(event, ctx);
             return;
