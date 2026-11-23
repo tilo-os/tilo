@@ -264,11 +264,7 @@ tilo_test_env::scenario! {
 /// with no window of the app open, and the clock its app and its triggers read.
 fn tasks() -> (ResourceService, std::rc::Rc<std::cell::RefCell<String>>) {
     let clock = std::rc::Rc::new(std::cell::RefCell::new("2026-10-27T09:00:00Z".to_owned()));
-    let (ada, _) = Replica::new(
-        "ada",
-        Workspace::new(),
-        &[crate::fixtures::AGENT, DISCUSSION, TASKS],
-    );
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[DISCUSSION, TASKS]);
     ada.host.set_clock({
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()

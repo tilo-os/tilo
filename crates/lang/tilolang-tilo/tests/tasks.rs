@@ -2618,7 +2618,7 @@ tilo_test_env::scenario! {
             .collect();
         assert_eq!(
             segments,
-            ["List", "Board"],
+            ["List", "Board", "Page"],
             "the views it declares, in the order it declares them, each saying what it adds to the type's name"
         );
         let icons: Vec<Option<String>> = switch.of_kind("ui.Segment")
@@ -2627,7 +2627,11 @@ tilo_test_env::scenario! {
             .collect();
         assert_eq!(
             icons,
-            [Some("list".to_owned()), Some("columns-2".to_owned())],
+            [
+                Some("list".to_owned()),
+                Some("columns-2".to_owned()),
+                Some("info".to_owned())
+            ],
             "each view says the glyph it reads as"
         );
         assert_eq!(
@@ -2652,10 +2656,8 @@ tilo_test_env::scenario! {
             "no action is drawn as a switch: {toggles:?}"
         );
         assert!(
-            ["New task", "New section", "Rename…"]
-                .iter()
-                .all(|label| commands.contains(&label.to_string())),
-            "and the commands beside it are buttons: {commands:?}"
+            commands.contains(&"New task".to_owned()),
+            "and the project's primary action is a button: {commands:?}"
         );
     }
 

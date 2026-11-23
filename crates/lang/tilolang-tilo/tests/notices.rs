@@ -134,11 +134,7 @@ impl Device {
 /// A session's service over a copy of `base`, for `person`, telling what it shows to a recorder.
 /// Its clock stands before the reminder, so its own turn runs nothing until it is told to.
 fn service(name: &str, person: &str, base: &Workspace) -> (Device, Recorder) {
-    let (replica, _) = Replica::new(
-        name,
-        base.fork(),
-        &[crate::fixtures::AGENT, DISCUSSION, TASKS],
-    );
+    let (replica, _) = Replica::new(name, base.fork(), &[DISCUSSION, TASKS]);
     let (mut service, doc) = replica.into_service_with_workspace(person);
     service.set_clock(|| "2026-10-27T09:00:00Z".to_owned());
     let recorder = Recorder::default();
@@ -150,11 +146,7 @@ fn service(name: &str, person: &str, base: &Workspace) -> (Device, Recorder) {
 /// triggers read.
 fn ada_workspace() -> (Device, Recorder, std::rc::Rc<std::cell::RefCell<String>>) {
     let clock = std::rc::Rc::new(std::cell::RefCell::new("2026-10-27T09:00:00Z".to_owned()));
-    let (ada, _) = Replica::new(
-        "ada",
-        Workspace::new(),
-        &[crate::fixtures::AGENT, DISCUSSION, TASKS],
-    );
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[DISCUSSION, TASKS]);
     ada.host.set_clock({
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()
@@ -251,11 +243,7 @@ fn invoke(replica: &Replica, meta: &Meta, name: &str, args: Vec<Value>) -> Value
 /// nine, with the clock at nine as the actions were made.
 fn reminded_workspace() -> (Replica, Meta, std::rc::Rc<std::cell::RefCell<String>>) {
     let clock = std::rc::Rc::new(std::cell::RefCell::new("2026-10-27T09:00:00Z".to_owned()));
-    let (ada, packages) = Replica::new(
-        "ada",
-        Workspace::new(),
-        &[crate::fixtures::AGENT, DISCUSSION, TASKS],
-    );
+    let (ada, packages) = Replica::new("ada", Workspace::new(), &[DISCUSSION, TASKS]);
     ada.host.set_clock({
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()
@@ -439,7 +427,7 @@ tilo_test_env::scenario! {
 
         // Another device of the workspace, which has not heard from ada's yet: both come to run the
         // reminder at its moment, as they do when the origin moves between them.
-        let bo = ada.fork("bo", &[crate::fixtures::AGENT, DISCUSSION, TASKS]);
+        let bo = ada.fork("bo", &[DISCUSSION, TASKS]);
         bo.host.set_clock({
             let clock = std::rc::Rc::clone(&clock);
             move || clock.borrow().clone()
