@@ -250,10 +250,10 @@ pub fn qualify_applications(
         file.validate()?;
     }
     script.validate()?;
-    let native = sorted_value(qualified.receiving_proof()?);
+    let receiving_proof = qualified.receiving_proof()?;
     let helper = ProtectedFile::open(Path::new(HELPER))?;
     let helper_sha = actual_hash(&helper)?;
-    if native
+    if receiving_proof
         .get("prepared_helper_sha256")
         .and_then(serde_json::Value::as_str)
         != Some(helper_sha.as_str())
@@ -265,10 +265,11 @@ pub fn qualify_applications(
         subset_protocol: 2,
         prepared_helper_sha256: helper_sha,
         qualification_script_sha256: script_sha,
-        native_qualification_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&native)?)),
+        native_qualification_sha256: canonical_sha256(receiving_proof),
     };
     capability.validate()?;
     let original = before.into_capability(qualified.receipt_sha256())?;
+    let native = sorted_value(receiving_proof);
     let envelope = serde_json::json!({"capability":capability,"original_source":original,"native_qualification":native});
     let bytes = serde_json::to_vec(&envelope)?;
     if bytes.len() > PROOF_BOUND {
@@ -277,8 +278,14 @@ pub fn qualify_applications(
     output.write_all(&bytes)?;
     output.write_all(b"\n")
 }
-// Explicitly recurse and insert sorted keys: workspace serde_json can enable
-// preserve_order, so merely hashing Value serialization is not canonical.
+fn canonical_sha256(value: &serde_json::Value) -> String {
+    let mut hasher = Sha256::new();
+    tilo_canonical_json::write_bytes(value, |chunk| hasher.update(chunk));
+    hex::encode(hasher.finalize())
+}
+// Explicitly recurse and insert sorted keys so `"native_qualification"` inside
+// the serialized envelope keeps sorted key order even when workspace serde_json
+// enables `preserve_order`.
 fn sorted_value(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(fields) => {
@@ -773,10 +780,15 @@ mod applications_encoding_tests {
         ];
         for (name, input, expected_hex) in cases {
             let value: serde_json::Value = serde_json::from_str(input).unwrap();
-            let digest = hex::encode(Sha256::digest(
+            assert_eq!(
+                super::canonical_sha256(&value),
+                expected_hex,
+                "canonical_sha256 row {name}"
+            );
+            let sorted_digest = hex::encode(Sha256::digest(
                 serde_json::to_vec(&super::sorted_value(&value)).unwrap(),
             ));
-            assert_eq!(digest, expected_hex, "digest row {name}");
+            assert_eq!(sorted_digest, expected_hex, "sorted_value row {name}");
         }
     }
 }

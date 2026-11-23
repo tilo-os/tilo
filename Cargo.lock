@@ -7912,6 +7912,7 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-app-id",
  "tilo-app-package",
+ "tilo-canonical-json",
  "tilo-clock",
  "tilo-crypto",
  "tilo-dav",

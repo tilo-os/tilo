@@ -116,6 +116,7 @@ leveldb-sys = { version = "=2.0.9", features = ["snappy"], optional = true }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
 tilo-install-helpers = { path = "../../system/install-helpers", optional = true }
 zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
+tilo-canonical-json = { path = "../tilo-canonical-json" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 fs-native = { path = "../../system/fs-native" }

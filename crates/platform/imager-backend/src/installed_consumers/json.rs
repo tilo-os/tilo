@@ -79,32 +79,30 @@ impl<'de> Visitor<'de> for Strict {
 
 /// Sorted keys, no whitespace, non-ASCII text kept as UTF-8.
 pub fn canonical(value: &Value) -> Vec<u8> {
-    let mut output = Vec::new();
-    encode(value, false, &mut output);
-    output
+    tilo_canonical_json::to_vec(value)
 }
 
 /// Sorted keys, no whitespace, non-ASCII text escaped as `\uXXXX`.
 pub fn canonical_ascii(value: &Value) -> Vec<u8> {
     let mut output = Vec::new();
-    encode(value, true, &mut output);
+    encode(value, &mut output);
     output
 }
 
-fn encode(value: &Value, ascii: bool, output: &mut Vec<u8>) {
+fn encode(value: &Value, output: &mut Vec<u8>) {
     match value {
         Value::Null => output.extend_from_slice(b"null"),
         Value::Bool(true) => output.extend_from_slice(b"true"),
         Value::Bool(false) => output.extend_from_slice(b"false"),
         Value::Number(number) => output.extend_from_slice(number.to_string().as_bytes()),
-        Value::String(text) => string(text, ascii, output),
+        Value::String(text) => string(text, output),
         Value::Array(items) => {
             output.push(b'[');
             for (index, item) in items.iter().enumerate() {
                 if index > 0 {
                     output.push(b',');
                 }
-                encode(item, ascii, output);
+                encode(item, output);
             }
             output.push(b']');
         }
@@ -117,10 +115,10 @@ fn encode(value: &Value, ascii: bool, output: &mut Vec<u8>) {
                 if index > 0 {
                     output.push(b',');
                 }
-                string(key, ascii, output);
+                string(key, output);
                 output.push(b':');
                 if let Some(item) = fields.get(key.as_str()) {
-                    encode(item, ascii, output);
+                    encode(item, output);
                 }
             }
             output.push(b'}');
@@ -128,7 +126,7 @@ fn encode(value: &Value, ascii: bool, output: &mut Vec<u8>) {
     }
 }
 
-fn string(text: &str, ascii: bool, output: &mut Vec<u8>) {
+fn string(text: &str, output: &mut Vec<u8>) {
     output.push(b'"');
     for character in text.chars() {
         match character {
@@ -139,15 +137,12 @@ fn string(text: &str, ascii: bool, output: &mut Vec<u8>) {
             '\t' => output.extend_from_slice(b"\\t"),
             '\u{8}' => output.extend_from_slice(b"\\b"),
             '\u{c}' => output.extend_from_slice(b"\\f"),
-            c if (c as u32) < 0x20 || (ascii && !(' '..='~').contains(&c)) => {
+            c @ ' '..='~' => output.push(c as u8),
+            c => {
                 let mut units = [0_u16; 2];
                 for unit in c.encode_utf16(&mut units) {
                     output.extend_from_slice(format!("\\u{unit:04x}").as_bytes());
                 }
-            }
-            c => {
-                let mut buffer = [0_u8; 4];
-                output.extend_from_slice(c.encode_utf8(&mut buffer).as_bytes());
             }
         }
     }
