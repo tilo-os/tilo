@@ -142,28 +142,39 @@ pub async fn apply_on<R: Resource>(
         (workspace, &cert),
         (app, name),
         Some(start),
-        |doc| {
-            let mut replica = Replica::<R>::from_doc(std::mem::take(doc))
-                .as_invoker(&hex::encode(cert.user_public_key));
-            // This device's own actor: the genesis is one actor's change
-            // already, and two devices continuing it under that actor would
-            // make one sequence with two different changes.
-            replica
-                .doc_mut()
-                .set_actor(automerge::ActorId::from(cert.device_public_key.to_vec()));
-            let applied = replica
-                .apply(action)
-                .map(drop)
-                .map_err(|error| error.to_string());
-            std::mem::swap(doc, replica.doc_mut());
-            applied
-        },
+        |doc| invoke(doc, &cert, action),
     ))
     .await
     .map_err(|error| error.to_string());
     if applied.is_ok() {
         workspaces.wrote(workspace, app, name);
     }
+    applied
+}
+
+/// Apply `action` to `doc`, a resource `R`, as `cert`'s person on `cert`'s
+/// device.
+///
+/// # Errors
+/// The action was refused.
+pub(super) fn invoke<R: Resource>(
+    doc: &mut automerge::AutoCommit,
+    cert: &tilo_user_identity::DeviceCert,
+    action: Invoke<R>,
+) -> Result<(), String> {
+    let mut replica =
+        Replica::<R>::from_doc(std::mem::take(doc)).as_invoker(&hex::encode(cert.user_public_key));
+    // This device's own actor: the genesis is one actor's change
+    // already, and two devices continuing it under that actor would
+    // make one sequence with two different changes.
+    replica
+        .doc_mut()
+        .set_actor(automerge::ActorId::from(cert.device_public_key.to_vec()));
+    let applied = replica
+        .apply(action)
+        .map(drop)
+        .map_err(|error| error.to_string());
+    std::mem::swap(doc, replica.doc_mut());
     applied
 }
 

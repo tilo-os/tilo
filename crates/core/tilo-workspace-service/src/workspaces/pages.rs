@@ -1349,7 +1349,6 @@ impl Workspaces {
             .await?;
         if let JoinReply::Admitted { workspace, .. } = &reply {
             self.accepted(workspace, &invitation, person).await;
-            self.keep_admitted(workspace, &person).await;
             // A key that came in with an invitation is listed as every key
             // the workspace admits is, by the name it joined as, so its
             // person finds it and can revoke it there.

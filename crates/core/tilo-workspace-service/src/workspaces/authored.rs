@@ -2,7 +2,9 @@
 //! shared desktop, a person's servers in their admin workspace. Every holder writes them,
 //! whether or not it runs agents, so this is not part of `applications`.
 
-use super::{CollaborationError, Workspaces, system_time};
+use super::sealed_documents::DocumentKeys;
+use super::{CollaborationError, GovernedWorkspace, Workspaces, system_time};
+use tilo_peer_state::StatePeer;
 use tilo_user_identity::DeviceCert;
 
 impl Workspaces {
@@ -58,26 +60,122 @@ impl Workspaces {
             .peer()
             .workspace()
             .check_workspace_administration(holder.device_public_key, system_time(now))?;
-        let keys = self
-            .sealing_keys(&governed, app, name)
+        let record = self.hold_record(&governed, (app, name)).await?;
+        // Build the change on the workspace as it stands, with its copy locked
+        // from the build to the commit, the staging the workspace's other
+        // changes use. The link takes members' writes into that same copy
+        // without the workspace's other lock, so a candidate cloned before
+        // this lock can be older than the copy by the time it commits, and the
+        // commit is then refused for history it was not built on. Locked here,
+        // a write the link takes in meanwhile waits for this commit, which
+        // publishes it with this change.
+        let (result, published) = governed
+            .change_held(
+                &self.inner.host.key,
+                system_time(now),
+                |_, candidate| {
+                    let (result, published) = record.write(
+                        candidate,
+                        genesis,
+                        change,
+                        (&self.inner.host.key, system_time(now)),
+                    )?;
+                    Ok(((result, published), published))
+                },
+                |record, _| Ok(record.collaboration.clone()),
+            )
+            .map_err(CollaborationError::new)?;
+        if !published {
+            return Ok(result);
+        }
+        self.settle(&mut governed).await?;
+        Ok(result)
+    }
+}
+
+/// A record a change of the workspace writes within itself, with the keys it
+/// is read and sealed with: taken before the change is built, under the lock
+/// of the workspace's copy, where nothing may be waited for.
+pub(super) struct HeldRecord {
+    workspace: String,
+    app: String,
+    name: String,
+    read: Option<DocumentKeys>,
+    write: Option<DocumentKeys>,
+}
+
+impl Workspaces {
+    /// Take what writing `name` of `app` within a change of `workspace` needs.
+    ///
+    /// # Errors
+    /// The record is sealed and its keys cannot be read, or its channel cannot
+    /// be opened.
+    pub(super) async fn hold_record(
+        &self,
+        workspace: &GovernedWorkspace,
+        (app, name): (&str, &str),
+    ) -> Result<HeldRecord, CollaborationError> {
+        let write = self
+            .sealing_keys(workspace, app, name)
             .await
             .map_err(CollaborationError::new)?;
-        let existing = governed
-            .readable_document(app, name)
+        let read = workspace
+            .document_keys(app, name)
             .await
             .map_err(CollaborationError::new)?;
+        Ok(HeldRecord {
+            workspace: workspace.workspace().to_owned(),
+            app: app.to_owned(),
+            name: name.to_owned(),
+            read,
+            write,
+        })
+    }
+}
+
+impl HeldRecord {
+    /// The workspace the record is of.
+    pub(super) fn workspace(&self) -> &str {
+        &self.workspace
+    }
+
+    /// Make `change` to the record as `candidate` holds it, or to `genesis`
+    /// (else nothing) while it holds none, and publish what it added into
+    /// `candidate`, signed with `key` at `now`: the record is committed with
+    /// whatever else `candidate` changes, or not at all. An existing record
+    /// keeps its graph and gains only the change. Answers what `change`
+    /// answers, and whether anything was published.
+    ///
+    /// # Errors
+    /// The record does not read, `change` refuses, the record would be
+    /// founded without its identity, or the publication is refused.
+    pub(super) fn write<R>(
+        &self,
+        candidate: &mut StatePeer,
+        genesis: Option<Box<automerge::AutoCommit>>,
+        change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
+        (key, now): (&ed25519_dalek::SigningKey, std::time::SystemTime),
+    ) -> Result<(R, bool), String> {
+        let (workspace, app, name) = (
+            self.workspace.as_str(),
+            self.app.as_str(),
+            self.name.as_str(),
+        );
+        let existing = super::sealed_documents::opened_readable(
+            candidate,
+            self.read.as_ref(),
+            workspace,
+            (app, name),
+        )?;
         let (mut document, heads) = match existing {
             Some(bytes) => {
-                let mut document = automerge::AutoCommit::load(&bytes)
-                    .map_err(|error| CollaborationError::new(error.to_string()))?;
-                let heads = match &keys {
+                let mut document =
+                    automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+                let heads = match &self.write {
                     Some(_) => document.get_heads(),
-                    None => governed
-                        .peer()
+                    None => candidate
                         .plaintext_complete_heads(app, name)
-                        .ok_or_else(|| {
-                            CollaborationError::new("record is not complete plaintext")
-                        })?,
+                        .ok_or("record is not complete plaintext")?,
                 };
                 (document, Some(heads))
             }
@@ -94,42 +192,20 @@ impl Workspaces {
             );
         }
         if heads.is_none() && !founds_as_read(&document, (app, name), workspace) {
-            return Err(CollaborationError::new(format!(
+            return Err(format!(
                 "{app} {name} would be founded without the identity every reader of the \
                  workspace's own records checks; it starts from its genesis"
-            )));
+            ));
         }
-        // Build the change on the workspace as it stands, with its copy locked
-        // from the build to the commit, the staging the workspace's other
-        // changes use. The link takes members' writes into that same copy
-        // without the workspace's other lock, so a candidate cloned before
-        // this lock can be older than the copy by the time it commits, and the
-        // commit is then refused for history it was not built on. Locked here,
-        // a write the link takes in meanwhile waits for this commit, which
-        // publishes it with this change.
-        let (result, published) = governed
-            .change_held(
-                &self.inner.host.key,
-                system_time(now),
-                |_, candidate| {
-                    let published = publish_authored(
-                        candidate,
-                        keys.as_ref(),
-                        (app, name),
-                        (&mut document, heads),
-                        (&self.inner.host.key, system_time(now)),
-                    )
-                    .map_err(|error| error.to_string())?;
-                    Ok(((result, published), published))
-                },
-                |record, _| Ok(record.collaboration.clone()),
-            )
-            .map_err(CollaborationError::new)?;
-        if !published {
-            return Ok(result);
-        }
-        self.settle(&mut governed).await?;
-        Ok(result)
+        let published = publish_authored(
+            candidate,
+            self.write.as_ref(),
+            (app, name),
+            (&mut document, heads),
+            (key, now),
+        )
+        .map_err(|error| error.to_string())?;
+        Ok((result, published))
     }
 }
 
