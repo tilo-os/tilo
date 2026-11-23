@@ -1,7 +1,10 @@
 //! Recovery inputs stay unverified until a new canonical signed full verifier.
 use super::*;
 use crate::setup::{migration::PinnedDirectory, nofollow};
-use std::{os::fd::AsRawFd, path::Path};
+use std::{
+    os::fd::{AsFd, AsRawFd},
+    path::Path,
+};
 pub(super) fn validate_artifacts(
     f: &InstalledVerifiedArtifactFacts,
     b: &Binding,
@@ -962,21 +965,15 @@ impl InstalledCopyRecovery {
                     return Err(failure("Installed recovery destination already exists"));
                 }
                 self.file_check(index, "artifacts", cancel)?;
-                let name = std::ffi::CString::new(leaf.as_str())
-                    .map_err(|_| failure("Installed recovery name invalid"))?;
-                if unsafe {
-                    libc::syscall(
-                        libc::SYS_renameat2,
-                        source.file.as_raw_fd(),
-                        name.as_ptr(),
-                        self.output.file.as_raw_fd(),
-                        name.as_ptr(),
-                        libc::RENAME_NOREPLACE,
-                    )
-                } < 0
-                {
-                    return Err(io::Error::last_os_error());
+                if leaf.contains('\0') {
+                    return Err(failure("Installed recovery name invalid"));
                 }
+                host_fs::rename_noreplace_at(
+                    source.file.as_fd(),
+                    std::ffi::OsStr::new(leaf.as_str()),
+                    self.output.file.as_fd(),
+                    std::ffi::OsStr::new(leaf.as_str()),
+                )?;
                 self.files[index].1 = format!("output/{leaf}");
                 migration_durability::sync_directory(&source.file)?;
                 migration_durability::sync_directory(&self.output.file)?;
