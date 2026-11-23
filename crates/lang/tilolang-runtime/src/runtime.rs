@@ -439,6 +439,12 @@ impl Runtime {
         self.core.foreign.borrow_mut().take_wanted()
     }
 
+    /// The resources of the apps `keep` names that views read before their readings came in,
+    /// each its id and type. The rest stay asked for, for the host that answers them.
+    pub fn take_wanted_of(&self, keep: impl FnMut(&str) -> bool) -> Vec<(String, String)> {
+        self.core.foreign.borrow_mut().take_wanted_of(keep)
+    }
+
     /// The apps whose package a view read a resource of before it was loaded here, each with
     /// the type as the view named it (`<app>#<Type>`): what the host loads
     /// ([`Runtime::load_foreign_package`]). Each app is asked for once; until its package

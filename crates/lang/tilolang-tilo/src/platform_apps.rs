@@ -24,6 +24,10 @@ use crate::catalogue::{package_of, parse_surfaces};
 
 /// The app the device's resources are published as: `use so.tilo.device`.
 pub const DEVICE_APP: &str = "so.tilo.device";
+/// The app the workspace's activity is published as: `use so.tilo.history`. The app whose window
+/// shows it is `so.tilo.activity`, and it reads this package (`history.history`, and the range a
+/// view names of it) as any other package it uses.
+pub const ACTIVITY_APP: &str = "so.tilo.history";
 /// Contacts' app, whose directory of the workspace the session publishes.
 /// The directory's package, whose root is one record of the workspace ([`CONTACTS_ROOTS`]).
 /// Its own id, not the Contacts app's: the app is a tilolang package of that id, and a
@@ -135,6 +139,8 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("quick_settings", "QuickSettings", "session:quick-settings"),
     ("clipboard", "Clipboard", "session:clipboard"),
 ];
+/// The activity's root, the one resource every change and every verb of it is on.
+const ACTIVITY_ROOTS: &[(&str, &str, &str)] = &[("history", "Activity", "workspace.activity")];
 const VISION_ROOTS: &[(&str, &str, &str)] = &[
     ("image_model", "ImageModel", "vision:vision.image-model"),
     ("analysis", "Analysis", "vision:vision.analysis"),
@@ -234,6 +240,16 @@ const PUBLISHED: &[Published] = &[
             include_str!("../../../../apps/settings/surface.toml"),
             SECTIONS_SURFACE,
         ],
+        described: false,
+        listed: &[],
+    },
+    Published {
+        app: ACTIVITY_APP,
+        title: "Activity",
+        kinds: &[],
+        roots: ACTIVITY_ROOTS,
+        // What the workspace's activity reads as, beside the session that serves it.
+        files: &[include_str!("../../../desktop/session/activity-surface.json")],
         described: false,
         listed: &[],
     },
@@ -554,5 +570,234 @@ fn surfaces_of(file: &str) -> Result<Vec<Surface>, String> {
         Ok(json.resources)
     } else {
         parse_surfaces(file)
+    }
+}
+
+/// One published resource, followed: its reading each time the session publishes one.
+pub trait Reading: Send {
+    /// The newest reading since the last call, `None` while nothing new came.
+    fn latest(&self) -> Option<Result<String, String>>;
+}
+
+/// Where the platform's published resources are reached: the session's services, which a
+/// process reaches over its connection.
+pub trait Published: Send + Sync {
+    /// Follow the reading of the published resource `resource`, waking `wake`'s owner at each
+    /// new one.
+    ///
+    /// # Errors
+    /// No session's services are reached, or the watch was refused.
+    fn follow(
+        &self,
+        resource: &str,
+        wake: tilo_rt::wake::WakeHandle,
+    ) -> Result<Box<dyn Reading>, String>;
+}
+
+/// The session's services: the platform roots read where the session publishes them.
+pub struct Session;
+
+impl Published for Session {
+    fn follow(
+        &self,
+        resource: &str,
+        wake: tilo_rt::wake::WakeHandle,
+    ) -> Result<Box<dyn Reading>, String> {
+        Ok(Box::new(Followed(collaboration::SessionResource::follow(
+            resource, wake,
+        )?)))
+    }
+}
+
+/// A resource of the session's followed: each reading the session publishes.
+struct Followed(collaboration::SessionResource);
+
+impl Reading for Followed {
+    fn latest(&self) -> Option<Result<String, String>> {
+        self.0.latest()
+    }
+}
+
+static SOURCE: std::sync::OnceLock<Box<dyn Published>> = std::sync::OnceLock::new();
+
+/// Read the platform's published resources through `source` from now on. Called once, by the
+/// process's start; a process with none reads no platform root.
+pub fn install(source: Box<dyn Published>) {
+    let _ = SOURCE.set(source);
+}
+
+fn published() -> Option<&'static dyn Published> {
+    SOURCE.get().map(Box::as_ref)
+}
+
+/// Load the platform packages `uses` names into `host`, as descriptions before the bundle that
+/// uses them links: what its views read as `device.sound` or `history.history`. The apps loaded
+/// are returned, so the caller follows the roots each publishes. A package that does not load is
+/// said and left out: the views that read it draw their waiting state.
+pub fn load(host: &crate::host::Host, uses: &[String]) -> Vec<String> {
+    let Ok(packages) = platform_packages() else {
+        tracing::warn!("the platform's packages do not read");
+        return Vec::new();
+    };
+    let mut loaded = Vec::new();
+    for meta in packages {
+        if !uses.contains(&meta.app) {
+            continue;
+        }
+        let app = meta.app.clone();
+        if let Err(error) = host.runtime().load_foreign(meta) {
+            tracing::warn!(%app, %error, "a platform package did not load");
+            continue;
+        }
+        loaded.push(app);
+    }
+    loaded
+}
+
+/// The platform's roots one window reads: the packages its bundle `use`s, and each root followed
+/// from where the session publishes it.
+#[derive(Default)]
+pub struct Roots {
+    /// The apps among them whose package this window loaded.
+    apps: std::collections::BTreeSet<String>,
+    /// The roots followed, each with the resource of the app it is.
+    followed: Vec<(crate::runtime::ResourceRef, Box<dyn Reading>)>,
+    /// The roots a package declares, by id: followed for as long as the window runs. The others
+    /// are read on demand — a reading keyed by a range — and only while a view shows one.
+    declared: std::collections::BTreeSet<String>,
+    /// Wakes the window when a followed root publishes a reading.
+    wake: Option<tilo_rt::wake::WakeHandle>,
+    /// Whether the packages and their roots were loaded from the bundle.
+    loaded: bool,
+}
+
+impl Roots {
+    /// The platform packages `uses` names, loaded into `host`, and each of their roots followed.
+    /// What the session does not answer is said once and left reading as it would start.
+    pub fn load(&mut self, host: &crate::host::Host, uses: &[String], wake: tilo_rt::wake::WakeHandle) {
+        if self.loaded {
+            return;
+        }
+        self.loaded = true;
+        self.wake = Some(wake.clone());
+        let apps = load(host, uses);
+        if published().is_none() {
+            self.apps.extend(apps);
+            return;
+        }
+        let Ok(packages) = platform_packages() else {
+            return;
+        };
+        for meta in packages {
+            if !apps.contains(&meta.app) {
+                continue;
+            }
+            for root in &meta.named_roots {
+                let Some(published) = root.published.as_deref() else {
+                    continue;
+                };
+                // The type a view reads the root as: its app and its name, as the platform's
+                // roots name it (`so.tilo.device#Sound`).
+                let Some(name) = meta
+                    .types
+                    .iter()
+                    .find(|declared| declared.id == root.ty)
+                    .map(|declared| declared.name.clone())
+                else {
+                    continue;
+                };
+                let Some(target) =
+                    crate::runtime::ResourceRef::parse_id(published, format!("{}#{name}", meta.app))
+                else {
+                    continue;
+                };
+                self.declared.insert(target.id_string());
+                self.follow(&target, wake.clone());
+                self.seed(host, &target);
+            }
+        }
+        self.apps.extend(apps);
+    }
+
+    /// Follow `target`, the resource the session publishes under its id.
+    fn follow(&mut self, target: &crate::runtime::ResourceRef, wake: tilo_rt::wake::WakeHandle) {
+        let Some(source) = published() else {
+            return;
+        };
+        match source.follow(&target.id_string(), wake) {
+            Ok(reading) => self.followed.push((target.clone(), reading)),
+            Err(why) => tracing::debug!(
+                resource = %target.id_string(),
+                %why,
+                "a platform root is not read here"
+            ),
+        }
+    }
+
+    /// Start `target` reading what it would before its app publishes anything, so a view that
+    /// reads a field of it runs as the app opens, rather than trapping on a resource with no
+    /// reading at all. The session's first reading replaces it.
+    fn seed(&self, host: &crate::host::Host, target: &crate::runtime::ResourceRef) {
+        let _ = host.runtime().set_reading(target, "{}");
+    }
+
+    /// Hand the runtime every new reading of the roots followed, and follow the ones its views
+    /// read before they were. Whether a reading moved, which runs those views again, and only
+    /// them: a reading is parsed once as it arrives, never per frame.
+    pub fn read(
+        &mut self,
+        host: &crate::host::Host,
+        reads: impl Fn(&crate::runtime::ResourceRef) -> bool,
+    ) -> bool {
+        let runtime = host.runtime();
+        let mut moved = false;
+        for (target, reading) in &self.followed {
+            while let Some(result) = reading.latest() {
+                match result {
+                    Ok(reading) => {
+                        moved |= runtime.set_reading(target, &reading).unwrap_or_else(|error| {
+                            tracing::warn!(%error, resource = %target.id_string(), "a platform reading was refused");
+                            false
+                        });
+                    }
+                    Err(why) => {
+                        tracing::debug!(resource = %target.id_string(), %why, "a platform reading failed");
+                    }
+                }
+            }
+        }
+        // A view read a root before it was followed (a resource this bundle's platform package
+        // publishes under no name it declares): it is followed now, and reads as it would start
+        // until its reading comes.
+        let apps = &self.apps;
+        let wanted: Vec<(String, String)> = runtime.take_wanted_of(|app| apps.contains(app));
+        let Some(wake) = self.wake.clone() else {
+            return moved;
+        };
+        for (id, ty) in wanted {
+            let Some((app, _name)) = ty.split_once('#') else {
+                continue;
+            };
+            if !self.apps.contains(app)
+                || self
+                    .followed
+                    .iter()
+                    .any(|(target, _)| target.id_string() == id)
+            {
+                continue;
+            }
+            let Some(target) = crate::runtime::ResourceRef::parse_id(&id, ty.clone()) else {
+                continue;
+            };
+            self.follow(&target, wake.clone());
+            self.seed(host, &target);
+        }
+        // A reading followed because a view read it goes once no view of this window reads it:
+        // a detail beside another change, a range another window shows. The session stops
+        // publishing it here, and the runtime keeps what was read of it no longer.
+        let declared = self.declared.clone();
+        self.followed
+            .retain(|(target, _)| declared.contains(&target.id_string()) || reads(target));
+        moved
     }
 }

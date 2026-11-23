@@ -58,6 +58,7 @@ use tilolang_tilo::used::UsedApp;
 use tilolang_tilo::{HostEffect, OpenEffect};
 
 mod used;
+use tilolang_tilo::platform_apps::Roots;
 use used::{Used, used_apps};
 
 use crate::call::Calls;
@@ -543,6 +544,10 @@ struct HostPlatform {
     person: String,
     /// The folders this instance watches, shared with the frames that run their actions.
     watches: Rc<crate::files::Watches>,
+    /// The platform packages this bundle uses, loaded into its host before the bundle links.
+    platform: Rc<RefCell<Roots>>,
+    /// What wakes this instance when a followed platform root publishes a reading.
+    root_wake: tilo_wake::WakeHandle,
 }
 
 impl HostPlatform {
@@ -616,6 +621,11 @@ impl Platform for HostPlatform {
     /// The latest later build when there is one that loads, else the package the instance was
     /// started with.
     fn load(&self, host: &Host) -> u64 {
+        // The platform's packages are descriptions the bundle's `use`s name: loaded before the
+        // bundle, whose types read them.
+        self.platform
+            .borrow_mut()
+            .load(host, &self.bundle.meta.uses, self.root_wake.clone());
         let installed = |app: &str| self.installed.contains_key(app);
         if let Some(update) = self.builds().and_then(|builds| builds.latest()) {
             match host.load_bundle_using(&update.bundle, installed) {
@@ -1269,6 +1279,7 @@ pub struct Hosted {
     children: Rc<RefCell<BTreeMap<String, Child>>>,
     /// Whether the runtime sends its calls of other apps' actions on this instance's connection.
     sending: bool,
+    platform: Rc<RefCell<Roots>>,
     /// The identity-service connection the instance's connection signs through, held for as
     /// long as the instance runs.
     #[allow(
@@ -1400,6 +1411,7 @@ impl Hosted {
         let used = used_apps(&spec, &bundle, &store);
         let personal = PersonalDocument::open(&spec.app, &spec.person, &store);
         let watches = Rc::new(crate::files::Watches::new(Arc::clone(&wake)));
+        let platform_roots = Rc::new(RefCell::new(Roots::default()));
         let platform = HostPlatform {
             bundle: Arc::clone(&bundle),
             installed: spec.installed.clone(),
@@ -1418,6 +1430,8 @@ impl Hosted {
             no_chooser: crate::files::NO_CHOOSER.to_owned(),
             person: spec.person.clone(),
             watches: Rc::clone(&watches),
+            platform: Rc::clone(&platform_roots),
+            root_wake: scope.0.handle(),
         };
         let mut instance = Instance::new(
             Config {
@@ -1523,6 +1537,7 @@ impl Hosted {
             waiting_calls,
             children,
             sending: false,
+            platform: platform_roots,
             identity: None,
             scope,
             personal,
@@ -1793,6 +1808,9 @@ impl Hosted {
         self.presence.show(&mut self.instance);
         self.calls.show(&mut self.instance);
         self.invocations.show(&mut self.instance);
+        // The platform's roots are followed before the views run, so the first frame reads what
+        // the session publishes rather than an app's waiting state.
+        changed |= self.read_platform();
         changed |= self.instance.update();
         // A watched folder that changed runs its action now, as the person's own step.
         changed |= self.run_watches();
@@ -2863,6 +2881,18 @@ impl Hosted {
             self.answer_invocation(id, answer);
         }
         true
+    }
+
+    /// Hand the instance the readings of the platform roots its bundle reads, and follow the ones
+    /// its views asked for. Whether a reading moved, which runs those views again.
+    fn read_platform(&mut self) -> bool {
+        let Some(host) = self.instance.host() else {
+            return false;
+        };
+        let read_now = self.instance.foreign_reads();
+        self.platform
+            .borrow_mut()
+            .read(&host, |target| read_now.contains(target))
     }
 
     /// Bring the other apps' readings up to date: what their documents took in is read again, and

@@ -31,7 +31,6 @@ use tilolang_tilo::background::Waker;
 use tilolang_tilo::host::{Host, RootView};
 use tilolang_tilo::instance::{Config, Instance, Mode};
 use tilolang_tilo::origin::{Origin, OriginCx, Polled};
-use tilolang_tilo::platform_apps::platform_packages;
 use tilolang_tilo::resources::{ResourceStore, Watch};
 use tilolang_tilo::runtime::Delivery;
 use tilolang_tilo::tilolang::Compiled;

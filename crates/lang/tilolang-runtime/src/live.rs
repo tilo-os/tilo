@@ -1016,6 +1016,21 @@ impl Live {
         self.dirty.extend(hit);
     }
 
+    /// The view state keys the living boundaries last read, each once, in the order they first
+    /// read it: what a host follows a reading for while a view shows it, and stops following once
+    /// none does.
+    pub fn state_keys_read(&self) -> Vec<StateKey> {
+        let mut out: Vec<StateKey> = Vec::new();
+        for bound in self.bounds.iter().flatten() {
+            for (key, _) in &bound.state_seen {
+                if !out.contains(key) {
+                    out.push(key.clone());
+                }
+            }
+        }
+        out
+    }
+
     /// The value a view state slot had when a boundary last read it, its default included.
     pub fn state_seen(&self, key: &StateKey) -> Option<Value> {
         self.bounds.iter().flatten().find_map(|b| {

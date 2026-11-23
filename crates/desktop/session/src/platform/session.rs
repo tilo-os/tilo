@@ -1507,6 +1507,14 @@ impl Session {
             service.own_person(&options.person, &own.earlier);
         }
         let services = mount_services(&mut published, started);
+        // The workspace's activity as an app of this session reads it: the model's own reads and
+        // writes, published as `so.tilo.activity`, so a tilolang app shows the history through the
+        // same model the shell's pane does.
+        services
+            .borrow_mut()
+            .add(Box::new(crate::activity_service::Served::new(
+                activity.requests(),
+            )));
         // The records the services keep themselves: the activity lists an agent's run in one and
         // undoes it through the record's own history, as it does an app's.
         activity.attach_services(Rc::clone(&services));

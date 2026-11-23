@@ -49,6 +49,8 @@ tilo-formats = { version = "0.1.0", path = "../../ui/tilo-formats" }
 tilolang-runtime = { version = "0.1.0", path = "../tilolang-runtime", default-features = false }
 # The history verbs a store answers, and the names history speaks of its writers in.
 collaboration = { version = "0.1.0", path = "../../core/collaboration" }
+# The wake a followed reading rings: the same handle the session's watch takes.
+tilo-rt.workspace = true
 # The resource types and document ids the workspace's records are known by.
 collab-types = { version = "0.1.0", path = "../../core/collab-types" }
 # The device's one store, which every resource of an app is kept in and read from.

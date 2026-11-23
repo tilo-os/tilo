@@ -660,3 +660,19 @@ so-tilo-desktop-confirm-approve = Run the action the question asks about
 so-tilo-desktop-confirm-cancel = Run nothing, and put the question away
 so-tilo-desktop-power-menu-open = Open the power menu
 so-tilo-desktop-power-menu-close = Close the power menu
+## The workspace's activity, served to an app as `so.tilo.activity`.
+
+so-tilo-activity = Activity
+so-tilo-activity-mark-viewed = Mark the changes the reader was shown as seen on this device
+so-tilo-activity-focused = Say the ask the serial names was shown
+so-tilo-activity-name = Name, rename or un-name a range of changes; an empty name removes it
+so-tilo-activity-split = Split the named work group a range sits in at its start
+so-tilo-activity-merge = Merge the named work groups a range spans
+so-tilo-activity-move-boundary = Move the boundary between two work sessions
+so-tilo-activity-undo-change = Undo a range of changes
+so-tilo-activity-restore = Restore the workspace to before a range of changes
+so-tilo-activity-undo-session = Undo the agent session a range belongs to
+so-tilo-activity-undo-record = Undo one record's share of an agent session
+so-tilo-activity-open-change = Open what a change touched in its app
+so-tilo-activity-choose-source = Choose, or stop choosing, the resource a range changed as a morning source
+so-tilo-activity-source = Run a command on a chosen morning source

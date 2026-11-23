@@ -254,6 +254,17 @@ impl ViewInstance {
         self.live.wakes_at()
     }
 
+    /// The resources of other apps this view's boundaries read: what the host follows while
+    /// the view shows one, and what it may stop following once none does.
+    #[must_use]
+    pub fn foreign_reads(&self) -> Vec<ResourceRef> {
+        self.live
+            .state_keys_read()
+            .iter()
+            .filter_map(|key| crate::foreign::reading_target(&key.state))
+            .collect()
+    }
+
     /// The host clock's time, when the time some boundary read reads differently by then. The
     /// clock is read only while some boundary waits for it.
     fn time_passed(&self) -> Option<i64> {

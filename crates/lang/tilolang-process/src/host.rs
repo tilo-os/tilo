@@ -151,6 +151,9 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
     #[cfg(feature = "app-launch")]
     tilolang_process::db_engine::register();
     let stop = stop_watching();
+    // The platform's published resources (the device, Settings, the workspace's activity) are
+    // read from the session's services, which this process's connection reaches.
+    tilolang_tilo::platform_apps::install(Box::new(tilolang_tilo::platform_apps::Session));
     let mut host = TilolangProcess::new(wake.waker());
     // What an earlier version of its app kept on this device, as the session granted it.
     if let Some(earlier) = std::env::var_os(EARLIER_ENV).filter(|dir| !dir.is_empty()) {

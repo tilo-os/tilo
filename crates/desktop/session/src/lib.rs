@@ -78,6 +78,8 @@ pub mod activity;
 // that change them.
 mod activity_models;
 #[cfg(target_os = "linux")]
+mod activity_service;
+#[cfg(target_os = "linux")]
 mod agent_sessions;
 #[cfg(target_os = "linux")]
 mod agents;

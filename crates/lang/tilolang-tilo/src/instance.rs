@@ -836,6 +836,25 @@ impl Instance {
         self.host()?.runtime().held_for()
     }
 
+    /// The resources of other apps this window's views read, each once: what its host follows
+    /// while a view shows one — a reading keyed by a range, say — and what it stops following
+    /// once no view does.
+    #[must_use]
+    pub fn foreign_reads(&self) -> Vec<crate::runtime::ResourceRef> {
+        let mut reads: Vec<crate::runtime::ResourceRef> = Vec::new();
+        for shown in [self.root.as_ref(), self.detail.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            for target in shown.view.borrow().foreign_reads() {
+                if !reads.contains(&target) {
+                    reads.push(target);
+                }
+            }
+        }
+        reads
+    }
+
     /// The root view's tree, as the runtime holds it.
     #[must_use]
     pub fn root_tree(&self) -> Option<UiNode> {

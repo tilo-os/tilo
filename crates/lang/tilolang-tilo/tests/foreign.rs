@@ -22,7 +22,7 @@ const SERVICE: &str = r#"
 kind = "sound.player"
 label = "Player"
 version = 1
-fields = [{ path = "level", type = "float" }]
+fields = [{ path = "level", type = "float" }, { path = "rows", type = { list = "int" } }]
 
 [[resources.verbs]]
 id = "set-level"
@@ -42,6 +42,10 @@ view player(p: sound.Player) {
     text("{p.level}")
     button("Up", on: sound.set_level(p, 1.0)) as up
   }
+}
+
+view quiet(p: sound.Player) {
+  text("held")
 }
 "#;
 
@@ -1177,5 +1181,92 @@ fn a_row_with_an_address_moves_with_its_reading_and_is_called_on_its_address() {
         target.as_ref().map(ResourceRef::id_string).as_deref(),
         Some("net:Cafe"),
         "the row's address, as any caller names the network"
+    );
+}
+
+/// A reading is a record of the app that publishes it: handing a new one in runs the views that
+/// read it, and only them, once per reading however many rows it holds. The quiet view reads
+/// nothing of the player, so ten readings leave it exactly where it was, and frames after a
+/// reading of 10k rows do no work at all.
+#[test]
+fn a_reading_changing_runs_only_the_views_that_read_it() {
+    let host = Host::new(
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
+    let meta = service();
+    host.runtime().load_foreign(meta.clone()).unwrap();
+    let compiled = tilolang::compile_package(VIEW, &IdsLock::new(), std::slice::from_ref(&meta))
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    let package = host.load_compiled(&compiled).unwrap();
+    let view = |name: &str| {
+        package
+            .meta
+            .views
+            .iter()
+            .find(|view| view.name == name)
+            .unwrap_or_else(|| panic!("the {name} view"))
+            .id
+            .clone()
+    };
+    host.runtime()
+        .set_reading(&player(), &json!({ "level": 0.25 }).to_string())
+        .unwrap();
+    let mut reader = host
+        .open_resource(&player(), Some(&view("player")))
+        .unwrap();
+    let mut quiet = host.open_resource(&player(), Some(&view("quiet"))).unwrap();
+    let _ = reader.poll_patches().unwrap();
+    let _ = quiet.poll_patches().unwrap();
+    host.runtime().record_costs(true);
+
+    for level in 1..=10 {
+        host.runtime()
+            .set_reading(&player(), &json!({ "level": level }).to_string())
+            .unwrap();
+        let _ = reader.poll_patches().unwrap();
+        let _ = quiet.poll_patches().unwrap();
+    }
+    let costs = host.runtime().costs().expect("costs are recorded");
+    assert_eq!(
+        costs.calls("sound.Player.player view"),
+        10,
+        "the reader ran once for each reading:\n{}",
+        costs.render()
+    );
+    assert_eq!(
+        costs.calls("sound.Player.quiet view"),
+        0,
+        "a view that reads nothing of the player never runs for its readings"
+    );
+
+    // A reading of ten thousand rows is taken in once, when it lands: the frames after it do no
+    // work, and there is no copy per frame.
+    let rows: Vec<i64> = (0..10_000).collect();
+    host.runtime()
+        .set_reading(&player(), &json!({ "level": 11, "rows": rows }).to_string())
+        .unwrap();
+    let _ = reader.poll_patches().unwrap();
+    let _ = quiet.poll_patches().unwrap();
+    let runs = host
+        .runtime()
+        .costs()
+        .expect("costs are recorded")
+        .calls("sound.Player.player view");
+    for _ in 0..5 {
+        let _ = reader.poll_patches().unwrap();
+        let _ = quiet.poll_patches().unwrap();
+    }
+    let costs = host.runtime().costs().expect("costs are recorded");
+    assert_eq!(
+        costs.calls("sound.Player.player view"),
+        runs,
+        "a reading that did not change costs no frame"
+    );
+    assert_eq!(
+        costs.calls("sound.Player.quiet view"),
+        0,
+        "nor does it run the quiet view"
     );
 }

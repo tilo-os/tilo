@@ -1,0 +1,1422 @@
+{
+  "resources": [
+    {
+      "kind": "activity",
+      "label": "Activity",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "mark-viewed",
+          "label": "Mark the changes the reader was shown as seen on this device",
+          "description": "Mark the changes the reader was shown as seen on this device.",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "entries",
+              "required": true,
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "later",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "focused",
+          "label": "Say the ask the serial names was shown",
+          "description": "Say the ask the serial names was shown.",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "serial",
+              "required": true,
+              "schema": {
+                "type": "integer"
+              },
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "id": "name",
+          "label": "Name, rename or un-name a range of changes; an empty name removes it",
+          "description": "Name, rename or un-name a range of changes; an empty name removes it.",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "range",
+              "required": true,
+              "schema": {
+                "type": "object",
+                "required": [
+                  "from",
+                  "to"
+                ],
+                "properties": {
+                  "from": {
+                    "type": "string"
+                  },
+                  "to": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false,
+                "description": "A range of changes, by its first and last in feed order."
+              },
+              "type": {
+                "named": "Span"
+              }
+            },
+            {
+              "name": "record",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "label",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "split",
+          "label": "Split the named work group a range sits in at its start",
+          "description": "Split the named work group a range sits in at its start.",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "from",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "to",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "merge",
+          "label": "Merge the named work groups a range spans",
+          "description": "Merge the named work groups a range spans.",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "from",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "to",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "move-boundary",
+          "label": "Move the boundary between two work sessions",
+          "description": "Move the boundary between two work sessions.",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "older",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "newer",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "toward",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "undo-change",
+          "label": "Undo a range of changes",
+          "description": "Undo a range of changes.",
+          "kind": "undoable",
+          "destructive": true,
+          "params": [
+            {
+              "name": "from",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "to",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "restore",
+          "label": "Restore the workspace to before a range of changes",
+          "description": "Restore the workspace to before a range of changes.",
+          "kind": "undoable",
+          "destructive": true,
+          "params": [
+            {
+              "name": "from",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "to",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "undo-session",
+          "label": "Undo the agent session a range belongs to",
+          "description": "Undo the agent session a range belongs to.",
+          "kind": "undoable",
+          "destructive": true,
+          "params": [
+            {
+              "name": "from",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "to",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "undo-record",
+          "label": "Undo one record's share of an agent session",
+          "description": "Undo one record's share of an agent session.",
+          "kind": "undoable",
+          "destructive": true,
+          "params": [
+            {
+              "name": "range",
+              "required": true,
+              "schema": {
+                "type": "object",
+                "required": [
+                  "from",
+                  "to"
+                ],
+                "properties": {
+                  "from": {
+                    "type": "string"
+                  },
+                  "to": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false,
+                "description": "A range of changes, by its first and last in feed order."
+              },
+              "type": {
+                "named": "Span"
+              }
+            },
+            {
+              "name": "task",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "app_id",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "id",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "open-change",
+          "label": "Open what a change touched in its app",
+          "description": "Open what a change touched in its app.",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "app_id",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "app_label",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "id",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "choose-source",
+          "label": "Choose, or stop choosing, the resource a range changed as a morning source",
+          "description": "Choose, or stop choosing, the resource a range changed as a morning source.",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "from",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "to",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "source",
+          "label": "Run a command on a chosen morning source",
+          "description": "Run a command on a chosen morning source.",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "key",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "command",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "feed",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Feed"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "everywhere",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Feed"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "summary",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Summary"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "replay",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Replay"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "sessions",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Sessions"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "focus",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Focus"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "AgentSession",
+          "doc": "One agent session: an instruction it worked, and the actions it took for it.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "agent",
+              "type": {
+                "named": "Author"
+              }
+            },
+            {
+              "name": "instruction",
+              "type": "text"
+            },
+            {
+              "name": "decision",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "started_ms",
+              "type": "int"
+            },
+            {
+              "name": "last_ms",
+              "type": "int"
+            },
+            {
+              "name": "range",
+              "type": {
+                "named": "Span"
+              }
+            },
+            {
+              "name": "actions",
+              "type": {
+                "list": {
+                  "named": "SessionAction"
+                }
+              }
+            },
+            {
+              "name": "undo_blocked",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "now",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "Author",
+          "doc": "Who made a change.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "rgb",
+              "type": {
+                "list": "int"
+              }
+            },
+            {
+              "name": "identity",
+              "type": "text"
+            },
+            {
+              "name": "relation",
+              "type": "text"
+            },
+            {
+              "name": "on_behalf_of",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "for_reader",
+              "type": "bool"
+            },
+            {
+              "name": "task",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Brief",
+          "doc": "A work session: related changes told as an outcome.",
+          "fields": [
+            {
+              "name": "title",
+              "type": "text"
+            },
+            {
+              "name": "detail",
+              "type": "text"
+            },
+            {
+              "name": "authors",
+              "type": {
+                "list": {
+                  "named": "Author"
+                }
+              }
+            },
+            {
+              "name": "apps",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "resources",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "changes",
+              "type": "int"
+            },
+            {
+              "name": "actions",
+              "type": {
+                "list": {
+                  "named": "BriefAction"
+                }
+              }
+            },
+            {
+              "name": "first_ms",
+              "type": "int"
+            },
+            {
+              "name": "last_ms",
+              "type": "int"
+            },
+            {
+              "name": "group",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "work_session",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "entries",
+              "type": {
+                "list": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "BriefAction",
+          "doc": "One action of a work session's evidence.",
+          "fields": [
+            {
+              "name": "author",
+              "type": {
+                "named": "Author"
+              }
+            },
+            {
+              "name": "summary",
+              "type": "text"
+            },
+            {
+              "name": "at_ms",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "Entry",
+          "doc": "One change.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "author",
+              "type": {
+                "named": "Author"
+              }
+            },
+            {
+              "name": "kind",
+              "type": "text"
+            },
+            {
+              "name": "at_ms",
+              "type": "int"
+            },
+            {
+              "name": "summary",
+              "type": "text"
+            },
+            {
+              "name": "app",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "resource",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "group",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "redacted",
+              "type": "bool"
+            },
+            {
+              "name": "refused",
+              "type": {
+                "list": {
+                  "named": "Refusal"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Feed",
+          "doc": "A workspace's history, newest first.",
+          "fields": [
+            {
+              "name": "workspace",
+              "type": "text"
+            },
+            {
+              "name": "scope",
+              "type": "text"
+            },
+            {
+              "name": "total",
+              "type": "int"
+            },
+            {
+              "name": "entries",
+              "type": {
+                "list": {
+                  "named": "Entry"
+                }
+              }
+            },
+            {
+              "name": "groups",
+              "type": {
+                "list": {
+                  "named": "Group"
+                }
+              }
+            },
+            {
+              "name": "people",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "lenses",
+              "type": {
+                "list": {
+                  "named": "Lens"
+                }
+              }
+            },
+            {
+              "name": "pending",
+              "type": "bool"
+            },
+            {
+              "name": "mutations",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "Focus",
+          "doc": "What to show, asked for outside the app.",
+          "fields": [
+            {
+              "name": "serial",
+              "type": "int"
+            },
+            {
+              "name": "view",
+              "type": "text"
+            },
+            {
+              "name": "author",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "lens",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "entry",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Frame",
+          "doc": "The layout after one change.",
+          "fields": [
+            {
+              "name": "entry",
+              "type": "text"
+            },
+            {
+              "name": "author",
+              "type": {
+                "named": "Author"
+              }
+            },
+            {
+              "name": "summary",
+              "type": "text"
+            },
+            {
+              "name": "at_ms",
+              "type": "int"
+            },
+            {
+              "name": "workspaces",
+              "type": {
+                "list": {
+                  "named": "ReplayWorkspace"
+                }
+              }
+            },
+            {
+              "name": "pointers",
+              "type": {
+                "list": {
+                  "named": "ReplayPointer"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Group",
+          "doc": "A named range of changes.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "start",
+              "type": "text"
+            },
+            {
+              "name": "end",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "named_by",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Lens",
+          "doc": "A way to narrow the feed.",
+          "fields": [
+            {
+              "name": "key",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "Refusal",
+          "doc": "A device that refused one of a change's writes.",
+          "fields": [
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "reason",
+              "type": "text"
+            },
+            {
+              "name": "permanent",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "Replay",
+          "doc": "The workspace's layout at each recent change.",
+          "fields": [
+            {
+              "name": "frames",
+              "type": {
+                "list": {
+                  "named": "Frame"
+                }
+              }
+            },
+            {
+              "name": "unavailable",
+              "type": "int"
+            },
+            {
+              "name": "note",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "pending",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "ReplayGroup",
+          "doc": "One group of tabs in a replayed workspace.",
+          "fields": [
+            {
+              "name": "tabs",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "active",
+              "type": "int"
+            },
+            {
+              "name": "width_permille",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "ReplayPointer",
+          "doc": "Someone's pointer as it was.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "rgb",
+              "type": {
+                "list": "int"
+              }
+            }
+          ]
+        },
+        {
+          "name": "ReplayWorkspace",
+          "doc": "A workspace as it was.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "groups",
+              "type": {
+                "list": {
+                  "named": "ReplayGroup"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Resume",
+          "doc": "Where the reader left off.",
+          "fields": [
+            {
+              "name": "target",
+              "type": {
+                "named": "Target"
+              }
+            },
+            {
+              "name": "author",
+              "type": {
+                "named": "Author"
+              }
+            },
+            {
+              "name": "app",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "at_ms",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "SessionAction",
+          "doc": "One action an agent session took, and what it did.",
+          "fields": [
+            {
+              "name": "range",
+              "type": {
+                "named": "Span"
+              }
+            },
+            {
+              "name": "changes",
+              "type": "int"
+            },
+            {
+              "name": "at_ms",
+              "type": "int"
+            },
+            {
+              "name": "summary",
+              "type": "text"
+            },
+            {
+              "name": "view",
+              "type": "text"
+            },
+            {
+              "name": "place",
+              "type": "text"
+            },
+            {
+              "name": "title",
+              "type": "text"
+            },
+            {
+              "name": "cwd",
+              "type": "text"
+            },
+            {
+              "name": "output",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "more",
+              "type": "bool"
+            },
+            {
+              "name": "exit",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "ended_ms",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "lines",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "app_id",
+              "type": "text"
+            },
+            {
+              "name": "record",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "Sessions",
+          "doc": "Every agent session the history holds, newest first.",
+          "fields": [
+            {
+              "name": "sessions",
+              "type": {
+                "list": {
+                  "named": "AgentSession"
+                }
+              }
+            },
+            {
+              "name": "total",
+              "type": "int"
+            },
+            {
+              "name": "pending",
+              "type": "bool"
+            },
+            {
+              "name": "mutations",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "Source",
+          "doc": "A resource this device chose to hear about each morning.",
+          "fields": [
+            {
+              "name": "key",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "text",
+              "type": "text"
+            },
+            {
+              "name": "refreshable",
+              "type": "bool"
+            },
+            {
+              "name": "status",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Span",
+          "doc": "A range of changes, by its first and last in feed order.",
+          "fields": [
+            {
+              "name": "from",
+              "type": "text"
+            },
+            {
+              "name": "to",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "Summary",
+          "doc": "What changed since this device last looked.",
+          "fields": [
+            {
+              "name": "workspace",
+              "type": "text"
+            },
+            {
+              "name": "briefs",
+              "type": {
+                "list": {
+                  "named": "Brief"
+                }
+              }
+            },
+            {
+              "name": "narrative",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "resume",
+              "type": {
+                "option": {
+                  "named": "Resume"
+                }
+              }
+            },
+            {
+              "name": "away",
+              "type": "bool"
+            },
+            {
+              "name": "sources_available",
+              "type": "bool"
+            },
+            {
+              "name": "sources",
+              "type": {
+                "list": {
+                  "named": "Source"
+                }
+              }
+            },
+            {
+              "name": "pending",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "Target",
+          "doc": "A resource a change touched, and where it opens.",
+          "fields": [
+            {
+              "name": "app_id",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "app_label",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "activity-range",
+      "label": "Activity change",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "detail",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Detail"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Detail",
+          "doc": "What a range of changes did, as a view of that one range reads it: the reading a view names as `resource(\"workspace.activity/range/<from>-<to>\", of: activity.Detail)`.",
+          "fields": [
+            {
+              "name": "title",
+              "type": "text"
+            },
+            {
+              "name": "provenance",
+              "type": "text"
+            },
+            {
+              "name": "authors",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "resources",
+              "type": {
+                "list": {
+                  "named": "Target"
+                }
+              }
+            },
+            {
+              "name": "group",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "group_label",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "offers",
+              "type": {
+                "list": {
+                  "named": "Offer"
+                }
+              }
+            },
+            {
+              "name": "changes",
+              "type": {
+                "list": {
+                  "named": "FieldChange"
+                }
+              }
+            },
+            {
+              "name": "comparison",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "gone",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "FieldChange",
+          "doc": "One field a range of changes changed, with what it held either side of it.",
+          "fields": [
+            {
+              "name": "field",
+              "type": "text"
+            },
+            {
+              "name": "before",
+              "type": "text"
+            },
+            {
+              "name": "after",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "Offer",
+          "doc": "One action a view may offer for a range of changes.",
+          "fields": [
+            {
+              "name": "action",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "Target",
+          "doc": "A resource a change touched, and where it opens.",
+          "fields": [
+            {
+              "name": "app_id",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "app_label",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

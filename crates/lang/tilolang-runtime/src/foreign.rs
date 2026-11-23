@@ -360,6 +360,26 @@ impl Foreign {
         std::mem::take(&mut self.wanted).into_values().collect()
     }
 
+    /// What [`Self::take_wanted`] takes, of the apps `keep` names: the rest stay asked for, so
+    /// the host that follows one kind of app's readings leaves another's to the host that
+    /// answers them.
+    pub(crate) fn take_wanted_of(
+        &mut self,
+        mut keep: impl FnMut(&str) -> bool,
+    ) -> Vec<(String, String)> {
+        let mut taken = Vec::new();
+        let mut kept = BTreeMap::new();
+        for (at, (id, ty)) in std::mem::take(&mut self.wanted) {
+            if ty.split_once('#').is_some_and(|(app, _)| keep(app)) {
+                taken.push((id, ty));
+            } else {
+                kept.insert(at, (id, ty));
+            }
+        }
+        self.wanted = kept;
+        taken
+    }
+
     /// The reading of `target` whole, as JSON, with the generation it was read at, when one
     /// arrived: what a Rust app's view is handed of the resource it shows (its own model type
     /// reads its fields from it).
@@ -738,6 +758,13 @@ pub(crate) fn reading_key_at(key: &str) -> StateKey {
         None,
         format!("$reading:{key}"),
     )
+}
+
+/// The resource a [`reading_key`] names, when `state` is one: its type and id.
+#[must_use]
+pub fn reading_target(state: &str) -> Option<ResourceRef> {
+    let (ty, id) = state.strip_prefix("$reading:")?.split_once('@')?;
+    ResourceRef::parse_id(id, ty.to_owned())
 }
 
 /// The view state slot that moves every time any reading of another app is set here: what a

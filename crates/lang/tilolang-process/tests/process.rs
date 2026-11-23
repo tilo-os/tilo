@@ -3128,4 +3128,262 @@ fn a_hosted_window_advances_words_revision_and_republishes_translated_labels() {
         labels.contains(&"Neue Notiz") && !labels.contains(&"New note"),
         "published action labels update to German when words_revision moves: {labels:?}"
     );
+const SOUNDCHECK: &str = "so.tilo.lang.soundcheck";
+
+/// A package that reads a field of the device's sound and asks the device to mute it: the
+/// session publishes both, so the app holds neither.
+const SOUNDCHECK_SOURCE: &str = r#"app so.tilo.lang.soundcheck "Sound check" (icon: .hash, category: .utility)
+
+use so.tilo.device as device
+
+type Panel {
+    /// How many times the person asked for more.
+    presses: Int merge counter
+}
+
+root Panel
+
+default view panel for Panel
+
+view panel(p: Panel) {
+    std.page(p) {
+        ui.Text(if device.sound.muted { "Muted" } else { "On" }, role: .title)
+        ui.Button("Mute") {
+            on press: device.toggle_muted(device.sound)
+        }
+        ui.Text("Pressed {p.presses}", numeric: true)
+    }
+}
+"#;
+
+/// The session's published resources as a test plays them: the readings a test hands in, and the
+/// changes it was asked for.
+#[derive(Default)]
+struct Published {
+    queued: std::sync::Mutex<BTreeMap<String, std::collections::VecDeque<String>>>,
+    wakes: std::sync::Mutex<BTreeMap<String, tilo_wake::WakeHandle>>,
+    invoked: std::sync::Mutex<Vec<(String, String)>>,
+}
+
+impl Published {
+    /// Install this stand-in as where the platform's roots are read, once, and hand it back.
+    fn install() -> Arc<Self> {
+        static INSTALLED: std::sync::OnceLock<Arc<Published>> = std::sync::OnceLock::new();
+        INSTALLED
+            .get_or_init(|| {
+                let published = Arc::new(Published::default());
+                tilolang_tilo::platform_apps::install(Box::new(TestSession(Arc::clone(
+                    &published,
+                ))));
+                published
+            })
+            .clone()
+    }
+
+    /// The session publishes `reading` of `resource`, waking the views that read it.
+    fn publish(&self, resource: &str, reading: &str) {
+        self.queued
+            .lock()
+            .unwrap()
+            .entry(resource.to_owned())
+            .or_default()
+            .push_back(reading.to_owned());
+        if let Some(wake) = self.wakes.lock().unwrap().get(resource) {
+            wake.wake();
+        }
+    }
+
+    /// The changes asked of the session, as `(resource, action)`.
+    fn invoked(&self) -> Vec<(String, String)> {
+        self.invoked.lock().unwrap().clone()
+    }
+}
+
+/// [`Published`] as the source the process reads the platform's roots through.
+struct TestSession(Arc<Published>);
+
+impl tilolang_tilo::platform_apps::Published for TestSession {
+    fn follow(
+        &self,
+        resource: &str,
+        wake: tilo_wake::WakeHandle,
+    ) -> Result<Box<dyn tilolang_tilo::platform_apps::Reading>, String> {
+        self.0
+            .wakes
+            .lock()
+            .unwrap()
+            .insert(resource.to_owned(), wake);
+        Ok(Box::new(Followed {
+            published: Arc::clone(&self.0),
+            resource: resource.to_owned(),
+        }))
+    }
+
+    fn invoke(
+        &self,
+        resource: &str,
+        action: &str,
+        _arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        self.0
+            .invoked
+            .lock()
+            .unwrap()
+            .push((resource.to_owned(), action.to_owned()));
+        Ok(())
+    }
+}
+
+/// One followed resource: the readings [`Published`] queued for it.
+struct Followed {
+    published: Arc<Published>,
+    resource: String,
+}
+
+impl tilolang_tilo::platform_apps::Reading for Followed {
+    fn latest(&self) -> Option<Result<String, String>> {
+        self.published
+            .queued
+            .lock()
+            .unwrap()
+            .get_mut(&self.resource)?
+            .pop_front()
+            .map(Ok)
+    }
+}
+
+/// The first button of the window, its key and the event it fires.
+fn first_button(window: &Window) -> (String, String) {
+    fn buttons<'a>(node: &'a patch::Node, out: &mut Vec<&'a patch::Node>) {
+        if node.kind == "ui.Button" {
+            out.push(node);
+        }
+        for child in &node.children {
+            buttons(child, out);
+        }
+    }
+    let mut found = Vec::new();
+    buttons(window.root.as_ref().expect("the root is shown"), &mut found);
+    let button = found.first().expect("the window shows its button");
+    let event = button
+        .events
+        .keys()
+        .next()
+        .expect("the button fires")
+        .clone();
+    (button.key.clone(), event)
+}
+
+/// A package that reads the device's published sound and whose press is the device's own verb:
+/// the session's readings reach its views, a new one runs them again, and the press is asked of
+/// the session, not recorded here.
+#[test]
+fn a_platform_packages_reading_reaches_the_app_and_its_verb_goes_to_the_session() {
+    let published = Published::install();
+    let platform = tilolang_tilo::platform_apps::platform_packages().unwrap();
+    let compiled =
+        tilolang::compile_package(SOUNDCHECK_SOURCE, &tilolang::IdsLock::new(), &platform)
+            .unwrap_or_else(|diagnostics| panic!("the sound check compiles: {diagnostics:#?}"));
+    let (mut host, mut window, _sent, _inbox, _route) =
+        running_app("ada", SOUNDCHECK, Bundle::new(&compiled, []));
+
+    // The session publishes the sound muted, and the window that opens reads it.
+    published.publish("sound", r#"{"muted":true}"#);
+    settle(&mut host, &mut window);
+    assert!(
+        shown(&window).contains("Muted"),
+        "the session's reading renders: {}",
+        shown(&window)
+    );
+
+    // A second reading runs the view again without the person pressing anything.
+    published.publish("sound", r#"{"muted":false}"#);
+    settle(&mut host, &mut window);
+    assert!(
+        shown(&window).contains("On") && !shown(&window).contains("Muted"),
+        "the new reading renders: {}",
+        shown(&window)
+    );
+
+    // The press is the device's verb, asked of the session.
+    let (key, event) = first_button(&window);
+    window.send(&[ToApp::Fire {
+        level: Level::Root,
+        key,
+        event,
+        value: None,
+        gesture: None,
+    }]);
+    settle(&mut host, &mut window);
+    tilo_test_env::wait_until("the mute reached the session", || {
+        published.invoked() == [("sound".to_owned(), "toggle-muted".to_owned())]
+    });
+}
+
+const HISTORY: &str = "so.tilo.lang.history";
+
+/// A package that reads the workspace's activity and marks a change seen: the session publishes
+/// both, as it does the device's sound.
+const HISTORY_SOURCE: &str = r#"app so.tilo.lang.history "History" (icon: .hash, category: .utility)
+
+use so.tilo.history as activity
+
+type Panel {
+    /// What the person marked.
+    seen: Int merge counter
+}
+
+root Panel
+
+default view panel for Panel
+
+view panel(p: Panel) {
+    std.page(p) {
+        if let newest = activity.history.feed.entries.first() {
+            ui.Text(newest.summary, role: .title)
+        }
+        ui.Button("Seen") {
+            on press: activity.mark_viewed(activity.history, entries: ["00112233445566778899aabbccddeeff"], later: false)
+        }
+        ui.Text("Seen {p.seen}", numeric: true)
+    }
+}
+"#;
+
+/// A workspace's activity is a platform package too: its feed reaches the app that reads it, and
+/// the app's press is the activity's own verb, asked of the session.
+#[test]
+fn the_workspaces_activity_reaches_the_app_that_reads_it() {
+    let published = Published::install();
+    let platform = tilolang_tilo::platform_apps::platform_packages().unwrap();
+    let compiled = tilolang::compile_package(HISTORY_SOURCE, &tilolang::IdsLock::new(), &platform)
+        .unwrap_or_else(|diagnostics| panic!("the history package compiles: {diagnostics:#?}"));
+    let (mut host, mut window, _sent, _inbox, _route) =
+        running_app("ada", HISTORY, Bundle::new(&compiled, []));
+
+    published.publish(
+        "workspace.activity",
+        r#"{"feed":{"workspace":"Home","scope":"this-workspace","total":1,"entries":[{"id":"00112233445566778899aabbccddeeff","author":{"name":"Ada","rgb":[200,120,90],"identity":"ada","relation":"reader","on_behalf_of":null,"for_reader":true,"task":null},"kind":"text","at_ms":1700000000000,"summary":"Renamed a note","app":"Notes","resource":null,"group":null,"redacted":false,"refused":[]}],"groups":[],"people":["Ada"],"lenses":[],"pending":false,"mutations":true}}"#,
+    );
+    settle(&mut host, &mut window);
+    assert!(
+        shown(&window).contains("Renamed a note"),
+        "the activity's reading renders: {}",
+        shown(&window)
+    );
+
+    let (key, event) = first_button(&window);
+    window.send(&[ToApp::Fire {
+        level: Level::Root,
+        key,
+        event,
+        value: None,
+        gesture: None,
+    }]);
+    settle(&mut host, &mut window);
+    tilo_test_env::wait_until("marking it seen reached the session", || {
+        published
+            .invoked()
+            .contains(&("workspace.activity".to_owned(), "mark-viewed".to_owned()))
+    });
 }
