@@ -16,7 +16,9 @@ use serde_json::{Value, json};
 use tilo_action_policy::{Grant, Grantee, KindSet, TreePath};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::WORKSPACE_AGENT_CREATE;
-use tilo_actions::remote::{ActionProvider, InvokeArgument, InvokeRequest, RemoteActionTarget};
+use tilo_actions::remote::{
+    ActionProvider as _, InvokeArgument, InvokeRequest, RemoteActionTarget,
+};
 use tilo_agent_session::AppCatalogue;
 use tilo_agent_session::model::PlanTurns;
 use tilo_model_gateway::host_backend::protocol::{
@@ -355,11 +357,14 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
     let provider = Arc::new(tilo_actions::remote::TestProvider::new());
     let agents =
         ServerAgents::on_device(workspaces.clone(), provider, Arc::new(Keys)).scripted(model);
+    let event = posted(&workspace, &owner, "m-1");
+    let place = crate::agents::triggered::Where::of(&event).expect("a message is a place");
     let started = agents
         .triggered(
             &workspace,
             SCOUT,
-            posted(&workspace, &owner, "m-1"),
+            place,
+            event,
             owner.clone(),
             (InvocationId::new(), Arc::new(AtomicBool::new(false))),
         )
@@ -374,7 +379,7 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
     let asked = asked.lock().unwrap().clone();
     let shown = tool_results(&asked[1]);
     assert!(
-        taken.iter().all(|change| shown.contains(change)),
+        taken.iter().all(|change| shown.contains(change.as_str())),
         "the read answered the person's changes: {shown}"
     );
     assert_eq!(
@@ -443,11 +448,14 @@ async fn a_moderation_turn_is_refused_when_the_saver_may_not() {
     let agents =
         ServerAgents::on_device(workspaces.clone(), provider, Arc::new(Keys)).scripted(model);
     let saver = "c2".repeat(32); // a member whose grants do not reach the record
+    let event = posted(&workspace, &owner, "m-1");
+    let place = crate::agents::triggered::Where::of(&event).expect("a message is a place");
     let started = agents
         .triggered(
             &workspace,
             SCOUT,
-            posted(&workspace, &owner, "m-1"),
+            place,
+            event,
             saver,
             (InvocationId::new(), Arc::new(AtomicBool::new(false))),
         )

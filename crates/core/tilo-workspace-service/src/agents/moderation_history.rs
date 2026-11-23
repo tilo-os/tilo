@@ -229,7 +229,7 @@ impl TurnHistory {
                 continue;
             }
             if let Some(invocation) = version.get("invocation").and_then(Value::as_str)
-                && !invocations.iter().any(|held| held == invocation)
+                && !invocations.iter().any(|held| held.as_str() == invocation)
             {
                 invocations.push(invocation.to_owned());
             }
