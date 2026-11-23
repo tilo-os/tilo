@@ -2965,18 +2965,29 @@ impl AccountsPane {
     ) -> Step {
         let before = self.account_root.store();
         let mut shared = before.clone();
+        let mut refused = None;
         for account in stored {
             if let Err(error) = shared.keep(&account) {
-                return settle(self, Err(error.to_string()));
+                refused = Some(error.to_string());
+                break;
             }
         }
-        let Err(error) = self.account_root.save_store(&shared) else {
-            let finished = finish_or_recover(&self.account_root, "account save");
-            return settle(self, finished);
+        // Whatever the record does not take — an account it refuses, or a save it cannot
+        // complete — the credentials written for it are put back and the mutation ended: an
+        // account that is not the workspace's leaves no secret of its own behind.
+        let (failed, metadata_rollback) = if let Some(refused) = refused {
+            (refused, Ok(()))
+        } else {
+            let Err(error) = self.account_root.save_store(&shared) else {
+                let finished = finish_or_recover(&self.account_root, "account save");
+                return settle(self, finished);
+            };
+            warn!(target: "tilo::settings", op = "account_store_save", %error, "failed to persist account metadata");
+            (
+                format!("could not persist account: {error}"),
+                self.account_root.save_store(&before),
+            )
         };
-        let metadata_rollback = self.account_root.save_store(&before);
-        warn!(target: "tilo::settings", op = "account_store_save", %error, "failed to persist account metadata");
-        let failed = format!("could not persist account: {error}");
         let rolled_back = move |pane: &mut Self, credentials: Result<(), String>| {
             if let Err(rollback) = credentials {
                 return settle(
