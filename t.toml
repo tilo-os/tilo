@@ -5260,7 +5260,7 @@ name = "installer-internal-cycle-x86_64"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "FEDORA_URL=https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2 FEDORA_SHA256=28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f SCENARIO=all TILO_INTERNAL_CYCLE_RELEASE_TAG=imager-v0.0.0 TILO_INTERNAL_CYCLE_RUN_ID=t-${T_COMMIT:0:12} TILO_INTERNAL_CYCLE_STORAGE_ROOT=/var/tmp/tilo-installer-internal-cycle TILO_ACCEL=kvm TILO_MEM=8192 TILO_INTERNAL_CYCLE_MAX_INSTALL_SECONDS=3600 bash os/dev/ci-internal-install-cycle.sh /target/publish/installer-release-medium/x86_64/disk.qcow2 /target/installer-internal-cycle"
 needs = ["installer-release-medium-x86_64", "tilo-vm-binary-x86_64"]
-env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm", CARGO_PROFILE_RELEASE_LTO = "off", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/installer-internal-cycle/**"]
