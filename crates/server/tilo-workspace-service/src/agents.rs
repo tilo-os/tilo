@@ -2990,6 +2990,28 @@ pub async fn invoke_named(
     invoke_at(provider, caller, target, InvokeArgument::Json(arguments)).await
 }
 
+/// [`invoke_named`] as the invocation `invocation`: one taken again, as a step handed over again
+/// after a restart takes it, is answered once.
+///
+/// # Errors
+/// The provider refused or failed the action, or it did not end in time.
+pub async fn invoke_once(
+    provider: &WorkspaceActionProvider,
+    caller: &Caller,
+    route: &DocumentRoute,
+    resource: &str,
+    action: &str,
+    arguments: Map<String, Value>,
+    invocation: InvocationId,
+) -> Result<Value, String> {
+    let target = target_named(route, resource, action);
+    let request = InvokeRequest {
+        invocation,
+        ..invocation_of(target, InvokeArgument::Json(arguments))
+    };
+    invoke_request(provider, caller, request).await
+}
+
 /// `action` on `resource` of what is kept at `route`, as what an invocation names.
 fn target_named(route: &DocumentRoute, resource: &str, action: &str) -> RemoteActionTarget {
     RemoteActionTarget {
@@ -3027,7 +3049,15 @@ async fn invoke_at(
     target: RemoteActionTarget,
     argument: InvokeArgument,
 ) -> Result<Value, String> {
-    let request = invocation_of(target, argument);
+    invoke_request(provider, caller, invocation_of(target, argument)).await
+}
+
+/// Invoke `request` as `caller`, and wait for it to end.
+async fn invoke_request(
+    provider: &WorkspaceActionProvider,
+    caller: &Caller,
+    request: InvokeRequest,
+) -> Result<Value, String> {
     let (provider, caller) = (provider.clone(), caller.clone());
     tokio::task::spawn_blocking(move || {
         let invocation = request.invocation;

@@ -16,16 +16,15 @@
 //! they set their assistant bounds what its events spend as well.
 //!
 //! An instruction a program hands over starts a turn of its person's
-//! assistant, where the server keeps its workspaces' agents working: it is asked
-//! through Chat's own verb for that (`ask-agent`), in the conversation the
-//! person has with their assistant, as that person's event, under the
-//! step's own key, so a step taken again after a restart starts nothing
-//! twice. The turn is the assistant's own work under its own bounds: what
-//! it would send or change outside the workspace still asks its person.
-//! Where nothing takes the instruction (a server that keeps no agents working, a Chat
-//! from before the verb), the invocation is tried again, and kept as a dead letter
-//! once its attempts are spent, so what was not delivered can be read and
-//! invoked again.
+//! assistant: it is written as a message in the conversation the person has
+//! with their assistant, as that person's event, under the step's own
+//! invocation, so a step taken again after a restart writes it once. The
+//! message is what fires the assistant's own trigger, and the turn it starts
+//! is the assistant's answer there ([`super::triggered`]), under the
+//! assistant's own bounds: what it would send or change outside the
+//! workspace still asks its person. Where nothing takes the message, the
+//! invocation is tried again, and kept as a dead letter once its attempts
+//! are spent, so what was not delivered can be read and invoked again.
 
 #[cfg(feature = "apps")]
 pub mod transforms;
@@ -47,19 +46,18 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::{Agent, WorkspaceAgents};
 
-use crate::agents::{WorkspaceActionProvider, invoke_named};
+use crate::agents::{WorkspaceActionProvider, invoke_named, invoke_once};
 
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::protocol::ErrorKind;
 use crate::workspaces::person_model::{Interaction, ModelRefusal, Spender};
 
-/// The app that keeps the workspace's record of its agents.
-use tilo_app_id::apps::CHAT;
+use super::triggered::CHAT;
 
-/// Chat's verb that starts a turn of the agents in a conversation.
-const ASK_AGENT: &str = "ask-agent";
-/// The verb's argument that names the conversation.
-const IN: &str = "channel";
+/// Chat's verb that opens a person's direct conversation with a member.
+const MESSAGE_MEMBER: &str = "message_person";
+/// Chat's verb that writes a message in a conversation.
+const SEND: &str = "send";
 /// What a turn is said to be started by: a moment its person asked for.
 pub const REMINDER: &str = "reminder";
 /// What a turn is said to be started by: an event whose result its person
@@ -222,40 +220,27 @@ fn workspace_of(workspace: &str) -> Result<WorkspaceId, StepError> {
     })
 }
 
-/// One turn to start: who Chat is asked as, and what it is asked.
+/// One turn to start: who writes to the assistant, and what.
 #[derive(Clone, Debug, PartialEq)]
 struct Asking {
     /// The id the asking software goes by: the program's own, never the
-    /// assistant's, so the conversation's agent is not asking itself.
+    /// assistant's, so the assistant's trigger, which leaves out its own
+    /// changes, fires on it.
     asked_as: String,
-    /// The verb's arguments: the conversation, the words and the cause.
-    arguments: Map<String, Value>,
+    /// Whom the conversation is with, as Chat's verb names a member.
+    with: Value,
+    /// The message: the instruction and what the program's note says.
+    text: String,
 }
 
 impl Asking {
     /// The turn `instruction` starts of `assistant`, the agent its person
-    /// keeps: asked in the conversation of the two, with the step's own
-    /// invocation as the cause's key, so one step is one turn however often
-    /// it is handed over.
+    /// keeps: a message in the conversation of the two.
     fn of(instruction: &Instruction, starter: &Starter, assistant: &str) -> Self {
-        use tilo_actions::policy::MemberId;
-        let conversation = chat::Chat::direct_id([
-            MemberId::person(instruction.person.clone()),
-            MemberId::agent(assistant),
-        ]);
-        let label = within(starter.name.trim(), MAX_LABEL_BYTES);
-        let arguments = json!({
-            (IN): conversation.as_str(),
-            "text": told(instruction, starter),
-            "cause": {
-                "kind": starter.kind,
-                "label": label,
-                "key": instruction.cause.invocation.0.to_string(),
-            },
-        });
         Self {
             asked_as: instruction.cause.installation.clone(),
-            arguments: arguments.as_object().cloned().unwrap_or_default(),
+            with: json!(tilo_actions::policy::MemberId::agent(assistant)),
+            text: told(instruction, starter),
         }
     }
 }
@@ -303,7 +288,7 @@ fn told(instruction: &Instruction, starter: &Starter) -> String {
         text,
         "\n\nThis is your person's {} \"{}\" (id {}).",
         starter.kind,
-        starter.name.trim(),
+        within(starter.name.trim(), MAX_LABEL_BYTES),
         instruction.cause.installation
     );
     text.push_str(within(&noted, MAX_NOTE_BYTES));
@@ -353,14 +338,39 @@ impl Hosted {
             cluster_id: instruction.workspace.clone(),
             document: String::new(),
         };
-        runtime
+        let provider = WorkspaceActionProvider::new(actions.clone(), workspace);
+        let mut with = Map::new();
+        with.insert("who".into(), asking.with);
+        let opened = runtime
             .block_on(invoke_named(
-                &WorkspaceActionProvider::new(actions.clone(), workspace),
+                &provider,
                 &caller,
                 &route,
-                &collab_types::document::chain_resource_id(&chat::parts::chain()),
-                ASK_AGENT,
-                asking.arguments,
+                &format!("tl:{CHAT}"),
+                MESSAGE_MEMBER,
+                with,
+            ))
+            .map_err(StepError::Unavailable)?;
+        let conversation = opened
+            .pointer("/resources/0")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                StepError::Unavailable(format!(
+                    "Chat opened no conversation with the assistant: {opened}"
+                ))
+            })?
+            .to_owned();
+        let mut message = Map::new();
+        message.insert("body".into(), json!(asking.text));
+        runtime
+            .block_on(invoke_once(
+                &provider,
+                &caller,
+                &route,
+                &conversation,
+                SEND,
+                message,
+                instruction.cause.invocation,
             ))
             // The turn is started, not waited for: its answer is the
             // assistant's reply in the conversation.
@@ -467,7 +477,6 @@ mod tests {
 
     #[test]
     fn an_instruction_is_one_turn_in_its_persons_conversation_with_their_assistant() {
-        use tilo_actions::policy::MemberId;
         let invocation = tilo_actions::InvocationId::new();
         let instruction = Instruction {
             person: "ab".repeat(32),
@@ -491,17 +500,8 @@ mod tests {
             asking.asked_as, "7f0c1c0e-5a1b-4a52-9d0f-0d6f3a1b2c3d",
             "it asks as itself, never as the assistant"
         );
-        let conversation = chat::Chat::direct_id([
-            MemberId::agent("assistant"),
-            MemberId::person("ab".repeat(32)),
-        ]);
-        assert_eq!(asking.arguments[IN], conversation.as_str());
-        assert_eq!(
-            asking.arguments["cause"],
-            json!({"kind": "reminder", "label": "Call home", "key": invocation.0.to_string()}),
-            "the step's own key: handed over again, it is the same turn"
-        );
-        let text = asking.arguments["text"].as_str().unwrap_or_default();
+        assert_eq!(asking.with, json!({"agent": "assistant"}));
+        let text = asking.text.as_str();
         assert!(
             text.starts_with("Say that it is time to call home."),
             "{text}"
