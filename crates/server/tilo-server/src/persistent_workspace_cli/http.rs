@@ -8,8 +8,7 @@
 //! people can get in, so a deployment tells a host that is loading from one
 //! that is gone. It also says the operator's kill switch: `normal`,
 //! `spectator-only`, or `back-soon`, from the `mode` file in the state
-//! directory (`TILO_WORKSPACES_MODE` names the mode at start), which the
-//! workspace's entry reads so a paused host admits nobody new without a
+//! directory, which the workspace's entry reads so a paused host admits nobody new without a
 //! restart.
 //!
 //! Plain HTTP: the ingress in front of it holds the certificate and the

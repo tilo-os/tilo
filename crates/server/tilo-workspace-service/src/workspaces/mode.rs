@@ -13,11 +13,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// The file the operator writes the mode into, inside the state directory; what it names wins
-/// over [`MODE_ENV`] once it exists.
+/// The file the operator writes the mode into, inside the state directory. It outlives a restart,
+/// so the mode a host starts under is whatever the file last said.
 pub const MODE_FILE: &str = "mode";
-/// The environment variable that names the mode a host starts under.
-pub const MODE_ENV: &str = "TILO_WORKSPACES_MODE";
 /// How long an entry the switch turned away asks to wait before it is tried again.
 pub const PAUSED_RETRY_AFTER_SECS: u64 = 60;
 
@@ -89,17 +87,6 @@ impl HostMode {
     #[must_use]
     pub fn held(state: PathBuf, initial: Mode) -> Arc<Self> {
         Arc::new(Self::new(state, initial))
-    }
-
-    /// The mode [`MODE_ENV`] names, normal when it names none this host knows, with `state`'s
-    /// file winning once written.
-    #[must_use]
-    pub fn from_env(state: PathBuf) -> Arc<Self> {
-        let initial = std::env::var(MODE_ENV)
-            .ok()
-            .and_then(|text| Mode::parse(&text))
-            .unwrap_or_default();
-        Self::held(state, initial)
     }
 
     /// What the operator set: the file's mode now, or the one the host started with.
