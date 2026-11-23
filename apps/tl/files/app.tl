@@ -5,6 +5,8 @@ app so.tilo.file-explorer "Files" (
     keywords: ["files", "file manager", "folder", "folders", "browse", "explorer", "documents", "downloads", "trash", "dateien", "ordner", "durchsuchen"],
 )
 
+use so.tilo.device as device
+
 /// How a folder's entries read.
 enum SortBy {
     /// By what they are called.
@@ -125,6 +127,7 @@ initial action standard_places(f: Files) {
     f.places.insert(Place(label: "Pictures", path: "~/Pictures", group: "Folders"))
     f.places.insert(Place(label: "Music", path: "~/Music", group: "Folders"))
     f.places.insert(Place(label: "Videos", path: "~/Videos", group: "Folders"))
+    f.places.insert(Place(label: "Remote", path: "~/Remote", group: "This computer"))
     f.places.insert(Place(label: "Root", path: "/", group: "This computer"))
     f.places.insert(Place(label: "Trash", path: "trash", group: "This computer"))
 }
@@ -246,6 +249,13 @@ action up(f: Files) uses files, time {
     require not at_top(f) "This is already the top folder"
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     go(f, if folder_place(s.here) { parent_of(s.here) } else { "~" })
+}
+
+/// Sends the entry the person chose to the nearby device `nearby`, as Nearby Send offers it.
+action send_nearby(f: Files, nearby: Text) uses files {
+    require has_selection(f) "Choose a file to send first"
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    device.send(device.nearby_send, items: [s.selected], device: nearby)
 }
 
 /// Dismisses what the window last said went wrong.
@@ -552,6 +562,11 @@ fn can_go_forward(f: Files) -> Bool {
     if let s = f.sessions.first() { not s.ahead.is_empty() } else { false }
 }
 
+/// Whether this window has an entry chosen.
+fn has_selection(f: Files) -> Bool {
+    if let s = f.sessions.first() { s.selected != "" } else { false }
+}
+
 /// Whether this window shows the top folder.
 fn at_top(f: Files) -> Bool {
     if let s = f.sessions.first() { s.here == "/" } else { true }
@@ -835,8 +850,9 @@ view files(f: Files) {
 }
 
 /// The places down the side: this person's, the system's folders, this computer's top, the trash,
-/// and the places the person marked.
+/// the places the person marked, and the devices a file can be handed to.
 view places(f: Files, s: Session) {
+    let nearby = device.nearby_send.devices.filter(d -> d.reachable)
     ui.NavList(selected: s.here) {
         ui.NavSection("Places") {
             for place in f.places.filter(x -> x.group == "Places").sort_by(x -> x.label) {
@@ -861,7 +877,9 @@ view places(f: Files, s: Session) {
                         .video
                     } else if place.path == "~/Downloads" {
                         .download
-                    } else if place.path == "~/Desktop" { .monitor } else { .folder },
+                    } else if place.path == "~/Desktop" {
+                        .monitor
+                    } else if place.path == "~/Remote" { .cloud } else { .folder },
                 ) {
                     on select: go(f, place.path)
                 }
@@ -899,7 +917,9 @@ view places(f: Files, s: Session) {
                         .video
                     } else if place.path == "~/Downloads" {
                         .download
-                    } else if place.path == "~/Desktop" { .monitor } else { .folder },
+                    } else if place.path == "~/Desktop" {
+                        .monitor
+                    } else if place.path == "~/Remote" { .cloud } else { .folder },
                 ) {
                     on select: go(f, place.path)
                 }
@@ -928,9 +948,20 @@ view places(f: Files, s: Session) {
                         .video
                     } else if place.path == "~/Downloads" {
                         .download
-                    } else if place.path == "~/Desktop" { .monitor } else { .folder },
+                    } else if place.path == "~/Desktop" {
+                        .monitor
+                    } else if place.path == "~/Remote" { .cloud } else { .folder },
                 ) {
                     on select: go(f, place.path)
+                }
+            }
+        }
+        if not nearby.is_empty() {
+            ui.NavSection("Nearby") {
+                for d in nearby {
+                    ui.NavItem(d.handle, d.name, icon: .laptop) {
+                        on select: send_nearby(f, d.handle)
+                    }
                 }
             }
         }
@@ -1005,7 +1036,7 @@ view view_options(f: Files, s: Session, naming: State<Text>, name: State<Text>) 
                 on choose: ascending(f, false)
             }
         }
-        ui.MenuButton("More", icon: .ellipsis, icon_only: true) {
+        ui.MenuButton("View options", icon: .ellipsis, icon_only: true) {
             ui.MenuItem(
                 if s.hidden { "Hide hidden files" } else { "Show hidden files" },
                 icon: .eye,

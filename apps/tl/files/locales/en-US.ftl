@@ -231,6 +231,12 @@ d-52nrdgom = Up
     .doc = Goes to the folder above the one shown.
     .w-this-is-already-the-top-folder = This is already the top folder
 
+d-e3tczbcu = Send nearby
+    .doc = Sends the entry the person chose to the nearby device `nearby`, as Nearby Send offers it.
+    .w-choose-a-file-to-send-first = Choose a file to send first
+
+d-e3tczbcu-nearby = Nearby
+
 d-v7sec4gx = Dismiss notice
     .doc = Dismisses what the window last said went wrong.
 
@@ -371,6 +377,8 @@ d-mpazezbv = Forward~present
 
 d-3e5q2ijn = Up~present
 
+d-mnbjennf = Send nearby~present
+
 d-4zknrelh = Rename entry~present
 
 d-dwct4abs = Trash entries~present
@@ -390,7 +398,7 @@ d-n9jkqy4o = Files
     .w-sort-by-date = Sort by date
     .w-ascending = Ascending
     .w-descending = Descending
-    .w-more = More
+    .w-view-options = View options
     .w-hide-hidden-files = Hide hidden files
     .w-show-hidden-files = Show hidden files
     .w-new-file = New file
@@ -432,6 +440,7 @@ d-z6cheebf = Places
     .w-favorites = Favorites
     .w-folders = Folders
     .w-this-computer = This computer
+    .w-nearby = Nearby
 
 d-jwdlcu14 = Entry grid
     .w-files = Files

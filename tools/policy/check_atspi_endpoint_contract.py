@@ -180,11 +180,18 @@ def audit(root: Path = ROOT) -> list[str]:
     # package may not silently leave core acceptance coverage by deleting a
     # scenario, and every scenario must contain an observable post-action tree
     # state rather than merely a successful in-process callback.
+    # A core app declares its scenario in the package it is written as, a tilolang package
+    # beside its `app.tl`, or a Rust app's own manifest; the names are the ones its window
+    # exposes.
     for app, expected in {
-        "file-explorer": {"root": "Files activity", "action": "View options"},
+        "files": {"root": "Home", "action": "View options"},
+        "photos": {"root": "Photos", "action": "Favorites"},
         "settings": {"root": "Settings", "action": "Accessibility"},
     }.items():
         manifest = root / "apps" / app / "tilo-app.toml"
+        written_as_a_package = root / "apps" / "tl" / app / "tilo-app.toml"
+        if written_as_a_package.is_file():
+            manifest = written_as_a_package
         with manifest.open("rb") as source:
             document = tomllib.load(source)
         scenario = document.get("accessibility", {}).get("atspi_acceptance")

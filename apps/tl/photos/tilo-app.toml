@@ -1,0 +1,9 @@
+# What this package declares beyond `app.tl` for the signed manifest `tilolang build` writes:
+# the external AT-SPI acceptance scenario the release check drives against the window's own
+# accessible names.
+
+[accessibility.atspi_acceptance]
+root = "Photos"
+required = ["Library", "Favorites"]
+action = "Favorites"
+after_action = ["No favorites yet"]

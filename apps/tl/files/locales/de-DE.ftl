@@ -356,6 +356,14 @@ d-0nodt7ql = Prüfen
 
 d-0nodt7ql-e = E
 
+d-e3tczbcu = In der Nähe senden
+    .doc = Sendet den Eintrag, den die Person gewählt hat, an das Gerät `nearby`, wie es „In der Nähe senden“ anbietet.
+    .w-choose-a-file-to-send-first = Wähle zuerst eine Datei zum Senden
+
+d-e3tczbcu-nearby = In der Nähe
+
+d-mnbjennf = In der Nähe senden~present
+
 d-86n0vq62 = Benennen
     .doc = Tut, wofür der Name die Person gefragt hat: legt den Ordner oder die Datei an oder benennt den Eintrag um.
 
@@ -390,7 +398,7 @@ d-n9jkqy4o = Dateien
     .w-sort-by-date = Nach Datum sortieren
     .w-ascending = Aufsteigend
     .w-descending = Absteigend
-    .w-more = Mehr
+    .w-view-options = Ansichtsoptionen
     .w-hide-hidden-files = Versteckte Dateien verbergen
     .w-show-hidden-files = Versteckte Dateien zeigen
     .w-new-file = Neue Datei
@@ -432,6 +440,7 @@ d-z6cheebf = Orte
     .w-favorites = Favoriten
     .w-folders = Ordner
     .w-this-computer = Dieser Computer
+    .w-nearby = In der Nähe
 
 d-jwdlcu14 = Eintragsraster
     .w-files = Dateien

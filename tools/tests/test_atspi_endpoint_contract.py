@@ -95,8 +95,9 @@ class AtspiEndpointContractTests(unittest.TestCase):
             ])
             repository = SCRIPT.parents[2]
             for name in (
-                "apps/file-explorer/tilo-app.toml",
-                "apps/settings/tilo-app.toml",
+                "apps/tl/files/tilo-app.toml",
+                "apps/tl/photos/tilo-app.toml",
+                "apps/tl/settings/tilo-app.toml",
                 "tools/atspi_external_client.py",
                 "os/dev/vm.sh",
                 "os/Containerfile",
