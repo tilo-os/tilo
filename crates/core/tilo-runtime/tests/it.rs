@@ -101,6 +101,8 @@ mod hosted_agent_terminal;
 mod hosted_mail_accounts;
 #[path = "hosted_terminal_fresh_tab.rs"]
 mod hosted_terminal_fresh_tab;
+#[path = "hosted_turns.rs"]
+mod hosted_turns;
 #[path = "hosted_web_call.rs"]
 mod hosted_web_call;
 #[path = "invocations.rs"]

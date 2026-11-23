@@ -213,7 +213,7 @@ workspace_actions::hosted_agent_turns::asks::sub_agents::reply_times::four_hundr
 workspace_actions::hosted_agent_turns::asks::sub_agents::several_sub_agents_work_at_once_and_a_stop_ends_the_one_it_names	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::share_ends::a_person_ends_from_any_device_the_share_their_agent_made_and_nobody_else_does	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::skills::a_hosted_agent_uses_the_same_workspace_skills_actions	failed	daemon-turns	
-workspace_actions::hosted_agent_turns::asks::sub_agents::skills::workspace_skills_are_shared_and_use_the_members_role	failed	daemon-turns	
+workspace_actions::hosted_agent_turns::asks::sub_agents::skills::workspace_skills_are_shared_and_use_the_members_role	failed	daemon-turns	it: hosted_turns::workspace_skills_are_shared_and_a_viewers_write_is_refused
 workspace_actions::hosted_agent_turns::asks::sub_agents::teams::a_lead_reads_the_team_under_it_and_nothing_above_or_beside_it	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::teams::a_sub_agent_of_a_sub_agent_does_nothing_its_starter_may_not	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::teams::a_team_is_answered_to_any_members_turn_of_the_agent	failed	daemon-turns	
