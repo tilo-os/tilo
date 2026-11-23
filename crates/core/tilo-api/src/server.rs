@@ -681,15 +681,7 @@ impl Connection {
     }
 
     fn workspace(&self, listing: &tilo_server_protocol::workspaces::WorkspaceListing) -> Workspace {
-        Workspace {
-            id: listing.workspace.clone(),
-            name: listing.name.clone(),
-            host: Some(self.host.clone()),
-            role: listing.role.clone(),
-            labels: listing.labels.clone(),
-            unattended: listing.unattended,
-            address: None,
-        }
+        Workspace::listed(listing, Some(self.host.clone()))
     }
 
     /// Whether the session still serves: not closed, and not refused by

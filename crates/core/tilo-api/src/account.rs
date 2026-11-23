@@ -1489,7 +1489,7 @@ impl Account {
             }
             for workspace in host.workspaces(key) {
                 if let Err(error) = host
-                    .revoke_key(key.clone(), workspace.id, id.to_owned())
+                    .revoke_key(key.clone(), workspace.id.clone(), id.to_owned())
                     .await
                 {
                     tracing::warn!(%error, workspace = %workspace.id, "a workspace did not keep a key's revocation");
