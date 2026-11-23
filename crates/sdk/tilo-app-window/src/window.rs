@@ -3260,3 +3260,7 @@ mod tests;
 #[cfg(test)]
 #[path = "motion_tests.rs"]
 mod motion_tests;
+
+#[cfg(test)]
+#[path = "window_motion_tests.rs"]
+mod part_motion_tests;

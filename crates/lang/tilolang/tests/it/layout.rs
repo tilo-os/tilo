@@ -104,6 +104,30 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_container_names_how_what_it_holds_moves;
+    // `motion:` takes a name, never a timing: the toolkit's named motions are the only ones.
+    {
+        let c = compile_body(
+            "view v(b: Bool) {\n    stack(motion: .cross_fade) {\n        row(motion: .none) { spacer }\n        grid(motion: .list) { spacer }\n    }\n}",
+        );
+        validate(&c.wasm);
+        for want in ["motion", "cross_fade", "none", "list"] {
+            assert!(
+                contains(&c.wasm, want),
+                "{want} is not in the module's strings"
+            );
+        }
+        assert_eq!(
+            codes("view v() {\n    stack(motion: .slide) {\n        spacer\n    }\n}"),
+            vec!["E036"],
+            "a motion the toolkit does not name is refused"
+        );
+        assert!(
+            !codes("view v() {\n    stack(motion: 200) {\n        spacer\n    }\n}").is_empty(),
+            "a timing is refused"
+        );
+    }
+
     phase a_chosen_option_reaches_the_host_as_its_name;
     // A text's role reaches the host as the toolkit's `Text` role it names, and `numeric` sets it
     // in tabular figures.

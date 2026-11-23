@@ -1,31 +1,54 @@
-//! The rows of a virtualized collection on their way after a structural change. Owners note only their
-//! shown rows: survivors move from where they stood, arrivals fade in, and (for an owner that paints
-//! them) the rows the change took away fade out where they stood.
+//! The rows of a collection on their way after a structural change. Owners note only their shown
+//! rows: survivors move from where they stood, arrivals fade in, and (for an owner that paints them)
+//! the rows the change took away fade out where they stood. A row's place is a top (`f64`, a list's
+//! rows) or a point (`Vec2`, the parts of a row or a grid).
 
+use crate::motion::Animatable;
 use crate::time::Instant;
 use crate::tokens::{EffectiveMotion, MotionSource};
+
+fn zero<P: Animatable>() -> P {
+    P::from_channels([0.0; 4])
+}
+
+/// `a - b`, channel by channel.
+fn minus<P: Animatable>(a: P, b: P) -> P {
+    let (a, b) = (a.to_channels(), b.to_channels());
+    P::from_channels(std::array::from_fn(|at| a[at] - b[at]))
+}
+
+/// `a + b`, channel by channel.
+fn plus<P: Animatable>(a: P, b: P) -> P {
+    let (a, b) = (a.to_channels(), b.to_channels());
+    P::from_channels(std::array::from_fn(|at| a[at] + b[at]))
+}
+
+/// Whether a row moved by `by` moved at all: more than half a pixel on some axis.
+fn moved<P: Animatable>(by: P) -> bool {
+    by.to_channels().iter().any(|channel| channel.abs() > 0.5)
+}
 
 /// A row on its way after a change the person made (`motion::ListChange`): moving from where it stood
 /// to its new place, or fading in where it arrived.
 #[derive(Clone, Copy, Debug)]
-pub struct RowMotion {
-    /// How far below its laid-out place it is drawn (negative: above).
-    offset: crate::motion::MotionValue<f64>,
+pub struct RowMotion<P: Animatable = f64> {
+    /// How far from its laid-out place it is drawn (for a top: below it, negative above).
+    offset: crate::motion::MotionValue<P>,
     /// Its opacity.
     fade: crate::motion::MotionValue<f64>,
 }
 
-impl RowMotion {
+impl<P: Animatable> RowMotion<P> {
     fn rest() -> Self {
         Self {
-            offset: crate::motion::MotionValue::new(0.0).with_tolerance(0.25),
+            offset: crate::motion::MotionValue::new(zero()).with_tolerance(0.25),
             fade: crate::motion::MotionValue::new(1.0),
         }
     }
 
-    /// How far below its laid-out place it is drawn at `now`.
+    /// How far from its laid-out place it is drawn at `now`.
     #[must_use]
-    pub fn offset(&self, now: Instant) -> f64 {
+    pub fn offset(&self, now: Instant) -> P {
         self.offset.get(now)
     }
 
@@ -47,8 +70,8 @@ impl RowMotion {
 
 /// Where the shown rows stood just before a structural change the person made, by key, for the next
 /// frame to move them from.
-struct PendingRows<K> {
-    before: Vec<(K, f64)>,
+struct PendingRows<K, P> {
+    before: Vec<(K, P)>,
     arrivals_fade: bool,
     source: MotionSource,
 }
@@ -57,21 +80,21 @@ struct PendingRows<K> {
 /// (`motion::ListChange`): the owner notes where its shown rows stand before the change
 /// ([`Self::capture`]), and the next frame moves the survivors from there to where they are laid out
 /// now and fades arrivals in ([`Self::start`]).
-pub struct RowMotions<K> {
-    rows: std::collections::HashMap<K, RowMotion>,
-    pending: Option<PendingRows<K>>,
+pub struct RowMotions<K, P: Animatable = f64> {
+    rows: std::collections::HashMap<K, RowMotion<P>>,
+    pending: Option<PendingRows<K, P>>,
     /// Rows the change took out of the shown ones, fading out where they stood, for an owner that
     /// paints them ([`Self::fading_out_leavers`]).
-    leaving: Option<Vec<LeavingRow<K>>>,
+    leaving: Option<Vec<LeavingRow<K, P>>>,
 }
 
-struct LeavingRow<K> {
+struct LeavingRow<K, P> {
     key: K,
-    top: f64,
+    top: P,
     fade: crate::motion::MotionValue<f64>,
 }
 
-impl<K> Default for RowMotions<K> {
+impl<K, P: Animatable> Default for RowMotions<K, P> {
     fn default() -> Self {
         Self {
             rows: std::collections::HashMap::new(),
@@ -81,7 +104,7 @@ impl<K> Default for RowMotions<K> {
     }
 }
 
-impl<K: Clone + Eq + std::hash::Hash> RowMotions<K> {
+impl<K: Clone + Eq + std::hash::Hash, P: Animatable> RowMotions<K, P> {
     /// Rows a change takes out of the shown ones fade out where they stood ([`Self::leaving`]): an
     /// owner that keeps what they showed paints them, as a tree does the rows a collapse folds away.
     #[must_use]
@@ -100,10 +123,10 @@ impl<K: Clone + Eq + std::hash::Hash> RowMotions<K> {
         crate::motion::recent_input(now).filter(|source| !source.lands_at_once())
     }
 
-    /// Before a structural change: note where the shown rows stand (`before`, each row's top).
+    /// Before a structural change: note where the shown rows stand (`before`, each row's place).
     pub fn capture(
         &mut self,
-        before: impl IntoIterator<Item = (K, f64)>,
+        before: impl IntoIterator<Item = (K, P)>,
         arrivals_fade: bool,
         source: Option<MotionSource>,
     ) {
@@ -134,12 +157,12 @@ impl<K: Clone + Eq + std::hash::Hash> RowMotions<K> {
     }
 
     /// Start the motion of a change noted before this frame, for the rows
-    /// shown now (`shown`, each row's laid-out top), and forget rows that
+    /// shown now (`shown`, each row's laid-out place), and forget rows that
     /// have arrived. A row already moving continues from where it is drawn.
     /// Asks the frame pump for frames until the last one rests.
     pub fn start(
         &mut self,
-        shown: impl IntoIterator<Item = (K, f64)>,
+        shown: impl IntoIterator<Item = (K, P)>,
         motion: EffectiveMotion,
         now: Instant,
     ) {
@@ -147,7 +170,7 @@ impl<K: Clone + Eq + std::hash::Hash> RowMotions<K> {
         if let Some(change) = self.pending.take() {
             let shift = ListChange::MOVE.timing(Direction::Enter, motion, change.source);
             let fade = ListChange::FADE.timing(Direction::Enter, motion, change.source);
-            let shown: Vec<(K, f64)> = shown.into_iter().collect();
+            let shown: Vec<(K, P)> = shown.into_iter().collect();
             if let Some(leaving) = self.leaving.as_mut() {
                 let fade_out = ListChange::FADE.timing(Direction::Exit, motion, change.source);
                 let gone = change
@@ -172,11 +195,11 @@ impl<K: Clone + Eq + std::hash::Hash> RowMotions<K> {
                     .find(|(before, _)| *before == key)
                     .map(|(_, was)| *was);
                 match was {
-                    Some(was) if (was - top).abs() > 0.5 => {
+                    Some(was) if moved(minus(was, top)) => {
                         let entry = self.rows.entry(key).or_insert_with(RowMotion::rest);
                         let drawn = entry.offset.get(now);
-                        entry.offset.snap(drawn + (was - top));
-                        entry.offset.set(0.0, shift, now);
+                        entry.offset.snap(plus(drawn, minus(was, top)));
+                        entry.offset.set(zero(), shift, now);
                     }
                     None if change.arrivals_fade => {
                         let entry = self.rows.entry(key).or_insert_with(RowMotion::rest);
@@ -186,11 +209,7 @@ impl<K: Clone + Eq + std::hash::Hash> RowMotions<K> {
                     _ => {}
                 }
             }
-            let leaving = self.leaving.iter().flatten();
-            if let Some(until) = (self.rows.values().filter_map(RowMotion::settles_at))
-                .chain(leaving.filter_map(|row| row.fade.settles_at()))
-                .max()
-            {
+            if let Some(until) = self.settles_at() {
                 crate::motion::want_frames_until(until);
             }
         }
@@ -205,9 +224,9 @@ impl<K: Clone + Eq + std::hash::Hash> RowMotions<K> {
         }
     }
 
-    /// The rows fading out where they stood at `now`: each one's key, its top before the change and its
-    /// opacity.
-    pub fn leaving(&self, now: Instant) -> impl Iterator<Item = (&K, f64, f32)> {
+    /// The rows fading out where they stood at `now`: each one's key, its place before the change and
+    /// its opacity.
+    pub fn leaving(&self, now: Instant) -> impl Iterator<Item = (&K, P, f32)> {
         self.leaving
             .iter()
             .flatten()
@@ -229,17 +248,26 @@ impl<K: Clone + Eq + std::hash::Hash> RowMotions<K> {
 
     /// The motion of the row keyed `key`, while it has one.
     #[must_use]
-    pub fn get(&self, key: &K) -> Option<&RowMotion> {
+    pub fn get(&self, key: &K) -> Option<&RowMotion<P>> {
         self.rows.get(key)
     }
 
-    /// Where the row keyed `key` is drawn at `now`: how far below its
+    /// Where the row keyed `key` is drawn at `now`: how far from its
     /// laid-out place, and its opacity. `(0, 1)` for a row at rest.
     #[must_use]
-    pub fn pose(&self, key: &K, now: Instant) -> (f64, f32) {
+    pub fn pose(&self, key: &K, now: Instant) -> (P, f32) {
         self.rows
             .get(key)
-            .map_or((0.0, 1.0), |row| (row.offset(now), row.opacity(now)))
+            .map_or((zero(), 1.0), |row| (row.offset(now), row.opacity(now)))
+    }
+
+    /// When the last row on its way rests; `None` when none is.
+    #[must_use]
+    pub fn settles_at(&self) -> Option<Instant> {
+        let leaving = self.leaving.iter().flatten();
+        (self.rows.values().filter_map(RowMotion::settles_at))
+            .chain(leaving.filter_map(|row| row.fade.settles_at()))
+            .max()
     }
 
     /// Whether no row is on its way.
@@ -272,7 +300,7 @@ mod tests {
     #[test]
     fn rows_move_arrivals_fade_in_and_leavers_fade_out_unless_motion_is_reduced() {
         let now = crate::time::now();
-        let mut rows = RowMotions::default().fading_out_leavers();
+        let mut rows = RowMotions::<i32>::default().fading_out_leavers();
         rows.capture([(1, 0.0), (2, 20.0)], true, Some(MotionSource::Pointer));
         rows.start([(1, 40.0), (3, 20.0)], motion(false), now);
         let middle = now + Duration::from_millis(40);
@@ -291,7 +319,7 @@ mod tests {
         rows.settle(done);
         assert!(rows.is_empty(), "settled rows are gone");
 
-        let mut reduced = RowMotions::default().fading_out_leavers();
+        let mut reduced = RowMotions::<i32>::default().fading_out_leavers();
         let source = RowMotions::<i32>::caused_by_hand(now, true);
         reduced.capture([(1, 0.0)], true, source);
         reduced.start([(2, 0.0)], motion(true), now);

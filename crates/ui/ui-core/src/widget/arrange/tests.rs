@@ -521,7 +521,7 @@ tilo_test_env::scenario! {
         stack.insert(2, Part::new(boxed(40.0)));
         stack.move_part(2, 0);
         stack.set_placement(1, Fit::hug(), 2, None);
-        assert!(stack.remove(0).is_some());
+        assert!(stack.remove(0));
         assert_eq!(stack.take_structure_change(), StructureChange::Children);
         assert_eq!(
             stack.take_structure_change(),

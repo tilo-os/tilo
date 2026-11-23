@@ -5,6 +5,7 @@ mod arranged;
 mod flex;
 mod grid;
 mod layers;
+mod motion;
 mod page;
 mod split;
 mod units;
@@ -13,6 +14,7 @@ pub use arranged::{Arranged, Layout, Part, Resolved};
 pub use flex::{FlexLayout, Row, Stack};
 pub use grid::{Columns, Grid, GridLayout};
 pub use layers::{Layers, LayersLayout};
+pub use motion::{DrawnPart, PartsMotion};
 pub use page::{MEASURE_REM, Page, PageLayout, TranscriptEdges};
 pub use split::{Collapse, Navigation, Pane, Side, Split, SplitLayout};
 pub use units::{

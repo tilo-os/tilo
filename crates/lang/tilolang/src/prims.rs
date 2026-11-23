@@ -86,10 +86,13 @@ pub const PRIMS: &[Prim] = &[
     prim_of("form", &[], &[]),
     prim_of("field", &["label"], &["help"]),
     prim_of("choice", &[], &["bind"]),
-    prim_of("stack", &[], &["gap", "padding", "align"]),
+    // `motion:` names how what a container holds moves when it changes: `.list` (the default)
+    // slides, fades in and fades out; `.cross_fade` swaps one child for another in place; `.none`
+    // lands at once.
+    prim_of("stack", &[], &["gap", "padding", "align", "motion"]),
     // With a block, a layout row; with a title and no block, a list row.
     prim_of("row", &[], LAYOUT_ROW_ARGS),
-    prim_of("grid", &[], &["min", "columns", "gap"]),
+    prim_of("grid", &[], &["min", "columns", "gap", "motion"]),
     prim_of("split", &[], &["side", "ratio", "collapse", "gap"]),
     prim_of("primary", &[], &[]),
     prim_of("secondary", &[], &[]),
@@ -122,7 +125,7 @@ pub const PRIMS: &[Prim] = &[
 /// whole list.
 pub const PREVIEW_ROWS: i64 = 5;
 
-pub const LAYOUT_ROW_ARGS: &[&str] = &["gap", "padding", "align", "distribute", "wrap"];
+pub const LAYOUT_ROW_ARGS: &[&str] = &["gap", "padding", "align", "distribute", "wrap", "motion"];
 
 /// Sizing and placement arguments every UI call takes. `lead` counts row leads: a container that
 /// says `lead: 1` stands its content one lead in, under the text a heading's control leads to.
@@ -156,6 +159,11 @@ pub const CHOICES: &[Choice] = &[
         kind: "distribute",
         name: "Distribute",
         variants: &["start", "center", "end", "between"],
+    },
+    Choice {
+        kind: "motion",
+        name: "Motion",
+        variants: &["list", "cross_fade", "none"],
     },
     Choice {
         kind: "collapse",
@@ -232,6 +240,7 @@ pub fn arg_choice(prim: &str, arg: &str) -> Option<&'static str> {
         (_, "align") => "align",
         (_, "distribute") => "distribute",
         (_, "collapse") => "collapse",
+        (_, "motion") => "motion",
         (_, "side") => "side",
         (_, "at") => "at",
         (_, "axis") => "axis",

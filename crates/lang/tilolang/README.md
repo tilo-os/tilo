@@ -644,7 +644,8 @@ view notebook(nb: Notebook) {
 
 The options and their values: `gap:`/`padding:` `.tight .related .sibling .section .group`;
 `align:` `.start .center .end .stretch`; `distribute:` `.start .center .end .between`; `collapse:`
-`.stack .drawer .navigate`; `side:` `.leading .trailing`; `at:` the nine positions `.top_leading`
+`.stack .drawer .navigate`; `motion:` (on `stack`, `row` and `grid`) `.list .cross_fade .none`;
+`side:` `.leading .trailing`; `at:` the nine positions `.top_leading`
 ... `.bottom_trailing`; `axis:` `.vertical .horizontal`; text `role:` `.display .large_title
 .title .heading .subheading .body .label .caption .reading .code`, with `numeric: true` for
 figures. A component primitive (`text`, `input`, `checkbox`, `rich_input`, `image`, ...) takes

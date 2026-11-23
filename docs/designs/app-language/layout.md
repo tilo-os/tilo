@@ -49,6 +49,13 @@ Widgets own their padding and size, as the design system says. A container that 
 not draw — a shell's surfaces, a panel's body — keeps a padding of its own (`padding: .section`):
 the room it holds back on every side. Text wraps by default; `lines: n` clamps it.
 
+What a `stack`, `row` or `grid` holds moves when it changes, with no code in the view: a child the
+person adds fades in while the others slide aside, one they take away fades out where it stood, and
+one that moves slides from where it was. `motion:` names another of the toolkit's motions:
+`.cross_fade` for a container that swaps one child for another in place, `.none` for one whose
+changes land at once. It takes names only, never timings. A change no hand made (a sync, an agent,
+a shortcut) and reduced motion land at once.
+
 ## 4. Responding to space
 
 The primitives do most of it. For the rest, a view reads `space`, what its container offers:

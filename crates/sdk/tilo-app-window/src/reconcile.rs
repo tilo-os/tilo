@@ -15,8 +15,8 @@ use crate::{UiNode, Value};
 use ui::LocalState;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::arrange::{
-    Align, At, Collapse, Distribute, Fit, Grid, Layers, Length, Navigation, Page, Part, Row, Side,
-    Split, Stack,
+    Align, At, Collapse, Distribute, Fit, Grid, Layers, Length, Navigation, Page, Part,
+    PartsMotion, Row, Side, Split, Stack,
 };
 use ui::widget::{
     Avatar, AvatarSize, Button, ButtonRole, Checkbox, Container, ControlSize, Divider, Dropdown,
@@ -260,6 +260,16 @@ fn lead(node: &UiNode) -> i16 {
     }
 }
 
+/// How a container's parts move when what it holds changes (`motion: .cross_fade`), when it names it.
+fn parts_motion(node: &UiNode) -> Option<PartsMotion> {
+    Some(match token(node, "motion")? {
+        "list" => PartsMotion::List,
+        "cross_fade" => PartsMotion::CrossFade,
+        "none" => PartsMotion::None,
+        _ => return None,
+    })
+}
+
 /// The tree as it is drawn: a `page` inside another page, or inside a block's view, is a plain
 /// stack. A page is the outermost layout of a window (gutter, readable measure); a view shown
 /// within another view's layout takes the width that layout offers and adds no second gutter.
@@ -407,6 +417,7 @@ trait PartContainer {
     fn move_part(&mut self, from: usize, to: usize);
     fn set_placement(&mut self, index: usize, placement: Placement);
     fn set_lead(&mut self, lead: i16);
+    fn set_motion(&mut self, motion: PartsMotion);
 }
 
 impl<L: ui::widget::arrange::Layout + 'static> PartContainer for ui::widget::arrange::Arranged<L> {
@@ -437,6 +448,10 @@ impl<L: ui::widget::arrange::Layout + 'static> PartContainer for ui::widget::arr
 
     fn set_lead(&mut self, lead: i16) {
         ui::widget::arrange::Arranged::set_lead(self, lead);
+    }
+
+    fn set_motion(&mut self, motion: PartsMotion) {
+        ui::widget::arrange::Arranged::set_motion(self, motion);
     }
 }
 
@@ -664,6 +679,9 @@ impl Reconciler {
         let lead = lead(node);
         if lead > 0 {
             with_part_container(&mut element, |container| container.set_lead(lead));
+        }
+        if let Some(motion) = parts_motion(node) {
+            with_part_container(&mut element, |container| container.set_motion(motion));
         }
         element
     }

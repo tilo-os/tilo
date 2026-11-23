@@ -14,9 +14,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use super::Side;
+use super::motion::{DrawnPart, PartMotions, PartsMotion, draw_posed};
 use super::units::{At, Fit, Length, WidthClass};
 use crate::interaction::InteractionEnvironment;
-
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
@@ -102,6 +102,20 @@ pub struct Part {
     /// Where a layer sits; `None` fills the cell.
     pub at: Option<At>,
     wrapper: Option<NodeId>,
+    /// Which part this is across the container's changes: what its motion follows.
+    key: u64,
+}
+
+/// A key no other part on this thread has.
+fn next_part_key() -> u64 {
+    thread_local! {
+        static NEXT: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+    }
+    NEXT.with(|next| {
+        let key = next.get();
+        next.set(key.wrapping_add(1));
+        key
+    })
 }
 
 impl Part {
@@ -126,6 +140,7 @@ impl Part {
             span: 1,
             at: None,
             wrapper: None,
+            key: next_part_key(),
         }
     }
 }
@@ -272,6 +287,10 @@ pub struct Arranged<L: Layout> {
     relaid: bool,
     /// Where this container stood when its parts changed: what they drew there is repainted.
     relaid_from: Option<Rect>,
+    /// Whether it has been placed: the first layout never moves.
+    placed: bool,
+    /// Its parts on their way after a change the person made.
+    motions: PartMotions,
 }
 
 impl<L: Layout> Arranged<L> {
@@ -289,6 +308,79 @@ impl<L: Layout> Arranged<L> {
             structure: StructureChange::None,
             relaid: false,
             relaid_from: None,
+            placed: false,
+            motions: PartMotions::default(),
+        }
+    }
+
+    /// Move the parts as `motion` names when what this container holds changes; by default they
+    /// slide, arrive and leave as a list's rows do ([`PartsMotion::List`]).
+    #[must_use]
+    pub fn motion(mut self, motion: PartsMotion) -> Self {
+        self.set_motion(motion);
+        self
+    }
+
+    /// Move the parts as `motion` names from the next change on.
+    pub fn set_motion(&mut self, motion: PartsMotion) {
+        self.motions.set_kind(motion);
+    }
+
+    /// How the parts move when what this container holds changes.
+    #[must_use]
+    pub const fn parts_motion(&self) -> PartsMotion {
+        self.motions.kind()
+    }
+
+    /// Where each part is drawn at `now` and how opaque, in order, then the parts that left and are
+    /// fading out where they stood: what a person sees of a change while it moves.
+    #[must_use]
+    pub fn drawn(&self, now: crate::time::Instant) -> Vec<DrawnPart> {
+        let mut drawn: Vec<DrawnPart> = self
+            .parts
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !self.layout.hidden(*index))
+            .map(|(_, part)| {
+                let (by, opacity) = self.motions.pose(part.key, now);
+                DrawnPart {
+                    rect: part.element.get_rect() + by,
+                    opacity,
+                    leaving: false,
+                }
+            })
+            .collect();
+        drawn.extend(self.motions.drawn_leavers(self.origin(), now));
+        drawn
+    }
+
+    /// Where this container stands, as the offset its parts' places are kept from.
+    fn origin(&self) -> Vec2 {
+        self.rect.origin().to_vec2()
+    }
+
+    /// Each shown, laid-out part's key and place from this container's origin.
+    fn places(&self) -> Vec<(u64, Vec2)> {
+        let origin = self.origin();
+        self.parts
+            .iter()
+            .enumerate()
+            .filter(|(index, part)| part.wrapper.is_some() && !self.layout.hidden(*index))
+            .map(|(_, part)| {
+                (
+                    part.key,
+                    part.element.get_rect().origin().to_vec2() - origin,
+                )
+            })
+            .collect()
+    }
+
+    /// Before a part operation: once this container has been placed, note where its parts stand,
+    /// for the change to move them from.
+    fn before_change(&mut self) {
+        if self.placed && self.node.is_some() {
+            let places = self.places();
+            self.motions.before_change(places.into_iter());
         }
     }
 
@@ -360,11 +452,13 @@ impl<L: Layout> Arranged<L> {
     pub fn set_parts(&mut self, parts: Vec<Part>) {
         self.parts = parts;
         self.structure = StructureChange::Rebuild;
+        self.motions.clear();
     }
 
     /// Take the children out, to put them back with [`Self::set_parts`].
     pub fn take_parts(&mut self) -> Vec<Part> {
         self.structure = StructureChange::Rebuild;
+        self.motions.clear();
         std::mem::take(&mut self.parts)
     }
 
@@ -381,31 +475,54 @@ impl<L: Layout> Arranged<L> {
 
     /// Show `element` in part `index` instead of its child, which it returns; the part keeps
     /// its sizing. A change the frame's damage describes: the new child draws itself whole,
-    /// and the host repaints where the boxes it moved were and are.
+    /// and the host repaints where the boxes it moved were and are. A container that cross-fades
+    /// ([`PartsMotion::CrossFade`]) keeps the old child to fade out under the new one, and returns
+    /// none.
     pub fn replace(&mut self, index: usize, element: Element) -> Option<Element> {
+        let swaps = self.motions.kind() == PartsMotion::CrossFade;
+        if swaps && index < self.parts.len() {
+            self.before_change();
+        }
+        let origin = self.origin();
         let part = self.parts.get_mut(index)?;
         let held = std::mem::replace(&mut part.element, element);
+        let held = if swaps && self.motions.changing() {
+            let at = held.get_rect().origin().to_vec2() - origin;
+            self.motions.leave(part.key, held, at);
+            part.key = next_part_key();
+            self.motions.arrive(part.key);
+            None
+        } else {
+            Some(held)
+        };
         // The new child has no layout until the parts are laid out again: nothing places it or
         // hands it input through the node its predecessor stood in.
         part.wrapper = None;
         self.parts_changed();
-        Some(held)
+        held
     }
 
     /// Insert `part` at `index` (at the end past it). Described, as [`Self::replace`] is.
     pub fn insert(&mut self, index: usize, part: Part) {
+        self.before_change();
         let index = index.min(self.parts.len());
+        self.motions.arrive(part.key);
         self.parts.insert(index, part);
         self.parts_changed();
     }
 
-    /// Take the part at `index` out. Described, as [`Self::replace`] is.
-    pub fn remove(&mut self, index: usize) -> Option<Part> {
+    /// Take the part at `index` out: whether there was one. Described, as [`Self::replace`] is. A
+    /// part the person's hand took out fades out where it stood.
+    pub fn remove(&mut self, index: usize) -> bool {
         if index >= self.parts.len() {
-            return None;
+            return false;
         }
+        self.before_change();
         self.parts_changed();
-        Some(self.parts.remove(index))
+        let part = self.parts.remove(index);
+        let at = part.element.get_rect().origin().to_vec2() - self.origin();
+        self.motions.leave(part.key, part.element, at);
+        true
     }
 
     /// Move the part at `from` to `to`, its child kept. Described, as [`Self::replace`] is.
@@ -413,6 +530,7 @@ impl<L: Layout> Arranged<L> {
         if from == to || from >= self.parts.len() {
             return;
         }
+        self.before_change();
         let part = self.parts.remove(from);
         self.parts.insert(to.min(self.parts.len()), part);
         self.parts_changed();
@@ -728,6 +846,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.resolved = Resolved::of(theme).with_target(self.interaction.minimum_target());
+        self.motions.set_motion(theme.motion());
         self.layout.items(self.parts.len());
         self.relaid = false;
         // A part changed while the parts below build belongs to this build, not to the node the
@@ -832,17 +951,66 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
                 );
             }
         }
+        self.placed = true;
+        // A change waits for the parts to be laid out again under this container before it moves.
+        if !self.relaid {
+            let places = self.places();
+            self.motions.start(places.into_iter());
+        }
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.motions.set_motion(theme.motion());
+        let now = crate::motion::frame_now();
+        self.motions.settle(now);
+        self.motions.begin_frame();
+        let moving = !self.motions.at_rest();
+        if moving {
+            let origin = self.origin();
+            self.motions
+                .draw_leavers(origin, now, scene, transform, text, theme, &env);
+        }
         for (index, part) in self.parts.iter_mut().enumerate() {
-            if self.layout.hidden(index) || env.should_cull(part.element.get_rect()) {
+            if self.layout.hidden(index) {
+                continue;
+            }
+            let (by, opacity) = if moving {
+                self.motions.pose(part.key, now)
+            } else {
+                (Vec2::ZERO, 1.0)
+            };
+            if by != Vec2::ZERO || opacity < 1.0 {
+                self.motions.painted(part.element.get_rect() + by);
+                draw_posed(
+                    part.element.as_mut(),
+                    (by, opacity),
+                    scene,
+                    transform,
+                    text,
+                    theme,
+                    &env,
+                );
+                continue;
+            }
+            if env.should_cull(part.element.get_rect()) {
                 continue;
             }
             part.element
                 .draw_child(scene, transform, text, theme,&env);
+        }
+    }
+
+    /// What the parts paint, with the parts that left fading out where they stood.
+    fn paint_bounds(&self) -> Rect {
+        let painted = self
+            .motions
+            .last_painted()
+            .fold(self.rect, |whole, rect| whole.union(*rect));
+        match self.motions.leaver_bounds(self.origin()) {
+            Some(leaving) => painted.union(leaving),
+            None => painted,
         }
     }
 
@@ -903,6 +1071,22 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
             regions.push(from);
             regions.push(self.rect);
         }
+        // Parts on their way: where the last frames drew them, and where this one does.
+        if !self.motions.at_rest() {
+            regions.extend(self.motions.last_painted().copied());
+            let now = crate::motion::frame_now();
+            let boxes = self
+                .parts
+                .iter()
+                .map(|part| (part.key, part.element.get_rect()));
+            regions.extend(self.motions.moving_boxes(boxes, now));
+            regions.extend(
+                self.motions
+                    .drawn_leavers(self.origin(), now)
+                    .into_iter()
+                    .map(|leaver| leaver.rect),
+            );
+        }
         for (index, part) in self.parts.iter().enumerate() {
             if !self.layout.hidden(index) {
                 part.element.collect_damage(regions);
@@ -962,9 +1146,11 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.parts
-            .iter()
-            .any(|part| part.element.needs_animation_frame())
+        self.motions.is_moving(crate::motion::frame_now())
+            || self
+                .parts
+                .iter()
+                .any(|part| part.element.needs_animation_frame())
     }
 
     /// What the part operations did, joined with what the children report. A child that replaced
@@ -1014,6 +1200,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         }
         self.resolved =
             Resolved::of(remount.theme()).with_target(self.interaction.minimum_target());
+        self.motions.set_motion(remount.theme().motion());
         self.layout.items(self.parts.len());
         let mut wrappers = Vec::with_capacity(self.parts.len());
         for index in 0..self.parts.len() {
@@ -1034,6 +1221,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     /// it was asked.
     fn needs_redraw(&self) -> bool {
         self.relaid_from.is_some()
+            || self.motions.needs_redraw(crate::motion::frame_now())
             || self.parts.iter().enumerate().any(|(index, part)| {
                 !self.layout.hidden(index)
                     && (part.element.needs_redraw() || part.element.needs_animation_frame())
