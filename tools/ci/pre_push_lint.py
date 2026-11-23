@@ -17,10 +17,12 @@ A package that builds directly on one of those through a path dependency is lint
 too, a dev-dependency's test included: a type a push changes breaks the package that
 constructs it while the package that declares it compiles clean. A selected package
 the page family names is also linted for wasm32, a target the host lint cannot see.
-Only the direct dependants are named; what a change reaches through them, and the
-packages as they ship, is t's `clippy`, `clippy-{arch}`, `clippy-idle`,
-`clippy-shipped` and `clippy-page` families' work, on every change: each is keyed by
-what it reads, and a miss is named on the head it broke.
+The crates that only unify features are neither a source nor a dependant: their
+dependency lists name members they hold no code for. Only the direct dependants are
+named; what a change reaches through them, and the packages as they ship, is t's
+`clippy`, `clippy-{arch}`, `clippy-idle`, `clippy-shipped` and `clippy-page`
+families' work, on every change: each is keyed by what it reads, and a miss is named
+on the head it broke.
 
 Where t is installed, the lint is t's own per-package checks of the families
 that build with those unified features (`clippy/<package>`, `clippy-idle/...`,
@@ -136,7 +138,7 @@ UNIFY = "workspace-unify"
 PAGE_FAMILY = "clippy-page"
 # The packages that only unify features, generated from the workspace's manifests. Their
 # dependency lists name members they never use, so a change to one reaches no code and names no
-# set of dependants.
+# set of dependants, and their own lint says nothing about a member that changed.
 SYNTHETIC = {"workspace-hack", "workspace-unify"}
 # A target kind another package can link against; a package with none cannot be depended on.
 LIBRARY_KINDS = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
@@ -433,7 +435,9 @@ def dependants(seeds: set[str], packages: dict[str, dict], root: Path) -> set[st
 
     A type a push changes breaks the package that constructs it while the package that declares
     it compiles clean, and a dev-dependency's test breaks the same way. Only the direct
-    dependants are named: a break further along belongs to the dependant that fails first.
+    dependants are named: a break further along belongs to the dependant that fails first. The
+    feature unification crates are neither a seed's source nor its dependants: their dependency
+    lists name members they hold no code for, so their own lint says nothing.
     """
     reverse = reverse_dependencies(packages, root)
     reached: set[str] = set()
@@ -441,7 +445,7 @@ def dependants(seeds: set[str], packages: dict[str, dict], root: Path) -> set[st
         if seed in SYNTHETIC or not library(packages.get(seed, {})):
             continue
         reached |= reverse.get(seed, set())
-    return reached - seeds
+    return reached - seeds - SYNTHETIC
 
 
 def select(root: Path, push: Push, files: set[str]) -> Selection | None:

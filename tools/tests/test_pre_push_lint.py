@@ -226,6 +226,9 @@ class PrePushLintTests(unittest.TestCase):
         # Whether the fixture has the generated package that only unifies features, which a
         # member depends on without using anything of it.
         self.hack = False
+        # Whether the fixture has those packages building on the host crate, as their generated
+        # manifests do on every member.
+        self.hack_dependants = False
         self.commit("test: a workspace of one host crate and one page crate")
         self.base = self.head()
 
@@ -268,6 +271,15 @@ class PrePushLintTests(unittest.TestCase):
             packages.append(
                 {"name": "workspace-hack", "manifest_path": str(root / "workspace-hack/Cargo.toml"),
                  "targets": [{"kind": ["lib"]}], "dependencies": []})
+        if self.hack_dependants:
+            # Generated manifests name every member, so the host crate is one of their
+            # dependencies; a lib and a bin target so neither is skipped for its target kinds.
+            for name, kinds in (("workspace-hack", ["lib"]), ("workspace-unify", ["bin"])):
+                packages.append(
+                    {"name": name, "manifest_path": str(root / name / "Cargo.toml"),
+                     "targets": [{"kind": kinds}],
+                     "dependencies": [{"name": "fixture-native", "kind": None,
+                                       "path": str(root / "native")}]})
         for name in self.dependents:
             packages.append(
                 {"name": name, "manifest_path": str(root / name / "Cargo.toml"),
@@ -543,6 +555,23 @@ class PrePushLintTests(unittest.TestCase):
         result = self.push()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls(), ["t test clippy/workspace-hack --json"])
+
+    def test_the_feature_unification_crates_are_never_dependants(self):
+        # They hold no code of their own, only feature resolution: a member's change cannot
+        # break them, so selecting them as dependants would lint nothing.
+        self.hack_dependants = True
+        for name in ("workspace-hack", "workspace-unify"):
+            self.write(f"{name}/Cargo.toml", CRATE.format(name=name)
+                       + '\n[dependencies]\nfixture-native = { path = "../native" }\n')
+            self.write(f"{name}/src/lib.rs", "pub fn nothing() {}\n")
+        self.commit("test: the unification crates build on the host crate")
+        self.base = self.head()
+        self.with_t()
+        self.write("native/src/lib.rs", LIB.format(answer=27))
+        self.commit("feat: answer 27")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), ["t test clippy/fixture-native --json"])
 
     def test_a_check_t_answered_before_is_answered_from_its_cache(self):
         # After a rebase onto commits that reach nothing the package's build reads, t's key is
