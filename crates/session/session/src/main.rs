@@ -976,9 +976,9 @@ fn run(
         println!("TILO_MCP_SERVER={}", agent.display());
     }
     // Where a program of this login answers as the person, against the workspaces this device
-    // holds: `tilolang repl` and `tilo` reach it there (`tilo_api::client::desktop_socket`).
+    // has: `tilolang repl` and `tilo` reach it there (`tilo_api::calls::desktop_socket`).
     if let Some(api) = sockets.api.filter(|api| api.exists()) {
-        println!("{}={}", tilo_api::client::DESKTOP_ENV, api.display());
+        println!("{}={}", tilo_api::calls::DESKTOP_ENV, api.display());
     }
     // Where `tilo-control` drives it, in a development build started with one.
     if let Some(control) = sockets.test_control.filter(|control| control.exists()) {

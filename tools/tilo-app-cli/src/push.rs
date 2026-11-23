@@ -6,16 +6,16 @@
 //! made with another version waits until its author has.
 //!
 //! That is the workspace's governance in its action API, so this command
-//! opens the API as a key of the developer's (`TILO_API_KEY`, a `--key-file`,
-//! or the key `tilo login` kept here) and invokes them on the workspace's
-//! `workspace/apps` path, exactly as `tilo do` does. The workspace decides
-//! whether the key's person may.
+//! calls them as a key of the developer's (a `--key-file`, or the key
+//! `tilo login` kept here) through [`tilo_api::calls`], invoking them on the
+//! workspace's `workspace/apps` path exactly as `tilo do` does. The workspace
+//! decides whether the key's person may.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Map, Value, json};
-use tilo_api::client::{Client, Reach};
+use tilo_api::calls::{Calls, Reach};
 
 /// The path of a workspace's apps in its action API.
 const APPS: &str = "workspace/apps";
@@ -31,13 +31,8 @@ pub struct PushArgs {
     /// The workspace to push to, by its id or the name it is listed under.
     #[arg(long = "workspace")]
     workspace: String,
-    /// The API server the workspace is reached through (also
-    /// `$TILO_API_URL`). Defaults to `https://mcp.tilo.sh`, or to the server
-    /// `tilo login` logged in to here.
-    #[arg(long, hide = true)]
-    api: Option<String>,
-    /// A key this computer holds (`tilo keys export`), instead of
-    /// `$TILO_API_KEY`.
+    /// A key this computer has (`tilo keys export`), instead of the key
+    /// `tilo login` kept here.
     #[arg(long)]
     key_file: Option<PathBuf>,
     /// The `.tapp` to run; defaults to the newest in the app's `dist/`
@@ -68,30 +63,28 @@ pub fn run_push(args: PushArgs) -> Result<Value> {
         None => newest_package(&app_dir.join("dist"))?,
     };
     let push = app_push(&app_dir, &package, !args.published)?;
-    let client = Client::open(Reach {
-        api: args.api.as_deref(),
-        key_file: args.key_file.as_deref(),
-        json: false,
-    })
-    .context("reach the workspace's action API")?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let started = std::time::Instant::now();
     let answer = runtime.block_on(async {
-        let workspace = client.workspace_id(&args.workspace).await?;
+        let calls = Box::pin(Calls::open(Reach {
+            key_file: args.key_file.as_deref(),
+            json: false,
+        }))
+        .await
+        .context("reach the workspace's action API")?;
+        let workspace = Box::pin(calls.workspace_id(&args.workspace)).await?;
         let mut argument = Value::Object(push.argument.clone());
         if let Some(path) = &push.upload {
             let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-            let file = upload_app_file(&client, &workspace, &bytes).await?;
+            let file = Box::pin(upload_app_file(&calls, &workspace, &bytes)).await?;
             if let Some(fields) = argument.as_object_mut() {
                 fields.insert("file".into(), Value::from(file));
             }
         }
         let title = format!("push {}", describe(&push));
-        let answer = client
-            .act(&workspace, APPS, push.action, &argument, &title)
-            .await?;
+        let answer = Box::pin(calls.act(&workspace, APPS, push.action, &argument, &title)).await?;
         Ok::<_, anyhow::Error>((workspace, answer))
     });
     let (workspace, answer) = answer.map_err(|error| {
@@ -108,7 +101,7 @@ pub fn run_push(args: PushArgs) -> Result<Value> {
 /// Hand the package `bytes` to `workspace`'s server in the pieces it takes,
 /// naming it by its BLAKE3 hash: what `install-app` names as the version's
 /// `file`.
-async fn upload_app_file(client: &Client, workspace: &str, bytes: &[u8]) -> Result<String> {
+async fn upload_app_file(calls: &Calls, workspace: &str, bytes: &[u8]) -> Result<String> {
     if bytes.is_empty() {
         bail!("the package file is empty");
     }
@@ -122,15 +115,14 @@ async fn upload_app_file(client: &Client, workspace: &str, bytes: &[u8]) -> Resu
             "total": total,
             "data": hex::encode(piece),
         });
-        client
-            .act(
-                workspace,
-                APPS,
-                "upload-app-file",
-                &argument,
-                "hand the workspace an app version's package",
-            )
-            .await?;
+        Box::pin(calls.act(
+            workspace,
+            APPS,
+            "upload-app-file",
+            &argument,
+            "hand the workspace an app version's package",
+        ))
+        .await?;
         offset = offset.saturating_add(piece.len() as u64);
     }
     Ok(hash)

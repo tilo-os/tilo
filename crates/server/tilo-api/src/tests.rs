@@ -1604,7 +1604,3 @@ fn a_persons_keys_kept_without_being_issued_here_are_bounded() {
 /// What a difference between the page's clock and the server's does to an
 /// approval.
 mod sign_in_clock;
-
-/// Server-sent events of `POST …/model/ask`, across line endings, piece cuts
-/// and multi-line `data:` fields.
-mod model_asks;

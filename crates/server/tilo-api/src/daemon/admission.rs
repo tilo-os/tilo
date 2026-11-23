@@ -29,10 +29,6 @@ impl Admitted {
     }
 }
 
-/// Why a connection's request is refused.
-pub const NOT_SIGNED_IN: &str = "this computer's Tilo serves the people signed in on it, and \
-     this account is not one of them: sign in on this computer as yourself first";
-
 /// Who the daemon's connections are: its own account, whether it serves every account of the
 /// computer, and which accounts are signed in as which person.
 #[derive(Debug)]

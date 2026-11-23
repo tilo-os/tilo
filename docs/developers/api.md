@@ -13,8 +13,9 @@ Three things serve it:
   by a key of theirs it was minted from) — so any API server accepts it. Every call is forwarded to
   the Tilo host that serves the workspace best right now, and that host decides it. When no host
   that can read the workspace is online, the call answers `503 unavailable` saying so.
-- **Any Tilo host directly**, from the SDKs and the `tilo` command, as a device of the person
-  with its own key. The SDKs link the same Rust client the API server runs (`tilo-api`'s
+- **Any Tilo host directly**, from the SDKs, as a device of the person with its own key. The
+  `tilo` command calls the same actions through its computer's daemon instead, as the account
+  that runs it. The SDKs link the same Rust client the API server runs (`tilo-api`'s
   library), which serves these same routes in process: no second implementation.
 - **A Tilo desktop, to its own person's programs on that computer.** The desktop serves these
   routes as HTTP on `$XDG_RUNTIME_DIR/tilo-session/api.sock`, in its login's private directory,

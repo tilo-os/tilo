@@ -8,7 +8,7 @@ stack works on hardware you control — only the endpoint URL changes.
 | Client | Configuration |
 | :--- | :--- |
 | **SDKs** | `TILO_API_URL` environment variable, or `Tilo(url="…")` / `new Tilo({ url: "…" })` |
-| **CLI** | `--api` flag or `TILO_API_URL` |
+| **CLI** | `tilo login` to your host, or a key file (`--key-file`) |
 | **MCP agents** | `<host>/mcp` (all workspaces) or `<host>/w/<workspace>/mcp` (single workspace) |
 
 API keys are tied to your identity rather than a single server, so the same key works against any

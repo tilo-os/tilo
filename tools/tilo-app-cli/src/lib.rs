@@ -6830,15 +6830,25 @@ struct DevRuntimeGuard;
 impl Drop for DevRuntimeGuard {
     fn drop(&mut self) {
         if let Some(runtime) = DEV_RUNTIME.get().and_then(Option::as_ref) {
-            stop_runtime_daemon(&runtime.profile);
+            stop_runtime_daemon(runtime);
         }
     }
 }
 
-/// The pid the runtime daemon serving `profile` reports, if one answers.
-fn runtime_daemon_pid(profile: &Path) -> Option<i32> {
+/// The pid the dev runtime's daemon reports, if one answers at the socket the runtime says it
+/// listens at.
+fn runtime_daemon_pid(runtime: &DevRuntime) -> Option<i32> {
     use std::io::Read as _;
-    let mut stream = tilo_files::native::socket::connect(&profile.join("native.sock")).ok()?;
+    let said = ProcessCommand::new(&runtime.host)
+        .arg("--profile")
+        .arg(&runtime.profile)
+        .arg("--socket")
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|said| said.status.success())?;
+    let socket = PathBuf::from(String::from_utf8(said.stdout).ok()?.trim_end());
+    let mut stream = tilo_files::native::socket::connect(&socket).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
     stream
         .set_write_timeout(Some(Duration::from_secs(2)))
@@ -6855,8 +6865,8 @@ fn runtime_daemon_pid(profile: &Path) -> Option<i32> {
         .filter(|pid| *pid > 0)
 }
 
-fn stop_runtime_daemon(profile: &Path) {
-    let Some(pid) = runtime_daemon_pid(profile) else {
+fn stop_runtime_daemon(runtime: &DevRuntime) {
+    let Some(pid) = runtime_daemon_pid(runtime) else {
         return;
     };
     if unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
@@ -6906,9 +6916,12 @@ fn provide_runtime_host(app_dir: &Path) {
             .ok()
     });
     let runtime = host.map(|host| {
-        let profile = dev_session_dir(app_dir).join("runtime");
-        stop_runtime_daemon(&profile);
-        DevRuntime { host, profile }
+        let runtime = DevRuntime {
+            host,
+            profile: dev_session_dir(app_dir).join("runtime"),
+        };
+        stop_runtime_daemon(&runtime);
+        runtime
     });
     let _ = DEV_RUNTIME.set(runtime);
 }

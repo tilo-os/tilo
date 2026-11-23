@@ -26,7 +26,7 @@ use tilo_peer_state::actions::{ReadFuture, Workspaces as PeerWorkspaces};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_session_client::device::Device as Entered;
 use tilo_workspace_service::apps::services::{GrantRecording, WorkspaceAuthority, WorkspaceGrants};
-use tilo_workspace_service::content::RouteContent;
+use tilo_workspace_service::content::{ContentShelf, RouteContent};
 use tilo_workspace_service::own_device::{self, KeyService};
 use tilo_workspace_service::service::{ServiceConfig, WorkspaceService};
 use tilo_workspace_service::workspaces::{SessionAdmission, Workspaces};
@@ -66,8 +66,9 @@ pub(crate) struct ServiceWorkspaces {
     session: std::sync::OnceLock<Entered>,
     /// Whether this device takes its server's work, and so is one of its person's servers.
     takes_work: std::sync::atomic::AtomicBool,
-    /// The record content service of these workspaces, once it is made.
-    content: OnceLock<Arc<RouteContent>>,
+    /// The record content service of these workspaces, once it is made, and the shelf it keeps
+    /// content on.
+    content: OnceLock<(Arc<RouteContent>, Arc<dyn ContentShelf>)>,
     /// What the service hands the content its members answer this device with,
     /// held here so it is there for as long as the runtime.
     keepers: Mutex<Vec<Arc<dyn tilo_workspace_service::workspaces::ContentKeeper>>>,
@@ -718,12 +719,19 @@ impl ServiceWorkspaces {
 
     /// The record content service of these workspaces, once it is made.
     pub(crate) fn record_content_service(&self) -> Option<Arc<RouteContent>> {
-        self.content.get().cloned()
+        self.content.get().map(|(content, _)| Arc::clone(content))
     }
 
-    /// Keep `content` as this profile's record content service from now on.
-    pub(crate) fn install_content(&self, content: &Arc<RouteContent>) {
-        let _ = self.content.set(Arc::clone(content));
+    /// The shelf this profile keeps content on, once its record content service is made: where
+    /// content put into a workspace here is kept, and read back from.
+    pub(crate) fn content_shelf(&self) -> Option<Arc<dyn ContentShelf>> {
+        self.content.get().map(|(_, shelf)| Arc::clone(shelf))
+    }
+
+    /// Keep `content`, which keeps what it is handed `on` a shelf, as this profile's record
+    /// content service from now on.
+    pub(crate) fn install_content(&self, content: &Arc<RouteContent>, on: Arc<dyn ContentShelf>) {
+        let _ = self.content.set((Arc::clone(content), on));
     }
 
     /// Keep `keeper`, which the service hands the content its members answer

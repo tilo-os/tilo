@@ -3,10 +3,9 @@
 //!
 //! The host keeps one session per device, so two processes entering as the same device cut each
 //! other off, over and over: each agent's calls then fail as "not connected to the host" or go
-//! unanswered. Every `tilo mcp` therefore reaches the daemon over its socket ([`reach`], its
-//! service started when none listens) and relays its agent's
-//! stdio to it ([`relay`]). The daemon serves each connection as its own agent run over the one
-//! session.
+//! unanswered. Every `tilo mcp` therefore reaches the daemon at its native endpoint ([`reach`],
+//! its service started when none listens) and relays its agent's stdio to it ([`relay`]). The
+//! daemon serves each connection as its own agent run over the one session.
 
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
@@ -33,7 +32,18 @@ pub(crate) fn ensure(place: &DaemonPlace) -> Result<(), String> {
 /// A connection to this computer's daemon, its service started when none listens.
 pub(crate) fn reach(place: &DaemonPlace) -> Result<UnixStream, String> {
     place.reach(REACHING).map_err(|why| {
-        tracing::debug!(socket = %place.socket().display(), %why, "Tilo's daemon did not answer");
+        tracing::debug!(socket = %place.native().display(), %why, "Tilo's daemon did not answer");
+        "Tilo's background sync isn't answering on this computer. Run `tilo status` to see how \
+         it stands, then try again."
+            .to_owned()
+    })
+}
+
+/// A connection to this computer's daemon's native endpoint, its service started when none
+/// answers.
+pub(crate) fn reach_native(place: &DaemonPlace) -> Result<UnixStream, String> {
+    place.reach_native(REACHING).map_err(|why| {
+        tracing::debug!(socket = %place.native().display(), %why, "Tilo's daemon did not answer");
         "Tilo's background sync isn't answering on this computer. Run `tilo status` to see how \
          it stands, then try again."
             .to_owned()

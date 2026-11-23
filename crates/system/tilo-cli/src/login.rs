@@ -25,7 +25,7 @@ use tilo_session_client::Outbox as _;
 use tilo_session_client::device::Device as Entered;
 
 use crate::agent::{self, Agent};
-use crate::api::Client;
+use crate::api::Calls;
 pub(crate) use tilo_api::daemon::enter::{
     LOGIN_ENDED, NOT_LOGGED_IN, UNREACHED, choose_workspace, connect, debug_why, enter_said,
     host_of, server_of, signed_over_iroh,
@@ -204,7 +204,7 @@ fn invitation_in(link: &str) -> Result<Vec<u8>> {
 /// into, as the person kept here (made now, named `name`, when there is none). The link carries
 /// the signed invitation and, in it, the workspace's devices' own signed iroh addresses: this
 /// computer's daemon joins at one that holds the workspace's keys, over iroh (through its packet
-/// relay when it is behind a NAT), and keeps the workspace ([`Client::account`]'s
+/// relay when it is behind a NAT), and keeps the workspace ([`Calls::account`]'s
 /// `account/workspaces#join`). Nothing is fetched from a web origin: a server on someone's laptop
 /// is joined as one in a data centre is.
 ///
@@ -239,11 +239,10 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
     let agent = agent::given(agent);
     ensure_daemon()?;
     let runtime = runtime()?;
-    let client = Client::open(crate::api::Reach {
-        api: None,
-        key_file: None,
-        json: false,
-    })?;
+    let client = runtime.block_on(Calls::open_with(
+        crate::api::Reach::default(),
+        crate::mcp::reach_daemon,
+    ))?;
     let invite = tilo_workspace_join::encode_invitation_text(&invitation);
     let joined = runtime
         .block_on(client.account("account/workspaces", "join", &json!({"invite": invite})))
@@ -321,14 +320,15 @@ pub(crate) fn first_act(agent: &Agent) -> String {
     )
 }
 
-/// The streamable HTTP MCP server that reaches `device`'s workspace, when one does: the API
-/// server `TILO_API_URL` names, else tilo.sh's for a workspace on tilo.sh's own server. A
-/// workspace on another server (one joined over iroh, a company's own) is reached through the
-/// stdio server alone.
+/// The streamable HTTP MCP server that reaches this computer's workspace, when one does:
+/// tilo.sh's for a workspace on tilo.sh's own server. A workspace on another server (one joined
+/// over iroh, a company's own) is reached through the stdio server alone.
 fn http_mcp() -> Option<String> {
-    std::env::var(tilo_api::client::API_URL_ENV)
-        .ok()
-        .filter(|api| !api.trim().is_empty())
+    let device = home()?;
+    let domain = host_of(&device.host_origin);
+    let on_tilo_sh =
+        device.server_address.is_none() && (domain == "tilo.sh" || domain.ends_with(".tilo.sh"));
+    on_tilo_sh.then(|| agent::MCP_URL.to_owned())
 }
 
 /// Where an agent finds Tilo's MCP server: the stdio server `tilo mcp`, and the streamable HTTP
@@ -406,7 +406,7 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
         );
     }
     let agent = agent::given(agent);
-    if tilo_api::client::desktop_socket().is_some() {
+    if tilo_api::calls::desktop_socket().is_some() {
         bail!(
             "This computer's Tilo desktop is one of your devices already: `tilo` commands and \
              agents here act through it, with no login of their own."
@@ -418,9 +418,7 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
         &agent.name,
         named.map_or_else(hostname, str::to_owned).as_str(),
     );
-    tilo_api::daemon::this_computer()
-        .and_then(|place| place.wait_for_native(ANSWERING))
-        .map_err(anyhow::Error::msg)?;
+    ensure_daemon()?;
     eprintln!("Asking your device to add this computer; it may ask you to approve it…");
     // This computer's daemon logs in, whether a person's certificate names it already or not, and
     // its person's part starts again as the device the ticket made of it.
@@ -437,11 +435,10 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
         .unwrap_or("this computer");
     let days = became.get("days").and_then(Value::as_u64).unwrap_or(0);
     println!("{}", logged_in_said(label, days, &agent.name));
-    let client = Client::open(crate::api::Reach {
-        api: None,
-        key_file: None,
-        json: false,
-    })?;
+    let client = runtime.block_on(Calls::open_with(
+        crate::api::Reach::default(),
+        crate::mcp::reach_daemon,
+    ))?;
     let text = parsed.encode();
     report(&runtime, &client, &text, Step::LoggedIn, &agent, None);
     let added = add_and_report(&runtime, &client, &text, &agent);
@@ -465,7 +462,7 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
 /// tab that showed the ticket what became of them.
 fn add_and_report(
     runtime: &tokio::runtime::Runtime,
-    client: &Client,
+    client: &Calls,
     ticket: &str,
     agent: &Agent,
 ) -> bool {
@@ -513,7 +510,7 @@ fn add_and_report(
 /// it there. A report the host did not take never fails the login: the tab shows what it heard.
 pub(crate) fn report(
     runtime: &tokio::runtime::Runtime,
-    client: &Client,
+    client: &Calls,
     ticket: &str,
     step: Step,
     agent: &Agent,
@@ -540,14 +537,14 @@ pub(crate) fn report(
 /// How long a command waits for this computer's daemon to serve its API, its service started.
 const ANSWERING: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Start this computer's daemon's service and wait until its API socket is served: the actions a
-/// ticket is served and logged in with are calls there.
+/// Start this computer's daemon's service and wait until its native endpoint answers: a
+/// connection there, where the actions a ticket is served and logged in with are called.
 ///
 /// # Errors
-/// The service did not start, or the daemon did not serve its API in time.
-pub(crate) fn ensure_daemon() -> Result<()> {
+/// The service did not start, or the daemon did not answer in time.
+pub(crate) fn ensure_daemon() -> Result<std::os::unix::net::UnixStream> {
     tilo_api::daemon::this_computer()
-        .and_then(|place| place.wait_for_api(ANSWERING))
+        .and_then(|place| place.reach_native(ANSWERING))
         .map_err(anyhow::Error::msg)
 }
 
@@ -555,7 +552,7 @@ pub(crate) fn ensure_daemon() -> Result<()> {
 /// files and Tilo's tools are: whether it is kept here.
 fn entered_after_login(
     runtime: &tokio::runtime::Runtime,
-    client: &Client,
+    client: &Calls,
     became: &Value,
     agent: &Agent,
     added: bool,

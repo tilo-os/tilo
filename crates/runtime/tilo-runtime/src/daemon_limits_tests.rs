@@ -48,6 +48,17 @@ fn endpoint() -> (tempfile::TempDir, PathBuf, HeldHost) {
         media: None,
         other_devices: None,
         agents: None,
+        frames: {
+            let host = host.clone();
+            crate::device::local::Frames::new(move || {
+                Ok((
+                    Arc::new(host.clone())
+                        as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+                    tilo_actions::remote::Caller::local_person("owner").in_workspace("workspace"),
+                ))
+            })
+        },
+        to_agents: None,
     };
     std::thread::spawn(move || {
         super::accept(&listener, |stream, slot| endpoint.take(stream, slot, None))

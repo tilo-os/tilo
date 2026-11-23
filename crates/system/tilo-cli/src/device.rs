@@ -20,7 +20,7 @@ use tilo_actions::remote::device_tickets::FleetDevice;
 use tilo_device_identity::login::Ticket;
 use tilo_user_identity::DeviceCert;
 
-use crate::api::{Client, Reach};
+use crate::api::{Calls, Reach};
 use crate::login::{self, Device};
 
 /// `tilo device add`: print a ticket, wait for a computer to log in with it, and say which one
@@ -52,14 +52,10 @@ pub fn add(
     // A login that ended names a workspace no daemon here holds: the daemon serves this
     // computer as the person's own device instead, in the workspace it founded.
     let here = login::home().filter(Device::reaches_a_server);
-    login::ensure_daemon()?;
+    let daemon = login::ensure_daemon()?;
     let runtime = login::runtime()?;
     let cert = runtime.block_on(async {
-        let client = Client::open(Reach {
-            api: None,
-            key_file: None,
-            json: false,
-        })?;
+        let client = Calls::open_with(Reach::default(), || Ok(daemon)).await?;
         let workspace = match &here {
             Some(device) => device.workspace.clone(),
             None => client.founded_workspace().await?,
@@ -161,11 +157,7 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
     let runtime = login::runtime()?;
     let text = parsed.encode();
     let (device, label, capability) = runtime.block_on(async {
-        let client = Client::open(Reach {
-            api: None,
-            key_file: None,
-            json: false,
-        })?;
+        let client = Calls::open_with(Reach::default(), crate::mcp::reach_daemon).await?;
         let workspace = here.workspace.clone();
         let answer = client
             .act(
@@ -216,11 +208,7 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
         None => None,
     };
     let answer = runtime.block_on(async {
-        let client = Client::open(Reach {
-            api: None,
-            key_file: None,
-            json: false,
-        })?;
+        let client = Calls::open_with(Reach::default(), crate::mcp::reach_daemon).await?;
         let argument = match &cert {
             Some(cert) => json!({"ticket": text, "cert": cert, "label": here.cert.device_label}),
             None => json!({"ticket": text, "label": here.cert.device_label}),

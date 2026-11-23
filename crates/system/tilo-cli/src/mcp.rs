@@ -81,23 +81,14 @@ pub fn serve() -> Result<ExitCode> {
     }
 }
 
-/// Start this computer's daemon when none is up, so the workspace commands acting as the device
-/// reach it: they are calls to its API ([`held`]), never a session of their own, which would cut
-/// that one off. Nothing, when this computer did not log in.
-///
-/// The login is read from its certificate, not its device key: this process hands the daemon
-/// its calls, and one that read the key would be undumpable, which the daemon's admission
-/// refuses.
+/// A connection to this computer's daemon's native endpoint, which the workspace commands acting
+/// as the device call: its service started when none answers, so no command opens a session of
+/// its own, which would cut the daemon's off.
 ///
 /// # Errors
-/// The login is damaged, or the daemon did not start.
-pub(crate) fn ensure_held() -> Result<()> {
-    let login = crate::login::Place::here(crate::identity::paths())?;
-    if crate::login::served_device_key(login.keys()).is_none() {
-        return Ok(());
-    }
-    let place = this_computer().map_err(anyhow::Error::msg)?;
-    held::ensure(&place).map_err(anyhow::Error::msg)
+/// The daemon's sockets are not this account's, or no daemon answered in time.
+pub(crate) fn reach_daemon() -> Result<std::os::unix::net::UnixStream, String> {
+    held::reach_native(&this_computer()?)
 }
 
 /// Why a call answers nothing while this computer is not in the workspace: the reason, and that

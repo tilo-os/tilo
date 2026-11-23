@@ -84,6 +84,8 @@ pub struct Caller {
     // person's ask for its steps itself (`Self::steps_unasked`): the grant kept there says the
     // person let them go. Set only by the host that read that grant.
     steps_unasked: bool,
+    // The device's operating system (`Self::local_system`), which acts for nobody.
+    system: bool,
 }
 
 impl Caller {
@@ -106,6 +108,7 @@ impl Caller {
             asked: None,
             own_bound: None,
             steps_unasked: false,
+            system: false,
         }
     }
 
@@ -136,6 +139,23 @@ impl Caller {
     #[must_use]
     pub fn local_person(person: impl Into<tilo_action_policy::PersonId>) -> Self {
         Self::admitted(Acting::person(person.into()), None)
+    }
+
+    /// The device's operating system on a local connection the provider admitted as its
+    /// superuser: what signs people in at the device and out of it. It acts for nobody, so it
+    /// has nothing in any workspace; only the device's own actions answer it.
+    #[must_use]
+    pub fn local_system() -> Self {
+        Self {
+            system: true,
+            ..Self::admitted(Acting::person(""), None)
+        }
+    }
+
+    /// Whether this is the device's operating system ([`Self::local_system`]).
+    #[must_use]
+    pub const fn is_system(&self) -> bool {
+        self.system
     }
 
     /// A delegated agent on a connection the provider admitted itself.

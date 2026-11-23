@@ -57,11 +57,11 @@ usage:
       tag line, other-language names and keywords, the kinds of record it declares, the actions
       it offers while closed and the surface.toml it ships, or null for a package that declares
       no app
-  tilolang repl [--workspace NAME] [--key-file FILE] [--api URL] [--color always|never]
+  tilolang repl [--workspace NAME] [--key-file FILE] [--color always|never]
   tilolang repl --session [SESSION] [--workspace NAME] [--color always|never]
       tilolang typed in one of your workspaces, as you: the one this computer's Tilo login is
       in, or NAME, or the one you pick when your key reaches several. Sign in first with
-      `tilo login` (or act as a key file, or as TILO_API_KEY at URL). With --session, work in
+      `tilo login` (or act as a key file). With --session, work in
       a nested session open on this computer instead (dist/dev/nested-session.sh): the
       only one, the one you pick, or SESSION (its state directory, --ready file, runtime
       directory or control socket). Each entry is a program
@@ -424,7 +424,6 @@ fn repl_command(args: &[String]) -> Result<(), String> {
         match arg.as_str() {
             "--workspace" | "-w" => options.workspace = Some(value(&mut iter, arg)?),
             "--key-file" => options.key_file = Some(PathBuf::from(value(&mut iter, arg)?)),
-            "--api" => options.api = Some(value(&mut iter, arg)?),
             "--session" => {
                 let named = iter
                     .as_slice()

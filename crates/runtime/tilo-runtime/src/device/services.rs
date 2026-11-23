@@ -127,6 +127,11 @@ pub struct Daemon {
     cert: DeviceCert,
     /// The person's account at their server, once [`Self::home`] names it.
     account: Mutex<Option<Arc<super::account::Account>>>,
+    /// Tilo's API as this device, once a caller needed it: one, so an invocation of the
+    /// account's begun on one connection is followed on the next.
+    api: std::sync::OnceLock<Arc<tilo_api::direct::Direct>>,
+    /// What hands agents' connections on the native endpoint to the device's session.
+    agents: super::serve::Agents,
     place: DaemonPlace,
     /// The device's lock, when this daemon took it itself: one started under the lock the
     /// daemon's device part keeps ([`Self::start_locked`]) holds none of its own.
@@ -161,7 +166,7 @@ impl Identity {
     /// # Errors
     /// Nothing certifies this computer's device key ([`SET_UP_FIRST`]).
     fn here() -> io::Result<Self> {
-        let place = tilo_device_identity::login::Place::here(tilo_api::client::device_keys())
+        let place = tilo_device_identity::login::Place::here(tilo_api::calls::device_keys())
             .map_err(io::Error::other)?;
         let (key, cert) = tilo_identity::trusted_device::current("").map_err(|error| {
             io::Error::new(io::ErrorKind::NotFound, format!("{SET_UP_FIRST} ({error})"))
@@ -322,8 +327,12 @@ impl Daemon {
     /// # Errors
     /// The API server cannot be built.
     pub(crate) fn api(self: &Arc<Self>) -> io::Result<Arc<tilo_api::direct::Direct>> {
-        let here = Arc::clone(self) as Arc<dyn tilo_api::session::Here>;
-        Ok(Arc::new(
+        if let Some(api) = self.api.get() {
+            return Ok(Arc::clone(api));
+        }
+        // The API reaches the daemon without keeping it: the daemon keeps the API.
+        let here = Arc::new(DaemonHere(Arc::downgrade(self))) as Arc<dyn tilo_api::session::Here>;
+        let api = Arc::new(
             tilo_api::direct::Direct::here(
                 here,
                 self.key.clone(),
@@ -331,6 +340,28 @@ impl Daemon {
                 &self.cert.device_label,
             )
             .map_err(io::Error::other)?,
+        );
+        Ok(Arc::clone(self.api.get_or_init(|| api)))
+    }
+
+    /// The tree the person reaches in action frames at the daemon's native endpoint, and the
+    /// caller they are there: the workspace this daemon serves, and the account over the
+    /// login's one session.
+    ///
+    /// # Errors
+    /// The workspace cannot be admitted to now.
+    pub(crate) fn person_tree(
+        self: &Arc<Self>,
+    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        let provider = self.provider_for(&self.workspace)?;
+        let api = self.api()?;
+        let workspace = self.workspace.clone();
+        let joined =
+            block_on_owned(async move { api.joined(&workspace, Arc::new(provider)).await })
+                .map_err(io::Error::other)?;
+        Ok((
+            joined,
+            Caller::local_person(&self.actor).in_workspace(&self.workspace),
         ))
     }
 
@@ -411,6 +442,11 @@ impl Daemon {
     /// Where this daemon's connections reach it.
     pub(crate) fn place(&self) -> &DaemonPlace {
         &self.place
+    }
+
+    /// What hands agents' connections to the device's session while one holds it.
+    pub(crate) fn agents(&self) -> &super::serve::Agents {
+        &self.agents
     }
 
     #[allow(
@@ -782,6 +818,8 @@ impl Daemon {
             key: identity.key.clone(),
             cert: identity.cert,
             account: Mutex::new(None),
+            api: std::sync::OnceLock::new(),
+            agents: super::serve::Agents::default(),
             place,
             _lock: lock,
         })
@@ -1014,6 +1052,11 @@ fn broker_services(
             apps: Arc::clone(parts.apps),
         })),
         journal_root: Some(parts.root.join(INVOCATION_JOURNAL)),
+        // What a caller puts into a workspace here is kept on the shelf its records' content is.
+        content_store: parts
+            .workspaces
+            .content_shelf()
+            .map(tilo_workspace_service::content::shelf_puts),
         document_content: Some(document_content),
         // The person's shortcuts, saved into the workspaces this device holds and run here: the
         // same store the trigger runner arms them from, so a computer keeps its shortcuts with
@@ -1270,6 +1313,66 @@ impl Daemon {
     ) -> Option<Arc<dyn tilo_mcp::TaskHosts>> {
         let _ = (host, caller, person);
         None
+/// The daemon as its API reaches it, without keeping it.
+struct DaemonHere(std::sync::Weak<Daemon>);
+
+impl DaemonHere {
+    fn daemon(&self) -> Result<Arc<Daemon>, String> {
+        self.0
+            .upgrade()
+            .ok_or_else(|| "this device's daemon is stopping".to_owned())
+    }
+}
+
+impl tilo_api::session::Here for DaemonHere {
+    fn workspaces(&self, key: &DeviceCert) -> Vec<tilo_api::session::Workspace> {
+        self.daemon()
+            .map(|daemon| tilo_api::session::Here::workspaces(&*daemon, key))
+            .unwrap_or_default()
+    }
+
+    fn enter(
+        &self,
+        workspace: &str,
+        key: &tilo_api::grant_key::GrantKey,
+    ) -> Result<tilo_api::session::Reached, String> {
+        tilo_api::session::Here::enter(&*self.daemon()?, workspace, key)
+    }
+
+    fn account(&self) -> Option<Arc<dyn tilo_api::session::AccountServer>> {
+        tilo_api::session::Here::account(&*self.daemon().ok()?)
+    }
+
+    fn keep(&self, workspace: &str) -> tilo_api::session::Asked<'_, ()> {
+        let (daemon, workspace) = (self.daemon(), workspace.to_owned());
+        Box::pin(async move {
+            let daemon = daemon?;
+            tilo_api::session::Here::keep(&*daemon, &workspace).await
+        })
+    }
+
+    fn leave(&self, workspace: &str) -> tilo_api::session::Asked<'_, ()> {
+        let (daemon, workspace) = (self.daemon(), workspace.to_owned());
+        Box::pin(async move {
+            let daemon = daemon?;
+            tilo_api::session::Here::leave(&*daemon, &workspace).await
+        })
+    }
+
+    fn join(&self, invite: &str) -> tilo_api::session::Asked<'_, String> {
+        let (daemon, invite) = (self.daemon(), invite.to_owned());
+        Box::pin(async move {
+            let daemon = daemon?;
+            tilo_api::session::Here::join(&*daemon, &invite).await
+        })
+    }
+
+    fn workspaces_changed(&self) -> Option<Pending<()>> {
+        tilo_api::session::Here::workspaces_changed(&*self.daemon().ok()?)
+    }
+
+    fn invocations(&self) -> Option<Arc<Invocations>> {
+        tilo_api::session::Here::invocations(&*self.daemon().ok()?)
     }
 }
 
@@ -2342,6 +2445,78 @@ impl ActionProvider for RuntimeActionProvider {
         self.broker
             .state()
             .action_cancel(&on_this_device(caller), id)
+    }
+
+    /// The workspace's content, put through the broker, which decides who may, into the shelf
+    /// its records' content is kept on: for the run this runtime admitted, as that run.
+    fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
+        Some(Arc::new(AdmittedContent {
+            session: Arc::clone(self.session.as_ref()?),
+            workspaces: Arc::clone(&self.workspaces),
+            content: self.broker.state().content_puts()?,
+        }))
+    }
+
+    /// What was put into the workspace here, read back by the run this runtime admitted.
+    fn content_gets(&self) -> Option<Arc<dyn tilo_actions::remote::ContentGets>> {
+        Some(Arc::new(AdmittedContent {
+            session: Arc::clone(self.session.as_ref()?),
+            workspaces: Arc::clone(&self.workspaces),
+            content: tilo_workspace_service::content::shelf_gets(self.workspaces.content_shelf()?),
+        }))
+    }
+}
+
+/// A workspace's content as the run a runtime admitted reaches it: each call is checked as the
+/// run's actions are, and made as the run.
+struct AdmittedContent<T: ?Sized> {
+    session: Arc<AdmittedRuntimeSession>,
+    workspaces: Arc<ServiceWorkspaces>,
+    content: Arc<T>,
+}
+
+impl<T: ?Sized> AdmittedContent<T> {
+    fn run(&self, caller: &Caller) -> Result<&Caller, ActionCallError> {
+        self.session.check(caller, &self.workspaces)?;
+        Ok(self.session.admission.caller())
+    }
+}
+
+impl tilo_actions::remote::ContentPuts for AdmittedContent<dyn tilo_actions::remote::ContentPuts> {
+    fn begin(
+        &self,
+        caller: &Caller,
+        size: u64,
+    ) -> Result<Box<dyn tilo_actions::remote::ContentPut>, ActionCallError> {
+        self.content.begin(self.run(caller)?, size)
+    }
+
+    fn put_many(&self, caller: &Caller, files: &[Vec<u8>]) -> Result<Vec<String>, ActionCallError> {
+        self.content.put_many(self.run(caller)?, files)
+    }
+
+    fn have(&self, caller: &Caller, hashes: &[String]) -> Result<Vec<bool>, ActionCallError> {
+        self.content.have(self.run(caller)?, hashes)
+    }
+
+    fn finish(
+        &self,
+        caller: &Caller,
+        put: Box<dyn tilo_actions::remote::ContentPut>,
+    ) -> Result<String, ActionCallError> {
+        self.content.finish(self.run(caller)?, put)
+    }
+}
+
+impl tilo_actions::remote::ContentGets for AdmittedContent<dyn tilo_actions::remote::ContentGets> {
+    fn get(
+        &self,
+        caller: &Caller,
+        content: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<tilo_actions::remote::ContentPiece, ActionCallError> {
+        self.content.get(self.run(caller)?, content, offset, length)
     }
 }
 

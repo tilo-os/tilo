@@ -240,7 +240,7 @@ pub fn key_created(grant: &Grant, token: &str) -> String {
             "<h1>Your API key \u{201c}{}\u{201d}</h1>\
              <p>Copy it now: it is not shown again.</p><code class=\"key\">{}</code>\
              <p class=\"quiet\">Send it as <code>Authorization: Bearer &lt;key&gt;</code> to the API at \
-             <code>/v1</code>, or set <code>TILO_API_KEY</code> for the <code>tilo</code> command. \
+             <code>/v1</code>, or set <code>TILO_API_KEY</code> for Tilo's SDKs. \
              {}</p>\
              <div class=\"actions\"><a class=\"button\" href=\"/grants\">Done</a></div>",
             escape(&grant.client_name),

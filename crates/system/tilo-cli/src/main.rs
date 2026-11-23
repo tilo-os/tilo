@@ -30,7 +30,7 @@ use anyhow::{Context, Result, anyhow, bail};
 mod agent;
 mod aliases;
 mod approving;
-use tilo_api::client as api;
+use tilo_api::calls as api;
 mod cleanup;
 mod desktop;
 mod device;
@@ -87,7 +87,7 @@ struct Cli {
         long,
         global = true,
         value_name = "FILE",
-        help = "A key this computer holds (`tilo keys export`), instead of TILO_API_KEY"
+        help = "A key file to act as (`tilo keys export`; also TILO_KEY_FILE)"
     )]
     key_file: Option<std::path::PathBuf>,
     #[arg(
@@ -96,25 +96,16 @@ struct Cli {
         help = "The answer as JSON, typed as the SDK gets it"
     )]
     json: bool,
-    #[arg(
-        long,
-        global = true,
-        hide = true,
-        help = "The API server (also TILO_API_URL; https://mcp.tilo.sh by default)"
-    )]
-    api: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
 
 impl Cli {
-    /// The command `cmd`, with no hosted workspace, key file or API server
-    /// named.
+    /// The command `cmd`, with no hosted workspace or key file named.
     const fn of(cmd: Cmd) -> Self {
         Self {
             workspace: None,
             key_file: None,
-            api: None,
             json: false,
             cmd,
         }
@@ -194,8 +185,8 @@ enum Cmd {
                       `tilo ls -w <workspace>` lists what it holds. Options are written name=value; a\n\
                       single value goes to the one the action needs; name=@- reads that value from\n\
                       standard input, for a secret that should stand in no command line. With -w, the path is\n\
-                      app/resource#action in that hosted workspace, over Tilo's API (key:\n\
-                      TILO_API_KEY, or this computer's own when it logged in).\n\n\
+                      app/resource#action in that hosted workspace, as this computer's own login\n\
+                      or the key file --key-file names.\n\n\
                       On a computer that holds the person's identity, --in-person does it as the\n\
                       person themselves rather than as the computer's agent: what only they\n\
                       answer, such as a question their agent asks them\n\
@@ -259,7 +250,7 @@ enum Cmd {
                       tilo workspace people role 3f9c…e1 administrator -w Acme\n  \
                       tilo workspace people rm 3f9c…e1 -w Acme\n\n\
                       On a computer `tilo login` set up these act as you, with no key. A script \
-                      elsewhere sets TILO_API_KEY (`tilo keys create`). Agents have the same \
+                      elsewhere names a key file (`tilo keys export`). Agents have the same \
                       actions over MCP: account/workspaces#… and workspace/members#…."
     )]
     Workspace {
@@ -431,8 +422,8 @@ enum Cmd {
                       History, which undoes it. Running it again brings only what is not there yet. \
                       Keys and passwords are never arguments: `connect` asks the person for a key.\n\n\
                       Without -w a run lands in this computer's own workspace. With it, the run lands in \
-                      that hosted workspace (a name or an id) through Tilo's API, with the key this \
-                      computer holds: TILO_API_KEY, the file --key-file names, or the key `tilo login` kept."
+                      that hosted workspace (a name or an id), as the key this computer keeps: the \
+                      file --key-file names, or the key `tilo login` kept."
     )]
     Migrate {
         /// The answer as JSON.
@@ -1091,8 +1082,7 @@ fn run_do(
     let Some(workspace) = workspace else {
         return desktop::run_action(desktop::ActionCmd::Run { action, args }, json, spelling);
     };
-    let keyed = reach.key_file.is_some() || std::env::var_os(api::KEY_ENV).is_some();
-    if person::answers(&action, keyed, in_person) {
+    if person::answers(&action, reach.key_file.is_some(), in_person) {
         return person::run(&workspace, &action, &args, json);
     }
     if in_person {
@@ -1146,7 +1136,6 @@ fn completions(shell: Shell) -> Result<ExitCode> {
 /// The commands that act in hosted workspaces (and `do`, which acts here or
 /// there): their answer, or the command back when it is none of them.
 fn run_hosted(
-    api: Option<&str>,
     key_file: Option<&std::path::Path>,
     json: bool,
     workspace: Option<String>,
@@ -1154,19 +1143,16 @@ fn run_hosted(
     spelling: &tilo_control::front::Spelling,
 ) -> Result<Result<ExitCode>, Cmd> {
     let needs_workspace = || anyhow::anyhow!("name the workspace: -w <name or id>");
-    let reach = api::Reach {
-        api,
-        key_file,
-        json,
-    };
+    let reach = api::Reach { key_file, json };
     // Acting as this computer's own device (no key, or the device's own key named), each command
-    // is a call to the process holding its device's session, started now when none is up.
-    let as_device = !(api_key_absent(api, key_file) && api::desktop_socket().is_some())
-        && api::held_api_for(reach).ok().flatten().is_some()
+    // is a call to this computer's daemon, which keeps the device's one session.
+    let as_device = !(key_file.is_none() && api::desktop_socket().is_some())
+        && reach.as_device().unwrap_or(false)
+        && api::entered_workspace(api::Reach::default())
+            .ok()
+            .flatten()
+            .is_some()
         && acts_as_the_login(&cmd, workspace.is_some());
-    if as_device && let Err(error) = mcp::ensure_held() {
-        return Ok(Err(error));
-    }
     // What the command, as the computer's agent, asks its person is answered here until it
     // ends, when this computer holds their root.
     let _approving = as_device.then(approving::start).flatten();
@@ -1211,7 +1197,7 @@ fn run_hosted(
                     name,
                     labels,
                 },
-        } if labels.is_empty() && api_key_absent(api, key_file) && desktop::available() => {
+        } if labels.is_empty() && key_file.is_none() && desktop::available() => {
             Ok(desktop::branch_workspace(&source, &name, spelling))
         }
         Cmd::Workspace { cmd } => Ok(hosted::workspace(reach, workspace.as_deref(), cmd)),
@@ -1219,7 +1205,6 @@ fn run_hosted(
         // over this computer's own, through the session `tilo login` holds.
         Cmd::Migrate { json, cmd } if workspace.is_some() => {
             let target = migrate::Target::Hosted {
-                api: api.map(str::to_owned),
                 key_file: key_file.map(std::path::Path::to_path_buf),
                 workspace: workspace.unwrap_or_default(),
             };
@@ -1245,12 +1230,6 @@ fn acts_as_the_login(cmd: &Cmd, named: bool) -> bool {
         Cmd::Keys { .. } | Cmd::Workspace { .. } | Cmd::View { .. } => true,
         other => acts_in_a_workspace(other),
     }
-}
-
-/// Whether these calls act as this computer's own login rather than a key
-/// someone handed over (`--key-file`, `TILO_API_KEY`).
-fn api_key_absent(api: Option<&str>, key_file: Option<&std::path::Path>) -> bool {
-    api.is_none() && key_file.is_none() && std::env::var_os(api::KEY_ENV).is_none()
 }
 
 /// Every command as a page of documentation (`tilo help-markdown`).
@@ -1295,7 +1274,6 @@ fn workspace_or_entered(cli: &Cli) -> Result<Option<String>> {
         return Ok(cli.workspace.clone());
     }
     let entered = api::entered_workspace(api::Reach {
-        api: cli.api.as_deref(),
         key_file: cli.key_file.as_deref(),
         json: false,
     })?;
@@ -1421,13 +1399,15 @@ fn ticket_from_stdin(cmd: &mut Cmd) -> Result<()> {
 
 fn run(mut cli: Cli) -> Result<ExitCode> {
     ticket_from_stdin(&mut cli.cmd)?;
+    if cli.key_file.is_none() {
+        cli.key_file = std::env::var_os(api::KEY_FILE_ENV).map(std::path::PathBuf::from);
+    }
     let spelling = tilo_control::front::Spelling::tilo();
     if let Some(logged_in) = login_without_a_tab(&cli) {
         return logged_in;
     }
     let workspace = workspace_or_entered(&cli)?;
     let cmd = match run_hosted(
-        cli.api.as_deref(),
         cli.key_file.as_deref(),
         cli.json,
         workspace,
@@ -2243,7 +2223,6 @@ mod tests {
                 workspace: workspace.map(str::to_owned),
                 key_file: key_file.map(std::path::PathBuf::from),
                 json: false,
-                api: None,
                 cmd,
             }
         }
@@ -2264,7 +2243,7 @@ mod tests {
         };
         let mut env = tilo_test_env::ScopedEnv::new();
         crate::login::keep_for_test(&mut env, dir.path(), &key, &device);
-        env.remove(api::KEY_ENV);
+        env.remove(api::KEY_FILE_ENV);
 
         let members = || Cmd::Workspace {
             cmd: hosted::WorkspaceCmd::People {

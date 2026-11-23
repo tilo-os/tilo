@@ -2,13 +2,12 @@
 //! `tilolang repl`, `tilo` — answers as the person against the workspaces
 //! this desktop holds, because the socket's own permissions and the kernel's
 //! account of the peer are what admit it, and the desktop answers as the one
-//! key the session holds in memory. No key is written beside the socket.
+//! key the session keeps in memory. No key is written beside the socket.
 //!
-//! The client is the one both commands make ([`tilo_api::client::Client`]),
-//! over its transport for a desktop's socket: the listing it asks first
-//! (`GET /v1/workspaces`) comes from the workspaces this device holds, and a
-//! program it then sends (`POST …/programs`) is carried out in the workspace as
-//! the person, through this session's own API.
+//! A request over that socket, as both commands make one: the listing it asks
+//! first (`account/workspaces#list`) comes from the workspaces this device
+//! entered, and a program it then sends (`POST …/programs`) is carried out in
+//! the workspace as the person, through this session's own API.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -23,7 +22,9 @@
 use serde_json::json;
 use tilo_session::Options;
 
-use crate::common::{PERSON, app_store, device_in, headless, seeded_apps, until};
+use crate::common::{
+    PERSON, api_account, api_request, app_store, device_in, headless, seeded_apps, until,
+};
 
 /// A session that holds its workspaces here, with the home it keeps them in: the home lives as
 /// long as the session, since nothing of the session's reads it after the home is gone.
@@ -61,12 +62,6 @@ fn session_with_api(root: &std::path::Path, api: &std::path::Path) -> Desktop {
     }
 }
 
-/// A client of the session's API at `api`, as `tilolang repl` and `tilo` make one: the socket
-/// alone, and no key of its own.
-fn client(api: &std::path::Path) -> tilo_api::client::Client {
-    tilo_api::client::Client::session(api)
-}
-
 /// Once the thread serving the API is up: the socket's name is there as soon as it is bound, and
 /// a connection is what says it serves.
 fn served(session: &mut tilo_session::Session, api: &std::path::Path) {
@@ -75,17 +70,8 @@ fn served(session: &mut tilo_session::Session, api: &std::path::Path) {
     });
 }
 
-/// A runtime to await the API's answers on: the session's own loop is stepped between calls, so
-/// the test needs its own.
-fn runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("a runtime")
-}
-
-/// The client lists the person's workspaces, and a program it sends to one of them answers as the
-/// person: `describe(tasks)` reaches the workspace's tasks.
+/// A request at the socket lists the person's workspaces, and a program it sends to one of them
+/// answers as the person: `describe(tasks)` reaches the workspace's tasks.
 #[test]
 fn a_program_of_this_login_answers_as_the_person_at_the_sessions_own_api() {
     let _settled = ui::motion::testing::settled();
@@ -95,13 +81,10 @@ fn a_program_of_this_login_answers_as_the_person_at_the_sessions_own_api() {
     let mut session = desktop.session;
     served(&mut session, &api);
 
-    // The list a program of the person's reads: workspace this device holds.
-    let client = client(&api);
-    let runtime = runtime();
+    // The list a program of the person's reads: workspace this device entered.
     let mut listed = serde_json::Value::Null;
     until(&mut session, "the desktop's workspace list", |_| {
-        listed = runtime
-            .block_on(client.workspaces())
+        listed = api_account(&api, "account/workspaces", "list", &json!({}))
             .unwrap_or(serde_json::Value::Null);
         listed
             .get("workspaces")
@@ -109,25 +92,25 @@ fn a_program_of_this_login_answers_as_the_person_at_the_sessions_own_api() {
             .is_some_and(|workspaces| !workspaces.is_empty())
     });
 
-    let answer = runtime.block_on(async {
+    let answer = {
         let workspace = listed
             .get("workspaces")
             .and_then(serde_json::Value::as_array)
             .and_then(|workspaces| workspaces.first())
-            .expect("the desktop lists the workspace it holds");
+            .expect("the desktop lists the workspace it entered");
         let workspace = workspace
             .get("id")
             .and_then(serde_json::Value::as_str)
             .expect("a workspace id")
             .to_owned();
-        client
-            .post(
-                &format!("/v1/workspaces/{workspace}/programs"),
-                &json!({"program": "1 + 1"}),
-            )
-            .await
-            .expect("the program answered")
-    });
+        api_request(
+            &api,
+            "POST",
+            &format!("/v1/workspaces/{workspace}/programs"),
+            Some(&json!({"program": "1 + 1"})),
+        )
+        .expect("the program answered")
+    };
     let text = answer
         .get("text")
         .and_then(serde_json::Value::as_str)

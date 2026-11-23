@@ -1013,6 +1013,149 @@ pub fn placed_resources(session: &Session) -> Vec<(String, String)> {
         .collect()
 }
 
+/// `value`, percent-encoded as a path segment or a query value: letters, digits and `-._~` as
+/// they are, everything else as its UTF-8 bytes, `/` and `#` included.
+pub fn encode_query(value: &str) -> String {
+    /// The digits `%` is followed by.
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0F)]));
+        }
+    }
+    encoded
+}
+
+/// `path`, each segment percent-encoded ([`encode_query`]) and `/` kept as the separator a
+/// workspace names a resource by.
+pub fn encode_path(path: &str) -> String {
+    path.split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(encode_query)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// One request to the API a session serves its own person's programs on its socket
+/// (`api.sock`): the socket answers as the device's own key, so the request carries no key. The
+/// answer's JSON, or what the API refused it with.
+pub fn api_request(
+    socket: &Path,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Value, String> {
+    use std::io::{Read as _, Write as _};
+    let mut stream = std::os::unix::net::UnixStream::connect(socket)
+        .map_err(|error| format!("the session's API socket {}: {error}", socket.display()))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(120)))
+        .map_err(|error| format!("the session's API socket: {error}"))?;
+    let body = body.map(ToString::to_string).unwrap_or_default();
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("the session's API socket: {error}"))?;
+    stream
+        .flush()
+        .map_err(|error| format!("the session's API socket: {error}"))?;
+    let mut reply = Vec::new();
+    stream
+        .read_to_end(&mut reply)
+        .map_err(|error| format!("the session's API socket: {error}"))?;
+    let split = reply
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| "the API answered no HTTP reply".to_owned())?;
+    let head = String::from_utf8_lossy(&reply[..split]).into_owned();
+    let status: u16 = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|status| status.parse().ok())
+        .ok_or_else(|| format!("the API answered no status: {head}"))?;
+    let lower = head.to_ascii_lowercase();
+    let body = if lower.contains("transfer-encoding: chunked") {
+        chunks(&reply[split + 4..])?
+    } else if let Some(length) = lower
+        .lines()
+        .find_map(|line| line.strip_prefix("content-length:"))
+        .and_then(|length| length.trim().parse::<usize>().ok())
+    {
+        reply[split + 4..]
+            .get(..length)
+            .unwrap_or_default()
+            .to_vec()
+    } else {
+        reply[split + 4..].to_vec()
+    };
+    let answered: Value = serde_json::from_slice(&body)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&body).into_owned()));
+    if (200..300).contains(&status) {
+        Ok(answered)
+    } else {
+        let error = answered.get("error");
+        let field = |name: &str| error.and_then(|error| error.get(name));
+        let code = field("code").and_then(Value::as_str).unwrap_or("failed");
+        let message = field("message")
+            .and_then(Value::as_str)
+            .unwrap_or("the API refused the call");
+        Err(format!("{message} ({code})"))
+    }
+}
+
+/// The body of a chunked answer.
+fn chunks(mut body: &[u8]) -> Result<Vec<u8>, String> {
+    let mut whole = Vec::new();
+    loop {
+        let end = body
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .ok_or_else(|| "a chunked answer ended early".to_owned())?;
+        let size = std::str::from_utf8(&body[..end])
+            .ok()
+            .and_then(|line| usize::from_str_radix(line.split(';').next()?.trim(), 16).ok())
+            .ok_or_else(|| "a chunked answer has no size".to_owned())?;
+        body = &body[end + 2..];
+        if size == 0 {
+            return Ok(whole);
+        }
+        let (chunk, rest) = body
+            .split_at_checked(size)
+            .ok_or_else(|| "a chunked answer ended early".to_owned())?;
+        whole.extend_from_slice(chunk);
+        body = rest.strip_prefix(b"\r\n").unwrap_or(rest);
+    }
+}
+
+/// An action of the account's (`account/workspaces#list`) at the session's API: what it
+/// answered, its `result`, or why it refused. One put to the person, who has not answered yet,
+/// is refused as waiting for them.
+pub fn api_account(
+    socket: &Path,
+    resource: &str,
+    action: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let path = format!("/v1/resources/{}/actions/{action}", encode_path(resource));
+    let mut answer = api_request(socket, "POST", &path, Some(args))?;
+    if answer.get("status").and_then(Value::as_str) == Some("pending") {
+        return Err("Waiting for your approval".to_owned());
+    }
+    Ok(answer
+        .get_mut("result")
+        .map_or_else(|| json!({}), Value::take))
+}
+
 /// A program of the person's on this computer at the session's API (`tilolang repl --session`):
 /// it acts as the person in the workspace in front, and its programs run in one program session,
 /// as the REPL's lines do, so `undo` takes back the steps before it. Each request is answered on a
@@ -1058,18 +1201,9 @@ impl Api {
         let answered = std::sync::Arc::new(std::sync::OnceLock::new());
         let answer = std::sync::Arc::clone(&answered);
         std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("a runtime");
-            let client = tilo_api::client::Client::session(&socket);
-            let asked = runtime.block_on(async {
-                match &body {
-                    Some(body) => client.post(&path, body).await,
-                    None => client.get(&path).await,
-                }
-            });
-            let _ = answer.set(asked.map_err(|error| format!("{error:#}")));
+            let method = if body.is_some() { "POST" } else { "GET" };
+            let asked = api_request(&socket, method, &path, body.as_ref());
+            let _ = answer.set(asked);
         });
         Asked(answered)
     }
@@ -1082,12 +1216,9 @@ impl Api {
         path: &str,
         cursor: Option<&str>,
     ) -> Result<Value, String> {
-        let path = tilo_api::client::encode_query(path);
+        let path = encode_query(path);
         let route = match cursor {
-            Some(cursor) => format!(
-                "resources?path={path}&cursor={}",
-                tilo_api::client::encode_query(cursor)
-            ),
+            Some(cursor) => format!("resources?path={path}&cursor={}", encode_query(cursor)),
             None => format!("resources?path={path}"),
         };
         self.send(&route, None).answer(session)

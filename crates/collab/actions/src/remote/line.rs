@@ -2,6 +2,10 @@
 //! session's control socket, a console app's socket and its virtio-serial
 //! channel each read a line, answer it here as the provider they serve, and
 //! write the line this answers.
+//!
+//! The daemon's socket answers a whole connection here ([`serve_lines`]): its uploads stay open
+//! between lines, and a request that waits is answered beside the ones after it. Its callers ask
+//! through [`LineClient`], the one client of the line wire.
 
 use std::time::Duration;
 
@@ -90,6 +94,15 @@ impl InvokeRequest {
         }
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+mod client;
+#[cfg(not(target_arch = "wasm32"))]
+mod lines;
+#[cfg(not(target_arch = "wasm32"))]
+pub use client::{LineClient, LinePut};
+#[cfg(not(target_arch = "wasm32"))]
+pub use lines::serve_lines;
 
 #[cfg(test)]
 mod tests {

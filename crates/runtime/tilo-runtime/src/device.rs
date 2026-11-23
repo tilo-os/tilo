@@ -33,6 +33,7 @@ pub(crate) mod first_workspace;
 #[cfg(test)]
 mod flow_laptop_phone_server;
 pub(crate) mod home;
+pub(crate) mod local;
 mod host_runs;
 mod keep;
 #[cfg(target_os = "linux")]

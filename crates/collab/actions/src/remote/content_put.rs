@@ -84,6 +84,15 @@ pub trait ContentPuts: Send + Sync {
             reason: "this workspace's content cannot be asked what it holds".into(),
         })
     }
+
+    /// Store `put`, which `caller` may have begun on a connection that has since ended, and
+    /// answer its reference.
+    ///
+    /// # Errors
+    /// What the put refused ([`ContentPut::finish_as`]).
+    fn finish(&self, caller: &Caller, put: Box<dyn ContentPut>) -> Result<String, ActionCallError> {
+        put.finish_as(caller)
+    }
 }
 
 /// One upload in progress, owned by the session that began it: dropped
@@ -106,6 +115,16 @@ pub trait ContentPut: Send {
 
     /// Store the content and answer its reference, `tilo.content:<hash>`.
     fn finish(self: Box<Self>) -> Result<String, ActionCallError>;
+
+    /// [`Self::finish`], decided as `caller`: the same person or app as began the upload,
+    /// finishing it on a later connection of theirs.
+    ///
+    /// # Errors
+    /// What [`Self::finish`] refuses, or a caller other than the one that began the upload.
+    fn finish_as(self: Box<Self>, caller: &Caller) -> Result<String, ActionCallError> {
+        let _ = caller;
+        self.finish()
+    }
 }
 
 /// Open uploads one provider keeps for all its callers at once; past it, the
@@ -371,7 +390,7 @@ impl HostedContentPuts {
                 }
                 let (_, _, put) = open.uploads.remove(&upload).ok_or_else(|| gone(upload))?;
                 drop(open);
-                put.finish()
+                puts.finish(caller, put)
                     .map(|content| ContentPutAnswer::Finished { content })
             }
         }

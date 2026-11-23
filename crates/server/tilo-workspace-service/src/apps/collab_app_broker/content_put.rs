@@ -171,6 +171,21 @@ impl ContentPuts for BrokerContentPuts {
             sink: Some(sink),
         }))
     }
+
+    /// Which of `hashes` the caller's workspace has: asked by whoever may put content there,
+    /// so a file it has is not sent again.
+    fn have(&self, caller: &Caller, hashes: &[String]) -> Result<Vec<bool>, ActionCallError> {
+        let workspace = caller
+            .workspace()
+            .ok_or_else(|| ActionCallError::InvalidRequest {
+                reason: "content goes to a workspace, and this session is in none".into(),
+            })?;
+        broker(&self.state)?.may_put_content(caller, workspace)?;
+        Ok(hashes
+            .iter()
+            .map(|hash| is_content_hash(hash) && self.store.holds(workspace, hash))
+            .collect())
+    }
 }
 
 /// One upload. Dropping it drops the store's upload, which stores nothing.
@@ -228,6 +243,18 @@ impl ContentPut for BrokerContentPut {
         self.hasher.update(chunk);
         self.written = end;
         Ok(end)
+    }
+
+    /// A connection that ended takes its run's execution with it: the upload it began is
+    /// finished, and decided again, as the same caller on the connection that resumed it.
+    fn finish_as(mut self: Box<Self>, caller: &Caller) -> Result<String, ActionCallError> {
+        if caller.acting() != self.caller.acting()
+            || caller.workspace() != Some(self.workspace.as_str())
+        {
+            return Err(ActionCallError::NotPermitted);
+        }
+        self.caller = caller.clone();
+        self.finish()
     }
 
     fn finish(mut self: Box<Self>) -> Result<String, ActionCallError> {

@@ -71,7 +71,6 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
 uuid.workspace = true
-wire-frame = { path = "../../platform/wire-frame" }
 
 [dev-dependencies]
 tilo-mcp = { path = "../../runtime/tilo-mcp", features = ["test-support"] }

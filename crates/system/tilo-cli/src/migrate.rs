@@ -118,12 +118,10 @@ pub enum MigrateCmd {
 
 /// Where a run lands.
 pub enum Target {
-    /// The workspace this computer's device is in, through its held session.
+    /// The workspace this computer's device is in, through its daemon's session.
     Device,
-    /// A hosted workspace, through Tilo's API with the key this computer holds.
+    /// A hosted workspace, through Tilo's actions as the key this computer keeps calls them.
     Hosted {
-        /// The API server, as `--api` names it.
-        api: Option<String>,
         /// A key file the person named, as `--key-file` does.
         key_file: Option<PathBuf>,
         /// The workspace, by name or id.
@@ -135,13 +133,8 @@ impl Target {
     /// The API `reach` this target's key is opened with.
     fn reach(&self) -> crate::api::Reach<'_> {
         match self {
-            Self::Device => crate::api::Reach {
-                api: None,
-                key_file: None,
-                json: false,
-            },
-            Self::Hosted { api, key_file, .. } => crate::api::Reach {
-                api: api.as_deref(),
+            Self::Device => crate::api::Reach::default(),
+            Self::Hosted { key_file, .. } => crate::api::Reach {
                 key_file: key_file.as_deref(),
                 json: false,
             },
@@ -159,12 +152,8 @@ impl Target {
             Self::Hosted { workspace, .. } => {
                 workspace::Hosted::workspace_id(self.reach(), workspace)
             }
-            Self::Device => Ok(crate::api::entered_workspace(crate::api::Reach {
-                api: None,
-                key_file: None,
-                json: false,
-            })?
-            .map_or_else(|| "this-computer".to_owned(), |(workspace, _)| workspace)),
+            Self::Device => Ok(crate::api::entered_workspace(crate::api::Reach::default())?
+                .map_or_else(|| "this-computer".to_owned(), |(workspace, _)| workspace)),
         }
     }
 

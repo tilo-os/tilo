@@ -133,6 +133,8 @@ pub use nodes::{
 mod execution_lease;
 mod line;
 pub use execution_lease::ExecutionLease;
+#[cfg(not(target_arch = "wasm32"))]
+pub use line::{LineClient, LinePut, serve_lines};
 pub use line::{answer_line, answer_message, frame_line, line_refusal};
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use resource_read::{

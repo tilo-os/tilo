@@ -75,6 +75,9 @@ use tokio::sync::mpsc;
 
 use crate::workspaces::{ContentKeeper, WorkspaceContent, Workspaces};
 
+mod put;
+pub use put::{shelf_gets, shelf_puts};
+
 pub use neighbour_wire::content::{MAX_CONTENT_BYTES, PIECE_BYTES, PIECES_PER_ANSWER};
 
 /// Requests this device keeps open at once; past it, the oldest go.
@@ -98,6 +101,26 @@ impl ContentScope {
             app: route.app_id.clone(),
         }
     }
+
+    /// Whether both names are ones a device keeps content under: a plain name of at most
+    /// [`MAX_SCOPE_COMPONENT`] bytes, never a path that leaves the store.
+    #[must_use]
+    pub fn names_a_store(&self) -> bool {
+        component(&self.workspace) && component(&self.app)
+    }
+}
+
+/// The longest a workspace or app name may be, as a content store names one.
+const MAX_SCOPE_COMPONENT: usize = 128;
+
+/// Whether `value` names one directory of a content store.
+fn component(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_SCOPE_COMPONENT
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        && !value.bytes().all(|byte| byte == b'.')
 }
 
 /// The device content store, as the host reaches it for records.
@@ -106,6 +129,10 @@ pub trait ContentShelf: Send + Sync {
     fn read(&self, scope: &ContentScope, hash: &str) -> Option<Vec<u8>>;
     /// Keep `bytes`, whose hash is `hash`, under `scope`.
     fn keep(&self, scope: &ContentScope, hash: &str, bytes: &[u8]) -> Result<(), String>;
+    /// Whether this device keeps `hash` under `scope`.
+    fn has(&self, scope: &ContentScope, hash: &str) -> bool {
+        self.read(scope, hash).is_some()
+    }
 }
 
 /// One device on a record's route, as the host's network names it.

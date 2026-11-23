@@ -211,12 +211,6 @@ impl GrantKey {
         self.name.as_deref().unwrap_or(&self.cert.device_label)
     }
 
-    /// The person's identity root key.
-    #[must_use]
-    pub(crate) const fn person_root(&self) -> [u8; 32] {
-        self.cert.user_public_key
-    }
-
     /// The person, by their identity root key, hex.
     #[must_use]
     pub fn person(&self) -> String {

@@ -17,8 +17,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-#[path = "hosted_journey.rs"]
-mod hosted_journey;
 #[path = "machine_tests.rs"]
 mod machine_tests;
 

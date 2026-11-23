@@ -8,7 +8,7 @@
 //!
 //! The host keeps one session per device, so two processes entering as the same device cut each
 //! other off. Every `tilo mcp` and every workspace command of a login therefore reaches the one
-//! daemon over a socket ([`DaemonPlace::connect`]), and the daemon takes the device's lock
+//! daemon at its native endpoint ([`DaemonPlace::native`]), and the daemon takes the device's lock
 //! ([`DaemonPlace::lock`]) or waits for the one holding it to hand the device over.
 
 pub mod admission;
@@ -24,6 +24,10 @@ use std::time::{Duration, Instant};
 /// and whether they are in sync.
 pub const PEER_STATUS: &str = "tilo/peer";
 
+/// The first line of an agent's connection to the daemon's native endpoint (`tilo mcp`): the
+/// rest is the agent's MCP session, served over the device's one session with its workspace.
+pub const AGENT_LINE: &str = r#"{"native":"agent"}"#;
+
 /// How long the service gives a daemon told to stop before it kills it. The daemon's own waits
 /// add up to less, so a stop ends by itself rather than being killed.
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -38,12 +42,9 @@ pub const SYSTEM_PROFILE: &str = "/var/lib/tilo/state";
 /// Linux), its closing NUL among them.
 const SOCKET_PATH_MAX: usize = 103;
 
-/// The native endpoint's socket: apps, `tilo-runtime --connect` and the system's own callers.
+/// The native endpoint's socket: apps, `tilo-runtime --connect`, the system's own callers,
+/// every command's action frames and agents' `tilo mcp`.
 const NATIVE: &str = tilo_paths::machine::DAEMON_NATIVE;
-/// Where agents' `tilo mcp` connections reach the daemon.
-const AGENTS: &str = "agents.sock";
-/// Where the daemon serves Tilo's API as the device.
-const API: &str = "api.sock";
 
 /// Whether this computer's daemon is the system's: Tilo OS runs it from boot as its own
 /// account for every person of the computer, where other computers run it as the person.
@@ -79,24 +80,10 @@ pub fn this_computer() -> Result<DaemonPlace, String> {
     })
 }
 
-/// Where this computer's daemon serves Tilo's API as its device, when it serves one here.
-///
-/// # Errors
-/// The login is damaged, or the daemon's sockets' directory is not this account's.
-pub fn device_api() -> anyhow::Result<Option<PathBuf>> {
-    if tilo_device_identity::login::served_device_key(&crate::client::device_keys()).is_none() {
-        return Ok(None);
-    }
-    let place = this_computer().map_err(|why| anyhow::anyhow!(why))?;
-    Ok(Some(place.api().to_path_buf()))
-}
-
 /// Whether every socket the daemon listens at in `sockets` has a path a socket's address holds:
 /// one that does not is refused, naming it, never cut short.
 fn fits(sockets: &Path) -> Result<(), String> {
-    [NATIVE, AGENTS, API]
-        .into_iter()
-        .try_for_each(|name| socket_fits(&sockets.join(name)))
+    socket_fits(&sockets.join(NATIVE))
 }
 
 /// Whether a socket's address holds `path`: one it does not is refused, naming it, never cut
@@ -190,11 +177,8 @@ fn own_sockets(login: &Path) -> Result<PathBuf, String> {
 pub struct DaemonPlace {
     /// The directory its sockets are in: these, its native endpoint and its services'.
     sockets: PathBuf,
-    /// Where it takes `tilo mcp` connections.
-    socket: PathBuf,
-    /// Where it serves Tilo's API as the device, over the one session: what `tilo do`, `ls`,
-    /// `read` and the other workspace commands of this login reach.
-    api: PathBuf,
+    /// Its native endpoint, in `sockets`.
+    native: PathBuf,
     /// One per device directory: a computer has one daemon, and a login made again under a new
     /// key waits for the daemon of the old one to end instead of running beside it.
     lock: PathBuf,
@@ -209,8 +193,7 @@ impl DaemonPlace {
     pub fn at(sockets: &Path, dir: &Path) -> Self {
         Self {
             sockets: sockets.to_owned(),
-            socket: sockets.join(AGENTS),
-            api: sockets.join(API),
+            native: sockets.join(NATIVE),
             lock: dir.join("holder.lock"),
             system: false,
         }
@@ -235,23 +218,12 @@ impl DaemonPlace {
         &self.sockets
     }
 
-    /// Its native endpoint: what every program of this computer asks about the device
-    /// ([`who`]).
+    /// Its native endpoint: where `tilo do`, `ls`, `read` and the other workspace commands of
+    /// this login call actions as the device, over the one session, in action frames, and where
+    /// agents' `tilo mcp` connections reach it ([`AGENT_LINE`]).
     #[must_use]
     pub fn native(&self) -> PathBuf {
-        self.sockets.join(NATIVE)
-    }
-
-    /// Where it takes `tilo mcp` connections.
-    #[must_use]
-    pub fn socket(&self) -> &Path {
-        &self.socket
-    }
-
-    /// Where it serves Tilo's API as the device.
-    #[must_use]
-    pub fn api(&self) -> &Path {
-        &self.api
+        self.native.clone()
     }
 
     /// The lock a live daemon holds.
@@ -269,18 +241,22 @@ impl DaemonPlace {
             .unwrap_or_default()
     }
 
-    /// A connection to the device's daemon when one listens, starting none.
+    /// An agent's connection to the device's daemon when one listens, starting none: its first
+    /// line ([`AGENT_LINE`]) said.
     #[must_use]
     pub fn connect(&self) -> Option<tilo_files::native::socket::Stream> {
-        tilo_files::native::socket::connect(&self.socket).ok()
+        use std::io::Write as _;
+        let mut stream = tilo_files::native::socket::connect(&self.native).ok()?;
+        writeln!(stream, "{AGENT_LINE}").ok()?;
+        Some(stream)
     }
 
-    /// Whether this login's daemon listens: its socket is there while it serves, and removed as
-    /// it ends. Unlike [`Self::connect`], this waits on nothing, so a command reads it of a
-    /// daemon that is busy with a step over a workspace's folder.
+    /// Whether this login's daemon listens: its native endpoint is there while it serves, and
+    /// removed as it ends. Unlike [`Self::connect`], this waits on nothing, so a command reads
+    /// it of a daemon that is busy with a step over a workspace's folder.
     #[must_use]
     pub fn listening(&self) -> bool {
-        tilo_files::native::socket::is_bound(&self.socket)
+        tilo_files::native::socket::is_bound(&self.native)
     }
 
     /// Whether a live process holds this device's lock. The kernel drops the lock with its
@@ -301,14 +277,15 @@ impl DaemonPlace {
         }
     }
 
-    /// Wait until this device's daemon serves Tilo's API at [`Self::api`], starting the service
-    /// ([`service::start`]) when none answers: what a client of this daemon needs before its
-    /// first call.
+    /// A connection to the daemon's native endpoint ([`Self::native`]), starting the service
+    /// ([`service::start`]) when none answers and waiting up to `within` for it: what a command
+    /// calling actions as the device makes before its first call.
     ///
     /// # Errors
     /// The service did not start, or no daemon answered in `within`.
-    pub fn wait_for_api(&self, within: Duration) -> Result<(), String> {
-        self.wait_for(&self.api, within, !self.system)
+    pub fn reach_native(&self, within: Duration) -> Result<tilo_files::native::socket::Stream, String> {
+        self.wait_for(within)?;
+        tilo_files::native::socket::connect(&self.native).map_err(|error| error.to_string())
     }
 
     /// Wait until the daemon answers at its native endpoint, starting the service when none
@@ -319,42 +296,42 @@ impl DaemonPlace {
     /// # Errors
     /// The service did not start, or no daemon answered in `within`.
     pub fn wait_for_native(&self, within: Duration) -> Result<(), String> {
-        self.wait_for(&self.native(), within, false)
+        self.wait_for(within)
     }
 
-    /// A connection to the daemon's `tilo mcp` socket, starting the service when none answers
-    /// and waiting up to `within` for it.
+    /// An agent's connection to the daemon ([`Self::connect`]), starting the service when none
+    /// answers and waiting up to `within` for it.
     ///
     /// # Errors
     /// The service did not start, or no daemon answered in `within`.
-    pub fn reach(
-        &self,
-        within: Duration,
-    ) -> Result<tilo_files::native::socket::Stream, String> {
-        self.wait_for(&self.socket, within, !self.system)?;
-        tilo_files::native::socket::connect(&self.socket).map_err(|error| error.to_string())
+    pub fn reach(&self, within: Duration) -> Result<tilo_files::native::socket::Stream, String> {
+        self.wait_for(within)?;
+        self.connect()
+            .ok_or_else(|| format!("{} stopped answering", self.native.display()))
     }
 
-    /// Wait until the daemon answers at `socket`, starting the service once when no daemon
-    /// keeps the device: one that runs (still starting, or taking a login up) is waited for. With
-    /// `founding`, a person's own computer that no person's certificate names yet founds its
-    /// person here, once its daemon answers, as its first command always has.
-    fn wait_for(&self, socket: &Path, within: Duration, mut founding: bool) -> Result<(), String> {
+    /// Wait until the daemon answers at its native endpoint, starting the service once when no
+    /// daemon keeps the device: one that runs (still starting, or taking a login up) is waited
+    /// for. A person's own computer that no person's certificate names yet founds its person
+    /// here, once its daemon answers, as its first command always has; Tilo OS's device waits
+    /// for a sign-in.
+    fn wait_for(&self, within: Duration) -> Result<(), String> {
+        let socket = &self.native;
         let deadline = Instant::now()
             .checked_add(within)
             .unwrap_or_else(Instant::now);
         let mut started = false;
         loop {
             if tilo_files::native::socket::connect(socket).is_ok() {
+                // A device no person's certificate names serves nobody yet.
+                if !self.system && who::who().is_ok_and(|who| !who.claimed) {
+                    self.found()?;
+                }
                 return Ok(());
             }
             if !started && !self.alive() {
                 started = true;
                 service::start()?;
-            }
-            if founding && tilo_files::native::socket::connect(&self.native()).is_ok() {
-                founding = false;
-                self.found()?;
             }
             if Instant::now() >= deadline {
                 return Err(format!(
@@ -504,7 +481,7 @@ mod tests {
     /// a byte longer is refused, naming the path it would have made, never cut short.
     #[test]
     fn a_socket_path_too_long_for_its_address_is_refused_by_name() {
-        let longest = NATIVE.len().max(AGENTS.len()).max(API.len());
+        let longest = NATIVE.len();
         // `/`, the directory's name, `/`, the socket's name.
         let room = SOCKET_PATH_MAX - longest - 2;
         let fitting = PathBuf::from(format!("/{}", "d".repeat(room)));

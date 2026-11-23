@@ -129,7 +129,7 @@ pub fn here() -> anyhow::Result<Option<(ed25519_dalek::SigningKey, Device)>> {
     let Ok(Some(device)) = home() else {
         return Ok(None);
     };
-    let key = tilo_device_identity::persist::load_device_key(&crate::client::device_keys())
+    let key = tilo_device_identity::persist::load_device_key(&crate::calls::device_keys())
         .map_err(|_| anyhow::anyhow!(tilo_device_identity::login::LOGIN_DAMAGED))?;
     if device.cert.device_public_key != key.verifying_key().to_bytes() {
         anyhow::bail!(

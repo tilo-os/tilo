@@ -898,6 +898,7 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
     let admission: &'static Admission = Box::leak(Box::new(Admission::new(DAEMON, true)));
     let native = std::sync::Arc::new(super::Native::new(answers.clone(), test_peer, admission));
     // The person's services run, answering as the workspace `home`.
+    let frames = crate::device::local::Frames::of_the_device(answers.clone());
     native.serve_the_person(super::Endpoint {
         session_factory: std::sync::Arc::new(move || {
             Ok(tilo_mcp::McpServer::for_agent(
@@ -916,6 +917,8 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
         media: None,
         other_devices: None,
         agents: None,
+        frames,
+        to_agents: None,
     });
     let socket = dir.path().join("native.sock");
     let listener = tilo_files::native::private::bind_socket(&socket).unwrap();

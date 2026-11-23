@@ -22,7 +22,7 @@ use iroh::EndpointId;
 use neighbour_wire::content::{MAX_CONTENT_BYTES, PIECE_PATIENCE_MS, Span};
 use neighbour_wire::{NeighbourMsg, peer_handle};
 use tilo_broker_core::route::CrdtRoute;
-use tilo_broker_core::services::{CONTENT_PUT_SCOPE, ContentSink, ContentStoreServices};
+use tilo_broker_core::services::ContentStoreServices;
 use tilo_content::{ContentStore, hash_bytes};
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_lock::MutexRecover as _;
@@ -41,8 +41,6 @@ use crate::sync::{Cmd, HostOutbox};
 const CONTENT_DIR: &str = "record-content";
 /// The app whose records are a workspace's file tree: its content is the files' bytes.
 const FILES_APP: &str = fs_protocol::tree::FILES_APP;
-/// The longest a workspace or app name may be, as a content store names one.
-const MAX_SCOPE_COMPONENT: usize = 128;
 /// Record scopes whose store this device keeps open at once. Content itself stays on disk; this is
 /// only what one pass over many workspaces holds.
 const MAX_OPEN_SCOPES: usize = 32;
@@ -149,7 +147,7 @@ impl ContentService {
     /// The store an app uploads content into through the content put API,
     /// addressed by the hash its record then references.
     pub(crate) fn puts(&self) -> Arc<dyn ContentStoreServices> {
-        Arc::new(Puts(Arc::clone(&self.shelf)))
+        tilo_workspace_service::content::shelf_puts(Arc::clone(&self.shelf) as Arc<dyn ContentShelf>)
     }
 
     /// Keep `bytes` as content of `workspace`, under the same store the
@@ -502,7 +500,7 @@ fn move_files_content(dir: &Path, keep: &dyn Fn(&[u8]) -> bool) {
 impl Shelf {
     /// The store of `scope` , when the scope names a directory this device keeps content in.
     fn store(&self, scope: &ContentScope) -> Option<ContentStore> {
-        if !component(&scope.workspace) || !component(&scope.app) {
+        if !scope.names_a_store() {
             return None;
         }
         if let Some(store) = self.stores.lock_recover().get(scope) {
@@ -546,6 +544,13 @@ impl ContentShelf for Shelf {
         } else {
             Err("the content store keeps these bytes under another address".into())
         }
+    }
+
+    fn has(&self, scope: &ContentScope, hash: &str) -> bool {
+        if scope.app == FILES_APP {
+            return self.files.read(&scope.workspace, hash).is_some();
+        }
+        self.store(scope).is_some_and(|store| store.has(hash))
     }
 }
 
@@ -658,76 +663,6 @@ impl tilo_content::ContentBackend for Kept {
 
     fn max_item_bytes(&self) -> usize {
         usize::try_from(MAX_CONTENT_BYTES).unwrap_or(usize::MAX)
-    }
-}
-
-fn component(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_SCOPE_COMPONENT
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
-        && !value.bytes().all(|byte| byte == b'.')
-}
-
-/// The content put API's store: bytes an app uploads into its workspace,
-/// kept beside the content its records reference.
-struct Puts(Arc<Shelf>);
-
-impl ContentStoreServices for Puts {
-    fn max_bytes(&self) -> u64 {
-        MAX_CONTENT_BYTES
-    }
-
-    fn begin(&self, workspace: &str) -> Result<Box<dyn ContentSink>, String> {
-        if !component(workspace) {
-            return Err("this workspace name keeps no content".into());
-        }
-        Ok(Box::new(Upload {
-            shelf: Arc::clone(&self.0),
-            scope: ContentScope {
-                workspace: workspace.to_owned(),
-                app: CONTENT_PUT_SCOPE.to_owned(),
-            },
-            bytes: Vec::new(),
-        }))
-    }
-
-    fn holds(&self, workspace: &str, hash: &str) -> bool {
-        let scope = ContentScope {
-            workspace: workspace.to_owned(),
-            app: CONTENT_PUT_SCOPE.to_owned(),
-        };
-        self.0.store(&scope).is_none_or(|store| store.has(hash))
-    }
-}
-
-/// One upload an app is still sending.
-struct Upload {
-    shelf: Arc<Shelf>,
-    scope: ContentScope,
-    bytes: Vec<u8>,
-}
-
-impl ContentSink for Upload {
-    fn append(&mut self, bytes: &[u8]) -> Result<(), String> {
-        if self.bytes.len().saturating_add(bytes.len()) as u64 > MAX_CONTENT_BYTES {
-            return Err("content is larger than a record may reference".into());
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(())
-    }
-
-    fn finish(self: Box<Self>) -> Result<(String, u64), String> {
-        let Self {
-            shelf,
-            scope,
-            bytes,
-        } = *self;
-        let hash = hash_bytes(&bytes);
-        shelf.keep(&scope, &hash, &bytes)?;
-        let len = bytes.len() as u64;
-        Ok((hash, len))
     }
 }
 

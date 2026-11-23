@@ -1,26 +1,21 @@
-//! Which API server `tilo keys create` and `tilo keys export` ask for a key: the one named, else
-//! the one of the site this computer logged in with.
+//! Which API server `tilo keys create` and `tilo keys export` ask for a key: the one of the site
+//! this computer logged in with.
 
 use anyhow::{Result, bail};
 use serde_json::Value;
 
 use super::{MAX_ANSWER, text};
-use crate::api;
 
-/// Where a key is asked for: the API server `--api` or `TILO_API_URL` names, else the one of the
-/// site this computer logged in with, as that site names it, and tilo.sh's only for a computer
-/// that logged in nowhere else. A computer logged in elsewhere is never sent to production
-/// unasked: where its site names no API server, it is told to name one.
-pub(super) async fn key_api(named: Option<&str>) -> Result<String> {
-    let named = named
-        .map(str::to_owned)
-        .or_else(|| std::env::var(api::API_URL_ENV).ok())
-        .filter(|api| !api.trim().is_empty());
-    if let Some(api) = named {
-        return Ok(api.trim_end_matches('/').to_owned());
-    }
+/// tilo.sh's API server, where a computer that logged in nowhere else asks for a key.
+const DEFAULT_API_URL: &str = "https://mcp.tilo.sh";
+
+/// Where a key is asked for: the API server of the site this computer logged in with, as that
+/// site names it, and tilo.sh's only for a computer that logged in nowhere else. A computer
+/// logged in elsewhere is never sent to production unasked: where its site names no API server,
+/// it is told to make a key of the workspace's own instead.
+pub(super) async fn key_api() -> Result<String> {
     let Some(device) = crate::login::home() else {
-        return Ok(api::DEFAULT_API_URL.to_owned());
+        return Ok(DEFAULT_API_URL.to_owned());
     };
     if device.server_address.is_some() {
         return api_of_site(&device.site, None, true);
@@ -57,18 +52,16 @@ fn api_of_site(site: &str, named: Option<&str>, over_iroh: bool) -> Result<Strin
     if over_iroh {
         bail!(
             "This computer joined a workspace on a server reached over iroh, which has no API \
-             server it names for keys. Name the one to ask with --api or {} (a local stack's: \
-             `stack.sh env`).",
-            api::API_URL_ENV
+             server it names for keys: `tilo keys mint -w <workspace>` makes a key of the \
+             workspace's own."
         );
     }
     if site == crate::login::DEFAULT_SITE {
-        return Ok(api::DEFAULT_API_URL.to_owned());
+        return Ok(DEFAULT_API_URL.to_owned());
     }
     bail!(
-        "This computer is logged in with {site}, which names no API server for keys. Name the one \
-         to ask with --api or {} (a local stack's: `stack.sh env`).",
-        api::API_URL_ENV
+        "This computer is logged in with {site}, which names no API server for keys: `tilo keys \
+         mint -w <workspace>` makes a key of the workspace's own."
     )
 }
 
@@ -125,14 +118,14 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            unnamed.contains("http://tilo.localhost:33720") && unnamed.contains("TILO_API_URL"),
+            unnamed.contains("http://tilo.localhost:33720") && unnamed.contains("tilo keys mint"),
             "{unnamed}"
         );
         assert!(!unnamed.contains("tilo.sh/"), "{unnamed}");
         let iroh = super::api_of_site("https://tilo.sh/", None, true)
             .unwrap_err()
             .to_string();
-        assert!(iroh.contains("TILO_API_URL"), "{iroh}");
+        assert!(iroh.contains("tilo keys mint"), "{iroh}");
     }
 
     /// `tilo keys revoke` takes a key by its grant or by its name as `tilo keys ls` lists it, and

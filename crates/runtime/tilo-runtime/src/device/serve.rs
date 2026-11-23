@@ -99,6 +99,78 @@ impl Socket {
     }
 }
 
+/// What takes an agent's connection, with what was read of it already.
+type Taker = Arc<dyn Fn(UnixStream, Vec<u8>) + Send + Sync>;
+
+/// How long an agent's connection waits for the person's part of the daemon to take it.
+const TAKEN_WITHIN: Duration = Duration::from_secs(30);
+
+/// Where the daemon's native endpoint hands agents' connections
+/// ([`tilo_api::daemon::AGENT_LINE`]): to the person's part of the daemon while it runs.
+#[derive(Clone, Default)]
+pub(crate) struct Agents(Arc<(std::sync::Mutex<Option<Taker>>, std::sync::Condvar)>);
+
+impl Agents {
+    /// Hand `stream`, of which `read` was read already, to the person's part, waiting for it to
+    /// start; one that none takes in time is told why and closed.
+    pub(crate) fn take(&self, stream: UnixStream, read: Vec<u8>) {
+        let (slot, started) = &*self.0;
+        let deadline = Instant::now()
+            .checked_add(TAKEN_WITHIN)
+            .unwrap_or_else(Instant::now);
+        let mut taking = slot.lock_recover();
+        let taker = loop {
+            if let Some(taker) = taking.as_ref() {
+                break Arc::clone(taker);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                drop(taking);
+                refuse(
+                    &stream,
+                    "this computer's Tilo has not started its person's part yet: run `tilo \
+                     status` to see how it stands, then try again",
+                );
+                return;
+            }
+            taking = started
+                .wait_timeout(taking, left)
+                .map_or_else(|poisoned| poisoned.into_inner().0, |(taking, _)| taking);
+        };
+        drop(taking);
+        taker(stream, read);
+    }
+
+    /// Hand every agent's connection to `taker` from now on.
+    fn serve(&self, taker: Taker) {
+        *self.0.0.lock_recover() = Some(taker);
+        self.0.1.notify_all();
+    }
+
+    /// Hand no more connections to the person's part that ends.
+    fn withdraw(&self) {
+        *self.0.0.lock_recover() = None;
+    }
+
+    /// An agent's connection, handed over as the native endpoint hands one: waits for the
+    /// person's part to take it.
+    #[cfg(test)]
+    fn connect(&self) -> UnixStream {
+        let (agent, served) = UnixStream::pair().unwrap();
+        self.take(served, Vec::new());
+        agent
+    }
+}
+
+/// Tell the agent at `stream` why it is not served, as a JSON-RPC error that names no request.
+pub(crate) fn refuse(stream: &UnixStream, why: &str) {
+    use std::io::Write as _;
+    let refusal = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32000, "message": why}});
+    let mut writing = stream;
+    let _ = writing.set_write_timeout(Some(Duration::from_secs(1)));
+    let _ = writeln!(writing, "{refusal}");
+}
+
 /// Take the lock that makes this process the device's one daemon, as [`take_lock`] does.
 ///
 /// # Errors
@@ -271,7 +343,8 @@ async fn serve_device(
     stop: &Stop,
 ) -> Result<super::Ended> {
     let socket = Socket::new(daemon)?;
-    let mut accepting = listen(place, &socket)?;
+    // Agents' connections reach the native endpoint, which hands them here from now on.
+    daemon.agents().serve(taking(Arc::clone(&socket)));
     super::serving(Some(Arc::clone(&socket.presence)));
     tokio::spawn(keep_peer(Arc::clone(daemon), home, place.device_dir()));
     let mut ended = ending(STOPPED_WITHIN)?;
@@ -299,124 +372,49 @@ async fn serve_device(
         () = stop.heard() => ("it was told to stop".to_owned(), super::Ended::Stopped),
     };
     tracing::error!("this daemon's person's part ends: {why}");
-    // No connection from here on: the socket is shut down rather than left queuing clients that
-    // would be told a daemon is there by the kernel and wait in vain for it.
-    accepting.stop();
+    // No agent's connection is handed here from now on: one that comes waits for the person's
+    // part that starts next, or is told why it is not served.
+    daemon.agents().withdraw();
     super::serving(None);
     if let Some(peer) = peer() {
         // Unmounting and keeping the trees wait for the mounts' and trees' own steps, which
         // cannot be interrupted; both are bounded, so a stop ends inside the unit's timeout.
         peer.stop(STOPPING).await;
     }
-    let _ = std::fs::remove_file(place.socket());
-    let _ = std::fs::remove_file(place.api());
     socket.presence.close().await;
     Ok(held)
 }
 
-/// Listen at `place`: `socket` for agents and the daemon's own requests, and Tilo's API as this
-/// computer's device beside it.
-///
-/// # Errors
-/// Either cannot be listened at.
-fn listen(place: &DaemonPlace, socket: &Arc<Socket>) -> Result<Accepting> {
-    // Replaces a socket left by a daemon that ended without removing it.
-    let listener = tilo_files::native::private::bind_socket(place.socket())
-        .with_context(|| format!("listen at {}", place.socket().display()))?;
-    std::fs::set_permissions(
-        place.socket(),
-        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(place.socket_mode()),
-    )?;
-    serve_api(place, socket.presence.api())?;
-    Ok(accepting(listener, Arc::clone(socket))?)
-}
-
-/// The thread that takes connections: on one of its own, so a client asking (a person's `tilo
-/// status`, an agent's `tilo mcp`) is taken the moment it does, however busy the runtime that
-/// answers it is with another client's work.
-struct Accepting {
-    /// A duplicate of the listening socket: shutting it down wakes the thread's accept.
-    socket: std::os::unix::net::UnixListener,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Accepting {
-    fn stop(&mut self) {
-        let _ = rustix::net::shutdown(&self.socket, rustix::net::Shutdown::Both);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
-impl Drop for Accepting {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
-/// Take the connections at `listener` on a thread of its own, serving each on one of its own.
-fn accepting(
-    listener: std::os::unix::net::UnixListener,
-    socket: Arc<Socket>,
-) -> std::io::Result<Accepting> {
-    let listening = listener.try_clone()?;
+/// What takes each agent's connection the native endpoint hands over: its first request is read
+/// on a thread of its own, so a person's `tilo status` is answered there whether or not the
+/// runtime's workers are free.
+fn taking(socket: Arc<Socket>) -> Taker {
     let runtime = tokio::runtime::Handle::current();
-    let thread = std::thread::Builder::new()
-        .name("tilo-accept".to_owned())
-        .spawn(move || {
-            loop {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        if !admitted(&stream) {
-                            continue;
-                        }
-                        let (socket, runtime) = (Arc::clone(&socket), runtime.clone());
-                        // Its first request is read on a thread of its own: `tilo status` is
-                        // answered there whether or not the runtime's workers are free.
-                        let started = std::thread::Builder::new()
-                            .name("tilo-connection".to_owned())
-                            .spawn(move || first_request(stream, &socket, &runtime));
-                        if let Err(error) = started {
-                            tracing::warn!(%error, "a connection to this daemon could not be served");
-                        }
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                    // The daemon stopped listening: the socket was shut down.
-                    Err(_) => break,
-                }
-            }
-        })?;
-    Ok(Accepting {
-        socket: listening,
-        thread: Some(thread),
+    Arc::new(move |stream, read| {
+        let (socket, runtime) = (Arc::clone(&socket), runtime.clone());
+        let started = std::thread::Builder::new()
+            .name("tilo-connection".to_owned())
+            .spawn(move || first_request(stream, read, &socket, &runtime));
+        if let Err(error) = started {
+            tracing::warn!(%error, "a connection to this daemon could not be served");
+        }
     })
 }
 
-/// Whether the account at the other end of `stream` is one this daemon serves
-/// ([`tilo_api::daemon::admission`]); one it does not is told why, and closed.
-fn admitted(stream: &UnixStream) -> bool {
-    use std::io::Write as _;
-    let admission = tilo_api::daemon::admission::here(|| rustix::process::geteuid().as_raw());
-    let served = crate::seats::peer_uid(stream).is_ok_and(|uid| admission.admit(uid).served());
-    if !served {
-        let refusal = json!({"jsonrpc": "2.0", "id": null,
-            "error": {"code": -32000, "message": tilo_api::daemon::admission::NOT_SIGNED_IN}});
-        let mut writing = stream;
-        let _ = writeln!(writing, "{refusal}");
-    }
-    served
-}
-
-/// Serve `stream`, a connection [`accepting`] took: its first request is read here, and one
+/// Serve `stream`, a connection [`taking`] took with `read` read of it already: its first request is read here, and one
 /// asking how the peer stands ([`PEER_STATUS`]) is answered here; any other is an agent's, served by `socket`'s agents'
 /// endpoint from there on.
-fn first_request(stream: UnixStream, socket: &Socket, runtime: &tokio::runtime::Handle) {
-    use std::io::{BufRead as _, Write as _};
+fn first_request(
+    stream: UnixStream,
+    read: Vec<u8>,
+    socket: &Socket,
+    runtime: &tokio::runtime::Handle,
+) {
+    use std::io::{BufRead as _, Read as _, Write as _};
     let Ok(reading) = stream.try_clone() else {
         return;
     };
-    let mut reader = std::io::BufReader::new(reading);
+    let mut reader = std::io::BufReader::new(std::io::Cursor::new(read).chain(reading));
     let mut first = String::new();
     if reader.read_line(&mut first).unwrap_or(0) == 0 {
         return;
@@ -583,24 +581,6 @@ impl Drop for Watching {
     fn drop(&mut self) {
         self.0.store(true, std::sync::atomic::Ordering::Relaxed);
     }
-}
-
-/// Serve Tilo's API at `place` as this computer's device, `api`: every workspace command of this
-/// login (`tilo do`, `ls`, `read`, `workspace`, `keys`) is a call here, answered by the daemon's
-/// own workspaces, rather than a session of its own that would cut the device's off at the
-/// server.
-fn serve_api(place: &DaemonPlace, api: Arc<tilo_api::direct::Direct>) -> Result<()> {
-    let listener = tilo_files::native::private::bind_socket(place.api())
-        .and_then(tilo_files::native::socket::tokio::listener)
-        .with_context(|| format!("listen at {}", place.api().display()))?;
-    std::fs::set_permissions(
-        place.api(),
-        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(place.socket_mode()),
-    )?;
-    tokio::spawn(tilo_api::direct::serve_current(listener, move || {
-        std::future::ready(Ok(Arc::clone(&api)))
-    }));
-    Ok(())
 }
 
 /// How long a daemon told to stop takes at most to end: every wait of its stop together (the
@@ -770,8 +750,8 @@ mod tests {
     }
 
     impl Agent {
-        fn connect(place: &DaemonPlace) -> Self {
-            let writing = UnixStream::connect(place.socket()).unwrap();
+        fn connect(agents: &Agents) -> Self {
+            let writing = agents.connect();
             writing
                 .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
@@ -834,14 +814,13 @@ mod tests {
         };
         let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
         let runtime = bridge_runtime().unwrap();
-        let place = daemon.place().clone();
-        let (socket, accepting) = runtime.block_on(async {
+        let socket = runtime.block_on(async {
             let socket = Socket::new(&daemon).unwrap();
-            let accepting = listen(&place, &socket).unwrap();
-            (socket, accepting)
+            daemon.agents().serve(taking(Arc::clone(&socket)));
+            socket
         });
 
-        let mut first = Agent::connect(&place);
+        let mut first = Agent::connect(daemon.agents());
         let tools = first.ask("tools/list", &json!({}));
         assert!(
             tools["tools"]
@@ -858,15 +837,14 @@ mod tests {
         assert!(!failed, "{workspaces}");
         assert!(workspaces.contains(daemon.workspace()), "{workspaces}");
 
-        let mut second = Agent::connect(&place);
+        let mut second = Agent::connect(daemon.agents());
         assert_ne!(first.run, second.run, "each connection is a run of its own");
         let (listed, failed) = second.tool("tilo_ls", &json!({"path": ""}));
         assert!(!failed && listed.contains("devices"), "{listed}");
 
-        drop((first, second, accepting));
+        drop((first, second));
+        daemon.agents().withdraw();
         runtime.block_on(socket.presence.close());
-        let _ = std::fs::remove_file(place.socket());
-        let _ = std::fs::remove_file(place.api());
     }
 
     /// A stop ends by itself inside the user service's timeout: every wait it makes, added

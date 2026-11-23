@@ -17084,7 +17084,6 @@ dependencies = [
  "unicode-normalization",
  "url",
  "uuid",
- "wire-frame",
  "workspace-hack",
 ]
 

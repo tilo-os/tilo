@@ -1,14 +1,12 @@
 //! Hosted workspaces from a shell: `tilo keys`, `tilo workspace`,
 //! `tilo do -w`, `tilo files` and `tilo run`.
 //!
-//! Each command is one call of Tilo's API (`/v1`, `docs/developers/api.md`),
-//! made by [`crate::api::Client`]: a workspace and its people, keys, programs
-//! and files are routes there, and an action is `POST
-//! …/resources/{path}/actions/{action}` with its arguments as the body. The
-//! key is `TILO_API_KEY` (at the server `--api` or `TILO_API_URL` names), a
-//! key file `--key-file` names, or, when this computer logged in (`tilo
-//! login`), its own device: each command a call to the process holding that
-//! device's one session, which a second session would cut off.
+//! Each command is a call of Tilo's actions ([`crate::api::Calls`]), as the
+//! agent surface's tools make it: a workspace and its people, keys, programs
+//! and files are actions there. The caller is a key file `--key-file` (or
+//! `TILO_KEY_FILE`) names, or, when this computer logged in (`tilo login`), its
+//! own device: each command a call to this computer's daemon, which keeps that
+//! device's one session, since a second session would cut it off.
 //!
 //! `tilo keys create` is the one command that asks the person: it waits at
 //! the API server's own key page until they approve one in their Tilo.
@@ -21,10 +19,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use crate::api::{self, Client, Reach};
+use crate::api::{self, Calls, Reach};
 use tilo_api::v1::lines;
 
 mod key_api;
+
+/// Where Tilo's SDKs read their key: what `tilo keys create` answers is set there.
+const SDK_KEY_ENV: &str = "TILO_API_KEY";
 
 const MAX_ANSWER: usize = 64 * 1024 * 1024;
 
@@ -397,6 +398,12 @@ pub(crate) fn run(future: impl std::future::Future<Output = Result<ExitCode>>) -
     }
 }
 
+/// The actions `reach` names: a key file's own session, else this computer's daemon, started
+/// when none is up.
+async fn open(reach: Reach<'_>) -> Result<Calls> {
+    Calls::open_with(reach, crate::mcp::reach_daemon).await
+}
+
 fn text<'a>(value: &'a Value, name: &str) -> &'a str {
     value.get(name).and_then(Value::as_str).unwrap_or_default()
 }
@@ -427,7 +434,7 @@ fn label_of(label: &str) -> Result<(String, String), String> {
 pub fn act(reach: Reach<'_>, workspace: &str, path: &str, args: &[String]) -> ExitCode {
     crate::log_to_stderr(tracing_subscriber::filter::LevelFilter::OFF);
     let acting = async {
-        let client = Client::open(reach)?;
+        let client = open(reach).await?;
         let Some((resource, action)) = path.rsplit_once('#') else {
             bail!("{path:?} names no action: write it as app/resource#action, like notes#open");
         };
@@ -459,20 +466,9 @@ pub fn act(reach: Reach<'_>, workspace: &str, path: &str, args: &[String]) -> Ex
 /// agent read the same text, and `cursor` reads on from where a page ended.
 pub fn ls(reach: Reach<'_>, workspace: &str, path: Option<&str>, cursor: Option<&str>) -> ExitCode {
     run(async {
-        let client = Client::open(reach)?;
+        let client = open(reach).await?;
         let workspace = client.workspace_id(workspace).await?;
-        let mut query = Vec::new();
-        if let Some(path) = path.map(str::trim).filter(|path| !path.is_empty()) {
-            query.push(format!("path={}", api::encode_query(path)));
-        }
-        if let Some(cursor) = cursor.map(str::trim).filter(|cursor| !cursor.is_empty()) {
-            query.push(format!("cursor={}", api::encode_query(cursor)));
-        }
-        let mut route = format!("/v1/workspaces/{workspace}/resources");
-        if !query.is_empty() {
-            let _ = write!(route, "?{}", query.join("&"));
-        }
-        let listed = client.get(&route).await?;
+        let listed = client.list(&workspace, path, cursor).await?;
         Ok(show(reach.json, &listed, &lines::listing(&listed)))
     })
 }
@@ -480,16 +476,9 @@ pub fn ls(reach: Reach<'_>, workspace: &str, path: Option<&str>, cursor: Option<
 /// `tilo read <path> -w <workspace>`: one resource, as `tilo_read` reads it.
 pub fn read(reach: Reach<'_>, workspace: &str, path: &str, cursor: Option<&str>) -> ExitCode {
     run(async {
-        let client = Client::open(reach)?;
+        let client = open(reach).await?;
         let workspace = client.workspace_id(workspace).await?;
-        let mut route = format!(
-            "/v1/workspaces/{workspace}/resources/{}",
-            api::encode_path(path.trim())
-        );
-        if let Some(cursor) = cursor.map(str::trim).filter(|cursor| !cursor.is_empty()) {
-            let _ = write!(route, "?cursor={}", api::encode_query(cursor));
-        }
-        let read = client.get(&route).await?;
+        let read = client.read(&workspace, path.trim(), cursor).await?;
         Ok(show(reach.json, &read, &lines::resource(&read)))
     })
 }
@@ -504,7 +493,7 @@ pub fn invocations(
     cursor: Option<&str>,
 ) -> ExitCode {
     run(async {
-        let client = Client::open(reach)?;
+        let client = open(reach).await?;
         let workspace = client.workspace_id(workspace).await?;
         let mut arguments = serde_json::Map::new();
         if let Some(limit) = limit {
@@ -588,16 +577,11 @@ pub fn view(
     picture: Option<&std::path::Path>,
 ) -> ExitCode {
     run(async {
-        let client = Client::open(reach)?;
+        let client = open(reach).await?;
         let workspace = client.workspace_id(workspace).await?;
-        let mut route = format!(
-            "/v1/workspaces/{workspace}/views?path={}",
-            api::encode_query(path.trim())
-        );
-        if picture.is_some() {
-            route.push_str("&picture=true");
-        }
-        let view = client.get(&route).await?;
+        let view = client
+            .view(&workspace, path.trim(), picture.is_some())
+            .await?;
         let mut said = text(&view, "text").to_owned();
         if let (Some(file), Some(content)) = (picture, view.get("picture").and_then(Value::as_str))
         {
@@ -616,7 +600,7 @@ pub fn view(
 /// for undo.
 pub fn program(reach: Reach<'_>, workspace: &str, file: &Path) -> ExitCode {
     run(async {
-        let client = Client::open(reach)?;
+        let client = open(reach).await?;
         let source =
             std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
         let workspace = client.workspace_id(workspace).await?;
@@ -660,23 +644,15 @@ fn program_text(answer: &Value) -> String {
 /// `surface.toml`, as the workspace's own read of the app answers it
 /// (`tilo sdk gen -w`).
 pub fn surfaces(reach: Reach<'_>, workspace: &str) -> Result<Vec<crate::sdk::App>> {
-    let client = Client::open(reach)?;
-    runtime()?.block_on(read_surfaces(&client, workspace))
+    runtime()?.block_on(async { read_surfaces(&open(reach).await?, workspace).await })
 }
 
-async fn read_surfaces(client: &Client, workspace: &str) -> Result<Vec<crate::sdk::App>> {
+async fn read_surfaces(client: &Calls, workspace: &str) -> Result<Vec<crate::sdk::App>> {
     let workspace = client.workspace_id(workspace).await?;
     let mut apps = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
-        let path = match &cursor {
-            Some(cursor) => format!(
-                "/v1/workspaces/{workspace}/resources?cursor={}",
-                percent_encoding::utf8_percent_encode(cursor, percent_encoding::NON_ALPHANUMERIC)
-            ),
-            None => format!("/v1/workspaces/{workspace}/resources"),
-        };
-        let listing = client.get(&path).await?;
+        let listing = client.list(&workspace, None, cursor.as_deref()).await?;
         for row in listing
             .get("rows")
             .and_then(Value::as_array)
@@ -689,13 +665,7 @@ async fn read_surfaces(client: &Client, workspace: &str) -> Result<Vec<crate::sd
             let Some(path) = row.get("path").and_then(Value::as_str) else {
                 continue;
             };
-            let read = match client
-                .get(&format!(
-                    "/v1/workspaces/{workspace}/resources/{}",
-                    api::encode_path(path)
-                ))
-                .await
-            {
+            let read = match client.read(&workspace, path, None).await {
                 Ok(read) => read,
                 Err(error) => {
                     // One app the workspace could not answer for is named, and
@@ -753,7 +723,7 @@ pub fn workspace(reach: Reach<'_>, workspace: Option<&str>, cmd: WorkspaceCmd) -
 /// them.
 fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
     run(async {
-        let client = Client::open(reach)?;
+        let client = open(reach).await?;
         match cmd {
             WorkspaceCmd::Ls { labels } => list_workspaces(&client, reach.json, &labels).await,
             WorkspaceCmd::Create { name, labels } => {
@@ -851,7 +821,7 @@ fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
 /// `tilo workspace ls [--label NAME=VALUE]`: the workspaces the key reaches,
 /// those labelled so when labels are named.
 async fn list_workspaces(
-    client: &Client,
+    client: &Calls,
     json: bool,
     labels: &[(String, String)],
 ) -> Result<ExitCode> {
@@ -871,7 +841,7 @@ async fn list_workspaces(
 
 /// `tilo workspace unattended <workspace> [--off]`: held while the
 /// person decides on their approving device, and said as it stands then.
-async fn unattended(client: &Client, json: bool, named: &str, off: bool) -> Result<ExitCode> {
+async fn unattended(client: &Calls, json: bool, named: &str, off: bool) -> Result<ExitCode> {
     let id = client.workspace_id(named).await?;
     let answer = client
         .act(
@@ -901,7 +871,7 @@ async fn unattended(client: &Client, json: bool, named: &str, off: bool) -> Resu
 /// `tilo files …`.
 pub fn files(reach: Reach<'_>, workspace: &str, cmd: FilesCmd) -> ExitCode {
     run(async {
-        let client = Client::open(reach)?;
+        let client = open(reach).await?;
         let workspace = client.workspace_id(workspace).await?;
         match cmd {
             FilesCmd::Put { paths, to, store } => {
@@ -932,7 +902,7 @@ pub(crate) struct Uploading {
 /// Upload `paths` into `workspace`'s file tree, in the folder `to` when one
 /// is named, and print where each file is there.
 async fn put_files(
-    client: &Client,
+    client: &Calls,
     workspace: &str,
     paths: &[PathBuf],
     to: Option<&str>,
@@ -1065,8 +1035,6 @@ fn files_under(path: &Path) -> Result<Vec<Uploading>> {
     Ok(found)
 }
 
-/// How many files go up at once.
-const UPLOADS_AT_ONCE: usize = 32;
 /// How many files one action puts into the workspace's tree: a folder larger
 /// than this goes in more runs, each answered within the peer's half minute,
 /// whatever a loaded disk makes a node cost.
@@ -1082,196 +1050,37 @@ const TREE_SAVE_WAIT_SECONDS: u64 = 10;
 /// How many follows of one put's save, at most.
 const TREE_SAVE_FOLLOWS: usize = 30;
 
-/// The most raw bytes one many-files call carries: under the 1 MiB request
-/// and session frame bounds once base64 and hex grow them.
-const MANY_BYTES: usize = 512 * 1024;
-/// How many many-files calls go at once. A workspace answers them one after
-/// another, so more in flight only queue: the oldest waits a step for every
-/// call ahead of it, and the peer gives up on one that waits half a minute.
-const CONTENTS_AT_ONCE: usize = 4;
-/// How many content hashes one call asks the workspace about: a small body,
-/// and the session asks the store in [`MAX_HAVE_HASHES`]-sized steps.
-const HAVE_HASHES: usize = 2_000;
-
 /// `file`'s length, as the disk says it.
 fn file_size(file: &Uploading) -> u64 {
     std::fs::metadata(&file.path).map_or(0, |meta| meta.len())
 }
 
-/// The address `file`'s bytes keep in the workspace, lowercase BLAKE3 hex: what
-/// the upload would answer, read here so content already kept is not sent again.
-fn hash_of(file: &Uploading) -> Result<String> {
-    use std::io::Read as _;
-    let mut opened = std::fs::File::open(&file.path)
-        .with_context(|| format!("reading {}", file.path.display()))?;
-    let mut hasher = blake3::Hasher::new();
-    let mut piece = vec![0_u8; 256 * 1024];
-    loop {
-        let read = match opened.read(&mut piece) {
-            Ok(0) => break,
-            Ok(read) => read,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error) => {
-                return Err(error).with_context(|| format!("reading {}", file.path.display()));
-            }
-        };
-        hasher.update(piece.get(..read).unwrap_or_default());
-    }
-    Ok(hasher.finalize().to_hex().to_string())
-}
-
-/// Upload `files`: what the workspace already holds is named without going up
-/// again, small files go many to a call, and a file larger than one call goes
-/// in pieces a few at a time. Tells a person at a terminal how far it is, and
-/// answers each with the `tilo.content:` reference it is kept by, in name
-/// order.
+/// Upload `files`, sending none the workspace already holds ([`Calls::put_files`]). Tells a
+/// person at a terminal how far it is, and answers each with the `tilo.content:` reference it is
+/// kept by, in name order.
 pub(crate) async fn upload_all(
-    client: &Client,
+    client: &Calls,
     workspace: &str,
     files: Vec<Uploading>,
 ) -> Result<Vec<(Uploading, String)>> {
-    use futures_util::StreamExt as _;
-    let count = files.len();
     let total: u64 = files.iter().map(file_size).sum();
     let name = match files.as_slice() {
         [one] => one.name.clone(),
-        _ => format!("{count} files"),
+        _ => format!("{} files", files.len()),
     };
     let mut progress = Progress::new(&name);
     progress.told(0, total);
-    // What the workspace already holds needs no upload.
-    let hashes: Vec<String> = files.iter().map(hash_of).collect::<Result<_>>()?;
-    let held = held_of(client, workspace, &hashes).await?;
-    let mut contents: Vec<Option<String>> = (0..count).map(|_| None).collect();
-    let (mut done, smalls, larges) = plan(&files, &held, &hashes, &mut contents);
-    progress.told(done.min(total), total);
-    // Small files go many to a call, a few calls at a time.
-    let mut sending = futures_util::stream::iter(smalls)
-        .map(|group| async {
-            let mut batch = Vec::with_capacity(group.len());
-            for index in &group {
-                let file = files
-                    .get(*index)
-                    .ok_or_else(|| anyhow!("a file went missing"))?;
-                batch.push(
-                    std::fs::read(&file.path)
-                        .with_context(|| format!("reading {}", file.path.display()))?,
-                );
-            }
-            let refs = client
-                .put_contents(workspace, &batch)
-                .await
-                .context("storing the files")?;
-            anyhow::Ok((group, refs))
-        })
-        .buffer_unordered(CONTENTS_AT_ONCE);
-    while let Some(sent) = sending.next().await {
-        let (group, refs) = sent?;
-        for (index, content) in group.into_iter().zip(refs) {
-            if let Some(kept) = contents.get_mut(index) {
-                *kept = Some(content);
-            }
-            if let Some(file) = files.get(index) {
-                done = done.saturating_add(file_size(file));
-            }
-            progress.told(done.min(total), total);
-        }
-    }
-    // A file larger than one many-files call goes up in pieces, a few at a time.
-    let listing = &files;
-    let mut big = futures_util::stream::iter(larges)
-        .map(|index| {
-            let files = listing;
-            async move {
-                let file = files
-                    .get(index)
-                    .ok_or_else(|| anyhow!("a file went missing"))?;
-                let put = client
-                    .upload_file(workspace, &file.path, &mut |_, _| {})
-                    .await
-                    .with_context(|| format!("uploading {}", file.name))?;
-                anyhow::Ok((index, text(&put, "content").to_owned(), file_size(file)))
-            }
-        })
-        .buffer_unordered(UPLOADS_AT_ONCE);
-    while let Some(sent) = big.next().await {
-        let (index, content, len) = sent?;
-        if let Some(kept) = contents.get_mut(index) {
-            *kept = Some(content);
-        }
-        done = done.saturating_add(len);
-        progress.told(done.min(total), total);
-    }
-    progress.done();
-    drop(sending);
-    drop(big);
-    files
-        .into_iter()
-        .zip(contents)
-        .map(|(file, content)| {
-            let content = content
-                .ok_or_else(|| anyhow!("no content reference was answered for {}", file.name))?;
-            Ok((file, content))
-        })
-        .collect()
-}
-
-/// What of `files` goes up how: the bytes the workspace holds already, whose
-/// references are put in `contents`; the small files grouped many to a call;
-/// and the files too large for one.
-fn plan(
-    files: &[Uploading],
-    held: &[bool],
-    hashes: &[String],
-    contents: &mut [Option<String>],
-) -> (u64, Vec<Vec<usize>>, Vec<usize>) {
+    let paths: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
     let mut done = 0_u64;
-    let mut smalls: Vec<Vec<usize>> = Vec::new();
-    let mut larges: Vec<usize> = Vec::new();
-    let mut group: Vec<usize> = Vec::new();
-    let mut group_bytes = 0_usize;
-    for (index, file) in files.iter().enumerate() {
-        if held.get(index).copied().unwrap_or(false) {
-            if let (Some(kept), Some(hash)) = (contents.get_mut(index), hashes.get(index)) {
-                *kept = Some(format!("tilo.content:{hash}"));
-            }
-            done = done.saturating_add(file_size(file));
-            continue;
-        }
-        let len = usize::try_from(file_size(file)).unwrap_or(usize::MAX);
-        if len > MANY_BYTES {
-            larges.push(index);
-        } else {
-            if group_bytes.saturating_add(len) > MANY_BYTES && !group.is_empty() {
-                smalls.push(std::mem::take(&mut group));
-                group_bytes = 0;
-            }
-            group_bytes = group_bytes.saturating_add(len);
-            group.push(index);
-        }
-    }
-    if !group.is_empty() {
-        smalls.push(group);
-    }
-    (done, smalls, larges)
-}
-
-/// Which of the files hashed `hashes` the workspace holds already, in order.
-async fn held_of(client: &Client, workspace: &str, hashes: &[String]) -> Result<Vec<bool>> {
-    let mut held = vec![false; hashes.len()];
-    for (at, asks) in hashes.chunks(HAVE_HASHES).enumerate() {
-        let answered = client
-            .have_contents(workspace, asks)
-            .await
-            .context("asking which files the workspace already holds")?;
-        for (offset, present) in answered.into_iter().enumerate() {
-            let index = at.saturating_mul(HAVE_HASHES).saturating_add(offset);
-            if let Some(held_here) = held.get_mut(index) {
-                *held_here = present;
-            }
-        }
-    }
-    Ok(held)
+    let contents = client
+        .put_files(workspace, &paths, &mut |bytes| {
+            done = done.saturating_add(bytes);
+            progress.told(done.min(total), total);
+        })
+        .await
+        .context("storing the files")?;
+    progress.done();
+    Ok(files.into_iter().zip(contents).collect())
 }
 
 /// `uploaded` in as few batches as the workspace takes: each a whole run and
@@ -1333,7 +1142,7 @@ fn folder_of(file: &Uploading, to: Option<&str>) -> String {
 /// up as content of its own, so the open carries one reference however many
 /// files it puts in the tree: one invocation, one History entry.
 async fn put_in_tree(
-    client: &Client,
+    client: &Calls,
     workspace: &str,
     files: &[&(Uploading, String)],
     to: Option<&str>,
@@ -1398,7 +1207,7 @@ async fn put_in_tree(
 /// `answer` of a put, held while it is still saving what it wrote: the invocation followed
 /// until it is done, refused or answered as failed. A put that never finishes is a failure, not
 /// a success: the files it names are not in the workspace.
-async fn followed(client: &Client, workspace: &str, mut answer: Value) -> Result<Value> {
+async fn followed(client: &Calls, workspace: &str, mut answer: Value) -> Result<Value> {
     for _ in 0..TREE_SAVE_FOLLOWS {
         if answer.get("status").and_then(Value::as_str) != Some("pending") {
             return Ok(answer);
@@ -1507,7 +1316,7 @@ fn bytes(count: u64) -> String {
     reason = "the file or the terminal is this command's own, written on its one thread"
 )]
 async fn get_content(
-    client: &Client,
+    client: &Calls,
     workspace: &str,
     content: &str,
     output: Option<&Path>,
@@ -1555,7 +1364,7 @@ const PEOPLE: &str = "workspace/members";
 /// `workspace/waiting` actions.
 fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
     run(async {
-        let client = Client::open(reach)?;
+        let client = open(reach).await?;
         let workspace = client.workspace_id(workspace).await?;
         let act = |path: String, action: &'static str, args: Value| {
             let (client, workspace) = (&client, &workspace);
@@ -1721,7 +1530,7 @@ fn waiting_text(listed: &Value) -> String {
 /// actions.
 fn servers(reach: Reach<'_>, workspace: &str, cmd: ServersCmd) -> ExitCode {
     run(async {
-        let client = Client::open(reach)?;
+        let client = open(reach).await?;
         let workspace = client.workspace_id(workspace).await?;
         let (action, args) = match cmd {
             ServersCmd::Ls => ("list", json!({})),
@@ -1796,7 +1605,7 @@ async fn key_workspace(reach: Reach<'_>, workspace: Option<&str>) -> Result<Opti
     match workspace {
         None => Ok(None),
         Some(id) if api::is_uuid(id) => Ok(Some(id.to_owned())),
-        Some(named) => Ok(Some(Client::open(reach)?.workspace_id(named).await?)),
+        Some(named) => Ok(Some(open(reach).await?.workspace_id(named).await?)),
     }
 }
 
@@ -1817,7 +1626,6 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
                 no_browser_pages,
             } => {
                 let asked = KeyAsk {
-                    api: reach.api,
                     name: &name,
                     workspace: workspace_id,
                     expires_in,
@@ -1828,7 +1636,7 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
                     println!("{answer}");
                 } else {
                     eprintln!("Approved. Your key (shown once):");
-                    println!("export {}={}", api::KEY_ENV, text(&answer, "key"));
+                    println!("export {SDK_KEY_ENV}={}", text(&answer, "key"));
                 }
                 Ok(ExitCode::SUCCESS)
             }
@@ -1838,7 +1646,6 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
                 expires_in,
             } => {
                 let asked = KeyAsk {
-                    api: reach.api,
                     name: &name,
                     workspace: workspace_id,
                     expires_in,
@@ -1847,7 +1654,8 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
                 export(&asked, &out, reach.json).await
             }
             KeysCmd::Ls => {
-                let listed = Client::open(reach)?
+                let listed = open(reach)
+                    .await?
                     .account("account/keys", "list", &serde_json::json!({}))
                     .await?;
                 Ok(show(reach.json, &listed, &lines::keys(&listed)))
@@ -1856,7 +1664,7 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
                 let Some(named) = workspace else {
                     bail!("name the workspace: -w <name or id>");
                 };
-                let client = Client::open(reach)?;
+                let client = open(reach).await?;
                 let id = client.workspace_id(named).await?;
                 let mut body = serde_json::json!({"workspace": id});
                 if let (Some(fields), Some(name)) = (body.as_object_mut(), name) {
@@ -1877,7 +1685,7 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
 /// `tilo keys revoke KEY`: the key `named` (its grant, or its name as `tilo keys ls` lists it)
 /// revoked, with every key it minted.
 async fn revoke_key(reach: Reach<'_>, named: &str) -> Result<ExitCode> {
-    let client = Client::open(reach)?;
+    let client = open(reach).await?;
     let listed = client
         .account("account/keys", "list", &serde_json::json!({}))
         .await?;
@@ -1948,8 +1756,6 @@ fn write_key_file(path: &Path, file: &tilo_api::direct::KeyFile) -> Result<()> {
 
 /// A key asked of the person: what `tilo keys create` and `tilo keys export` ask for.
 struct KeyAsk<'a> {
-    /// The API server, like `--api`.
-    api: Option<&'a str>,
     /// What will use it, as the grants page names it.
     name: &'a str,
     /// The id of the one workspace it reaches, when not all of them.
@@ -1964,13 +1770,12 @@ struct KeyAsk<'a> {
 /// it prints.
 async fn ask_key(asked: &KeyAsk<'_>) -> Result<Value> {
     let KeyAsk {
-        api,
         name,
         workspace,
         expires_in,
         browser_pages,
     } = *asked;
-    let api = key_api::key_api(api).await?;
+    let api = key_api::key_api().await?;
     let http = tilo_net::Client::new();
     let asked = http
         .post(format!("{api}/keys/new"))
@@ -2050,8 +1855,6 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    const WORKSPACE: &str = "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b";
-
     /// This computer's own key, as `tilo login` kept it, is a key file the API
     /// in process reads: its certificate in the canonical bytes `Direct`
     /// decodes, which is not the postcard the login itself keeps it as.
@@ -2111,7 +1914,6 @@ mod tests {
         // A key file is someone else's key: it names no workspace of its own.
         assert_eq!(
             api::entered_workspace(Reach {
-                api: None,
                 key_file: Some(Path::new("visa.json")),
                 json: false,
             })
@@ -2119,20 +1921,21 @@ mod tests {
             None
         );
 
-        exports_a_key_of_its_own(dir.path(), &root, &cert, &file, &mut env);
+        exports_a_key_of_its_own(dir.path(), &root, &device, &mut env);
     }
 
-    /// `tilo keys export` asks for a new key, as `tilo keys create` does, and writes that one,
-    /// never the device's own (`file`, as the login under `dir` keeps it): the script it is for
-    /// and this computer each hold a key alone.
+    /// `tilo keys export` asks for a new key, as `tilo keys create` does, at the API server the
+    /// login's site names, and writes that one, never the device's own (as the login of `device`
+    /// under `dir` keeps it): the script it is for and this computer each have a key
+    /// alone.
     fn exports_a_key_of_its_own(
         dir: &Path,
         root: &ed25519_dalek::SigningKey,
-        cert: &tilo_user_identity::DeviceCert,
-        file: &tilo_api::direct::KeyFile,
+        device: &crate::login::Device,
         env: &mut tilo_test_env::ScopedEnv,
     ) {
         use std::os::unix::fs::PermissionsExt as _;
+        let cert = &device.cert;
         let now = tilo_clock::unix_now_ns();
         let script = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
         let mut script_cert = cert.clone();
@@ -2145,9 +1948,18 @@ mod tests {
         )
         .unwrap();
         let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let site = Arc::new(std::sync::OnceLock::<String>::new());
         let api_server = test_http::Responder::handle({
-            let asked = Arc::clone(&asked);
+            let (asked, site) = (Arc::clone(&asked), Arc::clone(&site));
             move |request| {
+                if request.target == "/entry.json" {
+                    let named = serde_json::json!({"api": site.get()});
+                    return Some(
+                        test_http::Reply::status(200)
+                            .header("content-type", "application/json")
+                            .body(named.to_string()),
+                    );
+                }
                 asked.lock().unwrap().push(request.target.clone());
                 let body = match request.target.as_str() {
                     "/keys/new" => (
@@ -2168,14 +1980,18 @@ mod tests {
         let nobody = tempfile::tempdir().unwrap();
         env.set("XDG_CONFIG_HOME", nobody.path());
         let out = dir.join("visa.json");
-        let api_url = api_server.url();
-        let reach = Reach {
-            api: Some(&api_url),
-            key_file: None,
-            json: false,
+        let url = api_server.url();
+        site.set(url.clone()).unwrap();
+        // The login's site names the API server keys are asked of.
+        let at_site = crate::login::Device {
+            site: url,
+            ..device.clone()
         };
+        let login = crate::login::Place::here(crate::identity::paths()).unwrap();
+        crate::login::store(&login, &at_site).unwrap();
+        let file = &api::login_key(None).unwrap().expect("still logged in");
         let exported = crate::hosted::keys(
-            reach,
+            Reach::default(),
             None,
             crate::hosted::KeysCmd::Export {
                 name: "Visa backend".into(),
@@ -2201,71 +2017,19 @@ mod tests {
         assert_eq!(written.host, file.host, "it reaches the login's server");
         assert_eq!(written.site, file.site, "an exported key keeps its site");
         tilo_api::direct::Direct::new(&written).unwrap();
-        // It acts as itself; a key file naming the device's own key goes to the held session.
+        // It acts as itself; a key file naming the device's own key acts as this computer.
         let as_file = |path: &Path| {
-            api::held_api_for(Reach {
-                api: None,
+            Reach {
                 key_file: Some(path),
                 json: false,
-            })
+            }
+            .as_device()
             .unwrap()
         };
-        assert_eq!(as_file(&out), None);
+        assert!(!as_file(&out));
         let own = dir.join("own.json");
         std::fs::write(&own, serde_json::to_vec(file).unwrap()).unwrap();
-        assert!(as_file(&own).is_some());
-    }
-
-    /// `-w` names the workspace a new key reaches by its name, as every other command takes it:
-    /// the key page is asked with the id the name is listed under.
-    #[test]
-    fn a_new_key_reaches_the_workspace_its_name_names() {
-        let device = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_STATE_HOME", device.path().join("state"))
-            .set("TILO_IDENTITY_ROOT", device.path().join("identity"))
-            .set(api::KEY_ENV, "tilo_sk_test");
-        let api_server = test_http::Responder::handle(|request: &test_http::Request| {
-            let (status, body) = match (request.method.as_str(), request.target.as_str()) {
-                ("POST", "/v1/resources/account/workspaces/actions/list") => (
-                    200,
-                    serde_json::json!({"status": "ok", "result":
-                        {"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}}),
-                ),
-                _ => (
-                    400,
-                    serde_json::json!({"error": {"code": "refused", "message": "no key today"}}),
-                ),
-            };
-            Some(
-                test_http::Reply::status(status)
-                    .header("content-type", "application/json")
-                    .body(body.to_string()),
-            )
-        });
-        let url = api_server.url();
-        let asked = keys(
-            Reach {
-                api: Some(&url),
-                key_file: None,
-                json: false,
-            },
-            Some("Studio"),
-            KeysCmd::Create {
-                name: "Visa backend".into(),
-                expires_in: None,
-                no_browser_pages: false,
-            },
-        );
-        assert_ne!(asked, ExitCode::SUCCESS, "the key page refused this one");
-        let sent = api_server.drain_requests();
-        let new_key = sent
-            .iter()
-            .find(|sent| sent.target == "/keys/new")
-            .expect("the key was asked for");
-        let body: Value = serde_json::from_str(&new_key.body_text()).unwrap();
-        assert_eq!(body["workspace"], WORKSPACE, "the name is sent as its id");
-        drop(env);
+        assert!(as_file(&own));
     }
 
     tilo_test_env::scenario! {

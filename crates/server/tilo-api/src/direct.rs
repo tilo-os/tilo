@@ -17,8 +17,8 @@
 //! as its own device key, inside the desktop, which answers each workspace
 //! itself. The person's programs on that computer reach it over a socket of
 //! the login's own ([`Direct::serve`]). A computer `tilo login` made a device
-//! of serves it the same way, from the process holding that device's one
-//! session ([`serve_current`]), so no program of its opens a second one.
+//! of answers in its daemon, which keeps that device's one session, so no
+//! program of its opens a second one.
 
 use crate::grant_key::GrantKey;
 use crate::store::{GrantKind, Store};
@@ -55,7 +55,7 @@ pub(crate) fn names_this_device(
     let Some(named) = named else {
         return Ok(false);
     };
-    let device = tilo_device_identity::login::served_device_key(&crate::client::device_keys());
+    let device = tilo_device_identity::login::served_device_key(&crate::calls::device_keys());
     Ok(device == Some(named))
 }
 
@@ -152,84 +152,6 @@ impl KeyFile {
     }
 }
 
-/// Serve the API on `listener` until it closes, each connection as the key
-/// `current` answers with as it comes: to the accounts the daemon's admission
-/// serves ([`crate::daemon::admission`]: this process's own, root, and under
-/// the system unit the people signed in), and nobody else. While `current` has
-/// none (the process holding it is not in the workspace), each call answers
-/// why, as `not_in_workspace`.
-///
-/// Every call is answered as the key, so an account signed in as a person is served only when
-/// that key is their own: on a computer several people sign in to, one person never acts as the
-/// person the daemon's key belongs to.
-///
-/// The kernel's account of the connection's peer is the whole of the
-/// admission: its account must be one admitted, and it must live in this
-/// login's own user and mount namespaces, as a session's other sockets require
-/// ([`shares_security_namespaces`]). A program a sandbox put in a namespace of
-/// its own is the same account and is refused all the same.
-pub async fn serve_current<F, Fut>(
-    listener: tilo_files::native::socket::tokio::Listener,
-    current: F,
-) where
-    F: Fn() -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<Arc<Direct>, String>> + Send + 'static,
-{
-    use std::os::unix::fs::MetadataExt as _;
-    let admission = crate::daemon::admission::here(|| {
-        std::fs::metadata("/proc/self").map_or(u32::MAX, |metadata| metadata.uid())
-    });
-    let current = Arc::new(current);
-    loop {
-        let Ok((stream, _)) = listener.accept().await else {
-            return;
-        };
-        let admitted = stream
-            .peer_cred()
-            .ok()
-            .filter(|credentials| {
-                credentials
-                    .pid()
-                    .and_then(|pid| u32::try_from(pid).ok())
-                    .is_some_and(shares_security_namespaces)
-            })
-            .map(|credentials| admission.admit(credentials.uid()))
-            .filter(|admitted| admitted.served());
-        let Some(admitted) = admitted else {
-            tracing::warn!("API: a connection from another account or a sandbox is refused");
-            continue;
-        };
-        let current = Arc::clone(&current);
-        tokio::spawn(async move {
-            match current().await {
-                Ok(direct) if direct.answers(admitted) => direct.serve_one(stream).await,
-                Ok(_) => refuse_connection(stream, crate::daemon::admission::NOT_SIGNED_IN).await,
-                Err(why) => refuse_connection(stream, &why).await,
-            }
-        });
-    }
-}
-
-/// Answer every call on `stream` with why no key serves it now.
-async fn refuse_connection(stream: tilo_files::native::socket::tokio::Stream, why: &str) {
-    let refusal = serde_json::json!({"error": {"code": "not_in_workspace", "message": why}});
-    let service = hyper::service::service_fn(move |_| {
-        let refusal = refusal.clone();
-        async move {
-            Ok::<_, std::convert::Infallible>(crate::json_reply(
-                hyper::StatusCode::BAD_GATEWAY,
-                &refusal,
-            ))
-        }
-    });
-    if let Err(error) = hyper::server::conn::http1::Builder::new()
-        .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
-        .await
-    {
-        tracing::debug!(%error, "API connection ended");
-    }
-}
-
 /// Whether `pid` lives in this process's user and mount namespaces: what tells
 /// a program of this login from one a sandbox put in a namespace of its own.
 ///
@@ -251,11 +173,10 @@ fn shares_security_namespaces(pid: u32) -> bool {
 }
 
 /// Tilo's API in process, as one key.
+#[derive(Clone)]
 pub struct Direct {
     server: Arc<Server>,
     authorization: String,
-    /// The person, by their root key, whose key every call is answered as.
-    person: [u8; 32],
 }
 
 impl Direct {
@@ -353,27 +274,41 @@ impl Direct {
         Ok(Self {
             server,
             authorization: format!("Bearer {token}"),
-            person: key.person_root(),
         })
     }
 
-    /// Whether a connection `admitted` so may act as this key: the device itself, or the person
-    /// whose key it is, and no other person.
-    fn answers(&self, admitted: crate::daemon::admission::Admitted) -> bool {
-        use crate::daemon::admission::Admitted;
-        match admitted {
-            Admitted::Device => true,
-            Admitted::Person(person) => person == self.person,
-            Admitted::Stranger => false,
-        }
-    }
-
-    /// Serve the API on `listener` until it closes, every request as this
-    /// key: to programs of the account that owns the socket, and nobody else
-    /// ([`serve_current`]).
+    /// Serve the API on `listener` until it closes, every request as this key: to programs of
+    /// the account that owns the socket, and nobody else.
+    ///
+    /// The kernel's account of the connection's peer is the whole of the admission: its account
+    /// must be this process's, and it must live in this login's own user and mount namespaces,
+    /// as a session's other sockets require ([`shares_security_namespaces`]). A program a sandbox
+    /// put in a namespace of its own is the same account and is refused all the same.
     pub async fn serve(self, listener: tilo_files::native::socket::tokio::Listener) {
+        use std::os::unix::fs::MetadataExt as _;
         let this = Arc::new(self);
-        serve_current(listener, move || std::future::ready(Ok(Arc::clone(&this)))).await;
+        // Only this process's own account is served.
+        let owner = std::fs::metadata("/proc/self")
+            .ok()
+            .map(|metadata| metadata.uid());
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let admitted = stream
+                .peer_cred()
+                .ok()
+                .filter(|credentials| Some(credentials.uid()) == owner)
+                .and_then(|credentials| credentials.pid())
+                .and_then(|pid| u32::try_from(pid).ok())
+                .is_some_and(shares_security_namespaces);
+            if !admitted {
+                tracing::warn!("API: a connection from another account or a sandbox is refused");
+                continue;
+            }
+            let this = Arc::clone(&this);
+            tokio::spawn(async move { this.serve_one(stream).await });
+        }
     }
 
     /// Serve one admitted connection as this key.
@@ -394,6 +329,18 @@ impl Direct {
     /// # Errors
     /// The key cannot act now, or the call was not answered.
     pub async fn mcp(&self, request: serde_json::Value) -> Result<serde_json::Value, String> {
+        self.session()
+            .await?
+            .handle(request)
+            .await
+            .messages
+            .into_iter()
+            .last()
+            .ok_or_else(|| "your workspace didn't answer; try again in a minute".to_owned())
+    }
+
+    /// This key's one session, opened the first time.
+    async fn session(&self) -> Result<Arc<crate::session::Session>, String> {
         let mut headers = hyper::HeaderMap::new();
         let value = hyper::header::HeaderValue::from_str(&self.authorization)
             .map_err(|_| "this key cannot act now".to_owned())?;
@@ -402,18 +349,67 @@ impl Direct {
             .server
             .grant_of(&headers)
             .map_err(|_| "this key cannot act now".to_owned())?;
-        let session = self
-            .server
+        self.server
             .api_session(&grant)
             .await
-            .map_err(|error| error.body.message)?;
-        session
-            .handle(request)
+            .map_err(|error| error.body.message)
+    }
+
+    /// Call `tool` with `arguments` in `workspace` (`None`: the account's own tree) on this
+    /// key's session, as a step of `group` when one is named: its typed answer.
+    ///
+    /// # Errors
+    /// The call was refused.
+    pub async fn typed(
+        &self,
+        workspace: Option<&str>,
+        tool: &str,
+        arguments: serde_json::Value,
+        group: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, crate::v1::errors::ApiError> {
+        self.session()
             .await
-            .messages
-            .into_iter()
-            .last()
-            .ok_or_else(|| "your workspace didn't answer; try again in a minute".to_owned())
+            .map_err(|why| crate::v1::errors::ApiError::new("unavailable", why))?
+            .typed(workspace, tool, arguments, group)
+            .await
+    }
+
+    /// Run the program `arguments` names (`{program, confirm}`) in `workspace` on this key's
+    /// session, in the program session `session` names (its `let`s, the references its answers
+    /// showed), or a new one: its answer, and the program session to continue.
+    ///
+    /// # Errors
+    /// The program was refused, or that program session ended.
+    pub async fn program(
+        &self,
+        workspace: &str,
+        session: Option<&str>,
+        arguments: serde_json::Value,
+        group: Option<serde_json::Value>,
+    ) -> Result<(serde_json::Value, String), crate::v1::errors::ApiError> {
+        self.session()
+            .await
+            .map_err(|why| crate::v1::errors::ApiError::new("unavailable", why))?
+            .run_program(workspace, session, arguments, group)
+            .await
+    }
+
+    /// `actions`, the actions of `workspace`, with this key's account beside them: the tree a
+    /// program of the person's walks, where `account/…` is answered as for any key of theirs.
+    ///
+    /// # Errors
+    /// The key cannot act now.
+    pub async fn joined(
+        &self,
+        workspace: &str,
+        actions: crate::session::Provider,
+    ) -> Result<crate::session::Provider, String> {
+        let account = self.session().await?.account().clone();
+        Ok(crate::account::Joined::provider(
+            workspace,
+            Some(actions),
+            account,
+        ))
     }
 
     /// Answer `method` on `target` (a path with its query) with `headers` and
@@ -537,25 +533,6 @@ async fn next_data(body: &mut Option<Body>) -> Option<Bytes> {
     }
 }
 
-impl crate::client::Client {
-    /// The workspace a computer serves before a login exists: the one it founded. The device
-    /// actions are called in it, as `tilo login` and setup call them.
-    ///
-    /// # Errors
-    /// The workspaces could not be listed, or the daemon serves none.
-    pub async fn founded_workspace(&self) -> anyhow::Result<String> {
-        self.workspaces()
-            .await?
-            .get("workspaces")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|workspaces| workspaces.first())
-            .and_then(|workspace| workspace.get("id")?.as_str().map(str::to_owned))
-            .ok_or_else(|| {
-                anyhow::anyhow!("this computer's daemon serves no workspace to log in to")
-            })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{Answer, AnswerBody, Direct};
@@ -615,55 +592,10 @@ mod tests {
         }
     }
 
-    /// On a computer several people sign in to, the daemon's API answers every call as its own
-    /// key, so only the device itself and the person that key belongs to are served by it:
-    /// another person signed in on the same computer, and an account nobody signed in, are not.
-    #[test]
-    fn only_the_device_and_its_own_person_act_as_its_key() {
-        use crate::daemon::admission::Admitted;
-        let (ada, _) = UserIdentity::generate("Ada", 1);
-        let (bo, _) = UserIdentity::generate("Bo", 1);
-        let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let now = tilo_clock::unix_now_ns();
-        let mut cert = DeviceCert {
-            user_public_key: ada.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "the family computer".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: now.saturating_sub(60_000_000_000),
-            expires_at_ns: Some(now.saturating_add(3600 * 1_000_000_000)),
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &ada).unwrap();
-        let direct = Direct::here(
-            std::sync::Arc::new(Desktop::default()),
-            key,
-            cert,
-            "the family computer",
-        )
-        .unwrap();
-        assert!(
-            direct.answers(Admitted::Device),
-            "the device itself is refused"
-        );
-        assert!(
-            direct.answers(Admitted::Person(ada.verifying_key().to_bytes())),
-            "the key's own person is refused"
-        );
-        assert!(
-            !direct.answers(Admitted::Person(bo.verifying_key().to_bytes())),
-            "another person signed in on this computer acts as Ada"
-        );
-        assert!(
-            !direct.answers(Admitted::Stranger),
-            "an account nobody signed in is served"
-        );
-    }
-
-    /// A program on this computer reaches the desktop's API at its socket, as the desktop's own
-    /// device, with no key of its own: it lists the workspaces the desktop holds and lists
-    /// what one holds, which the desktop's own actions answer. The account's own actions are not answered.
+    /// A program on this computer reaches the desktop's own API socket as the desktop's own
+    /// device, with no key of its own, one MCP tool call a call: it lists the workspaces the
+    /// desktop is in and lists what one has, which the desktop's own actions answer. The
+    /// account's own actions are not answered.
     #[tokio::test]
     async fn a_desktop_serves_its_persons_programs_at_its_socket() {
         let (key, cert) = ada_laptop(7);
@@ -677,21 +609,18 @@ mod tests {
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         tokio::spawn(direct.serve(listener));
 
-        let client = crate::client::Client::session(&socket);
-        let listed = client.workspaces().await.unwrap();
+        let calls = crate::calls::Calls::desktop(socket);
+        let listed = calls.workspaces().await.unwrap();
         assert_eq!(listed["workspaces"][0]["id"], WORKSPACE, "{listed}");
         assert_eq!(listed["workspaces"][0]["name"], "Release", "{listed}");
-        let apps = client
-            .get(&format!("/v1/workspaces/{WORKSPACE}/resources"))
-            .await
-            .unwrap();
+        let apps = calls.list(WORKSPACE, None, None).await.unwrap();
         assert!(apps["rows"].is_array(), "{apps}");
         assert_eq!(
             *entered.lock().unwrap(),
             [WORKSPACE],
             "the desktop's own actions answer the listing: {apps}"
         );
-        let refused = client
+        let refused = calls
             .account(
                 "account/workspaces",
                 "create",
@@ -896,59 +825,6 @@ mod tests {
             kept(&listed).contains(&(SHARED.to_owned(), false, false)),
             "the person stays in what this device left: {listed}"
         );
-    }
-
-    /// A command that names no workspace acts in the one this computer's daemon keeps first,
-    /// asked at the daemon's own socket, which a certificate of the device key names: nothing
-    /// reads what a ticket left on this computer.
-    #[test]
-    fn a_command_naming_no_workspace_acts_in_the_one_the_daemon_keeps_first() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("HOME", dir.path())
-            .set("XDG_STATE_HOME", dir.path().join("state"))
-            .set("XDG_RUNTIME_DIR", dir.path().join("run"))
-            .set("TILO_IDENTITY_ROOT", dir.path().join("identity"))
-            .remove(crate::client::KEY_ENV);
-        std::fs::create_dir_all(dir.path().join("run")).unwrap();
-        let (key, cert) = ada_laptop(17);
-        let keys = crate::client::device_keys();
-        tilo_device_identity::persist::write_device_cert(
-            &keys.device_cert_for_user(&cert.user_public_key),
-            &cert,
-        )
-        .unwrap();
-        let reach = crate::client::Reach {
-            api: None,
-            key_file: None,
-            json: false,
-        };
-        assert_eq!(
-            crate::client::entered_workspace(reach).unwrap(),
-            None,
-            "no daemon answers yet"
-        );
-
-        let device = Device::default();
-        device
-            .kept
-            .lock()
-            .unwrap()
-            .push((WORKSPACE.to_owned(), "Release".to_owned()));
-        let direct = Direct::here(std::sync::Arc::new(device), key, cert, "Ada's laptop").unwrap();
-        let socket = crate::daemon::device_api().unwrap().unwrap();
-        let serving = tokio::runtime::Runtime::new().unwrap();
-        let listener = {
-            let _entered = serving.enter();
-            tokio::net::UnixListener::bind(&socket).unwrap()
-        };
-        serving.spawn(direct.serve(listener));
-        assert_eq!(
-            crate::client::entered_workspace(reach).unwrap(),
-            Some((WORKSPACE.to_owned(), "Release".to_owned()))
-        );
-        drop(serving);
-        drop(env);
     }
 
     /// A request with no `Authorization` at all is answered as the desktop's own key: a program of

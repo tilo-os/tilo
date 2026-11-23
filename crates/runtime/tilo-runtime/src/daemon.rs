@@ -1,6 +1,6 @@
 //! Persistent native session shared by independently launched GUI apps and MCP.
 use crate::device::presence::{Presence, Visit};
-use crate::device::services::Daemon;
+use crate::device::{local::Frames, services::Daemon};
 use crate::seats::{Seated, Seats};
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, host};
 use serde::{Deserialize, Serialize};
@@ -318,15 +318,7 @@ fn serve_device(
         native
             .seats
             .serve(Arc::new(PersonShells(Arc::downgrade(&session))));
-        let endpoint = Endpoint {
-            session_factory: admitted_per_connection(&session),
-            status: status_of(&session),
-            search,
-            media: session.media(),
-            other_devices: session.other_devices(),
-            agents: None,
-        };
-        native.serve_the_person(endpoint);
+        native.serve_the_person(the_persons(&session, search));
         // The device is served until the daemon is told to stop, another takes the device over,
         // or this computer logs in with a ticket: its person's part starts again as that device,
         // the device's own part (the native endpoint, the device's lock) staying up meanwhile.
@@ -441,6 +433,43 @@ fn shell_reads(name: &std::ffi::OsStr) -> bool {
             || (PREFIXED.iter().any(|prefix| name.starts_with(prefix))
                 && name != runtime_collab::wire::shell::SHELL_FD_ENV)
     })
+/// What the native endpoint serves the person with once `session`, their services, runs: the
+/// MCP projection and the action wire over their workspace, and host search's results opened
+/// through `search` once it started.
+fn the_persons(
+    session: &Arc<Daemon>,
+    search: Arc<OnceLock<Arc<tilo_os_search::OsSearch>>>,
+) -> Endpoint<<Daemon as RuntimeServices>::ActionProvider> {
+    Endpoint {
+        session_factory: admitted_per_connection(session),
+        status: status_of(session),
+        search,
+        media: session.media(),
+        other_devices: session.other_devices(),
+        agents: None,
+        frames: Frames::of_the_person(session),
+        to_agents: Some(session.agents().clone()),
+    }
+}
+
+/// Serve `session`'s native endpoint at `socket`, as the daemon does once the person's services
+/// run, each connection's account read by `uid_of` and admitted by `admission`: what a test of
+/// the endpoint reaches.
+#[cfg(test)]
+pub(crate) fn serve_for_test(
+    session: &Arc<Daemon>,
+    device: crate::device::unclaimed::DeviceOnly,
+    uid_of: crate::seats::UidOf,
+    admission: &'static tilo_api::daemon::admission::Admission,
+    socket: &Path,
+) -> io::Result<()> {
+    let native = Arc::new(Native::new(device, uid_of, admission));
+    native.serve_the_person(the_persons(session, Arc::new(OnceLock::new())));
+    let listener = tilo_files::native::private::bind_socket(socket)?;
+    std::thread::Builder::new()
+        .name("tilo-native-test".into())
+        .spawn(move || native.accept(&listener))?;
+    Ok(())
 }
 
 /// A connection the native endpoint takes, with the slot it counts against and who it is.
@@ -486,6 +515,7 @@ impl Native {
         seated: Seated,
     ) -> io::Result<()> {
         let answers = self.answers.seated(seated.clone());
+        let frames = Frames::of_the_device(answers.clone());
         Endpoint {
             session_factory: Arc::new(move || {
                 Ok(McpServer::for_agent(
@@ -505,6 +535,8 @@ impl Native {
             media: None,
             other_devices: None,
             agents: None,
+            frames,
+            to_agents: None,
         }
         .take(stream, slot, Some(seated))
     }
@@ -617,6 +649,13 @@ pub(crate) struct Endpoint<H> {
     /// presence in its workspace, which answers their account calls and says when the person
     /// stopped them.
     agents: Option<Arc<Presence>>,
+    /// What a connection whose first line is an action frame is answered by: the wire `tilo`'s
+    /// commands, `tilolang repl` and `tilo-app` call actions over.
+    frames: Frames,
+    /// Where an agent's `tilo mcp` connection is handed ([`tilo_api::daemon::AGENT_LINE`]): to
+    /// the device's one session, which every agent of the computer shares. An endpoint without
+    /// one serves an agent the device's own actions, as any other MCP client.
+    to_agents: Option<crate::device::serve::Agents>,
 }
 
 /// The endpoint every agent of this computer's login reaches at its device socket: the
@@ -636,6 +675,8 @@ pub(crate) fn agents_endpoint(
         media: daemon.media(),
         other_devices: daemon.other_devices(),
         agents: Some(agents),
+        frames: Frames::of_the_person(daemon),
+        to_agents: None,
     }
 }
 
@@ -742,6 +783,8 @@ impl<H> Clone for Endpoint<H> {
             media: self.media.clone(),
             other_devices: self.other_devices.clone(),
             agents: self.agents.clone(),
+            frames: self.frames.clone(),
+            to_agents: self.to_agents.clone(),
         }
     }
 }
@@ -780,6 +823,18 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         if let Err(error) = (&mut reader).take(FIRST_LINE).read_until(b'\n', &mut first) {
             tracing::debug!(%error, "native runtime client disconnected");
             return;
+        }
+        // A first line that is an action frame says the connection speaks the action wire,
+        // answered as whoever its account is admitted as.
+        let line = first.strip_suffix(b"\n").unwrap_or(&first);
+        if crate::device::local::is_frame(line) {
+            return self.frames.serve(stream, line, reader);
+        }
+        if line == tilo_api::daemon::AGENT_LINE.as_bytes() {
+            if let Some(agents) = &self.to_agents {
+                return agents.take(stream, reader.buffer().to_vec());
+            }
+            first.clear();
         }
         if let Some(forward) = first
             .strip_suffix(b"\n")

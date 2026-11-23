@@ -35,7 +35,7 @@
 #![recursion_limit = "256"]
 
 pub mod account;
-pub mod client;
+pub mod calls;
 pub mod daemon;
 pub mod direct;
 pub mod grant_key;
@@ -1810,11 +1810,12 @@ pub(crate) async fn serve_connection(
         let authorization = authorization.clone();
         async move {
             if let Some(authorization) = authorization {
-                // Only the API is served this way: no sign-in, no OAuth.
-                if !request.uri().path().starts_with("/v1") {
+                // Only the API and its MCP endpoint are served this way: no sign-in, no OAuth.
+                let path = request.uri().path();
+                if !path.starts_with("/v1") && path != "/mcp" {
                     return Ok::<_, std::convert::Infallible>(text(
                         StatusCode::NOT_FOUND,
-                        "only Tilo's API (/v1) is served here",
+                        "only Tilo's API (/v1, /mcp) is served here",
                     ));
                 }
                 request

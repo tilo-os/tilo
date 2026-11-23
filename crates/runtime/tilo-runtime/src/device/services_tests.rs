@@ -905,7 +905,7 @@ fn a_logins_device_is_what_this_computers_apps_sign_as() {
         issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
-    let place = tilo_device_identity::login::Place::here(tilo_api::client::device_keys()).unwrap();
+    let place = tilo_device_identity::login::Place::here(tilo_api::calls::device_keys()).unwrap();
     tilo_device_identity::persist::adopt_device_key(place.keys(), &key.to_bytes()).unwrap();
     tilo_device_identity::login::file_certificate(&place, &cert).unwrap();
     assert!(

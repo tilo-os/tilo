@@ -96,11 +96,13 @@ mkdir -m 0700 "$work/profile"
 "$contents/MacOS/tilo-runtime" --profile "$work/profile" \
   </dev/null >"$work/daemon.log" 2>&1 &
 daemon=$!
+socket="$("$contents/MacOS/tilo-runtime" --profile "$work/profile" --socket)" \
+  || fail 'the runtime does not say where its daemon listens'
 status=
 for _ in $(seq 1 120); do
   kill -0 "$daemon" 2>/dev/null || { cat "$work/daemon.log" >&2; fail 'daemon exited during startup'; }
-  if [ -S "$work/profile/native.sock" ]; then
-    status="$(python3 - "$work/profile/native.sock" <<'PY' 2>/dev/null || true
+  if [ -S "$socket" ]; then
+    status="$(python3 - "$socket" <<'PY' 2>/dev/null || true
 import socket, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.settimeout(5)

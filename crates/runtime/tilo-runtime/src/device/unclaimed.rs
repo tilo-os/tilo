@@ -63,7 +63,7 @@ impl ThisDevice {
     /// # Errors
     /// The key cannot be read or made, or another daemon keeps the device.
     pub(crate) fn lock() -> io::Result<Self> {
-        let keys = tilo_api::client::device_keys();
+        let keys = tilo_api::calls::device_keys();
         let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys)
             .map_err(|error| io::Error::other(format!("this computer's device key: {error}")))?;
         let place = Place::here(keys).map_err(io::Error::other)?;

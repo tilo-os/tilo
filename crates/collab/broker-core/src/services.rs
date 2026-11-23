@@ -763,7 +763,8 @@ pub trait ContentStoreServices: Send + Sync {
     /// has dropped since. A compaction of the content put attributions keeps
     /// the ones this answers `true` for and drops the rest, so the log stays
     /// as long as the content it describes is worth attributing. A store that
-    /// cannot tell keeps the attribution.
+    /// cannot tell keeps the attribution. A content put's `have` answers it as
+    /// well, so a store that is asked one answers what it keeps.
     fn holds(&self, workspace: &str, hash: &str) -> bool {
         let _ = (workspace, hash);
         true
