@@ -3031,7 +3031,7 @@ mod transfers_between_devices {
     }
 
     /// The person's continuity switches with nothing turned off, as their settings say.
-    fn permitted() -> Continuity {
+    pub(super) fn permitted() -> Continuity {
         let continuity = Continuity::default();
         let document: serde_json::Map<String, serde_json::Value> = serde_json::from_value(
             serde_json::json!({"continuity": {"enabled": true, "file_transfer": true}}),
@@ -3042,7 +3042,7 @@ mod transfers_between_devices {
     }
 
     /// The session this device decides against: one workspace, whose Files grant is `folder` .
-    struct Session {
+    pub(super) struct Session {
         tree: Layout,
     }
 
@@ -3054,7 +3054,7 @@ mod transfers_between_devices {
     }
 
     /// The session of a device whose Files may read and write `folder` .
-    fn session(folder: &Path) -> Session {
+    pub(super) fn session(folder: &Path) -> Session {
         let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
         let mut workspace = Workspace::new(workspace_id, "Session");
         workspace.grant_sandbox(
@@ -3302,15 +3302,15 @@ mod a_receiver_that_is_not_one_of_yours {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
-    use collab_types::caps::CapOverride;
     use runtime_collab::{NearbyTransferCommand, NearbyTransferPhase, NearbyTransferReply};
     use sha2::{Digest as _, Sha256};
-    use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
     use tilo_sheets::portal::{Body, Field, PortalEffect, PortalState};
+    use tilo_test_env::SpawnUnderEnvLock as _;
     use tilo_workspace_service::apps::services::{
         NearbyTransferRequestContext, NearbyTransferServices as _,
     };
 
+    use super::transfers_between_devices::{permitted, session};
     use super::{FILES_APP_ID, NearbyTransfer};
     use crate::nearby_airdrop::Consent;
 
@@ -3501,47 +3501,8 @@ mod a_receiver_that_is_not_one_of_yours {
         listener.local_addr().unwrap().port()
     }
 
-    /// The session this engine decides against: one workspace whose Files holds `folder` .
-    struct Session {
-        tree: Layout,
-    }
-
-    impl tilo_broker_core::services::WorkspaceAuthority for Session {
-        fn with_tree(&self, read: &mut dyn FnMut(&Layout)) -> Result<(), String> {
-            read(&self.tree);
-            Ok(())
-        }
-    }
-
-    /// The person's continuity switched on for file transfer, as their settings say.
-    fn permitted() -> crate::platform::fabric::Continuity {
-        let continuity = crate::platform::fabric::Continuity::default();
-        let document: serde_json::Map<String, serde_json::Value> = serde_json::from_value(
-            serde_json::json!({"continuity": {"enabled": true, "file_transfer": true}}),
-        )
-        .expect("a settings document");
-        continuity.read(&document);
-        continuity
-    }
-
     /// One engine under a Files grant over `folder` , and the connection Files asks through.
     fn engine(folder: &Path, spool: &Path) -> (Arc<NearbyTransfer>, NearbyTransferRequestContext) {
-        let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-        let mut workspace = Workspace::new(workspace_id, "Session");
-        workspace.grant_sandbox(
-            CapOverride::grant(
-                tilo_action_policy::Grantee::person("ada"),
-                collab_types::caps::Scope::FsPath(folder.to_string_lossy().into_owned()),
-                collab_types::caps::Access::Write,
-            )
-            .through(FILES_APP_ID)
-            .lasting(tilo_action_policy::Lifetime::Session),
-        );
-        let tree = Layout {
-            workspaces: vec![workspace],
-            active: workspace_id,
-            ..Layout::default()
-        };
         let nearby = NearbyTransfer::open_with_air_drop(
             None,
             Some(spool.to_path_buf()),
@@ -3550,7 +3511,7 @@ mod a_receiver_that_is_not_one_of_yours {
             true,
         )
         .expect("a transfer engine");
-        nearby.attach_authority(Arc::new(Session { tree }));
+        nearby.attach_authority(Arc::new(session(folder)));
         let app =
             NearbyTransferRequestContext::for_test(41, FILES_APP_ID, WORKSPACE, "files-41", "Ada");
         (nearby, app)
@@ -3632,7 +3593,7 @@ mod a_receiver_that_is_not_one_of_yours {
             ])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         child.stdin.take().unwrap().write_all(upload).unwrap();
         let output = child.wait_with_output().unwrap();

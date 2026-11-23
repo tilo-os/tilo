@@ -304,11 +304,20 @@ impl Asker {
         if self.shown.borrow().is_some() {
             return;
         }
+        // A sheet another ask stands on is not a question's to take: a portal question waits
+        // until that ask is answered (a file chooser has a sheet of its own).
+        let portal_busy = self
+            .portal
+            .as_ref()
+            .is_some_and(|portal| portal.dialog().is_some());
         let later = self.later.borrow().clone();
         let showing = questions
             .pending()
             .into_iter()
             .filter(|question| !shown_inline(question) && !later.contains(&question.handle))
+            .filter(|question| {
+                !portal_busy || question.kind == tilo_portal::file_chooser::FILE_CHOOSER_QUESTION
+            })
             .find_map(|question| {
                 let kind = question.kind.clone();
                 self.show(question).then_some(kind)
