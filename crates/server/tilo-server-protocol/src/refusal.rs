@@ -52,7 +52,7 @@ pub enum Refusal {
     /// that said it. A key lost, stolen or compromised is not told this: the
     /// entry names why, and the reason is the person's. Kept last: a refusal's
     /// variant index is its wire form.
-    Revoked(RevocationEntry),
+    Revoked(Box<RevocationEntry>),
 }
 
 /// A person's own workspace keeps as much as the host keeps for them, so the

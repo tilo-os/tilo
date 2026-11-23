@@ -92,7 +92,7 @@ impl Workspaces {
             );
             return;
         }
-        if let Err(error) = self.take_revocations(vec![entry]).await {
+        if let Err(error) = self.take_revocations(vec![*entry]).await {
             tracing::warn!(%error, "a refused dial's revocation was not taken in");
         }
     }
@@ -292,7 +292,9 @@ mod tests {
         forged.signature = [0; 64];
         let epoch = crate::authority_epoch::current();
         workspaces
-            .take_refusal(tilo_server_protocol::refusal::Refusal::Revoked(forged))
+            .take_refusal(tilo_server_protocol::refusal::Refusal::Revoked(Box::new(
+                forged,
+            )))
             .await;
         assert!(
             workspaces.revocations().is_empty(),
@@ -314,9 +316,9 @@ mod tests {
         // The same entry the root signs is taken, and reaches the workspace.
         let signed = revocation(&key, device.verifying_key().to_bytes());
         workspaces
-            .take_refusal(tilo_server_protocol::refusal::Refusal::Revoked(
+            .take_refusal(tilo_server_protocol::refusal::Refusal::Revoked(Box::new(
                 signed.clone(),
-            ))
+            )))
             .await;
         assert_eq!(
             crate::workspace_files::load_revocations(dir.path()).unwrap(),

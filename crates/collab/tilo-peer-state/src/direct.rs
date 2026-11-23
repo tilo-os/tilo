@@ -1857,8 +1857,10 @@ impl DirectSync {
     /// only that it was removed: the entry says why, and the reason is the
     /// person's.
     fn refusal_to(&self, device: [u8; 32], reason: String) -> Refusal {
-        self.revocation_of(device)
-            .map_or_else(|| Refusal::NotAMember(reason), Refusal::Revoked)
+        self.revocation_of(device).map_or_else(
+            || Refusal::NotAMember(reason),
+            |entry| Refusal::Revoked(Box::new(entry)),
+        )
     }
 
     /// The root-signed entry that retires `device`, as the replica carries it:
