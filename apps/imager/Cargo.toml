@@ -149,6 +149,7 @@ libc.workspace = true
 rustix = { workspace = true, features = ["process"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+host-fs = { path = "../../crates/system/host-fs" }
 # Only the installed setup consumer (tilo-prepared-setup) admits the
 # launcher's consuming bootstrap; the app never runs launcher code.
 launcher = { path = "../../crates/packaging/launcher", optional = true }

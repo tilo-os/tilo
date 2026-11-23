@@ -43,11 +43,11 @@ mod native {
     use crate::setup::internal_download::SelectedManifest;
     use sha2::{Digest, Sha256};
     use std::{
-        ffi::{CStr, CString},
+        ffi::{CStr, CString, OsStr},
         fs::{File, Metadata},
         io::{Read, Seek, SeekFrom, Write},
         os::{
-            fd::{AsRawFd, FromRawFd},
+            fd::{AsFd, AsRawFd, FromRawFd},
             unix::{ffi::OsStrExt, fs::MetadataExt},
         },
         path::Path,
@@ -1058,17 +1058,12 @@ mod native {
                     .unwrap()
                     .filename;
                 let target = name(final_name.as_bytes())?;
-                let rc = unsafe {
-                    libc::renameat2(
-                        parent.as_raw_fd(),
-                        source.as_ptr(),
-                        parent.as_raw_fd(),
-                        target.as_ptr(),
-                        libc::RENAME_NOREPLACE,
-                    )
-                };
-                if rc != 0 {
-                    let e = std::io::Error::last_os_error();
+                if let Err(e) = host_fs::rename_noreplace_at(
+                    parent.as_fd(),
+                    OsStr::from_bytes(source.as_bytes()),
+                    parent.as_fd(),
+                    OsStr::from_bytes(target.as_bytes()),
+                ) {
                     if e.kind() == std::io::ErrorKind::AlreadyExists {
                         return final_handle(
                             lease,

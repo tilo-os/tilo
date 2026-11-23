@@ -7804,6 +7804,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "fs-native",
  "hex",
+ "host-fs",
  "imager-backend",
  "install-plan",
  "install-profile-model",
