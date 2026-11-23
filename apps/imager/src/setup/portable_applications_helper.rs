@@ -10,6 +10,7 @@ use imager_backend::{
         flatpak_transfer::portable::{
             ApplicationImport, Expectation, NativeOfflineRunner, OfflineRunner,
         },
+        helper_arguments,
         portable_home_import::{HomeImportGrants, PortableHomeReview},
         prepared_setup::PreparedSetupReview,
     },
@@ -19,7 +20,7 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     io::{self, Read, Write},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::atomic::AtomicBool,
 };
 use zeroize::Zeroizing;
@@ -27,42 +28,8 @@ use zeroize::Zeroizing;
 fn failure() -> io::Error {
     io::Error::other("Portable applications could not be authenticated or restored")
 }
-fn arguments(args: impl IntoIterator<Item = OsString>) -> io::Result<BTreeMap<String, OsString>> {
-    let mut args = args.into_iter();
-    let mut values = BTreeMap::new();
-    while let Some(key) = args.next() {
-        let key = key.into_string().map_err(|_| failure())?;
-        if ![
-            "--setup-package",
-            "--setup-quarantine",
-            "--package",
-            "--receipt",
-            "--home",
-            "--workspace",
-            "--action",
-        ]
-        .contains(&key.as_str())
-            || values.contains_key(&key)
-        {
-            return Err(failure());
-        }
-        values.insert(key, args.next().ok_or_else(failure)?);
-    }
-    if values.len() != 7 {
-        return Err(failure());
-    }
-    Ok(values)
-}
 fn path(values: &BTreeMap<String, OsString>, key: &str) -> io::Result<PathBuf> {
-    let path = PathBuf::from(values.get(key).ok_or_else(failure)?);
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
-    {
-        return Err(failure());
-    }
-    Ok(path)
+    helper_arguments::path(values, key, failure)
 }
 fn private(path: &Path) -> io::Result<std::sync::Arc<PinnedDirectory>> {
     let pin = PinnedDirectory::open_absolute(path)?;
@@ -201,7 +168,7 @@ fn run_with_admission(
     runner: &impl OfflineRunner,
     admission: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
-    let values = arguments(args)?;
+    let values = helper_arguments::parse(args, failure)?;
     let action = values["--action"].to_str().ok_or_else(failure)?;
     if !["review", "restore"].contains(&action) {
         return Err(failure());
