@@ -869,7 +869,7 @@ impl VideoEditorApp {
         let badge_w = if clip.speed.is_normal() {
             0.0
         } else {
-            text_width(ctx.text, &clip.speed.label(), &badge_style) + S4
+            text_width(ctx.text, &crate::speed_label(&clip.speed), &badge_style) + S4
         };
         // A linked clip wears a chain at the head of its header, so "these two
         // move together" is legible when still. The name starts after it,
@@ -917,7 +917,7 @@ impl VideoEditorApp {
         // clip's *length*, so without a badge a 2x clip is indistinguishable
         // from one that was simply trimmed shorter.
         if !clip.speed.is_normal() && seen > 52.0 {
-            let words = clip.speed.label();
+            let words = crate::speed_label(&clip.speed);
             let lw = text_width(ctx.text, &words, &badge_style);
             let pill = Rect::new(vx1 - S2 - lw - S2, strip.y0, vx1 - S1, strip.y1);
             if pill.x0 > vx0 + 4.0 {

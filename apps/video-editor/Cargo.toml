@@ -35,6 +35,9 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 
+# The editing, decoding and encoding engine: the model and its verbs, probing,
+# project files, the audio mix, waveforms and frames.
+video-edit = { package = "tilo-video-edit", path = "../../crates/engines/video-edit", default-features = false }
 # Decode, playback and export run through tilo-media, which links GStreamer
 # under the `decode` and `gst` features. ffmpeg is intentionally not a dep.
 media = { package = "tilo-media", path = "../../crates/engines/tilo-media" }
@@ -76,10 +79,10 @@ thin = ["dep:runtime-dylib"]
 default = ["decode", "gst"]
 # Decode and waveform support for the preview canvas through
 # `media::MediaEngine` and its appsink.
-decode = ["media/decode"]
+decode = ["media/decode", "video-edit/decode"]
 # GStreamer encode and mux support. Kept separate so preview-only builds can
 # use `--no-default-features --features decode`.
-gst = ["media/encode", "media/decode"]
+gst = ["media/encode", "media/decode", "video-edit/gst"]
 
 [lints]
 workspace = true

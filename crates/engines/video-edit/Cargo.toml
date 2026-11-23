@@ -1,0 +1,67 @@
+[package]
+name = "tilo-video-edit"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The Video Editor's editing, decoding and encoding engine: the project model and its editing math, probing, project files, audio mixing, waveforms, thumbnails and frames — no UI."
+
+# What a video editor needs under its window: the project model and every edit
+# that can be made to it, what a file really is, the project file format, the
+# audio mix, waveforms, thumbnails and decoded frames. The compositor and the
+# app's own widget live above it, in the app and the app window: this crate
+# links no toolkit, so a daemon or a render helper can use it without a GPU
+# stack.
+
+[lib]
+name = "video_edit"
+path = "src/lib.rs"
+
+[dependencies]
+# Decode and encode run through the system's GStreamer under `decode`/`gst`.
+media = { package = "tilo-media", path = "../tilo-media", default-features = false }
+# Filmstrip frames and bin swatches come from the shared preview pipeline.
+thumbnail = { package = "tilo-thumbnail", path = "../thumbnail" }
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-paths = { path = "../../platform/tilo-paths" }
+tilo-actions = { path = "../../collab/actions" }
+# The project is a resource: its fields derive the document model.
+tilo-resource = { path = "../../sdk/tilo-resource" }
+# Content addresses for imported media.
+tilo-content = { path = "../../system/content", default-features = false }
+tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-rt = { path = "../../platform/tilo-rt" }
+# The toolkit's clock, so a capture or a replay reads one boundary.
+tilo-clock = { path = "../../platform/tilo-clock" }
+# What an image's own header says, and text a machine reads: no toolkit.
+tilo-image-codec = { path = "../tilo-image-codec" }
+tilo-formats = { path = "../../ui/tilo-formats" }
+automerge.workspace = true
+tilo-automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+fnv.workspace = true
+tracing.workspace = true
+# `peniko` image data for a decoded frame; no toolkit.
+vello.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serial_test.workspace = true
+
+[features]
+# The demo project's stand-in media resolution; the app turns it on with its own.
+samples = []
+# Decode and waveform support for the preview and the filmstrip.
+decode = ["media/decode"]
+# GStreamer encode and mux support.
+gst = ["media/encode", "media/decode"]
+default = ["decode", "gst"]
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

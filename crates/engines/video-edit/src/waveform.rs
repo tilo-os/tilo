@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use crate::media::MediaSource;
 use crate::model::MediaId;
-use ui::lock::MutexRecover as _;
+use tilo_lock::MutexRecover as _;
 
 pub const WAVE_BUCKETS: usize = 512;
 
@@ -250,7 +250,7 @@ impl WaveformCache {
             let work = self.work.clone();
             let tx = self.tx.clone();
             // Without a thread (the page) waveforms are simply not drawn.
-            let _ = ui::rt::spawn_thread("video-editor-waveform", move || run_worker(&work, &tx));
+            let _ = tilo_rt::spawn_thread("video-editor-waveform", move || run_worker(&work, &tx));
         }
         drop(w);
         cv.notify_one();

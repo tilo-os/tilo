@@ -730,19 +730,6 @@ impl Project {
     }
 }
 
-impl Track {
-    pub(crate) fn valid(&self) -> Result<(), Refusal> {
-        if !(MIN_GAIN_DB..=MAX_GAIN_DB).contains(&self.gain_db) {
-            return Err(Refusal::new(format!(
-                "a track's gain is between {MIN_GAIN_DB} and {MAX_GAIN_DB} dB"
-            )));
-        }
-        if !(-1.0..=1.0).contains(&self.pan) {
-            return Err(Refusal::new("a track's pan is between -1 and 1"));
-        }
-        Ok(())
-    }
-}
 
 /// The edits that replace the whole project with `project`, as opening a project
 /// file or staging a capture does.

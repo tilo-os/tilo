@@ -46,30 +46,6 @@ pub enum ProbeError {
     Unrecognised,
 }
 
-impl std::fmt::Display for ProbeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let words = match self {
-            ProbeError::Io(e) => crate::resource::CATALOG.t_args(
-                "video-editor-probe-unreadable",
-                &[("error", ui::i18n::ArgValue::Text(e.clone()))],
-            ),
-            ProbeError::Empty => crate::resource::CATALOG.t("video-editor-probe-empty"),
-            ProbeError::NotMedia { detected } => crate::resource::CATALOG.t_args(
-                "video-editor-probe-not-media",
-                &[(
-                    "detected",
-                    ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(detected)),
-                )],
-            ),
-            ProbeError::Unrecognised => {
-                crate::resource::CATALOG.t("video-editor-probe-unrecognised")
-            }
-        };
-        f.write_str(&words)
-    }
-}
-
-impl std::error::Error for ProbeError {}
 
 /// The whole file for a small clip, a prefix for a large one, dispatched on the
 /// magic bytes.
@@ -91,14 +67,14 @@ pub fn probe_bytes(data: &[u8], path: &Path) -> Result<ProbedMedia, ProbeError> 
     if data.is_empty() {
         return Err(ProbeError::Empty);
     }
-    if let Some(format) = ui::framework::content::image_format(data)
-        && let Some(codec) = match format.extension {
-            "png" => Some("png"),
-            "jpg" => Some("jpeg"),
+    if let Some(format) = tilo_image_codec::sniff(data)
+        && let Some(codec) = match format {
+            tilo_image_codec::Format::Png => Some("png"),
+            tilo_image_codec::Format::Jpeg => Some("jpeg"),
             _ => None,
         }
     {
-        let (w, h) = ui::framework::content::image_size(data).map_or((0, 0), |(_, w, h)| (w, h));
+        let (w, h) = tilo_image_codec::dimensions(data).unwrap_or((0, 0));
         return Ok(image_probe(w, h, codec));
     }
     if let Some(p) = parse_wav(data) {
@@ -231,16 +207,16 @@ fn image_probe(w: u32, h: u32, codec: &str) -> ProbedMedia {
 
 /// Media we do not parse but which is unquestionably media, so an import of
 /// one is honest with unknown numbers rather than refused.
-pub(crate) const VIDEO_EXTS: &[&str] = &[
+pub const VIDEO_EXTS: &[&str] = &[
     "mp4", "m4v", "mov", "qt", "mkv", "webm", "avi", "flv", "f4v", "wmv", "asf", "mpg", "mpeg",
     "mpe", "m1v", "m2v", "ts", "m2ts", "mts", "ogv", "3gp", "3g2", "vob", "mxf", "divx", "rm",
     "rmvb", "y4m",
 ];
-pub(crate) const AUDIO_EXTS: &[&str] = &[
+pub const AUDIO_EXTS: &[&str] = &[
     "wav", "wave", "mp3", "flac", "aac", "ogg", "oga", "opus", "m4a", "m4b", "wma", "aiff", "aif",
     "aifc", "ape", "mka", "amr", "au", "caf", "dsf", "wv", "ac3", "dts",
 ];
-pub(crate) const IMAGE_EXTS: &[&str] = &[
+pub const IMAGE_EXTS: &[&str] = &[
     "png", "jpg", "jpeg", "jpe", "gif", "webp", "bmp", "tif", "tiff", "avif", "heic", "heif",
     "ico", "jxl", "tga",
 ];

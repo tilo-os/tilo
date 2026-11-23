@@ -1103,7 +1103,7 @@ impl VideoEditorApp {
         let at = self.playhead;
         match (section, clip) {
             (Section::Transform, Some(c)) => self.a11y_transform_summary(c),
-            (Section::Speed, Some(c)) => c.speed.label(),
+            (Section::Speed, Some(c)) => crate::speed_label(&c.speed),
             (Section::Mix, Some(c)) => match self.project.track(c.track) {
                 Some(t) => {
                     let level = self.mix.track(t.id);

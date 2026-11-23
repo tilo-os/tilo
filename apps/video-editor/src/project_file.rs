@@ -25,7 +25,7 @@
 
 use std::path::Path;
 
-use ui::tilo_resource::Replica;
+use tilo_resource::Replica;
 
 use crate::model::Project;
 
@@ -106,8 +106,10 @@ pub fn encode(project: &Project) -> Result<Vec<u8>, ProjectFileError> {
     let mut replica = Replica::<Project>::new();
     replica
         .apply(
-            ui::tilo_resource::Invoke::edit(&crate::resource::load_project(project))
-                .map_err(|e| ProjectFileError::Corrupt(e.to_string()))?,
+            tilo_resource::Invoke::edit(
+                &tilo_resource::Path::<Project, Project>::root().set(project.clone()),
+            )
+            .map_err(|e| ProjectFileError::Corrupt(e.to_string()))?,
         )
         .map_err(|e| ProjectFileError::Corrupt(e.to_string()))?;
     let payload = replica.save();
@@ -173,14 +175,9 @@ pub fn load(path: &Path) -> Result<Project, ProjectFileError> {
 ///
 /// Seeds the Save dialog's filename field, so a user is never made to
 /// remember the extension — and never ends up with `Holiday.qvp.qvp`.
-pub fn with_extension(name: &str) -> String {
+pub fn with_extension(name: &str, untitled: &str) -> String {
     let stem = name.trim();
-    let untitled = crate::resource::CATALOG.t("video-editor-untitled");
-    let stem = if stem.is_empty() {
-        untitled.as_str()
-    } else {
-        stem
-    };
+    let stem = if stem.is_empty() { untitled } else { stem };
     if stem
         .rsplit_once('.')
         .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case(EXTENSION))

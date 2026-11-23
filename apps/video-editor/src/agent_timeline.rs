@@ -1283,7 +1283,7 @@ pub fn imported(
     let name = name.map(str::trim).filter(|name| !name.is_empty());
     let hint = std::path::Path::new(name.unwrap_or("content"));
     let probed = crate::probe::probe_bytes(&head, hint)
-        .map_err(|error| format!("content `{reference}` {error}"))?;
+        .map_err(|error| format!("content `{reference}` {}", crate::probe_words(&error)))?;
     let duration = match (probed.duration, duration) {
         (known, _) if known > 0.0 => known,
         (_, Some(given)) if given.is_finite() && given > 0.0 => given,

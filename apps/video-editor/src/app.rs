@@ -4593,7 +4593,8 @@ impl VideoEditorApp {
                 ui::format::memory(crate::files::KEEP_LIMIT as u64)
             ));
         }
-        let probed = probe::probe_bytes(&bytes, Path::new(name)).map_err(|e| e.to_string())?;
+        let probed = probe::probe_bytes(&bytes, Path::new(name))
+            .map_err(|e| crate::probe_words(&e))?;
         let id = Uuid::new_v4();
         let token = id.simple().to_string();
         let palette = (self.project.media.len() as u8) % 7;
@@ -4898,7 +4899,7 @@ impl VideoEditorApp {
     fn try_import_one(&mut self, path: &Path) -> Result<(), String> {
         let probed = match probe::probe_file(path) {
             Ok(p) => p,
-            Err(e) => return Err(e.to_string()),
+            Err(e) => return Err(crate::probe_words(&e)),
         };
         let resolved = crate::media::resolve(&path.to_string_lossy());
         let stored = crate::media::stored_path_for_import(&resolved.abs_path);

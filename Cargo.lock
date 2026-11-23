@@ -22682,6 +22682,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-video-edit"
+version = "0.1.0"
+dependencies = [
+ "fnv",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+ "tilo-actions",
+ "tilo-automerge",
+ "tilo-automerge-fork",
+ "tilo-clock",
+ "tilo-content",
+ "tilo-files",
+ "tilo-formats",
+ "tilo-image-codec",
+ "tilo-lock",
+ "tilo-media",
+ "tilo-paths",
+ "tilo-resource",
+ "tilo-rt",
+ "tilo-thumbnail",
+ "tilo-vello",
+ "tracing",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-video-render"
 version = "0.1.0"
 dependencies = [
@@ -25262,6 +25291,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-thumbnail",
  "tilo-vello",
+ "tilo-video-edit",
  "tilo-winit",
  "tracing",
  "uuid",

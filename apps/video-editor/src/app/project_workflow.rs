@@ -174,7 +174,10 @@ impl VideoEditorApp {
     ) -> ui::framework::EffectAnswer {
         let bytes = crate::project_file::encode(&self.project).map_err(|e| e.to_string())?;
         let Some(path) = path else {
-            let suggested = crate::project_file::with_extension(&self.project_label());
+            let suggested = crate::project_file::with_extension(
+                &self.project_label(),
+                &crate::resource::CATALOG.t("video-editor-untitled"),
+            );
             let later = self.later();
             return Ok(cx.save_file(
                 portal::export_project_request(&suggested),

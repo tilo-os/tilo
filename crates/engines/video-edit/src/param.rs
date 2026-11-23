@@ -125,7 +125,7 @@ impl<'de> Deserialize<'de> for Param {
     }
 }
 
-impl ui::tilo_resource::JsonSchema for Param {
+impl tilo_resource::JsonSchema for Param {
     fn json_schema() -> serde_json::Value {
         let mut names: Vec<String> = Param::SIMPLE.iter().map(|p| p.as_str()).collect();
         names.push("effect:<effect id>".into());
@@ -432,7 +432,7 @@ impl ClipAnimation {
     }
 }
 
-ui::tilo_resource::json_model!(ClipAnimation);
+tilo_resource::json_model!(ClipAnimation);
 
 #[cfg(test)]
 mod tests {

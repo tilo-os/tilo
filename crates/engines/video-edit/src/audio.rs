@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 
 use crate::model::{ClipId, MediaId, Project, TrackId, TrackKind};
-use ui::lock::MutexRecover as _;
+use tilo_lock::MutexRecover as _;
 
 /// Everything mixes at one rate, so summing never has to resample.
 pub const SAMPLE_RATE: u32 = 48_000;
@@ -116,7 +116,7 @@ pub fn plan_audio(project: &Project, t: f64) -> Vec<AudioLayer> {
             clip: clip.id,
             media: clip.media,
             track: track.id,
-            source_time: crate::preview::source_time_for(clip, t),
+            source_time: clip.source_time(t),
             gain,
             pan: track.pan,
             rate: clip.speed.signed(),
@@ -433,7 +433,7 @@ impl PcmSource for DecodedPcm {
 /// A decode that stalls past its budget mixes as silence rather than freezing an
 /// export.
 #[cfg(any(feature = "gst", feature = "decode"))]
-pub(crate) fn decode_pcm(source: &media::Source) -> Option<Vec<f32>> {
+pub fn decode_pcm(source: &media::Source) -> Option<Vec<f32>> {
     let mut out = Vec::new();
     let end = media::pcm::decode(
         source,
@@ -743,13 +743,13 @@ impl AudioMonitor {
             paused_turns: std::sync::atomic::AtomicUsize::new(0),
         });
         let state = shared.clone();
-        let handle = ui::rt::spawn_thread("video-editor-monitor", move || {
+        let handle = tilo_rt::spawn_thread("video-editor-monitor", move || {
             let block_secs = MONITOR_BLOCK as f64 / f64::from(SAMPLE_RATE);
             while !state.stop.load(AtomicOrdering::Relaxed) {
                 if !state.playing.load(AtomicOrdering::Relaxed) {
                     #[cfg(test)]
                     state.paused_turns.fetch_add(1, AtomicOrdering::SeqCst);
-                    let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(10));
+                    let _ = tilo_rt::sleep_thread(std::time::Duration::from_millis(10));
                     continue;
                 }
                 let at = *state.position.lock_recover();
@@ -1383,7 +1383,7 @@ mod tests {
 
     fn eventually(mut cond: impl FnMut() -> bool) -> bool {
         let deadline = tilo_test_env::hang_deadline();
-        while ui::time::now() < deadline {
+        while tilo_clock::time::now() < deadline {
             if cond() {
                 return true;
             }

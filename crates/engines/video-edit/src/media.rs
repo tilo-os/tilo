@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use ui::tilo_resource;
+use tilo_resource;
 
 /// The workspace mount: the same tree on every peer, hydrated per peer.
 pub use ::media::source::WORKSPACE_ROOT;
@@ -101,7 +101,7 @@ pub fn set_content_root(dir: Option<PathBuf>) {
 /// The file a content-addressed `path` names under the content root.
 fn content_file(path: &str) -> Option<PathBuf> {
     let reference = tilo_actions::content_hash(path)?;
-    let address = ui::framework::content::content_address(reference)?;
+    let address = tilo_content::content_address(reference)?;
     let root = CONTENT_ROOT.lock().ok()?.clone()?;
     Some(root.join(address))
 }

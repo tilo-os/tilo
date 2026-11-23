@@ -13,7 +13,7 @@ pub fn timecode(seconds: f64, fps: f64) -> String {
     let s = total_secs % 60;
     let m = (total_secs / 60) % 60;
     let h = total_secs / 3600;
-    ui::format::machine!(
+    tilo_formats::machine!(
         "SMPTE timecode, hours and minutes and seconds and frames",
         if h > 0 {
             format!("{h:02}:{m:02}:{s:02}:{f:02}")
@@ -33,7 +33,17 @@ pub fn clock(seconds: f64) -> String {
         reason = "clamped to zero above; a clip longer than u64 seconds does not exist"
     )]
     let total = seconds.round() as u64;
-    ui::format::timecode(total)
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    tilo_formats::machine!(
+        "a compact clock for a duration a person glances at",
+        if h > 0 {
+            format!("{h}:{m:02}:{s:02}")
+        } else {
+            format!("{m}:{s:02}")
+        }
+    )
 }
 
 /// One frame's duration in seconds at `fps`. Guards against a zero fps.

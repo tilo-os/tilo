@@ -9,36 +9,36 @@ fn at(path: &Path) -> Result<(tilo_files::Dir, tilo_files::VPath), FsError> {
 }
 
 #[cfg(any(feature = "decode", feature = "gst"))]
-pub(crate) fn metadata(path: &Path) -> Result<tilo_files::Meta, FsError> {
+pub fn metadata(path: &Path) -> Result<tilo_files::Meta, FsError> {
     let (dir, name) = at(path)?;
     blocking::metadata(&dir, &name)
 }
 
-pub(crate) fn read(path: &Path) -> Result<Vec<u8>, FsError> {
+pub fn read(path: &Path) -> Result<Vec<u8>, FsError> {
     let (dir, name) = at(path)?;
     blocking::read(&dir, &name)
 }
 
 /// At most the first `max` bytes; only those are read.
-pub(crate) fn read_prefix(path: &Path, max: u64) -> Result<Vec<u8>, FsError> {
+pub fn read_prefix(path: &Path, max: u64) -> Result<Vec<u8>, FsError> {
     let (dir, name) = at(path)?;
     blocking::read_prefix(&dir, &name, usize::try_from(max).unwrap_or(usize::MAX))
 }
 
 /// Save a document the user chose, keeping an existing file's link and mode.
-pub(crate) fn save(path: &Path, bytes: &[u8]) -> Result<(), FsError> {
+pub fn save(path: &Path, bytes: &[u8]) -> Result<(), FsError> {
     let (dir, name) = at(path)?;
     blocking::save_document(&dir, &name, bytes)
 }
 
 #[cfg(feature = "gst")]
-pub(crate) fn create_dir_all(path: &Path) {
+pub fn create_dir_all(path: &Path) {
     if let Ok((dir, name)) = at(path) {
         let _ = blocking::create_dir_all(&dir, &name);
     }
 }
 
-pub(crate) fn remove(path: &Path) {
+pub fn remove(path: &Path) {
     if let Ok((dir, name)) = at(path) {
         let _ = blocking::remove(&dir, &name);
     }
@@ -64,13 +64,13 @@ fn kept_token(path: &str) -> Option<&str> {
         reason = "only the seeking frame source of a build without GStreamer asks"
     )
 )]
-pub(crate) fn is_kept(path: &str) -> bool {
+pub fn is_kept(path: &str) -> bool {
     kept_token(path).is_some()
 }
 
 /// Whether a project media `path` names a copy this device imported by
 /// contents.
-pub(crate) fn kept_here(path: &str) -> bool {
+pub fn kept_here(path: &str) -> bool {
     let Some(token) = kept_token(path) else {
         return false;
     };
@@ -118,7 +118,7 @@ fn remember_source(token: &str, bytes: &[u8], name: &str) -> bool {
 
 /// `None` while it is not ready: a copy kept by an earlier visit is read back from the cache
 /// first, and is here (and [`kept_here`]) when that finishes.
-pub(crate) fn kept_source(path: &str) -> Option<media::Source> {
+pub fn kept_source(path: &str) -> Option<media::Source> {
     let token = kept_token(path)?;
     if let Some(source) = KEPT_SOURCES.lock().ok()?.get(token) {
         return Some(source.clone());
@@ -133,7 +133,7 @@ pub(crate) fn kept_source(path: &str) -> Option<media::Source> {
     let location = tilo_paths::AppPaths::for_app("so.tilo.video-editor")
         .cache()
         .join(&sub);
-    drop(ui::rt::app().spawn_pinned(move || async move {
+    drop(tilo_rt::app().spawn_pinned(move || async move {
         let (Ok(dir), Ok(file)) = (
             tilo_files::Dir::open(location),
             tilo_files::VPath::new(&token),
@@ -166,16 +166,16 @@ static MISSING: std::sync::Mutex<std::collections::BTreeSet<String>> =
         reason = "only the seeking frame source of a build without GStreamer asks"
     )
 )]
-pub(crate) fn kept_missing(path: &str) -> bool {
+pub fn kept_missing(path: &str) -> bool {
     kept_token(path).is_some_and(|token| MISSING.lock().is_ok_and(|m| m.contains(token)))
 }
 
 /// The largest media file imported by contents.
-pub(crate) const KEEP_LIMIT: usize = 512 * 1024 * 1024;
+pub const KEEP_LIMIT: usize = 512 * 1024 * 1024;
 
 /// The origin-private file system in a page. Best effort: the project keeps the item either
 /// way.
-pub(crate) fn keep_imported(token: String, name: &str, bytes: Vec<u8>) {
+pub fn keep_imported(token: String, name: &str, bytes: Vec<u8>) {
     if let Ok(mut kept) = KEPT_HERE.lock() {
         kept.insert(token.clone());
     }
@@ -186,7 +186,7 @@ pub(crate) fn keep_imported(token: String, name: &str, bytes: Vec<u8>) {
     let location = tilo_paths::AppPaths::for_app("so.tilo.video-editor")
         .cache()
         .join(&sub);
-    drop(ui::rt::app().spawn_pinned(move || async move {
+    drop(tilo_rt::app().spawn_pinned(move || async move {
         if let (Ok(dir), Ok(path)) = (
             tilo_files::Dir::open(location),
             tilo_files::VPath::new(&token),

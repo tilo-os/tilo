@@ -1718,7 +1718,7 @@ impl VideoEditorApp {
         match section {
             Section::Curves => curve_summary(clip, self.playhead),
             Section::Transform => self.transform_summary(clip),
-            Section::Speed => (!clip.speed.is_normal()).then(|| clip.speed.label()),
+            Section::Speed => (!clip.speed.is_normal()).then(|| crate::speed_label(&clip.speed)),
             // The clipping flag must survive a fold: hiding the warning because the panel
             // is tidied away is the silence this section exists to end.
             Section::Mix => {

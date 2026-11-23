@@ -6,7 +6,7 @@
 //! ([`crate::resource`]) run it.
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Id, Identified, Keyed, Model, Ordered};
+use tilo_resource::{self, Id, Identified, Keyed, Model, Ordered};
 use uuid::Uuid;
 
 use crate::curve::Curve;
@@ -90,7 +90,7 @@ impl ClipEffect {
 /// The kinds of stackable effect a clip can carry. Each transforms the graded
 /// colour; the preview and the (guarded) export apply them in list order.
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Model, ui::tilo_resource::JsonSchema,
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Model, tilo_resource::JsonSchema,
 )]
 pub enum EffectKind {
     Grayscale,
@@ -316,23 +316,16 @@ impl Speed {
             self.rate()
         }
     }
-    /// A short label like `2×` or `0.5× rev` for the inspector and the
-    /// timeline badge, in the window's language.
-    pub fn label(&self) -> String {
+    /// How the rate reads in a caption: its number (`2`, `0.5`), and whether it plays
+    /// backwards. The app says the words, in the window's language.
+    pub fn shown(&self) -> (String, bool) {
         let r = self.rate();
         let n = if (r - r.round()).abs() < 1e-6 {
             format!("{}", r.round() as i64)
         } else {
             format!("{r:.2}")
         };
-        crate::resource::CATALOG.t_args(
-            if self.reverse {
-                "video-editor-speed-shown-reverse"
-            } else {
-                "video-editor-speed-shown"
-            },
-            &[("rate", ui::i18n::ArgValue::Text(n))],
-        )
+        (n, self.reverse)
     }
 }
 
@@ -815,7 +808,7 @@ impl MediaKind {
 /// A track is a horizontal row of the timeline. Video tracks stack above audio tracks;
 /// `index` orders within a kind (V1 below V2, A1 above A2).
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Model, ui::tilo_resource::JsonSchema,
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Model, tilo_resource::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum TrackKind {
@@ -949,6 +942,21 @@ impl MediaItem {
     /// reference becomes a (possibly-local) file.
     pub fn source(&self) -> media::MediaSource {
         media::resolve(&self.path)
+    }
+}
+
+impl Track {
+    /// A track's mix is inside the range a fader and a panner can reach.
+    pub(crate) fn valid(&self) -> Result<(), tilo_resource::Refusal> {
+        if !(MIN_GAIN_DB..=MAX_GAIN_DB).contains(&self.gain_db) {
+            return Err(tilo_resource::Refusal::new(format!(
+                "a track's gain is between {MIN_GAIN_DB} and {MAX_GAIN_DB} dB"
+            )));
+        }
+        if !(-1.0..=1.0).contains(&self.pan) {
+            return Err(tilo_resource::Refusal::new("a track's pan is between -1 and 1"));
+        }
+        Ok(())
     }
 }
 

@@ -319,6 +319,7 @@ members = [
     "crates/engines/ocr",
     "crates/engines/segment",
     "crates/engines/thumbnail",
+    "crates/engines/video-edit",
     "crates/engines/video-render",
     "crates/engines/wet-media",
 
