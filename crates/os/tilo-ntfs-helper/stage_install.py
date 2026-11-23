@@ -26,7 +26,7 @@ items={
 items['usr/share/tilo-ntfs-helper/source/vendor/ntfs-3g-source.tar.gz']=(source_archive,0o644)
 # Keep the existing source/ helper location and its sibling relative dependency.
 # Each crate also builds independently, without inheriting the Tilo workspace.
-for crate, destination in [(ROOT, 'source'), (ROOT.parent / 'tilo-ntfs-protocol', 'tilo-ntfs-protocol'), (ROOT.parents[1] / 'system/wire-frame', 'wire-frame')]:
+for crate, destination in [(ROOT, 'source'), (ROOT.parent / 'tilo-ntfs-protocol', 'tilo-ntfs-protocol'), (ROOT.parents[1] / 'platform/wire-frame', 'wire-frame')]:
  for source in sorted(crate.rglob('*')):
   if not source.is_file() or '__pycache__' in source.parts or source.suffix=='.img':continue
   relative=source.relative_to(crate).as_posix()
