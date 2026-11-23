@@ -4935,6 +4935,9 @@ outputs = ["/target/installer-cycle/**"]
 cache = false
 git = true
 timeout_secs = 10800
+# It boots the medium in a KVM guest of its own; a shrunken host leaves the
+# guest's installer with too little memory to come up.
+heavy = true
 default = false
 on = ["dispatch"]
 
