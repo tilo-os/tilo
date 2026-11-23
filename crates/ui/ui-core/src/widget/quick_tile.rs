@@ -689,7 +689,11 @@ impl Widget for QuickTile {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let metrics = TileMetrics::of(theme);
         if self.metrics.as_ref() != Some(&metrics) {

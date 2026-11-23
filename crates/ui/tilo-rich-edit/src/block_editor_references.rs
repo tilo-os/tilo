@@ -692,7 +692,13 @@ mod tests {
         )
         .unwrap();
         editor.apply_layout(&tree, node, Point::ORIGIN);
-        editor.draw(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, renderer, &theme, PresenceCtx::empty().draw_env()));
+        editor.draw(&mut tilo_ui::DrawCtx::new(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            renderer,
+            &theme,
+            PresenceCtx::empty().draw_env(),
+        ));
     }
 
     fn type_keys(editor: &mut BlockEditor, text: &str) {

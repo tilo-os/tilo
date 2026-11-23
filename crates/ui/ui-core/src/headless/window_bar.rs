@@ -601,7 +601,8 @@ impl FrameHarness {
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut self.text,
-            &self.theme,&self.presence.draw_env(),
+            &self.theme,
+            &self.presence.draw_env(),
         );
         lay_out_bar(&mut bar, width, &self.theme);
         bar
@@ -822,11 +823,13 @@ impl FrameHarness {
                 furniture.place_search(search);
                 search.set_frame_origin(Point::new(0.0, frame_top));
                 furniture.paint(
-                    scene,
-                    transform,
-                    &mut self.text,
-                    &self.theme,
-                    &self.presence,
+                    &mut crate::draw::DrawCtx::new(
+                        scene,
+                        transform,
+                        &mut self.text,
+                        &self.theme,
+                        self.presence.draw_env(),
+                    ),
                     search,
                     crate::widget::window_header::RowFurnitureState::default(),
                 );
@@ -851,7 +854,8 @@ impl FrameHarness {
             scene,
             transform,
             &mut self.text,
-            &self.theme,&self.presence.draw_env(),
+            &self.theme,
+            &self.presence.draw_env(),
         );
         let search = &mut self.window_search;
         search.set_ground(ground);
@@ -859,14 +863,22 @@ impl FrameHarness {
             scene,
             transform,
             &mut self.text,
-            &self.theme,&self.presence.draw_env(),
+            &self.theme,
+            &self.presence.draw_env(),
         );
     }
 
     /// Paint the bar's top layer over the app's frame: the open search's options and replacement, under
     /// the field.
     pub(super) fn paint_window_bar_top_layer(&mut self, scene: &mut Scene, transform: Affine) {
-        self.window_search.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, &mut self.text, &self.theme, self.presence.draw_env()));
+        self.window_search
+            .draw_overlay(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                &mut self.text,
+                &self.theme,
+                self.presence.draw_env(),
+            ));
     }
 }
 
@@ -1289,7 +1301,13 @@ mod tests {
             bar.set_toolbar(TAB, toolbar);
             for _ in 0..2 {
                 lay_out_bar(&mut bar, 420.0, &harness.theme);
-                bar.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut harness.text, &harness.theme, harness.presence.draw_env()));
+                bar.draw(&mut crate::draw::DrawCtx::new(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut harness.text,
+                    &harness.theme,
+                    harness.presence.draw_env(),
+                ));
             }
             if parts {
                 let row = bar.toolbar_row();

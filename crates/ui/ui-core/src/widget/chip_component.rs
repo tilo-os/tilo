@@ -89,7 +89,6 @@ impl Described for Chip {
         if remove.is_none() {
             self.removable = false;
             self.on_remove = None;
-            self.remove_verb = None;
             self.remove_press = Press::default();
         } else {
             self.set_remove_press(remove);

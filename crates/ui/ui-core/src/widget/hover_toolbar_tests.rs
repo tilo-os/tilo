@@ -26,7 +26,16 @@ fn laid_out(bar: &mut HoverToolbar) -> (TaffyTree<()>, taffy::NodeId) {
 fn drawn(bar: &mut HoverToolbar) {
     let mut scene = Scene::new();
     let mut text = TextRenderer::new();
-    Widget::draw(bar, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark(), PresenceCtx::default().draw_env()));
+    Widget::draw(
+        bar,
+        &mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            crate::presence::PresenceCtx::default().draw_env(),
+        ),
+    );
     Widget::mark_drawn(bar);
 }
 

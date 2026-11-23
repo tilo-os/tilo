@@ -135,8 +135,12 @@ impl Widget for FixedContent {
         );
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+    fn draw(&mut self, ctx: &mut tilo_ui::draw::DrawCtx<'_>) {
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let style = theme.text(TextRole::Caption);
         let (_, h) = text_renderer.measure_style(self.label, None, &style);
@@ -185,7 +189,13 @@ fn overlay_panels_register_their_edge_in_both_themes() {
             let mut scene = Scene::new();
             let presence = PresenceCtx::default();
             let previous = presence.push_viewport(viewport);
-            dialog.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+            dialog.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                presence.draw_env(),
+            ));
             presence.pop_viewport(previous);
             let panel = dialog.get_rect();
             assert!(panel.width() > 100.0, "{name}: dialog laid out ({panel:?})");
@@ -210,7 +220,13 @@ fn overlay_panels_register_their_edge_in_both_themes() {
             let mut renderer = OffscreenRenderer::new(CANVAS_W, CANVAS_H);
             let mut scene = Scene::new();
             let presence = PresenceCtx::default();
-            popover.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+            popover.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                presence.draw_env(),
+            ));
             let panel = popover.get_rect();
             assert!(panel.width() > 40.0, "{name}: popover laid out ({panel:?})");
             let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.content);
@@ -238,7 +254,13 @@ fn overlay_panels_register_their_edge_in_both_themes() {
             let mut renderer = OffscreenRenderer::new(CANVAS_W, CANVAS_H);
             let mut scene = Scene::new();
             let presence = PresenceCtx::default();
-            prompt.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+            prompt.draw(&mut tilo_ui::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                presence.draw_env(),
+            ));
             let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.content);
             write_png(
                 &format!("permission_prompt_{name}"),

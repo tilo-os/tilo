@@ -4080,7 +4080,11 @@ impl Widget for DataTableCore {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.corners = crate::widget::scrollbar::SurfaceCorners::seen(theme, transform);
         self.reduce_motion = theme.reduce_motion;
@@ -4119,7 +4123,13 @@ impl Widget for DataTableCore {
             &body,
         );
         // Each row is drawn unscrolled and lands scrolled.
-        let pieces = self.draw_moving_rows(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        let pieces = self.draw_moving_rows(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
         scene.pop_layer();
 
         let mut chrome = Scene::new();
@@ -4741,15 +4751,13 @@ impl<Row: 'static> Widget for DataTable<Row> {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        DrawChild::draw_child(
-            &mut self.core,
-            scene,
-            transform,
-            text_renderer,
-            theme,&env,
-        );
+        DrawChild::draw_child(&mut self.core, scene, transform, text_renderer, theme, &env);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

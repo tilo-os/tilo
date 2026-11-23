@@ -617,10 +617,16 @@ fn manual_overflow_is_painted_inspected_and_clipped_per_axis() {
                 .unwrap();
             }
             widget.apply_layout(&tree, root, origin);
-            let presence = PresenceCtx::empty();
+            let presence = crate::presence::PresenceCtx::empty();
             presence.viewport.set(Some(viewport));
             let mut scene = Scene::new();
-            widget.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark(), presence.draw_env()));
+            widget.draw(&mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &Theme::dark(),
+                presence.draw_env(),
+            ));
             assert!(
                 !scene.encoding().draw_tags.is_empty(),
                 "visible overflowing control was culled with its small region allocation"
@@ -768,10 +774,16 @@ fn nested_negative_overflow(horizontal: bool) {
         )
     };
     outer.apply_layout(&tree, root, origin);
-    let presence = PresenceCtx::empty();
+    let presence = crate::presence::PresenceCtx::empty();
     presence.viewport.set(Some(viewport));
     let mut scene = Scene::new();
-    outer.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark(), presence.draw_env()));
+    outer.draw(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &Theme::dark(),
+        presence.draw_env(),
+    ));
     assert!(
         !scene.encoding().draw_tags.is_empty(),
         "visible nested grandchild was culled"

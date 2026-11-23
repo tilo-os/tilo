@@ -282,9 +282,16 @@ impl FrameHarness {
             crate::scene_parts::PartKey::new("window-parts", 0),
             vec![bounds],
             |scene| {
-                hosted
-                    .row
-                    .draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, presence.draw_env()), 0.0)
+                hosted.row.draw(
+                    &mut crate::draw::DrawCtx::new(
+                        scene,
+                        transform,
+                        text,
+                        theme,
+                        presence.draw_env(),
+                    ),
+                    0.0,
+                )
             },
         );
     }
@@ -347,6 +354,47 @@ impl FrameHarness {
                     .with_children(hosted.row.accessibility()),
             ),
             children: Vec::new(),
+        })
+    }
+
+    fn notice_card_inspection(&self, hosted: &HostedParts) -> Option<InspectionNode> {
+        let card = hosted.row.strip_card(&self.theme)?;
+        let nodes = hosted.row.accessibility();
+        let buttons = nodes
+            .iter()
+            .filter(|node| node.action_target.is_some() && node.role == crate::a11y::Role::Button)
+            .map(|node| {
+                let rect = node.bounds.map_or(Rect::ZERO, |bounds| bounds.to_rect());
+                InspectionNode {
+                    path: format!(
+                        "{WINDOW_PARTS}#{}",
+                        node.action_target.as_deref().unwrap_or_default()
+                    ),
+                    widget: "WindowPart".into(),
+                    test_id: None,
+                    focusable: node.state.focusable,
+                    rect: [rect.x0, rect.y0, rect.width(), rect.height()],
+                    child_clip: None,
+                    page_title: None,
+                    layout: None,
+                    paint_key: None,
+                    semantics: Some(node.clone()),
+                    children: Vec::new(),
+                }
+            })
+            .collect();
+        Some(InspectionNode {
+            path: WINDOW_PARTS.into(),
+            widget: "WindowNoticeStrip".into(),
+            test_id: None,
+            focusable: false,
+            rect: [card.x0, card.y0, card.width(), card.height()],
+            child_clip: None,
+            page_title: None,
+            layout: None,
+            paint_key: None,
+            semantics: nodes.into_iter().find(|node| node.live.is_some()),
+            children: buttons,
         })
     }
 

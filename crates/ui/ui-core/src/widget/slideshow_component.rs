@@ -114,9 +114,13 @@ impl Widget for Slideshow {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        crate::widget::draw_child(&mut self.image, scene, transform, text, theme,&env);
+        crate::widget::draw_child(&mut self.image, scene, transform, text, theme, &env);
     }
 
     fn handle_event(

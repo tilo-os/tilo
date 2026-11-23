@@ -269,11 +269,20 @@ impl VirtualRows {
 
     /// Paint the open menu over the rows.
     pub(super) fn paint_menu(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(menu) = self.menus.owned_mut() {
-            menu.menu
-                .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            menu.menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         }
     }
 

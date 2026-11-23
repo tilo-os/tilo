@@ -1158,7 +1158,11 @@ impl Widget for DocumentViewport {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.zoom_requested() {
             self.apply_requested_zoom();
@@ -1183,7 +1187,7 @@ impl Widget for DocumentViewport {
         let rect = self.rect;
         let content = &mut self.content;
         let mut draw_content = |scene: &mut Scene, at: Affine| match content {
-            Content::Widget(c) => c.draw_child(scene, at, text_renderer, theme,&env),
+            Content::Widget(c) => c.draw_child(scene, at, text_renderer, theme, &env),
             Content::Draw(draw) => draw(scene, at, text_renderer, theme, rect),
         };
         let canvas_xf = compose(transform, self.state.content_to_canvas());

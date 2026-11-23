@@ -223,7 +223,11 @@ impl Decorator for PlaceGround {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let rect = self.column.get_rect();
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -238,8 +242,7 @@ impl Decorator for PlaceGround {
             transform,
             &RoundedRect::from_rect(rect, radius),
         );
-        self.column
-            .draw_child(scene, transform, text, &on,&env);
+        self.column.draw_child(scene, transform, text, &on, &env);
         scene.pop_layer();
     }
 }

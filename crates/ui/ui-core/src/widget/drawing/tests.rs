@@ -237,7 +237,7 @@ tilo_test_env::scenario! {
     {
         use std::cell::RefCell;
         use std::rc::Rc;
-        use winit::event::{DeviceId, ElementState, MouseButton, MouseScrollDelta};
+        use winit::event::{DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
         let heard: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         let mut drawing = Drawing {
@@ -262,7 +262,10 @@ tilo_test_env::scenario! {
         drawing.on_drag = Some(note("drag", true));
         drawing.on_drag_end = Some(note("end", true));
         drawing.on_wheel = Some(note("wheel", true));
-        drawing.on_pinch = Some(note("pinch", false));
+        drawing.on_pinch = Some({
+            let heard = Rc::clone(&heard);
+            Box::new(move |x: f64| heard.borrow_mut().push(format!("pinch {x:.2}")))
+        });
 
         let moved = |x: f64, y: f64| WindowEvent::CursorMoved {
             device_id: DeviceId::dummy(),

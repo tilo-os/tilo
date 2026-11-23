@@ -152,7 +152,13 @@ impl RetainedEditor {
             presence.push_viewport(viewport);
         }
         self.scene.reset();
-        self.editor.draw(&mut tilo_ui::DrawCtx::new(&mut self.scene, Affine::IDENTITY, &mut self.text, &self.theme, presence.draw_env()));
+        self.editor.draw(&mut tilo_ui::DrawCtx::new(
+            &mut self.scene,
+            Affine::IDENTITY,
+            &mut self.text,
+            &self.theme,
+            presence.draw_env(),
+        ));
         self.damage.clear();
         self.editor.collect_damage(&mut self.damage);
         self.editor.mark_drawn();
@@ -1061,7 +1067,13 @@ fn render_window(fixture: &mut RetainedEditor, viewport: Option<Rect>, top: f64)
         presence.push_viewport(viewport);
     }
     let mut scene = Scene::new();
-    fixture.editor.draw(&mut tilo_ui::DrawCtx::new(&mut scene, Affine::translate((0.0, -top)), &mut fixture.text, &fixture.theme, presence.draw_env()));
+    fixture.editor.draw(&mut tilo_ui::DrawCtx::new(
+        &mut scene,
+        Affine::translate((0.0, -top)),
+        &mut fixture.text,
+        &fixture.theme,
+        presence.draw_env(),
+    ));
     let background = fixture.theme.tokens.colors.surfaces.content;
     ui::offscreen::OffscreenRenderer::new(640, 600).render(&scene, background)
 }

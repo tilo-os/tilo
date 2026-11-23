@@ -87,7 +87,13 @@ fn draw(tile: &mut QuickTile, theme: &Theme) -> Scene {
     let mut scene = Scene::new();
     let mut text = TextRenderer::new();
     text.set_text_scale(theme.text_scale);
-    tile.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, theme, PresenceCtx::default().draw_env()));
+    tile.draw(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        theme,
+        crate::presence::PresenceCtx::default().draw_env(),
+    ));
     scene
 }
 

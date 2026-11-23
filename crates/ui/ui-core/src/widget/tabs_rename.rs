@@ -219,7 +219,11 @@ impl TabBar {
     }
 
     pub(super) fn draw_rename(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.touch();
         self.measure_rename(text_renderer, theme);
@@ -227,7 +231,7 @@ impl TabBar {
         if let Some(rename) = self.rename.as_mut() {
             rename
                 .label
-                .draw_child(scene, transform, text_renderer, theme,&env);
+                .draw_child(scene, transform, text_renderer, theme, &env);
         }
     }
 }

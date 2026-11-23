@@ -1961,7 +1961,11 @@ impl Widget for ModalDialog<dyn Widget> {
     }
 
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if !self.appear.is_drawn() {
             return;
@@ -2052,7 +2056,8 @@ impl Widget for ModalDialog<dyn Widget> {
                 scene,
                 transform * Affine::translate(shift),
                 text_renderer,
-                &on_panel,&env,
+                &on_panel,
+                &env,
             );
         }
         if layout.body_overflows {
@@ -2067,13 +2072,18 @@ impl Widget for ModalDialog<dyn Widget> {
         let shift = self.content_target() - self.content_origin;
         let content_transform = transform * Affine::translate(shift);
         self.content
-            .draw_child(scene, content_transform, text_renderer, &on_panel,&env);
+            .draw_child(scene, content_transform, text_renderer, &on_panel, &env);
         if layout.body_overflows {
             scene.pop_layer();
         }
         self.paint_scroll_edges(scene, transform, theme);
-        self.content
-            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.content.draw_overlay(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
         pose.end(scene);
     }
 
@@ -2506,10 +2516,20 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     }
 
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.as_dyn_mut()
-            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            .draw_overlay(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

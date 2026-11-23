@@ -477,7 +477,11 @@ impl Widget for Art {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.rect.width() <= 0.0 {
             return;
@@ -651,7 +655,11 @@ impl Widget for SongLines {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.rect.width() <= 0.0 {
             return;
@@ -985,7 +993,11 @@ impl Widget for TimeLabel {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let label = self.shared.caption(self.side);
         if !label.is_empty() {

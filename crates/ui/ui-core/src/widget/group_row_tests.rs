@@ -1244,7 +1244,7 @@ fn panning_a_strip_drawn_in_canvas_coordinates_does_not_change_its_scene() {
             Affine::IDENTITY,
             &mut text,
             &theme,
-            PresenceCtx::empty().draw_env(),
+            crate::presence::PresenceCtx::empty().draw_env(),
         ));
         scene
     };
@@ -1567,7 +1567,7 @@ pub(super) fn drawn_strip(windows: u64) -> (GroupRow, Scene) {
         Affine::IDENTITY,
         &mut TextRenderer::new(),
         &Theme::dark(),
-        PresenceCtx::empty().draw_env(),
+        crate::presence::PresenceCtx::empty().draw_env(),
     ));
     (row, scene)
 }
@@ -3102,7 +3102,7 @@ fn a_panned_strip_replays_groups_off_screen_and_draws_those_on_it() {
             Affine::IDENTITY,
             text,
             &Theme::dark(),
-            PresenceCtx::empty().draw_env(),
+            crate::presence::PresenceCtx::empty().draw_env(),
         ));
         scene
     }
@@ -3174,7 +3174,7 @@ fn a_frame_that_only_moved_replays_groups_on_screen_at_rest() {
             Affine::IDENTITY,
             text,
             &Theme::dark(),
-            PresenceCtx::empty().draw_env(),
+            crate::presence::PresenceCtx::empty().draw_env(),
         ));
         row.mark_drawn();
         scene
@@ -3263,7 +3263,7 @@ fn a_pan_frame_replays_windows_at_rest_and_renders_as_a_drawn_frame() {
         });
         let _frame = PanReplay::begin(frame, number);
         let mut scene = Scene::new();
-        let presence = PresenceCtx::empty();
+        let presence = crate::presence::PresenceCtx::empty();
         let previous = presence.push_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
         row.draw(&mut crate::draw::DrawCtx::new(
             &mut scene,
@@ -3360,7 +3360,7 @@ fn each_group_of_a_strip_drawn_in_canvas_coordinates_is_a_damage_part() {
                 Affine::IDENTITY,
                 text,
                 &Theme::dark(),
-                PresenceCtx::empty().draw_env(),
+                crate::presence::PresenceCtx::empty().draw_env(),
             ));
         });
         (scene, parts.expect("the strip's parts are well nested"))
@@ -4548,7 +4548,7 @@ fn maximized_window_paints_alone_and_the_sibling_fade_redraws_to_rest() {
             Affine::IDENTITY,
             &mut TextRenderer::new(),
             &Theme::dark(),
-            PresenceCtx::empty().draw_env(),
+            crate::presence::PresenceCtx::empty().draw_env(),
         ));
         row.mark_drawn();
         scene.encoding().draw_tags.iter().map(|tag| tag.0).collect()

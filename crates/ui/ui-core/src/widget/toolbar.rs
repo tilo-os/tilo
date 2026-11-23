@@ -1452,7 +1452,11 @@ impl Widget for Toolbar {
         }
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.viewport = env.viewport.or(self.viewport);
         if let Some(viewport) = self.viewport {
@@ -1549,7 +1553,7 @@ impl Widget for Toolbar {
                 }
                 Some(ToolbarItem::Element(_)) => {
                     if let Some(ToolbarItem::Element(element)) = self.items.get_mut(index) {
-                        element.draw_child(scene, transform, text, theme,&env);
+                        element.draw_child(scene, transform, text, theme, &env);
                     }
                 }
                 Some(ToolbarItem::Spacer) | None => {}
@@ -1577,21 +1581,42 @@ impl Widget for Toolbar {
         super::defaults::mark_drawn(self.children_mut());
     }
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         for item in &mut self.items {
             if let ToolbarItem::Element(element) = item {
-                element.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+                element.draw_overlay(&mut crate::draw::DrawCtx::new(
+                    scene,
+                    transform,
+                    text,
+                    theme,
+                    env.clone(),
+                ));
             }
         }
         if let Some((index, menu)) = self.item_menu.as_mut() {
             if let (Some(viewport), Some(anchor)) = (self.viewport, self.item_rects.get(*index)) {
                 menu.reanchor(*anchor, viewport);
             }
-            menu.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
         }
-        self.menu
-            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if (self.focused || self.traps_focus())
@@ -2104,8 +2129,7 @@ mod tests {
             let toolbar = Toolbar::new(Orientation::Horizontal)
                 .push_button("Open workspace settings", move || {
                     count.set(count.get() + 1)
-                })
-                .with_view("test.workspace-settings");
+                });
             let mut frame = Framed::new(crate::State::new(), toolbar, (width, 480), Theme::dark());
             assert!(Framed::harness(&frame).native_app_audit().is_certified());
             if width == 100 {
@@ -2581,7 +2605,13 @@ mod tests {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        tb.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+        tb.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            presence.draw_env(),
+        ));
         scene
     }
 
@@ -2638,8 +2668,20 @@ mod lifecycle_tests {
             .viewport
             .set(Some(Rect::new(0.0, 0.0, 360.0, 220.0)));
         let mut scene = Scene::new();
-        tb.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
-        tb.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
+        tb.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            presence.draw_env(),
+        ));
+        tb.draw_overlay(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            presence.draw_env(),
+        ));
     }
 
     fn dispatch(tb: &mut Toolbar, event: WindowEvent) -> bool {

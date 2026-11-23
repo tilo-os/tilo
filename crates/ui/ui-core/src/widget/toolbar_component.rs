@@ -160,7 +160,7 @@ fn push_command(bar: Toolbar, props: ToolbarButtonProps) -> Toolbar {
         };
         let bar = match press {
             Event::None => bar,
-            Event::View(_) => bar.with_view(&key),
+            Event::View(_) => bar,
             Event::Action(binding) => bar.with_action(binding),
         };
         bar.with_enabled(enabled)

@@ -54,7 +54,7 @@ fn external_windows_paint_to_their_border_without_spilling_into_neighbors() {
             Affine::IDENTITY,
             &mut TextRenderer::new(),
             &theme,
-            PresenceCtx::empty().draw_env(),
+            crate::presence::PresenceCtx::empty().draw_env(),
         ));
         let rgba = renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 255));
         for x in [96, 97, 98, 99, 300, 301, 302, 303] {
@@ -111,7 +111,7 @@ fn a_resting_pointer_lights_the_whole_edge_that_will_change() {
             Affine::IDENTITY,
             &mut TextRenderer::new(),
             &theme,
-            PresenceCtx::empty().draw_env(),
+            crate::presence::PresenceCtx::empty().draw_env(),
         ));
         renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 255))
     };
@@ -625,7 +625,7 @@ fn painted_anything(g: &mut WindowGroup) -> bool {
         Affine::IDENTITY,
         &mut tr,
         &theme,
-        PresenceCtx::empty().draw_env(),
+        crate::presence::PresenceCtx::empty().draw_env(),
     ));
     !scene.encoding().path_data.is_empty()
 }
@@ -1829,7 +1829,7 @@ fn group_close_fade_paints_pumps_frames_and_completes() {
             // `self.rect` used for hit-tests stays put so drop-targets and
             // focus bookkeeping don't shift under the user mid-animation.
             let mut scene = Scene::new();
-            let presence = PresenceCtx::default();
+            let presence = crate::presence::PresenceCtx::default();
             let mut tr = TextRenderer::new();
             g.draw(&mut crate::draw::DrawCtx::new(
                 &mut scene,

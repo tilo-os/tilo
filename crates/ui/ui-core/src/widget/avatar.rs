@@ -974,7 +974,11 @@ impl Widget for Avatar {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.placeholder || env.should_cull(self.rect) {
             return;
@@ -1117,7 +1121,13 @@ mod tests {
         let mut body = Embedded::new(message);
         body.layout(Rect::new(68.0, 28.0, 300.0, 28.0), theme, text);
         let mut scene = Scene::new();
-        body.draw(&mut crate::draw::DrawCtx::new(&mut scene, transform, text, theme, PresenceCtx::empty().draw_env()));
+        body.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            transform,
+            text,
+            theme,
+            PresenceCtx::empty().draw_env(),
+        ));
         assert!(
             !scene.encoding().resources.glyphs.is_empty(),
             "text must render"
@@ -1134,7 +1144,13 @@ mod tests {
         let mut avatar = crate::widget::Embedded::new(Avatar::person("Scribe Agent", "scribe"));
         avatar.layout(Rect::new(24.0, 104.0, 64.0, 144.0), theme, &mut text);
         let bounds = transform.transform_rect_bbox(avatar.rect());
-        avatar.draw(&mut crate::draw::DrawCtx::new(&mut scene, transform, &mut text, theme, PresenceCtx::empty().draw_env()));
+        avatar.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            transform,
+            &mut text,
+            theme,
+            PresenceCtx::empty().draw_env(),
+        ));
         let after = renderer.render(&scene, ground);
         let fill = AvatarFace::new("Scribe Agent", "scribe").colour(theme);
         let mut changed = 0;
@@ -1257,7 +1273,13 @@ mod tests {
         .unwrap();
         avatar.apply_layout(&tree, node, Point::ZERO);
         let mut scene = Scene::new();
-        avatar.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &theme, PresenceCtx::empty().draw_env()));
+        avatar.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            PresenceCtx::empty().draw_env(),
+        ));
         assert_eq!(tags(&scene, DrawTag::IMAGE), 1);
         assert_eq!(
             Widget::accessibility(&avatar).unwrap().name.as_deref(),

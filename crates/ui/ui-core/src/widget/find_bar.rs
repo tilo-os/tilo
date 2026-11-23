@@ -846,7 +846,11 @@ impl FindBar {
 
     /// Paint the bar. `layout` must have run.
     pub fn paint(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.rect.width() <= 0.0 {
             return;
@@ -861,11 +865,10 @@ impl FindBar {
             0.0,
             ground,
         );
-        self.field
-            .draw_child(scene, transform, text, theme,&env);
+        self.field.draw_child(scene, transform, text, theme, &env);
         if self.replace_row {
             self.replace_field
-                .draw_child(scene, transform, text, theme,&env);
+                .draw_child(scene, transform, text, theme, &env);
         }
         let parts = self.parts.clone();
         let modes: Vec<(Part, Rect)> = parts
@@ -1039,11 +1042,21 @@ impl Widget for FindBar {
     crate::rect_geometry!();
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let rect = self.rect;
         self.layout(rect, theme, text);
-        self.paint(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.paint(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1513,14 +1526,17 @@ impl Widget for FindScope {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.motion = theme.motion();
         if !self.laid_sliding {
-            self.content
-                .draw_child(scene, transform, text, theme,&env);
+            self.content.draw_child(scene, transform, text, theme, &env);
             if self.open {
-                self.bar.draw_child(scene, transform, text, theme,&env);
+                self.bar.draw_child(scene, transform, text, theme, &env);
             }
             return;
         }
@@ -1537,7 +1553,8 @@ impl Widget for FindScope {
             scene,
             transform * Affine::translate((0.0, offset)),
             text,
-            theme,&env,
+            theme,
+            &env,
         );
         let band = self.bar.get_rect();
         if reveal.height > 0.0 && reveal.opacity > 0.0 {
@@ -1548,7 +1565,7 @@ impl Widget for FindScope {
                 transform,
                 &Rect::new(band.x0, band.y0, band.x1, band.y0 + reveal.height),
             );
-            self.bar.draw_child(scene, transform, text, theme,&env);
+            self.bar.draw_child(scene, transform, text, theme, &env);
             scene.pop_layer();
         }
         scene.pop_layer();
@@ -2045,7 +2062,13 @@ mod tests {
         // new layout and the content's box stays put.
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        scope.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark(), PresenceCtx::default().draw_env()));
+        scope.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            PresenceCtx::default().draw_env(),
+        ));
         assert!(!scope.structure_dirty);
         assert_eq!(scope.content.get_rect(), laid);
 

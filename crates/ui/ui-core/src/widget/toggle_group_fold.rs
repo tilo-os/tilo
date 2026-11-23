@@ -286,7 +286,10 @@ impl ToggleGroup {
             }
             self.viewport = Some(viewport);
         }
-        crate::widget::Widget::draw_overlay(&mut self.menu, &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        crate::widget::Widget::draw_overlay(
+            &mut self.menu,
+            &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
+        );
     }
 
     pub(super) fn fold_menu() -> ContextMenu {
@@ -324,8 +327,26 @@ mod tests {
             .viewport
             .set(Some(Rect::new(0.0, 0.0, 640.0, 480.0)));
         let mut scene = Scene::new();
-        Widget::draw(group, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, env.clone()));
-        Widget::draw_overlay(group, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, env.clone()));
+        Widget::draw(
+            group,
+            &mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                presence.draw_env(),
+            ),
+        );
+        Widget::draw_overlay(
+            group,
+            &mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                presence.draw_env(),
+            ),
+        );
         scene.encoding().draw_data.clone()
     }
 

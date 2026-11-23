@@ -13,7 +13,7 @@ struct Frames {
     text: TextRenderer,
     theme: Theme,
     scene: Scene,
-    presence: PresenceCtx,
+    presence: crate::presence::PresenceCtx,
     width: f32,
     top: f64,
     height: f64,
@@ -24,7 +24,7 @@ impl Frames {
         let theme = Theme::dark();
         let mut list = ConversationList::new(lines);
         list.theme = Some(theme.clone());
-        let presence = PresenceCtx::empty();
+        let presence = crate::presence::PresenceCtx::empty();
         presence.push_viewport(VIEWPORT);
         let mut frames = Self {
             list,
@@ -55,7 +55,13 @@ impl Frames {
         self.height = f64::from(measured.height);
         self.list.rect = Rect::new(0.0, self.top, f64::from(self.width), self.top + self.height);
         self.scene.reset();
-        self.list.draw(&mut crate::draw::DrawCtx::new(&mut self.scene, Affine::IDENTITY, &mut self.text, &self.theme, self.presence.draw_env()));
+        self.list.draw(&mut crate::draw::DrawCtx::new(
+            &mut self.scene,
+            Affine::IDENTITY,
+            &mut self.text,
+            &self.theme,
+            self.presence.draw_env(),
+        ));
     }
 
     fn frames(&mut self, count: u32) -> Duration {

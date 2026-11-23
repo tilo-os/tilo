@@ -5,6 +5,7 @@
 //! the grid reports the changes a person makes as events. Only the rows and columns on screen are
 //! laid out and painted, so a sheet of a hundred thousand cells costs its window.
 
+use crate::a11y::{AccessNode, AccessState, Role};
 use std::collections::{HashMap, HashSet};
 
 use taffy::TaffyTree;
@@ -337,23 +338,40 @@ impl Sheet {
     }
 
     /// Take a sheet's props, answering whether anything it draws changed.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn take(
-        &mut self,
-        name: Option<String>,
-        columns: i64,
-        rows: i64,
-        column_width: Option<f64>,
-        row_height: Option<f64>,
-        sizes: Vec<SheetSize>,
-        cells: Vec<SheetCell>,
-        selection: Option<String>,
-        found: Vec<String>,
-        commented: Vec<String>,
-        answered: Vec<String>,
-        peers: Vec<Peer>,
-        editable: bool,
-    ) -> bool {
+    pub(crate) fn take(&mut self, props: super::SheetProps) -> bool {
+        let super::SheetProps {
+            name,
+            columns,
+            rows,
+            column_width,
+            row_height,
+            sizes,
+            cells,
+            selection,
+            found,
+            commented,
+            answered,
+            peers,
+            editable,
+            select,
+            edit,
+            resized_column,
+            resized_row,
+            fill,
+            copy,
+            cut,
+            paste,
+        } = props;
+        self.events = Events {
+            select,
+            edit,
+            resized_column,
+            resized_row,
+            fill,
+            copy,
+            cut,
+            paste,
+        };
         let mut changed = false;
         if self.name != name {
             self.name = name;
@@ -890,7 +908,7 @@ impl Sheet {
             return false;
         };
         let mut text = std::mem::take(&mut editing.text);
-        let motion = |m: Motion| {
+        let mut motion = |m: Motion| {
             editing.core.motion(&text, m, shift);
             true
         };
@@ -1109,12 +1127,6 @@ impl Sheet {
 }
 
 impl Widget for Sheet {
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        // The grid is drawn, so the page shows it as its picture: what it holds is read through
-        // the accessibility tree and found by the window's search.
-        cx.picture();
-    }
-
     crate::described!();
 
     fn name(&self) -> &'static str {
@@ -1153,7 +1165,11 @@ impl Widget for Sheet {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.metrics = Metrics::resolve(
             text_renderer,

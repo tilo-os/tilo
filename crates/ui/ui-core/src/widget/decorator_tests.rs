@@ -283,7 +283,7 @@ fn lay_and_draw(
         Affine::IDENTITY,
         &mut TextRenderer::new(),
         theme,
-        PresenceCtx::empty().draw_env(),
+        crate::presence::PresenceCtx::empty().draw_env(),
     ));
     (taffy, node, nodes)
 }

@@ -2967,7 +2967,7 @@ impl Widget for NavShell {
             transform,
             text: text_renderer,
             theme,
-            env,
+            env: &env,
         });
         self.tick(theme);
     }

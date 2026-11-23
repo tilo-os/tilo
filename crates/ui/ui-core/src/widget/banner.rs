@@ -700,7 +700,11 @@ impl Widget for BannerBody {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
@@ -1145,13 +1149,16 @@ impl Banner {
 
     /// The body and the buttons, where the layout placed them.
     fn draw_contents(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.body
-            .draw_child(scene, transform, text, theme,&env);
+        self.body.draw_child(scene, transform, text, theme, &env);
         let on_well = theme.on_ground(well(theme, self.body.notice.kind));
         for button in self.buttons_mut() {
-            button.draw_child(scene, transform, text, &on_well,&env);
+            button.draw_child(scene, transform, text, &on_well, &env);
         }
     }
 
@@ -1347,7 +1354,11 @@ impl Widget for Banner {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.band.motion = theme.motion();
         if !self.in_motion() {
@@ -1357,7 +1368,13 @@ impl Widget for Banner {
             // Kept, so its column can draw it leaving when its view stops
             // building it.
             let mut painted = self.band.take_painted();
-            self.draw_contents(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            self.draw_contents(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
             self.band.show_at_rest(painted, scene, transform);
             return;
         }
@@ -1367,7 +1384,13 @@ impl Widget for Banner {
             return;
         }
         let mut painted = self.band.take_painted();
-        self.draw_contents(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.draw_contents(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
         self.band.show_moving(painted, scene, transform);
     }
 

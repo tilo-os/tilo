@@ -6091,7 +6091,7 @@ mod tests {
                 assert_ne!(first, second, "document identity must survive narrow tabs");
                 assert!(second.contains("060"), "{second}");
                 let mut scene = Scene::new();
-                bar.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
+                bar.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, crate::presence::PresenceCtx::default().draw_env()));
                 assert!(
                     scene
                         .encoding()
@@ -6548,7 +6548,7 @@ mod tests {
                 lay_out_at_width_with(b, 600.0, &theme);
                 let mut scene = Scene::new();
                 let mut tr = TextRenderer::new();
-                b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
+                b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, crate::presence::PresenceCtx::default().draw_env()));
                 scene.encoding().draw_data.clone()
             };
             let mut documents = bar();
@@ -7104,7 +7104,7 @@ mod tests {
 
                     let theme = Theme::dark();
                     let mut tr = TextRenderer::new();
-                    let presence = PresenceCtx::default();
+                    let presence = crate::presence::PresenceCtx::default();
                     let mut scene = Scene::new();
                     b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
                     scene
@@ -7145,7 +7145,7 @@ mod tests {
                     b.max_rects = vec![Rect::ZERO; 2];
                     b.search_rects = vec![Rect::ZERO; 2];
 
-                    let mut presence = PresenceCtx::default();
+                    let mut presence = crate::presence::PresenceCtx::default();
                     if with_peer {
                         presence.register_peer_at(
                             ::collaboration::permissions::MemberId::person("ada"),
@@ -7193,7 +7193,7 @@ mod tests {
                     b.close_rects = vec![Rect::ZERO; 2];
                     b.max_rects = vec![Rect::ZERO; 2];
                     b.search_rects = vec![Rect::ZERO; 2];
-                    let mut presence = PresenceCtx::default();
+                    let mut presence = crate::presence::PresenceCtx::default();
                     for peer in ["ada", "bot", "cy", "dee", "eve"] {
                         presence.register_peer_at(
                             ::collaboration::permissions::MemberId::person(peer),
@@ -7248,7 +7248,7 @@ mod tests {
                     ],
                     1,
                 );
-                let mut presence = PresenceCtx::default();
+                let mut presence = crate::presence::PresenceCtx::default();
                 presence.register_peer_at(
                             ::collaboration::permissions::MemberId::person("ada"),
                             &PresenceKey::Tab {
@@ -7284,7 +7284,7 @@ mod tests {
                     1,
                 );
                 let reserve = b.resting_reveal(1).reserve();
-                let draw_at = |b: &mut TabBar, width: f64, presence: &PresenceCtx| {
+                let draw_at = |b: &mut TabBar, width: f64, presence: &crate::presence::PresenceCtx| {
                     b.touch();
                     b.rect = Rect::new(0.0, 0.0, 80.0 + width, 40.0);
                     b.tab_rects = vec![
@@ -7297,9 +7297,9 @@ mod tests {
                     b.search_rects = vec![Rect::ZERO; 2];
                     b.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), presence.draw_env()));
                 };
-                draw_at(&mut b, 200.0, &PresenceCtx::default());
+                draw_at(&mut b, 200.0, &crate::presence::PresenceCtx::default());
                 let content = PILL_PAD_X + b.leading_zone(1) + b.shaped_title_width(1) + reserve;
-                let mut presence = PresenceCtx::default();
+                let mut presence = crate::presence::PresenceCtx::default();
                 presence.register_peer_at(
                             ::collaboration::permissions::MemberId::person("ada"),
                             &PresenceKey::Tab {
@@ -7341,7 +7341,7 @@ mod tests {
                 b.search_rects = vec![Rect::ZERO; 2];
                 let colour_tags = |b: &mut TabBar| {
                     let mut scene = Scene::new();
-                    b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
+                    b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), crate::presence::PresenceCtx::default().draw_env()));
                     scene
                         .encoding()
                         .draw_tags
@@ -7359,7 +7359,7 @@ mod tests {
                     }],
                 );
                 assert_eq!(
-                    b.face_count(1, &PresenceCtx::default().draw_env()),
+                    b.face_count(1, &crate::presence::PresenceCtx::default().draw_env()),
                     1,
                     "the given face is the pill's face"
                 );
@@ -7787,7 +7787,7 @@ mod tests {
             assert_eq!(node.children[2].description.as_deref(), Some("Loading"));
             let mut scene = Scene::new();
             let mut tr = TextRenderer::new();
-            tabs.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
+            tabs.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, crate::presence::PresenceCtx::default().draw_env()));
             assert!(!scene.encoding().draw_tags.is_empty());
         }
 
@@ -7922,7 +7922,7 @@ mod tests {
 
                 let theme = Theme::dark();
                 let mut tr = TextRenderer::new();
-                let presence = PresenceCtx::default();
+                let presence = crate::presence::PresenceCtx::default();
                 let mut scene = Scene::new();
                 b.draw(&mut crate::draw::DrawCtx::new(
                     &mut scene,
@@ -9118,7 +9118,7 @@ mod tests {
             lay_out_at_width_with(&mut b, 900.0, &theme);
             let mut scene = Scene::new();
             let mut tr = TextRenderer::new();
-            b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
+            b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, crate::presence::PresenceCtx::default().draw_env()));
             let location = b.location_rect();
             let home = (0..900_u32)
                 .map(|x| Point::new(f64::from(x), location.center().y))

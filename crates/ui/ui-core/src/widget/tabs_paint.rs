@@ -58,7 +58,11 @@ impl TabBar {
 
     /// [`Widget::draw`] of everything the bar shows, at `transform`.
     pub(super) fn draw_fresh(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.drag_lift_duration = theme.tokens.motion.durations.fast();
         self.painted_labels.borrow_mut().clear();
@@ -93,8 +97,18 @@ impl TabBar {
             self.selection_move = None;
         }
 
-        self.draw_pills(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()), layout_t, fade_window);
-        self.draw_rename(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+        self.draw_pills(
+            &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
+            layout_t,
+            fade_window,
+        );
+        self.draw_rename(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            tr,
+            theme,
+            env.clone(),
+        ));
         // The tab list's focus ring comes and goes with keyboard focus: a
         // damage part around the active pill, not a repaint of the bar.
         let focus = crate::scene_parts::PartKey::new("ui.tab-focus", ());
@@ -144,14 +158,26 @@ impl TabBar {
                 vec![transform.transform_rect_bbox(area)],
                 |scene| {
                     scene.push_clip_layer(vello::peniko::Fill::NonZero, transform, &area);
-                    row.paint(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env));
+                    row.paint(&mut crate::draw::DrawCtx::new(
+                        scene,
+                        transform,
+                        tr,
+                        theme,
+                        env.clone(),
+                    ));
                     scene.pop_layer();
                 },
             );
         }
         self.draw_closing_tabs(scene, transform, tr, theme);
         self.draw_drop_indicator(scene, transform, theme);
-        self.draw_drag_ghost(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+        self.draw_drag_ghost(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            tr,
+            theme,
+            env.clone(),
+        ));
     }
 
     /// The window's History toggle: the app's action, so it wears the app's
@@ -204,7 +230,12 @@ impl TabBar {
     /// Whether the bar's held drawing is the drawing it would make now: the
     /// bar is at rest, and nothing it draws from changed since it was made.
     /// Answers without building the list of people again.
-    pub(super) fn replays(&self, transform: Affine, theme: &Theme, env: &crate::draw::DrawEnv<'_>) -> bool {
+    pub(super) fn replays(
+        &self,
+        transform: Affine,
+        theme: &Theme,
+        env: &crate::draw::DrawEnv<'_>,
+    ) -> bool {
         self.painted.as_ref().is_some_and(|painted| {
             painted.epoch == self.paint_epoch
                 && painted.transform == transform
@@ -259,7 +290,11 @@ impl TabBar {
     /// and the people on its tabs are as when it was last drawn shows that
     /// drawing again ([`TabBar::replays`]); anything else draws it afresh.
     pub(super) fn paint_or_replay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         if self.replays(transform, theme, &env) {
             if let Some(painted) = self.painted.as_ref() {
@@ -270,7 +305,13 @@ impl TabBar {
         let _drawn = tilo_resource::profiling::Phase::start("ui.tab_bar.draw");
         let mut own = Scene::new();
         let ((), parts) = crate::scene_parts::record(&mut own, |own| {
-            self.draw_fresh(&mut crate::draw::DrawCtx::new(own, transform, tr, theme, env));
+            self.draw_fresh(&mut crate::draw::DrawCtx::new(
+                own,
+                transform,
+                tr,
+                theme,
+                env.clone(),
+            ));
         });
         let drawn = self.paint_epoch;
         if self.toolbar_row.take_measured() && self.strip_squeezes_parts() {

@@ -259,12 +259,15 @@ impl Decorator for HoverToolbar {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.focused = self.focus_shows();
         self.follow(Some(theme));
-        self.layers
-            .draw_child(scene, transform, text, theme,&env);
+        self.layers.draw_child(scene, transform, text, theme, &env);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -326,14 +329,18 @@ impl Decorator for ToolbarFace {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let openness = self.shown.openness.get();
         if openness <= 0.0 {
             return;
         }
         if openness >= 1.0 {
-            self.bar.draw_child(scene, transform, text, theme,&env);
+            self.bar.draw_child(scene, transform, text, theme, &env);
             return;
         }
         let rect = self.bar.get_rect();
@@ -348,7 +355,7 @@ impl Decorator for ToolbarFace {
             transform,
             &rect,
         );
-        self.bar.draw_child(scene, transform, text, theme,&env);
+        self.bar.draw_child(scene, transform, text, theme, &env);
         scene.pop_layer();
     }
 

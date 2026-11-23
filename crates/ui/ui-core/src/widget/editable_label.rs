@@ -540,13 +540,17 @@ impl Widget for EditableLabel {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.adopt_theme(theme);
         if self.editing {
             self.input.apply_layout_external(self.rect);
             self.input
-                .draw_child(scene, transform, text_renderer, theme,&env);
+                .draw_child(scene, transform, text_renderer, theme, &env);
             return;
         }
         let (shown, color) = if self.value.is_empty() {

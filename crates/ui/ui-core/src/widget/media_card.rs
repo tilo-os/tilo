@@ -1260,7 +1260,11 @@ impl Widget for MediaCard {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if env.should_cull(self.rect) {
             return;
@@ -1525,9 +1529,9 @@ pub struct MediaGrid {
     columns: Option<Rc<Cell<usize>>>,
 
     /// Every card's item, by the place it stands in: what a range of cards reports.
-    order: Rc<std::cell::RefCell<Vec<Option<crate::component::ResourceId>>>>,
+    pub(crate) order: Rc<std::cell::RefCell<Vec<Option<crate::component::ResourceId>>>>,
     /// The place of the card the pointer is over, as the card itself says it.
-    hovered: Rc<Cell<Option<usize>>>,
+    pub(crate) hovered: Rc<Cell<Option<usize>>>,
     /// The card the pointer pressed last, without shift: where a range taken with shift starts.
     anchor: Cell<Option<usize>>,
     /// The card the pointer is held on, while it is: where a drag's range starts.
@@ -2065,16 +2069,14 @@ impl Widget for MediaGrid {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(inner) = self.inner.as_mut() {
-            crate::widget::draw_child(
-                &mut **inner,
-                scene,
-                transform,
-                text_renderer,
-                theme,&env,
-            );
+            crate::widget::draw_child(&mut **inner, scene, transform, text_renderer, theme, &env);
             return;
         }
         if matches!(self.mode, GridMode::Columns) {
@@ -2091,7 +2093,7 @@ impl Widget for MediaGrid {
             }
         }
         for card in &mut self.cards {
-            card.draw_child(scene, transform, text_renderer, theme,&env);
+            card.draw_child(scene, transform, text_renderer, theme, &env);
         }
     }
 

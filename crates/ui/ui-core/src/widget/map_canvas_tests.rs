@@ -278,7 +278,13 @@ fn the_grain_is_faint_whole_pixels_inside_the_canvas_at_every_scale() {
             crate::widget::layout::lay_out_detached(&mut map, canvas, &theme, &mut text)
                 .expect("the map lays out");
             let mut scene = Scene::new();
-            map.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::scale(scale), &mut text, &theme, PresenceCtx::default().draw_env()));
+            map.draw(&mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::scale(scale),
+                &mut text,
+                &theme,
+                crate::presence::PresenceCtx::default().draw_env(),
+            ));
             let (width, height) = ((400.0 * scale) as u32, (300.0 * scale) as u32);
             let mut pixels = vec![0_u8; (width * height * 4) as usize];
             let mut target =

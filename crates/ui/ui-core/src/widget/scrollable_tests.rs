@@ -59,7 +59,11 @@ impl Widget for EventSpy {
     crate::rect_geometry!();
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
         self.draw_viewport.set(env.viewport);
     }

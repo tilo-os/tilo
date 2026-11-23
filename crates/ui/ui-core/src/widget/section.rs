@@ -554,7 +554,11 @@ impl Widget for CountPill {
     crate::rect_geometry!();
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.rect.height() <= 0.0 {
             return;
@@ -618,7 +622,11 @@ impl Widget for Chevron {
     crate::rect_geometry!();
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, _text, theme, mut env) = ctx.parts();
         let expanded = self.expanded.get();
         let icon = if expanded {
@@ -955,7 +963,11 @@ impl Widget for HeaderRow {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.painted = None;
         if let Some(disclosure) = &self.disclosure {
@@ -980,7 +992,13 @@ impl Widget for HeaderRow {
                 );
             }
         }
-        self.parts.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.parts.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 
     fn is_focusable(&self) -> bool {
@@ -1437,7 +1455,11 @@ impl Widget for Section {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.sync_rows(text, theme);
         let shown = self.shown();
@@ -1451,7 +1473,8 @@ impl Widget for Section {
                 scene,
                 transform * Affine::translate((0.0, dy)),
                 text,
-                theme,&env,
+                theme,
+                &env,
             );
         }
         self.ghosts.retain_drawn();
@@ -1806,7 +1829,11 @@ impl Widget for StatusLine {
     crate::rect_geometry!(measured);
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let style = theme.text(TextRole::Caption);
         let line = f64::from(style.line_height_px());
@@ -2028,7 +2055,11 @@ impl Widget for ObjectHeader {
     crate::rect_geometry!(measured);
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let m = ObjectMetrics::new(theme);
         let mut ctx = PaintCtx::new(scene, transform, text, theme);

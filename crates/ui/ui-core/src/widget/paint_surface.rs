@@ -184,10 +184,8 @@ impl PaintSurface {
         {
             let (image_width, image_height) = (f64::from(image.width), f64::from(image.height));
             if image_width > 0.0 && image_height > 0.0 {
-                let pixels_to_units = Affine::scale_non_uniform(
-                    self.width / image_width,
-                    self.height / image_height,
-                );
+                let pixels_to_units =
+                    Affine::scale_non_uniform(self.width / image_width, self.height / image_height);
                 let brush = ImageBrush::new(image);
                 scene.fill(
                     Fill::NonZero,
@@ -226,8 +224,8 @@ impl PaintSurface {
             }
             let image =
                 crate::raster::rgba8(Blob::new(Arc::new(dabs.pixels)), dabs.width, dabs.height);
-            let pixels_to_units = Affine::translate((dabs.origin.x, dabs.origin.y))
-                * Affine::scale(1.0 / dabs.scale);
+            let pixels_to_units =
+                Affine::translate((dabs.origin.x, dabs.origin.y)) * Affine::scale(1.0 / dabs.scale);
             let brush = ImageBrush::new(image);
             scene.fill(
                 Fill::NonZero,
@@ -455,9 +453,7 @@ mod tests {
         assert_eq!(origin, Point::new(0.0, 0.0));
         let at = surface.artwork_at(Point::new(40.0, 20.0));
         assert_eq!(at, Point::new(20.0, 25.0));
-        let back = surface
-            .artwork_to_screen(vello::kurbo::Affine::IDENTITY)
-            .transform_point2(at);
+        let back = surface.artwork_to_screen(vello::kurbo::Affine::IDENTITY) * at;
         assert_eq!(back, Point::new(40.0, 20.0));
     }
 

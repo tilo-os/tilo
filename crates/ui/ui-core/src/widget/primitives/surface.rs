@@ -362,7 +362,11 @@ impl Widget for Surface {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let paints = OPEN_LEVELS.with(|open| self.paints_ground(&open.borrow()));
         let child_theme = if paints {
@@ -376,7 +380,8 @@ impl Widget for Surface {
             scene,
             transform,
             text_renderer,
-            &child_theme,&env,
+            &child_theme,
+            &env,
         );
         OPEN_LEVELS.with(|open| {
             open.borrow_mut().pop();
@@ -550,7 +555,11 @@ impl Widget for DensityRegion {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let theme = theme.clone().with_density(self.density);
         crate::widget::draw_child(
@@ -558,7 +567,8 @@ impl Widget for DensityRegion {
             scene,
             transform,
             text_renderer,
-            &theme,&env,
+            &theme,
+            &env,
         );
     }
 

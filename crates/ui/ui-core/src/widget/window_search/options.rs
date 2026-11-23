@@ -292,7 +292,11 @@ impl OptionsPanel {
     }
 
     pub(super) fn paint(&mut self, ctx: &mut crate::draw::DrawCtx<'_>, shown: Shown) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.appearing.follow(self.open, theme.motion());
         if !self.appearing.is_drawn() {
@@ -314,7 +318,7 @@ impl OptionsPanel {
             floating_surface::paint(scene, transform, rect, theme);
             paint_choices(scene, transform, text, &on_panel, &choices);
             if replace_rect.area() > 0.0 {
-                field.draw_child(scene, transform, text, &on_panel,&env);
+                field.draw_child(scene, transform, text, &on_panel, &env);
             }
         });
     }

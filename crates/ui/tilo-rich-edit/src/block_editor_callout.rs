@@ -165,13 +165,8 @@ pub(super) fn draw_callout(b: &mut Block, kind: CalloutKind, x0: f64, ctx: &mut 
     inked.tokens.colors.text_primary = wash.ink;
     inked.text_dim = wash.ink_dim;
     inked.tokens.colors.text_dim = wash.ink_dim;
-    b.line.draw_child(
-        ctx.scene,
-        ctx.transform,
-        ctx.text_renderer,
-        &inked,
-        ctx.presence,
-    );
+    b.line
+        .draw_child(ctx.scene, ctx.transform, ctx.text_renderer, &inked, ctx.env);
 }
 
 #[cfg(test)]

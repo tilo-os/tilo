@@ -1736,7 +1736,11 @@ impl Map {
     /// forgotten once its departure ends, so a map of many places only carries motion for the
     /// ones it shows.
     fn draw_pins(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let now = crate::motion::frame_now();
         let source = crate::motion::input_source();
@@ -1797,7 +1801,7 @@ impl Map {
                 continue;
             };
             pose.paint(scene, transform, bounds, |scene, transform| {
-                child.draw_child(scene, transform, text, theme,&env);
+                child.draw_child(scene, transform, text, theme, &env);
             });
         }
     }
@@ -2260,7 +2264,11 @@ impl Widget for Map {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         // A page shown as HTML shows it as one image.
         crate::scene_parts::picture();
@@ -2288,7 +2296,13 @@ impl Widget for Map {
         }
         self.draw_hint(scene, transform, text, theme);
         self.draw_frame_outline(scene, transform, theme);
-        self.draw_pins(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.draw_pins(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
         if clips {
             scene.pop_layer();
         }

@@ -30,7 +30,13 @@ fn draw(w: &mut dyn Widget) -> Scene {
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    w.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+    w.draw(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        presence.draw_env(),
+    ));
     scene
 }
 

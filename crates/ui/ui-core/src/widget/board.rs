@@ -751,15 +751,13 @@ impl crate::widget::Decorator for Board {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        DrawChild::draw_child(
-            &mut self.row,
-            scene,
-            transform,
-            text_renderer,
-            theme,&env,
-        );
+        DrawChild::draw_child(&mut self.row, scene, transform, text_renderer, theme, &env);
         self.dirty = false;
         let Some(drag) = self.drag.as_ref().filter(|drag| drag.active) else {
             return;

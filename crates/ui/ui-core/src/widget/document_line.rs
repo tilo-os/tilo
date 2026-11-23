@@ -188,7 +188,6 @@ impl DocumentLine for TextInput {
         TextInput::paint_changed(self)
     }
 
-
     fn paints_shaped_caret(&self) -> bool {
         TextInput::paints_shaped_caret(self)
     }

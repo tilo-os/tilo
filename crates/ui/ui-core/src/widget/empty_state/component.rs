@@ -79,7 +79,7 @@ impl Described for EmptyState {
         self.handler = match act {
             Event::None => None,
             Event::Action(binding) => Some(super::Handler::Binding(binding)),
-            Event::View(intent) => Some(super::Handler::View(std::rc::Rc::new(
+            Event::View(intent) => Some(super::Handler::Press(std::rc::Rc::new(
                 std::cell::RefCell::new(Box::new(intent.sender())),
             ))),
         };

@@ -2017,7 +2017,6 @@ pub use action_proposal::{
 pub mod binding;
 pub mod capability;
 mod content_kind;
-pub mod input_provenance;
 pub mod permission;
 pub mod presence_topology;
 pub mod resources;
@@ -2604,7 +2603,6 @@ mod activation;
 mod press;
 pub use press::Press;
 mod dismissal;
-#[cfg(any(test, feature = "test-support"))]
 pub use activation::{Interaction, PaintedTargets, paint_disabled, paint_focus_ring};
 pub(crate) use activation::{press_waiting, take_presses};
 pub mod media_card;

@@ -97,7 +97,13 @@ fn provenance_and_author_pill_presentation() {
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
             t.place_controls(&theme);
-            t.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::empty().draw_env()));
+            t.draw(&mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                PresenceCtx::empty().draw_env(),
+            ));
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -1251,7 +1257,13 @@ fn a_long_writer_name_never_reaches_a_rows_time() {
         let mut text = TextRenderer::new();
         let mut scene = Scene::new();
         t.place_controls(&theme);
-        t.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, PresenceCtx::empty().draw_env()));
+        t.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            PresenceCtx::empty().draw_env(),
+        ));
         (pane, t)
     })
     .collect::<Vec<_>>();
@@ -1335,6 +1347,12 @@ fn an_agent_author_has_its_face_and_no_chip() {
         .with_relation(crate::widget::history::AuthorRelation::Software);
     let mut t = timeline_at(Rect::new(8.0, 8.0, 360.0, 408.0), vec![entry]);
     t.place_controls(&theme);
-    t.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &theme, PresenceCtx::empty().draw_env()));
+    t.draw(&mut crate::draw::DrawCtx::new(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        &theme,
+        PresenceCtx::empty().draw_env(),
+    ));
     assert_eq!(t.row_parts(0).expect("the row painted").chip, None);
 }

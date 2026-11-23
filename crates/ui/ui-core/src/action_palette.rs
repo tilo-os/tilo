@@ -3491,7 +3491,7 @@ mod tests {
                     payload: vec![],
                 },
             );
-            spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
+            spec.type_mut().contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
             let resource = ResourceSpec::new("document", "document", "Document").with_action(spec);
             let mut palette = ActionPalette::new();
             palette.load_open_resources(&[resource]);

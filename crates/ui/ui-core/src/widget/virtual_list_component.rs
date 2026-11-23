@@ -561,6 +561,7 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
     };
     Some(ListItemProps {
         key: item.key.clone(),
+        value: item.value.clone(),
         item: item.item.clone(),
         opens: item.opens,
         presence: item.presence.clone(),

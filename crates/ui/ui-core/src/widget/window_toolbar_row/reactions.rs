@@ -317,7 +317,8 @@ impl ToolbarRow {
                 scene,
                 transform,
                 tr,
-                theme,env,
+                theme,
+                env,
             );
         }
     }

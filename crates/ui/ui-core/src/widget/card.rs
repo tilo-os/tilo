@@ -294,9 +294,19 @@ impl Widget for CardHeader {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.parts.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.parts.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 }
 
@@ -589,7 +599,11 @@ impl Widget for Card {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if env.should_cull(self.parts.rect) {
             return;
@@ -603,7 +617,13 @@ impl Widget for Card {
             self.selected,
         );
         let inner = CardFace::content_theme(theme);
-        self.parts.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.parts.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 
     fn handle_event(
@@ -791,9 +811,19 @@ impl Widget for Actions {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.parts.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.parts.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 }
 
@@ -1029,13 +1059,17 @@ impl Widget for CardGrid {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         for card in &mut self.cards {
             if env.should_cull(card.get_rect()) {
                 continue;
             }
-            card.draw_child(scene, transform, text_renderer, theme,&env);
+            card.draw_child(scene, transform, text_renderer, theme, &env);
         }
     }
 

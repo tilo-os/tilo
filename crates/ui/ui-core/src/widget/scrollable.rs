@@ -1590,7 +1590,11 @@ impl Widget for Scrollable {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.reduce_motion_active = theme.reduce_motion;
         self.motion = theme.motion();
@@ -1631,7 +1635,7 @@ impl Widget for Scrollable {
         let keep = self.shown.keep().filter(|_| !fading);
         if let Some(c) = &mut self.child {
             crate::draw_cull::keeping(scene, keep, |scene| {
-                crate::widget::draw_child(c.as_mut(), scene, transform, tr, theme,&env);
+                crate::widget::draw_child(c.as_mut(), scene, transform, tr, theme, &env);
             });
         }
         if fading {

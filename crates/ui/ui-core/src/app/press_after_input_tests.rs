@@ -39,7 +39,7 @@ fn window(secret: bool) -> (App, Rc<RefCell<Vec<String>>>) {
         .with_id("name")
         .with_accessible_name("Display name")
         .with_secret(secret);
-    let save = crate::widget::Button::new("save", "Save").on_effect(move || {
+    let save = crate::widget::Button::new("save", "Save").on_click(move || {
         sink.borrow_mut().push(read.get());
     });
     let column = crate::widget::Column::new()

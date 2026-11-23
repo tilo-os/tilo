@@ -147,7 +147,16 @@ impl BlockEditor {
         if let Some(bounds) = self.popover_bounds.or(self.overlay_viewport) {
             self.text_menu.menu.set_viewport(Some(bounds));
         }
-        Widget::draw_overlay(&mut self.text_menu.menu, &mut tilo_ui::DrawCtx::new(scene, transform, text, theme, ui::presence::PresenceCtx::empty().draw_env()));
+        Widget::draw_overlay(
+            &mut self.text_menu.menu,
+            &mut tilo_ui::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                ui::presence::PresenceCtx::empty().draw_env(),
+            ),
+        );
     }
 
     /// The open text menu's node of the accessibility tree: its rows, each

@@ -960,7 +960,13 @@ fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
                 Rect::new(0.0, 0.0, 384.0, 52.0),
             );
             let mut scene = Scene::new();
-            group.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, PresenceCtx::default().draw_env()));
+            group.draw(&mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                PresenceCtx::default().draw_env(),
+            ));
             let runs = &scene.encoding().resources.glyph_runs;
             assert!(!runs.is_empty());
             for run in runs {
@@ -1040,7 +1046,13 @@ fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        g.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+        g.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            presence.draw_env(),
+        ));
 
         let colour_tags = scene
             .encoding()
@@ -1294,7 +1306,13 @@ fn the_thumb_slides_to_a_clicked_segment_and_lands_on_a_key() {
     let presence = PresenceCtx::default();
     let mut paint = |g: &mut ToggleGroup| {
         let mut scene = Scene::new();
-        g.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+        g.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            presence.draw_env(),
+        ));
     };
     let t0 = crate::time::now();
     let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
@@ -1350,7 +1368,13 @@ fn group_draw_data(focused: bool, theme: &Theme) -> Vec<u32> {
 
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    g.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
+    g.draw(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        theme,
+        presence.draw_env(),
+    ));
     scene.encoding().draw_data.clone()
 }
 

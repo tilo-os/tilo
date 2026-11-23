@@ -1732,13 +1732,21 @@ impl Widget for ContextMenu {
     /// window's top layer ([`Widget::draw_overlay`]), so no later sibling,
     /// pane or chrome covers it.
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (_scene, _transform, _text_renderer, theme, mut env) = ctx.parts();
         self.set_text_scale(theme.text_scale);
     }
 
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.set_text_scale(theme.text_scale);
         self.cache_theme(theme);
@@ -1782,7 +1790,13 @@ impl Widget for ContextMenu {
             self.paint_menu(scene, transform, text_renderer, theme);
         });
         if let Some((_, menu)) = self.submenu.as_mut() {
-            menu.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         }
         self.paint_send_to(scene, transform, text_renderer, theme);
     }
@@ -2272,7 +2286,13 @@ mod nested_and_anchored_tests {
         let presence = PresenceCtx::default();
         let previous = presence.push_viewport(WINDOW);
         let mut scene = Scene::new();
-        m.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), presence.draw_env()));
+        m.draw_overlay(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            presence.draw_env(),
+        ));
         presence.pop_viewport(previous);
     }
 

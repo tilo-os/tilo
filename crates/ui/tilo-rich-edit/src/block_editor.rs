@@ -7314,6 +7314,7 @@ struct BlockDrawCtx<'a> {
     transform: Affine,
     theme: &'a Theme,
     presence: &'a PresenceCtx,
+    env: &'a ui::draw::DrawEnv<'a>,
     line_rects: &'a [Rect],
     ordinals: &'a [u32],
     table_previews: &'a [Option<Rect>],
@@ -7677,13 +7678,8 @@ fn draw_block(
             let mut quiet = ctx.theme.clone();
             quiet.text_primary = quiet.text_dim;
             quiet.tokens.colors.text_primary = quiet.tokens.colors.text_dim;
-            b.line.draw_child(
-                ctx.scene,
-                ctx.transform,
-                ctx.text_renderer,
-                &quiet,
-                ctx.presence,
-            );
+            b.line
+                .draw_child(ctx.scene, ctx.transform, ctx.text_renderer, &quiet, ctx.env);
             return;
         }
 
@@ -7739,7 +7735,7 @@ fn draw_block(
                     ctx.transform,
                     ctx.text_renderer,
                     ctx.theme,
-                    ctx.presence,
+                    ctx.env,
                 );
             }
             draw_formula_run(idx, ctx, formulas);
@@ -7753,7 +7749,7 @@ fn draw_block(
                     ctx.transform,
                     ctx.text_renderer,
                     ctx.theme,
-                    ctx.presence,
+                    ctx.env,
                 );
                 if let Some(outer) = outer {
                     ctx.table_source = Some(std::mem::replace(ctx.scene, outer));
@@ -7783,7 +7779,7 @@ fn draw_block(
         ctx.transform,
         ctx.text_renderer,
         ctx.theme,
-        ctx.presence,
+        ctx.env,
     );
 }
 
@@ -8604,10 +8600,20 @@ impl Widget for BlockEditor {
     /// The editor's popovers, in the window's top layer — unless its owner
     /// painted them itself this frame, inside its own scroll and clip.
     fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         for child in self.children_mut() {
-            child.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            child.draw_overlay(&mut tilo_ui::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         }
         if !self.popovers_painted {
             self.paint_popovers(scene, transform, text_renderer, theme);
@@ -8934,7 +8940,11 @@ impl Widget for BlockEditor {
         reason = "one cohesive paint pass uses aligned caches and bounded viewport arithmetic"
     )]
     fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let fallback_presence = ui::presence::PresenceCtx::default();
         let presence = env.presence.unwrap_or(&fallback_presence);
@@ -9165,6 +9175,7 @@ impl Widget for BlockEditor {
             transform,
             theme,
             presence,
+            env: &env,
             line_rects: line_rects.as_slice(),
             ordinals: ordinals.as_slice(),
             table_previews: self.table_preview_rects.as_slice(),
@@ -9313,7 +9324,16 @@ impl Widget for BlockEditor {
                     theme,
                 );
                 if preceding.is_none() {
-                    table.draw_projected_focus(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()), self.caret_paint_suppressed);
+                    table.draw_projected_focus(
+                        &mut tilo_ui::DrawCtx::new(
+                            ctx.scene,
+                            transform,
+                            ctx.text_renderer,
+                            theme,
+                            ctx.env.clone(),
+                        ),
+                        self.caret_paint_suppressed,
+                    );
                     if let Some(painted) = table.projected_focus_paint() {
                         self.table_focus_paint.insert(b.id.clone(), painted);
                     }
@@ -9359,12 +9379,9 @@ impl Widget for BlockEditor {
                         y + 24.0 * self.text_scale,
                     ));
                 }
-                control.button.draw_child(
-                    ctx.scene,
-                    ctx.transform,
-                    ctx.text_renderer,
-                    theme,&env,
-                );
+                control
+                    .button
+                    .draw_child(ctx.scene, ctx.transform, ctx.text_renderer, theme, &env);
                 if self.focused == Some(idx)
                     || Rect::new(rect.x0, top, rect.x1, rect.y1).contains(self.last_mouse_pos)
                 {
@@ -9372,13 +9389,15 @@ impl Widget for BlockEditor {
                         ctx.scene,
                         ctx.transform,
                         ctx.text_renderer,
-                        theme,&env,
+                        theme,
+                        &env,
                     );
                     control.add_column.draw_child(
                         ctx.scene,
                         ctx.transform,
                         ctx.text_renderer,
-                        theme,&env,
+                        theme,
+                        &env,
                     );
                 }
                 if let Some(parts) = table_parts.as_mut() {
@@ -9712,7 +9731,7 @@ impl Widget for BlockEditor {
                 {
                     image
                         .button_mut()
-                        .draw_child(scene, transform, text_renderer, theme,&env);
+                        .draw_child(scene, transform, text_renderer, theme, &env);
                 }
             }
             if let Some(handle) = self.image_resize_handle(index) {

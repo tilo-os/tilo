@@ -2414,7 +2414,7 @@ fn present_shell(
     scale: f64,
 ) -> (Scene, Vec<Rect>) {
     let mut scene = Scene::new();
-    let presence = PresenceCtx::empty();
+    let presence = crate::presence::PresenceCtx::empty();
     let transform = Affine::scale(scale);
     shell.draw(&mut crate::draw::DrawCtx::new(
         &mut scene,

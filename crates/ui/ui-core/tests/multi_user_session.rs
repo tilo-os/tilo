@@ -326,13 +326,13 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
         let theme = tilo_ui::theme::Theme::dark();
         let mut tr = tilo_ui::text_render::TextRenderer::new();
 
-        input.draw(
+        input.draw(&mut tilo_ui::draw::DrawCtx::new(
             &mut scene,
             vello::kurbo::Affine::IDENTITY,
             &mut tr,
             &theme,
-            bob_app.presence_ctx(),
-        );
+            bob_app.presence_ctx().draw_env(),
+        ));
 
         assert!(!scene.encoding().is_empty());
         assert_eq!(

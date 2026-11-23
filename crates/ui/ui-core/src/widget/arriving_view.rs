@@ -336,7 +336,11 @@ impl Widget for Reserve {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
     }
 
@@ -937,7 +941,11 @@ impl Widget for ArrivingView {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let now = crate::motion::frame_now();
         let step = self.step(now);
@@ -969,7 +977,7 @@ impl Widget for ArrivingView {
         let rect = self.rect;
         let inner = &mut self.inner;
         layered(scene, transform, rect, incoming, |scene| {
-            inner.draw_child(scene, transform, text_renderer, theme,&env);
+            inner.draw_child(scene, transform, text_renderer, theme, &env);
         });
     }
 

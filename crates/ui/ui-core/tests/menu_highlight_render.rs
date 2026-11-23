@@ -263,7 +263,13 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
 
             let presence = PresenceCtx::default();
             let rendered = render(&theme, |scene, tr| {
-                menu.draw_overlay(&mut crate::draw::DrawCtx::new(scene, Affine::IDENTITY, tr, &theme, presence.draw_env()));
+                menu.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
+                    scene,
+                    Affine::IDENTITY,
+                    tr,
+                    &theme,
+                    presence.draw_env(),
+                ));
             });
             rendered.dump(&format!("menu_highlight_context_menu_hover_{name}"));
             assert_armed_row(
@@ -297,7 +303,13 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
             let row2 = menu.item_rect(2).unwrap();
 
             let rendered = render(&theme, |scene, tr| {
-                menu.draw_overlay(&mut crate::draw::DrawCtx::new(scene, Affine::IDENTITY, tr, &theme, presence.draw_env()));
+                menu.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
+                    scene,
+                    Affine::IDENTITY,
+                    tr,
+                    &theme,
+                    presence.draw_env(),
+                ));
             });
             rendered.dump(&format!("menu_highlight_context_menu_keyboard_{name}"));
             assert_armed_row(
@@ -332,7 +344,13 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
 
             let presence = PresenceCtx::default();
             let rendered = render(&theme, |scene, tr| {
-                menu.draw_overlay(&mut crate::draw::DrawCtx::new(scene, Affine::IDENTITY, tr, &theme, presence.draw_env()));
+                menu.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
+                    scene,
+                    Affine::IDENTITY,
+                    tr,
+                    &theme,
+                    presence.draw_env(),
+                ));
             });
             rendered.dump(&format!("menu_highlight_context_menu_hover_{name}"));
             assert_armed_row(
@@ -377,8 +395,20 @@ fn list_menu_cursor_rows_are_visible_in_both_themes() {
 
             let presence = PresenceCtx::default();
             let rendered = render(&theme, |scene, tr| {
-                dd.draw(&mut crate::draw::DrawCtx::new(scene, Affine::IDENTITY, tr, &theme, presence.draw_env()));
-                dd.draw_overlay(&mut crate::draw::DrawCtx::new(scene, Affine::IDENTITY, tr, &theme, presence.draw_env()));
+                dd.draw(&mut tilo_ui::draw::DrawCtx::new(
+                    scene,
+                    Affine::IDENTITY,
+                    tr,
+                    &theme,
+                    presence.draw_env(),
+                ));
+                dd.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
+                    scene,
+                    Affine::IDENTITY,
+                    tr,
+                    &theme,
+                    presence.draw_env(),
+                ));
             });
             rendered.dump(&format!("menu_highlight_dropdown_hover_{name}"));
             assert_armed_row(
@@ -414,8 +444,20 @@ fn list_menu_cursor_rows_are_visible_in_both_themes() {
 
             let presence = PresenceCtx::default();
             let rendered = render(&theme, |scene, tr| {
-                ac.draw(&mut crate::draw::DrawCtx::new(scene, Affine::IDENTITY, tr, &theme, presence.draw_env()));
-                ac.draw_overlay(&mut crate::draw::DrawCtx::new(scene, Affine::IDENTITY, tr, &theme, presence.draw_env()));
+                ac.draw(&mut tilo_ui::draw::DrawCtx::new(
+                    scene,
+                    Affine::IDENTITY,
+                    tr,
+                    &theme,
+                    presence.draw_env(),
+                ));
+                ac.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
+                    scene,
+                    Affine::IDENTITY,
+                    tr,
+                    &theme,
+                    presence.draw_env(),
+                ));
             });
             rendered.dump(&format!("menu_highlight_autocomplete_hover_{name}"));
             assert_highlight_visible(
@@ -491,12 +533,24 @@ fn closed_dropdown_hover_is_visible_on_an_opaque_ground() {
             let probe = Point::new(control.x1 - 44.0, control.center().y);
 
             let resting = render(&theme, |scene, tr| {
-                dd.draw(&mut crate::draw::DrawCtx::new(scene, Affine::IDENTITY, tr, &theme, presence.draw_env()));
+                dd.draw(&mut tilo_ui::draw::DrawCtx::new(
+                    scene,
+                    Affine::IDENTITY,
+                    tr,
+                    &theme,
+                    presence.draw_env(),
+                ));
             });
             dispatch(&mut dd, &cursor_moved(control.center()));
             assert!(!dd.is_open(), "a hover must not open the list");
             let hovered = render(&theme, |scene, tr| {
-                dd.draw(&mut crate::draw::DrawCtx::new(scene, Affine::IDENTITY, tr, &theme, presence.draw_env()));
+                dd.draw(&mut tilo_ui::draw::DrawCtx::new(
+                    scene,
+                    Affine::IDENTITY,
+                    tr,
+                    &theme,
+                    presence.draw_env(),
+                ));
             });
             hovered.dump(&format!("menu_highlight_dropdown_control_hover_{name}"));
 

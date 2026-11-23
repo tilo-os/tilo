@@ -135,7 +135,13 @@ impl Harness {
     /// from the shaped-glyph cache for THIS draw only.
     fn draw(&mut self) -> (u64, u64) {
         self.scene.reset();
-        self.root.draw(&mut crate::draw::DrawCtx::new(&mut self.scene, Affine::IDENTITY, &mut self.tr, &self.theme, self.presence.draw_env()));
+        self.root.draw(&mut tilo_ui::draw::DrawCtx::new(
+            &mut self.scene,
+            Affine::IDENTITY,
+            &mut self.tr,
+            &self.theme,
+            self.presence.draw_env(),
+        ));
         let (h, m, _ns) = self.tr.take_shape_stats();
         (h, m)
     }

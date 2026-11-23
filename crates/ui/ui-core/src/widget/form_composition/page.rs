@@ -5,9 +5,8 @@ use std::rc::Rc;
 
 use super::{
     Actions, Affine, Effective, Element, Form, FormSection, HashMap, LayoutInfo, LayoutOrigin,
-    NodeId, PageLayout, Parts, Point, PresenceCtx, Rect, Scene, Scrollable, TaffyTree, Text,
-    TextRenderer, TextRole, Theme, Widget, column_style, fr, length, minmax, percent,
-    retained_parts, spacing,
+    NodeId, PageLayout, Parts, Point, Rect, Scene, Scrollable, TaffyTree, Text, TextRenderer,
+    TextRole, Theme, Widget, column_style, fr, length, minmax, percent, retained_parts, spacing,
 };
 use crate::tokens::Rhythm;
 
@@ -126,9 +125,19 @@ impl Widget for PageBody {
         FormSection::share_label_column(&mut parts, tree, text);
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.parts.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.parts.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 }
 
@@ -188,7 +197,11 @@ impl Widget for PinnedActions {
         }
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let rect = self.parts.rect;
         crate::surface::separator(
@@ -200,7 +213,13 @@ impl Widget for PinnedActions {
             0.0,
             theme.tokens.colors.surfaces.content,
         );
-        self.parts.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.parts.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 }
 

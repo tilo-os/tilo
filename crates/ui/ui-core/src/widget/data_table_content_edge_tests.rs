@@ -471,7 +471,7 @@ tilo_test_env::scenario! {
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
         let shift = Affine::translate((0.0, -30.0));
-        table.draw(&mut crate::draw::DrawCtx::new(&mut scene, shift, &mut text, &Theme::dark(), PresenceCtx::default().draw_env()));
+        table.draw(&mut crate::draw::DrawCtx::new(&mut scene, shift, &mut text, &Theme::dark(), crate::presence::PresenceCtx::default().draw_env()));
         assert_eq!(*seen.lock().unwrap(), Some(shift));
     }
 

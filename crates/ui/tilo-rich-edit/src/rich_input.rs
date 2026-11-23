@@ -506,25 +506,41 @@ impl Decorator for RichInput {
     }
 
     fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.people.is_empty() && self.people_source.is_some() {
             self.people_source = None;
             self.offer();
-        } else if let Some(source) = self.people.source(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone())) {
+        } else if let Some(source) = env
+            .presence
+            .and_then(|presence| self.people.source(presence))
+        {
             self.people_source = Some(source);
             self.offer();
         }
-        self.line
-            .draw_child(scene, transform, text, theme,&env);
+        self.line.draw_child(scene, transform, text, theme, &env);
     }
 
     fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.line
             .inner_mut()
-            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            .draw_overlay(&mut tilo_ui::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
     }
 
     fn needs_animation_frame(&self) -> bool {

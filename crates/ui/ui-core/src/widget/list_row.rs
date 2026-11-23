@@ -291,10 +291,8 @@ pub struct ListRowFace<'a> {
 impl<'a> ListRowFace<'a> {
     /// Who else is at the item, when the row shows them: the identity its presence dot
     /// stands for ([`ListRow::presence`]).
-    
 
-
-#[cfg(test)]
+    #[cfg(test)]
     pub(crate) fn presence_hue(&self) -> Option<PresenceHue> {
         match self.status {
             Some(RowStatus::Presence(hue)) => Some(hue),
@@ -2050,7 +2048,6 @@ impl ListRow {
         }
     }
 
-
     fn trailing_reserve(&self) -> Option<f64> {
         let trailing = self.trailing.as_ref()?;
         (!trailing.wrapped).then(|| trailing.element.get_rect().width())
@@ -2841,7 +2838,11 @@ impl Widget for ListRow {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if env.should_cull(self.outer()) {
             return;
@@ -2868,11 +2869,14 @@ impl Widget for ListRow {
             );
             face.title_elided(band, text_renderer, theme)
         });
-        crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        crate::widget::draw_over(
+            self,
+            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+        );
         if let Some(trailing) = &mut self.trailing {
             trailing
                 .element
-                .draw_child(scene, transform, text_renderer, theme,&env);
+                .draw_child(scene, transform, text_renderer, theme, &env);
         }
     }
 
@@ -3083,8 +3087,8 @@ impl Widget for ListRow {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
+        state: &mut crate::widget::Edits<'_>,
+        path: &crate::widget::ModelPath,
     ) -> bool {
         match key_path {
             [] => {

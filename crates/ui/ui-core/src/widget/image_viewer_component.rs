@@ -179,10 +179,14 @@ impl Widget for ZoomableImage {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if let Some(viewer) = &mut self.viewer {
-            viewer.draw_child(scene, transform, text, theme,&env);
+            viewer.draw_child(scene, transform, text, theme, &env);
         }
     }
 

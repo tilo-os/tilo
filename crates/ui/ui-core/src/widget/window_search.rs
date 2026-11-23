@@ -1502,7 +1502,11 @@ impl Widget for WindowSearch {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.motion = theme.motion();
         if self.anchor.area() <= 0.0 {
@@ -1541,8 +1545,7 @@ impl Widget for WindowSearch {
                 &cover,
             );
         }
-        self.field
-            .draw_child(scene, transform, text, theme,&env);
+        self.field.draw_child(scene, transform, text, theme, &env);
         if self.parts_opacity > 0.0 {
             let bounds = self
                 .parts
@@ -1566,14 +1569,20 @@ impl Widget for WindowSearch {
     }
 
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let shown = options::Shown {
             options: self.options(),
             matches: self.matches(),
         };
-        self.panel
-            .paint(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()), shown);
+        self.panel.paint(
+            &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
+            shown,
+        );
     }
 
     fn mark_drawn(&mut self) {

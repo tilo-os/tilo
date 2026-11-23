@@ -803,7 +803,11 @@ impl Decorator for WindowFrame {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let rect = self.rect;
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -820,7 +824,10 @@ impl Decorator for WindowFrame {
         let pose = self.placed.pose(rect, now);
         let bounds = rect.union(pose.drawn_rect(rect));
         pose.paint(scene, transform, bounds, |scene, transform| {
-            self.paint_frame(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env), rect);
+            self.paint_frame(
+                &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env),
+                rect,
+            );
         });
     }
 
@@ -862,7 +869,11 @@ impl WindowFrame {
     /// The window itself, drawn where `rect` says: what [`Decorator::draw`] draws once the
     /// window is posed where its arrival or move has reached.
     fn paint_frame(&mut self, ctx: &mut crate::draw::DrawCtx<'_>, rect: Rect) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let radius = SurfaceLevel::Window.radius(theme).min(rect.height() / 2.0);
         if self.focused {
@@ -883,14 +894,14 @@ impl WindowFrame {
         {
             let mut children = self.layers.children_mut();
             if let Some(content) = children.get_mut(CONTENT) {
-                content.draw_child(scene, transform, text, &on,&env);
+                content.draw_child(scene, transform, text, &on, &env);
             }
         }
         crate::widget::window_controls::paint_pill(scene, transform, pill, theme);
         {
             let mut children = self.layers.children_mut();
             if let Some(controls) = children.get_mut(CONTROLS) {
-                controls.draw_child(scene, transform, text, &on,&env);
+                controls.draw_child(scene, transform, text, &on, &env);
             }
         }
         scene.pop_layer();
@@ -964,7 +975,16 @@ mod tests {
             &Rect::new(0.0, 0.0, 240.0, 240.0),
         );
         let mut text = crate::font_catalog::fixture_renderer();
-        Widget::draw(&mut frame, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, theme, PresenceCtx::empty().draw_env()));
+        Widget::draw(
+            &mut frame,
+            &mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                theme,
+                PresenceCtx::empty().draw_env(),
+            ),
+        );
         crate::offscreen::OffscreenRenderer::new(240, 240)
             .render(&scene, vello::peniko::Color::BLACK)
     }

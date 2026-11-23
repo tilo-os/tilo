@@ -96,10 +96,20 @@ impl Widget for Page {
     fn get_rect(&self) -> tilo_ui::kurbo::Rect {
         self.0.get_rect()
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+    fn draw(&mut self, ctx: &mut tilo_ui::draw::DrawCtx<'_>) {
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.0.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.0.draw(&mut tilo_ui::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 }
 

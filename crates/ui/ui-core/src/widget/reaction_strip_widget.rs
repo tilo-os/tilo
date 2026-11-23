@@ -333,7 +333,11 @@ impl Widget for ReactionStripWidget {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.me.is_none()
             && let Some(own) = env.self_member.clone()
@@ -357,10 +361,20 @@ impl Widget for ReactionStripWidget {
     }
 
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if let Some(picker) = &mut self.picker {
-            picker.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            picker.draw_overlay(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
         }
     }
 

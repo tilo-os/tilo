@@ -892,7 +892,11 @@ impl super::Decorator for ContextMenuArea {
     }
 
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // The overlay pass sees the whole window, where the menu may go;
         // the content's own pass may be scoped to a scrolled list.
@@ -902,11 +906,21 @@ impl super::Decorator for ContextMenuArea {
             // have changed: the menu stands where what opened it is now.
             self.place_menu();
         }
-        self.content
-            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.content.draw_overlay(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
         // The menu paints in the overlay pass, over everything.
-        self.menu
-            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
         if let Some((anchor, pick)) = self.picker_wanted.take() {
             let mut picker = super::EmojiPicker::framed();
             let viewport = self.viewport.unwrap_or_else(|| self.content.get_rect());
@@ -914,7 +928,7 @@ impl super::Decorator for ContextMenuArea {
             self.picker = Some((picker, pick));
         }
         if let Some((picker, _)) = self.picker.as_mut() {
-            picker.draw_child(scene, transform, text_renderer, theme,&env);
+            picker.draw_child(scene, transform, text_renderer, theme, &env);
         }
     }
 
@@ -1218,10 +1232,19 @@ mod tests {
             self.inner.apply_layout(taffy, node, origin);
         }
         fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-            self.inner
-                .draw(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+            self.inner.draw(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         }
         fn handle_event(&mut self, event: &WindowEvent, _ctx: &mut EventCtx<'_>) {
             if matches!(
@@ -1404,10 +1427,19 @@ mod tests {
             self.inner.apply_layout(taffy, node, origin);
         }
         fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-            self.inner
-                .draw(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+            self.inner.draw(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         }
         fn get_rect(&self) -> Rect {
             self.inner.get_rect()

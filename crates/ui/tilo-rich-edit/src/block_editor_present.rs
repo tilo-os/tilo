@@ -580,7 +580,13 @@ mod tests {
             }
             let mut text = ui::text_render::TextRenderer::new();
             let mut scene = vello::Scene::new();
-            editor.draw(&mut tilo_ui::DrawCtx::new(&mut scene, Affine::translate((0.0, TOP)), &mut text, &theme, presence.draw_env()));
+            editor.draw(&mut tilo_ui::DrawCtx::new(
+                &mut scene,
+                Affine::translate((0.0, TOP)),
+                &mut text,
+                &theme,
+                presence.draw_env(),
+            ));
             ui::offscreen::OffscreenRenderer::new(400, 400)
                 .render(&scene, vello::peniko::Color::BLACK)
         };

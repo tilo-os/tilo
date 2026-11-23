@@ -134,7 +134,13 @@ fn render_group_themed(
 
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    group.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
+    group.draw(&mut tilo_ui::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        theme,
+        presence.draw_env(),
+    ));
 
     // The theme's own app background, so the card edge and the maximized
     // chips are judged against the ground they really sit on.

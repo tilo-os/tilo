@@ -24,7 +24,7 @@ impl ToolbarRow {
         if self.suggestions_open() {
             self.suggestions.paint(scene, transform, tr, theme);
         }
-        self.paint_picker(scene, transform, (tr, theme, env));
+        self.paint_picker(scene, transform, (tr, theme, &env));
     }
 
     pub(crate) fn paint(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
@@ -50,7 +50,7 @@ impl ToolbarRow {
                 let _ = paint_parts(
                     scene,
                     transform,
-                    (tr, theme, env),
+                    (tr, theme, &env),
                     toolbar,
                     parts,
                     (None, None),
@@ -84,7 +84,7 @@ impl ToolbarRow {
             trigger = paint_parts(
                 scene,
                 transform,
-                (tr, theme, env),
+                (tr, theme, &env),
                 toolbar,
                 parts,
                 (Some(&interaction), crumbs),
@@ -119,7 +119,7 @@ impl ToolbarRow {
                 self.strip.text_rect(),
             ));
         }
-        self.paint_leaving(scene, transform, (tr, theme, env), incoming);
+        self.paint_leaving(scene, transform, (tr, theme, &env), incoming);
         self.paint_reactions(scene, transform, (tr, theme));
         self.labels = words;
     }
@@ -164,7 +164,7 @@ impl ToolbarRow {
             let _ = paint_parts(
                 scene,
                 at,
-                (tr, theme, env),
+                (tr, theme, &env),
                 toolbar,
                 parts,
                 (None, None),
@@ -491,7 +491,7 @@ pub(super) fn paint_parts(
             trigger = paint_location(
                 scene,
                 at,
-                (tr, theme, env),
+                (tr, theme, &env),
                 (location, crumbs),
                 (parts.location, parts.form),
                 (lifted, toolbar.notice.as_ref().map(|notice| notice.kind)),

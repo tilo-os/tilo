@@ -2954,7 +2954,13 @@ mod tests {
     fn draw_once(plot: &mut CartesianPlot, theme: &Theme) {
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        plot.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, theme, PresenceCtx::default().draw_env()));
+        plot.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            theme,
+            PresenceCtx::default().draw_env(),
+        ));
     }
 
     tilo_test_env::scenario! {

@@ -537,7 +537,11 @@ impl<M: PlotMarks> Widget for Plot<M> {
         self.layout_dirty = false;
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         crate::scene_parts::picture();
         self.marks.paint(scene, transform, tr, theme);

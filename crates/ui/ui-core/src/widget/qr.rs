@@ -293,7 +293,11 @@ impl Widget for QrWidget {
         reason = "QR module counts are capped by the QR spec at 177"
     )]
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.secret && !self.payload.is_empty() {
             crate::secret_paint::note_secret_painted();

@@ -8,6 +8,7 @@ use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
 
 use crate::text_render::TextRenderer;
 use crate::theme::{Look, Theme};
+use crate::theme_document::PresetDesign;
 use crate::tokens::{Emphasis, PresenceHue, TextRole};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

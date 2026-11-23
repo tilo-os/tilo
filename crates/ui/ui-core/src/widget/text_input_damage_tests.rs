@@ -49,7 +49,16 @@ fn an_edited_line_repaints_its_ink_that_rises_past_its_row() {
     field.apply_layout_external(Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)));
     let mut draw = |field: &mut TextInput| {
         let mut scene = Scene::new();
-        Widget::draw(field, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &theme, presence.draw_env()));
+        Widget::draw(
+            field,
+            &mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut renderer,
+                &theme,
+                presence.draw_env(),
+            ),
+        );
         scene
     };
     let shown = draw(&mut field);

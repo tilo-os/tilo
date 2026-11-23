@@ -171,12 +171,12 @@ tilo_test_env::scenario! {
             (blue.center().x, blue.center().y),
             (green.center().x, green.center().y),
         );
-        let fired = queue.take();
-        let last = fired.last().expect("the drag reports the range it took");
+        let taken = queue.take();
+        let last = taken.last().expect("the drag reports the range it took");
         assert_eq!(*last, fired("library", "select", both));
         assert!(
-            fired.iter().all(|event| event.event == "select"),
-            "a sweep takes cards, never opens one: {fired:?}"
+            taken.iter().all(|event| event.event == "select"),
+            "a sweep takes cards, never opens one: {taken:?}"
         );
     }
 

@@ -75,7 +75,13 @@ fn render(
     ));
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    picker.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
+    picker.draw(&mut tilo_ui::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        theme,
+        presence.draw_env(),
+    ));
     renderer.render(&scene, backdrop(theme))
 }
 

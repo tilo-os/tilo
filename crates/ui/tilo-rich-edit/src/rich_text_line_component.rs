@@ -174,10 +174,13 @@ impl ui::widget::Widget for DeclaredLine {
     }
 
     fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.line
-            .draw_child(scene, transform, text, theme,&env);
+        self.line.draw_child(scene, transform, text, theme, &env);
     }
 
     fn handle_event(

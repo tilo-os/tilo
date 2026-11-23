@@ -320,7 +320,13 @@ fn layout_and_draw_editor(editor: &mut BlockEditor, theme: &Theme) {
     editor.apply_layout(&taffy, node, Point::ZERO);
     let mut renderer = TextRenderer::new();
     renderer.set_text_scale(theme.text_scale);
-    editor.draw(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut renderer, theme, PresenceCtx::empty().draw_env()));
+    editor.draw(&mut tilo_ui::DrawCtx::new(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut renderer,
+        theme,
+        PresenceCtx::empty().draw_env(),
+    ));
 }
 
 tilo_test_env::scenario! {
@@ -659,7 +665,13 @@ fn presence_paths(editor: &mut BlockEditor, presence: &PresenceCtx) -> usize {
     editor.apply_layout(&taffy, node, Point::ZERO);
     let mut renderer = TextRenderer::new();
     let mut scene = Scene::new();
-    editor.draw(&mut tilo_ui::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &theme, presence.draw_env()));
+    editor.draw(&mut tilo_ui::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut renderer,
+        &theme,
+        presence.draw_env(),
+    ));
     scene.encoding().path_tags.len()
 }
 

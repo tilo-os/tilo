@@ -119,7 +119,7 @@ fn lay_out<C: Widget + 'static>(d: &mut ModalDialog<C>, area: Rect, theme: &Them
 }
 
 fn present<C: Widget + 'static>(d: &mut ModalDialog<C>, window: Rect, theme: &Theme) -> Scene {
-    let presence = PresenceCtx::default();
+    let presence = crate::presence::PresenceCtx::default();
     let previous = presence.push_viewport(window);
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
@@ -505,7 +505,7 @@ tilo_test_env::scenario! {
                 &Theme::dark(),
             );
             let mut scene = Scene::new();
-            d.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
+            d.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), crate::presence::PresenceCtx::default().draw_env()));
             assert!(scene.encoding().draw_tags.is_empty(), "draw paints nothing");
 
             let scene = present(&mut d, WINDOW, &Theme::dark());
@@ -1394,55 +1394,6 @@ tilo_test_env::scenario! {
             d.primary_rect(),
             "the address stands where the action is painted"
         );
-    }
-
-    phase dismissal_is_a_published_view_action_while_the_dialog_is_open;
-    {
-        let (dismissed, dismiss) = counter();
-        let mut d = ModalDialog::new("Delete rule?", TestContent)
-            .on_dismiss(dismiss)
-            .with_test_id("firewall-delete");
-        let doc = AutoCommit::new();
-        assert!(
-            crate::widget::resources::resources(&d, &doc).is_empty(),
-            "a closed dialog offers no way to close it"
-        );
-        d.set_open(true);
-        let resources = crate::widget::resources::resources(&d, &doc);
-        let [close] = resources.as_slice() else {
-            panic!("one close control, not {}", resources.len());
-        };
-        assert_eq!(close.id.0, "tilo.control:firewall-delete.close");
-        let [action] = close.actions.as_slice() else {
-            panic!("one action, not {}", close.actions.len());
-        };
-        assert_eq!(action.id, "invoke");
-        assert_eq!(action.kind, tilo_actions::OperationKind::View);
-        assert!(
-            crate::widget::controls::control_action_bindings(&d)
-                .iter()
-                .any(|binding| matches!(
-                    &binding.kind,
-                    crate::widget::ControlBindingKind::Action(address)
-                        if address.resource == close.id.0
-                )),
-            "the close control is bound to the action, not a private callback"
-        );
-        let mut doc = AutoCommit::new();
-        crate::widget::ResourceOperation::local(
-            tilo_actions::InvocationId::new(),
-            tilo_actions::OperationKind::View,
-            super::super::activation::NATIVE_INVOKE,
-            &serde_json::to_vec("firewall-delete.close").unwrap(),
-        )
-        .start(
-            &mut d,
-            &mut crate::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        )
-        .unwrap()
-        .expect("the open dialog answers its close control");
-        assert_eq!(dismissed.get(), 1);
     }
 }
 

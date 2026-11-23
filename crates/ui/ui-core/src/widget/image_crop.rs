@@ -372,10 +372,13 @@ impl Widget for ImageCropEditor {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.image
-            .draw_child(scene, transform, text, theme,&env);
+        self.image.draw_child(scene, transform, text, theme, &env);
         self.paint_crop_overlay(scene, transform, theme);
     }
 

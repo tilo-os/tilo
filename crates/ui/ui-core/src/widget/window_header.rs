@@ -280,8 +280,17 @@ impl RowFurniture {
         self.new_tab = self.new_tab + shift;
     }
 
-    pub(crate) fn paint(&self, ctx: &mut crate::draw::DrawCtx<'_>, search: &mut crate::widget::WindowSearch, state: RowFurnitureState) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+    pub(crate) fn paint(
+        &self,
+        ctx: &mut crate::draw::DrawCtx<'_>,
+        search: &mut crate::widget::WindowSearch,
+        state: RowFurnitureState,
+    ) {
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.controls.paint(scene, transform, theme, state.controls);
         if self.new_tab.area() > 0.0 {
@@ -295,7 +304,7 @@ impl RowFurniture {
             );
         }
         search.set_ground(theme.tokens.colors.surfaces.content);
-        search.draw_child(scene, transform, text, theme,&env);
+        search.draw_child(scene, transform, text, theme, &env);
         if let Some(control) = state.keyboard {
             let rect = control.rect(self);
             if rect.area() > 0.0 {

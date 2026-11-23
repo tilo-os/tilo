@@ -53,11 +53,23 @@ impl TileHost {
         }
         self.held = None;
         let mut window = Scene::new();
-        self.draw_steady_state(&mut crate::draw::DrawCtx::new(&mut window, Affine::IDENTITY, tr, theme, presence.draw_env()));
+        self.draw_steady_state(&mut crate::draw::DrawCtx::new(
+            &mut window,
+            Affine::IDENTITY,
+            tr,
+            theme,
+            presence.draw_env(),
+        ));
         let complete = if matches!(self.content, TileContent::App(_)) {
             let mut scene = Scene::new();
-            self.draw_complete_content_capture(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, tr, theme, presence.draw_env()))
-                .map(|rect| (scene, rect))
+            self.draw_complete_content_capture(&mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                tr,
+                theme,
+                presence.draw_env(),
+            ))
+            .map(|rect| (scene, rect))
         } else {
             None
         };
@@ -104,14 +116,24 @@ impl TileHost {
     }
 
     pub(super) fn draw_window(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         match self.current_held() {
             Some(held) => {
                 let moved = Affine::translate(self.held_offset(held));
                 scene.append(&held.window, Some(transform * moved));
             }
-            None => self.draw_steady_state(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone())),
+            None => self.draw_steady_state(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                tr,
+                theme,
+                env.clone(),
+            )),
         }
     }
 

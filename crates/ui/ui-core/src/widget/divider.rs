@@ -164,7 +164,11 @@ impl Widget for Divider {
     crate::rect_geometry!();
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, _text_renderer, theme, mut env) = ctx.parts();
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;

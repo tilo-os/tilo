@@ -391,7 +391,11 @@ impl Decorator for SwipeRow {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let now = crate::motion::frame_now();
         // Reduced motion lands a settle at once.
@@ -401,8 +405,7 @@ impl Decorator for SwipeRow {
         let offset = self.offset.get(now);
         self.drawn = offset;
         if offset == 0.0 {
-            self.content
-                .draw_child(scene, transform, text, theme,&env);
+            self.content.draw_child(scene, transform, text, theme, &env);
             return;
         }
         let row = self.content.get_rect();
@@ -422,7 +425,7 @@ impl Decorator for SwipeRow {
             None,
             &row,
         );
-        self.content.draw_child(scene, moved, text, theme,&env);
+        self.content.draw_child(scene, moved, text, theme, &env);
         scene.pop_layer();
     }
 

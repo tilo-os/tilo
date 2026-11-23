@@ -67,7 +67,13 @@ fn bar_at(harness: &mut FrameHarness, width: f64, history: bool) -> TabBar {
     }
     for _ in 0..2 {
         super::lay_out_bar(&mut bar, width, &harness.theme);
-        bar.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut harness.text, &harness.theme, harness.presence.draw_env()));
+        bar.draw(&mut crate::draw::DrawCtx::new(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut harness.text,
+            &harness.theme,
+            harness.presence.draw_env(),
+        ));
     }
     bar
 }

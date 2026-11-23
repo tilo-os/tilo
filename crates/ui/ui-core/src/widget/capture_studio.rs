@@ -1761,7 +1761,13 @@ impl CaptureStudio {
         }
         if let Some(menu) = self.send_menu.as_mut() {
             menu.layout_within(tr, theme);
-            menu.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, PresenceCtx::default().draw_env()));
+            menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                tr,
+                theme,
+                PresenceCtx::default().draw_env(),
+            ));
         }
     }
 
@@ -1956,7 +1962,11 @@ impl Widget for CaptureStudio {
         false
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (s, t, tr, theme, mut env) = ctx.parts();
         if !self.choosing() {
             return;

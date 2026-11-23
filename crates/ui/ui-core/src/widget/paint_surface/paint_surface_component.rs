@@ -112,8 +112,7 @@ impl Described for PaintSurface {
         self.on_panned = fire_vec(props.panned);
         self.on_pinch = (!props.pinch.is_none()).then(|| {
             let pinch = props.pinch.clone();
-            Box::new(move |scale: f64| pinch.fire(Some(Value::Float(scale))))
-                as Box<dyn FnMut(f64)>
+            Box::new(move |scale: f64| pinch.fire(Some(Value::Float(scale)))) as Box<dyn FnMut(f64)>
         });
         self.layout_dirty = true;
         true
@@ -124,7 +123,9 @@ impl Described for PaintSurface {
 fn fire_vec(event: Event) -> Option<Box<dyn FnMut(Vec<f64>)>> {
     (!event.is_none()).then(|| {
         Box::new(move |at: Vec<f64>| {
-            event.fire(Some(Value::List(at.into_iter().map(Value::Float).collect())));
+            event.fire(Some(Value::List(
+                at.into_iter().map(Value::Float).collect(),
+            )));
         }) as Box<dyn FnMut(Vec<f64>)>
     })
 }

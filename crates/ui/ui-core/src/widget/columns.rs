@@ -188,12 +188,15 @@ impl Widget for Columns {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.main
-            .draw_child(scene, transform, text, theme,&env);
+        self.main.draw_child(scene, transform, text, theme, &env);
         if let Some(aside) = &mut self.aside {
-            aside.draw_child(scene, transform, text, theme,&env);
+            aside.draw_child(scene, transform, text, theme, &env);
         }
     }
 

@@ -270,7 +270,11 @@ impl Widget for PromptBody {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         let c = &theme.tokens.colors;
         let width = crate::num::f32_of_f64(self.rect.width().max(1.0));
@@ -307,7 +311,7 @@ impl Widget for PromptBody {
                 &theme.text(TextRole::Label),
             );
         }
-        self.input.draw_child(scene, transform, tr, theme,&env);
+        self.input.draw_child(scene, transform, tr, theme, &env);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

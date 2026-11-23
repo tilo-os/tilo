@@ -70,7 +70,13 @@ fn render(scrollable: &mut Scrollable, renderer: &mut OffscreenRenderer) -> Vec<
 
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    scrollable.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+    scrollable.draw(&mut tilo_ui::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        presence.draw_env(),
+    ));
     renderer.render(&scene, Color::from_rgb8(BG[0], BG[1], BG[2]))
 }
 

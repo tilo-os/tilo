@@ -23,7 +23,7 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
             Affine::IDENTITY,
             &mut tr,
             &theme,
-            PresenceCtx::empty().draw_env(),
+            crate::presence::PresenceCtx::empty().draw_env(),
         ));
 
         let mut r = OffscreenRenderer::new(w, h);
@@ -113,7 +113,7 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
                 Affine::IDENTITY,
                 &mut tr,
                 &theme,
-                PresenceCtx::empty().draw_env(),
+                crate::presence::PresenceCtx::empty().draw_env(),
             ));
             let mut renderer = OffscreenRenderer::new(w, h);
             let rgba = renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
@@ -182,7 +182,7 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
                     Affine::IDENTITY,
                     &mut tr,
                     &theme,
-                    PresenceCtx::empty().draw_env(),
+                    crate::presence::PresenceCtx::empty().draw_env(),
                 ));
                 let mut renderer = OffscreenRenderer::new(width, height);
                 renderer.render(&scene, ground)
@@ -306,7 +306,7 @@ fn a_full_bleed_tile_draws_its_content_last_and_unclipped() {
             Affine::IDENTITY,
             &mut TextRenderer::new(),
             &Theme::default(),
-            PresenceCtx::empty().draw_env(),
+            crate::presence::PresenceCtx::empty().draw_env(),
         ));
         scene
     };
@@ -921,7 +921,7 @@ pub(super) fn paint(host: &mut TileHost, theme: &Theme) -> Scene {
         Affine::IDENTITY,
         &mut tr,
         theme,
-        PresenceCtx::empty().draw_env(),
+        crate::presence::PresenceCtx::empty().draw_env(),
     ));
     scene
 }
@@ -1300,7 +1300,7 @@ fn focus_reaches_a_pixel_further_out_and_leaves_the_card_where_it_was() {
                 Affine::scale(scale),
                 &mut TextRenderer::new(),
                 &theme,
-                PresenceCtx::empty().draw_env(),
+                crate::presence::PresenceCtx::empty().draw_env(),
             ));
             renderer.render(&scene, ground)
         };

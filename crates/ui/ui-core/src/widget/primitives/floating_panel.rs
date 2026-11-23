@@ -415,7 +415,11 @@ impl FloatingPanel {
     /// The panel itself, drawn where `rect` says: what [`Widget::draw`] draws once the panel is
     /// posed where its arrival has reached.
     fn paint_panel(&mut self, card: Rect, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let header = if self.header.is_some() {
             self.header_rect.height()
@@ -437,7 +441,7 @@ impl FloatingPanel {
             } else {
                 transform
             };
-            crate::widget::draw_child(slot.as_mut(), scene, at, text_renderer, &inner,&env);
+            crate::widget::draw_child(slot.as_mut(), scene, at, text_renderer, &inner, &env);
         }
     }
 }
@@ -531,7 +535,11 @@ impl Widget for FloatingPanel {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let now = crate::motion::frame_now();
         let arriving = self.placed.is_moving(now);
@@ -567,7 +575,10 @@ impl Widget for FloatingPanel {
         let pose = self.placed.pose(card, now);
         let bounds = card.union(pose.drawn_rect(card));
         pose.paint(scene, transform, bounds, |scene, transform| {
-            self.paint_panel(card, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            self.paint_panel(
+                card,
+                &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            );
         });
     }
 

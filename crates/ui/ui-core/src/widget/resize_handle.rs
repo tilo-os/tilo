@@ -119,7 +119,11 @@ impl Widget for ResizeHandle {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, _tr, theme, mut env) = ctx.parts();
         // Always the idle rule: under the pointer it is the owning window's
         // own edge that lights up, so the border never suggests that

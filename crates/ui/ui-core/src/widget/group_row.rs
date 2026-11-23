@@ -4564,7 +4564,7 @@ impl Widget for GroupRow {
         let kept = &self.pan_kept;
         self.pan_drawings
             .retain(|drawing| kept.contains(&drawing.id));
-        self.draw_floats(scene, transform, (tr, theme, env));
+        self.draw_floats(scene, transform, (tr, theme, &env));
         self.draw_group_drag_preview(&mut crate::draw::DrawCtx::new(
             scene,
             transform,
@@ -5082,7 +5082,7 @@ impl GroupRow {
                 }
             }
             if max_i < self.groups.len() {
-                self.draw_group_plain(max_i, scene, transform, (tr, theme, env));
+                self.draw_group_plain(max_i, scene, transform, (tr, theme, &env));
             }
             return;
         }
@@ -5156,7 +5156,7 @@ impl GroupRow {
                 Some(window)
                     if !source_is_lifted && !fading_sibling && dx.abs() <= f64::EPSILON =>
                 {
-                    self.draw_group_apart(i, window, scene, t, (tr, theme, env));
+                    self.draw_group_apart(i, window, scene, t, (tr, theme, &env));
                 }
                 // Only a group at rest in its slot, as above.
                 None if crate::retained_present::pan_replay()
@@ -5164,7 +5164,7 @@ impl GroupRow {
                     && !fading_sibling
                     && dx.abs() <= f64::EPSILON =>
                 {
-                    self.draw_group_replaying(i, scene, t, (tr, theme, env));
+                    self.draw_group_replaying(i, scene, t, (tr, theme, &env));
                 }
                 _ => {
                     // A frame that only moved but draws every window keeps
@@ -5177,7 +5177,7 @@ impl GroupRow {
                     {
                         self.pan_kept.push(id);
                     }
-                    self.draw_group_plain(i, scene, t, (tr, theme, env));
+                    self.draw_group_plain(i, scene, t, (tr, theme, &env));
                 }
             }
             if source_is_lifted {
@@ -5191,7 +5191,7 @@ impl GroupRow {
         // once for its picture.
         for i in 0..self.groups.len() {
             if in_run.get(i).copied().unwrap_or(false) {
-                self.picture_unseen_group(i, transform, (tr, theme, env));
+                self.picture_unseen_group(i, transform, (tr, theme, &env));
             }
         }
         if self.apart_window.is_some() {

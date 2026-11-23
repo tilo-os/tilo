@@ -275,7 +275,13 @@ fn a_clicked_menu_comes_from_the_pointer_and_fades_when_it_closes() {
     ));
     let paint = |menu: &mut ContextMenu, text: &mut TextRenderer| {
         let mut top = Scene::new();
-        menu.draw_overlay(&mut crate::draw::DrawCtx::new(&mut top, Affine::IDENTITY, text, &theme, presence.draw_env()));
+        menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+            &mut top,
+            Affine::IDENTITY,
+            text,
+            &theme,
+            presence.draw_env(),
+        ));
         top
     };
     with_monotonic_time(t0, || {
@@ -657,7 +663,13 @@ fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
     let presence = PresenceCtx::default();
     presence.viewport.set(Some(window));
     let mut scene = Scene::new();
-    menu.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
+    menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &theme,
+        presence.draw_env(),
+    ));
     let box_rect = menu.send_to().rect();
     assert!(menu.send_to().is_open(), "the send row opened the box");
     assert!(

@@ -158,7 +158,11 @@ impl Widget for Spinner {
     crate::rect_geometry!();
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, _text_renderer, theme, mut env) = ctx.parts();
         self.reduce_motion = !theme.motion().loops() || crate::time::wall_frozen();
         let now = crate::time::now();
@@ -468,7 +472,13 @@ mod tests {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        s.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+        s.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            presence.draw_env(),
+        ));
         scene.encoding().path_data.clone()
     }
 }

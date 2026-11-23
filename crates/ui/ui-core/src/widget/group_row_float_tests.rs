@@ -330,11 +330,17 @@ fn a_float_covers_the_windows_under_it_once_it_has_arrived() {
     let (mut row, _taffy, _root) = relayout_row_owned(row, FIXTURE_USABLE_PX);
     let theme = Theme::dark();
     let text = &mut TextRenderer::new();
-    let presence = PresenceCtx::empty();
+    let presence = crate::presence::PresenceCtx::empty();
     let mut draw = |row: &mut GroupRow, at: crate::time::Instant| {
         let _frame = pin_frame_at(at);
         let mut scene = Scene::new();
-        row.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, text, &theme, presence.draw_env()));
+        row.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            text,
+            &theme,
+            presence.draw_env(),
+        ));
     };
     draw(&mut row, now);
     assert!(

@@ -16,7 +16,11 @@ use crate::widget::DrawChild;
 
 impl VirtualRows {
     pub(super) fn paint(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.painted_lifts.clear();
         self.painted_chevrons.clear();
@@ -236,7 +240,7 @@ impl VirtualRows {
                 now,
                 &mut |ctx| {
                     row.widget
-                        .draw_child(ctx.scene, row_transform, ctx.text, theme,&env);
+                        .draw_child(ctx.scene, row_transform, ctx.text, theme, &env);
                 },
             );
             if let Some(marks) = tree.as_ref() {
@@ -286,7 +290,7 @@ impl VirtualRows {
         if let Some(field) = self.rename.as_mut() {
             field
                 .input
-                .draw_child(scene, transform, text_renderer, theme,&env);
+                .draw_child(scene, transform, text_renderer, theme, &env);
         }
         if let Some(preview) = self.reorder.preview() {
             scene.fill(

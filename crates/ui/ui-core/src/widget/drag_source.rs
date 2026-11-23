@@ -217,10 +217,13 @@ impl Decorator for DragSource {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.column
-            .draw_child(scene, transform, text, theme,&env);
+        self.column.draw_child(scene, transform, text, theme, &env);
         self.dirty = false;
     }
 

@@ -786,42 +786,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase on_view_publishes_the_row_as_an_action_instead_of_a_callback;
-    {
-        let opened = Rc::new(Cell::new(0));
-        let counter = Rc::clone(&opened);
-        let mut row = ListRow::new("contact-ada", "Ada Lovelace").on_open(move || {
-            counter.set(counter.get() + 1);
-        });
-        let bindings = crate::widget::controls::ActionControls::control_action_bindings(&row);
-        assert_eq!(bindings.len(), 1);
-        let doc = automerge::AutoCommit::new();
-        let resources = crate::widget::resources::PublishesResources::resources(&row, &doc);
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].label, "Ada Lovelace");
-        assert!(
-            crate::widget::resource_operation_handlers(&row)
-                .contains(crate::widget::activation::NATIVE_INVOKE)
-        );
-        let mut doc = automerge::AutoCommit::new();
-        let invocation = tilo_actions::InvocationId::new();
-        let payload = serde_json::to_vec("contact-ada").unwrap();
-        let started = crate::widget::ResourceOperation::local(
-            invocation,
-            tilo_actions::OperationKind::View,
-            crate::widget::activation::NATIVE_INVOKE,
-            &payload,
-        )
-        .start(
-            &mut row,
-            &mut crate::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        )
-        .unwrap();
-        assert!(started.is_some());
-        assert_eq!(opened.get(), 1);
-    }
-
     phase a_disabled_row_is_inert_and_skipped_by_focus;
     {
         let mut row = ListRow::new("r", "Row").on_open(|| {}).with_enabled(false);
@@ -2326,8 +2290,9 @@ fn a_double_click_opens_once_and_changes_twice() {
         (1, 4),
         "a double-click opens once; clicks apart open each"
     );
-    let changed =
-        counted(|hits| ListRow::new("count", "Count").on_click(move || hits.set(hits.get() + 1)));
+    let changed = counted(|hits| {
+        ListRow::new("count", "Count").on_activate(move || hits.set(hits.get() + 1))
+    });
     assert_eq!(
         changed,
         (2, 7),

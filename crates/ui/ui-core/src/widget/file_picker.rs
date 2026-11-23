@@ -2482,7 +2482,11 @@ impl Widget for FilePicker {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.adopt_theme(theme);
         self.poll_lookups();
@@ -2493,10 +2497,28 @@ impl Widget for FilePicker {
         let theme = &sheet;
 
         self.draw_header(scene, transform, text_renderer, theme);
-        self.draw_toolbar(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.draw_toolbar(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
         self.draw_sidebar(scene, transform, text_renderer, theme);
-        self.draw_list(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
-        self.draw_footer(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.draw_list(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
+        self.draw_footer(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
         self.draw_filter_menu(scene, transform, text_renderer, theme);
         self.draw_replace_prompt(scene, transform, text_renderer, theme);
     }
@@ -3196,7 +3218,11 @@ impl FilePicker {
     }
 
     fn draw_toolbar(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let tokens = &theme.tokens;
         let up_label = tr("widget-filepicker-up");
@@ -3239,14 +3265,14 @@ impl FilePicker {
         }
         match self.location.as_mut() {
             Some(field) => {
-                DrawChild::draw_child(field, scene, transform, text_renderer, theme,&env)
+                DrawChild::draw_child(field, scene, transform, text_renderer, theme, &env)
             }
             None => self
                 .crumbs
-                .draw_child(scene, transform, text_renderer, theme,&env),
+                .draw_child(scene, transform, text_renderer, theme, &env),
         }
         self.query
-            .draw_child(scene, transform, text_renderer, theme,&env);
+            .draw_child(scene, transform, text_renderer, theme, &env);
     }
 
     fn draw_sidebar(
@@ -3346,11 +3372,20 @@ impl FilePicker {
     }
 
     fn draw_list(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let tokens = &theme.tokens;
-        self.table
-            .draw(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.table.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
         let list = self.list_rect();
         if self.entries.is_empty() && !self.looking_up() {
             let key = match &self.listing {
@@ -3395,7 +3430,11 @@ impl FilePicker {
     }
 
     fn draw_footer(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let m = self.metrics;
         let ground = crate::chrome::panel_ground(theme);
@@ -3422,7 +3461,13 @@ impl FilePicker {
                 None,
                 &style,
             );
-            self.draw_filename_field(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            self.draw_filename_field(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
             if let Some(error) = &self.name_error {
                 let style = theme.text(TextRole::Caption);
                 text_renderer.draw_style(
@@ -3557,7 +3602,11 @@ impl FilePicker {
     }
 
     fn draw_filename_field(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let tokens = &theme.tokens;
         let field = self.filename_rect;
@@ -3596,7 +3645,8 @@ impl FilePicker {
             scene,
             transform,
             text_renderer,
-            theme,&env,
+            theme,
+            &env,
         );
     }
 

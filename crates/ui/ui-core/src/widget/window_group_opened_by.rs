@@ -150,7 +150,11 @@ impl super::WindowGroup {
     }
 
     pub(super) fn draw_bar_tips(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         let fallback_presence = Default::default();
         let presence = env.presence.unwrap_or(&fallback_presence);

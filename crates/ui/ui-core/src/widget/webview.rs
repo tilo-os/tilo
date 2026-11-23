@@ -988,7 +988,11 @@ impl Widget for WebView {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.lands_at(transform);
         let drawn = self.draw_page(scene, transform, text_renderer, theme);
@@ -2289,7 +2293,13 @@ mod tests {
 
     fn draw_at(view: &mut WebView, transform: Affine) -> Scene {
         let mut scene = Scene::new();
-        view.draw(&mut crate::draw::DrawCtx::new(&mut scene, transform, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
+        view.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            transform,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            PresenceCtx::default().draw_env(),
+        ));
         scene
     }
 
@@ -2852,7 +2862,13 @@ mod shared_page_tests {
     fn draw(view: &mut WebView) {
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        view.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark(), PresenceCtx::empty().draw_env()));
+        view.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            PresenceCtx::empty().draw_env(),
+        ));
         view.mark_drawn();
     }
 

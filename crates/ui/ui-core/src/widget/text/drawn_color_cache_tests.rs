@@ -3,7 +3,16 @@ use super::*;
 fn draw_current(text: &mut Text, renderer: &mut TextRenderer, theme: &Theme) -> Scene {
     text.apply_layout_external(vello::kurbo::Rect::new(10.0, 20.0, 810.0, 120.0));
     let mut scene = Scene::new();
-    crate::widget::Widget::draw(text, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, renderer, theme, crate::presence::PresenceCtx::empty().draw_env()));
+    crate::widget::Widget::draw(
+        text,
+        &mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            renderer,
+            theme,
+            crate::presence::PresenceCtx::empty().draw_env(),
+        ),
+    );
     crate::widget::Widget::mark_drawn(text);
     assert!(
         !scene.encoding().resources.glyph_runs.is_empty(),

@@ -1,5 +1,6 @@
 use super::*;
-use crate::a11y::{AccessBounds, AccessNode, AccessState};
+use crate::a11y::{AccessNode, AccessState};
+use crate::composition::Picture;
 
 fn text(path: &str, words: &str) -> Composed {
     let mut node = Composed::new(path.to_owned(), "Label", [13.0, 27.0, 200.0, 20.0]);
@@ -132,12 +133,7 @@ fn a_painted_widget_is_its_picture_with_what_acts_over_it() {
                 AccessNode::new(Role::Button)
                     .with_name("March".to_owned())
                     .with_action_target("bar:3")
-                    .with_bounds(AccessBounds {
-                        x0: 50.0,
-                        y0: 120.0,
-                        x1: 70.0,
-                        y1: 280.0,
-                    })
+                    .with_bounds(vello::kurbo::Rect::new(50.0, 120.0, 70.0, 280.0))
                     .with_state(AccessState::new().focusable(true)),
             ]),
     );

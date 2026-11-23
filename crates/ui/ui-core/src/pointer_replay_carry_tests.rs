@@ -85,9 +85,19 @@ impl Widget for Shows {
         }
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.child.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.child.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         self.child.handle_event(event, ctx);
@@ -263,9 +273,7 @@ fn a_list_row_checkbox_carries_its_press_across_a_rebuild() {
     assert_press_carries(
         |clicks, generation| {
             let mut ran = log(clicks, generation);
-            Box::new(
-                crate::widget::ListRow::new("inbox", "Inbox").checkbox(false, move |_| ran()),
-            )
+            Box::new(crate::widget::ListRow::new("inbox", "Inbox").checkbox(false, move |_| ran()))
         },
         |h| pressable_centre(h),
     );
@@ -318,7 +326,7 @@ fn a_stat_tile_carries_its_press_across_a_rebuild() {
         |clicks, generation| {
             Box::new(
                 crate::widget::StatTile::new("Revenue", "1,204")
-                    .on_choose("revenue", log(clicks, generation)),
+                    .on_open("revenue", log(clicks, generation)),
             )
         },
         |h| centre_of(h, "revenue"),

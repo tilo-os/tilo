@@ -980,7 +980,11 @@ impl Widget for DragRun {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.is_list() {
             let (raised, radius) = Self::list_ground(theme);
@@ -997,7 +1001,7 @@ impl Widget for DragRun {
             }
         }
         if let Some(items) = &mut self.items {
-            DrawChild::draw_child(&mut **items, scene, transform, text, theme,&env);
+            DrawChild::draw_child(&mut **items, scene, transform, text, theme, &env);
         }
         self.paint(scene, transform, text, theme);
         self.dirty = false;

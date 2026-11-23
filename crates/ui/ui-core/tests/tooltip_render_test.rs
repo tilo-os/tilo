@@ -52,7 +52,13 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
     ];
     for (b, r) in buttons.iter_mut().zip(rects.iter()) {
         b.apply_layout_external(*r);
-        b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
+        b.draw(&mut tilo_ui::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            theme,
+            presence.draw_env(),
+        ));
     }
 
     // Reveal the tooltip over the first (Search) button via the shared

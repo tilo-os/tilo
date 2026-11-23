@@ -832,9 +832,19 @@ impl Widget for Form {
         }
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.parts.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.parts.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 }
 impl Widget for FormSection {
@@ -991,7 +1001,11 @@ impl Widget for FormSection {
         self.parts.apply_layout(tree, node, origin);
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.grouped && self.beside {
             // A separator between consecutive field rows, never above the
@@ -1023,7 +1037,13 @@ impl Widget for FormSection {
                 }
             }
         }
-        self.parts.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.parts.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 }
 impl Widget for Field {
@@ -1150,9 +1170,19 @@ impl Widget for Field {
         self.parts.apply_layout(tree, node, origin);
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.parts.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.parts.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 }
 impl Field {
@@ -1280,8 +1310,18 @@ impl Widget for FieldBody {
         node
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.parts.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.parts.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 }

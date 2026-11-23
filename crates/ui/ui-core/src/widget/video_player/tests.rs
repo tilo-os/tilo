@@ -1050,7 +1050,13 @@ fn draw_once(vp: &mut VideoPlayer) {
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+    vp.draw(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        presence.draw_env(),
+    ));
 }
 
 fn draw_once_with_theme(vp: &mut VideoPlayer, theme: &Theme) {
@@ -1058,7 +1064,13 @@ fn draw_once_with_theme(vp: &mut VideoPlayer, theme: &Theme) {
     tr.set_text_scale(theme.text_scale);
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
+    vp.draw(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        theme,
+        presence.draw_env(),
+    ));
 }
 
 #[cfg(feature = "realtime-video")]
@@ -1106,7 +1118,13 @@ fn draw_at_text_scale(vp: &mut VideoPlayer, scale: f32) {
     tr.set_text_scale(scale);
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+    vp.draw(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        presence.draw_env(),
+    ));
 }
 
 #[test]
@@ -1121,7 +1139,13 @@ fn controls_ink_and_edges_read_on_both_presets() {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+        vp.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            presence.draw_env(),
+        ));
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -1178,7 +1202,13 @@ fn controls_ink_and_edges_read_on_both_presets() {
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
-            vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+            vp.draw(&mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                presence.draw_env(),
+            ));
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,

@@ -82,7 +82,13 @@ fn render_row(renderer: &mut OffscreenRenderer, row: &mut GroupRow) -> Vec<u8> {
 
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    row.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+    row.draw(&mut tilo_ui::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        presence.draw_env(),
+    ));
 
     let bg = Color::from_rgb8(0x0f, 0x17, 0x2a);
     renderer.render(&scene, bg)

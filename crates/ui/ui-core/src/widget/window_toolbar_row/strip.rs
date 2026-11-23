@@ -302,3 +302,12 @@ fn whole_text(lines: &[String], text: &str) -> bool {
     let letters = |text: &str| -> String { text.chars().filter(|c| !c.is_whitespace()).collect() };
     letters(&lines.concat()) == letters(text)
 }
+
+impl super::ToolbarRow {
+    /// Where the notice's strip stands while one is up and laid out.
+    pub(crate) fn strip_band(&self) -> Option<Rect> {
+        self.strip.notice()?;
+        let rect = self.strip.rect();
+        (rect.area() > 0.0).then_some(rect)
+    }
+}

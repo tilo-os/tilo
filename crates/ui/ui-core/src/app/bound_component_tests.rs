@@ -1148,7 +1148,6 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
                 )
                 .approval(Some(&crate::app_core::TEST_APPROVAL))
                 .broker_admitted(true)
-                .evidence(Some(&serde_json::json!({"confirm": true})))
                 .invocation(Some(tilo_actions::InvocationId::new())),
             )
             .unwrap();

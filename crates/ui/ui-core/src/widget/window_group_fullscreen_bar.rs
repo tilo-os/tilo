@@ -59,7 +59,11 @@ impl WindowGroup {
     /// The bar over the content stands on its own ground, so the app's top row never shows
     /// through it.
     pub(super) fn draw_bar_over_content(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -68,6 +72,12 @@ impl WindowGroup {
             None,
             &self.bar.get_rect(),
         );
-        self.draw_bar(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+        self.draw_bar(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            tr,
+            theme,
+            env.clone(),
+        ));
     }
 }

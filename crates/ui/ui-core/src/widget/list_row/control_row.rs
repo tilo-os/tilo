@@ -252,11 +252,15 @@ impl crate::widget::Decorator for ControlRow {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.paint_lift(scene, transform, theme);
         self.content
-            .draw_child(scene, transform, text_renderer, theme,&env);
+            .draw_child(scene, transform, text_renderer, theme, &env);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

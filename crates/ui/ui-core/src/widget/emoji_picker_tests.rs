@@ -169,7 +169,13 @@ fn opened(theme: &Theme) -> EmojiPicker {
         theme,
     );
     let mut scene = Scene::new();
-    picker.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), theme, PresenceCtx::default().draw_env()));
+    picker.draw(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        theme,
+        crate::presence::PresenceCtx::default().draw_env(),
+    ));
     picker
 }
 
@@ -223,7 +229,13 @@ fn the_workspace_comes_first_then_the_recents_then_the_group() {
 }
 
 fn redraw(picker: &mut EmojiPicker) {
-    picker.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
+    picker.draw(&mut crate::draw::DrawCtx::new(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        &Theme::dark(),
+        crate::presence::PresenceCtx::default().draw_env(),
+    ));
 }
 
 fn footer(picker: &EmojiPicker) -> String {
@@ -436,7 +448,13 @@ fn the_picker_is_a_dialog_with_its_field_tabs_and_named_emoji() {
 }
 
 fn paint(picker: &mut EmojiPicker, theme: &Theme) {
-    picker.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), theme, PresenceCtx::default().draw_env()));
+    picker.draw(&mut crate::draw::DrawCtx::new(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        theme,
+        crate::presence::PresenceCtx::default().draw_env(),
+    ));
 }
 
 fn contains(outer: Rect, inner: Rect) -> bool {

@@ -157,7 +157,7 @@ tilo_test_env::scenario! {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
 
-            input.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+            input.draw(&mut tilo_ui::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             assert!(
                 !scene.encoding().is_empty(),
                 "peer caret should produce scene geometry"

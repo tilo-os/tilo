@@ -43,7 +43,7 @@ fn key(named: NamedKey) -> WindowEvent {
 
 /// Paint the top layer over `WINDOW`, as hosts do.
 fn present<C: Widget + 'static>(p: &mut Popover<C>, theme: &Theme) -> Scene {
-    let presence = PresenceCtx::default();
+    let presence = crate::presence::PresenceCtx::default();
     let previous = presence.push_viewport(WINDOW);
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
@@ -309,7 +309,7 @@ tilo_test_env::scenario! {
         {
             let mut p = opened();
             let mut scene = Scene::new();
-            p.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
+            p.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), crate::presence::PresenceCtx::default().draw_env()));
             assert!(scene.encoding().draw_tags.is_empty());
             assert!(
                 !present(&mut p, &Theme::dark())

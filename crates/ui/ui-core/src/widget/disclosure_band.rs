@@ -182,7 +182,11 @@ impl Widget for DisclosureBand {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.band.motion = theme.motion();
         if !self.band.in_motion() {
@@ -191,7 +195,7 @@ impl Widget for DisclosureBand {
             }
             let mut painted = self.band.take_painted();
             self.child
-                .draw_child(&mut painted, Affine::IDENTITY, text, theme,&env);
+                .draw_child(&mut painted, Affine::IDENTITY, text, theme, &env);
             self.band.show_at_rest(painted, scene, transform);
             return;
         }
@@ -207,7 +211,7 @@ impl Widget for DisclosureBand {
         }
         let mut painted = self.band.take_painted();
         self.child
-            .draw_child(&mut painted, Affine::IDENTITY, text, theme,&env);
+            .draw_child(&mut painted, Affine::IDENTITY, text, theme, &env);
         self.band.show_moving(painted, scene, transform);
     }
 

@@ -802,7 +802,11 @@ impl Widget for Toggle {
         reason = "widget rectangles are finite renderer coordinates already laid out as f32"
     )]
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let now = crate::motion::frame_now();
         let motion = theme.motion();
@@ -851,7 +855,10 @@ impl Widget for Toggle {
                 &self.label_style,
             );
         }
-        crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        crate::widget::draw_over(
+            self,
+            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+        );
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1621,7 +1628,13 @@ mod tests {
     }
 
     fn present(t: &mut Toggle, theme: &Theme) {
-        t.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), theme, crate::presence::PresenceCtx::empty().draw_env()));
+        t.draw(&mut crate::draw::DrawCtx::new(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            theme,
+            crate::presence::PresenceCtx::empty().draw_env(),
+        ));
         t.mark_drawn();
     }
 

@@ -1,8 +1,8 @@
 //! A field label aligned to its first control, independent of supporting rows: its field sets the
 //! inset that centres it on the control's first line.
 use super::{
-    Affine, HashMap, NodeId, Parts, Point, PresenceCtx, Rect, Scene, Size, Style, TaffyTree,
-    TextRenderer, Theme, Widget, column_style, measure_owned, retained_parts,
+    Affine, HashMap, NodeId, Parts, Point, Rect, Scene, Size, Style, TaffyTree, TextRenderer,
+    Theme, Widget, column_style, measure_owned, retained_parts,
 };
 
 pub(super) struct FieldLabel {
@@ -38,8 +38,18 @@ impl Widget for FieldLabel {
         })
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.parts.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.parts.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 }

@@ -651,11 +651,6 @@ impl crate::widget::Widget for DeclaredVideo {
         dyn crate::widget::AudioTapProvider
     );
 
-    /// The player itself.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        crate::widget::Widget::html(&self.player, cx);
-    }
-
     fn needs_redraw(&self) -> bool {
         self.player.needs_redraw() || self.player.needs_animation_frame()
     }
@@ -723,10 +718,13 @@ impl crate::widget::Widget for DeclaredVideo {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.player
-            .draw_child(scene, transform, text, theme,&env);
+        self.player.draw_child(scene, transform, text, theme, &env);
     }
 
     fn handle_event(

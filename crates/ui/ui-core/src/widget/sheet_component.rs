@@ -284,52 +284,6 @@ impl Described for Sheet {
     }
 
     fn set_props(&mut self, props: SheetProps) -> bool {
-        let SheetProps {
-            name,
-            columns,
-            rows,
-            column_width,
-            row_height,
-            sizes,
-            cells,
-            selection,
-            found,
-            commented,
-            answered,
-            peers,
-            editable,
-            select,
-            edit,
-            resized_column,
-            resized_row,
-            fill,
-            copy,
-            cut,
-            paste,
-        } = props;
-        let changed = self.take(
-            name,
-            columns,
-            rows,
-            column_width,
-            row_height,
-            sizes,
-            cells,
-            selection,
-            found,
-            commented,
-            answered,
-            peers,
-            editable,
-        );
-        self.events.select = select;
-        self.events.edit = edit;
-        self.events.resized_column = resized_column;
-        self.events.resized_row = resized_row;
-        self.events.fill = fill;
-        self.events.copy = copy;
-        self.events.cut = cut;
-        self.events.paste = paste;
-        changed
+        self.take(props)
     }
 }
