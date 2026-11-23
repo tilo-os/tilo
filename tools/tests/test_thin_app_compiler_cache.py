@@ -90,6 +90,24 @@ class ThinAppCompilerCacheTests(unittest.TestCase):
         self.assertIn('build.rustc-wrapper="tools/ci/thin-app/sccache"', seen['args'])
         self.assertIsNone(seen['wrapper'])
 
+    def test_a_cache_probe_reaches_the_toolchain_rustc(self):
+        # A cache in front of the wrapper asks it about the compiler with a
+        # bare flag and no compiler argument; Cargo never does.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wrapper = root / 'tools/ci/rustc-thin-app-wrapper.sh'
+            wrapper.parent.mkdir(parents=True)
+            shutil.copy(ROOT / 'tools/ci/rustc-thin-app-wrapper.sh', wrapper)
+            rustc = root / 'bin/rustc'
+            rustc.parent.mkdir()
+            rustc.write_text('#!/bin/sh\nprintf "rustc 1.97.1\\n"\n')
+            rustc.chmod(0o755)
+            env = dict(os.environ, PATH=str(rustc.parent) + os.pathsep + os.environ['PATH'])
+            result = subprocess.run(['bash', str(wrapper), '-vV'], env=env,
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, 'rustc 1.97.1\n')
+
     def test_under_t_the_job_wrapper_is_left_alone(self):
         # A t job's cache already wraps every compile, and t refuses a
         # build.rustc-wrapper of ours: only the workspace wrapper is named.
