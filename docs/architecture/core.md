@@ -294,13 +294,14 @@ another app's or a native provider's, makes a child call bounded by its own
 caller's grants, and a refusal comes back to that code as a result, never
 only to a log. A child call is pending until it answers, and the calling run is suspended
 in its journal meanwhile, holding no connection or thread. A call that needs a
-person's yes is pending the same way: its invocation stays open in its record
-until the person answers, and the answer resumes the run with the result, or
+person's yes is pending the same way: its `tilo.invocations` record stays
+asked, readable by the caller and the person asked, until the person answers, and the answer resumes the run with the result, or
 with a refusal on no, checked against the grants as they stand then. There is
 no second way of asking. The person answers every question in one asking view the
 shell draws beside what asked: a press's call, an agent's question and a
 device's confirmation alike, in the desktop and on the web. No window draws
-its own. It streams its progress and output
+its own. That view lists the asked invocation records; there is no
+store of asks beside them. It streams its progress and output
 back to the caller as it goes, and ends in a result or a legible error the
 caller sees, and the caller can cancel it. What it writes goes into resources,
 so every view shows it, and work that outlives its device is carried on by
