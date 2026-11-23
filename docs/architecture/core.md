@@ -653,7 +653,9 @@ and screen share only, never documents, and stays as it is.
   `tilo.invocations#resolve`. An app, an agent, a web page in the Browser, an
   automation, and an outside process through the portal (the session raising
   it on its behalf) all ask this way. A secret answer goes only to the asker,
-  never into the record, its history, sync or logs.
+  never into the record, its history, sync or logs. An action that asks
+  declares it on its surface, and the dispatch asks once, stating facts
+  taken from the action's declared argument fields.
 - **An invocation follows its origin's permissions**: an invocation record
   names the resource it runs for. Its caller, or anyone who may write that
   resource, may cancel or retry it; only the identity an ask names may answer
