@@ -1273,18 +1273,35 @@ impl ViewInstance {
             BindTarget::State { key, ty, .. } => return self.edit_state(&key, &ty, value),
         };
         let (pkg, field) = self.bound_field(&target, &field_id)?;
-        // A control that picks a case hands over its name (the id the field holds it by): the
-        // field takes the case itself, so the name becomes that case before the field is
-        // written, as a case written in the language already is.
-        let value = match (&field.ty, value) {
-            (Ty::Enum(key), Value::Text(case)) => Value::Enum(
+        // A control hands over what it shows, and the field takes it as its type holds it: a case
+        // comes by its name, a whole number stays whole, and a value given for an optional field
+        // becomes its value, where an empty text is none.
+        let case_of = |key: &crate::meta::TypeKey, case: &str| -> Result<Value, RuntimeError> {
+            Ok(Value::Enum(
                 self.core
                     .registry
                     .borrow()
                     .enum_value(key, case)
                     .map_err(RuntimeError::BadArgs)?,
-            ),
-            _ => value.clone(),
+            ))
+        };
+        let value = match (&field.ty, value) {
+            (Ty::Enum(key), Value::Text(case)) => case_of(key, case)?,
+            (Ty::Int, Value::Float(number)) => Value::Int(whole(*number)),
+            (Ty::Float, Value::Int(number)) => Value::Float(integer(*number)),
+            (Ty::Option(inner), Value::Opt(_)) => value.clone(),
+            (Ty::Option(inner), given) => match (&**inner, given) {
+                (Ty::Text, Value::Text(text)) if text.is_empty() => Value::none(),
+                (Ty::Enum(key), Value::Text(case)) => Value::some(case_of(key, case)?),
+                (Ty::Int | Ty::Float, Value::Int(_) | Value::Float(_)) => {
+                    Value::some(hold(inner, given))
+                }
+                (Ty::Text, Value::Text(_)) | (Ty::Bool, Value::Bool(_) | Value::Int(_)) => {
+                    Value::some(given.clone())
+                }
+                _ => value.clone(),
+            },
+            (ty, given) => hold(ty, given),
         };
         let value = &value;
         let ctx = ExecCtx {
@@ -1430,6 +1447,34 @@ fn collect_lists(node: &UiNode, out: &mut Vec<String>) {
     }
     for child in &node.children {
         collect_lists(child, out);
+    }
+}
+
+/// `number` as the whole number a field of whole numbers holds, rounded to the nearest.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a setting's whole number is far inside i64"
+)]
+fn whole(number: f64) -> i64 {
+    number.round() as i64
+}
+
+/// `number`, a whole number a control shows, as the float a field of floats holds.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a setting's whole number is far inside f64"
+)]
+fn integer(number: i64) -> f64 {
+    number as f64
+}
+
+/// `given`, a value a control handed its field, as the field's type holds it: a whole number a
+/// number control gives a field of whole numbers, and any other as it came.
+fn hold(ty: &Ty, given: &Value) -> Value {
+    match (ty, given) {
+        (Ty::Int, Value::Float(number)) => Value::Int(whole(*number)),
+        (Ty::Float, Value::Int(number)) => Value::Float(integer(*number)),
+        _ => given.clone(),
     }
 }
 

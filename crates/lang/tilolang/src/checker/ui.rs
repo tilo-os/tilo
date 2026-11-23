@@ -1104,7 +1104,11 @@ impl Checker<'_> {
         titled: bool,
         placeholder: bool,
     ) -> Option<Ty> {
-        let takes = |ty: &Ty| allowed.contains(ty) || (enum_case && matches!(ty, Ty::Enum(_)));
+        let takes = |ty: &Ty| {
+            let case = matches!(ty, Ty::Enum(_))
+                || matches!(ty, Ty::Option(inner) if matches!(**inner, Ty::Enum(_)));
+            allowed.contains(ty) || (enum_case && case)
+        };
         let names = {
             let mut names = allowed
                 .iter()

@@ -2648,15 +2648,38 @@ pub fn show_bound<S: std::hash::BuildHasher>(
     if node.binding.is_some() {
         let key = format!("{prefix}{}", node.key);
         if let Some(value) = bound.get(&key) {
-            let flag = node.kind == "checkbox"
+            // What the control binds, as its description declares it: a number control shows a
+            // field of whole numbers, and a value a field holds as optional is its value.
+            let bound_ty = crate::adapter::description_of(node)
+                .and_then(|description| description.bindings.first())
+                .map(|binding| binding.ty.clone());
+            let number = matches!(bound_ty, Some(tilo_render_protocol::patch::PropType::Float));
+            let flag = matches!(bound_ty, Some(tilo_render_protocol::patch::PropType::Bool))
+                || node.kind == "checkbox"
                 || node.kind == "toggle"
                 || node.kind == crate::adapter::kind("ListRow");
+            let mut value = value;
+            while let Value::Opt(Some(inner)) = value {
+                value = inner;
+            }
             changed |= match value {
                 Value::Bool(checked) => reconciler.set_flag(&key, *checked),
-                Value::Int(number) if flag => reconciler.set_flag(&key, *number != 0),
-                Value::Int(number) => reconciler.set_count(&key, *number),
-                Value::Float(number) => reconciler.set_number(&key, *number),
+                Value::Int(number_of) if flag => reconciler.set_flag(&key, *number_of != 0),
+                Value::Int(number_of) if number => {
+                    #[expect(
+                        clippy::cast_precision_loss,
+                        reason = "a setting's whole number is far inside f64"
+                    )]
+                    reconciler.set_number(&key, *number_of as f64)
+                }
+                Value::Int(number_of) => reconciler.set_count(&key, *number_of),
+                Value::Float(number_of) => reconciler.set_number(&key, *number_of),
                 Value::Rich(rich) => reconciler.set_rich(&key, rich),
+                // A field that holds none, in a control that can show none: a switch is off and a
+                // text is empty; a number keeps what it showed.
+                Value::Opt(None) if flag => reconciler.set_flag(&key, false),
+                Value::Opt(None) if number => false,
+                Value::Opt(None) => reconciler.set_text(&key, ""),
                 other => reconciler.set_text(&key, &bound_text(other)),
             };
         }

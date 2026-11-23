@@ -269,7 +269,13 @@ view sim_properties(sim: device.ModemSim) {
 
 /// The path of the SIM mobile data uses: the active one, else the first.
 fn active_sim_path(m: device.ModemUnit) -> Text {
-    m.sims.find(s -> s.active)?.path ?? m.sims.first()?.path ?? ""
+    if let sim = m.sims.find(s -> s.active) {
+        sim.path
+    } else if let first = m.sims.first() {
+        first.path
+    } else {
+        ""
+    }
 }
 
 /// What a locked SIM says: how many tries it has left.

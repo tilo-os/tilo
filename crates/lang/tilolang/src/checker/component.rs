@@ -1693,10 +1693,17 @@ fn names_cases(ty: &Type) -> bool {
 /// that may be none.
 pub(super) fn binding_types(ty: &Type) -> Vec<Ty> {
     match ty {
-        Type::Text => vec![Ty::Text],
-        Type::Bool => vec![Ty::Bool],
-        Type::Int => vec![Ty::Int],
-        Type::Float => vec![Ty::Float],
+        // A control that edits text edits a field that may hold none, an empty text being none.
+        Type::Text => vec![Ty::Text, Ty::Option(Box::new(Ty::Text))],
+        Type::Bool => vec![Ty::Bool, Ty::Option(Box::new(Ty::Bool))],
+        Type::Int => vec![Ty::Int, Ty::Option(Box::new(Ty::Int))],
+        // A number control shows a whole number too: a size, a count, a number of minutes.
+        Type::Float => vec![
+            Ty::Float,
+            Ty::Int,
+            Ty::Option(Box::new(Ty::Float)),
+            Ty::Option(Box::new(Ty::Int)),
+        ],
         Type::Time => vec![
             Ty::Date,
             Ty::Time,
@@ -1714,7 +1721,8 @@ pub(super) fn binding_types(ty: &Type) -> Vec<Ty> {
 /// takes a field of whichever enum the app declares.
 fn binds(ty: &Type, field: &Ty) -> bool {
     match ty {
-        Type::Enum => matches!(field, Ty::Enum(_)),
+        Type::Enum => matches!(field, Ty::Enum(_))
+            || matches!(field, Ty::Option(inner) if matches!(**inner, Ty::Enum(_))),
         other => binding_types(other).contains(field),
     }
 }

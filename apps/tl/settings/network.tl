@@ -20,10 +20,8 @@ view network_pane() {
         vpn_pane(page, chosen)
     } else if page == "vpn-add" {
         vpn_add_page(page, chosen)
-    } else if page == "vpn-wireguard" {
-        vpn_wireguard_page(page)
-    } else if page == "vpn-plugin" {
-        vpn_plugin_page(chosen, page)
+    } else if page == "vpn-paste" {
+        vpn_paste_page(chosen, page)
     } else if page == "vpn-profile" {
         vpn_profile_page(chosen, page)
     } else if page == "net" {
@@ -329,20 +327,20 @@ view network_page(name: Text, page: State<Text>) {
                     ui.TextInput(bind: dns, placeholder: "Name servers, comma-separated")
                     row(gap: .related, align: .center, wrap: true) {
                         ui.Button("Take one from the network", size: .small) {
-                            on press: device.set_network_addresses(
+                            on press: device.set_network_ipv4(
                                 device.network,
                                 profile: saved.id,
                                 automatic: true,
                             )
                         }
                         ui.Button("Use these addresses", size: .small) {
-                            on press: device.set_network_addresses(
+                            on press: device.set_network_ipv4(
                                 device.network,
                                 profile: saved.id,
                                 automatic: false,
-                                addresses: addresses,
-                                gateway: gateway,
-                                dns: dns,
+                                addresses: comma_list(addresses),
+                                gateway: gateway.trim(),
+                                dns: comma_list(dns),
                             )
                         }
                     }
@@ -549,14 +547,7 @@ fn hotspot_words(on: Bool) -> Text {
     if on { "Sharing this connection" } else { "Off" }
 }
 
-/// What the VPN row says: how many profiles there are and whether one is up.
-fn vpn_words() -> Text {
-    let vpn = device.vpn
-    if vpn.profiles.is_empty() {
-        "No profile"
-    } else if let connected = vpn.profiles.find(p -> p.connected) {
-        connected.name
-    } else {
-        "Off"
-    }
+/// The entries `text` lists between commas, each trimmed, none empty.
+fn comma_list(text: Text) -> List<Text> {
+    text.split(",").map(x -> x.trim()).filter(x -> x != "")
 }

@@ -1,12 +1,17 @@
-app so.tilo.settings "Settings" (icon: .settings, category: .system)
+app so.tilo.lang.settings "Settings" (
+    icon: .settings,
+    category: .system,
+    tagline: "This device, your workspace and the accounts they keep",
+    keywords: ["settings", "preferences", "configuration", "einstellungen", "system", "options"],
+)
 
 use so.tilo.settings as settings
 use so.tilo.device as device
 
 /// The window's root. Settings keeps nothing of its own here: every row below changes a
-/// resource the session publishes — the person's appearance, notification and accessibility
-/// settings, the device's sound, network, Bluetooth, displays and power — so a change made
-/// here, in the shell's quick settings or by an agent is one change, with one history.
+/// resource the session publishes — the person's appearance, notification, accessibility and
+/// input settings, the device's sound, network, Bluetooth, displays, printers and power — so a
+/// change made here, in the shell's quick settings or by an agent is one change, with one history.
 type Settings {
 }
 
@@ -27,9 +32,6 @@ view settings_window(s: Settings) {
                     ui.NavItem("bluetooth", "Bluetooth", icon: .bluetooth) {
                         on select: set(pane, "bluetooth")
                     }
-                    ui.NavItem("speakers", "Speakers", icon: .speaker) {
-                        on select: set(pane, "speakers")
-                    }
                 }
                 ui.NavSection("Devices") {
                     ui.NavItem("displays", "Displays", icon: .monitor) {
@@ -38,16 +40,65 @@ view settings_window(s: Settings) {
                     ui.NavItem("sound", "Sound", icon: .speaker) {
                         on select: set(pane, "sound")
                     }
+                    ui.NavItem("speakers", "Speakers", icon: .speaker) {
+                        on select: set(pane, "speakers")
+                    }
                     ui.NavItem("power", "Power", icon: .battery) {
                         on select: set(pane, "power")
+                    }
+                    ui.NavItem("printers", "Printers", icon: .printer) {
+                        on select: set(pane, "printers")
+                    }
+                    ui.NavItem("input", "Keyboard and pointing", icon: .keyboard) {
+                        on select: set(pane, "input")
                     }
                 }
                 ui.NavSection("Personal") {
                     ui.NavItem("appearance", "Appearance", icon: .palette) {
                         on select: set(pane, "appearance")
                     }
+                    ui.NavItem("accessibility", "Accessibility", icon: .accessibility) {
+                        on select: set(pane, "accessibility")
+                    }
                     ui.NavItem("notifications", "Notifications", icon: .bell) {
                         on select: set(pane, "notifications")
+                    }
+                    ui.NavItem("shortcuts", "Keyboard shortcuts", icon: .command) {
+                        on select: set(pane, "shortcuts")
+                    }
+                    ui.NavItem("region", "Region and formats", icon: .globe) {
+                        on select: set(pane, "region")
+                    }
+                    ui.NavItem("spelling", "Spelling and text", icon: .spell_check) {
+                        on select: set(pane, "spelling")
+                    }
+                    ui.NavItem("default_apps", "Default apps", icon: .layout_grid) {
+                        on select: set(pane, "default_apps")
+                    }
+                    ui.NavItem("time", "Date and time", icon: .clock) {
+                        on select: set(pane, "time")
+                    }
+                }
+                ui.NavSection("Accounts and access") {
+                    ui.NavItem("accounts", "Accounts", icon: .mail) {
+                        on select: set(pane, "accounts")
+                    }
+                    ui.NavItem("agent_models", "Agent models", icon: .sparkles) {
+                        on select: set(pane, "agent_models")
+                    }
+                    ui.NavItem("devices", "Devices and access", icon: .monitor_smartphone) {
+                        on select: set(pane, "devices")
+                    }
+                    ui.NavItem("continuity", "Continuity", icon: .cloud) {
+                        on select: set(pane, "continuity")
+                    }
+                }
+                ui.NavSection("System") {
+                    ui.NavItem("updates", "Updates", icon: .download) {
+                        on select: set(pane, "updates")
+                    }
+                    ui.NavItem("about", "About", icon: .info) {
+                        on select: set(pane, "about")
                     }
                 }
             }
@@ -59,16 +110,44 @@ view settings_window(s: Settings) {
                         network_pane()
                     } else if pane == "bluetooth" {
                         bluetooth_pane()
-                    } else if pane == "speakers" {
-                        speakers_page()
                     } else if pane == "displays" {
                         displays_pane()
                     } else if pane == "sound" {
                         sound_pane()
+                    } else if pane == "speakers" {
+                        speakers_page()
                     } else if pane == "power" {
                         power_pane()
+                    } else if pane == "printers" {
+                        printers_pane()
+                    } else if pane == "input" {
+                        input_pane()
+                    } else if pane == "accessibility" {
+                        accessibility_pane()
                     } else if pane == "notifications" {
                         notifications_pane()
+                    } else if pane == "shortcuts" {
+                        shortcuts_pane()
+                    } else if pane == "region" {
+                        region_pane()
+                    } else if pane == "spelling" {
+                        spelling_pane()
+                    } else if pane == "default_apps" {
+                        default_apps_pane()
+                    } else if pane == "time" {
+                        date_time_pane()
+                    } else if pane == "accounts" {
+                        accounts_pane()
+                    } else if pane == "agent_models" {
+                        agent_models_pane()
+                    } else if pane == "devices" {
+                        devices_pane()
+                    } else if pane == "continuity" {
+                        continuity_pane()
+                    } else if pane == "updates" {
+                        updates_pane()
+                    } else if pane == "about" {
+                        about_pane()
                     } else {
                         appearance_pane()
                     }
@@ -83,16 +162,44 @@ fn pane_title(pane: Text) -> Text {
         "Network"
     } else if pane == "bluetooth" {
         "Bluetooth"
-    } else if pane == "speakers" {
-        "Speakers"
     } else if pane == "displays" {
         "Displays"
     } else if pane == "sound" {
         "Sound"
+    } else if pane == "speakers" {
+        "Speakers"
     } else if pane == "power" {
         "Power"
+    } else if pane == "printers" {
+        "Printers"
+    } else if pane == "input" {
+        "Keyboard and pointing"
+    } else if pane == "accessibility" {
+        "Accessibility"
     } else if pane == "notifications" {
         "Notifications"
+    } else if pane == "shortcuts" {
+        "Keyboard shortcuts"
+    } else if pane == "region" {
+        "Region and formats"
+    } else if pane == "spelling" {
+        "Spelling and text"
+    } else if pane == "default_apps" {
+        "Default apps"
+    } else if pane == "time" {
+        "Date and time"
+    } else if pane == "accounts" {
+        "Accounts"
+    } else if pane == "agent_models" {
+        "Agent models"
+    } else if pane == "devices" {
+        "Devices and access"
+    } else if pane == "continuity" {
+        "Continuity"
+    } else if pane == "updates" {
+        "Updates"
+    } else if pane == "about" {
+        "About"
     } else {
         "Appearance"
     }
@@ -117,13 +224,17 @@ view appearance_pane() {
             ui.ToggleGroup(
                 selected: if a.mode == "dark" {
                     1
-                } else if a.mode == "light" { 2 } else { 0 },
+                } else if a.mode == "light" {
+                    2
+                } else {
+                    0
+                },
                 label: "Mode",
             ) {
                 ui.Segment("Automatic")
                 ui.Segment("Light")
                 ui.Segment("Dark")
-                on change(i): settings.set_dark_mode(a, i == 2)
+                on change(i): settings.set_dark_mode(a, on: i == 2)
             },
         )
         setting(
@@ -164,6 +275,49 @@ view appearance_pane() {
                 step: 0.05,
                 shows_value: true,
             ),
+        )
+        setting(
+            "Accent",
+            "The colour presses and selections take; empty follows the theme",
+            ui.TextInput(bind: a.accent, placeholder: "Follow the theme"),
+        )
+        setting(
+            "Interface face",
+            "The typeface the desktop is drawn in; empty follows the theme",
+            ui.TextInput(bind: a.ui_face, placeholder: "Follow the theme"),
+        )
+    }
+    ui.Section("Reading") {
+        setting(
+            "Distinguish similar letters",
+            "Set I, l, 1, 0 and O apart in all text",
+            ui.Toggle(bind: a.distinct_letters),
+        )
+        setting(
+            "Windows and panels",
+            "Let the theme's translucency show; 0 draws them solid",
+            ui.Slider(
+                bind: a.translucency,
+                label: "Translucency",
+                min: 0.0,
+                max: 1.0,
+                step: 0.05,
+                shows_value: true,
+            ),
+        )
+    }
+    ui.Section("Desktop") {
+        let desktop = settings.desktop_controls
+        let on_device = settings.desktop_controls_device
+        setting(
+            "Vim keys",
+            "Move between what shows with h, j, k and l",
+            ui.Toggle(bind: desktop.vim_mode),
+        )
+        setting(
+            "Hide the top bar",
+            "Give the screen to what it shows on this device",
+            ui.Toggle(bind: on_device.hide_top_bar),
         )
     }
 }
@@ -208,12 +362,25 @@ view notifications_pane() {
             ui.Toggle(bind: n.play_sounds),
         )
     }
+    ui.Section("Quiet hours") {
+        let focus = n.focus
+        if focus.enabled {
+            ui.Text(
+                "Banners stay quiet between {focus.start_minute} and {focus.end_minute} minutes past midnight.",
+                role: .caption,
+                secondary: true,
+            )
+        } else {
+            ui.Text("Banners arrive at any hour.", role: .caption, secondary: true)
+        }
+    }
 }
 
-
-/// This device's screens: the brightness of each, and whether the picture turns with it.
+/// This device's screens: the brightness of each, whether the picture turns with it, and the
+/// warmth of the night light.
 view displays_pane() {
     let d = settings.display
+    let night = settings.night_light
     let screens = device.displays
     ui.Section("This device") {
         setting(
@@ -241,11 +408,36 @@ view displays_pane() {
             }
         }
     }
+    ui.Section("Night light") {
+        setting(
+            "Night light",
+            "Warm the screen's colours in the evening",
+            ui.Toggle(bind: night.night_light),
+        )
+        setting(
+            "Warmth",
+            "How far toward amber the screen goes",
+            ui.Slider(
+                bind: night.night_light_temperature,
+                label: "Warmth",
+                min: 1000.0,
+                max: 6500.0,
+                step: 50.0,
+                shows_value: true,
+            ),
+        )
+        setting(
+            "Follow the evening",
+            "Turn on at sunset and off at sunrise by itself",
+            ui.Toggle(bind: night.night_light_schedule),
+        )
+    }
 }
 
 /// Where sound comes out and goes in, and how it is shaped.
 view sound_pane() {
     let sound = device.sound
+    let audio = settings.audio
     ui.Section("Output") {
         if let volume = sound.volume {
             row(gap: .related, align: .center) {
@@ -306,12 +498,58 @@ view sound_pane() {
             }
         }
     }
+    ui.Section("Balance and shape") {
+        setting(
+            "Balance",
+            "Which side the sound favours; the middle is even",
+            ui.Slider(
+                bind: audio.balance,
+                label: "Balance",
+                min: -1.0,
+                max: 1.0,
+                step: 0.05,
+                shows_value: true,
+            ),
+        )
+        setting(
+            "One channel",
+            "Play the same sound from every speaker",
+            ui.Toggle(bind: audio.mono_output),
+        )
+        setting(
+            "Echo cancellation",
+            "Take the speakers out of what the microphone hears",
+            ui.Toggle(bind: audio.echo_cancellation),
+        )
+    }
+    ui.Section("System sounds") {
+        let prefs = audio.system_sounds
+        setting(
+            "Play them",
+            "A sound for a message, a screenshot, a connection",
+            ui.Toggle(bind: prefs.enabled),
+        )
+        setting(
+            "Their volume",
+            "How loud the system's own sounds are",
+            ui.Slider(
+                bind: prefs.volume,
+                label: "System sound volume",
+                min: 0.0,
+                max: 1.0,
+                step: 0.05,
+                shows_value: true,
+            ),
+        )
+    }
 }
 
-/// How this device uses its battery: the power mode it runs in and what it charges to.
+/// How this device uses its battery: the power mode it runs in, what it charges to and when it
+/// goes to sleep.
 view power_pane() {
     let power = device.power
     let battery = device.battery
+    let prefs = settings.power
     ui.Section("Battery") {
         if battery.present {
             ui.ListRow(
@@ -330,7 +568,11 @@ view power_pane() {
             selected: if let mode = power.mode {
                 if mode == .saver {
                     0
-                } else if mode == .performance { 2 } else { 1 }
+                } else if mode == .performance {
+                    2
+                } else {
+                    1
+                }
             } else {
                 1
             },
@@ -343,116 +585,220 @@ view power_pane() {
                 device.power,
                 mode: if i == 0 {
                     "saver"
-                } else if i == 2 { "performance" } else { "balanced" },
+                } else if i == 2 {
+                    "performance"
+                } else {
+                    "balanced"
+                },
             )
         }
     }
-}
-
-/// The networks in reach and the one this device is on.
-view network_pane() {
-    let net = device.network
-    let wifi = net.wifi
-    ui.Section("Wi-Fi") {
-        ui.ListRow(
-            "Wi-Fi",
-            secondary: if wifi.on { "On" } else { "Off" },
-            icon: .wifi,
-        ) {
-            trailing: {
-                ui.Button(
-                    if wifi.on { "Turn Wi-Fi off" } else { "Turn Wi-Fi on" },
-                    icon: if wifi.on { .wifi } else { .wifi_off },
-                    icon_only: true,
-                    toggled: wifi.on,
-                    role: .plain,
-                ) {
-                    on press: device.set_wifi(device.network, not wifi.on)
-                }
-            }
-        }
-        if wifi.on {
-            ui.Button("Scan for networks", icon: .search) {
-                on press: device.scan_wifi(device.network)
-            }
-            for network in wifi.networks {
-                ui.ListRow(
-                    network.ssid,
-                    secondary: if network.connected { "Connected" } else { "" },
-                    selected: network.connected,
-                    icon: .wifi,
-                ) {
-                    on activate: device.join_wifi(device.network, network.ssid)
-                }
-            }
-        }
-    }
-    ui.Section("Airplane mode") {
+    ui.Section("Sleep") {
         setting(
-            "Airplane mode",
-            "Turn every radio off at once",
-            ui.Button(
-                "Airplane mode",
-                icon: .plane,
-                toggled: net.airplane_mode,
-                role: .plain,
-            ) {
-                on press: device.set_airplane_mode(device.network, not net.airplane_mode)
-            },
+            "Sleep by itself",
+            "Go to sleep after a while away",
+            ui.Toggle(bind: prefs.auto_suspend),
+        )
+        setting(
+            "Go to sleep after",
+            "Minutes away before the screen goes dark and the device sleeps",
+            ui.NumberInput(
+                bind: prefs.suspend_minutes,
+                label: "Minutes",
+                min: 1.0,
+                max: 240.0,
+                step: 1.0,
+            ),
+        )
+        setting(
+            "Turn the screen off after",
+            "Minutes away before the screen goes dark",
+            ui.NumberInput(
+                bind: prefs.blank_minutes,
+                label: "Minutes",
+                min: 1.0,
+                max: 240.0,
+                step: 1.0,
+            ),
+        )
+        setting(
+            "Lock after",
+            "Minutes away before the screen locks",
+            ui.NumberInput(
+                bind: prefs.lock_minutes,
+                label: "Minutes",
+                min: 0.0,
+                max: 240.0,
+                step: 1.0,
+            ),
+        )
+        setting(
+            "Sleep locks the screen",
+            "Ask for the person's key when it wakes",
+            ui.Toggle(bind: prefs.lock_on_sleep),
+        )
+    }
+    ui.Section("When the battery is low") {
+        setting(
+            "Say so at",
+            "Per cent left before the device says the battery is low",
+            ui.NumberInput(
+                bind: prefs.low_battery_percent,
+                label: "Low battery percent",
+                min: 1.0,
+                max: 50.0,
+                step: 1.0,
+            ),
+        )
+        setting(
+            "Act at",
+            "Per cent left before the critical action",
+            ui.NumberInput(
+                bind: prefs.critical_battery_percent,
+                label: "Critical battery percent",
+                min: 1.0,
+                max: 30.0,
+                step: 1.0,
+            ),
         )
     }
 }
 
-/// The Bluetooth devices in reach and the ones this device knows.
-view bluetooth_pane() {
-    let bt = device.bluetooth
-    ui.Section("Bluetooth") {
-        ui.ListRow(
-            "Bluetooth",
-            secondary: if bt.on { "On" } else { "Off" },
-            icon: .bluetooth,
-        ) {
-            trailing: {
-                ui.Button(
-                    if bt.on {
-                        "Turn Bluetooth off"
-                    } else {
-                        "Turn Bluetooth on"
-                    },
-                    icon: .bluetooth,
-                    icon_only: true,
-                    toggled: bt.on,
-                    role: .plain,
+/// The printers this computer offers, the jobs they carry and the printers it can find.
+view printers_pane() {
+    let printers = device.printers
+    ui.Section("Printers") {
+        if not printers.serving {
+            ui.Text("This computer has no printer service", role: .caption, secondary: true)
+        } else {
+            if printers.queues.is_empty() {
+                ui.EmptyState("No printer", icon: .printer, inline: true)
+            }
+            for queue in printers.queues {
+                ui.ListRow(
+                    queue.name,
+                    secondary: queue_words(queue),
+                    selected: queue.default,
+                    icon: .printer,
                 ) {
-                    on press: device.set_bluetooth(device.bluetooth, not bt.on)
+                    trailing: {
+                        row(gap: .tight, align: .center, wrap: true) {
+                            if not queue.default {
+                                ui.Button("Use first", size: .small) {
+                                    on press: device.set_default(device.printers, printer: queue.name)
+                                }
+                            }
+                            ui.Button(
+                                if queue.state == .paused { "Resume" } else { "Pause" },
+                                size: .small,
+                            ) {
+                                on press: device.set_paused(
+                                    device.printers,
+                                    printer: queue.name,
+                                    paused: queue.state != .paused,
+                                )
+                            }
+                            ui.Button(
+                                "Remove this printer",
+                                icon: .trash,
+                                icon_only: true,
+                                role: .destructive,
+                                size: .small,
+                            ) {
+                                on press: device.remove(device.printers, printer: queue.name)
+                            }
+                        }
+                    }
+                }
+            }
+            ui.Button("Look for printers", icon: .search) {
+                on press: device.find(device.printers)
+            }
+            for found in printers.nearby {
+                ui.ListRow(
+                    found.name,
+                    secondary: if let where_ = found.location { where_ } else { found.uri },
+                    icon: .printer,
+                ) {
+                    trailing: {
+                        ui.Button("Add", size: .small, role: .primary) {
+                            on press: device.add(
+                                device.printers,
+                                uri: found.uri,
+                                name: found.name,
+                            )
+                        }
+                    }
                 }
             }
         }
-        if bt.on {
-            if bt.discovering {
-                ui.Button("Stop scanning", icon: .search) {
-                    on press: device.scan(device.bluetooth, on: false)
-                }
-            } else {
-                ui.Button("Scan for devices", icon: .search) {
-                    on press: device.scan(device.bluetooth, on: true)
-                }
-            }
-            for nearby in bt.nearby {
-                ui.ListRow(nearby.name, icon: .bluetooth) {
-                    on activate: device.pair(device.bluetooth, nearby.address)
-                }
-            }
+    }
+    ui.Section("Jobs") {
+        if printers.jobs.is_empty() {
+            ui.Text("Nothing waits to print", role: .caption, secondary: true)
         }
-        for accessory in bt.accessories {
+        for job in printers.jobs {
             ui.ListRow(
-                accessory.name,
-                secondary: if accessory.connected { "Connected" } else { "" },
-                selected: accessory.connected,
-                icon: .headphones,
+                if job.title != "" { job.title } else { "Untitled document" },
+                secondary: "{job.destination} - {job_words(job)}",
+                icon: .file,
             ) {
-                on activate: device.connect(device.bluetooth, accessory.address)
+                trailing: {
+                    row(gap: .tight, align: .center, wrap: true) {
+                        if job.state == .stopped {
+                            ui.Button("Retry", size: .small) {
+                                on press: device.retry_job(device.printers, job: job.id)
+                            }
+                        }
+                        ui.Button(
+                            "Cancel this job",
+                            icon: .x,
+                            icon_only: true,
+                            role: .destructive,
+                            size: .small,
+                        ) {
+                            on press: device.cancel_job(device.printers, job: job.id)
+                        }
+                    }
+                }
             }
         }
+    }
+    if let problem = printers.problem {
+        ui.StatusLine(problem, status: .error)
+    }
+}
+
+/// How a queue stands, in a word.
+fn queue_words(queue: device.PrinterQueue) -> Text {
+    if queue.state == .printing {
+        "Printing"
+    } else if queue.state == .paused {
+        if let why = queue.reason { "Paused: {why}" } else { "Paused" }
+    } else if queue.state == .offline {
+        "Offline"
+    } else if queue.default {
+        "Ready; the one used first"
+    } else {
+        "Ready"
+    }
+}
+
+/// How a job stands, in a word.
+fn job_words(job: device.PrintJob) -> Text {
+    if job.state == .printing {
+        "Printing"
+    } else if job.state == .held {
+        "Held"
+    } else if job.state == .stopped {
+        "Stopped"
+    } else if job.state == .cancelled {
+        "Cancelled"
+    } else if job.state == .failed {
+        "Failed"
+    } else if job.state == .printed {
+        "Printed"
+    } else {
+        "Waiting"
     }
 }

@@ -631,6 +631,20 @@ pub fn printers_surface() -> tilo_resource::surface::Surface {
     >(PRINTERS, "Printers")
 }
 
+/// The `system-update` resource's surface, as a shell reads it over `so.tilo.device`: what the
+/// machine booted, what waits for a restart, and the actions that update it.
+#[must_use]
+pub fn update_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<Update, UpdateAction>(SYSTEM_UPDATE, "System update")
+}
+
+/// The `time-zone` resource's surface: the zone the device keeps and whether it follows the
+/// network.
+#[must_use]
+pub fn time_zone_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<Time, TimeAction>(TIME_ZONE, "Time zone")
+}
+
 /// The `power` resource, as a declared type: the modes this device offers and
 /// who may use it.
 #[derive(tilo_resource::Row)]

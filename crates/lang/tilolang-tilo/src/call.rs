@@ -193,10 +193,35 @@ fn published_call(
         ..
     } = invocation
     else {
-        return Err(format!(
-            "{} publishes its resources' fields read-only; change them through its actions",
-            meta.title
-        ));
+        return match invocation {
+            // A control bound to a field of one of the package's resources: the resource publishes
+            // its own typed field edit, so a field is set as a resource's field is set, and the
+            // change is admitted, recorded and undone like any other.
+            Invocation::Edit {
+                app,
+                target,
+                field,
+                value,
+                ..
+            } => {
+                let path: Vec<Json> = field
+                    .split('.')
+                    .filter(|name| !name.is_empty())
+                    .map(|name| json!({ "field": name }))
+                    .collect();
+                Ok(json!({
+                    "app": app,
+                    "resource": target.id_string(),
+                    "action": "field-edit",
+                    "arguments": { "edit": { "path": path, "op": "set", "value": edited(value)? } },
+                    "published": true,
+                }))
+            }
+            _ => Err(format!(
+                "{} publishes its resources' fields read-only; change them through its actions",
+                meta.title
+            )),
+        };
     };
     // A platform package's action is its published verb, by the same id (`show-surface`).
     let resource = match target {
@@ -238,6 +263,19 @@ fn published_call(
         "arguments": arguments,
         "published": true,
     }))
+}
+
+/// The value an edit of a field writes, as the field's own edit takes it: a case by its name (the
+/// case a field of an enumeration holds), nothing for an optional field, and any other value as
+/// the language gives an argument.
+fn edited(value: &Value) -> Result<Json, String> {
+    match value {
+        Value::Enum(case) if case.fields.is_empty() => Ok(json!(case.variant)),
+        Value::Opt(None) => Ok(Json::Null),
+        Value::Opt(Some(inner)) => edited(inner),
+        other => tilolang_runtime::value::to_argument(other)
+            .map_err(|error| format!("a field does not take it: {error}")),
+    }
 }
 
 /// What the invocation is made from, when it is made from something, among the arguments the

@@ -101,6 +101,9 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("printers", "Printers", "printers"),
     ("modem", "Modem", "modem"),
     ("tethering", "Tethering", "tethering"),
+    // What the machine booted, what update waits, and the zone its clock keeps.
+    ("update", "SystemUpdate", "system-update"),
+    ("time_zone", "TimeZone", "time-zone"),
     ("quick_settings", "QuickSettings", "session:quick-settings"),
 ];
 const VISION_ROOTS: &[(&str, &str, &str)] = &[
@@ -123,6 +126,53 @@ const SETTINGS_ROOTS: &[(&str, &str, &str)] = &[
         "agent_models",
         "AgentModels",
         "settings:settings.agent-models",
+    ),
+    // Every other section the person's settings keep: each published as its record, with the
+    // fields a view shows and the verbs that change it as its own actions.
+    (
+        "accessibility",
+        "Accessibility",
+        "settings:settings.accessibility",
+    ),
+    (
+        "accessibility_device",
+        "AccessibilityDevice",
+        "settings:settings.accessibility-device",
+    ),
+    ("input", "Input", "settings:settings.input"),
+    (
+        "input_device",
+        "InputDevice",
+        "settings:settings.input-device",
+    ),
+    (
+        "text_assistance",
+        "TextAssistance",
+        "settings:settings.text-assistance",
+    ),
+    ("locale", "Locale", "settings:settings.locale"),
+    ("shortcuts", "Shortcuts", "settings:settings.shortcuts"),
+    ("continuity", "Continuity", "settings:settings.continuity"),
+    ("updates", "Updates", "settings:settings.updates"),
+    ("clock", "Clock", "settings:settings.clock"),
+    (
+        "default_apps",
+        "DefaultApps",
+        "settings:settings.default-apps",
+    ),
+    ("identity", "Identity", "settings:settings.identity"),
+    ("night_light", "NightLight", "settings:settings.night-light"),
+    ("audio", "Audio", "settings:settings.audio"),
+    ("audio_device", "AudioDevice", "settings:settings.audio-device"),
+    (
+        "desktop_controls",
+        "DesktopControls",
+        "settings:settings.desktop-controls",
+    ),
+    (
+        "desktop_controls_device",
+        "DesktopControlsDevice",
+        "settings:settings.desktop-controls-device",
     ),
 ];
 /// The contacts directory of the workspace, which Contacts keeps and Mail,

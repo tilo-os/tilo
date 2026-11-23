@@ -1,6 +1,6 @@
 /// The VPN profiles this device has, each switched on or off from the list and opened on a page
-/// of its own to change; and the ways to add one: a WireGuard tunnel made here, an installed
-/// plugin's type, or a configuration's text pasted in.
+/// of its own to change; and the ways to add one: a configuration pasted in, or a profile of an
+/// installed kind.
 view vpn_pane(page: State<Text>, chosen: State<Text>) {
     let vpn = device.vpn
     ui.Section("VPN") {
@@ -23,7 +23,13 @@ view vpn_pane(page: State<Text>, chosen: State<Text>) {
                         ui.Button(if p.connected { "On" } else { "Off" }, toggled: p.connected) {
                             on press: device.set_vpn(device.vpn, profile: p.id, on: not p.connected)
                         }
-                        ui.Button("This VPN", icon: .chevron_right, icon_only: true, role: .plain, size: .small) {
+                        ui.Button(
+                            "This VPN",
+                            icon: .chevron_right,
+                            icon_only: true,
+                            role: .plain,
+                            size: .small,
+                        ) {
                             on press: set(chosen, p.id).then(set(page, "vpn-profile"))
                         }
                     }
@@ -41,125 +47,80 @@ view vpn_pane(page: State<Text>, chosen: State<Text>) {
 
 /// The ways to add a VPN.
 view vpn_add_page(page: State<Text>, chosen: State<Text>) {
-    state name: Text = ""
-    state kind: Text = "WireGuard"
-    state text: Text = ""
     let vpn = device.vpn
     ui.Section("Add a VPN") {
         ui.ListRow("Back", icon: .chevron_left) {
             on activate: set(page, "vpn")
         }
-        ui.ListRow("WireGuard", secondary: "A tunnel this device sets up with its own key", icon: .shield) {
-            on activate: set(page, "vpn-wireguard")
+        ui.ListRow(
+            "Paste a configuration",
+            secondary: "A WireGuard or OpenVPN configuration, as text",
+            icon: .file_text,
+        ) {
+            on activate: set(page, "vpn-paste")
         }
         if not vpn.plugins.is_empty() {
             ui.Text("Installed kinds", role: .caption, secondary: true)
             for plugin in vpn.plugins {
-                ui.ListRow(plugin.name, secondary: "Set up a profile of this kind", icon: .puzzle) {
-                    on activate: set(chosen, plugin.service).then(set(page, "vpn-plugin"))
+                ui.ListRow(
+                    plugin.name,
+                    secondary: "Paste a configuration of this kind",
+                    icon: .puzzle,
+                ) {
+                    on activate: set(chosen, plugin.service).then(set(page, "vpn-paste"))
                 }
             }
         }
     }
+}
+
+/// A configuration pasted in: its name, its kind, and its text, as the device reads it.
+view vpn_paste_page(service: Text, page: State<Text>) {
+    state name: Text = ""
+    state kind: Text = "WireGuard"
+    state text: Text = ""
+    let vpn = device.vpn
     ui.Section("Paste a configuration") {
-        ui.Text(
-            "A WireGuard .conf or an OpenVPN configuration, pasted as text.",
-            role: .caption,
-            secondary: true,
-        )
+        ui.ListRow("Back", icon: .chevron_left) {
+            on activate: set(page, "vpn-add")
+        }
         ui.TextInput(bind: name, placeholder: "Name")
-        ui.Dropdown(bind: kind, options: ["WireGuard", "OpenVPN"], placeholder: "Kind")
-        ui.TextInput(bind: text, placeholder: "The configuration", lines: 6)
+        if service == "" {
+            ui.Dropdown(bind: kind, options: ["WireGuard", "OpenVPN"], placeholder: "Kind")
+        }
+        ui.TextInput(bind: text, placeholder: "The configuration", lines: 8)
         ui.Button("Set it up", role: .primary) {
             on press: device.import_vpn(
                 device.vpn,
-                kind: if kind == "OpenVPN" { "openvpn" } else { "wireguard" },
+                kind: vpn_kind_key(service, kind),
                 name: name,
                 text: text,
             )
         }
+        ui.Text(
+            "The configuration's secrets are kept by the device's VPN service; this page does not keep a copy.",
+            role: .caption,
+            secondary: true,
+        )
+    }
+    if let problem = vpn.problem {
+        ui.StatusLine(problem, status: .error)
     }
 }
 
-/// A WireGuard tunnel made here: a key pair for this device, the server and what goes through
-/// it. The public key is what the server is told; the private one never leaves the device.
-view vpn_wireguard_page(page: State<Text>) {
-    state name: Text = ""
-    state address: Text = ""
-    state server_key: Text = ""
-    state endpoint: Text = ""
-    state allowed: Text = ""
-    state dns: Text = ""
-    state keepalive: Text = ""
-    let vpn = device.vpn
-    ui.Section("WireGuard") {
-        ui.ListRow("Back", icon: .chevron_left) {
-            on activate: set(page, "vpn-add")
-        }
-        if let public = vpn.generated_key {
-            ui.PropertyList {
-                ui.Property("This device's public key", public)
-            }
-            ui.Text(
-                "Give this key to the server. The private one stays on this device.",
-                role: .caption,
-                secondary: true,
-            )
-            ui.Button("Make another key pair", icon: .key) {
-                on press: device.generate_vpn_keys(device.vpn)
-            }
-        } else {
-            ui.Button("Make a key pair", icon: .key) {
-                on press: device.generate_vpn_keys(device.vpn)
-            }
-        }
-    }
-    ui.Section("The tunnel") {
-        ui.TextInput(bind: name, placeholder: "Name")
-        ui.TextInput(bind: address, placeholder: "This device's address in the tunnel, such as 10.7.0.2/32")
-        ui.TextInput(bind: server_key, placeholder: "The server's public key")
-        ui.TextInput(bind: endpoint, placeholder: "The server, as host:port")
-        ui.TextInput(bind: allowed, placeholder: "What goes through it, comma-separated; everything when empty")
-        ui.TextInput(bind: dns, placeholder: "Name servers, comma-separated")
-        ui.TextInput(bind: keepalive, placeholder: "Seconds between keepalives; 0 for none")
-        ui.Button("Set it up", role: .primary, enabled: vpn.generated_key != .none) {
-            on press: device.create_wireguard(
-                device.vpn,
-                name: name,
-                address: address,
-                server_public_key: server_key,
-                endpoint: endpoint,
-                allowed_ips: allowed,
-                dns: dns,
-                keepalive: keepalive.to_int() ?? 0,
-            )
-        }
+/// The kind an import names: an installed plugin's own service, or the chosen kind's key.
+fn vpn_kind_key(service: Text, kind: Text) -> Text {
+    if service != "" {
+        service
+    } else if kind == "OpenVPN" {
+        "openvpn"
+    } else {
+        "wireguard"
     }
 }
 
-/// A profile of an installed plugin's kind.
-view vpn_plugin_page(service: Text, page: State<Text>) {
-    state name: Text = ""
-    state server: Text = ""
-    let plugin = device.vpn.plugins.find(p -> p.service == service)
-    ui.Section(if let p = plugin { p.name } else { "VPN" }) {
-        ui.ListRow("Back", icon: .chevron_left) {
-            on activate: set(page, "vpn-add")
-        }
-        ui.TextInput(bind: name, placeholder: "Name")
-        ui.TextInput(bind: server, placeholder: "The server, as a host name or address")
-        ui.Button("Set it up", role: .primary) {
-            on press: device.create_plugin_vpn(
-                device.vpn,
-                service: service,
-                name: name,
-                server: server,
-            )
-        }
-    }
-}
-
-/// One profile's page: how it stands, and the settings its own page changes.
+/// One profile's page: how it stands, and the settings its own page changes. What is left out of
+/// a change stays as it is.
 view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
     state name: Text = ""
     state endpoint: Text = ""
@@ -185,11 +146,16 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
                     }
                 }
             }
+            if not p.addresses.is_empty() {
+                ui.PropertyList {
+                    ui.Property("This device's address", p.addresses.join(", "))
+                }
+            }
         }
         ui.Section("Settings") {
-            ui.TextInput(bind: name, placeholder: if p.name != "" { p.name })
+            ui.TextInput(bind: name, placeholder: p.name)
             ui.Button("Rename", size: .small) {
-                on press: device.set_vpn_name(device.vpn, profile: p.id, name: name)
+                on press: device.edit_vpn(device.vpn, profile: p.id, name: name)
             }
             ui.ListRow(
                 "Joins by itself",
@@ -198,10 +164,10 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
             ) {
                 trailing: {
                     ui.Button(if p.autoconnect { "On" } else { "Off" }, toggled: p.autoconnect) {
-                        on press: device.set_vpn_autoconnect(
+                        on press: device.edit_vpn(
                             device.vpn,
                             profile: p.id,
-                            on: not p.autoconnect,
+                            autoconnect: not p.autoconnect,
                         )
                     }
                 }
@@ -213,10 +179,10 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
             ) {
                 trailing: {
                     ui.Button(if p.all_traffic { "On" } else { "Off" }, toggled: p.all_traffic) {
-                        on press: device.set_vpn_all_traffic(
+                        on press: device.edit_vpn(
                             device.vpn,
                             profile: p.id,
-                            on: not p.all_traffic,
+                            all_traffic: not p.all_traffic,
                         )
                     }
                 }
@@ -228,42 +194,62 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
             }
             ui.TextInput(bind: endpoint, placeholder: "The server, as host:port")
             ui.Button("Change the server", size: .small) {
-                on press: device.set_vpn_endpoint(device.vpn, profile: p.id, endpoint: endpoint)
+                on press: device.edit_vpn(device.vpn, profile: p.id, endpoint: endpoint)
             }
-            if p.kind == "wireguard" {
-                ui.PropertyList {
-                    if let key = p.peer_public_key {
-                        ui.Property("Server's public key", key)
-                    }
-                    if let m = p.mtu { ui.Property("Largest packet", "{m} bytes") }
-                    if let k = p.keepalive { ui.Property("Keepalive", "{k} seconds") }
-                    if p.allowed_ips.is_empty() {
-                        ui.Property("Routes", "Everything")
-                    } else {
-                        ui.Property("Routes", p.allowed_ips.join(", "))
-                    }
+            ui.PropertyList {
+                if let key = p.peer_public_key {
+                    ui.Property("Server's public key", key)
                 }
-                ui.TextInput(bind: keepalive, placeholder: "Seconds between keepalives; 0 for none")
-                ui.Button("Change the keepalive", size: .small) {
-                    on press: device.set_vpn_keepalive(
+                if let m = p.mtu {
+                    ui.Property("Largest packet", "{m} bytes")
+                }
+                if let k = p.keepalive {
+                    ui.Property("Keepalive", "{k} seconds")
+                }
+                if p.allowed_ips.is_empty() {
+                    ui.Property("Routes", "Everything")
+                } else {
+                    ui.Property("Routes", p.allowed_ips.join(", "))
+                }
+            }
+            ui.TextInput(bind: keepalive, placeholder: "Seconds between keepalives; 0 for none")
+            ui.Button("Change the keepalive", size: .small) {
+                on press: device.edit_vpn(
+                    device.vpn,
+                    profile: p.id,
+                    keepalive: keepalive.to_int() ?? 0,
+                )
+            }
+            ui.TextInput(
+                bind: route,
+                placeholder: "An address to route through it, such as 10.20.0.0/16",
+            )
+            row(gap: .related, align: .center, wrap: true) {
+                ui.Button("Route it", size: .small) {
+                    on press: device.edit_vpn(
                         device.vpn,
                         profile: p.id,
-                        seconds: keepalive.to_int() ?? 0,
+                        allowed_ips: with_entry(p.allowed_ips, route),
                     )
                 }
-                ui.TextInput(bind: route, placeholder: "An address to route through it, such as 10.20.0.0/16")
-                row(gap: .related, align: .center, wrap: true) {
-                    ui.Button("Route it", size: .small) {
-                        on press: device.add_vpn_route(device.vpn, profile: p.id, address: route)
-                    }
-                    ui.Button("Stop routing it", size: .small) {
-                        on press: device.remove_vpn_route(device.vpn, profile: p.id, address: route)
-                    }
+                ui.Button("Stop routing it", size: .small) {
+                    on press: device.edit_vpn(
+                        device.vpn,
+                        profile: p.id,
+                        allowed_ips: without_entry(p.allowed_ips, route),
+                    )
                 }
             }
-            ui.TextInput(bind: mtu, placeholder: "Largest packet in bytes; empty to choose automatically")
+            ui.TextInput(
+                bind: mtu,
+                placeholder: "Largest packet in bytes; empty to choose automatically",
+            )
             ui.Button("Change the packet size", size: .small) {
-                on press: device.set_vpn_mtu(device.vpn, profile: p.id, mtu: mtu.to_int())
+                on press: device.edit_vpn(
+                    device.vpn,
+                    profile: p.id,
+                    mtu: mtu.to_int() ?? 0,
+                )
             }
         }
         ui.Section("Name servers") {
@@ -273,11 +259,17 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
             for server in p.dns {
                 ui.ListRow(server, icon: .server) {
                     trailing: {
-                        ui.Button("Ask it no more", icon: .x, icon_only: true, role: .plain, size: .small) {
-                            on press: device.remove_vpn_dns(
+                        ui.Button(
+                            "Ask it no more",
+                            icon: .x,
+                            icon_only: true,
+                            role: .plain,
+                            size: .small,
+                        ) {
+                            on press: device.edit_vpn(
                                 device.vpn,
                                 profile: p.id,
-                                server: server,
+                                dns: without_entry(p.dns, server),
                             )
                         }
                     }
@@ -286,7 +278,11 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
             row(gap: .related, align: .center, wrap: true) {
                 ui.TextInput(bind: dns, placeholder: "A name server's address", fill)
                 ui.Button("Ask it too", size: .small) {
-                    on press: device.add_vpn_dns(device.vpn, profile: p.id, server: dns)
+                    on press: device.edit_vpn(
+                        device.vpn,
+                        profile: p.id,
+                        dns: with_entry(p.dns, dns),
+                    )
                 }
             }
         }
@@ -313,6 +309,22 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
     }
 }
 
+/// `entries` with `entry` added, where it is not there yet and is not empty.
+fn with_entry(entries: List<Text>, entry: Text) -> List<Text> {
+    let trimmed = entry.trim()
+    if trimmed == "" or entries.contains(trimmed) {
+        entries
+    } else {
+        [entries, [trimmed]].flat_map(x -> x)
+    }
+}
+
+/// `entries` without `entry`.
+fn without_entry(entries: List<Text>, entry: Text) -> List<Text> {
+    let trimmed = entry.trim()
+    entries.filter(x -> x != trimmed)
+}
+
 /// What a VPN profile says of itself.
 fn vpn_state_words(p: device.VpnProfile) -> Text {
     if p.connected {
@@ -321,5 +333,20 @@ fn vpn_state_words(p: device.VpnProfile) -> Text {
         "WireGuard"
     } else {
         "Off"
+    }
+}
+
+/// The VPNs in one word for the network page's row.
+fn vpn_words() -> Text {
+    let vpn = device.vpn
+    if vpn.profiles.is_empty() {
+        "None set up"
+    } else {
+        let joined = vpn.profiles.find(p -> p.connected)
+        if let p = joined {
+            "Through {p.name}"
+        } else {
+            "Off"
+        }
     }
 }
