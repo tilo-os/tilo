@@ -27,6 +27,8 @@ const SPINNER_WIDTH: f32 = 44.0;
 /// `lg` text height with some breathing margin.
 const PICKER_HEIGHT: f32 = 132.0;
 const COLON_WIDTH: f32 = 8.0;
+/// Room for the AM/PM token in a 12-hour locale.
+const AMPM_WIDTH: f32 = 34.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TimeCell {
@@ -89,12 +91,15 @@ pub struct TimePicker {
     hours: u8,           // 0..=23
     minutes: u8,         // 0..=59
     seconds: Option<u8>, // Some(0..=59) only when explicitly enabled
+    /// Minutes the pointer steppers move the minute cell by.
+    step: u8,
     on_change: Option<TimeChange>,
     local_state: Option<crate::widget::binding::BoxedBinding<TimeValue>>,
     rect: Rect,
     hour_rect: Rect, // populated in apply_layout
     minute_rect: Rect,
     second_rect: Rect, // ZERO when seconds == None
+    ampm_rect: Rect,   // ZERO in a 24-hour locale
     last_cursor: Point,
     pointer_inside: bool,
     is_focused: bool,
@@ -117,12 +122,14 @@ impl TimePicker {
             hours: hours.min(HOUR_MAX),
             minutes: minutes.min(MINSEC_MAX),
             seconds: None,
+            step: 15,
             on_change: None,
             local_state: None,
             rect: Rect::ZERO,
             hour_rect: Rect::ZERO,
             minute_rect: Rect::ZERO,
             second_rect: Rect::ZERO,
+            ampm_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             pointer_inside: false,
             is_focused: false,
@@ -160,6 +167,17 @@ impl TimePicker {
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.accessible_name = Some(name.into());
         self
+    }
+
+    /// The minutes the wheel and the chevrons move the minute cell by.
+    #[must_use]
+    pub fn with_step(mut self, step: u8) -> Self {
+        self.step = step.clamp(1, MINSEC_MAX);
+        self
+    }
+
+    pub fn set_step(&mut self, step: u8) {
+        self.step = step.clamp(1, MINSEC_MAX);
     }
 
     #[must_use]
@@ -314,14 +332,30 @@ impl TimePicker {
         if self.seconds.is_some() {
             x += cell_w + colon_w;
             self.second_rect = Rect::new(x, y0, x + cell_w, y1);
+            x += cell_w;
         } else {
             self.second_rect = Rect::ZERO;
+            x += cell_w;
         }
+        if Self::twelve_hour() {
+            x += colon_w;
+            self.ampm_rect = Rect::new(x, y0, x + f64::from(AMPM_WIDTH), y1);
+        } else {
+            self.ampm_rect = Rect::ZERO;
+        }
+    }
+
+    /// Whether the person's clock reads 12-hour with an AM/PM token.
+    fn twelve_hour() -> bool {
+        matches!(crate::clock::configured(), crate::clock::TimeStyle::H12)
     }
 
     pub fn intrinsic_size(&self) -> (f64, f64) {
         let n = if self.seconds.is_some() { 3.0 } else { 2.0 };
-        let w = n * f64::from(SPINNER_WIDTH) + (n - 1.0) * f64::from(COLON_WIDTH);
+        let mut w = n * f64::from(SPINNER_WIDTH) + (n - 1.0) * f64::from(COLON_WIDTH);
+        if Self::twelve_hour() {
+            w += f64::from(COLON_WIDTH) + f64::from(AMPM_WIDTH);
+        }
         (w, f64::from(PICKER_HEIGHT))
     }
 
@@ -369,6 +403,12 @@ impl TimePicker {
                 self.seconds = Some(Self::wrapped(cur, by, MINSEC_MAX));
             }
         }
+        self.fire_on_change();
+    }
+
+    /// Move the whole time by `by` hours: Page Up and Down step an hour, whichever cell has focus.
+    fn step_hours(&mut self, by: i16) {
+        self.hours = Self::wrapped(self.hours, by, HOUR_MAX);
         self.fire_on_change();
     }
 
@@ -447,7 +487,10 @@ impl Widget for TimePicker {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let n_spinners: f32 = if self.seconds.is_some() { 3.0 } else { 2.0 };
-        let total_w = n_spinners * SPINNER_WIDTH + (n_spinners - 1.0) * COLON_WIDTH;
+        let mut total_w = n_spinners * SPINNER_WIDTH + (n_spinners - 1.0) * COLON_WIDTH;
+        if Self::twelve_hour() {
+            total_w += COLON_WIDTH + AMPM_WIDTH;
+        }
         let style = Style {
             size: Size::from_lengths(total_w, PICKER_HEIGHT),
             // Fixed target: never the item that gives in an overflowing row.
@@ -509,7 +552,16 @@ impl Widget for TimePicker {
             };
             scene.stroke(&Stroke::new(width), transform, color, None, &outline);
 
-            let label = format!("{value:02}");
+            let shown = if cell_idx == 0 && Self::twelve_hour() {
+                if self.hours.is_multiple_of(12) {
+                    12
+                } else {
+                    self.hours % 12
+                }
+            } else {
+                *value
+            };
+            let label = format!("{shown:02}");
             let (w, h) = text_renderer.measure_style(&label, None, &text_style);
             let tx = value_rect.x0 + (value_rect.width() - f64::from(w)) / 2.0;
             let ty = value_rect.y0 + (value_rect.height() - f64::from(h)) / 2.0;
@@ -567,6 +619,21 @@ impl Widget for TimePicker {
                 ),
                 None,
                 &text_style,
+            );
+        }
+        if self.ampm_rect.width() > 0.0 {
+            let token = if self.hours < 12 { "AM" } else { "PM" };
+            let style = theme.text(TextRole::Label);
+            let (tw, th) = text_renderer.measure_style(token, None, &style);
+            let tx = self.ampm_rect.x0 + (self.ampm_rect.width() - f64::from(tw)) / 2.0;
+            let ty = self.ampm_rect.y0 + (self.ampm_rect.height() - f64::from(th)) / 2.0;
+            text_renderer.draw_style(
+                scene,
+                token,
+                colors.text_dim,
+                transform.pre_translate((tx, ty).into()),
+                None,
+                &style,
             );
         }
     }
@@ -756,7 +823,7 @@ impl TimePicker {
             if delta != 0 {
                 match which {
                     0 => self.step(TimeCell::Hours, i16::from(delta)),
-                    1 => self.step(TimeCell::Minutes, i16::from(delta)),
+                    1 => self.step(TimeCell::Minutes, i16::from(delta) * i16::from(self.step)),
                     2 => self.step(TimeCell::Seconds, i16::from(delta)),
                     _ => {}
                 }
@@ -828,15 +895,11 @@ impl TimePicker {
             ) => {
                 if let Some(cell) = self.focused_cell {
                     self.digit_buffer.clear();
-                    let stretch = match cell {
-                        TimeCell::Hours => 6,
-                        TimeCell::Minutes | TimeCell::Seconds => 15,
-                    };
                     match key {
                         NamedKey::ArrowUp => self.step(cell, 1),
                         NamedKey::ArrowDown => self.step(cell, -1),
-                        NamedKey::PageUp => self.step(cell, stretch),
-                        NamedKey::PageDown => self.step(cell, -stretch),
+                        NamedKey::PageUp => self.step_hours(1),
+                        NamedKey::PageDown => self.step_hours(-1),
                         NamedKey::Home => self.set_cell(cell, 0),
                         _ => self.set_cell(cell, u8::MAX),
                     }
@@ -897,7 +960,7 @@ impl TimePicker {
             if value_rect.contains(p) {
                 match which {
                     0 => self.step(TimeCell::Hours, i16::from(step)),
-                    1 => self.step(TimeCell::Minutes, i16::from(step)),
+                    1 => self.step(TimeCell::Minutes, i16::from(step) * i16::from(self.step)),
                     2 => self.step(TimeCell::Seconds, i16::from(step)),
                     _ => {}
                 }
@@ -999,9 +1062,31 @@ mod tests {
 
                 assert_eq!(
                     tp.minutes(),
-                    31,
-                    "wheel up over minute cell must increment minutes"
+                    45,
+                    "wheel up over the minute cell steps a quarter hour"
                 );
+            }
+
+            {
+                let mut tp = TimePicker::new(10, 30).with_step(1);
+                picker_with_layout(&mut tp);
+                let centre = tp.minute_rect.center();
+                dispatch(&mut tp, &cursor_moved(centre.x, centre.y));
+                dispatch(&mut tp, &wheel(1.0));
+                assert_eq!(tp.minutes(), 31, "a step of one moves one minute");
+            }
+
+            // Typing a time: 9, Tab to minutes, 30.
+            {
+                let mut tp = TimePicker::new(0, 0);
+                Widget::set_focus(&mut tp, true);
+                tp.focused_cell = Some(TimeCell::Hours);
+                tp.accept_digit(9);
+                tp.advance_focus();
+                assert_eq!(tp.focused_cell(), Some(TimeCell::Minutes));
+                tp.accept_digit(3);
+                tp.accept_digit(0);
+                assert_eq!((tp.hours(), tp.minutes()), (9, 30));
             }
 
             // Case `time_picker_click_on_hour_value_cell_focuses_hours`.
@@ -1071,23 +1156,23 @@ mod tests {
                 assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
             }
 
-            // Page Up and Down move a dial a stretch, round its ends; Home and End to its ends.
+            // Page Up and Down move the whole time an hour wherever focus is; Home and End take a
+            // cell to its ends.
             {
                 use winit::keyboard::NamedKey;
                 let mut tp = TimePicker::new(9, 50);
                 Widget::set_focus(&mut tp, true);
                 tp.focused_cell = Some(TimeCell::Minutes);
                 dispatch(&mut tp, &crate::synthetic_input::named_key(NamedKey::PageUp));
-                assert_eq!(tp.minutes(), 5, "50 and a quarter hour comes round to 5");
+                assert_eq!((tp.hours(), tp.minutes()), (10, 50), "an hour later");
                 dispatch(&mut tp, &crate::synthetic_input::named_key(NamedKey::PageDown));
-                assert_eq!(tp.minutes(), 50);
+                assert_eq!((tp.hours(), tp.minutes()), (9, 50), "an hour earlier");
                 dispatch(&mut tp, &crate::synthetic_input::named_key(NamedKey::End));
                 assert_eq!(tp.minutes(), 59);
                 dispatch(&mut tp, &crate::synthetic_input::named_key(NamedKey::Home));
                 assert_eq!(tp.minutes(), 0);
-                tp.focused_cell = Some(TimeCell::Hours);
                 dispatch(&mut tp, &crate::synthetic_input::named_key(NamedKey::PageDown));
-                assert_eq!(tp.hours(), 3);
+                assert_eq!(tp.hours(), 8);
             }
         }
 

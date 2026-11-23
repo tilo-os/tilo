@@ -2188,6 +2188,38 @@ impl Checker<'_> {
         if ty == Ty::File {
             return self.file_type_method(name, args, span);
         }
+        // `Time.from_wall(zone, text)`: the moment a wall-clock time names where people in `zone`
+        // are, a pure reading of the zone's rules, so a view draws it and an action that imports
+        // a calendar needs no clock to say when its events are.
+        if ty == Ty::Time && name.name == "from_wall" {
+            let [zone, text] = args else {
+                self.err(
+                    "E022",
+                    span,
+                    "`Time.from_wall` takes the zone and the wall-clock time: `Time.from_wall(\"Europe/Berlin\", \"2026-11-24T09:00\")`",
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            };
+            for arg in [zone, text] {
+                if let Some(named) = &arg.name {
+                    self.err(
+                        "E022",
+                        named.span,
+                        "`Time.from_wall` takes the zone and the time by position",
+                    );
+                }
+            }
+            let zone = self.expr_as(&zone.value, &Ty::Text);
+            let text = self.expr_as(&text.value, &Ty::Text);
+            return Ex::host(
+                Imp::TimeFromWall,
+                vec![zone, text],
+                Ty::Option(Box::new(Ty::Time)),
+            );
+        }
         if name.name != "parse" {
             self.err(
                 "E027",
@@ -2723,6 +2755,27 @@ impl Checker<'_> {
             (Ty::Time, "day") if args.is_empty() => {
                 self.reads(crate::effects::Effect::Time, span, "`day`");
                 Ex::host(Imp::TimeDay, vec![r], Ty::Date)
+            }
+            // The day a moment falls on in the named zone, or in `floating`'s (its wall time read
+            // as UTC): a pure reading of the zone's rules, which a view draws as it draws a day.
+            (Ty::Time, "day_in")
+                if args.len() == 1 && args.first().is_some_and(|a| a.name.is_none()) =>
+            {
+                let Some(a) = args.first() else {
+                    return Ex::error();
+                };
+                let zone = self.expr_as(&a.value, &Ty::Text);
+                Ex::host(Imp::TimeDayIn, vec![r, zone], Ty::Date)
+            }
+            // The wall time a moment is in a named zone, as a calendar stores one.
+            (Ty::Time, "wall")
+                if args.len() == 1 && args.first().is_some_and(|a| a.name.is_none()) =>
+            {
+                let Some(one) = args.first() else {
+                    return Ex::error();
+                };
+                let zone = self.expr_as(&one.value, &Ty::Text);
+                Ex::host(Imp::TimeWall, vec![r, zone], Ty::Option(Box::new(Ty::Text)))
             }
             (Ty::Time, "time_of_day") if args.is_empty() => {
                 self.reads(crate::effects::Effect::Time, span, "`time_of_day`");

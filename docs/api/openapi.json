@@ -3172,1196 +3172,6 @@
         ],
         "description": ""
       },
-      "calendar.calendar.new-event.Arguments": {
-        "type": "object",
-        "properties": {
-          "event": {
-            "additionalProperties": false,
-            "properties": {
-              "all_day": {
-                "type": "boolean"
-              },
-              "attendees": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "email": {
-                      "type": "string"
-                    },
-                    "id": {
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    },
-                    "status": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "email"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "calendar_id": {
-                "type": "string"
-              },
-              "categories": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "color": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "end": {
-                "type": "string"
-              },
-              "end_later_fold": {
-                "type": "boolean"
-              },
-              "id": {
-                "type": "string"
-              },
-              "location": {
-                "type": "string"
-              },
-              "occurrence_overrides": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "cancelled": {
-                      "type": "boolean"
-                    },
-                    "end": {
-                      "type": "string"
-                    },
-                    "end_later_fold": {
-                      "type": "boolean"
-                    },
-                    "location": {
-                      "type": "string"
-                    },
-                    "original_date": {
-                      "type": "string"
-                    },
-                    "original_time": {
-                      "type": "string"
-                    },
-                    "start": {
-                      "type": "string"
-                    },
-                    "title": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "original_date",
-                    "cancelled",
-                    "start",
-                    "end",
-                    "title",
-                    "location"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "organizer": {
-                "type": "string"
-              },
-              "project": {
-                "type": "string"
-              },
-              "recurrence_count": {
-                "maximum": 4294967295,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "recurrence_exdates": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "recurrence_interval": {
-                "maximum": 4294967295,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "recurrence_until": {
-                "type": "string"
-              },
-              "reminder": {
-                "type": "integer"
-              },
-              "rrule": {
-                "type": "string"
-              },
-              "start": {
-                "type": "string"
-              },
-              "timezone": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          }
-        },
-        "required": [
-          "event"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.new-task.Arguments": {
-        "type": "object",
-        "properties": {
-          "task": {
-            "additionalProperties": false,
-            "properties": {
-              "done": {
-                "type": "boolean"
-              },
-              "due": {
-                "type": "string"
-              },
-              "id": {
-                "type": "string"
-              },
-              "parent": {
-                "type": "string"
-              },
-              "priority": {
-                "maximum": 255,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "project": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          }
-        },
-        "required": [
-          "task"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.new-project.Arguments": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.delete-event.Arguments": {
-        "type": "object",
-        "properties": {
-          "event": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "event"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.reschedule.Arguments": {
-        "type": "object",
-        "properties": {
-          "event": {
-            "type": "string"
-          },
-          "start": {
-            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?$",
-            "type": "string"
-          },
-          "end": {
-            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?$",
-            "type": "string"
-          }
-        },
-        "required": [
-          "event",
-          "start",
-          "end"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.set-start.Arguments": {
-        "type": "object",
-        "properties": {
-          "event": {
-            "type": "string"
-          },
-          "start": {
-            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?$",
-            "type": "string"
-          }
-        },
-        "required": [
-          "event",
-          "start"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.move-to-calendar.Arguments": {
-        "type": "object",
-        "properties": {
-          "event": {
-            "type": "string"
-          },
-          "calendar": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "color": {
-            "enum": [
-              "indigo",
-              "emerald",
-              "amber",
-              "red",
-              "blue",
-              "violet",
-              "slate"
-            ],
-            "type": "string"
-          }
-        },
-        "required": [
-          "event",
-          "color"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.invite.Arguments": {
-        "type": "object",
-        "properties": {
-          "event": {
-            "type": "string"
-          },
-          "email": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "event",
-          "email",
-          "name"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.set-categories.Arguments": {
-        "type": "object",
-        "properties": {
-          "event": {
-            "type": "string"
-          },
-          "categories": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "event",
-          "categories"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.add-invitation.Arguments": {
-        "type": "object",
-        "properties": {
-          "ics": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "ics"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.add-invitation.Result": {
-        "type": "object"
-      },
-      "calendar.calendar.delete-task.Arguments": {
-        "type": "object",
-        "properties": {
-          "task": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "task"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.delete-project.Arguments": {
-        "type": "object",
-        "properties": {
-          "project": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "project"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.import-items.Arguments": {
-        "type": "object",
-        "properties": {
-          "events": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "all_day": {
-                  "type": "boolean"
-                },
-                "attendees": {
-                  "items": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "email": {
-                        "type": "string"
-                      },
-                      "id": {
-                        "type": "string"
-                      },
-                      "name": {
-                        "type": "string"
-                      },
-                      "status": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "email"
-                    ],
-                    "type": "object"
-                  },
-                  "type": "array"
-                },
-                "calendar_id": {
-                  "type": "string"
-                },
-                "categories": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "color": {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "end": {
-                  "type": "string"
-                },
-                "end_later_fold": {
-                  "type": "boolean"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "location": {
-                  "type": "string"
-                },
-                "occurrence_overrides": {
-                  "items": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "cancelled": {
-                        "type": "boolean"
-                      },
-                      "end": {
-                        "type": "string"
-                      },
-                      "end_later_fold": {
-                        "type": "boolean"
-                      },
-                      "location": {
-                        "type": "string"
-                      },
-                      "original_date": {
-                        "type": "string"
-                      },
-                      "original_time": {
-                        "type": "string"
-                      },
-                      "start": {
-                        "type": "string"
-                      },
-                      "title": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "original_date",
-                      "cancelled",
-                      "start",
-                      "end",
-                      "title",
-                      "location"
-                    ],
-                    "type": "object"
-                  },
-                  "type": "array"
-                },
-                "organizer": {
-                  "type": "string"
-                },
-                "project": {
-                  "type": "string"
-                },
-                "recurrence_count": {
-                  "maximum": 4294967295,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "recurrence_exdates": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "recurrence_interval": {
-                  "maximum": 4294967295,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "recurrence_until": {
-                  "type": "string"
-                },
-                "reminder": {
-                  "type": "integer"
-                },
-                "rrule": {
-                  "type": "string"
-                },
-                "start": {
-                  "type": "string"
-                },
-                "timezone": {
-                  "type": "string"
-                },
-                "title": {
-                  "type": "string"
-                }
-              },
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "tasks": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "done": {
-                  "type": "boolean"
-                },
-                "due": {
-                  "type": "string"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "parent": {
-                  "type": "string"
-                },
-                "priority": {
-                  "maximum": 255,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "project": {
-                  "type": "string"
-                },
-                "title": {
-                  "type": "string"
-                }
-              },
-              "type": "object"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "events",
-          "tasks"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.adopt-remote-event.Arguments": {
-        "type": "object",
-        "properties": {
-          "event": {
-            "additionalProperties": false,
-            "properties": {
-              "all_day": {
-                "type": "boolean"
-              },
-              "attendees": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "email": {
-                      "type": "string"
-                    },
-                    "id": {
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    },
-                    "status": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "email"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "calendar_id": {
-                "type": "string"
-              },
-              "categories": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "color": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "end": {
-                "type": "string"
-              },
-              "end_later_fold": {
-                "type": "boolean"
-              },
-              "id": {
-                "type": "string"
-              },
-              "location": {
-                "type": "string"
-              },
-              "occurrence_overrides": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "cancelled": {
-                      "type": "boolean"
-                    },
-                    "end": {
-                      "type": "string"
-                    },
-                    "end_later_fold": {
-                      "type": "boolean"
-                    },
-                    "location": {
-                      "type": "string"
-                    },
-                    "original_date": {
-                      "type": "string"
-                    },
-                    "original_time": {
-                      "type": "string"
-                    },
-                    "start": {
-                      "type": "string"
-                    },
-                    "title": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "original_date",
-                    "cancelled",
-                    "start",
-                    "end",
-                    "title",
-                    "location"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "organizer": {
-                "type": "string"
-              },
-              "project": {
-                "type": "string"
-              },
-              "recurrence_count": {
-                "maximum": 4294967295,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "recurrence_exdates": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "recurrence_interval": {
-                "maximum": 4294967295,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "recurrence_until": {
-                "type": "string"
-              },
-              "reminder": {
-                "type": "integer"
-              },
-              "rrule": {
-                "type": "string"
-              },
-              "start": {
-                "type": "string"
-              },
-              "timezone": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
-          "at": {
-            "additionalProperties": false,
-            "properties": {
-              "calendar": {
-                "type": "string"
-              },
-              "etag": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "href": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "calendar",
-              "href"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "event",
-          "at"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.adopt-remote-task.Arguments": {
-        "type": "object",
-        "properties": {
-          "task": {
-            "additionalProperties": false,
-            "properties": {
-              "done": {
-                "type": "boolean"
-              },
-              "due": {
-                "type": "string"
-              },
-              "id": {
-                "type": "string"
-              },
-              "parent": {
-                "type": "string"
-              },
-              "priority": {
-                "maximum": 255,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "project": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
-          "at": {
-            "additionalProperties": false,
-            "properties": {
-              "calendar": {
-                "type": "string"
-              },
-              "etag": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "href": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "calendar",
-              "href"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "task",
-          "at"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.drop-remote-item.Arguments": {
-        "type": "object",
-        "properties": {
-          "item": {
-            "format": "uuid",
-            "type": "string"
-          }
-        },
-        "required": [
-          "item"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.server-applied.Arguments": {
-        "type": "object",
-        "properties": {
-          "event": {
-            "format": "uuid",
-            "type": "string"
-          },
-          "at": {
-            "additionalProperties": false,
-            "properties": {
-              "calendar": {
-                "type": "string"
-              },
-              "etag": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "href": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "calendar",
-              "href"
-            ],
-            "type": "object"
-          },
-          "holds": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "event",
-          "at",
-          "holds"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.server-removed.Arguments": {
-        "type": "object",
-        "properties": {
-          "item": {
-            "format": "uuid",
-            "type": "string"
-          }
-        },
-        "required": [
-          "item"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.pulled.Arguments": {
-        "type": "object",
-        "properties": {
-          "calendar": {
-            "type": "string"
-          },
-          "token": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "calendar",
-          "token"
-        ],
-        "description": ""
-      },
-      "calendar.calendar.export-ics-content.Arguments": {
-        "type": "object",
-        "properties": {
-          "event": {
-            "format": "uuid",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [],
-        "description": ""
-      },
-      "tilo.accounts.publish-browser-identity.Arguments": {
-        "type": "object",
-        "properties": {
-          "root": {
-            "type": "string"
-          },
-          "origin": {
-            "type": "string"
-          },
-          "display_name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "root",
-          "origin",
-          "display_name"
-        ],
-        "description": ""
-      },
-      "tilo.accounts.save-account.Arguments": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "type_id": {
-            "type": "string"
-          },
-          "display_name": {
-            "type": "string"
-          },
-          "config": {},
-          "enabled": {
-            "type": "boolean"
-          },
-          "tint": {
-            "maximum": 255,
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "id",
-          "type_id",
-          "display_name",
-          "config",
-          "enabled",
-          "tint"
-        ],
-        "description": ""
-      },
-      "tilo.accounts.remove-account.Arguments": {
-        "type": "object",
-        "properties": {
-          "account": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "account"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.project-contact.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          },
-          "label": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "person",
-          "label"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.remove-contact.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "person"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.confirm-endpoint.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          },
-          "endpoint": {
-            "type": "string"
-          },
-          "service": {
-            "type": "string"
-          },
-          "recipient": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "person",
-          "endpoint",
-          "service",
-          "recipient"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.confirm-account.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          },
-          "endpoint": {
-            "type": "string"
-          },
-          "service": {
-            "type": "string"
-          },
-          "scope": {
-            "type": "string"
-          },
-          "recipient": {
-            "type": "string"
-          },
-          "revision": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "person",
-          "endpoint",
-          "service",
-          "scope",
-          "recipient",
-          "revision"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.replace-endpoint.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          },
-          "previous": {
-            "type": "string"
-          },
-          "endpoint": {
-            "type": "string"
-          },
-          "service": {
-            "type": "string"
-          },
-          "recipient": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "person",
-          "previous",
-          "endpoint",
-          "service",
-          "recipient"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.replace-account.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          },
-          "previous": {
-            "type": "string"
-          },
-          "endpoint": {
-            "type": "string"
-          },
-          "service": {
-            "type": "string"
-          },
-          "scope": {
-            "type": "string"
-          },
-          "recipient": {
-            "type": "string"
-          },
-          "revision": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "person",
-          "previous",
-          "endpoint",
-          "service",
-          "scope",
-          "recipient",
-          "revision"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.project-phones.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          },
-          "phones": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "person",
-          "phones"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.project-emails.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          },
-          "emails": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "person",
-          "emails"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.project-contacts.Arguments": {
-        "type": "object",
-        "properties": {
-          "people": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "emails": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "label": {
-                  "type": "string"
-                },
-                "person": {
-                  "type": "string"
-                },
-                "phones": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "photo": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "person",
-                "label",
-                "phones",
-                "emails"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "removed": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "people",
-          "removed"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.forget-endpoint.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          },
-          "endpoint": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "person",
-          "endpoint"
-        ],
-        "description": ""
-      },
       "camera.register-capture.Arguments": {
         "type": "object",
         "properties": {
@@ -11420,6 +10230,260 @@
         ],
         "description": ""
       },
+      "tilo.contacts.identities.project-contact.Arguments": {
+        "type": "object",
+        "properties": {
+          "person": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "person",
+          "label"
+        ],
+        "description": ""
+      },
+      "tilo.contacts.identities.remove-contact.Arguments": {
+        "type": "object",
+        "properties": {
+          "person": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "person"
+        ],
+        "description": ""
+      },
+      "tilo.contacts.identities.confirm-endpoint.Arguments": {
+        "type": "object",
+        "properties": {
+          "person": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          },
+          "recipient": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "person",
+          "endpoint",
+          "service",
+          "recipient"
+        ],
+        "description": ""
+      },
+      "tilo.contacts.identities.confirm-account.Arguments": {
+        "type": "object",
+        "properties": {
+          "person": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "recipient": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "person",
+          "endpoint",
+          "service",
+          "scope",
+          "recipient",
+          "revision"
+        ],
+        "description": ""
+      },
+      "tilo.contacts.identities.replace-endpoint.Arguments": {
+        "type": "object",
+        "properties": {
+          "person": {
+            "type": "string"
+          },
+          "previous": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          },
+          "recipient": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "person",
+          "previous",
+          "endpoint",
+          "service",
+          "recipient"
+        ],
+        "description": ""
+      },
+      "tilo.contacts.identities.replace-account.Arguments": {
+        "type": "object",
+        "properties": {
+          "person": {
+            "type": "string"
+          },
+          "previous": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "recipient": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "person",
+          "previous",
+          "endpoint",
+          "service",
+          "scope",
+          "recipient",
+          "revision"
+        ],
+        "description": ""
+      },
+      "tilo.contacts.identities.project-phones.Arguments": {
+        "type": "object",
+        "properties": {
+          "person": {
+            "type": "string"
+          },
+          "phones": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "person",
+          "phones"
+        ],
+        "description": ""
+      },
+      "tilo.contacts.identities.project-emails.Arguments": {
+        "type": "object",
+        "properties": {
+          "person": {
+            "type": "string"
+          },
+          "emails": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "person",
+          "emails"
+        ],
+        "description": ""
+      },
+      "tilo.contacts.identities.project-contacts.Arguments": {
+        "type": "object",
+        "properties": {
+          "people": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "emails": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "person": {
+                  "type": "string"
+                },
+                "phones": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "photo": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "person",
+                "label",
+                "phones",
+                "emails"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "removed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "people",
+          "removed"
+        ],
+        "description": ""
+      },
+      "tilo.contacts.identities.forget-endpoint.Arguments": {
+        "type": "object",
+        "properties": {
+          "person": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "person",
+          "endpoint"
+        ],
+        "description": ""
+      },
       "containers.engine.clear-create.Arguments": {
         "type": "object",
         "properties": {},
@@ -16275,6 +15339,70 @@
           }
         },
         "required": [],
+        "description": ""
+      },
+      "tilo.accounts.publish-browser-identity.Arguments": {
+        "type": "object",
+        "properties": {
+          "root": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "root",
+          "origin",
+          "display_name"
+        ],
+        "description": ""
+      },
+      "tilo.accounts.save-account.Arguments": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type_id": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "config": {},
+          "enabled": {
+            "type": "boolean"
+          },
+          "tint": {
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "type_id",
+          "display_name",
+          "config",
+          "enabled",
+          "tint"
+        ],
+        "description": ""
+      },
+      "tilo.accounts.remove-account.Arguments": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account"
+        ],
         "description": ""
       },
       "model-providers.root.list-presets.Arguments": {
@@ -26204,6 +25332,1699 @@
         "properties": {},
         "required": [],
         "description": "Adds a column at the right of the board."
+      },
+      "tl.so.tilo.calendar.Attendee.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.calendar.Attendee.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name",
+              "email",
+              "status",
+              "role"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Attendee.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Attendee.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.calendar.Project.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.calendar.Project.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Project.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Project.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.calendar.Project.set_project_color.Arguments": {
+        "type": "object",
+        "properties": {
+          "color": {
+            "choice_labels": {
+              "amber": "Amber",
+              "blue": "Blue",
+              "emerald": "Emerald",
+              "indigo": "Indigo",
+              "red": "Red",
+              "slate": "Slate",
+              "violet": "Violet"
+            },
+            "enum": [
+              "indigo",
+              "emerald",
+              "amber",
+              "red",
+              "blue",
+              "violet",
+              "slate"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "color"
+        ],
+        "description": "Sets the colour a project is drawn in."
+      },
+      "tl.so.tilo.calendar.Project.rename_project.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "Renames a project."
+      },
+      "tl.so.tilo.calendar.Task.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.calendar.Task.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "title",
+              "notes"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Task.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "done"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Task.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.calendar.Task.check_task.Arguments": {
+        "type": "object",
+        "properties": {
+          "done": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "description": "Checks a task off, or opens it again."
+      },
+      "tl.so.tilo.calendar.Task.due_task.Arguments": {
+        "type": "object",
+        "properties": {
+          "due": {
+            "format": "date",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "description": "Sets the day a task is due by."
+      },
+      "tl.so.tilo.calendar.Task.due_task_today.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Makes a task due today."
+      },
+      "tl.so.tilo.calendar.Task.due_task_tomorrow.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Makes a task due tomorrow."
+      },
+      "tl.so.tilo.calendar.Task.due_task_next_week.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Makes a task due at the start of next week."
+      },
+      "tl.so.tilo.calendar.Task.due_task_clear.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Clears the day a task is due by."
+      },
+      "tl.so.tilo.calendar.Task.set_task_priority.Arguments": {
+        "type": "object",
+        "properties": {
+          "priority": {
+            "choice_labels": {
+              "high": "High",
+              "low": "Low",
+              "medium": "Medium",
+              "none": "No priority"
+            },
+            "enum": [
+              "none",
+              "low",
+              "medium",
+              "high"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "priority"
+        ],
+        "description": "Sets how much a task matters."
+      },
+      "tl.so.tilo.calendar.Task.file_task.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.calendar.Project",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "description": "Files a task under a project, or under none for the inbox."
+      },
+      "tl.so.tilo.calendar.Event.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.calendar.Event.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "href",
+              "etag",
+              "title",
+              "start",
+              "end",
+              "timezone",
+              "location",
+              "notes",
+              "body",
+              "recurrence",
+              "color",
+              "project",
+              "organizer",
+              "original_start"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Event.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "all_day",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Event.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.calendar.Event.dropped.Arguments": {
+        "type": "object",
+        "properties": {
+          "start": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "place": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "place"
+        ],
+        "description": "Moves an event where it was dropped: a day chip moves to that day keeping its time of day,\nand an hour moves to the hour it was dropped at. A repeating event waits for its own answer."
+      },
+      "tl.so.tilo.calendar.Event.ended.Arguments": {
+        "type": "object",
+        "properties": {
+          "end_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "end_at"
+        ],
+        "description": "Ends an event where its edge was dropped. A repeating event waits for its own answer."
+      },
+      "tl.so.tilo.calendar.Event.file_event.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.calendar.Project",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "description": "Files an event under a project, or files it under none."
+      },
+      "tl.so.tilo.calendar.Event.set_event_color.Arguments": {
+        "type": "object",
+        "properties": {
+          "color": {
+            "choice_labels": {
+              "amber": "Amber",
+              "blue": "Blue",
+              "emerald": "Emerald",
+              "indigo": "Indigo",
+              "red": "Red",
+              "slate": "Slate",
+              "violet": "Violet"
+            },
+            "enum": [
+              "indigo",
+              "emerald",
+              "amber",
+              "red",
+              "blue",
+              "violet",
+              "slate"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "color"
+        ],
+        "description": "Sets the colour an event is drawn in."
+      },
+      "tl.so.tilo.calendar.Event.clear_event_color.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Takes an event's own colour off: it is drawn in its calendar's."
+      },
+      "tl.so.tilo.calendar.Event.set_categories.Arguments": {
+        "type": "object",
+        "properties": {
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "categories"
+        ],
+        "description": "Sets the categories an event is filed under in its person's words."
+      },
+      "tl.so.tilo.calendar.Event.set_zone.Arguments": {
+        "type": "object",
+        "properties": {
+          "zone": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "zone"
+        ],
+        "description": "Sets the zone an event's wall times are read in: `Europe/Berlin`, `UTC`, or `floating` for\nthe same time of day everywhere."
+      },
+      "tl.so.tilo.calendar.Event.add_category.Arguments": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "category"
+        ],
+        "description": "Files an event under one more category."
+      },
+      "tl.so.tilo.calendar.Event.remove_category.Arguments": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "category"
+        ],
+        "description": "Takes a category off an event."
+      },
+      "tl.so.tilo.calendar.Event.organize.Arguments": {
+        "type": "object",
+        "properties": {
+          "who": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "who"
+        ],
+        "description": "Makes someone the organiser of an event."
+      },
+      "tl.so.tilo.calendar.Event.remind_at_start.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Reminds the people coming when the event starts."
+      },
+      "tl.so.tilo.calendar.Event.remind_before.Arguments": {
+        "type": "object",
+        "properties": {
+          "minutes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "minutes"
+        ],
+        "description": "Reminds them a given number of minutes before it starts."
+      },
+      "tl.so.tilo.calendar.Event.remind_off.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Tells nobody, once more."
+      },
+      "tl.so.tilo.calendar.Event.repeat_rule.Arguments": {
+        "type": "object",
+        "properties": {
+          "how": {
+            "choice_labels": {
+              "daily": "Every day",
+              "monthly": "Every month",
+              "none": "None",
+              "weekdays": "The days chosen of every week",
+              "weekly": "Every week",
+              "yearly": "Every year"
+            },
+            "enum": [
+              "none",
+              "daily",
+              "weekly",
+              "monthly",
+              "yearly",
+              "weekdays"
+            ],
+            "type": "string"
+          },
+          "every": {
+            "type": "integer"
+          },
+          "weekdays": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "until": {
+            "format": "date",
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "how"
+        ],
+        "description": "Repeats an event, its rule in iCalendar's words, how often, and where it ends."
+      },
+      "tl.so.tilo.calendar.Event.repeat_weekdays.Arguments": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "days"
+        ],
+        "description": "Repeats an event on chosen days of the week from the day it stands on."
+      },
+      "tl.so.tilo.calendar.Event.repeat_off.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Stops an event repeating from the day it stands on."
+      },
+      "tl.so.tilo.calendar.Event.skip_date.Arguments": {
+        "type": "object",
+        "properties": {
+          "day": {
+            "format": "date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day"
+        ],
+        "description": "Skips one date of a repeating event."
+      },
+      "tl.so.tilo.calendar.Event.restore_date.Arguments": {
+        "type": "object",
+        "properties": {
+          "day": {
+            "format": "date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day"
+        ],
+        "description": "Gives a skipped date of a repeating event back."
+      },
+      "tl.so.tilo.calendar.Event.move_occurrence.Arguments": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "start": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "end": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "start",
+          "end"
+        ],
+        "description": "Moves one date of a repeating event: an event of its own stands in its place and the series\nkeeps every other date."
+      },
+      "tl.so.tilo.calendar.Event.cancel_occurrence.Arguments": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at"
+        ],
+        "description": "Cancels one date of a repeating event."
+      },
+      "tl.so.tilo.calendar.Event.restore_occurrence.Arguments": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at"
+        ],
+        "description": "Gives a cancelled or moved date of a series back."
+      },
+      "tl.so.tilo.calendar.Event.move_following.Arguments": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "start": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "end": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "start",
+          "end"
+        ],
+        "description": "Moves a repeating event from one date on: the series ends the day before, and a new one\nbegins where it was moved to, with every date after it."
+      },
+      "tl.so.tilo.calendar.Event.move_to_day.Arguments": {
+        "type": "object",
+        "properties": {
+          "day": {
+            "format": "date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day"
+        ],
+        "description": "Moves an event to a day, keeping the time of day it starts and how long it lasts, and its\nreminder at the same distance from its start."
+      },
+      "tl.so.tilo.calendar.Event.change_day.Arguments": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at"
+        ],
+        "description": "Moves an event to the day a moment names, keeping the time of day it starts."
+      },
+      "tl.so.tilo.calendar.Event.change_start.Arguments": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at"
+        ],
+        "description": "Sets the time of day an event starts, its end keeping how long it lasts. A day the moment\nnames is the day it moves to."
+      },
+      "tl.so.tilo.calendar.Event.change_end.Arguments": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at"
+        ],
+        "description": "Sets when an event ends."
+      },
+      "tl.so.tilo.calendar.Event.repeat.Arguments": {
+        "type": "object",
+        "properties": {
+          "how": {
+            "choice_labels": {
+              "daily": "Every day",
+              "monthly": "Every month",
+              "none": "None",
+              "weekdays": "The days chosen of every week",
+              "weekly": "Every week",
+              "yearly": "Every year"
+            },
+            "enum": [
+              "none",
+              "daily",
+              "weekly",
+              "monthly",
+              "yearly",
+              "weekdays"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "how"
+        ],
+        "description": "Repeats an event every day, week, month or year from the day it stands on, on the days\nchosen of a week, and no longer on the days it named before."
+      },
+      "tl.so.tilo.calendar.Event.repeat_every.Arguments": {
+        "type": "object",
+        "properties": {
+          "every": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "every"
+        ],
+        "description": "How often it repeats, in the unit it repeats in: every two weeks is 2."
+      },
+      "tl.so.tilo.calendar.Event.repeat_until.Arguments": {
+        "type": "object",
+        "properties": {
+          "until": {
+            "format": "date",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "description": "The last day it repeats by, or none for a series that does not end."
+      },
+      "tl.so.tilo.calendar.Event.repeat_until_at.Arguments": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at"
+        ],
+        "description": "The last day it repeats by, as the day a moment names."
+      },
+      "tl.so.tilo.calendar.Event.repeat_count.Arguments": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "description": "How many times it repeats in all, or none for a series that does not end."
+      },
+      "tl.so.tilo.calendar.Event.file_in.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.calendar.Calendar",
+            "type": "object"
+          }
+        },
+        "required": [
+          "k"
+        ],
+        "description": "Files an event under a calendar the person picks."
+      },
+      "tl.so.tilo.calendar.Event.invite.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "email"
+        ],
+        "description": "Invites someone to an event, by the name and address the person gives."
+      },
+      "tl.so.tilo.calendar.Event.answer.Arguments": {
+        "type": "object",
+        "properties": {
+          "g": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.calendar.Attendee",
+            "type": "object"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "g",
+          "status"
+        ],
+        "description": "Records someone's answer to an invitation: `accepted`, `declined` or `tentative`."
+      },
+      "tl.so.tilo.calendar.Event.uninvite.Arguments": {
+        "type": "object",
+        "properties": {
+          "g": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.calendar.Attendee",
+            "type": "object"
+          }
+        },
+        "required": [
+          "g"
+        ],
+        "description": "Takes someone off an event's guests: nothing is sent to them."
+      },
+      "tl.so.tilo.calendar.Event.invite_by_mail.Arguments": {
+        "type": "object",
+        "properties": {
+          "g": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.calendar.Attendee",
+            "type": "object"
+          }
+        },
+        "required": [
+          "g"
+        ],
+        "description": "Starts a message inviting a guest, the event's calendar invitation carried beside it: what Mail\nshows the person, to read and send. Nothing is sent by this."
+      },
+      "tl.so.tilo.calendar.Event.ring_due.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Rings an event's reminder when its moment comes, and nothing for an event that has none."
+      },
+      "tl.so.tilo.calendar.Event.remind_now.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Tells the people coming that an event starts, once, and clears its reminder."
+      },
+      "tl.so.tilo.calendar.Event.go_to.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Goes to the week an event is on."
+      },
+      "tl.so.tilo.calendar.Event.repeat_every_text.Arguments": {
+        "type": "object",
+        "properties": {
+          "typed": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "typed"
+        ],
+        "description": "Repeats an event how often the person typed, in the unit it repeats in: 2 for every other."
+      },
+      "tl.so.tilo.calendar.Event.repeat_count_text.Arguments": {
+        "type": "object",
+        "properties": {
+          "typed": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "typed"
+        ],
+        "description": "Repeats an event as many times as the person typed."
+      },
+      "tl.so.tilo.calendar.Calendar.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.calendar.Calendar.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "account",
+              "sync_token",
+              "name",
+              "color"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Calendar.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "writable"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Calendar.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.calendar.Calendar.set_calendar_color.Arguments": {
+        "type": "object",
+        "properties": {
+          "color": {
+            "choice_labels": {
+              "amber": "Amber",
+              "blue": "Blue",
+              "emerald": "Emerald",
+              "indigo": "Indigo",
+              "red": "Red",
+              "slate": "Slate",
+              "violet": "Violet"
+            },
+            "enum": [
+              "indigo",
+              "emerald",
+              "amber",
+              "red",
+              "blue",
+              "violet",
+              "slate"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "color"
+        ],
+        "description": "Sets the colour a calendar is drawn in."
+      },
+      "tl.so.tilo.calendar.Calendar.rename_calendar.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "Renames a calendar."
+      },
+      "tl.so.tilo.calendar.Calendars.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.calendar.Calendars.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Calendars.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Calendars.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.calendar.Calendars.new_event.Arguments": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "day": {
+            "format": "date",
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "minutes": {
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "description": "Starts an event on a day the person points at, at nine in the morning for an hour, or at\nthe moment the words name."
+      },
+      "tl.so.tilo.calendar.Calendars.new_between.Arguments": {
+        "type": "object",
+        "properties": {
+          "start": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "end": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ],
+        "description": "Makes an event of the hours dragged across, from where the drag began to where it ended."
+      },
+      "tl.so.tilo.calendar.Calendars.new_task.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.calendar.Project",
+            "type": "object"
+          },
+          "due": {
+            "format": "date",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "description": "Adds a task to the inbox or to a project."
+      },
+      "tl.so.tilo.calendar.Calendars.add_step.Arguments": {
+        "type": "object",
+        "properties": {
+          "t": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.calendar.Task",
+            "type": "object"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "t",
+          "title"
+        ],
+        "description": "Adds a step under a task, in its project, and opens the task if it was done: there is work\nunder it now."
+      },
+      "tl.so.tilo.calendar.Calendars.remove_task.Arguments": {
+        "type": "object",
+        "properties": {
+          "t": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.calendar.Task",
+            "type": "object"
+          }
+        },
+        "required": [
+          "t"
+        ],
+        "description": "Deletes a task and the steps under it."
+      },
+      "tl.so.tilo.calendar.Calendars.new_project.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Starts a project."
+      },
+      "tl.so.tilo.calendar.Calendars.move_project.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.calendar.Project",
+            "type": "object"
+          },
+          "up": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "p",
+          "up"
+        ],
+        "description": "Moves a project one place earlier or later among the projects."
+      },
+      "tl.so.tilo.calendar.Calendars.remove_project.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.calendar.Project",
+            "type": "object"
+          }
+        },
+        "required": [
+          "p"
+        ],
+        "description": "Deletes a project; its events and tasks go back to none."
+      },
+      "tl.so.tilo.calendar.Calendars.go_to_day.Arguments": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at"
+        ],
+        "description": "Stands the window on the day a moment names."
+      },
+      "tl.so.tilo.calendar.Calendars.previous_day.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Shows the day before."
+      },
+      "tl.so.tilo.calendar.Calendars.next_day.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Shows the day after."
+      },
+      "tl.so.tilo.calendar.Calendars.this_day.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Shows today."
+      },
+      "tl.so.tilo.calendar.Calendars.sync.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Asks each account's server for its calendars now, so what it holds comes in as it does when\nthe server is heard from."
+      },
+      "tl.so.tilo.calendar.Calendars.new_calendar.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Adds a calendar of the workspace's own."
+      },
+      "tl.so.tilo.calendar.Calendars.remove.Arguments": {
+        "type": "object",
+        "properties": {
+          "e": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.calendar.Event",
+            "type": "object"
+          }
+        },
+        "required": [
+          "e"
+        ],
+        "description": "Deletes an event."
+      },
+      "tl.so.tilo.calendar.Calendars.previous_week.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The window shows the week before."
+      },
+      "tl.so.tilo.calendar.Calendars.next_week.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The window shows the week after."
+      },
+      "tl.so.tilo.calendar.Calendars.previous_month.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The window shows the month before."
+      },
+      "tl.so.tilo.calendar.Calendars.next_month.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The window shows the month after."
+      },
+      "tl.so.tilo.calendar.Calendars.this_week.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The window shows this week."
+      },
+      "tl.so.tilo.calendar.Calendars.export_calendar.Arguments": {
+        "type": "object",
+        "properties": {
+          "e": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.calendar.Event",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "description": "The calendar — every event and task it holds, or only one event — as an iCalendar file, for\na person to save or an agent to hand on. Nothing is written by this."
+      },
+      "tl.so.tilo.calendar.Calendars.import_ics.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Imports the events and tasks of an iCalendar file, and answers how many it took: what a\nperson's own file offers, and what another calendar exported. A line naming a zone this\nbuild cannot read is read in the person's zone."
+      },
+      "tl.so.tilo.calendar.Moment.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.calendar.Moment.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Moment.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Moment.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.lang.chat.Conversations.$create.Arguments": {
         "type": "object",
@@ -36267,204 +37088,6 @@
       "arguments": "#/components/schemas/calculator.document.delete-surface.Arguments"
     },
     {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "new-event",
-      "arguments": "#/components/schemas/calendar.calendar.new-event.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "new-task",
-      "arguments": "#/components/schemas/calendar.calendar.new-task.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "new-project",
-      "arguments": "#/components/schemas/calendar.calendar.new-project.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "delete-event",
-      "arguments": "#/components/schemas/calendar.calendar.delete-event.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "reschedule",
-      "arguments": "#/components/schemas/calendar.calendar.reschedule.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "set-start",
-      "arguments": "#/components/schemas/calendar.calendar.set-start.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "move-to-calendar",
-      "arguments": "#/components/schemas/calendar.calendar.move-to-calendar.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "invite",
-      "arguments": "#/components/schemas/calendar.calendar.invite.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "set-categories",
-      "arguments": "#/components/schemas/calendar.calendar.set-categories.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "add-invitation",
-      "arguments": "#/components/schemas/calendar.calendar.add-invitation.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "delete-task",
-      "arguments": "#/components/schemas/calendar.calendar.delete-task.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "delete-project",
-      "arguments": "#/components/schemas/calendar.calendar.delete-project.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "import-items",
-      "arguments": "#/components/schemas/calendar.calendar.import-items.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "adopt-remote-event",
-      "arguments": "#/components/schemas/calendar.calendar.adopt-remote-event.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "adopt-remote-task",
-      "arguments": "#/components/schemas/calendar.calendar.adopt-remote-task.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "drop-remote-item",
-      "arguments": "#/components/schemas/calendar.calendar.drop-remote-item.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "server-applied",
-      "arguments": "#/components/schemas/calendar.calendar.server-applied.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "server-removed",
-      "arguments": "#/components/schemas/calendar.calendar.server-removed.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "pulled",
-      "arguments": "#/components/schemas/calendar.calendar.pulled.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "calendar.calendar",
-      "action": "export-ics-content",
-      "arguments": "#/components/schemas/calendar.calendar.export-ics-content.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tilo.accounts",
-      "action": "publish-browser-identity",
-      "arguments": "#/components/schemas/tilo.accounts.publish-browser-identity.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tilo.accounts",
-      "action": "save-account",
-      "arguments": "#/components/schemas/tilo.accounts.save-account.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tilo.accounts",
-      "action": "remove-account",
-      "arguments": "#/components/schemas/tilo.accounts.remove-account.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tilo.contacts.identities",
-      "action": "project-contact",
-      "arguments": "#/components/schemas/tilo.contacts.identities.project-contact.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tilo.contacts.identities",
-      "action": "remove-contact",
-      "arguments": "#/components/schemas/tilo.contacts.identities.remove-contact.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tilo.contacts.identities",
-      "action": "confirm-endpoint",
-      "arguments": "#/components/schemas/tilo.contacts.identities.confirm-endpoint.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tilo.contacts.identities",
-      "action": "confirm-account",
-      "arguments": "#/components/schemas/tilo.contacts.identities.confirm-account.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tilo.contacts.identities",
-      "action": "replace-endpoint",
-      "arguments": "#/components/schemas/tilo.contacts.identities.replace-endpoint.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tilo.contacts.identities",
-      "action": "replace-account",
-      "arguments": "#/components/schemas/tilo.contacts.identities.replace-account.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tilo.contacts.identities",
-      "action": "project-phones",
-      "arguments": "#/components/schemas/tilo.contacts.identities.project-phones.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tilo.contacts.identities",
-      "action": "project-emails",
-      "arguments": "#/components/schemas/tilo.contacts.identities.project-emails.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tilo.contacts.identities",
-      "action": "project-contacts",
-      "arguments": "#/components/schemas/tilo.contacts.identities.project-contacts.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tilo.contacts.identities",
-      "action": "forget-endpoint",
-      "arguments": "#/components/schemas/tilo.contacts.identities.forget-endpoint.Arguments"
-    },
-    {
       "app": "so.tilo.camera",
       "resource": "camera",
       "action": "register-capture",
@@ -41017,6 +41640,642 @@
       "resource": "tl.so.tilo.lang.board.Board",
       "action": "new_column",
       "arguments": "#/components/schemas/tl.so.tilo.lang.board.Board.new_column.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tilolang.personal",
+      "action": "view-state",
+      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tilolang.personal",
+      "action": "seen",
+      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tilolang.personal",
+      "action": "seen-runs",
+      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Attendee",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Attendee.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Attendee",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Attendee.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Attendee",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Attendee.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Attendee",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Attendee.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Project",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Project.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Project",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Project.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Project",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Project.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Project",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Project.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Project",
+      "action": "set_project_color",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Project.set_project_color.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Project",
+      "action": "rename_project",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Project.rename_project.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Task",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Task.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Task",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Task.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Task",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Task.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Task",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Task.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Task",
+      "action": "check_task",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Task.check_task.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Task",
+      "action": "due_task",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Task.due_task.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Task",
+      "action": "due_task_today",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Task.due_task_today.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Task",
+      "action": "due_task_tomorrow",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Task.due_task_tomorrow.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Task",
+      "action": "due_task_next_week",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Task.due_task_next_week.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Task",
+      "action": "due_task_clear",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Task.due_task_clear.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Task",
+      "action": "set_task_priority",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Task.set_task_priority.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Task",
+      "action": "file_task",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Task.file_task.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "dropped",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.dropped.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "ended",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.ended.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "file_event",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.file_event.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "set_event_color",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.set_event_color.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "clear_event_color",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.clear_event_color.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "set_categories",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.set_categories.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "set_zone",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.set_zone.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "add_category",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.add_category.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "remove_category",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.remove_category.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "organize",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.organize.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "remind_at_start",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.remind_at_start.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "remind_before",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.remind_before.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "remind_off",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.remind_off.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "repeat_rule",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.repeat_rule.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "repeat_weekdays",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.repeat_weekdays.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "repeat_off",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.repeat_off.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "skip_date",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.skip_date.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "restore_date",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.restore_date.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "move_occurrence",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.move_occurrence.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "cancel_occurrence",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.cancel_occurrence.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "restore_occurrence",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.restore_occurrence.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "move_following",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.move_following.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "move_to_day",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.move_to_day.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "change_day",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.change_day.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "change_start",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.change_start.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "change_end",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.change_end.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "repeat",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.repeat.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "repeat_every",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.repeat_every.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "repeat_until",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.repeat_until.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "repeat_until_at",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.repeat_until_at.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "repeat_count",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.repeat_count.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "file_in",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.file_in.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "invite",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.invite.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "answer",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.answer.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "uninvite",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.uninvite.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "invite_by_mail",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.invite_by_mail.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "ring_due",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.ring_due.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "remind_now",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.remind_now.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "go_to",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.go_to.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "repeat_every_text",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.repeat_every_text.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "repeat_count_text",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.repeat_count_text.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendar",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendar.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendar",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendar.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendar",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendar.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendar",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendar.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendar",
+      "action": "set_calendar_color",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendar.set_calendar_color.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendar",
+      "action": "rename_calendar",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendar.rename_calendar.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "new_event",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.new_event.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "new_between",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.new_between.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "new_task",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.new_task.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "add_step",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.add_step.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "remove_task",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.remove_task.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "new_project",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.new_project.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "move_project",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.move_project.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "remove_project",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.remove_project.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "go_to_day",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.go_to_day.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "previous_day",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.previous_day.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "next_day",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.next_day.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "this_day",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.this_day.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "sync",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.sync.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "new_calendar",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.new_calendar.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "remove",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.remove.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "previous_week",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.previous_week.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "next_week",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.next_week.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "previous_month",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.previous_month.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "next_month",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.next_month.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "this_week",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.this_week.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "export_calendar",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.export_calendar.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "import_ics",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.import_ics.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Moment",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Moment.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Moment",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Moment.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Moment",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Moment.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Moment",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Moment.$origin.Arguments"
     },
     {
       "app": "so.tilo.lang.chat",

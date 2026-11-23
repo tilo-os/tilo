@@ -1,3 +1,102 @@
+//! Calendar setup against an existing canonical account. No credentials are copied.
+use calendar_model::account::{CalDavConfig, RemoteCalendar};
+
+pub const GOOGLE_CALDAV_URL: &str = "https://apidata.googleusercontent.com/caldav/v2/";
+
+pub fn google_config(email: &str) -> CalDavConfig {
+    let calendar_id = url::form_urlencoded::byte_serialize(email.as_bytes())
+        .collect::<String>()
+        .replace('+', "%20")
+        .replace("%40", "@");
+    CalDavConfig {
+        server_url: format!("{GOOGLE_CALDAV_URL}{calendar_id}/user"),
+        username: email.into(),
+        ..Default::default()
+    }
+}
+
+pub(crate) fn same_origin_url(base: &url::Url, href: &str) -> Result<url::Url, String> {
+    let target = base.join(href).map_err(|_| "invalid calendar URL")?;
+    if target.origin() != base.origin()
+        || !target.username().is_empty()
+        || target.password().is_some()
+        || target.query().is_some()
+        || target.fragment().is_some()
+        || !matches!(target.scheme(), "http" | "https")
+    {
+        return Err("calendar URL must stay on the configured origin".into());
+    }
+    Ok(target)
+}
+
+/// Enable only confirmed collections on the original account. The caller saves
+/// the canonical store; Files settings, account ID/type and vault remain intact.
+/// `discovered` must be the result of discovery, not user-entered collection URLs.
+pub fn select_calendars(
+    account: &mut accounts::Account,
+    config: &CalDavConfig,
+    discovered: &[RemoteCalendar],
+    selected: &[String],
+    google: bool,
+) -> Result<(), String> {
+    if selected.is_empty() {
+        return Err("select at least one calendar".into());
+    }
+    let server = url::Url::parse(&config.server_url).map_err(|_| "invalid calendar server URL")?;
+    let mut calendars = Vec::new();
+    for id in selected {
+        if calendars
+            .iter()
+            .any(|calendar: &RemoteCalendar| &calendar.id == id)
+        {
+            return Err("duplicate calendar selection".into());
+        }
+        let calendar = discovered
+            .iter()
+            .find(|calendar| &calendar.id == id)
+            .ok_or("calendar was not discovered")?;
+        same_origin_url(&server, id)?;
+        calendars.push(calendar.clone());
+    }
+    // An account connected for reading only stays so when its calendars are
+    // chosen again, and none of them is taken as one that can be written,
+    // whatever its server answered for it.
+    let read_only = account
+        .config
+        .get("calendar")
+        .and_then(|kept| kept.get("read_only"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or_default();
+    for calendar in &mut calendars {
+        calendar.read_only |= read_only;
+    }
+    let mut payload = serde_json::to_value(config).map_err(|error| error.to_string())?;
+    let settings = payload
+        .as_object_mut()
+        .ok_or("calendar settings are not an object")?;
+    settings.insert(
+        "calendars".into(),
+        serde_json::to_value(calendars).map_err(|error| error.to_string())?,
+    );
+    if read_only {
+        settings.insert("read_only".into(), true.into());
+    }
+    let object = account
+        .config
+        .as_object_mut()
+        .ok_or("account settings are not an object")?;
+    object.insert("calendar".into(), payload);
+    object.insert("use_calendar".into(), true.into());
+    if google {
+        object.insert("calendar_provider".into(), "google".into());
+    } else {
+        object.remove("calendar_provider");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
 use super::*;
 use accounts::person::AccountList;
 use accounts::{Account, AccountId, SecretVault};
@@ -54,7 +153,7 @@ tilo_test_env::scenario! {
             saved.account(account.id.as_str()).unwrap().config["files"],
             original["files"]
         );
-        let projection = crate::CalendarAccounts::from_shared(&saved);
+        let projection = calendar_model::account::CalendarAccounts::from_shared(&saved);
         assert_eq!(projection.accounts.len(), 1);
         assert_eq!(projection.accounts[0].id, "canonical-nextcloud");
         assert_eq!(
@@ -107,7 +206,7 @@ tilo_test_env::scenario! {
         );
         let mut shared = AccountList::default();
         shared.keep(&account).unwrap();
-        let projection = crate::CalendarAccounts::from_shared(&shared);
+        let projection = calendar_model::account::CalendarAccounts::from_shared(&shared);
         assert_eq!(projection.accounts.len(), 1);
         assert!(projection.accounts[0].read_only);
         assert!(projection.accounts[0].calendars[0].read_only);
@@ -175,102 +274,9 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    /// Setting up a Google account: the grant it syncs with and what it never writes.
-    fn google_calendars_sync_through_the_canonical_grant_and_keep_tokens_out;
-
-    phase google_refreshes_canonical_grant_and_sends_bearer_report_and_guarded_writes;
-    {
-        let root = tempfile::tempdir().unwrap();
-        let token_server = Responder::start(vec![Reply::status(200).header("Content-Type", "application/json").body(r#"{"access_token":"renewed-calendar","token_type":"Bearer","expires_in":3600,"refresh_token":"rotated-refresh"}"#)]);
-        let mut provider = account_credentials::OAuthIssuer::Google.endpoints();
-        provider.token_endpoint = format!("{}/token", token_server.url());
-        let credential_store = account_credentials::CredentialStore::for_root(Some(root.path().to_owned()))
-            .with_issuer_endpoints(account_credentials::OAuthIssuer::Google, provider);
-        let id = AccountId::from("canonical-google");
-        credential_store
-            .seal_oauth(
-                &id,
-                &account_credentials::TokenSet {
-                    access_token: "expired".into(),
-                    refresh_token: "old-refresh".into(),
-                    obtained_at: 1,
-                    expires_in: 1,
-                    scope: Some("https://www.googleapis.com/auth/calendar".into()),
-                },
-            )
-            .unwrap();
-        let server = Responder::start(vec![
-            Reply::status(207).body("<d:multistatus xmlns:d=\"DAV:\"/>"),
-            Reply::status(412),
-            Reply::status(204),
-        ]);
-        let config = CalDavConfig {
-            server_url: server.url(),
-            ..Default::default()
-        };
-        let service = tilo_dav::oauth::Service::for_test_origin(credential_store, &server.url()).unwrap();
-        let url = format!("{}/cal/", server.url());
-        let client = service
-            .authorised(
-                Some(&Account::new(id.clone(), accounts::cloud_types::GOOGLE_DRIVE)),
-                &config.server_url,
-                "",
-                "",
-                &url,
-            )
-            .unwrap();
-        let run = |future| ui::rt::block_on(future).expect("test thread may block");
-        assert_eq!(
-            run(client.report(&url, tilo_dav::Depth::One, "<report/>".into()))
-                .unwrap()
-                .status()
-                .as_u16(),
-            207
-        );
-        assert_eq!(
-            ui::rt::block_on(client.put(
-                &url,
-                b"ics".to_vec(),
-                Some("text/calendar"),
-                tilo_dav::Precondition::IfMatch("\"v1\"")
-            ))
-            .unwrap()
-            .unwrap()
-            .status()
-            .as_u16(),
-            412
-        );
-        ui::rt::block_on(client.delete(&url, tilo_dav::Precondition::IfMatch("\"v2\"")))
-            .unwrap()
-            .unwrap();
-        for (method, etag) in [
-            ("REPORT", None),
-            ("PUT", Some("\"v1\"")),
-            ("DELETE", Some("\"v2\"")),
-        ] {
-            let request = server.next_request();
-            assert_eq!(request.method, method);
-            assert_eq!(
-                request.header("authorization"),
-                Some("Bearer renewed-calendar")
-            );
-            assert_eq!(request.header("if-match"), etag);
-        }
-        let request = token_server.next_request();
-        assert!(request.body_text().contains("refresh_token=old-refresh"));
-        assert!(request.body_text().contains("grant_type=refresh_token"));
-        let stored = SecretVault::open_in(root.path()).get(&id).unwrap();
-        assert!(
-            !serde_json::to_string(&stored)
-                .unwrap()
-                .contains("old-refresh")
-        );
-        assert!(
-            serde_json::to_string(&stored)
-                .unwrap()
-                .contains("rotated-refresh")
-        );
-    }
+    /// Setting up a Google account: the calendar URL its address makes, and what its selection
+    /// keeps.
+    fn google_calendars_are_addressed_and_selected_by_their_url;
 
     phase google_collection_id_cannot_change_the_url_path_or_query;
     {
@@ -324,7 +330,7 @@ tilo_test_env::scenario! {
         let vault = SecretVault::open_in(root.path());
         let before = vault.get(&AccountId::from("drive-account")).unwrap();
         let shared = record.state().unwrap();
-        let projection = crate::CalendarAccounts::from_shared(&shared);
+        let projection = calendar_model::account::CalendarAccounts::from_shared(&shared);
         assert_eq!(
             projection.accounts[0].config.oauth_account_id.as_deref(),
             Some("drive-account")
@@ -341,4 +347,5 @@ tilo_test_env::scenario! {
         assert!(!plaintext.contains("approved-google-access"));
         assert!(!plaintext.contains("canonical-refresh"));
     }
+}
 }

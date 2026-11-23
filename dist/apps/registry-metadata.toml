@@ -15,8 +15,6 @@ description = "Protect important work with clear, restorable backups."
 description = "Browse the web with built-in ad blocking, private windows, and Chrome extensions."
 [apps.calculator]
 description = "A fast calculator for everyday arithmetic, formulas, and graphs."
-[apps.calendar]
-description = "Plan time, events, and shared schedules in one calm calendar."
 [apps.camera]
 description = "Capture photos and video from your connected cameras."
 [apps.canvas]

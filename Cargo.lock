@@ -1868,45 +1868,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "calendar"
-version = "0.1.0"
-dependencies = [
- "account-credentials",
- "accounts",
- "app-fleet",
- "calendar-model",
- "fnv",
- "hex",
- "jiff",
- "runtime-dylib",
- "serde",
- "serde_json",
- "taffy",
- "tempfile",
- "test-http",
- "tilo-accounts-engine",
- "tilo-actions",
- "tilo-app",
- "tilo-app-package",
- "tilo-automerge-fork",
- "tilo-contact-directory",
- "tilo-contact-directory-engine",
- "tilo-dav",
- "tilo-document",
- "tilo-files",
- "tilo-rich-text",
- "tilo-test-env",
- "tilo-timezone-engine",
- "tilo-vello",
- "tilo-winit",
- "toml 1.0.6+spec-1.1.0",
- "tracing",
- "url",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "calendar-model"
 version = "0.1.0"
 dependencies = [
@@ -7811,7 +7772,7 @@ dependencies = [
  "block-devices",
  "bounded-command",
  "browser-continuity",
- "calendar",
+ "calendar-model",
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
@@ -15512,7 +15473,7 @@ dependencies = [
  "accounts",
  "agent-provider-config",
  "bounded-command",
- "calendar",
+ "calendar-model",
  "collab-types",
  "desktop-policy",
  "hex",
@@ -17356,7 +17317,6 @@ dependencies = [
  "blake3",
  "bytes",
  "calculator",
- "calendar",
  "camera",
  "canvas",
  "chat",
@@ -18733,7 +18693,6 @@ dependencies = [
  "agent-provider-config",
  "blake3",
  "calculator",
- "calendar",
  "chat",
  "collab-types",
  "desktop-policy",
@@ -28019,7 +27978,6 @@ dependencies = [
  "calculator",
  "calculator-model",
  "calculator-model-wasm",
- "calendar",
  "calendar-model",
  "calendar-model-wasm",
  "calloop",

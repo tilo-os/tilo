@@ -289,7 +289,41 @@ struct Found {
     words: usize,
 }
 
+/// A day or a moment written the way a calendar writes it, as one word: `2026-11-26`, or
+/// `2026-11-26T09:00:00` (a trailing `Z` read as written, the wall clock the text names). The day,
+/// and the time of day in minutes where the word names one.
+fn iso_word(word: &str) -> Option<(i64, Option<i64>)> {
+    // A word the reader holds is folded to lower case, so the `T` is read in either case.
+    let word = word.trim_end_matches(['Z', 'z']);
+    let split = word.find(['T', 't']);
+    let date = split.and_then(|at| word.get(..at)).unwrap_or(word);
+    let time = split.and_then(|at| word.get(at + 1..));
+    let mut parts = date.split('-');
+    let year: i64 = parts.next()?.parse().ok()?;
+    let month: i64 = parts.next()?.parse().ok()?;
+    let day: i64 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    let minutes = match time {
+        None => None,
+        Some(time) => {
+            let mut parts = time.split(':');
+            let hour: i64 = parts.next()?.parse().ok()?;
+            let minute: i64 = parts.next()?.parse().ok()?;
+            let seconds: i64 = parts.next().unwrap_or("0").parse().ok()?;
+            if parts.next().is_some() || hour > 23 || minute > 59 || seconds > 59 {
+                return None;
+            }
+            Some(hour * 60 + minute)
+        }
+    };
+    Some((days, minutes))
+}
+
 /// The phrase starting at `texts[i]`, read on the day `today` (days since 1970); `led` when a lead
+/// word stands before it./// The phrase starting at `texts[i]`, read on the day `today` (days since 1970); `led` when a lead
 /// word stands before it.
 fn phrase_at(texts: &[&str], i: usize, today: i64, led: bool, lang: Language) -> Option<Found> {
     let w = |k: usize| texts.get(i + k).copied();
@@ -464,6 +498,19 @@ pub fn scan(words: &[Word], today: i64, lang: Language) -> Vec<Phrase> {
         // ("at 9").
         let lead =
             usize::from(lang.leads().contains(&texts[i]) && !lang.time_leads().contains(&texts[i]));
+        // A day or moment a calendar wrote (`2026-11-26T09:00:00`) is read as itself: an imported
+        // line, or a moment a person typed whole.
+        if let Some((day, minutes)) = iso_word(texts[i + lead]) {
+            out.push(Phrase {
+                day: Some(day),
+                minutes,
+                after: None,
+                from: i,
+                words: lead + 1,
+            });
+            i += lead + 1;
+            continue;
+        }
         if let Some(found) = phrase_at(&texts, i + lead, today, lead == 1, lang) {
             out.push(Phrase {
                 day: found.day,
@@ -623,6 +670,30 @@ mod tests {
         phase now_is_a_thursday_morning_in_berlin;
         {
             assert_eq!(crate::calendar::time_text(NOW), "2026-10-29T07:00:00Z");
+        }
+
+        phase a_day_or_moment_a_calendar_wrote_is_read_as_itself;
+        {
+            assert_eq!(
+                read("Trip 2026-11-26"),
+                ("Trip".into(), Some("2026-11-26".into()), None)
+            );
+            assert_eq!(
+                read("Trip 2026-11-26T09:30:00"),
+                (
+                    "Trip".into(),
+                    Some("2026-11-26".into()),
+                    Some("2026-11-26T08:30:00Z".into())
+                )
+            );
+            assert_eq!(
+                read("Trip 2026-11-26T09:30:00Z"),
+                (
+                    "Trip".into(),
+                    Some("2026-11-26".into()),
+                    Some("2026-11-26T08:30:00Z".into())
+                )
+            );
         }
 
         phase a_day_and_a_time_come_out_of_the_title;

@@ -161,7 +161,7 @@ account-credentials = { path = "../../crates/integrations/account-credentials" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 # Prove that discovered selections are consumed by Calendar, not just valid JSON.
-calendar = { path = "../calendar", default-features = false }
+calendar-model = { path = "../calendar-model", default-features = false, features = ["live", "store"] }
 # Serialised, self-restoring HOME/XDG redirection for the tests that
 # construct the whole app or persist through the per-user settings file.
 tilo-test-env = { path = "../../tools/test-env" }

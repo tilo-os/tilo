@@ -47,6 +47,13 @@ impl Core {
                 let at = self.instant_arg(a.h(0)?)?;
                 self.ret_h(Value::Text(day_text(self.local_day(at))))
             }
+            // The day a moment falls on in a named zone: the same moment, read where people there
+            // are, from the zone's own rules rather than the person's clock.
+            Imp::TimeDayIn => self.time_day_in_import(a),
+            // The moment a wall-clock time names in a named zone: the zone's own rules decide it,
+            // the person's clock none of it, so a view draws it and an import needs no clock.
+            Imp::TimeFromWall => self.time_from_wall_import(a),
+            Imp::TimeWall => self.time_wall_import(a),
             Imp::TimeOfDay => {
                 let at = self.instant_arg(a.h(0)?)?;
                 let local = self.local_wall(at);
@@ -59,14 +66,7 @@ impl Core {
             }
             // The time of day a moment falls at, as the person reads a clock: `10:41` or
             // `10:41 AM`, in the style they chose in Settings.
-            Imp::TimeClock => {
-                let at = self.instant_arg(a.h(0)?)?;
-                let local = self.local_wall(at);
-                self.ret_h(Value::Text(self.clock_text(
-                    u32::from(local.hour().unsigned_abs()),
-                    u32::from(local.minute().unsigned_abs()),
-                )))
-            }
+            Imp::TimeClock => self.time_clock_import(a),
             Imp::DayShift => {
                 let day = self.day(a.h(0)?)?;
                 let secs = a.long(1)?;
@@ -143,6 +143,41 @@ impl Core {
             Imp::Occurrences => self.occurrences_import(a),
             _ => trap("not a day or moment import"),
         }
+    }
+
+    /// The time of day a moment falls at, as the person reads a clock (`Imp::TimeClock`).
+    fn time_clock_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let at = self.instant_arg(a.h(0)?)?;
+        let local = self.local_wall(at);
+        self.ret_h(Value::Text(self.clock_text(
+            u32::from(local.hour().unsigned_abs()),
+            u32::from(local.minute().unsigned_abs()),
+        )))
+    }
+
+    /// The moment a wall-clock time names in a named zone (`Imp::TimeFromWall`).
+    fn time_from_wall_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let zone = self.text(a.h(0)?)?;
+        let text = self.text(a.h(1)?)?;
+        let at = self.moment_of_wall(&zone, &text);
+        self.ret_h(Value::Opt(at.map(|at| {
+            Box::new(Value::Text(tilolang::calendar::time_text(at)))
+        })))
+    }
+
+    /// The wall time a moment is in a named zone (`Imp::TimeWall`): what a calendar stores.
+    fn time_wall_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let at = self.instant_arg(a.h(0)?)?;
+        let name = self.text(a.h(1)?)?;
+        let wall = self.wall_in(at, &name);
+        self.ret_h(Value::Opt(wall.map(|wall| Box::new(Value::Text(wall)))))
+    }
+
+    /// The day a moment falls on in a named zone (`Imp::TimeDayIn`).
+    fn time_day_in_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let at = self.instant_arg(a.h(0)?)?;
+        let name = self.text(a.h(1)?)?;
+        self.ret_h(Value::Text(day_text(self.day_in(at, &name)?)))
     }
 
     /// The day a text names, near the day a person says it on.
@@ -356,6 +391,71 @@ impl Core {
     /// The day `instant` falls on for the person.
     pub(crate) fn local_day(&self, instant: i64) -> Date {
         self.local_wall(instant).date()
+    }
+
+    /// The wall time the moment `instant` is in the zone `name`, as a calendar writes one
+    /// (`2026-11-24T09:00:00`); `floating`'s is where the reader is. None for a zone this build
+    /// does not know.
+    fn wall_in(&self, instant: i64, name: &str) -> Option<String> {
+        let name = tilo_recurrence::canonical_zone(name)?;
+        let Ok(utc) = jiff::Timestamp::from_second(instant) else {
+            return None;
+        };
+        let wall = if name == "floating" {
+            self.local_wall(instant)
+        } else {
+            let zone = if name == "UTC" {
+                jiff::tz::TimeZone::UTC
+            } else {
+                tilo_recurrence::zone::named(&name)?
+            };
+            utc.to_zoned(zone).datetime()
+        };
+        Some(wall.strftime("%Y-%m-%dT%H:%M:%S").to_string())
+    }
+
+    /// The moment a wall-clock time names in the zone `name`, as the zone's own rules resolve it:
+    /// the earlier instant of a fold and the first real minute out of a gap, so every device reads
+    /// the same text the same way. `floating` is a wall time with no zone of its own — nine is nine
+    /// wherever the reader is — so it is resolved in theirs; a zone this build does not know, and a
+    /// text that is no wall time, answer none.
+    fn moment_of_wall(&self, name: &str, text: &str) -> Option<i64> {
+        let wall = ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"]
+            .into_iter()
+            .find_map(|shape| DateTime::strptime(shape, text).ok())?;
+        let zone = tilo_recurrence::canonical_zone(name)?;
+        // A floating time is a wall time with no zone of its own: nine is nine wherever the
+        // reader is, so it is resolved in their zone, as the Rust Calendar read it.
+        if zone == "floating" {
+            return Some(self.instant_of(wall));
+        }
+        let (instant, _) = tilo_recurrence::wall_to_utc(&zone, wall)?;
+        Some(instant.as_second())
+    }
+
+    /// The day `instant` falls on in the zone `name`: a moment's date where people there read it,
+    /// resolved from the zone's own rules, so two people in different zones read it alike and no
+    /// clock is asked. `floating` is a wall time with no zone of its own, so its day is the
+    /// reader's, as `day` reads it.
+    fn day_in(&self, instant: i64, name: &str) -> HResult<Date> {
+        let Some(name) = tilo_recurrence::canonical_zone(name) else {
+            return trap(format!("`{name}` is not a time zone"));
+        };
+        if name == "floating" {
+            return Ok(self.local_day(instant));
+        }
+        let Ok(utc) = jiff::Timestamp::from_second(instant) else {
+            return trap("the moment is out of range");
+        };
+        let zone = if name == "UTC" {
+            jiff::tz::TimeZone::UTC
+        } else {
+            let Some(zone) = tilo_recurrence::zone::named(&name) else {
+                return trap(format!("`{name}` is not a time zone this build knows"));
+            };
+            zone
+        };
+        Ok(utc.to_zoned(zone).date())
     }
 }
 

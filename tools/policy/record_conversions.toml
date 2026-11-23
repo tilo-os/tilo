@@ -123,3 +123,9 @@ kind = "tilo.contacts.identities"
 app = "mail"
 change = "moved"
 lost = "Mail only read the contacts' identities; Contacts keeps them."
+
+[[change]]
+kind = "calendar.calendar"
+app = "calendar"
+change = "removed"
+lost = "The native Calendar's events, calendars, tasks and projects, kept in one workspace resource. The tilolang Calendar keeps the workspace's events in the calendar service's own resource types, which the native app never wrote, and it converts no document: what the native app held stays in its old resource and is not shown by the new one."

@@ -46,12 +46,13 @@ use Imp::{
     SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, Steps,
     StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
     StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper,
-    StrWords, Suggest, Take, TimeClock, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today,
-    TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
-    UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiChild, UiNode, UiOn,
-    UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
-    Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
-    WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
+    StrWords, Suggest, Take, TimeClock, TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse,
+    TimeShift, TimeSpan, TimeWall, Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew,
+    TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin,
+    UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF,
+    UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet,
+    WebHeaders, WebOk, WebPost, WebStatus, WebStatusText, WebText, Withdraw, Word,
+    WorkspaceMembers,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -154,6 +155,9 @@ pub struct Core {
     /// The person's clipboard (`Runtime::set_clipboard`): what a copy offers and what a paste
     /// reads. Until the host sets one, nothing copies and nothing pastes.
     pub clipboard: RefCell<Option<Box<dyn crate::clipboard::ClipboardHost>>>,
+    /// The host a notice is raised to (`Runtime::set_notices`): the desktop's notifications, or
+    /// a test's record. Until the host sets one, a notice is only the record the run wrote.
+    pub notices: RefCell<Option<Box<dyn crate::notify::Notices>>>,
     /// What names actors; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     /// How a day or a time of day reads in a sentence; its stored text until the host says
@@ -347,6 +351,7 @@ impl Core {
             web: RefCell::new(None),
             blobs: RefCell::new(None),
             clipboard: RefCell::new(None),
+            notices: RefCell::new(None),
             names: RefCell::new(None),
             shown: RefCell::new(None),
             shown_by: RefCell::new(None),
@@ -521,9 +526,9 @@ impl Core {
             Query => self.ret_h(self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?),
             Filters | FilterLit | SortLit => self.catalogue_import(imp, a),
             IdentPart => self.ret_h(self.ident_part(a.h(0)?, a.h(1)?)?),
-            Today | TimeDay | TimeOfDay | TimeClock | TimeSpan | DayShift | DayPart
-            | DayWeekday | DayStartOfWeek | DayParse | TimeParse | WallClock | DateShow
-            | Occurrences => self.time_import(imp, a),
+            Today | TimeDay | TimeDayIn | TimeFromWall | TimeWall | TimeOfDay | TimeClock
+            | TimeSpan | DayShift | DayPart | DayWeekday | DayStartOfWeek | DayParse
+            | TimeParse | WallClock | DateShow | Occurrences => self.time_import(imp, a),
             RandomInt | RandomFloat | RandomChoice | RandomShuffle | RandomId => {
                 self.random_import(imp, a)
             }

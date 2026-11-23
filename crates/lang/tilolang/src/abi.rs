@@ -298,6 +298,15 @@ imports! {
     // far two days or two moments are apart; a part of a day, its weekday and the day its week starts on;
     // and a day or a moment a text names, read at a moment.
     TimeDay = "time_day" ([H] -> [H]);
+    // The day a moment falls on in a named zone: the same moment, read where people there are, from
+    // the zone's own rules and never the person's clock.
+    TimeDayIn = "time_day_in" ([H, H] -> [H]);
+    // The moment a wall-clock time names in a named zone: the zone's own rules decide it, the
+    // person's clock none of it.
+    TimeFromWall = "time_from_wall" ([H, H] -> [H]);
+    // The wall time a moment is in a named zone (`2026-11-24T09:00:00`), the form a calendar
+    // stores; `floating`'s is where the reader is.
+    TimeWall = "time_wall" ([H, H] -> [H]);
     TimeOfDay = "time_of_day" ([H] -> [I64]);
     TimeClock = "time_clock" ([H] -> [H]);
     DayShift = "day_shift" ([H, I64, I32] -> [H]);

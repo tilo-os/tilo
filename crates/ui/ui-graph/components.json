@@ -5688,12 +5688,17 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "step",
+          "doc": "The minutes the wheel and the chevrons step the minute cell by: a quarter hour by default.",
+          "type": "int"
         }
       ],
       "events": [
         {
-          "name": "change",
-          "doc": "The moment changed: carries the instant, at the time chosen today.",
+          "name": "changed",
+          "doc": "The time changed: carries the instant, at the time chosen today.",
           "value": "time"
         }
       ],

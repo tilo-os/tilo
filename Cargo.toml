@@ -115,7 +115,6 @@ members = [
     "apps/calculator",
     "apps/calculator-model",
     "apps/calculator-model-wasm",
-    "apps/calendar",
     "apps/calendar-model",
     "apps/calendar-model-wasm",
     "apps/camera",

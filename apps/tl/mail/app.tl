@@ -194,7 +194,7 @@ type Mail {
     }
 }
 
-root Mail
+root mail: Mail
 
 default view mail for Mail
 

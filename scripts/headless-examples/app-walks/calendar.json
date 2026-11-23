@@ -2,173 +2,497 @@
   "app": "calendar",
   "said": "Calendar",
   "family": "apps",
-  "live": "rust",
-  "rust": {
+  "live": "tl",
+  "tl": {
     "id": "so.tilo.calendar",
-    "native": "calendar"
+    "package": "calendar"
   },
   "steps": [
     {
       "id": "open",
       "said": "Open Calendar on the month it is today, with today picked out",
-      "ops": [
-        {
-          "theme": false
-        },
-        {
-          "launch": true
-        },
-        {
-          "wait_for": "window"
-        },
-        {
-          "wait_for": "actions"
-        },
-        {
-          "targets": true
-        }
-      ],
+      "ops": {
+        "rust": [
+          {
+            "theme": false
+          },
+          {
+            "launch": true
+          },
+          {
+            "wait_for": "window"
+          },
+          {
+            "wait_for": "actions"
+          },
+          {
+            "targets": true
+          }
+        ],
+        "tl": [
+          {
+            "theme": false
+          },
+          {
+            "launch": true
+          },
+          {
+            "wait_for": "window"
+          },
+          {
+            "wait_for": "New event"
+          },
+          {
+            "targets": true
+          }
+        ]
+      },
       "dark": true,
       "budget_ms": 30000
     },
     {
       "id": "today",
       "said": "Today is one of the days drawn, and the calendar comes back to it",
-      "ops": [
-        {
-          "must": [
-            [
+      "ops": {
+        "rust": [
+          {
+            "must": [
+              [
+                "Go to today",
+                "Today"
+              ],
+              {
+                "prefix": "Open "
+              }
+            ]
+          },
+          {
+            "press_any": [
               "Go to today",
               "Today"
-            ],
-            {
-              "prefix": "Open "
-            }
-          ]
-        },
-        {
-          "press_any": [
-            "Go to today",
-            "Today"
-          ]
-        }
-      ],
+            ]
+          }
+        ],
+        "tl": [
+          {
+            "press_any": [
+              "Today"
+            ]
+          }
+        ]
+      },
       "dark": true
     },
     {
       "id": "week",
       "said": "Switch the calendar to the week",
-      "ops": [
-        {
-          "press_any": [
-            "Week view",
-            "Week"
-          ]
-        },
-        {
-          "must": [
-            "Previous week",
-            {
-              "prefix": "Open "
-            }
-          ]
-        },
-        {
-          "must_not": [
-            "Previous month"
-          ]
-        }
-      ],
+      "ops": {
+        "rust": [
+          {
+            "press_any": [
+              "Week view",
+              "Week"
+            ]
+          },
+          {
+            "must": [
+              "Previous week",
+              {
+                "prefix": "Open "
+              }
+            ]
+          },
+          {
+            "must_not": [
+              "Previous month"
+            ]
+          }
+        ],
+        "tl": [
+          {
+            "press_any": [
+              "Week"
+            ]
+          },
+          {
+            "must": [
+              "Previous week"
+            ]
+          },
+          {
+            "must_not": [
+              "Previous month"
+            ]
+          }
+        ]
+      },
       "dark": true
     },
     {
       "id": "day",
       "said": "Switch the calendar to the day",
-      "ops": [
-        {
-          "press_any": [
-            "Day view",
-            "Day"
-          ]
-        },
-        {
-          "must": [
-            "Previous day"
-          ]
-        },
-        {
-          "must_not": [
-            "Previous week"
-          ]
-        }
-      ]
+      "ops": {
+        "rust": [
+          {
+            "press_any": [
+              "Day view",
+              "Day"
+            ]
+          },
+          {
+            "must": [
+              "Previous day"
+            ]
+          },
+          {
+            "must_not": [
+              "Previous week"
+            ]
+          }
+        ],
+        "tl": [
+          {
+            "press_any": [
+              "Day"
+            ]
+          },
+          {
+            "must": [
+              "Previous day"
+            ]
+          },
+          {
+            "must_not": [
+              "Previous week"
+            ]
+          }
+        ]
+      }
     },
     {
       "id": "month",
       "said": "Switch the calendar back to the month",
-      "ops": [
-        {
-          "press_any": [
-            "Month view",
-            "Month"
-          ]
-        },
-        {
-          "must": [
-            "Previous month",
-            {
-              "prefix": "Open "
-            }
-          ]
-        },
-        {
-          "must_not": [
-            "Previous day"
-          ]
-        }
-      ]
+      "ops": {
+        "rust": [
+          {
+            "press_any": [
+              "Month view",
+              "Month"
+            ]
+          },
+          {
+            "must": [
+              "Previous month",
+              {
+                "prefix": "Open "
+              }
+            ]
+          },
+          {
+            "must_not": [
+              "Previous day"
+            ]
+          }
+        ],
+        "tl": [
+          {
+            "press_any": [
+              "Month"
+            ]
+          },
+          {
+            "must": [
+              "Previous month"
+            ]
+          },
+          {
+            "must_not": [
+              "Previous day"
+            ]
+          }
+        ]
+      }
     },
     {
       "id": "new-event",
       "said": "Add an event for today and give it a name",
-      "ops": [
-        {
-          "press": "New event"
-        },
-        {
-          "wait_for": {
-            "shown": "Edit event title"
-          }
-        },
-        {
-          "click": "Edit event title"
-        },
-        {
-          "type": "Dentist"
-        },
-        {
-          "press": "Done"
-        },
-        {
-          "wait_for": {
-            "shown": {
-              "prefix": "Open event Dentist"
+      "ops": {
+        "rust": [
+          {
+            "press": "New event"
+          },
+          {
+            "wait_for": {
+              "shown": "Edit event title"
+            }
+          },
+          {
+            "click": "Edit event title"
+          },
+          {
+            "type": "Dentist"
+          },
+          {
+            "press": "Done"
+          },
+          {
+            "wait_for": {
+              "shown": {
+                "prefix": "Open event Dentist"
+              }
             }
           }
-        }
-      ],
+        ],
+        "tl": [
+          {
+            "press": "New event"
+          },
+          {
+            "wait_for": {
+              "shown": {
+                "prefix": "Title"
+              }
+            }
+          },
+          {
+            "click": {
+              "prefix": "Title"
+            }
+          },
+          {
+            "type": "Dentist"
+          },
+          {
+            "wait_for": {
+              "shown": {
+                "prefix": "Dentist"
+              }
+            }
+          }
+        ]
+      },
       "dark": true
     },
     {
       "id": "it-shows",
       "said": "The event is drawn on today, and the calendar keeps it",
-      "ops": [
-        {
-          "must": [
-            {
+      "ops": {
+        "rust": [
+          {
+            "must": [
+              {
+                "prefix": "Open event Dentist"
+              }
+            ]
+          },
+          {
+            "read": {
+              "app": "so.tilo.calendar",
+              "operation": "read",
+              "is": {
+                "events#len": 1
+              },
+              "contains": "Dentist"
+            }
+          }
+        ],
+        "tl": [
+          {
+            "must": [
+              {
+                "prefix": "Dentist"
+              }
+            ]
+          },
+          {
+            "read": {
+              "app": "so.tilo.calendar",
+              "operation": "read",
+              "is": {
+                "events#len": 1
+              },
+              "contains": "Dentist"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "edit",
+      "said": "Open the event, rename it, and the new name is the one drawn",
+      "ops": {
+        "rust": [
+          {
+            "press": {
               "prefix": "Open event Dentist"
             }
-          ]
+          },
+          {
+            "wait_for": {
+              "shown": "Edit event title"
+            }
+          },
+          {
+            "click": "Edit event title"
+          },
+          {
+            "key": "End"
+          },
+          {
+            "key": "Backspace"
+          },
+          {
+            "key": "Backspace"
+          },
+          {
+            "key": "Backspace"
+          },
+          {
+            "key": "Backspace"
+          },
+          {
+            "key": "Backspace"
+          },
+          {
+            "key": "Backspace"
+          },
+          {
+            "key": "Backspace"
+          },
+          {
+            "type": "Dentist appointment"
+          },
+          {
+            "press": "Done"
+          },
+          {
+            "read": {
+              "app": "so.tilo.calendar",
+              "operation": "read",
+              "is": {
+                "events#len": 1
+              },
+              "contains": "Dentist appointment"
+            }
+          },
+          {
+            "wait_for": {
+              "shown": {
+                "prefix": "Open event Dentist appointment"
+              }
+            }
+          }
+        ],
+        "tl": [
+          {
+            "click": {
+              "prefix": "Title"
+            }
+          },
+          {
+            "key": "End"
+          },
+          {
+            "type": " appointment"
+          },
+          {
+            "read": {
+              "app": "so.tilo.calendar",
+              "operation": "read",
+              "is": {
+                "events#len": 1
+              },
+              "contains": "Dentist appointment"
+            }
+          },
+          {
+            "wait_for": {
+              "shown": {
+                "prefix": "Dentist appointment"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "delete",
+      "said": "Delete the event, and it is gone from the calendar",
+      "ops": {
+        "rust": [
+          {
+            "press": {
+              "prefix": "Open event Dentist appointment"
+            }
+          },
+          {
+            "wait_for": {
+              "shown": "Delete event"
+            }
+          },
+          {
+            "press": "Delete event"
+          },
+          {
+            "must_not": [
+              {
+                "prefix": "Open event Dentist"
+              }
+            ]
+          },
+          {
+            "read": {
+              "app": "so.tilo.calendar",
+              "operation": "read",
+              "is": {
+                "events#len": 0
+              }
+            }
+          }
+        ],
+        "tl": [
+          {
+            "press_any": [
+              "Delete event"
+            ]
+          },
+          {
+            "must_not": [
+              {
+                "prefix": "Dentist"
+              }
+            ]
+          },
+          {
+            "read": {
+              "app": "so.tilo.calendar",
+              "operation": "read",
+              "is": {
+                "events#len": 0
+              }
+            }
+          }
+        ]
+      },
+      "dark": true
+    },
+    {
+      "id": "drag-create",
+      "said": "Make an event by dragging across empty hours of a day",
+      "ops": [
+        {
+          "drag": {
+            "window": [
+              [
+                0.34,
+                0.34
+              ],
+              [
+                0.42,
+                0.46
+              ]
+            ]
+          }
         },
         {
           "read": {
@@ -177,18 +501,77 @@
             "is": {
               "events#len": 1
             },
-            "contains": "Dentist"
+            "contains": "New event"
           }
         }
       ]
     },
     {
-      "id": "edit",
-      "said": "Open the event, rename it, and the new name is the one drawn",
+      "id": "open-dragged",
+      "said": "Open the event the drag made and name it",
+      "ops": {
+        "rust": [
+          {
+            "press": {
+              "prefix": "Open event New event"
+            }
+          },
+          {
+            "wait_for": {
+              "shown": "Edit event title"
+            }
+          },
+          {
+            "click": "Edit event title"
+          },
+          {
+            "type": "Standup"
+          },
+          {
+            "press": "Done"
+          },
+          {
+            "wait_for": {
+              "shown": {
+                "prefix": "Open event Standup"
+              }
+            }
+          }
+        ],
+        "tl": [
+          {
+            "wait_for": {
+              "shown": {
+                "prefix": "Title"
+              }
+            }
+          },
+          {
+            "click": {
+              "prefix": "Title"
+            }
+          },
+          {
+            "type": "Standup"
+          },
+          {
+            "wait_for": {
+              "shown": {
+                "prefix": "Standup"
+              }
+            }
+          }
+        ]
+      },
+      "dark": true
+    },
+    {
+      "id": "edit-time",
+      "said": "Edit the time it starts at with the time picker",
       "ops": [
         {
           "press": {
-            "prefix": "Open event Dentist"
+            "prefix": "Open event Standup"
           }
         },
         {
@@ -197,34 +580,20 @@
           }
         },
         {
-          "click": "Edit event title"
+          "click_any": [
+            {
+              "prefix": "9:"
+            },
+            {
+              "prefix": "09:"
+            }
+          ]
         },
         {
-          "key": "End"
+          "key": "ArrowUp"
         },
         {
-          "key": "Backspace"
-        },
-        {
-          "key": "Backspace"
-        },
-        {
-          "key": "Backspace"
-        },
-        {
-          "key": "Backspace"
-        },
-        {
-          "key": "Backspace"
-        },
-        {
-          "key": "Backspace"
-        },
-        {
-          "key": "Backspace"
-        },
-        {
-          "type": "Dentist appointment"
+          "key": "Escape"
         },
         {
           "press": "Done"
@@ -236,53 +605,275 @@
             "is": {
               "events#len": 1
             },
-            "contains": "Dentist appointment"
-          }
-        },
-        {
-          "wait_for": {
-            "shown": {
-              "prefix": "Open event Dentist appointment"
-            }
+            "contains": "Standup"
           }
         }
       ]
     },
     {
-      "id": "delete",
-      "said": "Delete the event, and it is gone from the calendar",
+      "id": "move",
+      "said": "Move the event to another day by dragging it there",
       "ops": [
         {
-          "press": {
-            "prefix": "Open event Dentist appointment"
+          "key": "Escape"
+        },
+        {
+          "drag": {
+            "window": [
+              [
+                0.38,
+                0.4
+              ],
+              [
+                0.52,
+                0.4
+              ]
+            ]
           }
-        },
-        {
-          "wait_for": {
-            "shown": "Delete event"
-          }
-        },
-        {
-          "press": "Delete event"
-        },
-        {
-          "must_not": [
-            {
-              "prefix": "Open event Dentist"
-            }
-          ]
         },
         {
           "read": {
             "app": "so.tilo.calendar",
             "operation": "read",
             "is": {
-              "events#len": 0
-            }
+              "events#len": 1
+            },
+            "contains": "Standup"
           }
         }
-      ],
+      ]
+    },
+    {
+      "id": "recur",
+      "said": "Make the event repeat every week",
+      "ops": {
+        "rust": [
+          {
+            "press": {
+              "prefix": "Open event Standup"
+            }
+          },
+          {
+            "wait_for": {
+              "shown": "Repeat"
+            }
+          },
+          {
+            "press": "Repeat"
+          },
+          {
+            "wait_for": {
+              "shown": {
+                "menuitem": "Every week"
+              }
+            }
+          },
+          {
+            "press": {
+              "menuitem": "Every week"
+            }
+          },
+          {
+            "press": "Done"
+          },
+          {
+            "read": {
+              "app": "so.tilo.calendar",
+              "operation": "read",
+              "is": {
+                "events#len": 1
+              },
+              "contains": "FREQ=WEEKLY"
+            }
+          }
+        ],
+        "tl": [
+          {
+            "press_any": [
+              {
+                "prefix": "Open event Standup"
+              },
+              "Standup"
+            ]
+          },
+          {
+            "wait_for": {
+              "shown": "Repeat"
+            }
+          },
+          {
+            "press": "Repeat"
+          },
+          {
+            "wait_for": {
+              "shown": {
+                "menuitem": "Every week"
+              }
+            }
+          },
+          {
+            "press": {
+              "menuitem": "Every week"
+            }
+          },
+          {
+            "read": {
+              "app": "so.tilo.calendar",
+              "operation": "read",
+              "is": {
+                "events#len": 1
+              },
+              "contains": "FREQ=WEEKLY"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "import",
+      "said": "Import an .ics file another calendar exported",
+      "ops": {
+        "rust": [
+          {
+            "file": {
+              "name": "team.ics",
+              "text": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nSUMMARY:Trip to Lisbon\r\nDTSTART:20261127T090000Z\r\nDTEND:20261127T170000Z\r\nLOCATION:Lisbon\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            }
+          },
+          {
+            "press_any": [
+              {
+                "menuitem": "Import calendar"
+              },
+              "Import calendar"
+            ]
+          },
+          {
+            "choose": {
+              "name": "team.ics"
+            }
+          },
+          {
+            "wait_for": {
+              "shown": {
+                "prefix": "Open event Trip to Lisbon"
+              }
+            }
+          },
+          {
+            "read": {
+              "app": "so.tilo.calendar",
+              "operation": "read",
+              "is": {
+                "events#len": 2
+              }
+            }
+          }
+        ],
+        "tl": [
+          {
+            "file": {
+              "name": "team.ics",
+              "text": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nSUMMARY:Trip to Lisbon\r\nDTSTART:20261127T090000Z\r\nDTEND:20261127T170000Z\r\nLOCATION:Lisbon\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            }
+          },
+          {
+            "press_any": [
+              {
+                "menuitem": "Import calendar"
+              },
+              "Import calendar"
+            ]
+          },
+          {
+            "choose": {
+              "name": "team.ics"
+            }
+          },
+          {
+            "wait_for": {
+              "shown": {
+                "prefix": "Trip to Lisbon"
+              }
+            }
+          },
+          {
+            "read": {
+              "app": "so.tilo.calendar",
+              "operation": "read",
+              "is": {
+                "events#len": 2
+              }
+            }
+          }
+        ]
+      },
       "dark": true
+    },
+    {
+      "id": "fast-title",
+      "said": "A title typed in one burst and saved at once makes one event with the whole title",
+      "ops": {
+        "rust": [
+          {
+            "press": "New event"
+          },
+          {
+            "wait_for": {
+              "shown": "Edit event title"
+            }
+          },
+          {
+            "click": "Edit event title"
+          },
+          {
+            "type": "Dentist appointment"
+          },
+          {
+            "press": "Done"
+          },
+          {
+            "read": {
+              "app": "so.tilo.calendar",
+              "operation": "read",
+              "is": {
+                "events#len": 3
+              },
+              "contains": "Dentist appointment"
+            }
+          }
+        ],
+        "tl": [
+          {
+            "press": "New event"
+          },
+          {
+            "wait_for": {
+              "shown": {
+                "prefix": "Title"
+              }
+            }
+          },
+          {
+            "click": {
+              "prefix": "Title"
+            }
+          },
+          {
+            "type": "Dentist appointment"
+          },
+          {
+            "read": {
+              "app": "so.tilo.calendar",
+              "operation": "read",
+              "is": {
+                "events#len": 3
+              },
+              "contains": "Dentist appointment"
+            }
+          }
+        ]
+      }
     }
   ]
 }

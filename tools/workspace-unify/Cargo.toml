@@ -150,7 +150,6 @@ doc = false
 "calculator" = { path = "../../apps/calculator", default-features = false, features = [] }
 "calculator-model" = { path = "../../apps/calculator-model", default-features = false, features = [] }
 "calculator-model-wasm" = { path = "../../apps/calculator-model-wasm", default-features = false, features = [] }
-"calendar" = { path = "../../apps/calendar", default-features = false, features = ["default", "live"] }
 "calendar-model" = { path = "../../apps/calendar-model", default-features = false, features = ["live", "store"] }
 "calendar-model-wasm" = { path = "../../apps/calendar-model-wasm", default-features = false, features = [] }
 "calloop-0_14_4" = { package = "calloop", version = "^0.14.4", default-features = false, features = [] }
@@ -2816,7 +2815,6 @@ doc = false
 "calculator" = { path = "../../apps/calculator", default-features = false, features = [] }
 "calculator-model" = { path = "../../apps/calculator-model", default-features = false, features = [] }
 "calculator-model-wasm" = { path = "../../apps/calculator-model-wasm", default-features = false, features = [] }
-"calendar" = { path = "../../apps/calendar", default-features = false, features = ["default", "live"] }
 "calendar-model" = { path = "../../apps/calendar-model", default-features = false, features = ["live", "store"] }
 "calendar-model-wasm" = { path = "../../apps/calendar-model-wasm", default-features = false, features = [] }
 "calloop-0_14_4" = { package = "calloop", version = "^0.14.4", default-features = false, features = [] }

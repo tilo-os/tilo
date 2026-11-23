@@ -558,20 +558,20 @@ pub const KINDS: &[OriginKind] = &[
                 "Text",
                 "When it ends, as iCalendar writes the wall time.",
             ),
-            field("all_day", "Bool", "Whether it lasts whole days."),
+            people("all_day", "Bool", "Whether it lasts whole days."),
             people(
                 "timezone",
                 "Text",
                 "The zone its wall time is read in: an IANA name, `UTC` for a time written in \
                  it, or `floating` for a time written nowhere in particular.",
             ),
-            field(
+            people(
                 "day",
                 "Date",
                 "The day it starts on, its wall time's own: what a calendar sorts and counts it \
                  by.",
             ),
-            field(
+            people(
                 "end_day",
                 "Date",
                 "The day it ends on, its wall time's own; the last day it is on, where it lasts \
@@ -579,7 +579,7 @@ pub const KINDS: &[OriginKind] = &[
             ),
             people("location", "Text", "Where it is."),
             people("notes", "Text", "What it says: its `DESCRIPTION`, as text."),
-            field(
+            people(
                 "attendees",
                 "Collection<caldav.attendee>",
                 "Who organises it and who it invites.",
@@ -595,17 +595,17 @@ pub const KINDS: &[OriginKind] = &[
                 "How it repeats, as its `RRULE`'s frequency and days \
                  (`FREQ=WEEKLY;BYDAY=MO,TU`); empty for one occurrence.",
             ),
-            field(
+            people(
                 "recurrence_every",
                 "Int",
                 "One for a repeat every time it comes, two for every other, and so on.",
             ),
-            field(
+            people(
                 "recurrence_until",
                 "Option<Date>",
                 "The last day it repeats on; none for no end.",
             ),
-            field(
+            people(
                 "recurrence_count",
                 "Option<Int>",
                 "How many times it repeats; none for no count.",
@@ -630,12 +630,12 @@ pub const KINDS: &[OriginKind] = &[
                 "Text",
                 "What the app files it under; the server holds nothing of it.",
             ),
-            field(
+            people(
                 "cancelled",
                 "Bool",
                 "Whether this occurrence of a repeat is called off.",
             ),
-            field(
+            people(
                 "remind",
                 "Time",
                 "When its reminder rings, an instant; 1970 for none. Its `VALARM`.",
@@ -646,13 +646,13 @@ pub const KINDS: &[OriginKind] = &[
                 "The calendar it is in. A change to it moves the entry: written to the calendar \
                  it names, and taken out of the one it was in.",
             ),
-            field(
+            people(
                 "recurrence_of",
                 "Option<caldav.event>",
                 "The repeating entry this is one occurrence of, changed or cancelled; none for \
                  an entry of its own.",
             ),
-            field(
+            people(
                 "original_start",
                 "Text",
                 "The wall time this occurrence would have started at, where it is one of a \

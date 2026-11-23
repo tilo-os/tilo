@@ -104,9 +104,9 @@ const MAP: &[&str] = &["get", "keys"];
 /// the week it stands in, and its stored text (`iso`).
 const DAY: &[&str] = &["weekday", "day", "month", "year", "start_of_week", "iso"];
 
-/// What a moment can be asked: the day it falls on, the time of day it is then, that time as the person
-/// reads a clock, and its stored text (`iso`).
-const MOMENT: &[&str] = &["day", "time_of_day", "clock", "iso"];
+/// What a moment can be asked: the day it falls on (for the person, or in a named zone), the time of
+/// day it is then, that time as the person reads a clock, and its stored text (`iso`).
+const MOMENT: &[&str] = &["day", "day_in", "time_of_day", "clock", "iso", "wall"];
 
 const LENGTH: &[&str] = &["seconds"];
 
@@ -167,7 +167,10 @@ pub fn described(ty: &Ty) -> String {
         // A day and a moment also come from a text, by way of the global reader rather than a method of the
         // value.
         Ty::Date => format!("{} (and `Date.parse`)", DAY.join(", ")),
-        Ty::Time => format!("{} (and `Time.parse`)", MOMENT.join(", ")),
+        Ty::Time => format!(
+            "{} (and `Time.parse`, `Time.from_wall`, `wall`)",
+            MOMENT.join(", ")
+        ),
         Ty::Option(_) | Ty::Result(..) | Ty::Enum(_) => {
             "none; take it apart with `match`, such as `match x { .some(v) => v, .none => 0 }`"
                 .to_owned()

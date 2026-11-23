@@ -1135,6 +1135,12 @@ impl Runtime {
         *self.core.clipboard.borrow_mut() = Some(Box::new(host));
     }
 
+    /// The host a notice is raised to: the desktop's notifications show it, a test's record
+    /// keeps it. The notice is the record the run wrote either way; a host hears each once.
+    pub fn set_notices(&self, host: impl crate::notify::Notices + 'static) {
+        *self.core.notices.borrow_mut() = Some(Box::new(host));
+    }
+
     /// Where `model_call` goes.
     pub fn set_model_host(&self, host: impl ModelHost + 'static) {
         *self.core.models.borrow_mut() = Some(Box::new(host));
