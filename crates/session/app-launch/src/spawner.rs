@@ -1807,6 +1807,31 @@ mod tests {
         tilo_test_env::exited("the app its session no longer runs", running.pid);
     }
 
+    /// A force quit names the app by its process, not by the launch: the launch that runs it is
+    /// found, and its end is the person's, so no notice says it stopped working.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_app_ended_by_its_process_is_the_persons_own_quit() {
+        let mut spawner = Spawner::default();
+        let stuck = spawner
+            .start(&shell("exec sleep infinity", BTreeMap::new()))
+            .expect("starts");
+        assert!(
+            spawner.end_pid(stuck.pid),
+            "the launch that runs that process is found"
+        );
+        let ended = events(&spawner, 1);
+        assert_eq!(ended[0].id, stuck.id);
+        assert!(
+            ended[0].asked_to_end,
+            "the quit is the person's, never a crash"
+        );
+        assert!(
+            !spawner.end_pid(u32::MAX),
+            "a process no launch of this session runs is not one"
+        );
+    }
+
     /// A package's launch starts without forking the session, and with none of the descriptors the
     /// session holds. The session is the compositor: a fork copies every page table of a large
     /// multi-threaded process on the thread that draws the desktop, and in a desktop session it was
