@@ -65,7 +65,7 @@ pub(super) async fn shared_with(
 
 /// `serving` creates the workspace `name` and invites `device` into it: the serving device, the
 /// device it invites, the workspace and the invitation's text.
-async fn invited(
+pub(super) async fn invited(
     serving: TestHost,
     serving_cert: &DeviceCert,
     name: &str,
