@@ -105,7 +105,7 @@ pub struct SessionProvider<H: ActionProvider> {
     press: Option<Arc<dyn Press>>,
 }
 
-impl<H> Clone for SessionProvider<H> {
+impl<H: ActionProvider> Clone for SessionProvider<H> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
