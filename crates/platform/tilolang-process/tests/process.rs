@@ -30,6 +30,8 @@ use tilolang_tilo::resources::ResourceStore;
 use tilolang_tilo::runtime::Value;
 
 /// The native Notes app's notebook, carried over once by the tilolang Notes a session starts.
+#[path = "process/chat.rs"]
+mod chat;
 #[path = "process/native_notes.rs"]
 mod native_notes;
 /// A paste past a mebibyte, kept and undone.
