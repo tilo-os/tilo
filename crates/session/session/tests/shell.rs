@@ -875,27 +875,27 @@ fn the_overviews_search_finds_a_window_of_another_workspace() {
     );
     show(&mut session, "overview");
     let field = OVERVIEW_SEARCH;
+    // The window's row, as a reader meets it: the app it shows, then its name.
+    let row = "so.tilo.notes, Notes";
     until(&mut session, |session| {
         session.shell_control(field).is_some()
     });
     assert!(
-        session.shell_control("so.tilo.notes").is_none(),
+        session.shell_control(row).is_none(),
         "the workspace in front has no window to show: {:?}",
         session.accessible_labels()
     );
     press(&mut session, field);
     type_text(&mut session, "notes");
     // It is found; its row names the workspace it is in.
-    until(&mut session, |session| {
-        session.shell_control("so.tilo.notes").is_some()
-    });
+    until(&mut session, |session| session.shell_control(row).is_some());
     assert!(
         session.shell_says(&behind),
         "the row names the workspace behind: {:?}",
         session.accessible_labels()
     );
     // Choosing it goes there.
-    press(&mut session, "so.tilo.notes");
+    press(&mut session, row);
     until(&mut session, |session| shell(session).workspace == behind);
     assert!(
         crate::common::windows(&session)
