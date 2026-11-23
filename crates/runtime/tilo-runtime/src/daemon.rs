@@ -102,6 +102,7 @@ const ANSWERING: Duration = Duration::from_secs(120);
 /// this computer's. A profile named apart (a test's, a VM host's) is served by whoever started
 /// its daemon, and is only asked.
 fn running(profile: &Path) -> io::Result<Status> {
+    validate_profile(profile)?;
     let socket = native_socket(profile)?;
     if let Ok(status) = probe(&socket) {
         return Ok(status);

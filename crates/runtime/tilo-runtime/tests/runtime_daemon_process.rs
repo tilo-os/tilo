@@ -494,30 +494,39 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() -> Result<()> {
 }
 
 #[test]
-fn public_profile_and_symlinked_session_lock_are_rejected() -> Result<()> {
+fn public_profile_and_symlinked_device_lock_are_refused() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    let profile = DaemonProfile::new()?;
+    // A launcher and a daemon both refuse a profile anyone can write to, and change nothing.
+    let profile = DaemonProfile::unstarted()?;
     std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o777))?;
     let output = run_true(profile.path(), "dev.tilo.test")?;
-    ensure!(!output.status.success(), "a public profile was accepted");
+    ensure!(
+        !output.status.success(),
+        "a launcher accepted a public profile"
+    );
+    ensure!(
+        !host(profile.path()).output_locked()?.status.success(),
+        "a daemon accepted a public profile"
+    );
     ensure!(
         std::fs::metadata(profile.path())?.permissions().mode() & 0o777 == 0o777,
-        "the rejected launcher changed the profile"
+        "the rejected start changed the profile"
     );
+    // Only the daemon takes the device's lock, so it is the one that must not follow a
+    // symlink planted where the lock goes.
     std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))?;
     let target = profile.path().join("other-file");
     std::fs::write(&target, "untouched")?;
-    // The device's lock, in the profile's own state.
     let device = profile.path().join("state/tilo/device");
     std::fs::create_dir_all(&device)?;
     std::os::unix::fs::symlink(&target, device.join("holder.lock"))?;
     ensure!(
-        !run_true(profile.path(), "dev.tilo.test")?.status.success(),
-        "a symlinked session lock was accepted"
+        !host(profile.path()).output_locked()?.status.success(),
+        "a daemon took a symlinked device lock"
     );
     ensure!(
         std::fs::read_to_string(target)? == "untouched",
-        "the rejected launcher wrote through the symlinked lock"
+        "the rejected daemon wrote through the symlinked lock"
     );
     Ok(())
 }
