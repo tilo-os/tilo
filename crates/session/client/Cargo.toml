@@ -126,6 +126,11 @@ tilo-automerge-isolate.workspace = true
 # beside the wire's.
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 test-http = { path = "../../dev/test-http" }
+# The model providers a flow is answered through, on loopback: OpenAI with a key and signed
+# in, and Anthropic.
+fake-model-providers = { path = "../../dev/fake-model-providers" }
+# The relays and DNS a device's endpoint binds with, as a runtime binds its own.
+tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 tilo-server = { path = "../../server/tilo-server", features = ["web", "test-support"] }
 # The fetch proxy's host side, as the page's test of it drives it.
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net" }

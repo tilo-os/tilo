@@ -6,6 +6,7 @@
     reason = "each test binary uses a different subset of these fixtures"
 )]
 
+pub mod flow;
 pub mod https;
 
 use std::collections::BTreeSet;

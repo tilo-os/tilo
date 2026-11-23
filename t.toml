@@ -256,7 +256,15 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=pass -p tilo-agent-session --test it -E 'test(workspace_actions::flow_customer_workspaces::)'\n"
 timeout_secs = 1800
 [check.matrix]
-flow = ["customer-workspaces"]
+flow = ["customer-workspaces", "four-devices", "laptop-phone-server"]
+
+[[check.matrix.set]]
+when = { flow = "four-devices" }
+run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=pass -p tilo-session-client --test it -E 'test(flow_four_devices::)'\n"
+
+[[check.matrix.set]]
+when = { flow = "laptop-phone-server" }
+run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=pass -p tilo-session-client --test it -E 'test(flow_laptop_phone_server::)'\n"
 
 # Clippy over the workspace: one driver, one unit per crate, shared with `test` and `check` (t's
 # compiler cache keys a unit by what it was given, whichever family asked for it). Its selection

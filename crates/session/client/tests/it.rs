@@ -46,6 +46,10 @@ mod entry;
 mod fetch_proxy;
 #[path = "first_landing.rs"]
 mod first_landing;
+#[path = "flow_four_devices.rs"]
+mod flow_four_devices;
+#[path = "flow_laptop_phone_server.rs"]
+mod flow_laptop_phone_server;
 #[path = "folder_scale.rs"]
 mod folder_scale;
 #[path = "forgotten_device.rs"]
