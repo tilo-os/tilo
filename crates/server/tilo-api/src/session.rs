@@ -27,8 +27,8 @@
 //! first.
 //!
 //! A server inside a Tilo desktop serving its own person ([`Here`]) forwards nothing: the
-//! desktop answers each workspace itself, and lists its workspaces; the account's other actions
-//! go to the server its login reaches, where there is one.
+//! desktop answers each workspace itself, keeps and lists its workspaces, and asks the person's
+//! account at their server ([`AccountServer`]) for the rest, where it reaches one.
 //!
 //! The session's name is the person's: the client's name and a number of
 //! their own sessions ("Claude Code #2"), which History groups the session's
@@ -114,11 +114,43 @@ pub trait Here: Send + Sync {
     /// It holds no such workspace, the key's person is not in it, or it cannot serve it now.
     fn enter(&self, workspace: &str, key: &crate::grant_key::GrantKey) -> Result<Reached, String>;
 
-    /// The connection the account's own actions go over, when this host forwards them to the
-    /// server its login reaches: `None` for a desktop, which answers no account action itself.
-    fn connection(&self) -> Option<Arc<crate::server::Connection>> {
+    /// The person's account at their server, which makes, branches and deletes their
+    /// workspaces and lists those this host does not keep. `None` for a desktop that reaches no
+    /// server.
+    fn account(&self) -> Option<Arc<dyn AccountServer>> {
         None
     }
+
+    /// Keep `workspace`, one the person takes part in, here: a copy of it synced with its host.
+    fn keep(&self, _workspace: &str) -> Asked<'_, ()> {
+        Box::pin(async { Err(ServerError::NoAccountHere.to_string()) })
+    }
+
+    /// Stop keeping `workspace` here; the person stays in it.
+    fn leave(&self, _workspace: &str) -> Asked<'_, ()> {
+        Box::pin(async { Err(ServerError::NoAccountHere.to_string()) })
+    }
+
+    /// Join the workspace `invite` invites the person into, and keep it here: its id.
+    fn join(&self, _invite: &str) -> Asked<'_, String> {
+        Box::pin(async { Err(ServerError::NoAccountHere.to_string()) })
+    }
+
+    /// Answered the next time the workspaces this host keeps change; `None` when it cannot tell.
+    fn workspaces_changed(&self) -> Option<tilo_actions::remote::Pending<()>> {
+        None
+    }
+
+    /// Take in, once, what a desktop of this device kept of its person's workspaces itself
+    /// (`account/workspaces#import`), asked by `by`: what was taken in. A host that keeps no
+    /// device's workspaces refuses it.
+    fn import(&self, by: &tilo_actions::remote::Caller, carried: Value) -> Imported {
+        let _ = (by, carried);
+        Box::pin(std::future::ready(Err(
+            "only this computer's own Tilo service takes in a desktop's workspaces".to_owned(),
+        )))
+    }
+
     /// The device's record of every invocation it was asked for, shared with the account: `None`
     /// for a host that keeps none, whose account keeps its own.
     fn invocations(&self) -> Option<Arc<tilo_actions::remote::invocation_record::Invocations>> {
@@ -126,7 +158,26 @@ pub trait Here: Send + Sync {
     }
 }
 
-/// A workspace a desktop holds, as the account lists it: the person's own.
+/// What a [`Here`] or an [`AccountServer`] answers, once it did.
+pub type Asked<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + Send + 'a>>;
+
+/// The person's account at their server, as a host asks it for itself, signed as its device.
+pub trait AccountServer: Send + Sync {
+    /// Invoke `target` at the server (one of its own operations, `workspace.create-own`, or a
+    /// workspace's governance) with `arguments`: what it answered, or why not.
+    fn call(
+        &self,
+        target: tilo_actions::remote::RemoteActionTarget,
+        arguments: Map<String, Value>,
+    ) -> Asked<'_, Value>;
+}
+
+/// What [`Here::import`] answers once it took in a desktop's workspaces.
+pub type Imported =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>>;
+
+/// A workspace a desktop keeps, as the account lists it: the person's own.
 #[must_use]
 pub fn held(id: String, name: String) -> Workspace {
     Workspace {
@@ -136,6 +187,8 @@ pub fn held(id: String, name: String) -> Workspace {
         role: Some("owner".into()),
         labels: Labels::new(),
         unattended: false,
+        own: true,
+        kept_here: true,
         address: None,
     }
 }
@@ -166,6 +219,8 @@ pub struct Session {
     id: String,
     /// The person, as their workspaces name them.
     person: String,
+    /// The agent the key is, which acts for the person.
+    agent: String,
     /// Who its requests are by ([`Self::caller`]).
     caller: tilo_actions::remote::Caller,
     /// How the session reaches the workspaces.
@@ -244,10 +299,12 @@ impl Session {
         );
         let account = Account::new(server, grant.clone(), reach.clone(), caller.clone());
         let grant = grant.id.clone();
-        let own = McpServer::new(
+        let agent = tilo_actions::policy::key_agent_id(&cert.device_public_key);
+        let own = McpServer::for_agent(
             Joined::provider(ROOT_TREE, None, account.clone()),
             ROOT_TREE.to_owned(),
-            person.clone(),
+            &agent,
+            &person,
         )
         .with_agent_session(&id);
         Self {
@@ -256,6 +313,7 @@ impl Session {
             label,
             id,
             person,
+            agent,
             caller,
             reach,
             account,
@@ -395,7 +453,7 @@ impl Session {
         let actions = Joined::provider(workspace, Some(actions), self.account.clone());
         // A forwarded session starts no task host: only a device starts tilolang processes, in
         // their sandbox, and this server is none. Its agent works with single and batched calls.
-        McpServer::new(actions, workspace.to_owned(), self.person.clone())
+        McpServer::for_agent(actions, workspace.to_owned(), &self.agent, &self.person)
             .with_agent_session(&self.id)
     }
 

@@ -782,7 +782,7 @@ mod tests {
     }
 
     impl crate::session::Here for Device {
-        fn workspaces(&self) -> Vec<crate::session::Workspace> {
+        fn workspaces(&self, _: &tilo_user_identity::DeviceCert) -> Vec<crate::session::Workspace> {
             self.kept
                 .lock()
                 .unwrap()
@@ -791,7 +791,11 @@ mod tests {
                 .collect()
         }
 
-        fn enter(&self, workspace: &str) -> Result<crate::session::Reached, String> {
+        fn enter(
+            &self,
+            workspace: &str,
+            _: &crate::grant_key::GrantKey,
+        ) -> Result<crate::session::Reached, String> {
             Err(format!("{workspace} is not entered in this test"))
         }
 
