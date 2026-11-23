@@ -2625,6 +2625,21 @@ impl ActionProvider for RuntimeActionProvider {
             if let Err(refusal) = session.check(caller, &self.workspaces) {
                 return Pending::ready(Err(refusal.into()));
             }
+            // What an agent asks shown goes on its person's layout, where their devices show it.
+            if session.agent.is_some()
+                && let Some(shown) = super::layout::show_on_layout(
+                    &self.workspaces,
+                    &self.workspace,
+                    (session.acting(), &request),
+                    |app| {
+                        self.apps
+                            .as_ref()
+                            .map_or_else(|| app.to_owned(), |apps| apps.display_name(app))
+                    },
+                )
+            {
+                return shown;
+            }
             let runs_as = session.acting().clone();
             let invocation = request.invocation;
             self.invocations.record(
