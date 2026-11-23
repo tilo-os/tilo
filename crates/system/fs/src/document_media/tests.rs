@@ -121,7 +121,9 @@ async fn the_empty_attachment_is_readable_only_where_it_was_stored() {
 }
 
 #[tokio::test]
-async fn ranged_reads_after_a_restart_read_only_the_range() {
+async fn a_restarted_mount_reads_ranges_whole_and_trusts_only_the_ranges_it_reads() {
+    use std::io::{Seek, SeekFrom, Write};
+
     let dir = tempfile::tempdir().unwrap();
     let photos = scope("workspace-1", "so.tilo.photos");
     let data = pattern(9 * 1024 * 1024 + 12_345);
@@ -173,23 +175,9 @@ async fn ranged_reads_after_a_restart_read_only_the_range() {
     }
     assert_eq!(store.local(hash).await.unwrap().as_ref(), data);
     assert!(!store.is_cached(hash));
-    store.shutdown().await.unwrap();
-}
 
-#[tokio::test]
-async fn cold_ranged_reads_verify_only_selected_chunk_groups() {
-    use std::io::{Seek, SeekFrom, Write};
-
-    let dir = tempfile::tempdir().unwrap();
-    let photos = scope("workspace-1", "so.tilo.photos");
-    let data = pattern(9 * 1024 * 1024 + 12_345);
-    let hash = {
-        let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
-        let media = DocumentMedia::new(Arc::clone(&store));
-        let hash = media.store(&photos, data.clone()).await.unwrap();
-        store.shutdown().await.unwrap();
-        hash
-    };
+    // A range read verifies the groups it reads: the good byte before the damage still
+    // reads, the damaged one does not, and nothing claims the blob on those reads.
     let damaged = data.len() - 100;
     let path = dir.path().join("files/data").join(hash.to_hex());
     let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
@@ -197,7 +185,6 @@ async fn cold_ranged_reads_verify_only_selected_chunk_groups() {
     file.write_all(&[data[damaged] ^ 0xff]).unwrap();
     file.sync_all().unwrap();
     drop(file);
-
     let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
     let media = DocumentMedia::new(Arc::clone(&store));
     assert_eq!(
