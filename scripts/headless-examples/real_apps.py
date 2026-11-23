@@ -317,6 +317,20 @@ def catalogue(ask, needle: str = "") -> list:
     raise Failed(f"the listing for {needle!r} ran past 256 pages")
 
 
+def record(ask, workspace: str, app: str, record_id: str, wait_ms: int | None = None) -> dict:
+    """The record `record_id` of `app` in `workspace` as the session's record API reads it, held
+    up to `wait_ms` for a write: its readings (`records`, `revision`). `ask` sends one frame and
+    answers the frame that came back."""
+    read = {"workspace": workspace, "app": app, "record": record_id}
+    if wait_ms:
+        read["wait_ms"] = wait_ms
+    answer = ask(frame({"ResourceRead": {"correlation": 1, "read": read}}))
+    result = answer["message"]["ResourceReading"]["result"]
+    if "Ok" not in result:
+        raise Refused("read", refusal(result.get("Err", result)))
+    return json.loads(result["Ok"])
+
+
 def address(row: dict) -> tuple[str, str] | None:
     """The resource and action a catalogue row invokes, or None for a row of a resource alone."""
     found = (row.get("action") or {}).get("address")

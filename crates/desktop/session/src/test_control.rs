@@ -325,7 +325,6 @@ enum Op {
     ProcessMemory,
     /// The questions waiting for the person, as their sheets show them.
     Questions,
-    ResourceRead,
     Scroll,
     SearchRows,
     Snapshot,
@@ -340,7 +339,7 @@ enum Op {
 
 impl Op {
     /// Every op the protocol answers, in the order the refusal names them.
-    const ALL: [Self; 28] = [
+    const ALL: [Self; 27] = [
         Self::ClickAt,
         Self::ClickNamed,
         Self::Drag,
@@ -358,7 +357,6 @@ impl Op {
         Self::ProfileStop,
         Self::ProvisionTestIdentity,
         Self::Questions,
-        Self::ResourceRead,
         Self::Scroll,
         Self::SearchRows,
         Self::Snapshot,
@@ -391,7 +389,6 @@ impl Op {
             "profile_stop" => Self::ProfileStop,
             "provision_test_identity" => Self::ProvisionTestIdentity,
             "questions" => Self::Questions,
-            "resource_read" => Self::ResourceRead,
             "scroll" => Self::Scroll,
             "search_rows" => Self::SearchRows,
             "snapshot" => Self::Snapshot,
@@ -426,7 +423,6 @@ impl Op {
             Self::ProfileStop => "profile_stop",
             Self::ProvisionTestIdentity => "provision_test_identity",
             Self::Questions => "questions",
-            Self::ResourceRead => "resource_read",
             Self::Scroll => "scroll",
             Self::SearchRows => "search_rows",
             Self::Snapshot => "snapshot",
@@ -451,7 +447,6 @@ impl Op {
                 | Self::ProfileStart
                 | Self::ProfileStatus
                 | Self::ProfileStop
-                | Self::ResourceRead
                 | Self::StateDump
                 | Self::Watch
                 | Self::Windows
@@ -499,7 +494,7 @@ fn not_this_api(who: Audience, op: Op) -> Json {
         &format!(
             "this control socket serves action frames, the state the session shows and its \
              own diagnostics (`process_memory`, `profile_start`, `profile_status`, \
-             `profile_stop`, `resource_read`, `state_dump`, `watch` and `windows`), not \
+             `profile_stop`, `state_dump`, `watch` and `windows`), not \
              `{}`; synthetic input and screenshots exist only on a development session's \
              test-control socket",
             op.name()
@@ -956,8 +951,8 @@ fn stream_state(writer: &Writer, ctx: &Context, shared: &Shared) -> Watching {
     Watching { stop }
 }
 
-/// The answer to what `op` asks only of the actions and the change signal, when it asks of them:
-/// answered where the connection asked, so a wait holds no frame.
+/// The answer to `watch`, which asks only of the change signal: answered where the connection
+/// asked, so the stream holds no frame.
 fn asked_here(
     op: Op,
     request: &Json,
@@ -966,66 +961,7 @@ fn asked_here(
     ctx: &Context,
     shared: &Shared,
 ) -> Option<Json> {
-    Some(match op {
-        Op::Watch => watch(request, writer, watching, ctx, shared),
-        Op::ResourceRead => resource_read(request, &shared.actions, ctx),
-        _ => return None,
-    })
-}
-
-/// The answer to `resource_read`: the records `records` of `app` in `workspace` (the one in front
-/// when unnamed), read through the record shared as this person reads them, once they differ from
-/// `after` (the `revision` an earlier answer gave) or `wait_ms` passed: as every reader of a
-/// record is answered ([`tilo_actions::remote::ResourceReadings::readable`]). Each record is watched
-/// before it is read, so a reader holding a copy is woken by the next write to any of them.
-fn resource_read(request: &Json, actions: &Actions, ctx: &Context) -> Json {
-    use tilo_actions::remote::{ResourceAddress, ResourceAsk};
-    let Some(app) = request.get("app").and_then(Json::as_str) else {
-        return refusal("parse_error", "`resource_read` takes `app` and `records`");
-    };
-    let workspace = request.get("workspace").and_then(Json::as_str).map_or_else(
-        || {
-            ctx.scope.as_ref().map_or_else(
-                || actions.front.known(HOST_WAIT).unwrap_or_default(),
-                |scope| scope.workspace.clone(),
-            )
-        },
-        str::to_owned,
-    );
-    let asks: Vec<ResourceAsk> = request
-        .get("records")
-        .and_then(Json::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Json::as_str)
-        .map(|record| ResourceAsk {
-            address: ResourceAddress {
-                workspace: workspace.clone(),
-                app: app.to_owned(),
-                record: record.to_owned(),
-            },
-            joined: false,
-        })
-        .collect();
-    let after = request.get("after").and_then(Json::as_str);
-    let deadline = wait_deadline(request.get("wait_ms").and_then(Json::as_u64));
-    let Some(reads) = actions.host.resource_reads() else {
-        return refusal(
-            "unavailable",
-            tilo_actions::remote::RESOURCE_READS_UNAVAILABLE,
-        );
-    };
-    let caller = actions.caller(ctx).in_workspace(workspace);
-    match tilo_actions::remote::read_resources(reads.as_ref(), &caller, &asks, after, deadline)
-        .map_err(|error| refusal(error.code(), &error.to_string()))
-        .and_then(|readings| {
-            readings
-                .readable()
-                .map_err(|error| refusal("unreadable", &error))
-        }) {
-        Ok(answer) => json!({ "answer": answer }),
-        Err(refused) => refused,
-    }
+    (op == Op::Watch).then(|| watch(request, writer, watching, ctx, shared))
 }
 
 /// Start or stop streaming the session's state to a connection (`watch`).
@@ -1453,9 +1389,6 @@ struct Actions {
 /// How long a host may take to answer a request at all.
 const HOST_WAIT: Duration = Duration::from_secs(30);
 
-/// The longest a control request waits: what `tilo-control` says a desktop caps a wait at.
-const MAX_WAIT: Duration = Duration::from_secs(30);
-
 /// The workspace in front, as the loop last served the session, and the wait for a request that
 /// arrives before the session holds one.
 ///
@@ -1629,14 +1562,6 @@ fn clicked_named(request: &Json, session: &Session<'_>) -> Json {
         Ok(()) => json!({"ok": {}}),
         Err(error) => refusal("unknown_target", &error),
     }
-}
-
-/// When a wait of `wait_ms` started now ends, capped at what a control request waits.
-fn wait_deadline(wait_ms: Option<u64>) -> Instant {
-    let wait = Duration::from_millis(wait_ms.unwrap_or(0)).min(MAX_WAIT);
-    Instant::now()
-        .checked_add(wait)
-        .unwrap_or_else(Instant::now)
 }
 
 /// `request` 's `name` field, when it is a number.

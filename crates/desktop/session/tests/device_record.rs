@@ -25,34 +25,18 @@ use tilo_server_protocol::workspaces::Role;
 /// The devices Settings lists on `device`: the record of the person's devices, read through the
 /// record API of the device's session, as every list of them reads it.
 fn listed(device: &Device) -> Vec<Value> {
-    use tilo_actions::remote::{RemoteActionMessage, ResourceReadRequest};
     use tilo_server_protocol::devices::{DEVICES, FleetRecords, fleet, record_value};
     let person = device.cert.user_public_key;
-    let answer = device.frame(RemoteActionMessage::ResourceRead {
-        correlation: 1,
-        on_behalf_of: None,
-        read: ResourceReadRequest {
-            workspace: tilo_action_policy::roles::person_workspace_id(&person),
-            app: DEVICES.0.to_owned(),
-            record: DEVICES.1.to_owned(),
-            joined: false,
-            after: None,
-            wait_ms: None,
-            document: false,
-            listing: false,
-        },
-    });
-    let RemoteActionMessage::ResourceReading {
-        result: Ok(read), ..
-    } = answer
-    else {
-        panic!(
-            "{} reads the person's devices: {answer:?}\n{}",
-            device.label,
-            device.diagnostic()
-        );
-    };
-    let read: Value = serde_json::from_str(&read).expect("a reading is JSON");
+    let workspace = tilo_action_policy::roles::person_workspace_id(&person);
+    let read = device
+        .read(&workspace, DEVICES, None, None)
+        .unwrap_or_else(|error| {
+            panic!(
+                "{} reads the person's devices: {error}\n{}",
+                device.label,
+                device.diagnostic()
+            )
+        });
     let records = FleetRecords {
         devices: record_value(&read),
         ..FleetRecords::default()

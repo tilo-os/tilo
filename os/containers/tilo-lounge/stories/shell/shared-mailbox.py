@@ -37,6 +37,7 @@ from story import (  # noqa: E402
     workspaces,
 )
 from story import stand_in as stands_in  # noqa: E402
+from real_apps import record as read_record  # noqa: E402
 
 WORKSPACE = "The lab"
 JOIN_INVITATION = "TILO_SHELL_JOIN_INVITATION_FILE"
@@ -189,8 +190,9 @@ def steps(story: Story) -> None:
         """What a shell reads of the workspace's accounts, and what its Mail shows of them, kept
         beside the story when Mail shows none."""
         try:
-            record = one.session.control({"op": "resource_read", "app": ACCOUNTS_OWNER,
-                                          "records": [ACCOUNTS_RECORD], "wait_ms": 2000})
+            shown = front(one) or {}
+            record = read_record(one.session.control, shown.get("id", ""), ACCOUNTS_OWNER,
+                                 ACCOUNTS_RECORD, wait_ms=2000)
         except Exception as error:  # noqa: BLE001 - the refusal is the evidence
             record = {"refused": str(error)}
         story.note(f"{one.key}-accounts-record", record)

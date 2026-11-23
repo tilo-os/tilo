@@ -47,22 +47,25 @@ fn a_made_workspace_is_on_the_service_before_its_first_record_write() {
     let workspace = laptop.showing().expect("the workspace Ada's shell made");
     // Held as this device's member: the service took the workspace the session made.
     laptop.wait_holding(&workspace);
-    let answer = laptop.ask(&json!({
-        "op": "resource_read",
-        "workspace": workspace,
-        "app": tilo_desktop_model::ownership::DESKTOP_APP,
-        "records": [tilo_desktop_model::ownership::DESKTOP_DOCUMENT],
-    }));
+    let answer = laptop
+        .read(
+            &workspace,
+            (
+                tilo_desktop_model::ownership::DESKTOP_APP,
+                tilo_desktop_model::ownership::DESKTOP_DOCUMENT,
+            ),
+            None,
+            None,
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "{} reads the made workspace's layout: {error}\n{}",
+                laptop.label,
+                laptop.diagnostic()
+            )
+        });
     assert!(
-        answer.get("err").is_none(),
-        "{} reads the made workspace's layout: {answer}\n{}",
-        laptop.label,
-        laptop.diagnostic()
-    );
-    assert!(
-        !answer["answer"]["records"]
-            .as_array()
-            .is_none_or(Vec::is_empty),
+        !answer["records"].as_array().is_none_or(Vec::is_empty),
         "the layout record the session wrote is the service's: {answer}\n{}",
         laptop.diagnostic()
     );

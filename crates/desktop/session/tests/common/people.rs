@@ -1610,6 +1610,7 @@ impl Device {
             .get("wait_ms")
             .or_else(|| request.pointer("/message/Invoke/wait_ms"))
             .or_else(|| request.pointer("/message/Observe/wait_ms"))
+            .or_else(|| request.pointer("/message/ResourceRead/read/wait_ms"))
             .and_then(Value::as_u64)
             .map_or(Duration::ZERO, Duration::from_millis);
         stream
@@ -1951,6 +1952,36 @@ impl Device {
                 panic!("{} answered {asked} with {answer}: {error}", self.label)
             })
             .message
+    }
+
+    /// The record `record` of `app` in `workspace`, read through the record API of this device's
+    /// session as every reader of it reads it, once it moved past `after` or `wait_ms` passed:
+    /// the readings (`records`, `revision`), or what the read was refused with.
+    pub fn read(
+        &self,
+        workspace: &str,
+        (app, record): (&str, &str),
+        after: Option<&str>,
+        wait_ms: Option<u32>,
+    ) -> Result<Value, tilo_actions::remote::ActionCallError> {
+        let answer = self.frame(RemoteActionMessage::ResourceRead {
+            correlation: 1,
+            on_behalf_of: None,
+            read: tilo_actions::remote::ResourceReadRequest {
+                workspace: workspace.to_owned(),
+                app: app.to_owned(),
+                record: record.to_owned(),
+                joined: false,
+                after: after.map(str::to_owned),
+                wait_ms,
+                document: false,
+                listing: false,
+            },
+        });
+        let RemoteActionMessage::ResourceReading { result, .. } = answer else {
+            panic!("{} answered a read with {answer:?}", self.label);
+        };
+        result.map(|read| serde_json::from_str(&read).expect("a reading is JSON"))
     }
 
     /// Map a window of `app` called `title` on this device, as an app starting its own

@@ -29,18 +29,32 @@ fn agents_held(device: &Device) -> Vec<String> {
 /// The id and name of each agent the workspace's copy of the agents record holds on `device`.
 fn held_agents(device: &Device) -> Vec<(String, String)> {
     let record = collab_types::workspace_document_id("tilo.workspace.agent");
-    let answer = device.ask(&json!({
-        "op": "resource_read",
-        "app": "so.tilo.assistant",
-        "records": [record],
-        "wait_ms": 0,
-    }));
+    let answer = in_front(device, ("so.tilo.assistant", &record));
     let mut agents = Vec::new();
-    agents_in(
-        &answer["answer"]["records"][0]["value"]["agents"],
-        &mut agents,
-    );
+    agents_in(&answer["records"][0]["value"]["agents"], &mut agents);
     agents
+}
+
+/// The record `route` of the workspace in front on `device`, as its session's record API reads it.
+fn in_front(device: &Device, route: (&str, &str)) -> Value {
+    let workspace = device.showing().unwrap_or_else(|| {
+        panic!(
+            "{} shows a workspace: {}",
+            device.label,
+            device.diagnostic()
+        )
+    });
+    device
+        .read(&workspace, route, None, None)
+        .unwrap_or_else(|error| {
+            panic!(
+                "{} reads {}/{} of {workspace}: {error}\n{}",
+                device.label,
+                route.0,
+                route.1,
+                device.diagnostic()
+            )
+        })
 }
 
 /// The id and name of every agent `value` holds, however the record keys them.
@@ -62,13 +76,7 @@ fn agents_in(value: &Value, agents: &mut Vec<(String, String)>) {
 /// send landed as.
 fn wait_for_chat_holding(device: &Device, wanted: &[&str]) {
     tilo_test_env::wait_until(Awaited(device, format!("holds {wanted:?} in Chat")), || {
-        let answer = device.ask(&json!({
-            "op": "resource_read",
-            "app": "so.tilo.chat",
-            "records": [""],
-            "wait_ms": 0,
-        }));
-        let held = answer["answer"]["records"].to_string();
+        let held = in_front(device, ("so.tilo.chat", ""))["records"].to_string();
         wanted.iter().all(|needle| held.contains(needle))
     });
 }

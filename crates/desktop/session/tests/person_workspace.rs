@@ -39,20 +39,16 @@ fn own_workspace(person: &Person) -> String {
 /// The record `record` of `app` in `workspace` as this device's workspace service holds it, read
 /// outside its app: `None` while the workspace holds none of it, or it is still arriving.
 fn held(device: &Device, workspace: &str, (app, record): (&str, &str)) -> Option<Value> {
-    let answer = device.ask(&json!({
-        "op": "resource_read",
-        "workspace": workspace,
-        "app": app,
-        "records": [record],
-        "wait_ms": 250,
-    }));
-    assert!(
-        answer.get("err").is_none(),
-        "{} reads {app}/{record} of {workspace}: {answer}\n{}",
-        device.label,
-        device.diagnostic()
-    );
-    let held = answer["answer"]["records"].as_array()?.first()?;
+    let answer = device
+        .read(workspace, (app, record), None, Some(250))
+        .unwrap_or_else(|error| {
+            panic!(
+                "{} reads {app}/{record} of {workspace}: {error}\n{}",
+                device.label,
+                device.diagnostic()
+            )
+        });
+    let held = answer["records"].as_array()?.first()?;
     held.get("value").cloned()
 }
 
