@@ -22348,6 +22348,7 @@ dependencies = [
  "tilo-media",
  "tilo-mime",
  "tilo-paint-stream",
+ "tilo-paint-strokes",
  "tilo-paths",
  "tilo-platform-caps",
  "tilo-presentation",
