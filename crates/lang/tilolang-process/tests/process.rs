@@ -2617,7 +2617,7 @@ fn a_form_asking_for_a_required_text_takes_it_before_it_answers() {
         tags_of(&host, &note).is_empty(),
         "submitting nothing files nothing"
     );
-    type_into(&mut window, "form~n", "travel");
+    type_into(&mut window, "form~name", "travel");
     settle(&mut host, &mut window);
     assert!(
         window.form.as_ref().is_some_and(|form| form.ready),
