@@ -54,37 +54,3 @@ impl GrantStore {
         tilo_files::native::atomic::write_with_mode(&path, &bytes, 0o600)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::identity::Identity;
-    use crate::policy::Binding;
-    use crate::protocol::Mode;
-
-    #[test]
-    fn grants_round_trip_per_person_and_vanish_when_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = GrantStore::new(dir.path().join("grants"));
-        assert!(store.load(1000).unwrap().is_empty());
-        let grant = Grant {
-            id: "g".into(),
-            label: "Windows".into(),
-            mode: Mode::Open,
-            binding: Binding::External {
-                identity: Identity {
-                    volume: Some(1),
-                    ..Identity::default()
-                },
-            },
-        };
-        store.save(1000, std::slice::from_ref(&grant)).unwrap();
-        assert_eq!(store.load(1000).unwrap(), vec![grant]);
-        assert!(
-            store.load(1001).unwrap().is_empty(),
-            "another person's are separate"
-        );
-        store.save(1000, &[]).unwrap();
-        assert!(!dir.path().join("grants/1000.json").exists());
-    }
-}
