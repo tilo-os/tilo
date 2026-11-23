@@ -77,7 +77,10 @@ fn selected_website_session_preparation_is_separate_authenticated_ownership() {
         .unwrap();
     let selected = account_credentials::CredentialStore::for_root(Some(root.path().join("target")))
         .service_session(
-            &declaration.sessions[0].account("selected-session-operation"),
+            &imager_backend::setup::service_sessions::account(
+                &declaration.sessions[0],
+                "selected-session-operation",
+            ),
             identity.public_key(),
             "selected-session-operation",
         )

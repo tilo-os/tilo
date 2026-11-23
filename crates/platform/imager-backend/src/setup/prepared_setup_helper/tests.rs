@@ -650,3 +650,123 @@ fn unseal_handoff_refuses_a_sidecar_for_another_package_before_any_tpm_operation
     assert!(error.to_string().contains("another package"));
     assert!(output.is_empty());
 }
+
+#[test]
+fn helper_receipt_with_all_carried_units_round_trips_with_shared_wire_shape() {
+    use sha2::{Digest, Sha256};
+
+    let key = [7u8; 32];
+    let device_key = [8u8; 32];
+    let record_sha256 = [9u8; 32];
+    let certificate_sha256 = [10u8; 32];
+    let fleet_sha256 = [11u8; 32];
+    let current_identity: tilo_identity::enrolled_transport::CurrentDeviceDeclaration =
+        serde_json::from_value(serde_json::json!({
+            "schema": 1,
+            "user_public_key": key,
+            "device_public_key": device_key,
+            "record_name": "primary.json",
+            "record_sha256": record_sha256,
+            "certificate_sha256": certificate_sha256,
+            "fleet_sha256": fleet_sha256,
+        }))
+        .unwrap();
+    let limits = crate::setup::portable_transfer::Limits {
+        plaintext_bytes: 1_048_576,
+        entries: 64,
+        metadata_bytes: 65_536,
+    };
+    let app_op = "11111111-1111-4111-8111-111111111111";
+    let browser_op = "22222222-2222-4222-8222-222222222222";
+    let plan = browser_continuity::Plan::new(
+        "setup-binding".into(),
+        key,
+        vec![
+            browser_continuity::Profile::new(
+                "a".repeat(64),
+                browser_continuity::Provider::Chromium,
+                vec!["browser".into(), "Default".into()],
+                true,
+                false,
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap();
+    let plan_sha256: [u8; 32] = Sha256::digest(plan.encode().unwrap()).into();
+    let receipt = Receipt {
+        identity_public_key: key,
+        account_count: 1,
+        current_identity: Some(current_identity),
+        service_sessions: Some(crate::setup::service_sessions::Declaration {
+            schema: 1,
+            consumer_protocol: 2,
+            sessions: vec![crate::setup::service_sessions::SelectedSession {
+                id: "discord-session".into(),
+                service: browser_continuity::sessions::Service::Discord,
+            }],
+            sealed_bytes: 1024,
+            ciphertext_sha256: [3; 32],
+        }),
+        device_label: "Ada's laptop".into(),
+        portable_home: Some(PortableHomeDeclaration {
+            schema: 1,
+            setup_binding: "setup-binding".into(),
+            selection: crate::setup::prepared_setup::PortableHomeSelection::FullHome,
+            applications: true,
+        }),
+        portable_flatpak: Some(crate::setup::flatpak_transfer::portable::Expectation {
+            operation: app_op.into(),
+            filename: format!("applications-{app_op}.sealed"),
+            setup_binding: "setup-binding".into(),
+            sealed_bytes: 512,
+            plaintext_bytes: 256,
+            entries: 4,
+            ciphertext_sha256: [4; 32],
+            limits,
+            kind: crate::setup::flatpak_transfer::portable::Applications {
+                consumer_protocol: 2,
+                manifest_sha256: [5; 32],
+            },
+        }),
+        browser: Some(crate::setup::prepared_setup::BrowserHandoff {
+            plan,
+            payload: crate::setup::browser_transfer::Expectation {
+                operation: browser_op.into(),
+                filename: format!("browser-{browser_op}.sealed"),
+                setup_binding: "setup-binding".into(),
+                sealed_bytes: 512,
+                plaintext_bytes: 256,
+                entries: 2,
+                ciphertext_sha256: [6; 32],
+                limits,
+                kind: crate::setup::browser_transfer::Browser { plan_sha256 },
+            },
+        }),
+        mail: vec![crate::setup::account_transfer::ThunderbirdImportReceipt {
+            accounts: vec![crate::setup::account_transfer::ThunderbirdAccountReceipt {
+                source_id: "account-1".into(),
+                created: true,
+                needs_reconnect: false,
+                folders: vec![crate::setup::account_transfer::ThunderbirdFolderReceipt {
+                    source_id: "folder-1".into(),
+                    messages: 12,
+                    bytes: 4096,
+                    local_only: false,
+                }],
+            }],
+            address_books: 1,
+            calendars: 2,
+        }],
+    };
+    receipt.validate().unwrap();
+    let bytes = serde_json::to_vec(&receipt).unwrap();
+    let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(wire["portable_flatpak"].get("schema").is_none());
+    assert!(wire["portable_flatpak"].get("purpose").is_none());
+    assert_eq!(wire["portable_flatpak"]["kind"]["consumer_protocol"], 2);
+    assert!(wire["browser"]["payload"].get("schema").is_none());
+    assert!(wire["browser"]["payload"].get("purpose").is_none());
+    assert_eq!(wire["service_sessions"]["consumer_protocol"], 2);
+    assert_eq!(serde_json::from_slice::<Receipt>(&bytes).unwrap(), receipt);
+}

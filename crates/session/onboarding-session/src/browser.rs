@@ -380,20 +380,20 @@ pub mod fixtures {
         let operation = uuid::Uuid::new_v4().to_string();
         let declaration = BrowserDeclaration {
             payload: crate::prepared::BrowserPayload {
-                schema: 1,
                 filename: format!("browser-{operation}.sealed"),
                 operation,
-                purpose: "browser_profiles".into(),
                 setup_binding: plan.setup_binding.clone(),
                 sealed_bytes: 18,
                 plaintext_bytes: 16,
                 entries: 2,
                 ciphertext_sha256: [2; 32],
-                plan_sha256: Sha256::digest(plan.encode().unwrap()).into(),
                 limits: crate::prepared::ApplicationLimits {
                     plaintext_bytes: 1024,
                     entries: 64,
                     metadata_bytes: 1024,
+                },
+                kind: prepared_setup_model::Browser {
+                    plan_sha256: Sha256::digest(plan.encode().unwrap()).into(),
                 },
             },
             plan,
@@ -698,5 +698,20 @@ mod tests {
                 .unwrap(),
             b"fixture ciphertext"
         );
+        let mut with_unknown =
+            serde_json::to_value(&pending.context().declaration.payload).unwrap();
+        with_unknown["unexpected"] = serde_json::json!(true);
+        std::fs::write(
+            root(home.path()).join("expectation.json"),
+            serde_json::to_vec(&with_unknown).unwrap(),
+        )
+        .unwrap();
+        let mut refused = Pending::open(
+            home.path().into(),
+            reopened.context().identity.clone(),
+            reopened.context().declaration.clone(),
+        )
+        .unwrap();
+        assert!(refused.run_with("review", &helper).is_err());
     }
 }

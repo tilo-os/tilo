@@ -7867,6 +7867,7 @@ dependencies = [
  "mime_guess",
  "os-actions",
  "package-store",
+ "prepared-setup-model",
  "reqwest",
  "runtime-bundle",
  "runtime-collab",
@@ -13063,6 +13064,17 @@ dependencies = [
  "either",
  "ipnet",
  "num-traits",
+]
+
+[[package]]
+name = "prepared-setup-model"
+version = "0.1.0"
+dependencies = [
+ "browser-continuity",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -20774,6 +20786,7 @@ dependencies = [
  "launcher",
  "libc",
  "os-actions",
+ "prepared-setup-model",
  "rand_core 0.10.0",
  "rustix 1.1.6",
  "serde",
@@ -28795,6 +28808,7 @@ dependencies = [
  "ppv-lite86",
  "precomputed-hash",
  "prefix-trie",
+ "prepared-setup-model",
  "presser",
  "prettyplease 0.2.37",
  "prettyplease 0.3.0",

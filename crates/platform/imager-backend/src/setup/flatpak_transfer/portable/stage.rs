@@ -11,7 +11,6 @@ use crate::setup::{
 use crate::setup::{migration::PinnedDirectory, migration_review::SourceInventory};
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, OpenOptions, OpenOptionsExt};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{ffi::OsStr, io::Write, sync::atomic::AtomicBool};
 use std::{
@@ -37,22 +36,7 @@ pub struct StagedApplications {
     manifest_sha256: [u8; 32],
     consumer_protocol: u32,
 }
-/// A sealed applications unit: the signed system apps and their closure.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Applications {
-    pub consumer_protocol: u32,
-    pub manifest_sha256: [u8; 32],
-}
-impl crate::setup::portable_transfer::UnitKind for Applications {
-    const PURPOSE: Purpose = Purpose::FlatpakApplications;
-    const PREFIX: &'static str = "applications";
-    const INVALID: &'static str = "Invalid portable application expectation";
-    fn within_bounds(expectation: &Expectation) -> bool {
-        matches!(expectation.kind.consumer_protocol, 1 | 2)
-    }
-}
-pub type Expectation = crate::setup::portable_transfer::Expectation<Applications>;
+pub use prepared_setup_model::{Applications, ApplicationsExpectation as Expectation};
 impl PortableFlatpakSource {
     /// Stage only actual selected apps and create-usb's exported runtime/extension
     /// closure. The caller owns this explicitly granted temporary directory and

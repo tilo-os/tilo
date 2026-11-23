@@ -170,9 +170,7 @@ pub mod fixtures {
         std::fs::set_permissions(&metadata_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let ciphertext = b"fixture ciphertext";
         let declaration = PortableApplications {
-            schema: 1,
             operation: operation.clone(),
-            purpose: "flatpak_applications".into(),
             filename: format!("applications-{operation}.sealed"),
             setup_binding: "a".repeat(256),
             sealed_bytes: u64::try_from(ciphertext.len()).unwrap(),
@@ -181,11 +179,14 @@ pub mod fixtures {
                 .saturating_add(state_bytes),
             entries,
             ciphertext_sha256: Sha256::digest(ciphertext).into(),
-            manifest_sha256: Sha256::digest(&metadata).into(),
             limits: crate::prepared::ApplicationLimits {
                 plaintext_bytes: 1024 * 1024,
                 entries: 128,
                 metadata_bytes: 64 * 1024,
+            },
+            kind: prepared_setup_model::Applications {
+                consumer_protocol: 2,
+                manifest_sha256: Sha256::digest(&metadata).into(),
             },
         };
         let signer = tilo_identity::store::load_from_path(identity.join("primary.json")).unwrap();
@@ -269,7 +270,7 @@ mod tests {
             Pending::open(home.path().into(), identity.clone(), declaration.clone()).unwrap();
         assert!(!reopened.pending());
         let mut changed = declaration.clone();
-        changed.manifest_sha256 = [9; 32];
+        changed.kind.manifest_sha256 = [9; 32];
         assert!(Pending::open(home.path().into(), identity, changed).is_err());
         let bytes = std::fs::read(root(home.path()).join(&declaration.filename)).unwrap();
         assert_eq!(bytes, b"fixture ciphertext");
@@ -283,9 +284,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            declaration.manifest_sha256,
+            declaration.kind.manifest_sha256,
             <[u8; 32]>::from(Sha256::digest(&selected))
         );
+        let mut with_unknown = serde_json::to_value(&declaration).unwrap();
+        with_unknown["unexpected"] = serde_json::json!(true);
+        std::fs::write(
+            root(home.path()).join("expectation.json"),
+            serde_json::to_vec(&with_unknown).unwrap(),
+        )
+        .unwrap();
+        assert!(reopened.run_with("review", &helper).is_err());
         std::fs::remove_file(root(home.path()).join("expectation.json")).unwrap();
         symlink(
             home.path().join("inert-helper"),

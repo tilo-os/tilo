@@ -711,7 +711,10 @@ fn prepared_setup_authenticates_separate_selected_session_before_any_adoption() 
     review.import_service_sessions(&target, PASSWORD).unwrap();
     let selected = account_credentials::CredentialStore::for_root(Some(target))
         .service_session(
-            &declaration.sessions[0].account("selected-operation"),
+            &crate::setup::service_sessions::account(
+                &declaration.sessions[0],
+                "selected-operation",
+            ),
             identity.public_key(),
             "selected-operation",
         )

@@ -1,7 +1,10 @@
 //! Separately consented, bounded browser data carried without a home grant.
 use crate::browser_selection::SelectedSources;
 use browser_continuity::{PLAN_FILE, PROFILES_DIRECTORY, Plan};
-use serde::{Deserialize, Serialize};
+use prepared_setup_model::{
+    BROWSER_MAX_ARCHIVE_BYTES as MAX_ARCHIVE_BYTES, BROWSER_MAX_ENTRIES as MAX_ENTRIES,
+    BROWSER_MAX_METADATA as MAX_METADATA,
+};
 use sha2::{Digest, Sha256};
 use std::{io, os::unix::fs::PermissionsExt, path::Path, sync::atomic::AtomicBool};
 use tilo_files::native::atomic::{Privacy, PublishMode, StorageDirectory};
@@ -12,45 +15,9 @@ use super::{
     portable_transfer::{ExportReview, ImportReview, Limits, Purpose, VerifiedTree},
 };
 
-pub const MAX_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_ARCHIVE_BYTES: u64 = MAX_BYTES + 1024 * 1024;
-const MAX_ENTRIES: usize = 128;
-const MAX_METADATA: usize = 1024 * 1024;
-
-/// A sealed browser unit: the authenticated plan's profiles, within fixed bounds.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Browser {
-    pub plan_sha256: [u8; 32],
-}
-impl super::portable_transfer::UnitKind for Browser {
-    const PURPOSE: Purpose = Purpose::BrowserProfiles;
-    const PREFIX: &'static str = "browser";
-    const INVALID: &'static str = "Invalid browser transfer expectation";
-    fn within_bounds(expectation: &Expectation) -> bool {
-        expectation.limits.plaintext_bytes <= MAX_ARCHIVE_BYTES
-            && expectation.limits.entries <= MAX_ENTRIES
-            && expectation.limits.metadata_bytes <= MAX_METADATA
-    }
-}
-pub type Expectation = super::portable_transfer::Expectation<Browser>;
-impl Expectation {
-    /// # Errors
-    /// Refuses a different setup, identity, selection or authenticated plan digest.
-    pub fn validate_plan(&self, plan: &Plan) -> io::Result<()> {
-        self.validate()?;
-        let bytes = plan.encode().map_err(io::Error::other)?;
-        if plan.profiles.is_empty()
-            || plan.setup_binding != self.setup_binding
-            || digest(&bytes) != self.kind.plan_sha256
-        {
-            return Err(changed(
-                "Browser transfer differs from its authenticated plan",
-            ));
-        }
-        Ok(())
-    }
-}
+pub use prepared_setup_model::{
+    BROWSER_MAX_BYTES as MAX_BYTES, Browser, BrowserExpectation as Expectation,
+};
 
 pub struct ExportRequest<'a> {
     pub staging_parent: &'a Path,

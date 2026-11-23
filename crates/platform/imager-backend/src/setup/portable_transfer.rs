@@ -16,56 +16,15 @@ use zeroize::Zeroizing;
 pub mod acl;
 pub mod archive;
 pub(crate) mod codec;
-mod expectation;
 mod process;
 mod progress;
-pub use expectation::{Expectation, UnitKind};
+pub use prepared_setup_model::{Expectation, Limits, Purpose, UnitKind};
 pub use progress::{ArchivePhase, ArchiveProgress, Observer};
 mod source_sizes;
 mod sparse;
 use source_sizes::source_sizes;
 #[cfg(test)]
 mod tests;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Purpose {
-    Home,
-    PreparedSetup,
-    PreparationAccounts,
-    FlatpakApplications,
-    BrowserProfiles,
-}
-/// Bounds must come from the explicitly allocated medium/storage, not an estimate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Limits {
-    pub plaintext_bytes: u64,
-    pub entries: usize,
-    pub metadata_bytes: usize,
-}
-impl Limits {
-    fn validate(self) -> io::Result<()> {
-        if self.plaintext_bytes == 0
-            || self.entries == 0
-            || self.entries > 1_000_000
-            || self.metadata_bytes == 0
-            || self.metadata_bytes > 512 * 1024 * 1024
-        {
-            return Err(changed("Portable transfer review bounds are invalid"));
-        }
-        self.sealed_bound()
-            .ok_or_else(|| changed("Portable transfer allocation overflows"))?;
-        Ok(())
-    }
-    pub fn sealed_bound(self) -> Option<u64> {
-        self.plaintext_bytes.checked_add(2048)?.checked_add(
-            self.plaintext_bytes
-                .div_ceil(codec::CHUNK as u64)
-                .checked_mul(256)?,
-        )
-    }
-}
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ExportSummary {
     pub files: u64,

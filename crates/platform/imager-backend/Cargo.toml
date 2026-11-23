@@ -81,6 +81,7 @@ toml.workspace = true
 uuid.workspace = true
 staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 install-profile-model = { path = "../../session/install-profile-model", features = ["model"] }
+prepared-setup-model = { path = "../../session/prepared-setup-model" }
 # The destination side (`destination`).
 calendar = { path = "../../../apps/calendar", default-features = false, features = ["live"], optional = true }
 os-actions = { path = "../../system/os-actions", optional = true }

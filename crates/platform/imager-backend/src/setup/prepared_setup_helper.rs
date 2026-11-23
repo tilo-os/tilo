@@ -117,35 +117,10 @@ mod original_controller_tests {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Receipt {
-    pub identity_public_key: [u8; 32],
-    pub account_count: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_identity: Option<tilo_identity::enrolled_transport::CurrentDeviceDeclaration>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_sessions: Option<super::service_sessions::Declaration>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub device_label: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub portable_home: Option<PortableHomeDeclaration>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub portable_flatpak: Option<super::flatpak_transfer::portable::Expectation>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub browser: Option<super::prepared_setup::BrowserHandoff>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mail: Vec<super::account_transfer::ThunderbirdImportReceipt>,
-}
-#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PortableHomeDeclaration {
-    pub schema: u32,
-    pub setup_binding: String,
-    pub selection: super::prepared_setup::PortableHomeSelection,
-    #[serde(default)]
-    pub applications: bool,
-}
+pub use prepared_setup_model::PortableHomeDeclaration;
+pub type Receipt = prepared_setup_model::PreparedSetupReceipt<
+    tilo_identity::enrolled_transport::CurrentDeviceDeclaration,
+>;
 fn failed() -> io::Error {
     io::Error::other("Prepared setup could not be imported")
 }

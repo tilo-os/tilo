@@ -69,6 +69,7 @@ rustix = { workspace = true, features = ["fs", "pipe", "process", "stdio"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 browser-continuity = { path = "../../import/browser-continuity", features = ["native"] }
+prepared-setup-model = { path = "../prepared-setup-model" }
 
 [dev-dependencies]
 iroh.workspace = true

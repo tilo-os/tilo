@@ -513,6 +513,7 @@ members = [
     "crates/platform/imager-backend",
     "crates/session/install-plan",
     "crates/session/install-profile-model",
+    "crates/session/prepared-setup-model",
     "crates/session/liveness",
     "crates/session/native-media",
     "crates/session/network-actor",
