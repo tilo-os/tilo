@@ -45,13 +45,15 @@ use tilo_render_protocol::patch::{ToUi, Transport};
 use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
+use tilolang_tilo::call::Callees;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::{Config, Instance, LaterBuilds, Locale, Mode, Platform, Publication};
 use tilolang_tilo::publish::HOST_RESOURCE;
 use tilolang_tilo::publish::{Caller, Moved, Planner, Publications, publish_package};
 use tilolang_tilo::resources::ResourceStore;
+use tilolang_tilo::runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_tilo::runtime::ids::MemberId;
-use tilolang_tilo::runtime::{InvokeOutcome, Value};
+use tilolang_tilo::runtime::{InvokeOutcome, RunOutcome, Value};
 use tilolang_tilo::used::UsedApp;
 use tilolang_tilo::{HostEffect, OpenEffect};
 
@@ -65,6 +67,18 @@ use crate::presence::Presence;
 thread_local! {
     /// The caller of the invocation being built on this thread, as the broker delivered it.
     static CALLER: RefCell<Option<Caller>> = const { RefCell::new(None) };
+    /// The invocation the broker is serving on this thread, as the app's code runs for it: the
+    /// calls that code makes are its children.
+    static SERVING: RefCell<Option<Serving>> = const { RefCell::new(None) };
+}
+
+/// The invocation the broker served, whose code runs on this thread: the calls it makes continue
+/// it, decided as its caller's and scoped to its authority.
+#[derive(Clone, Debug)]
+struct Serving {
+    invocation: tilo_actions::InvocationId,
+    /// The person the served invocation acts for, when the broker named one.
+    person: Option<String>,
 }
 
 /// What one instance is: the app, the workspace, the window and who is at it, as the session named
@@ -917,10 +931,14 @@ pub struct Hosted {
     wake: Waker,
     /// The other apps the app uses, each read through its own package ([`Used`]).
     used: Vec<Used>,
-    /// What the app's views and actions asked of the other apps' apis, waiting to be sent.
-    asks: Rc<RefCell<Vec<tilolang_tilo::runtime::delegate::Invocation>>>,
-    /// Whether the runtime sends what it changes of another app's resources to [`Self::asks`].
-    asking: bool,
+    /// How a call of another app's action is built, from the packages this app may use.
+    callees: Rc<Callees>,
+    /// The child calls sent, by the invocation each went out under: what each answers as.
+    waiting_calls: Rc<RefCell<BTreeMap<String, Invocation>>>,
+    /// The child calls a run waits on, by the invocation each went out under.
+    children: Rc<RefCell<BTreeMap<String, Child>>>,
+    /// Whether the runtime sends its calls of other apps' actions on this instance's connection.
+    sending: bool,
     /// The identity-service connection the instance's connection signs through, held for as
     /// long as the instance runs.
     #[allow(
@@ -952,6 +970,36 @@ pub struct Hosted {
     /// The content store the app's files are kept in, which the session opened for it: the bytes
     /// of the file its launch named are read from here, as its own `file.text()` reads them.
     files: Option<tilo_content::ContentStore>,
+}
+
+/// What invoking one action came to.
+enum Ran {
+    /// It ran, and this is what it answers.
+    Done(tilo_actions::ActionOutput),
+    /// It waits on a child call it made: the call's id, and the run that waits on it (`None`
+    /// when no run does, the call itself being the served invocation's work).
+    Waits {
+        call: String,
+        run: Option<tilolang_tilo::runtime::ids::RunId>,
+    },
+}
+
+/// A child call this instance sent, and what waits on its answer.
+struct Child {
+    /// The run that waits on the answer, when one does: a run of the action the broker served,
+    /// or of the action the app was opened with. `None` for a call made outside a run, whose
+    /// answer is the served invocation's own.
+    run: Option<tilolang_tilo::runtime::ids::RunId>,
+    /// The invocation the broker served that the answer ends, when the call was made under one:
+    /// the id the broker delivered it under, and the invocation's own id. `None` for a call made
+    /// by the app opening a file, which answers nobody.
+    served: Option<(u64, tilo_actions::InvocationId)>,
+    /// The person the served invocation acts for, when the broker named one: what the run goes
+    /// on as when the answer comes.
+    person: Option<String>,
+    /// Whether it was resumed from the store's journals, so the invocation it was made under is
+    /// not kept: the answer cannot end that invocation, and the run stays waiting.
+    rebuilt: bool,
 }
 
 /// The wake scope an instance's code runs in, the device's content store registered for it: an
@@ -1052,6 +1100,33 @@ impl Hosted {
         drop(in_scope);
         let presence = Presence::new(&spec.app, &spec.person);
         let calls = Calls::new(&spec.person);
+        // The apps this one may call, each by its package: what a call of another app's action
+        // is built from.
+        let callees = Rc::new(callees_of(&bundle, &spec.workspace));
+        // The runs an earlier host over this store left waiting on a child call: the answers
+        // they wait on resume them. A run's journal is the store's, so a store the process kept
+        // (another instance over it) carries its waits here. The invocation a call went out as
+        // is not in the journal; the action it invokes is, and is enough to read its answer.
+        let waiting_calls: Rc<RefCell<BTreeMap<String, Invocation>>> = Rc::default();
+        let children: Rc<RefCell<BTreeMap<String, Child>>> = Rc::new(RefCell::new(
+            store
+                .open_runs()
+                .into_iter()
+                .filter_map(|(call, run, action)| {
+                    let invocation = rebuilt_invocation(&callees, &action)?;
+                    waiting_calls.borrow_mut().insert(call.clone(), invocation);
+                    Some((
+                        call,
+                        Child {
+                            run: Some(run),
+                            served: None,
+                            person: None,
+                            rebuilt: true,
+                        },
+                    ))
+                })
+                .collect(),
+        ));
 
         Self {
             spec,
@@ -1076,8 +1151,10 @@ impl Hosted {
             search_whole: None,
             wake,
             used,
-            asks: Rc::default(),
-            asking: false,
+            callees,
+            waiting_calls,
+            children,
+            sending: false,
             identity: None,
             scope,
             personal,
@@ -1261,6 +1338,20 @@ impl Hosted {
         events.extend(self.connection.poll());
         let mut changed = !events.is_empty();
         self.instance.sync();
+        // The runtime's calls of other apps' actions go out on this instance's connection, as
+        // children of the invocation the broker is serving: installed once the host that makes
+        // them is open.
+        if !self.sending
+            && let Some(host) = self.instance.host()
+        {
+            host.runtime().set_foreign_invoker(Apis {
+                workspace: self.spec.workspace.clone(),
+                callees: Rc::clone(&self.callees),
+                calls: Rc::clone(&self.waiting_calls),
+                manager: self.connection.shared_manager(),
+            });
+            self.sending = true;
+        }
         // What the person picked and saw, as their own document keeps it, before the views run.
         if self.personal.take_moved(&self.store)
             && !self
@@ -1323,7 +1414,6 @@ impl Hosted {
         }
         changed |= self.records_moved();
         changed |= self.read_used();
-        self.send_asks();
         self.publish();
         self.answer_directory();
         self.publish_search_index();
@@ -1486,6 +1576,15 @@ impl Hosted {
                 Some(std::rc::Rc::unwrap_or_clone(made.target))
             }
             Ok(InvokeOutcome::Done(_)) => None,
+            // It calls another app and waits on the answer: the run goes on when it comes, and
+            // the file open answers nobody.
+            Ok(InvokeOutcome::Waits { run, call }) => {
+                self.waiting(call, Some(run), None, None);
+                None
+            }
+            // A person is asked through the dispatch, which runs it once they have: the open
+            // answers nobody.
+            Ok(InvokeOutcome::Asked(_)) => None,
             Ok(other) => {
                 self.instance
                     .failed(format!("{opening} was not opened: {other:?}"));
@@ -2006,8 +2105,7 @@ impl Hosted {
                 return true;
             }
             CollabEvent::RemoteAction { message } => {
-                said_back(&self.spec.app, &message);
-                return false;
+                return self.answered(&message);
             }
             CollabEvent::InvocationCancellation { id } => {
                 // An invocation runs to its end in the frame it arrives in and is answered
@@ -2076,17 +2174,30 @@ impl Hosted {
         // What the action writes is stamped with the invocation the broker admitted, so the
         // workspace's history tells the step by the call that made it.
         self.store.serve(Some(invocation.0.to_string()));
+        let serving = Serving {
+            invocation,
+            person: person.map(str::to_owned),
+        };
+        SERVING.with(|slot| *slot.borrow_mut() = Some(serving));
         let outcome = self.invoke(&address, argument.as_deref(), &invoker, attributed.as_ref());
+        SERVING.with(|slot| *slot.borrow_mut() = None);
         self.store.serve(None);
-        let update = match outcome {
-            Ok(output) => InvocationUpdate::Succeeded { invocation, output },
-            Err(error) => failed(invocation, error),
+        let answer = match outcome {
+            Ok(Ran::Done(output)) => Some(InvocationUpdate::Succeeded { invocation, output }),
+            // What it calls answers later: the invocation ends with the run, not now.
+            Ok(Ran::Waits { call, run }) => {
+                self.waiting(call, run, Some((id, invocation)), person.map(str::to_owned));
+                None
+            }
+            Err(error) => Some(failed(invocation, error)),
         };
         // The action's writes reached the store as it ran: what it queued outside the workspace
         // waits in the outbox, and the instance settles it on its next frame, as it does what a
         // person's own action queues.
         self.instance.commit_planned();
-        self.answer_invocation(id, update);
+        if let Some(answer) = answer {
+            self.answer_invocation(id, answer);
+        }
         true
     }
 
@@ -2101,10 +2212,6 @@ impl Hosted {
             return false;
         };
         let runtime = host.runtime();
-        if !self.asking {
-            runtime.set_foreign_invoker(Apis(Rc::clone(&self.asks)));
-            self.asking = true;
-        }
         let mut moved = false;
         for used in &mut self.used {
             if std::mem::take(&mut used.moved) {
@@ -2119,56 +2226,181 @@ impl Hosted {
         moved
     }
 
-    /// Send what the views and actions changed of the other apps' resources to those apps'
-    /// apis, each as that app's action on its resource: a change comes back as its next reading.
-    fn send_asks(&self) {
-        let asks = std::mem::take(&mut *self.asks.borrow_mut());
-        if asks.is_empty() {
-            return;
-        }
-        let metas = self.bundle.imports.iter().map(|import| &import.meta);
-        let callees = tilolang_tilo::call::Callees {
-            apps: metas
-                .chain([&self.bundle.meta])
-                .map(|meta| (meta.app.clone(), meta.clone()))
-                .collect(),
-            ..Default::default()
+    /// Keep the child call `call` as one a run waits on, and as a step of the invocation the
+    /// broker served (`served`) when it was made under one. The run goes on with the answer, and
+    /// the served invocation ends with the run.
+    fn waiting(
+        &self,
+        call: String,
+        run: Option<tilolang_tilo::runtime::ids::RunId>,
+        served: Option<(u64, tilo_actions::InvocationId)>,
+        person: Option<String>,
+    ) {
+        self.children.borrow_mut().insert(
+            call,
+            Child {
+                run,
+                served,
+                person,
+                rebuilt: false,
+            },
+        );
+    }
+
+    /// What another app's api answered of a child call: the run waiting on it goes on, and the
+    /// invocation the broker served is answered when the run ends. Whether the message was an
+    /// answer this instance waits on.
+    fn answered(&mut self, message: &tilo_actions::remote::RemoteActionMessage) -> bool {
+        use tilo_actions::remote::{ActionCallError, ReceiptStatus, RemoteActionMessage};
+        let receipt = match message {
+            RemoteActionMessage::Receipt(receipt) => receipt.clone(),
+            RemoteActionMessage::Update {
+                state: Some(state), ..
+            } => state.receipt(),
+            _ => return false,
         };
-        for invocation in asks {
-            let Ok(call) = callees.call(&invocation).inspect_err(|why| {
-                tracing::warn!(app = self.spec.app, ?why, "no app takes this change");
-            }) else {
-                continue;
-            };
-            let field = |key: &str| call.get(key).cloned().unwrap_or_default();
-            let text = |key: &str| field(key).as_str().unwrap_or_default().to_owned();
-            let (app, argument) = (text("app"), field("arguments").as_object().cloned());
-            let request = tilo_actions::remote::InvokeRequest {
-                invocation: tilo_actions::InvocationId::new(),
-                target: tilo_actions::remote::application_action_target(
-                    &self.spec.workspace,
-                    &app,
-                    text("resource"),
-                    text("action"),
-                ),
-                argument: tilo_actions::remote::InvokeArgument::Json(argument.unwrap_or_default()),
-                context: None,
-                confirmation: None,
-                revision: None,
-                on_behalf_of: None,
-                wait_ms: None,
-                appearance: None,
-                signed: None,
-            };
-            let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
-            if let Err(error) = self
-                .connection
-                .manager()
-                .try_send(CollabRequest::RemoteAction { message })
-            {
-                tracing::warn!(app = self.spec.app, to = app, %error, "a change of another app did not reach its api");
+        // The dispatch admitted it and runs it: its answer comes when it ends.
+        if matches!(receipt.status, ReceiptStatus::Accepted) {
+            return false;
+        }
+        // A person is being asked about it: the dispatch keeps it open and answers once they
+        // have, so the run keeps waiting.
+        if matches!(
+            &receipt.status,
+            ReceiptStatus::Rejected {
+                error: ActionCallError::ConfirmationRequired { .. }
+            }
+        ) {
+            return false;
+        }
+        let call = receipt.invocation.0.to_string();
+        // A run resumed from the store's journals waits on a call whose invocation is gone: its
+        // answer has nobody to end, so the run stays waiting rather than committing half an
+        // invocation nobody was answered for.
+        if self
+            .children
+            .borrow()
+            .get(&call)
+            .is_some_and(|child| child.rebuilt)
+        {
+            tracing::warn!(
+                app = self.spec.app,
+                call,
+                "a run resumed from the store waits on a call its invocation is no longer here \
+                 to answer; it stays waiting"
+            );
+            return false;
+        }
+        let invocation = self.waiting_calls.borrow_mut().remove(&call);
+        let Some(child) = self.children.borrow_mut().remove(&call) else {
+            // A call made outside a run (a press, whose answer the dispatch read when it ran
+            // the action), or one this instance has already answered.
+            return false;
+        };
+        let answer = match &receipt.status {
+            ReceiptStatus::Completed { output } => self.answered_value(invocation.as_ref(), output),
+            ReceiptStatus::Failed { error } => Invoked::Failed(error.message.clone()),
+            // A call a person did not allow, or one stopped on the way: the run sees a refusal.
+            ReceiptStatus::Rejected { error } => Invoked::Refused(error.said()),
+            ReceiptStatus::Cancelled { message } => Invoked::Refused(
+                message
+                    .clone()
+                    .unwrap_or_else(|| "the call was stopped".to_owned()),
+            ),
+            ReceiptStatus::Accepted => return false,
+        };
+        match (child.run, child.served) {
+            (Some(run), served) => self.resume(&run, served, child.person, answer),
+            // The call itself is the served invocation's work: its answer ends it.
+            (None, Some((id, invocation))) => {
+                let update = match receipt.status {
+                    ReceiptStatus::Completed { output } => {
+                        InvocationUpdate::Succeeded { invocation, output }
+                    }
+                    ReceiptStatus::Failed { error } => {
+                        InvocationUpdate::Failed { invocation, error }
+                    }
+                    ReceiptStatus::Cancelled { message } => InvocationUpdate::Cancelled {
+                        invocation,
+                        message,
+                    },
+                    ReceiptStatus::Rejected { error } => {
+                        failed(invocation, Refused::new(error.code(), error.said()))
+                    }
+                    ReceiptStatus::Accepted => return false,
+                };
+                self.instance.commit_planned();
+                self.answer_invocation(id, update);
+            }
+            (None, None) => {}
+        }
+        true
+    }
+
+    /// Run the run `run` on with the child call's answer: it either ends, and the invocation
+    /// the broker served is answered with what it did, or it waits on another call, kept here
+    /// under the id that call went out with.
+    fn resume(
+        &mut self,
+        run: &tilolang_tilo::runtime::ids::RunId,
+        served: Option<(u64, tilo_actions::InvocationId)>,
+        person: Option<String>,
+        answer: Invoked,
+    ) {
+        let Some(host) = self.instance.host() else {
+            return;
+        };
+        // The run goes on as the invocation the broker served: what it writes from here is that
+        // invocation's step, and a call it makes continues it.
+        if let Some((_, invocation)) = served {
+            self.store.serve(Some(invocation.0.to_string()));
+            SERVING.with(|slot| {
+                *slot.borrow_mut() = Some(Serving {
+                    invocation,
+                    person: person.clone(),
+                });
+            });
+        }
+        let outcome = host.runtime().answer_call(run, answer);
+        SERVING.with(|slot| *slot.borrow_mut() = None);
+        self.store.serve(None);
+        match outcome {
+            Ok(RunOutcome::Done(value)) => {
+                self.instance.commit_planned();
+                if let Some((id, invocation)) = served {
+                    let update = InvocationUpdate::Succeeded {
+                        invocation,
+                        output: output_of(&self.spec.app, &value),
+                    };
+                    self.answer_invocation(id, update);
+                }
+            }
+            Ok(RunOutcome::Waits { run, call }) => self.waiting(call, Some(run), served, person),
+            Err(error) => {
+                self.instance.commit_planned();
+                if let Some((id, invocation)) = served {
+                    let update =
+                        failed(invocation, Refused::new("action_failed", error.to_string()));
+                    self.answer_invocation(id, update);
+                }
             }
         }
+    }
+
+    /// What the child call, whose invocation is `invocation`, answers its run as: its output as
+    /// the declaring action returns it. A call resumed from a journal (its invocation is not
+    /// kept with it) answers nothing, so the run goes on with no result.
+    fn answered_value(
+        &self,
+        invocation: Option<&Invocation>,
+        output: &tilo_actions::ActionOutput,
+    ) -> Invoked {
+        let Some(invocation) = invocation else {
+            return Invoked::Done(Value::Unit);
+        };
+        let output = serde_json::to_value(output).unwrap_or_default();
+        self.callees
+            .answered(invocation, tilolang_tilo::task::Answered::Done(output))
     }
 
     /// Hand the broker the outcome of the invocation `id`. An answer the connection does not
@@ -2306,7 +2538,7 @@ impl Hosted {
         argument: Option<&str>,
         invoker: &ActionInvoker,
         ambient: Option<&ActionContext>,
-    ) -> Result<tilo_actions::ActionOutput, Refused> {
+    ) -> Result<Ran, Refused> {
         let surface = self
             .surface
             .borrow()
@@ -2354,10 +2586,10 @@ impl Hosted {
                 .history_edit(&edit, &invoker.acting.by)
                 .map_err(|error| Refused::new("action_failed", error))?;
             self.store_moved();
-            return Ok(tilo_actions::ActionOutput {
+            return Ok(Ran::Done(tilo_actions::ActionOutput {
                 value,
                 resources: Vec::new(),
-            });
+            }));
         }
         if encoded.type_id == VIEW_TYPE {
             let locale = self.phrases.locale();
@@ -2369,16 +2601,18 @@ impl Hosted {
                 &host,
                 &locale,
                 &self.spec.person,
-            );
+            )
+            .map(Ran::Done);
         }
         if encoded.type_id == tilo_resource::read::TYPE {
             return self
                 .read(&encoded.payload, &caller.reader())
-                .map_err(|error| Refused::new("action_failed", error));
+                .map_err(|error| Refused::new("action_failed", error))
+                .map(Ran::Done);
         }
         if encoded.type_id == tilo_actions::remote::APPLICATION_ACTIVATE_TYPE {
             self.instance.activate_window();
-            return Ok(tilo_actions::remote::activation_requested());
+            return Ok(Ran::Done(tilo_actions::remote::activation_requested()));
         }
         if encoded.type_id == ACTION_TYPE {
             let action: DynAction = serde_json::from_slice(&encoded.payload)
@@ -2386,13 +2620,22 @@ impl Hosted {
             if let Some(why) = self.store.take_refusal() {
                 return Err(Refused::new("action_failed", why));
             }
+            // What the action asked of another app, or of the app's own action the authority
+            // asks a person about, went through the dispatch as a child call: the invocation
+            // waits on its answer, and is answered when it comes.
+            if let Some(waiting) = host.take_waiting() {
+                return Ok(Ran::Waits {
+                    call: waiting.call,
+                    run: waiting.run,
+                });
+            }
             // The answer names the characters it wrote: the window draws them in the writer's
             // colour, ending at the writer's caret.
             let mut output = returned(&host, &action)?;
             if let Some(wrote) = self.store.take_wrote(&action.app) {
                 output.value = tilo_actions::ActionOutput::noting_wrote(output.value, &wrote);
             }
-            return Ok(output);
+            return Ok(Ran::Done(output));
         }
         if address.resource == HOST_RESOURCE
             && encoded.type_id == <HostEffect as tilo_resource::Effect>::OPERATION
@@ -2405,16 +2648,18 @@ impl Hosted {
             if let Some(why) = self.store.take_refusal() {
                 return Err(Refused::new("action_failed", why));
             }
-            return Ok(output);
+            return Ok(Ran::Done(output));
         }
         if encoded.type_id == <OpenEffect as tilo_resource::Effect>::OPERATION {
-            return self.open_from_action(&encoded.payload, by_person);
+            return self
+                .open_from_action(&encoded.payload, by_person)
+                .map(Ran::Done);
         }
         if tilo_resource::share::handles(&encoded.type_id) {
-            return self.shared(encoded.payload.as_slice());
+            return self.shared(encoded.payload.as_slice()).map(Ran::Done);
         }
         if encoded.type_id == tilo_actions::remote::APPLICATION_OPEN_LINK_TYPE {
-            return self.open_link_from_action(&encoded.payload);
+            return self.open_link_from_action(&encoded.payload).map(Ran::Done);
         }
         Err(Refused::new(
             "action_unknown",
@@ -2695,7 +2940,7 @@ impl Hosted {
         let invoker = ActionInvoker::person(self.spec.person.clone());
         let opens_what_it_made = self.is_primary(&address);
         match self.invoke(&address, argument.as_deref(), &invoker, None) {
-            Ok(output) => {
+            Ok(Ran::Done(output)) => {
                 // What a press made shows, as the person asked for it: a primary action's opens
                 // beside the list as a page of its own where the window has no place for its
                 // kind, and any other action's where the window shows what it made — a note made
@@ -2708,6 +2953,9 @@ impl Hosted {
                     }
                 }
             }
+            // It calls another app and waits on the answer: the run goes on when it comes. A
+            // press answers nobody, so nothing is answered for it.
+            Ok(Ran::Waits { call, run }) => self.waiting(call, run, None, None),
             Err(refused) => self.instance.failed(refused.message),
         }
         // The press ran: once it is in the document this frame sends what it opened, then tells
@@ -2820,38 +3068,145 @@ impl Hosted {
     }
 }
 
-/// Where the runtime sends what a view or an action changes of another app's resources: queued
-/// for [`Hosted::send_asks`], and done here; the change comes back as the resource's next reading.
-struct Apis(Rc<RefCell<Vec<tilolang_tilo::runtime::delegate::Invocation>>>);
+/// Where the runtime sends the calls an app makes of another app's action, or of its own action
+/// the authority asks a person about first: each goes through the dispatch at once, as a child of
+/// the invocation being served, and the run that made it waits on the answer
+/// ([`Hosted::answered`]).
+struct Apis {
+    /// The workspace the call is made in.
+    workspace: String,
+    /// How a call of another app's action is built, from the packages this app may use.
+    callees: Rc<Callees>,
+    /// The invocation each child call went out as, by the id it went out under.
+    calls: Rc<RefCell<BTreeMap<String, Invocation>>>,
+    /// The instance's connection, to send the call on.
+    manager: Rc<RefCell<collaboration::CollaborationManager>>,
+}
 
-impl tilolang_tilo::runtime::delegate::Invoker for Apis {
-    fn invoke(
-        &self,
-        invocation: &tilolang_tilo::runtime::delegate::Invocation,
-    ) -> tilolang_tilo::runtime::delegate::Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        tilolang_tilo::runtime::delegate::Invoked::Sent
+impl Invoker for Apis {
+    fn invoke(&self, invocation: &Invocation) -> Invoked {
+        let call = match self.callees.call(invocation) {
+            Ok(call) => call,
+            Err(answer) => return self.callees.answered(invocation, answer),
+        };
+        let field = |key: &str| call.get(key).cloned().unwrap_or_default();
+        let text = |key: &str| field(key).as_str().unwrap_or_default().to_owned();
+        let app = text("app");
+        let invocation_id = tilo_actions::InvocationId::new();
+        // The call continues the invocation the broker is serving on this thread, decided as
+        // its caller's. A call the authority asks a person about goes the same way: the
+        // dispatch keeps it as its invocation record, asked, and answers once they have
+        // (`delegate::Invocation::Action::asks`).
+        let served = SERVING.with(|served| served.borrow().clone());
+        // A call of a host's own record (the shell's asking view resolving an invocation) names
+        // its provider itself; every other goes to the action's app in this workspace.
+        let workspace = match text("workspace") {
+            named if !named.is_empty() => named,
+            _ => self.workspace.clone(),
+        };
+        let target = match call.get("provider").and_then(serde_json::Value::as_str) {
+            Some(provider) => tilo_actions::remote::RemoteActionTarget {
+                provider: provider.to_owned(),
+                address: tilo_actions::ActionAddress::new(text("resource"), text("action")),
+            },
+            None => tilo_actions::remote::application_action_target(
+                &workspace,
+                &app,
+                text("resource"),
+                text("action"),
+            ),
+        };
+        let request = tilo_actions::remote::InvokeRequest {
+            invocation: invocation_id,
+            target,
+            argument: tilo_actions::remote::InvokeArgument::Json(
+                field("arguments").as_object().cloned().unwrap_or_default(),
+            ),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: served.as_ref().map(|served| served.invocation),
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        tracing::debug!(
+            to = app,
+            on_behalf_of = served
+                .as_ref()
+                .map(|served| served.invocation.0.to_string()),
+            person = served.as_ref().and_then(|served| served.person.as_deref()),
+            "a child call goes through the dispatch"
+        );
+        let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
+        if let Err(error) = self
+            .manager
+            .borrow_mut()
+            .try_send(CollabRequest::RemoteAction { message })
+        {
+            tracing::warn!(to = app, %error, "a child call did not reach the dispatch");
+            return Invoked::Failed(format!("the call did not reach {app}: {error}"));
+        }
+        let call_id = invocation_id.0.to_string();
+        self.calls
+            .borrow_mut()
+            .insert(call_id.clone(), invocation.clone());
+        Invoked::Pending(call_id)
     }
 }
 
-/// Say what another app's api answered of a change asked of it, when it refused or failed:
-/// the change never came, and its resource reads as it did.
-fn said_back(app: &str, message: &tilo_actions::remote::RemoteActionMessage) {
-    use tilo_actions::remote::{ReceiptStatus, RemoteActionMessage};
-    if let RemoteActionMessage::Receipt(receipt) = message {
-        match &receipt.status {
-            ReceiptStatus::Rejected { error } => {
-                tracing::warn!(
-                    app,
-                    ?error,
-                    "another app's api refused a change asked of it"
-                );
-            }
-            ReceiptStatus::Failed { error } => {
-                tracing::warn!(app, ?error, "a change asked of another app's api failed");
-            }
-            _ => {}
-        }
+/// The invocation a call of the action `action` was made as, as its answer reads: what a run
+/// resumed from a journal rebuilds, the journal keeping the action and not the call. `None` when
+/// no package this app may call declares it.
+fn rebuilt_invocation(callees: &Callees, action: &str) -> Option<Invocation> {
+    let (app, declared) = callees.apps.iter().find_map(|(app, meta)| {
+        meta.actions
+            .iter()
+            .find(|declared| declared.id == action)
+            .map(|declared| (app.as_str(), declared))
+    })?;
+    Some(Invocation::Action {
+        app: tilolang_tilo::runtime::ids::AppId::from(app),
+        action: action.to_owned(),
+        name: declared.name.clone(),
+        args: Vec::new(),
+        class: tilolang_tilo::runtime::meta::EffectClass::Undoable,
+        destructive: false,
+        author: None,
+        target: None,
+        from: None,
+        asks: false,
+    })
+}
+
+/// Every package this app may call, by app, in the workspace it calls them in: what a child call
+/// is built from.
+fn callees_of(bundle: &Bundle, workspace: &str) -> Callees {
+    Callees {
+        apps: bundle
+            .imports
+            .iter()
+            .map(|import| &import.meta)
+            .chain([&bundle.meta])
+            .map(|meta| (meta.app.clone(), meta.clone()))
+            .collect(),
+        workspace: Some(workspace.to_owned()),
+        ..Default::default()
+    }
+}
+
+/// What the action whose run `value` returned answers: the resource it made, if any, as the
+/// invocation answers it.
+fn output_of(app: &str, value: &Value) -> tilo_actions::ActionOutput {
+    match value {
+        Value::Ref(made) => tilo_actions::ActionOutput {
+            value: None,
+            resources: vec![tilolang_tilo::publish::resource_id(
+                app,
+                &made.target.id_string(),
+            )],
+        },
+        _ => tilo_actions::ActionOutput::default(),
     }
 }
 

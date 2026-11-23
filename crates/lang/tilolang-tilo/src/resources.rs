@@ -4002,6 +4002,25 @@ impl ResourceStore {
 }
 
 impl ResourceStore {
+    /// The runs this store holds that wait on a child call: the invocation the call went out
+    /// under, the run, and the action it invokes. What a host starting over this store waits
+    /// on, so the answer resumes the run. Empty when nothing waits.
+    #[must_use]
+    pub fn open_runs(&self) -> Vec<(String, RunId, String)> {
+        self.inner
+            .journals
+            .borrow()
+            .iter()
+            .filter(|(_, journal)| !journal.finished)
+            .filter_map(|(run, journal)| match &journal.pending {
+                Some(tilolang_runtime::run::Pending::Call { call, action }) => {
+                    Some((call.clone(), run.clone(), action.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// What an order or a filter reads of `target` as `field`: the field, or the time of the
     /// version a reflected pseudo-field names (`$created`, `$updated`, `$changed.<field>`).
     fn order_key(

@@ -81,6 +81,13 @@ impl Connection {
         self.manager.borrow_mut()
     }
 
+    /// The shared manager, for a holder that sends later than this frame's borrow: the runtime's
+    /// invoker building a child call.
+    #[must_use]
+    pub fn shared_manager(&self) -> Rc<RefCell<CollaborationManager>> {
+        Rc::clone(&self.manager)
+    }
+
     /// What the connection delivered since the last poll: first what arrived while a resource
     /// command waited, then what is ready now.
     pub fn poll(&self) -> Vec<CollabEvent> {

@@ -35,6 +35,9 @@ mod results;
 /// The native Notes app's notebook, carried over once by the tilolang Notes a session starts.
 #[path = "process/chat.rs"]
 mod chat;
+/// An app's calls of another app's action, through the dispatch.
+#[path = "process/children.rs"]
+mod children;
 #[path = "process/native_notes.rs"]
 mod native_notes;
 /// A paste past a mebibyte, kept and undone.

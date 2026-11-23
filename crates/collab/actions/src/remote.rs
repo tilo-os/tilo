@@ -250,7 +250,7 @@ pub const WORKSPACE_WAITING: &str = "waiting";
 /// person names it. An operation not listed is published on the root under its
 /// own name; one listed on [`WORKSPACE_MEMBER`] is published on each person, who
 /// is its `person`.
-pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 22] = [    ("member.list", Some(WORKSPACE_MEMBERS), "list"),
+pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 21] = [    ("member.list", Some(WORKSPACE_MEMBERS), "list"),
     (
         "member.add",
         Some(WORKSPACE_MEMBERS),
