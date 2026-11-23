@@ -32,7 +32,10 @@ pub(super) fn for_turn(turn: &Turn) -> String {
         ""
     } else {
         " Chat's workspace skills say how work is done here. Use the skills your tools can \
-         read when they fit the request. Add or correct a workspace skill only when the person \
+         read when they fit the request. A skill may keep examples too: results the person \
+         accepted (more like this) or rejected (less like this), each with what they said. Read \
+         a skill's examples before you use it, and keep one with `keep_example` when the person \
+         accepts or rejects what you did. Add or correct a workspace skill only when the person \
          asks you to share that guidance with the workspace."
     };
     format!(

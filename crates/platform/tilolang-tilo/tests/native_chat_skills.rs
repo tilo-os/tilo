@@ -1,13 +1,16 @@
 //! The skills a workspace wrote for the native Chat, opened by the tilolang Chat: its migration
 //! carries each over once, with what it is called, the work it is for, how the work is done
 //! here, the form of its result and the model, under the id it had there and in the order it
-//! stood. The native app's document is read, never written.
+//! stood, and the examples it kept, oldest first, each with what the result was, whether the
+//! person accepted it, what they said and when it was kept. A document whose examples do not read
+//! as records of their own carries no skill at all, so none comes without the examples it kept.
+//! The native app's document is read, never written.
 //!
 //! The document is built here as the native Skills resource stored it: its record's layout
 //! version and its collection of skills, each an order key and its fields.
 
 use automerge::transaction::Transactable as _;
-use automerge::{AutoCommit, ObjType, ROOT};
+use automerge::{AutoCommit, ObjType, ROOT, ReadDoc as _};
 use tilolang_runtime::{ResourceRef, Value};
 
 use crate::fixtures::{Replica, target};
@@ -28,6 +31,17 @@ type Kept = (
     &'static str,
     &'static str,
     Option<&'static str>,
+);
+
+/// One example as the native app kept it: its id, its order key, the result, whether the person
+/// accepted it, what they said and when it was kept.
+type KeptExample = (
+    &'static str,
+    &'static str,
+    &'static str,
+    bool,
+    &'static str,
+    i64,
 );
 
 /// The skills the fixture holds, oldest first.
@@ -52,8 +66,34 @@ const KEPT: [Kept; 2] = [
     ),
 ];
 
+/// The examples `skill` kept, oldest first.
+fn examples_of(skill: &str) -> &'static [KeptExample] {
+    match skill {
+        "skill-weekly" => &[
+            (
+                "e1",
+                "a",
+                "Revenue rose 4 %, churn fell.",
+                true,
+                "",
+                1_700_000_000_000,
+            ),
+            (
+                "e2",
+                "b",
+                "This week was a week of many things.",
+                false,
+                "Too vague",
+                1_700_000_100_000,
+            ),
+        ],
+        _ => &[],
+    }
+}
+
 /// The native workspace's skills document, as the native Skills resource kept it: the record's
-/// own fields at its root and the skills in a collection, each item an order key and its fields.
+/// own fields at its root, the skills in a collection, each item an order key and its fields,
+/// and each skill's examples in a collection of its own.
 fn native_documents() -> Vec<(String, AutoCommit)> {
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "tilo:version", 1_i64).unwrap();
@@ -71,6 +111,18 @@ fn native_documents() -> Vec<(String, AutoCommit)> {
             doc.splice_text(&text, 0, 0, model).unwrap();
         }
         doc.put(&fields, "at", 1_700_000_000_000_i64).unwrap();
+        let examples = doc.put_object(&fields, "examples", ObjType::Map).unwrap();
+        for &(example, order, text, accepted, note, at) in examples_of(id) {
+            let entry = doc.put_object(&examples, example, ObjType::Map).unwrap();
+            doc.put(&entry, "k", order).unwrap();
+            let fields = doc.put_object(&entry, "v", ObjType::Map).unwrap();
+            for (field, said) in [("text", text), ("note", note)] {
+                let at = doc.put_object(&fields, field, ObjType::Text).unwrap();
+                doc.splice_text(&at, 0, 0, said).unwrap();
+            }
+            doc.put(&fields, "accepted", accepted).unwrap();
+            doc.put(&fields, "at", at).unwrap();
+        }
     }
     vec![("chat.skills".to_owned(), doc)]
 }
@@ -107,19 +159,56 @@ fn text(ada: &Replica, at: &ResourceRef, field: &str) -> String {
     }
 }
 
-fn id_of(item: &ResourceRef) -> String {
-    item.item.clone().expect("a skill is an item")
+fn flag(ada: &Replica, at: &ResourceRef, field: &str) -> bool {
+    match read(ada, at, field) {
+        Value::Bool(flag) => flag,
+        other => panic!("{field} reads {other:?}"),
+    }
 }
 
+fn number(ada: &Replica, at: &ResourceRef, field: &str) -> i64 {
+    match read(ada, at, field) {
+        Value::Int(number) => number,
+        other => panic!("{field} reads {other:?}"),
+    }
+}
+
+fn id_of(item: &ResourceRef) -> String {
+    item.item.clone().expect("an item")
+}
+
+/// An example as the test reads it: the result, whether the person accepted it, what they said
+/// and when it was kept.
+type ExampleRow = (String, bool, String, i64);
+
 /// A skill as the test reads it: its id, its name, the work it is for, how the work is done,
-/// the form of its result and its model.
-type Row = (String, String, String, String, String, String);
+/// the form of its result, its model and its examples.
+type Row = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Vec<ExampleRow>,
+);
 
 /// Each skill carried over, as the native app held it.
 fn carried(ada: &Replica, all: &ResourceRef) -> Vec<Row> {
     listed(ada, all, "skills")
         .iter()
         .map(|skill| {
+            let examples = listed(ada, skill, "examples")
+                .iter()
+                .map(|example| {
+                    (
+                        text(ada, example, "text"),
+                        flag(ada, example, "accepted"),
+                        text(ada, example, "note"),
+                        number(ada, example, "at"),
+                    )
+                })
+                .collect();
             (
                 id_of(skill),
                 text(ada, skill, "name"),
@@ -127,12 +216,13 @@ fn carried(ada: &Replica, all: &ResourceRef) -> Vec<Row> {
                 text(ada, skill, "how"),
                 text(ada, skill, "form"),
                 text(ada, skill, "model"),
+                examples,
             )
         })
         .collect()
 }
 
-/// The fixture's skills, as they should be carried over.
+/// The fixture's skills and examples, as they should be carried over.
 fn expected() -> Vec<Row> {
     KEPT.iter()
         .map(|(id, _, name, work, how, form, model)| {
@@ -143,6 +233,12 @@ fn expected() -> Vec<Row> {
                 (*how).to_owned(),
                 (*form).to_owned(),
                 model.unwrap_or_default().to_owned(),
+                examples_of(id)
+                    .iter()
+                    .map(|(_, _, text, accepted, note, at)| {
+                        ((*text).to_owned(), *accepted, (*note).to_owned(), *at)
+                    })
+                    .collect(),
             )
         })
         .collect()
@@ -168,7 +264,7 @@ fn a_native_workspace_skills_document_is_carried_over_once_as_one_change() {
     assert_eq!(
         carried(&ada, &all),
         expected(),
-        "every skill, each keeping its id, in the order it stood"
+        "every skill and its examples, each keeping its id, in the order they stood"
     );
 
     let migration = ada
@@ -203,4 +299,26 @@ fn a_native_workspace_skills_document_is_carried_over_once_as_one_change() {
         .map(|(_, doc)| doc.clone().get_heads())
         .collect();
     assert_eq!(before, after, "the native app's document is not written");
+}
+
+#[test]
+fn a_skill_whose_examples_do_not_read_as_records_is_not_carried_without_them() {
+    let documents = native_documents();
+    let mut documents = documents;
+    // An example the native app kept as a word instead of a record of its own: the skill's
+    // examples read as one id and no record, so the document carries no skill at all rather
+    // than one without the examples it kept.
+    let (_, doc) = &mut documents[0];
+    let (_, skills) = doc.get(ROOT, "skills").unwrap().unwrap();
+    let (_, skill) = doc.get(&skills, "skill-weekly").unwrap().unwrap();
+    let (_, fields) = doc.get(&skill, "v").unwrap().unwrap();
+    let (_, examples) = doc.get(&fields, "examples").unwrap().unwrap();
+    doc.put(&examples, "e3", "a whole week of things").unwrap();
+
+    let (ada, all) = opened(&documents);
+    ada.host.migrate();
+    assert!(
+        listed(&ada, &all, "skills").is_empty(),
+        "a skill whose examples do not read is not carried part-way"
+    );
 }

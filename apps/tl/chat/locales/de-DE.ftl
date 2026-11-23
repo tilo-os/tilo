@@ -150,6 +150,32 @@ d-ijpa4i7d = Form des Ergebnisses
 d-3wlkwi6k = Modell
     .doc = Das Modell, mit dem die Arbeit getan wird, als `provider/model`; leer für die Wahl der Person für diese Art Arbeit.
 
+d-bxx5rykt = Beispiele
+    .doc = Ergebnisse, die die Person angenommen und abgelehnt hat, älteste zuerst: wie die Arbeit getan wird, gezeigt an dem, was daraus wurde.
+
+d-so72kbuk = Beispiel
+    .doc = Ein Ergebnis, das eine Person angenommen oder abgelehnt hat, bei seiner Fähigkeit aufbewahrt als Beispiel, wie diese Arbeit getan wird: mehr davon, oder weniger davon.
+    .noun = { $count ->
+        [one] Beispiel
+       *[other] Beispiele
+    }
+
+d-fspydtu6 = Text
+    .doc = Das Ergebnis, oder der Teil davon, der gemeint ist.
+
+d-2u2ngevv = Angenommen
+    .doc = Ob die Person es angenommen (mehr davon) oder abgelehnt (weniger davon) hat.
+
+d-agcun6lt = Notiz
+    .doc = Was die Person dazu gesagt hat; leer, wenn sie nichts weiter gesagt hat.
+
+d-3ccutu3r = Wann
+    .doc = Wann es aufbewahrt wurde, woher diese Fähigkeit kommt, in Millisekunden seit 1970; 0 für eines, das hier aufbewahrt wurde, dessen Zeit der Verlauf der Fähigkeit sagt.
+
+d-so72kbuk-filter-accepted = Angenommen
+
+d-so72kbuk-filter-at = Wann
+
 d-msf7yzn7 = Neuer Kanal
     .doc = Fügt der Seitenleiste einen Textkanal hinzu, über `topic`, wenn es angegeben ist.
     .w-new-channel = new-channel
@@ -220,6 +246,8 @@ d-clq6mq5o = Neue Fähigkeit~present
 
 d-umfqj3us = Fähigkeit korrigieren~present
 
+d-3e27liaz = Beispiel aufbewahren~present
+
 d-comllwls = Bearbeiten~present
 
 d-c2x2a6dh = Anheften~present
@@ -243,6 +271,12 @@ d-2dkm5gja = Fähigkeit
     .w-empty-when-it-has-no-fixed = Leer, wenn es keine feste Form hat
     .w-the-model = Das Modell
     .w-provider-model-empty-for-the-person = provider/model, leer für die Wahl der Person
+    .w-examples = Beispiele
+
+d-gnhwq4qd = Beispielzeile
+    .w-accepted-more-like-this = Angenommen: mehr davon
+    .w-rejected-less-like-this = Abgelehnt: weniger davon
+    .w-remove = Entfernen
 
 d-5rkfnkg4 = Seitenleiste
     .w-channels = Kanäle
@@ -375,6 +409,21 @@ d-fvl622e2-model = Modell
 d-wmxknkkc = Fähigkeit vergessen
     .doc = Vergisst eine Fähigkeit: keine spätere Runde liest sie.
 
+d-4fojczoe = Ein Beispiel aufbewahren
+    .doc = Bewahrt ein Beispiel einer Fähigkeit auf: ein Ergebnis, das die Person angenommen (mehr davon) oder abgelehnt (weniger davon) hat, mit dem, was sie dazu gesagt hat.
+    .w-an-example-says-what-the-result = Ein Beispiel sagt, was das Ergebnis war
+
+d-4fojczoe-text = Text
+
+d-4fojczoe-accepted = Angenommen
+
+d-4fojczoe-note = Notiz
+
+d-aqrwkeib = Das Beispiel entfernen
+    .doc = Nimmt ein Beispiel aus einer Fähigkeit heraus.
+
+d-aqrwkeib-example = Beispiel
+
 d-qnkkcusk = Sprachkanal
 
 d-lkjppscz = Sprachkanalübersicht
@@ -383,7 +432,7 @@ d-aod7dups = Früheren Chat übernehmen
     .doc = Die Unterhaltungen, die der frühere Chat vor der Übernahme dieser Kennung hielt, einmalig in diese übernommen: seine Kategorien und Kanäle in der Reihenfolge der Seitenleiste, jeweils mit Name und Thema, und jede Nachricht eines Kanals mit ihrem Wortlaut, ob sie angeheftet war und welche Kennung sie dort hatte.
 
 d-uuhhrrha = Frühere Fähigkeiten übernehmen
-    .doc = Die Fähigkeiten des Arbeitsbereichs, die der frühere Chat vor der Übernahme dieser Kennung hielt, einmalig in diese übernommen: wie jede heißt, welche Arbeit sie betrifft, wie die Arbeit hier getan wird, die Form ihres Ergebnisses und das Modell, unter der Kennung, die sie dort hatte, und in der Reihenfolge, in der sie stand.
+    .doc = Die Fähigkeiten des Arbeitsbereichs, die der frühere Chat vor der Übernahme dieser Kennung hielt, einmalig in diese übernommen: wie jede heißt, welche Arbeit sie betrifft, wie die Arbeit hier getan wird, die Form ihres Ergebnisses und das Modell, unter der Kennung, die sie dort hatte, und in der Reihenfolge, in der sie stand, und die Beispiele, die sie aufbewahrte, älteste zuerst, jedes mit dem, was das Ergebnis war, ob die Person es angenommen hat, was sie dazu gesagt hat und wann es aufbewahrt wurde.
 
 d-4da5gcom = Geschrieben in
     .doc = Wo eine hierher übernommene oder weitergeleitete Nachricht geschrieben wurde.

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@2e48b4261c1efeb5";
+export const SURFACE = "so.tilo.chat@fee4e4e79582b433";
 
 /** The arguments of `delete_channel`. */
 export interface DeleteChannelArgs {
@@ -93,6 +93,18 @@ export interface CorrectSkillArgs {
 
 /** The arguments of `forget_skill`. */
 export interface ForgetSkillArgs {
+}
+
+/** The arguments of `keep_example`. */
+export interface KeepExampleArgs {
+  text: string;
+  accepted: boolean;
+  note?: string;
+}
+
+/** The arguments of `drop_example`. */
+export interface DropExampleArgs {
+  example: Example;
 }
 
 /** Conversations — `tl.so.tilo.chat.Conversations`. */
@@ -469,6 +481,7 @@ export interface Skill extends tilo.Resource {
   bn3w5doj: string;  // how
   ijpa4i7d: string;  // form
   "3wlkwi6k": string;  // model
+  bxx5rykt: Array<tilo.Entry<Example>>;  // examples
   /** Corrects a skill: only what is given changes, and what is left out stays as it is. */
   correct_skill(args?: {
     name?: string;
@@ -483,15 +496,46 @@ export interface Skill extends tilo.Resource {
   forget_skill(): Promise<void>;
   /** Runs `forget_skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   forget_skillMany(items: ForgetSkillArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Keeps an example of a skill: a result the person accepted (more like this) or rejected (less like this), with what they said about it. The same result said again is that example, moved newest, and a skill keeps its newest twelve. */
+  keep_example(args: {
+    text: string;
+    accepted: boolean;
+    note?: string;
+  }): Promise<void>;
+  /** Runs `keep_example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  keep_exampleMany(items: KeepExampleArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes an example out of a skill. */
+  drop_example(args: {
+    example: Example;
+  }): Promise<void>;
+  /** Runs `drop_example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  drop_exampleMany(items: DropExampleArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Skill` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const SKILL_ACTIONS = ["correct_skill", "correct_skillMany", "forget_skill", "forget_skillMany"] as const;
+export const SKILL_ACTIONS = ["correct_skill", "correct_skillMany", "forget_skill", "forget_skillMany", "keep_example", "keep_exampleMany", "drop_example", "drop_exampleMany"] as const;
 
 /** The `tl.so.tilo.chat.Skill` kind at `path`. */
 export function skill(ws: tilo.Workspace, path: string): Skill {
   return resourceProxy(ws, path, SURFACE, SKILL_ACTIONS) as unknown as Skill;
+}
+
+/** Example — `tl.so.tilo.chat.Example`. */
+export interface Example extends tilo.Resource {
+  fspydtu6: string;  // text
+  "2u2ngevv": boolean;  // accepted
+  agcun6lt: string;  // note
+  "3ccutu3r": number;  // at
+}
+
+/** The actions `Example` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const EXAMPLE_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.chat.Example` kind at `path`. */
+export function example(ws: tilo.Workspace, path: string): Example {
+  return resourceProxy(ws, path, SURFACE, EXAMPLE_ACTIONS) as unknown as Example;
 }
 
 /** Chat — `tl.so.tilo.chat`. */

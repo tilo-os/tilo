@@ -169,6 +169,23 @@ type Skill (untitled: "New skill") {
     /// The model the work is done with, as `provider/model`; empty for the person's choice for
     /// the kind of work.
     model: Text = ""
+    /// Results the person accepted and rejected, oldest first: how the work is done, shown by
+    /// what came of it.
+    examples: Collection<Example>
+}
+
+/// A result a person accepted or rejected, kept with its skill as an example of how that work is
+/// done: more like this, or less like this.
+type Example {
+    /// The result, or the part of it that is meant.
+    text: Text
+    /// Whether the person accepted it (more like this) or rejected it (less like this).
+    accepted: Bool
+    /// What the person said about it; empty when they said nothing more.
+    note: Text = ""
+    /// When it was kept where this skill came from, in milliseconds since 1970; 0 for one kept
+    /// here, which the skill's history says when.
+    at: Int = 0
 }
 
 default view sidebar for Conversations
@@ -264,6 +281,35 @@ action correct_skill(
 /// Forgets a skill: no later turn reads it.
 action forget_skill(s: Skill) (icon: .trash_2, label: "Forget skill") {
     conversations.skills.remove(s)
+}
+
+/// Keeps an example of a skill: a result the person accepted (more like this) or rejected (less
+/// like this), with what they said about it. The same result said again is that example, moved
+/// newest, and a skill keeps its newest twelve.
+action keep_example(s: Skill, text: Text, accepted: Bool, note: Text = "") (
+    icon: .bookmark,
+    label: "Keep an example",
+) {
+    require text.trim() != "" "An example says what the result was"
+    let text = text.trim()
+    let note = note.trim()
+    if let known = s.examples.find(e -> e.text == text) {
+        known.accepted = accepted
+        known.note = note
+        if let last = s.examples.last() {
+            if last != known { s.examples.move(known, after: last) }
+        }
+    } else {
+        s.examples.insert(Example(text: text, accepted: accepted, note: note))
+        if s.examples.len() > 12 {
+            if let first = s.examples.first() { s.examples.remove(first) }
+        }
+    }
+}
+
+/// Takes an example out of a skill.
+action drop_example(s: Skill, example: Example) (icon: .trash_2, label: "Remove the example") {
+    s.examples.remove(example)
 }
 
 /// The direct conversations an earlier version kept with one person alone (`person`), which
@@ -430,21 +476,51 @@ migration action carry_native_chat(all: Conversations) {
 
 /// The workspace's skills the native Chat kept before this app took its id over, carried into
 /// these once: what each is called, the work it is for, how the work is done here, the form of
-/// its result and the model, under the id it had there and in the order it stood. The native
-/// app's own document is left as it is.
+/// its result and the model, under the id it had there and in the order it stood, and the
+/// examples it kept, oldest first, each with what the result was, whether the person accepted
+/// it, what they said and when it was kept. The native app's own document is left as it is; a
+/// document whose examples do not read as records of their own carries nothing, so no skill
+/// comes without the examples it kept.
 migration action carry_native_skills(all: Conversations) {
-    for e in earlier(all).filter(e -> e.of == "skills") {
-        all.skills.insert(
-            Skill(
-                name: e.texts.get("name") ?? "",
-                work: e.texts.get("work") ?? "",
-                how: e.texts.get("how") ?? "",
-                form: e.texts.get("form") ?? "",
-                model: e.texts.get("model") ?? "",
-            ),
-            id: e.id,
-        )
+    let earlier = earlier(all)
+    let skills = earlier.filter(e -> e.of == "skills")
+    if not skills.any(e -> examples_problem(e) != "") {
+        for e in skills {
+            let skill = all.skills.insert(
+                Skill(
+                    name: e.texts.get("name") ?? "",
+                    work: e.texts.get("work") ?? "",
+                    how: e.texts.get("how") ?? "",
+                    form: e.texts.get("form") ?? "",
+                    model: e.texts.get("model") ?? "",
+                ),
+                id: e.id,
+            )
+            // Each example it kept, oldest first, with when it was kept there.
+            for example in e.records.get("examples") ?? [] {
+                skill.examples.insert(
+                    Example(
+                        text: example.get("text") ?? "",
+                        accepted: (example.get("accepted") ?? "") == "true",
+                        note: example.get("note") ?? "",
+                        at: (example.get("at") ?? "").to_int() ?? 0,
+                    ),
+                )
+            }
+        }
     }
+}
+
+/// What of the examples the native skill `e` kept cannot be carried: a skill whose examples do
+/// not read as records of their own, or an example that says nothing. Empty when they all read.
+fn examples_problem(e: host.Earlier) -> Text {
+    let kept = e.lists.get("examples") ?? []
+    let held = e.records.get("examples") ?? []
+    if kept.len() != held.len() {
+        "examples that do not read as records"
+    } else if held.any(example -> (example.get("text") ?? "").trim() == "") {
+        "an example that says nothing"
+    } else { "" }
 }
 
 /// Who is in a direct conversation `opener` opens with `who`: the two of them, or `opener` alone
@@ -936,9 +1012,41 @@ view skill(s: Skill) {
                     placeholder: "provider/model, empty for the person's choice",
                 )
             }
+            if not s.examples.is_empty() {
+                stack(gap: .tight) {
+                    text("Examples", role: .label)
+                    for e in s.examples {
+                        example_row(s, e)
+                    }
+                }
+            }
         }
         std.after_body {
             std.history(s)
+        }
+    }
+}
+
+/// An example a skill keeps: the result, whether the person accepted it, and what they said
+/// about it, with the way to take it out.
+view example_row(s: Skill, e: Example) {
+    row(gap: .related, align: .start) {
+        ui.Icon(
+            if e.accepted { .circle_check } else { .x },
+            size: .small,
+            tone: if e.accepted { .success } else { .danger },
+            description: if e.accepted {
+                "Accepted: more like this"
+            } else { "Rejected: less like this" },
+        )
+        stack(fill: 1.0, gap: .none) {
+            text(e.text, role: .body)
+            if e.note != "" {
+                text(e.note, role: .caption, secondary: true)
+            }
+        }
+        ui.Button("Remove") {
+            on press: drop_example(s, e)
         }
     }
 }

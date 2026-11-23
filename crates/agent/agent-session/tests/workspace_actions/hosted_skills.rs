@@ -1,22 +1,32 @@
 //! A workspace's skills say how work is done there. Chat keeps them, its people write them
-//! through Chat's own actions, and a hosted agent's turn is told they exist and reads one
-//! through the tools it has, as the person it works for. Nothing of this is per agent: the
-//! same actions write and read the skills a person edits.
+//! through Chat's own actions, and a hosted agent's turn is told they exist and reads one,
+//! with the examples it keeps, through the tools it has, as the person it works for. Nothing of
+//! this is per agent: the same actions write and read the skills a person edits.
 use super::*;
 use tilo_server::workspaces::Workspaces;
 use tilo_workspace_service::tl_records::runtime::Value;
 
-/// What a person writes down about how the weekly report is done.
+/// What a person writes down about how the weekly report is done, and a result of it they
+/// rejected.
 const NAME: &str = "Weekly report";
 const WORK: &str = "Answering a request that asks for a weekly report";
 const HOW: &str = "Put the weekly numbers first.";
+const REJECTED: &str = "The launch slipped by a day; say so first.";
+const SAID: &str = "Too vague";
+/// A result the person accepted afterwards.
+const ACCEPTED: &str = "Revenue rose 4 %, churn fell.";
 
-/// The workspace's skills, each by its name and how its work is done, as Chat keeps them.
+/// An example as the test reads it: the result, whether the person accepted it, and what they
+/// said about it.
+type ExampleRow = (String, bool, String);
+
+/// The workspace's skills, each by its name and how its work is done, with its examples, as
+/// Chat keeps them.
 async fn skills_kept(
     workspaces: &Workspaces,
     workspace: &str,
     person: &str,
-) -> Vec<(String, String)> {
+) -> Vec<(String, String, Vec<ExampleRow>)> {
     let packages = asks::chat_packages().unwrap();
     let who = asks::Actor::Member(MemberId::person(person.to_owned()));
     let chat = packages.app().to_owned();
@@ -33,26 +43,83 @@ async fn skills_kept(
                     .read(at, field)
                     .map_err(|error| error.to_string())
             };
-            let Value::List(items) = read(&all, "skills")? else {
+            let Value::List(skills) = read(&all, "skills")? else {
                 return Err("skills read as no list".to_owned());
             };
             let mut kept = Vec::new();
-            for item in items {
-                let Value::Ref(skill) = item else {
+            for skill in skills {
+                let Value::Ref(skill) = skill else {
                     return Err("a skill is no resource".to_owned());
                 };
                 let skill = (*skill.target).clone();
-                let (Value::Text(name), Value::Text(how)) =
-                    (read(&skill, "name")?, read(&skill, "how")?)
-                else {
+                let Value::Text(name) = read(&skill, "name")? else {
+                    return Err("a skill's name reads as no text".to_owned());
+                };
+                let Value::Text(how) = read(&skill, "how")? else {
                     return Err("a skill's words read as no text".to_owned());
                 };
-                kept.push((name, how));
+                let Value::List(examples) = read(&skill, "examples")? else {
+                    return Err("examples read as no list".to_owned());
+                };
+                let mut kept_examples = Vec::new();
+                for example in examples {
+                    let Value::Ref(example) = example else {
+                        return Err("an example is no resource".to_owned());
+                    };
+                    let example = (*example.target).clone();
+                    let (Value::Text(text), Value::Bool(accepted), Value::Text(note)) = (
+                        read(&example, "text")?,
+                        read(&example, "accepted")?,
+                        read(&example, "note")?,
+                    ) else {
+                        return Err("an example's words read as no text".to_owned());
+                    };
+                    kept_examples.push((text, accepted, note));
+                }
+                kept.push((name, how, kept_examples));
             }
             Ok(kept)
         })
         .await
         .unwrap()
+}
+
+/// The skill called `name` in Chat's record, as `who` opens it.
+fn skill_named(
+    opened: &mut tilo_workspace_service::tl_records::Opened,
+    chat: &str,
+    name: &str,
+) -> Result<Value, String> {
+    let all = opened
+        .host()
+        .root_of(chat)
+        .map_err(|error| error.to_string())?;
+    let Value::List(skills) = opened
+        .host()
+        .runtime()
+        .read(&all, "skills")
+        .map_err(|error| error.to_string())?
+    else {
+        return Err("skills read as no list".to_owned());
+    };
+    for skill in skills {
+        let Value::Ref(skill) = skill else {
+            continue;
+        };
+        let skill = (*skill.target).clone();
+        let Value::Text(named) = opened
+            .host()
+            .runtime()
+            .read(&skill, "name")
+            .map_err(|error| error.to_string())?
+        else {
+            continue;
+        };
+        if named == name {
+            return Ok(Value::resource(&skill));
+        }
+    }
+    Err(format!("no skill is called {name}"))
 }
 
 /// The person starts a skill through Chat's action, as a device with no window open does it.
@@ -115,6 +182,39 @@ async fn writes_skill(
                         Value::Text(how),
                         Value::Text(String::new()),
                         Value::Text(String::new()),
+                    ],
+                    None,
+                )
+                .map(drop)
+        })
+        .await
+        .unwrap();
+}
+
+/// The person keeps an example of the skill `skill` through Chat's action: a result they
+/// accepted or rejected, with what they said about it.
+async fn keeps_example(
+    workspaces: &Workspaces,
+    workspace: &str,
+    person: &str,
+    (skill, text, accepted, said): (&str, &str, bool, &str),
+) {
+    let packages = asks::chat_packages().unwrap();
+    let who = asks::Actor::Member(MemberId::person(person.to_owned()));
+    let chat = packages.app().to_owned();
+    let (skill, text, said) = (skill.to_owned(), text.to_owned(), said.to_owned());
+    workspaces
+        .with_tl_record(workspace, &packages, who.clone(), move |opened| {
+            let skill = skill_named(opened, &chat, &skill)?;
+            opened
+                .invoke(
+                    &who,
+                    (&chat, "keep_example"),
+                    vec![
+                        skill,
+                        Value::Text(text),
+                        Value::Bool(accepted),
+                        Value::Text(said),
                     ],
                     None,
                 )
@@ -198,21 +298,22 @@ fn tool_answers(request: &ModelRequest) -> Vec<(String, bool)> {
         .collect()
 }
 
-/// The path a find answered for the skill: the first line naming a resource of Chat's.
+/// The path a find answered with a resource of Chat's: the first line naming one.
 fn path_of(answered: &str) -> String {
     answered
         .lines()
         .find(|line| line.contains("tl.so.tilo.chat"))
         .and_then(|line| line.split("  ").next())
-        .unwrap_or_else(|| panic!("the skill is not among what the find answered: {answered}"))
+        .unwrap_or_else(|| panic!("no resource of Chat's in what the find answered: {answered}"))
         .trim()
         .to_owned()
 }
 
 /// A hosted workspace with one person and their agent working on the server. The person writes
-/// down how the weekly report is done, then asks the agent for it. The turn is told the
-/// workspace has skills, finds the one it needs and reads it, and answers. The person then adds
-/// another skill through the same action the first one was written with.
+/// down how the weekly report is done and keeps a result they rejected as an example, then asks
+/// the agent for it. The turn is told the workspace has skills and that they keep examples; it
+/// finds the skill and the example and reads both. The person then adds another skill and keeps
+/// a result they accepted, both through the same actions.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_workspace_skill_is_told_read_and_written_through_chats_actions() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -233,13 +334,24 @@ async fn a_workspace_skill_is_told_read_and_written_through_chats_actions() {
     make_agent(&page, &workspaces, &workspace, &person, None).await;
 
     writes_skill(&workspaces, &workspace, &person, (NAME, WORK, HOW)).await;
+    keeps_example(
+        &workspaces,
+        &workspace,
+        &person,
+        (NAME, REJECTED, false, SAID),
+    )
+    .await;
     assert_eq!(
         skills_kept(&workspaces, &workspace, &person).await,
-        [(NAME.to_owned(), HOW.to_owned())]
+        [(
+            NAME.to_owned(),
+            HOW.to_owned(),
+            [(REJECTED.to_owned(), false, SAID.to_owned())].to_vec(),
+        )]
     );
 
     // The person asks the agent for the weekly report, and the model answers as a turn that
-    // read the workspace's skill.
+    // read the workspace's skill and its example.
     write_to_agent(
         &served.roster.actions,
         &workspaces,
@@ -258,17 +370,48 @@ async fn a_workspace_skill_is_told_read_and_written_through_chats_actions() {
                     told.contains("workspace skills"),
                     "the turn is told the workspace keeps skills: {told}"
                 );
-                calls("find-1", "tilo_find", serde_json::json!({"query": NAME}))
+                assert!(
+                    told.contains("examples"),
+                    "and that its skills keep examples: {told}"
+                );
+                calls(
+                    "find-skill",
+                    "tilo_find",
+                    serde_json::json!({"query": NAME}),
+                )
             }
             1 => {
                 assert!(!answers[0].1, "the skill is found: {:?}", answers[0]);
                 let path = path_of(&answers[0].0);
-                calls("read-1", "tilo_read", serde_json::json!({"path": path}))
+                calls("read-skill", "tilo_read", serde_json::json!({"path": path}))
+            }
+            2 => {
+                assert!(!answers[1].1, "the skill reads: {:?}", answers[1]);
+                assert!(
+                    answers[1].0.contains(HOW),
+                    "the skill's words: {}",
+                    answers[1].0
+                );
+                calls(
+                    "find-example",
+                    "tilo_find",
+                    serde_json::json!({"query": "slipped"}),
+                )
+            }
+            3 => {
+                assert!(!answers[2].1, "the example is found: {:?}", answers[2]);
+                let path = path_of(&answers[2].0);
+                calls(
+                    "read-example",
+                    "tilo_read",
+                    serde_json::json!({"path": path}),
+                )
             }
             _ => {
                 let (read, failed) = answers.last().unwrap().clone();
-                assert!(!failed, "the skill reads: {read}");
-                assert!(read.contains(HOW), "the skill's words: {read}");
+                assert!(!failed, "the example reads: {read}");
+                assert!(read.contains(REJECTED), "the example's result: {read}");
+                assert!(read.contains(SAID), "what the person said: {read}");
                 says("I wrote it, with the weekly numbers first.")
             }
         }
@@ -284,13 +427,23 @@ async fn a_workspace_skill_is_told_read_and_written_through_chats_actions() {
     .expect("the turn ends")
     .unwrap();
 
-    // The person adds another skill through the same action, and both are the workspace's.
+    // The person adds another skill through the same action, and keeps a result they accepted
+    // with the first: both are the workspace's.
     starts_skill(&workspaces, &workspace, &person, "Meeting recap").await;
+    keeps_example(&workspaces, &workspace, &person, (NAME, ACCEPTED, true, "")).await;
     assert_eq!(
         skills_kept(&workspaces, &workspace, &person).await,
         [
-            (NAME.to_owned(), HOW.to_owned()),
-            ("Meeting recap".to_owned(), String::new()),
+            (
+                NAME.to_owned(),
+                HOW.to_owned(),
+                [
+                    (REJECTED.to_owned(), false, SAID.to_owned()),
+                    (ACCEPTED.to_owned(), true, String::new()),
+                ]
+                .to_vec(),
+            ),
+            ("Meeting recap".to_owned(), String::new(), Vec::new()),
         ]
     );
     page.peer.close();
