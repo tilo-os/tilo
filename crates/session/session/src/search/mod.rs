@@ -1843,7 +1843,6 @@ mod tests {
                 candidates: Vec::new(),
                 declared: std::collections::BTreeMap::new(),
                 resource_kinds: std::collections::BTreeMap::new(),
-                earlier: tilo_action_policy::EarlierIds::default(),
                 launchable: Vec::new(),
                 tools: Vec::new(),
             }

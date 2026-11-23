@@ -1,4 +1,4 @@
-app so.tilo.agent "Agents" (icon: .sparkles, category: .system, previously: so.tilo.lang.agent)
+app so.tilo.agent "Agents" (icon: .sparkles, category: .system)
 
 /// Where an ask stands. The workspace's agent engine moves it on, except that its asker
 /// withdraws it and a person stops a turn that is working.

@@ -83,9 +83,6 @@ pub(super) struct LaunchDestination {
     pub(super) workspace: Workspace,
     pub(super) app_id: String,
     pub(super) record: Option<String>,
-    /// The resource the request names under its app's id now, when it was written under an id
-    /// the app had before (`tl:<old>:<id>`); delivered as that, the request staying as written.
-    pub(super) resource: Option<String>,
 }
 
 /// The broker as the [`ActionProvider`](tilo_actions::remote::ActionProvider) an
@@ -357,17 +354,6 @@ pub(super) fn app_start_descriptor(package_id: &str, display_name: &str) -> Acti
     descriptor.description =
         Some("Start this application in the current workspace without showing it".into());
     descriptor
-}
-
-/// The address `request` is delivered at: on `resource`, the resource it names as its app
-/// publishes it now, when it was written under an id the app had before.
-fn current_address(resource: Option<&str>, request: &InvokeRequest) -> tilo_actions::ActionAddress {
-    resource.map_or_else(
-        || request.target.address.clone(),
-        |resource| {
-            tilo_actions::ActionAddress::new(resource, request.target.address.action.clone())
-        },
-    )
 }
 
 /// What launching an app for `request` needs of its person on the app:
@@ -1982,12 +1968,9 @@ impl AppBrokerState {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<LaunchDestination, ActionCallError> {
-        // A target written under an id its app had before (a reference kept in a note) opens the
-        // app that took its place, on the resource as that app publishes it; the request stays
-        // as written.
-        let earlier = self.earlier_ids();
-        let resource = earlier.current_resource(&request.target.address.resource);
-        let address = &current_address(resource.as_deref(), request);
+        // A target names the app and the resource as it publishes them; the request stays as
+        // written.
+        let address = &request.target.address;
         let (workspace, app_id, record, offered) =
             if let Some((workspace, app_id)) = super::windowless_instances::started_app(request) {
                 // A workspace's `start` of its app offers nothing of the app: it
@@ -2070,17 +2053,7 @@ impl AppBrokerState {
             workspace,
             app_id,
             record,
-            resource,
         })
-    }
-
-    /// The ids installed apps had before, as the launcher's catalogue believes them.
-    fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
-        self.services
-            .launcher
-            .as_ref()
-            .map(|launcher| launcher.earlier_ids())
-            .unwrap_or_default()
     }
 
     /// The action the installed app `app_id`'s signed manifest offers at
@@ -2097,10 +2070,8 @@ impl AppBrokerState {
         request: &InvokeRequest,
     ) -> Option<(String, String, Option<PublishedAction>)> {
         let (workspace, app_id) = application_provider(&request.target.provider)?;
-        let earlier = self.earlier_ids();
-        let resource = earlier.current_resource(&request.target.address.resource);
-        let address = &current_address(resource.as_deref(), request);
-        let app_id = earlier.current(app_id).to_owned();
+        let app_id = app_id.to_owned();
+        let address = &request.target.address;
         let offered = self
             .published_surfaces()
             .into_iter()

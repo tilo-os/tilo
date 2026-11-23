@@ -72,10 +72,8 @@ impl AppConnection {
                 return Err(BrokerError::failed(reason));
             }
         }
-        // A renamed app keeps using the record of an id it had before (`kept_document`).
         let resource_route = route.clone();
-        let (route, as_app) =
-            kept_document::working_route(self.lease.local_media.as_deref(), &resource_route);
+        // An attested launch joins its own route; another app's only to
         // An attested launch joins its own route; another app's only to
         // read a record whose kinds it declared it reads.
         let route_access = match self.lease.local_media.as_ref() {
@@ -251,7 +249,6 @@ impl AppConnection {
             state: state.clone(),
             directories: Rc::clone(&self.directories),
             channel_id,
-            as_app,
             peer_id: hold_id,
             connection_id: peer_id,
             verified_identity,

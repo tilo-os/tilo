@@ -6,7 +6,7 @@ use tilo_broker_core::delivery::{DeliveryAsk, DeliveryFuture, DeliveryHost, deli
 use super::super::published_invocation::InvocationCaller;
 use super::{
     ActionAddress, ActionCallError, AppBrokerState, Arc, Caller, Completer, InvokeRequest,
-    LaunchDestination, current_address,
+    LaunchDestination,
 };
 
 /// The workspace service's admission of one invocation while it waits for its app to take it:
@@ -118,7 +118,7 @@ impl AppBrokerState {
         request: &InvokeRequest,
     ) -> Result<u64, ActionCallError> {
         let workspace = destination.workspace.id().to_string();
-        let address = current_address(destination.resource.as_deref(), request);
+        let address = &request.target.address;
         let origin = origin.map(LaunchOrigin);
         let ask = DeliveryAsk {
             caller,
@@ -126,7 +126,7 @@ impl AppBrokerState {
             app_id: &destination.app_id,
             workspace: &workspace,
             opened_on: destination.record.as_deref(),
-            address: &address,
+            address,
             start: super::super::windowless_instances::started_app(request).is_some(),
             timeout: self.launchable.delivery_timeout(),
             launches: super::super::launchable::launch_permits(),

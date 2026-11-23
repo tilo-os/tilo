@@ -701,7 +701,7 @@ fn launch_holds(
     if !local.current() || local.workspace_id != route.cluster_id {
         return None;
     }
-    if local.keeps_documents_of(&route.app_id) {
+    if local.app_id == route.app_id {
         return Some(true);
     }
     (read_only

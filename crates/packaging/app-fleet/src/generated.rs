@@ -5,11 +5,7 @@
 use super::FleetApp;
 
 /// `(an id an app answers by besides its own, the app it names)`.
-pub(super) const PREVIOUS: &[(&str, &str)] = &[
-    ("so.tilo.lang.agent", "so.tilo.agent"),
-    ("so.tilo.lang.notes", "so.tilo.notes"),
-    ("so.tilo.lang.todo", "so.tilo.lang.tasks"),
-];
+pub(super) const PREVIOUS: &[(&str, &str)] = &[];
 
 /// The apps a window of which is the person's own (`WINDOWS_ARE_PERSONAL`).
 pub(super) const OWN_WINDOWS: &[&str] =

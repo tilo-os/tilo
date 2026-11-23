@@ -58,26 +58,20 @@ use tilolang_tilo::instance::LaterBuilds;
 /// The route an instance of `meta`'s package for `person` in `workspace` joins: the person's own
 /// document of the workspace for an app whose documents are each member's own (`documents: .own`),
 /// which only their devices are admitted to, else the workspace's document of the app.
-///
-/// The route keeps the document of an id the app had before only when the installed catalogue
-/// honours it ([`tilo_action_policy::earlier`]): the same table the broker maps a route back with.
 #[must_use]
 pub fn route_of(
     meta: &tilolang_tilo::tilolang::PackageMeta,
     workspace: uuid::Uuid,
     person: &str,
 ) -> collaboration::RouteSpec {
-    let records = tilo_action_policy::earlier::held()
-        .documents_under(&meta.app)
-        .to_owned();
     if meta.uses_personal_profile()
         && let Some(profile) = collab_types::personal_cluster_of(person)
     {
         let kind = format!("tl.{}", meta.app);
         let id = collab_types::person_document_for_workspace(&kind, workspace);
-        return collaboration::RouteSpec::document(&records, profile, id);
+        return collaboration::RouteSpec::document(&meta.app, profile, id);
     }
-    collaboration::RouteSpec::app(records, workspace)
+    collaboration::RouteSpec::app(meta.app.clone(), workspace)
 }
 
 /// A restricted package closes its window when its read grant is removed.
@@ -707,13 +701,6 @@ impl TilolangProcess {
                 launched: request.app,
                 declared: bundle.meta.app,
             });
-        }
-        // The ids the session believes each app had before are the ones this host honours: a
-        // module's own `previously:` is a claim the installed catalogue decides on.
-        for (app, under) in &request.installed {
-            if under != app {
-                tilolang_tilo::schema::register_previously(app, std::slice::from_ref(under));
-            }
         }
         let workspace = uuid::Uuid::parse_str(&request.workspace)
             .map_err(|_| AdmitError::Workspace(request.workspace.clone()))?;

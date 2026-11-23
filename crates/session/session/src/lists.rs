@@ -42,9 +42,6 @@ pub struct AppLists {
     /// The resource kinds each installed app declares its records hold, by package id: what it
     /// may reach in its own node.
     pub resource_kinds: BTreeMap<String, Vec<String>>,
-    /// The ids each installed app was published under before, as the store checked them at
-    /// install: the same publisher signed both, so a renamed app keeps its earlier id's records.
-    pub earlier: tilo_action_policy::EarlierIds,
     /// The apps a service can ask this session to open, as the action API lists them: each app's
     /// name, the actions its signed manifest offers while it is not running, and the capabilities a
     /// grant is decided on. What decides the reach the device's settings app has of the settings
@@ -92,10 +89,6 @@ impl AppLists {
         let named = named(&installed);
         let declared = declared(&installed);
         let resource_kinds = resource_kinds(&installed);
-        let earlier = app_catalogue::apps::earlier_ids_from_env().unwrap_or_else(|error| {
-            tracing::warn!(%error, "the installed apps' earlier ids are not read");
-            tilo_action_policy::EarlierIds::default()
-        });
         // The machine's entries through the memoised scan, which this read starts on the lists'
         // worker: a later ask for an entry's icon or name (`crate::app_icons::entry_icon`) finds it
         // read, or meets the read already under way rather than starting one.
@@ -159,7 +152,6 @@ impl AppLists {
             candidates,
             declared,
             resource_kinds,
-            earlier,
             launchable,
             tools,
         }
@@ -634,89 +626,6 @@ mod tests {
             &[],
         )
         .expect("a desktop entry")
-    }
-
-    /// A signed package of `id`, published as `previously` before, as the installer packs one.
-    fn signed(
-        identity: &tilo_app_package::SigningIdentity,
-        id: &str,
-        version: &str,
-        previously: &[&str],
-    ) -> (tempfile::TempDir, tilo_app_package::Packed) {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("bin/app");
-        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
-        std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
-        let before: Vec<String> = previously.iter().map(|old| format!("\"{old}\"")).collect();
-        let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
-            "[package]\nid = \"{id}\"\nversion = \"{version}\"\nkind = \"app\"\n\
-             previously = [{}]\n\n[publisher]\nidentity = \"ed25519:{}\"\nsignature = \"\"\n\n\
-             [sandbox]\nnamespaces = [\"user\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\n\
-             [sandbox.net]\nmode = \"off\"\n\n[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n",
-            before.join(", "),
-            hex::encode(identity.public_key_bytes()),
-        ))
-        .unwrap();
-        let packed = tilo_app_package::pack(dir.path(), &manifest, identity).unwrap();
-        (dir, packed)
-    }
-
-    /// An earlier id is the renamed app's own as the store checked it at install: the same
-    /// publisher signed both. Another publisher's claim is refused while that app is installed,
-    /// and one for an id another app took over is not believed: neither opens the old app's
-    /// records.
-    #[test]
-    fn an_earlier_id_the_store_checked_is_the_apps_own() {
-        use package_store::{Admission, PackageStore, StoreError};
-        let admit = |_: &tilo_app_package::PackageMeta| Ok::<_, String>(Admission::default());
-        let root = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_APPS_DATA_DIR", root.path());
-        let store = PackageStore::at(root.path().to_path_buf());
-        let install = |packed: &tilo_app_package::Packed| {
-            store.install(
-                tilo_app_package::tapp::to_bytes(&packed.meta, Some(packed))
-                    .unwrap()
-                    .as_slice(),
-                admit,
-                None,
-            )
-        };
-        let publisher = tilo_app_package::SigningIdentity::generate();
-        let stranger = tilo_app_package::SigningIdentity::generate();
-        let (_old_dir, old) = signed(&publisher, "so.tilo.lang.notes", "1.0.0", &[]);
-        install(&old).unwrap();
-        let (_claim_dir, claim) =
-            signed(&stranger, "so.tilo.other", "1.0.0", &["so.tilo.lang.notes"]);
-        let refused = install(&claim).unwrap_err();
-        assert!(matches!(refused, StoreError::Refused(_)), "{refused:?}");
-        let (_new_dir, renamed) = signed(
-            &publisher,
-            "so.tilo.notes",
-            "2.0.0",
-            &["so.tilo.lang.notes"],
-        );
-        install(&renamed).unwrap();
-        let earlier = AppLists::read().earlier;
-        assert_eq!(
-            earlier.successor("so.tilo.lang.notes"),
-            Some("so.tilo.notes"),
-            "the same publisher's rename keeps the earlier id"
-        );
-        assert_eq!(
-            earlier.of("so.tilo.notes"),
-            ["so.tilo.lang.notes"].map(str::to_owned)
-        );
-        // The id is another app's now: a stranger's claim to it is installed but not believed.
-        let (_later_dir, later) =
-            signed(&stranger, "so.tilo.other", "2.0.0", &["so.tilo.lang.notes"]);
-        install(&later).unwrap();
-        let earlier = AppLists::read().earlier;
-        assert!(earlier.of("so.tilo.other").is_empty());
-        assert_eq!(
-            earlier.successor("so.tilo.lang.notes"),
-            Some("so.tilo.notes")
-        );
     }
 
     tilo_test_env::scenario! {

@@ -504,7 +504,6 @@ impl LocalDirectoryFixture {
         route: &CrdtRoute,
     ) -> runtime_collab::ChannelHandle {
         wire_channel(JoinedChannel {
-            as_app: None,
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
             state: Arc::clone(&self.state),
             directories: Rc::clone(&self.directories),

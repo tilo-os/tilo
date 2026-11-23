@@ -503,17 +503,6 @@ impl LauncherServices for Launches {
             .unwrap_or_default()
     }
 
-    /// The ids each installed app was published under before, as this session's lists last read
-    /// them from the store: an app launched under a new id keeps its earlier id's records as its
-    /// own, and a claim the store did not verify opens nothing.
-    fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
-        self.applications
-            .lock_recover()
-            .as_ref()
-            .map(|lists| lists.latest().earlier.clone())
-            .unwrap_or_default()
-    }
-
     /// Start `app` in `workspace` at `place`, opening `record` of it when the
     /// broker named one: the launch is made by the session's loop, on the
     /// same path the shell's own launches take, and the answer here is that
@@ -644,24 +633,6 @@ mod tests {
     use super::*;
     #[cfg(target_os = "linux")]
     use tilo_test_env::SpawnUnderEnvLock as _;
-
-    /// The launcher answers the ids the store checked for a renamed app, and nothing before a
-    /// session lends its lists: what lets a renamed app keep its earlier id's records as its own.
-    #[test]
-    fn the_launcher_answers_the_earlier_ids_the_store_checked() {
-        let launches = Launches::default();
-        assert!(LauncherServices::earlier_ids(&launches).is_empty());
-        let mut earlier = tilo_action_policy::EarlierIds::new();
-        earlier.insert("so.tilo.notes", ["so.tilo.lang.notes"]);
-        launches.watching(crate::lists::Lists::fixed(crate::lists::AppLists {
-            earlier,
-            ..crate::lists::AppLists::default()
-        }));
-        assert_eq!(
-            LauncherServices::earlier_ids(&launches).of("so.tilo.notes"),
-            ["so.tilo.lang.notes"].map(str::to_owned)
-        );
-    }
 
     tilo_test_env::scenario! {
         #[cfg(target_os = "linux")]

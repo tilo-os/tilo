@@ -34,7 +34,6 @@ mod workspace_document_ownership {
         )
         .unwrap();
         JoinedChannel {
-            as_app: None,
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
             state: workspace.state.clone(),
             directories: workspace.directories.clone(),

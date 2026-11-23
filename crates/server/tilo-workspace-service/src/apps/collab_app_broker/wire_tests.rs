@@ -98,7 +98,6 @@ impl Workspace {
         let (connection, outgoing) = WireConnection::new(None);
         let hold = self.state.next_peer_id();
         let channel = connection.open(ChannelSession::new(Rc::new(JoinedChannel {
-            as_app: None,
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
             state: self.state.clone(),
             directories: self.directories.clone(),

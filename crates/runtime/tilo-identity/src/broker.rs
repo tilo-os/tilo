@@ -337,14 +337,9 @@ struct Bound<'a> {
 }
 
 impl Bound<'_> {
-    /// Whether `app_id` is the bound app's, or an id it had before whose records it keeps using.
+    /// Whether `app_id` is the bound app's.
     fn keeps_records_of(&self, app_id: &str) -> bool {
         app_id == self.app_id
-            || self
-                .person
-                .earlier_ids(self.app_id)
-                .iter()
-                .any(|old| old == app_id)
     }
 
     /// Whether the bound app declares that it reads `app_id`'s records: another app's, which
@@ -791,18 +786,6 @@ mod tests {
     }
 
     /// Every app was published as the id this names before, as an installed catalogue believes.
-    struct RenamedFrom(&'static str);
-
-    impl PersonResourceTypes for RenamedFrom {
-        fn person_resource_types(&self, _app_id: &str) -> Vec<String> {
-            Vec::new()
-        }
-
-        fn earlier_ids(&self, _app_id: &str) -> Vec<String> {
-            vec![self.0.to_owned()]
-        }
-    }
-
     /// Notes keeps the person's record of what they watched.
     struct NotesKeepsWatched;
 
@@ -1067,36 +1050,6 @@ mod tests {
                     &bound(&workspace, app_id),
                     &workspace_id,
                     "so.tilo.calendar",
-                    document_id,
-                    &unsigned,
-                ),
-                Response::Denied(_)
-            ));
-            // An app renamed from Notes, as the installed catalogue believes it, changes the record
-            // Notes kept, where it is; an app claiming nothing of Notes does not.
-            let renamed = RenamedFrom(app_id);
-            let as_renamed = Bound {
-                workspace: &workspace,
-                app_id: "so.tilo.notebook",
-                person: &renamed,
-            };
-            assert!(matches!(
-                sign_collaboration_op(
-                    &tree,
-                    &as_renamed,
-                    &workspace_id,
-                    app_id,
-                    document_id,
-                    &unsigned
-                ),
-                Response::Signature(_)
-            ));
-            assert!(matches!(
-                sign_collaboration_op(
-                    &tree,
-                    &bound(&workspace, "so.tilo.notebook"),
-                    &workspace_id,
-                    app_id,
                     document_id,
                     &unsigned,
                 ),

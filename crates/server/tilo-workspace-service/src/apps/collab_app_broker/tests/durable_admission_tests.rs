@@ -306,7 +306,6 @@ async fn invocation_journal_invalid_updates_never_persist() {
         let channel = fixture.invocation_channel();
         let wire_id = admit(&mut fixture, &caller);
         let foreign = wire_channel(JoinedChannel {
-            as_app: None,
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
             state: fixture.state.clone(), directories: fixture.directories.clone(),
             channel_id: fixture.route.channel_key(), peer_id: 999, connection_id: 999,

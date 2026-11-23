@@ -674,7 +674,6 @@ async fn an_idle_held_read_body() {
         state,
         directories: Rc::new(super::super::LocalActionDirectoryRegistry::new(bridge)),
         channel_id: route.channel_key(),
-        as_app: None,
         peer_id,
         connection_id: peer_id,
         verified_identity: admitted,

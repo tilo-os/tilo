@@ -1314,15 +1314,6 @@ fn search_options(
             .map(Arc::new);
         (home.clone(), FileNames::scan(home), content)
     });
-    // What a reference written under an app's earlier id names, for search and for every decision
-    // this process makes.
-    match app_catalogue::apps::earlier_ids_from_env() {
-        Ok(earlier) => {
-            tilo_action_policy::earlier::register_all(&earlier);
-            content.set_earlier_ids(earlier);
-        }
-        Err(error) => eprintln!("tilo-session: earlier app ids: {error}"),
-    }
     // What the apps installed here declare, held where a launched app's surface is: the records an
     // app keeps of the person's are known before it runs, so its endpoint — the Files daemon, on
     // the record route — publishes its tree with the app never opened.

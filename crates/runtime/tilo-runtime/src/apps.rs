@@ -387,15 +387,6 @@ impl Apps {
 }
 
 impl LauncherServices for Apps {
-    fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
-        let ids = self
-            .catalog
-            .as_ref()
-            .and_then(|catalog| app_catalogue::apps::earlier_ids(catalog).ok())
-            .unwrap_or_default();
-        tilo_action_policy::earlier::register_all(&ids);
-        ids
-    }
     fn applications(&self) -> Vec<LaunchableApplication> {
         let mut apps = self.installed();
         apps.retain(|app| app.has_gui);

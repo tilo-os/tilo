@@ -405,33 +405,18 @@ fn identity(
 }
 
 /// What the identity service knows of the apps it signs for: the person records their surfaces
-/// declare, and the ids each had before as the installed catalogue believes them.
-struct InstalledApps {
-    earlier: tilo_action_policy::EarlierIds,
-}
+/// declare.
+struct InstalledApps;
 
 impl InstalledApps {
-    /// The catalogue as this login holds it; an unreadable one leaves the apps with the ids they
-    /// have now.
     fn read() -> Self {
-        let earlier = match app_catalogue::apps::earlier_ids_from_env() {
-            Ok(earlier) => earlier,
-            Err(error) => {
-                tracing::warn!(%error, "the installed apps are not read: no earlier app ids");
-                tilo_action_policy::EarlierIds::default()
-            }
-        };
-        Self { earlier }
+        Self
     }
 }
 
 impl PersonResourceTypes for InstalledApps {
     fn person_resource_types(&self, app_id: &str) -> Vec<String> {
         tilo_workspace_service::apps::SurfacePersonDocuments.person_resource_types(app_id)
-    }
-
-    fn earlier_ids(&self, app_id: &str) -> Vec<String> {
-        self.earlier.of(app_id).to_vec()
     }
 
     fn reads_documents_of(&self, reader: &str, owner: &str) -> bool {

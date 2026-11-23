@@ -145,8 +145,6 @@ pub(super) struct JoinedChannel {
     pub(super) state: Arc<AppBrokerState>,
     pub(super) directories: Rc<LocalActionDirectoryRegistry>,
     pub(super) channel_id: String,
-    /// The launched app, when the channel is the record of an id it had before ([`kept_document`]).
-    pub(super) as_app: Option<String>,
     /// The route hold this channel publishes and works as ([`route_holds`]).
     pub(super) peer_id: u64,
     /// The connection: its transport identity for document fanout,

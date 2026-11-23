@@ -35,7 +35,6 @@ async fn checkout_channel(
         .unwrap()
     });
     let channel = wire_channel(JoinedChannel {
-        as_app: None,
         committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
         state: workspace.state.clone(),
         directories: workspace.directories.clone(),
@@ -251,7 +250,6 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
                 .unwrap()
                 .clone();
             let channel = wire_channel(JoinedChannel {
-                as_app: None,
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state: workspace.state.clone(),
                 directories: workspace.directories.clone(),

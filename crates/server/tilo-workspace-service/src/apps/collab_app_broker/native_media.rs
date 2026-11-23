@@ -68,10 +68,6 @@ pub(super) struct LocalAppConnection {
     /// An instance of the app the host runs with no window
     /// ([`crate::apps::services::AuthenticatedApplicationLaunch::windowless`]).
     pub(super) windowless: bool,
-    /// The ids the launched app had before, as the launcher's catalogue believes them (the same
-    /// publisher signed them): the app keeps using the record of its earliest
-    /// ([`tilo_action_policy::EarlierIds::documents_under`]).
-    pub(super) earlier: Vec<String>,
     process: PeerProcess,
     /// What Files hands over on its connection's descriptor stream: the only
     /// app whose selected objects this broker takes. Other apps' descriptors
@@ -224,15 +220,14 @@ impl LocalAppConnection {
         process: PeerProcess,
         launch: crate::apps::services::AuthenticatedApplicationLaunch,
     ) -> Option<Arc<Self>> {
-        Self::attested_keeping(app_id, workspace_id, process, launch, Vec::new())
+        Self::attested_keeping(app_id, workspace_id, process, launch)
     }
-    /// The attested launch of `app_id`, an app that had the ids `earlier` before.
+    /// The attested launch of `app_id`.
     pub(super) fn attested_keeping(
         app_id: String,
         workspace_id: String,
         process: PeerProcess,
         launch: crate::apps::services::AuthenticatedApplicationLaunch,
-        earlier: Vec<String>,
     ) -> Option<Arc<Self>> {
         process.alive().then(|| {
             Arc::new(Self {
@@ -243,7 +238,6 @@ impl LocalAppConnection {
                 workspace_id,
                 continuation_instance: launch.continuation_instance,
                 windowless: launch.windowless,
-                earlier,
                 process,
                 connected: AtomicBool::new(true),
             })
@@ -253,21 +247,10 @@ impl LocalAppConnection {
         handoff: super::CollabLaunchHandoff,
         process: Option<PeerProcess>,
         launch: crate::apps::services::AuthenticatedApplicationLaunch,
-        earlier: Vec<String>,
     ) -> Option<Arc<Self>> {
         process.and_then(|process| {
-            Self::attested_keeping(
-                handoff.app_id,
-                handoff.workspace_id,
-                process,
-                launch,
-                earlier,
-            )
+            Self::attested_keeping(handoff.app_id, handoff.workspace_id, process, launch)
         })
-    }
-    /// Whether `app` is the launched app's id, or one it had before: a route of either is its own.
-    pub(super) fn keeps_documents_of(&self, app: &str) -> bool {
-        self.app_id == app || self.earlier.iter().any(|old| old == app)
     }
     pub(super) fn current(&self) -> bool {
         self.connected.load(Ordering::Acquire) && self.process.alive()

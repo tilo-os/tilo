@@ -50,13 +50,6 @@ pub trait PersonResourceTypes: collab_types::signer::MaybeSendSync + 'static {
     /// app's surface; by default it is ignored and only a package's counts.
     fn attached(&self, _app_id: &str, _surface: &[u8]) {}
 
-    /// The ids `app_id` had before, as the installed catalogue believes them (the same publisher
-    /// signed them, `app_catalogue::apps::earlier_ids`): the app keeps using the records of
-    /// those ids, so a route of one is its launch's own. None by default.
-    fn earlier_ids(&self, _app_id: &str) -> Vec<String> {
-        Vec::new()
-    }
-
     /// Whether `reader` declares that it reads `owner`'s records (its surface's `reads` against
     /// the owner's resource kinds), as the broker admits its read-only join: it is handed the
     /// keys that open them, and signs nothing there. None by default.
