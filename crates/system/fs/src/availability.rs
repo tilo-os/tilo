@@ -960,26 +960,6 @@ mod tests {
         }
         {
             let temp = TempDir::new().unwrap();
-            let path = temp.path().join("availability.json");
-            let id = FileDocumentId::new();
-            let version = test_hash();
-            let old_name = "draft.png";
-
-            let mut registry = AvailabilityRegistry::open(&path).unwrap();
-            let mut record = file(id, version);
-            record.policy = AvailabilityPolicy::Pinned;
-            registry.put(record).unwrap();
-
-            let new_name = "approved.png";
-            assert_ne!(old_name, new_name);
-            assert_eq!(
-                registry.effective_policy(id).unwrap(),
-                Some(AvailabilityPolicy::Pinned)
-            );
-            assert_eq!(registry.records().count(), 1);
-        }
-        {
-            let temp = TempDir::new().unwrap();
             let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
             let id = FileDocumentId::new();
             let mut record = file(id, test_hash());

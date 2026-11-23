@@ -1,12 +1,7 @@
 //! Opening the next file of a folder through the mount's open path, with
-//! the content on a real peer: what predictive hydration has made local by
-//! then, and how long the next file's first byte takes.
+//! the content on a real peer: what predictive hydration has made local by then.
 
-#![allow(
-    clippy::arithmetic_side_effects,
-    clippy::cast_precision_loss,
-    reason = "test fixtures, a simulated link's timing and a timing report"
-)]
+#![allow(clippy::arithmetic_side_effects, reason = "test fixture arithmetic")]
 
 use super::*;
 use crate::namespace::ROOT_INO;
@@ -18,12 +13,6 @@ use crate::smart::kept_history::KeptHistory;
 
 const PAGE_BYTES: usize = 2 * 1024 * 1024;
 const FIRST_READ: u64 = 64 * 1024;
-const BENCH_ENV: &str = "TILO_FS_PREFETCH_BENCH";
-const DWELL: Duration = Duration::from_secs(1);
-const BENCH_LINK: Link = Link {
-    round_trip: Duration::from_millis(40),
-    bytes_per_second: 50_000_000 / 8,
-};
 
 fn page_bytes(index: usize) -> Vec<u8> {
     let seed = u64::try_from(index).unwrap() * 2 + 1;
@@ -46,43 +35,15 @@ fn page_names(count: usize) -> Vec<(&'static str, String)> {
         .collect()
 }
 
-#[derive(Clone, Copy)]
-struct Link {
-    round_trip: Duration,
-    bytes_per_second: u64,
-}
-
-/// The other device, across a link: each fetch waits out a round trip, then its bytes cross
-/// one after another at the link's rate.
+/// The other device, reachable over the content source.
 struct OverLink {
     store: Arc<ContentStore>,
-    link: Option<Link>,
-    free_at: Arc<Mutex<tokio::time::Instant>>,
 }
 
 impl crate::hydration::ContentSource for OverLink {
     fn fetch(&self, hash: Hash) -> futures_util::future::BoxFuture<'static, Option<bytes::Bytes>> {
-        let (store, link, free_at) = (
-            Arc::clone(&self.store),
-            self.link,
-            Arc::clone(&self.free_at),
-        );
-        Box::pin(async move {
-            let bytes = store.local(hash).await?;
-            if let Some(link) = link {
-                tokio::time::sleep(link.round_trip).await;
-                let on_the_wire =
-                    Duration::from_secs_f64(bytes.len() as f64 / link.bytes_per_second as f64);
-                let sent_at = {
-                    let mut free_at = free_at.lock().unwrap();
-                    let sent_at = (*free_at).max(tokio::time::Instant::now()) + on_the_wire;
-                    *free_at = sent_at;
-                    sent_at
-                };
-                tokio::time::sleep_until(sent_at).await;
-            }
-            Some(bytes)
-        })
+        let store = Arc::clone(&self.store);
+        Box::pin(async move { store.local(hash).await })
     }
 }
 
@@ -93,7 +54,7 @@ struct RemoteFolder {
 }
 
 impl RemoteFolder {
-    async fn with_files(files: &[(&str, String)], link: Option<Link>) -> Self {
+    async fn with_files(files: &[(&str, String)]) -> Self {
         let files_given = files;
         let source_store = Arc::new(ContentStore::memory());
         let mut hashes = Vec::with_capacity(files.len());
@@ -109,8 +70,6 @@ impl RemoteFolder {
         let hydrator = Arc::new(Hydrator::new(Arc::new(ContentStore::memory())).with_source(
             Arc::new(OverLink {
                 store: source_store,
-                link,
-                free_at: Arc::new(Mutex::new(tokio::time::Instant::now())),
             }),
         ));
         let namespace = Arc::new(Mutex::new(Namespace::new("prediction").unwrap()));
@@ -190,17 +149,14 @@ impl RemoteFolder {
         (dir, ino)
     }
 
-    async fn open_and_time_first_byte(&self, index: usize) -> Duration {
+    async fn open_and_read_first_byte(&self, index: usize) {
         let (ino, hash) = self.files[index];
         self.fs.predict_after_open(ino);
-        let started = Instant::now();
         let bytes = self.fs.hydrator.read(hash, 0, FIRST_READ).await.unwrap();
-        let elapsed = started.elapsed();
         assert_eq!(
             bytes,
             page_bytes(index)[..usize::try_from(FIRST_READ).unwrap()]
         );
-        elapsed
     }
 
     async fn settle(&self) {
@@ -223,9 +179,9 @@ impl RemoteFolder {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn paging_through_a_folder_finds_each_next_page_local() {
-    let folder = RemoteFolder::with_files(&page_names(12), None).await;
+    let folder = RemoteFolder::with_files(&page_names(12)).await;
     for index in 0..folder.files.len() - 1 {
-        folder.open_and_time_first_byte(index).await;
+        folder.open_and_read_first_byte(index).await;
         folder.settle().await;
         assert!(
             folder.is_local(index + 1).await,
@@ -260,11 +216,11 @@ fn report_and_chart() -> Vec<(&'static str, String)> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_opened_together_before_is_hydrated_with_it_only_if_readable() {
     {
-        let folder = RemoteFolder::with_files(&report_and_chart(), None).await;
+        let folder = RemoteFolder::with_files(&report_and_chart()).await;
         let opens = [folder.open_of(0), folder.open_of(1)];
         seed_opened_together(&folder.fs, &opens);
         assert!(!folder.is_local(1).await);
-        folder.open_and_time_first_byte(0).await;
+        folder.open_and_read_first_byte(0).await;
         folder.settle().await;
         assert!(
             folder.is_local(1).await,
@@ -274,7 +230,7 @@ async fn a_file_opened_together_before_is_hydrated_with_it_only_if_readable() {
     }
     {
         const ME: [u8; 32] = [0xB7; 32];
-        let folder = RemoteFolder::with_files(&report_and_chart(), None).await;
+        let folder = RemoteFolder::with_files(&report_and_chart()).await;
         let opens = [folder.open_of(0), folder.open_of(1)];
         let mut acl = crate::acl::WorkspaceAcl::new();
         acl.grant_read(ME, "/scans/report.pdf");
@@ -284,69 +240,13 @@ async fn a_file_opened_together_before_is_hydrated_with_it_only_if_readable() {
             folder.fs.predictive_candidates(opens[0].1).is_empty(),
             "a partner outside the view is never a candidate"
         );
-        folder.open_and_time_first_byte(0).await;
+        folder.open_and_read_first_byte(0).await;
         folder.settle().await;
         assert!(
             !folder.is_local(1).await,
             "the history cannot carry content across the view's boundary"
         );
         folder.close();
-    }
-}
-
-fn percentile(sorted: &[Duration], percent: usize) -> Duration {
-    let rank = (sorted.len() * percent).div_ceil(100).max(1);
-    sorted[rank - 1]
-}
-
-async fn timed_paging(scenario: &str, order: &[usize], predict: bool) {
-    let folder = RemoteFolder::with_files(&page_names(order.len()), Some(BENCH_LINK)).await;
-    if !predict {
-        folder
-            .fs
-            .heuristics
-            .set_policy(crate::smart::PredictivePolicy {
-                enabled: false,
-                ..crate::smart::PredictivePolicy::default()
-            });
-    }
-    let mut next = Vec::new();
-    let mut local = 0_usize;
-    for (step, index) in order.iter().copied().enumerate() {
-        let was_local = folder.is_local(index).await;
-        let ttfb = folder.open_and_time_first_byte(index).await;
-        if step > 0 {
-            next.push(ttfb);
-            local += usize::from(was_local);
-        }
-        tokio::time::sleep(DWELL).await;
-    }
-    next.sort();
-    let (ranged, loose) = folder.fs.hydrator.received_bytes();
-    eprintln!(
-        "PERF {scenario} prefetch={} next-page ttfb p50 {:.2} ms p90 {:.2} ms max {:.2} ms; \
-         local before open {local}/{}; received {:.1} MiB",
-        if predict { "on" } else { "off" },
-        percentile(&next, 50).as_secs_f64() * 1e3,
-        percentile(&next, 90).as_secs_f64() * 1e3,
-        next.last().unwrap().as_secs_f64() * 1e3,
-        next.len(),
-        (ranged + loose) as f64 / (1024.0 * 1024.0),
-    );
-    folder.close();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn time_to_first_byte_of_the_next_page() {
-    if std::env::var_os(BENCH_ENV).is_none() {
-        return;
-    }
-    let forwards: Vec<usize> = (0..12).collect();
-    let backwards: Vec<usize> = (0..12).rev().collect();
-    for (scenario, order) in [("forwards", &forwards), ("backwards", &backwards)] {
-        for predict in [false, true] {
-            timed_paging(scenario, order, predict).await;
-        }
     }
 }
 
@@ -363,7 +263,7 @@ fn predicts(folder: &RemoteFolder, from: usize, to: usize) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn files_opened_together_still_predict_each_other_after_a_restart() {
     {
-        let folder = RemoteFolder::with_files(&report_and_chart(), None).await;
+        let folder = RemoteFolder::with_files(&report_and_chart()).await;
         seed_opened_together(&folder.fs, &[folder.open_of(0), folder.open_of(1)]);
         assert!(predicts(&folder, 0, 1), "warm before the restart");
         let folder = folder.restart(None);
@@ -375,7 +275,7 @@ async fn files_opened_together_still_predict_each_other_after_a_restart() {
     }
     {
         let root = tempfile::tempdir().unwrap();
-        let folder = RemoteFolder::with_files(&report_and_chart(), None)
+        let folder = RemoteFolder::with_files(&report_and_chart())
             .await
             .keep_history(root.path(), NEVER);
         seed_opened_together(&folder.fs, &[folder.open_of(0), folder.open_of(1)]);
@@ -388,7 +288,7 @@ async fn files_opened_together_still_predict_each_other_after_a_restart() {
             "the old mount kept its history"
         );
         assert!(!folder.is_local(1).await);
-        folder.open_and_time_first_byte(0).await;
+        folder.open_and_read_first_byte(0).await;
         folder.settle().await;
         assert!(
             folder.is_local(1).await,
@@ -404,7 +304,7 @@ async fn opening_files_never_writes_the_kept_history() {
     const BURST: usize = 20;
     {
         let root = tempfile::tempdir().unwrap();
-        let folder = RemoteFolder::with_files(&report_and_chart(), None)
+        let folder = RemoteFolder::with_files(&report_and_chart())
             .await
             .keep_history(root.path(), NEVER);
         for open in 0..BURST {
@@ -416,7 +316,7 @@ async fn opening_files_never_writes_the_kept_history() {
     }
     {
         let root = tempfile::tempdir().unwrap();
-        let folder = RemoteFolder::with_files(&report_and_chart(), None)
+        let folder = RemoteFolder::with_files(&report_and_chart())
             .await
             .keep_history(root.path(), NEVER);
         for open in 0..BURST {
@@ -431,7 +331,7 @@ async fn opening_files_never_writes_the_kept_history() {
     }
     {
         let root = tempfile::tempdir().unwrap();
-        let folder = RemoteFolder::with_files(&report_and_chart(), None)
+        let folder = RemoteFolder::with_files(&report_and_chart())
             .await
             .keep_history(root.path(), Duration::from_millis(1));
         folder.fs.predict_after_open(folder.files[0].0);
@@ -460,7 +360,7 @@ fn kept_pairs(folder: &RemoteFolder) -> usize {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn turning_prefetch_off_forgets_the_kept_history() {
     let root = tempfile::tempdir().unwrap();
-    let folder = RemoteFolder::with_files(&report_and_chart(), None)
+    let folder = RemoteFolder::with_files(&report_and_chart())
         .await
         .keep_history(root.path(), NEVER);
     seed_opened_together(&folder.fs, &[folder.open_of(0), folder.open_of(1)]);
@@ -505,7 +405,7 @@ async fn turning_prefetch_off_forgets_the_kept_history() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_corrupt_kept_history_is_discarded() {
     let root = tempfile::tempdir().unwrap();
-    let mut folder = RemoteFolder::with_files(&report_and_chart(), None)
+    let mut folder = RemoteFolder::with_files(&report_and_chart())
         .await
         .keep_history(root.path(), NEVER);
     seed_opened_together(&folder.fs, &[folder.open_of(0), folder.open_of(1)]);
@@ -526,37 +426,4 @@ async fn a_corrupt_kept_history_is_discarded() {
         assert_eq!(kept_pairs(&folder), 0, "nothing of the {case} file is used");
     }
     folder.close();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn first_read_after_restart() {
-    const ROUNDS: usize = 7;
-    if std::env::var_os(BENCH_ENV).is_none() {
-        return;
-    }
-    for warm in [false, true] {
-        let mut reads = Vec::with_capacity(ROUNDS);
-        let mut local = 0_usize;
-        for _ in 0..ROUNDS {
-            let root = tempfile::tempdir().unwrap();
-            let folder = RemoteFolder::with_files(&report_and_chart(), Some(BENCH_LINK))
-                .await
-                .keep_history(root.path(), NEVER);
-            seed_opened_together(&folder.fs, &[folder.open_of(0), folder.open_of(1)]);
-            let folder = folder.restart(warm.then_some((root.path(), NEVER)));
-            folder.open_and_time_first_byte(0).await;
-            tokio::time::sleep(DWELL).await;
-            local += usize::from(folder.is_local(1).await);
-            reads.push(folder.open_and_time_first_byte(1).await);
-            folder.close();
-        }
-        reads.sort();
-        eprintln!(
-            "PERF after-restart history={} partner first read p50 {:.2} ms max {:.2} ms; \
-             local before open {local}/{ROUNDS}",
-            if warm { "kept" } else { "forgotten" },
-            percentile(&reads, 50).as_secs_f64() * 1e3,
-            reads.last().unwrap().as_secs_f64() * 1e3,
-        );
-    }
 }
