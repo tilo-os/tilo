@@ -176,15 +176,22 @@ impl Workspaces {
         }
         let parsed = nextcloud::server_url(&server).map_err(|error| error.to_string())?;
         let named = named_by(&parsed)?;
+        let lookup = reach.lookup();
+        if reach.is_public() {
+            let answers = lookup(named).await.map_err(|error| {
+                if tilo_net::address::not_public(&error) {
+                    "That server's address is not one this server may call".to_owned()
+                } else {
+                    "No server was found under that name".to_owned()
+                }
+            })?;
+            if answers.is_empty() {
+                return Err("No server was found under that name".into());
+            }
+        }
         let flow = tokio::task::spawn_blocking({
             let server = server.clone();
-            let reach = reach.clone();
-            move || {
-                if !reach.takes(&named) {
-                    return Err("That server's address is not one this server may call".into());
-                }
-                nextcloud::begin_looking(&server, reach.lookup()).map_err(|error| error.to_string())
-            }
+            move || nextcloud::begin_looking(&server, lookup).map_err(|error| error.to_string())
         })
         .await
         .map_err(|_| "the Nextcloud server was not asked to the end".to_string())??;
@@ -472,63 +479,15 @@ fn named_by(url: &Url) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream};
+    use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use test_http::CountingListener;
     use tilo_account_probe::imap::Reach;
 
     use super::*;
     use crate::workspaces::tests::{governor, test_host};
-
-    /// A loopback TCP listener that counts every accepted connection and closes
-    /// it immediately, so a client never waits out a read timeout.
-    struct CountingListener {
-        port: u16,
-        accepted: Arc<AtomicUsize>,
-        stop: Arc<AtomicBool>,
-        worker: Option<std::thread::JoinHandle<()>>,
-    }
-
-    impl CountingListener {
-        fn start() -> Self {
-            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a port here");
-            let port = listener.local_addr().expect("its address").port();
-            let accepted = Arc::new(AtomicUsize::new(0));
-            let stop = Arc::new(AtomicBool::new(false));
-            let count = Arc::clone(&accepted);
-            let stopping = Arc::clone(&stop);
-            let worker = std::thread::spawn(move || {
-                while let Ok((stream, _)) = listener.accept() {
-                    if stopping.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    count.fetch_add(1, Ordering::SeqCst);
-                    drop(stream);
-                }
-            });
-            Self {
-                port,
-                accepted,
-                stop,
-                worker: Some(worker),
-            }
-        }
-
-        fn count(&self) -> usize {
-            self.accepted.load(Ordering::SeqCst)
-        }
-    }
-
-    impl Drop for CountingListener {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::SeqCst);
-            let _ = TcpStream::connect((Ipv4Addr::LOCALHOST, self.port));
-            if let Some(worker) = self.worker.take() {
-                let _ = worker.join();
-            }
-        }
-    }
 
     /// A look-up that answers with a public address on its first asking and
     /// `127.0.0.1` afterwards, counting every call.
@@ -612,7 +571,7 @@ mod tests {
         let host = test_host(dir.path(), &key, &owner).await;
         let workspaces = host.workspaces();
         let listener = CountingListener::start();
-        let server = format!("https://localhost:{}", listener.port);
+        let server = format!("https://localhost:{}", listener.port());
         let asking = nextcloud_asking(server);
 
         let asked = Arc::new(AtomicUsize::new(0));
@@ -638,7 +597,7 @@ mod tests {
             "https://[::1]",
             "https://10.0.0.7",
             "https://2130706433",
-            &format!("http://127.0.0.1:{}", listener.port),
+            &format!("http://127.0.0.1:{}", listener.port()),
         ] {
             let err = workspaces
                 .begin_sign_in(
@@ -654,6 +613,55 @@ mod tests {
             );
         }
         assert_eq!(listener.count(), 0, "inside literals reach nobody");
+
+        // An inside name is refused before anything is sent, and a name that
+        // does not resolve gets the not-found answer rather than a refusal;
+        // the listener is reached in neither case.
+        let inside_lookup: tilo_net::address::Lookup = Arc::new(|_name: String| {
+            Box::pin(async { Ok(vec![IpAddr::from(Ipv4Addr::LOCALHOST)]) })
+        });
+        let inside_reach = Reach::public().looked_up_by(inside_lookup);
+        let inside_named = format!("https://inside.example.test:{}", listener.port());
+        assert_eq!(
+            workspaces
+                .begin_sign_in(
+                    ([1; 32], "workspace-a"),
+                    &nextcloud_asking(inside_named),
+                    &inside_reach,
+                )
+                .await
+                .unwrap_err(),
+            "That server's address is not one this server may call"
+        );
+
+        let missing_lookup: tilo_net::address::Lookup = Arc::new(|name: String| {
+            Box::pin(async move {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("{name} does not resolve"),
+                ))
+            })
+        });
+        let empty_lookup: tilo_net::address::Lookup =
+            Arc::new(|_name: String| Box::pin(async { Ok(Vec::new()) }));
+        let missing_named = format!("https://missing.example.test:{}", listener.port());
+        for unresolvable in [
+            Reach::public().looked_up_by(missing_lookup),
+            Reach::public().looked_up_by(empty_lookup),
+        ] {
+            assert_eq!(
+                workspaces
+                    .begin_sign_in(
+                        ([1; 32], "workspace-a"),
+                        &nextcloud_asking(missing_named.clone()),
+                        &unresolvable,
+                    )
+                    .await
+                    .unwrap_err(),
+                "No server was found under that name"
+            );
+        }
+        assert_eq!(listener.count(), 0, "inside and missing names reach nobody");
 
         // Where the operator lets the server call its own network, it connects
         // as on main, proving the listener counts connections.
