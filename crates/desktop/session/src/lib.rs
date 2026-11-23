@@ -451,6 +451,8 @@ pub mod windows;
 #[cfg(target_os = "linux")]
 mod windows_compat;
 #[cfg(target_os = "linux")]
+mod workspace_agent_service;
+#[cfg(target_os = "linux")]
 mod workspace_branch;
 #[cfg(target_os = "linux")]
 mod workspace_delete;

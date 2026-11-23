@@ -99,6 +99,15 @@ conversation when they look.";
 /// currency: ten thousand, far past what a day's work costs.
 pub const MAX_SPEND_LIMIT_MICROS: u64 = 10_000_000_000;
 
+/// Whether the person at a window may pause or resume one of the workspace's agents: the
+/// record's own answer for `pause-agent` and `resume-agent`, or the workspace's governance,
+/// read beside the roster so a settings view offers the switch only to whoever may use it.
+#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentPermissions {
+    pub pause: bool,
+    pub resume: bool,
+}
+
 /// What an agent spent on one day, as it was counted: a later day's first
 /// charge replaces it, so no reading of an old day is a reading of this one.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -56,6 +56,9 @@ wire-frame = { version = "0.1.0", path = "../../platform/wire-frame" }
 # The native records an app keeps for its whole workspace, whose surfaces a package keeping
 # them publishes beside its own.
 tilo-workspace-emoji = { version = "0.1.0", path = "../../sdk/tilo-workspace-emoji" }
+# The workspace's record of its agents, which a settings view reads and pauses through its own
+# actions.
+tilo-workspace-agent = { version = "0.1.0", path = "../../sdk/tilo-workspace-agent" }
 moderation-model = { version = "0.1.0", path = "../../../apps/moderation-model" }
 
 [dev-dependencies]

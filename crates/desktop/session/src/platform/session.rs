@@ -1514,6 +1514,16 @@ impl Session {
                 &options.person,
                 options.wake.handle(),
             )));
+        // The workspace's record of its agents, and whether the person may pause or resume one:
+        // what the workspace settings' Agents tab lists and switches through its own actions.
+        services
+            .borrow_mut()
+            .add(Box::new(crate::workspace_agent_service::WorkspaceAgentService::new(
+                daemon.clone(),
+                handle.clone(),
+                &options.person,
+                options.wake.handle(),
+            )));
 
         // The person's other devices, and the files the studio and Files hand
         // them, as a resource the shell's quick settings, an agent and a script

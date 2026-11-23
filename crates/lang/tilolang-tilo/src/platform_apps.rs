@@ -34,6 +34,10 @@ pub const CONTACTS_APP: &str = "so.tilo.contacts.directory";
 pub use tilo_app_id::apps::SETTINGS as SETTINGS_APP;
 /// The app a workspace's own actions are published under: `use tilo.workspace`.
 pub const WORKSPACE_APP: &str = tilo_action_policy::agent_answers::WORKSPACE_APP;
+/// The app that keeps a workspace's record of its agents: `use so.tilo.assistant as assistant`.
+/// A settings view reads the roster there and changes an agent's working state through the
+/// record's own actions (`pause-agent`, `resume-agent`).
+pub const ASSISTANT_APP: &str = "so.tilo.assistant";
 /// The device's image model app: the picture bounded and sent to the model, as
 /// actions, and the library analysis run (`tilo_vision_service`). It is a platform package,
 /// not an installed app, so it has no first-party app id.
@@ -224,6 +228,22 @@ const CONTACTS_ROOTS: &[(&str, &str, &str)] = &[(
     "contacts:tilo.contacts.identities",
 )];
 
+/// The resources Assistant publishes of the workspace's record of its agents, which the
+/// workspace settings' Agents tab reads and switches: the roster itself, and whether the person
+/// at this window may pause or resume one of them.
+const ASSISTANT_ROOTS: &[(&str, &str, &str)] = &[
+    (
+        "agents",
+        "WorkspaceAgent",
+        "assistant:tilo.workspace.agent",
+    ),
+    (
+        "agent_permissions",
+        "AgentPermissions",
+        "assistant:tilo.workspace.agent-permissions",
+    ),
+];
+
 /// One app the platform publishes to programs: what people call it, the resource kinds of its
 /// surface a program reads (all of them when empty), the roots a program names of it
 /// (`(name, type, published resource)`), and the committed surface files it is read from.
@@ -236,6 +256,10 @@ struct Published {
     /// some of its resources (the settings service's agent model choice, the image model
     /// service's run): each read the same way, whichever wrote it.
     files: &'static [&'static str],
+    /// A surface read from code rather than a committed file, for a record whose surface is
+    /// its type's own (`WorkspaceAgents::surface`): what the app's code declares, so it cannot
+    /// drift from it.
+    built: Option<fn() -> Vec<Surface>>,
     /// Its actions keep the ids its file declares (a tilolang package's description), rather
     /// than being named by its app.
     described: bool,
@@ -252,6 +276,7 @@ const PUBLISHED: &[Published] = &[
         roots: DEVICE_ROOTS,
         files: &[include_str!("../../../desktop/session/device-surface.json")],
         described: false,
+        built: None,
     },
     Published {
         app: SETTINGS_APP,
@@ -265,6 +290,7 @@ const PUBLISHED: &[Published] = &[
             include_str!("../../../session/settings-service/agent-providers-surface.json"),
         ],
         described: false,
+        built: None,
     },
     Published {
         app: CONTACTS_APP,
@@ -275,6 +301,7 @@ const PUBLISHED: &[Published] = &[
             "../../../integrations/tilo-contact-directory/surface.json"
         )],
         described: false,
+        built: None,
     },
     Published {
         app: VISION_APP,
@@ -283,6 +310,7 @@ const PUBLISHED: &[Published] = &[
         roots: VISION_ROOTS,
         files: &[include_str!("../../../services/vision/surface.json")],
         described: false,
+        built: None,
     },
     Published {
         app: WORKSPACE_APP,
@@ -294,6 +322,18 @@ const PUBLISHED: &[Published] = &[
             "../../../core/tilo-workspace-service/workspace-surface.toml"
         )],
         described: false,
+        built: None,
+    },
+    Published {
+        app: ASSISTANT_APP,
+        title: "Assistant",
+        kinds: &[],
+        roots: ASSISTANT_ROOTS,
+        files: &[],
+        // The record of the workspace's agents and the reading of what a person may change of
+        // it are their types' own surfaces, so they are read from the code that declares them.
+        built: Some(assistant_surfaces),
+        described: false,
     },
     Published {
         app: SESSION_APP,
@@ -302,6 +342,7 @@ const PUBLISHED: &[Published] = &[
         roots: &[],
         files: &[include_str!("../../../../apps/tl/session/surface.toml")],
         described: true,
+        built: None,
     },
 ];
 
@@ -313,6 +354,19 @@ const PUBLISHED: &[Published] = &[
 /// A surface the file holds that does not read.
 pub fn device_surfaces() -> Result<Vec<tilo_actions::surface::Surface>, String> {
     surfaces_of(include_str!("../../../desktop/session/device-surface.json"))
+}
+
+/// The surfaces Assistant publishes of the workspace's record of its agents: the record itself,
+/// whose fields and actions its type declares, and the permissions reading a settings view
+/// offers the switch by.
+fn assistant_surfaces() -> Vec<Surface> {
+    vec![
+        <tilo_workspace_agent::WorkspaceAgents as tilo_resource::Resource>::surface(),
+        tilo_resource::surface::reading_surface::<
+            tilo_workspace_agent::AgentPermissions,
+            tilo_resource::NoEffect,
+        >("tilo.workspace.agent-permissions", "Agent permissions"),
+    ]
 }
 
 /// The platform's resources a view reads, each as the session publishes it (`power:battery`)
@@ -350,6 +404,9 @@ fn package(published: &Published) -> Result<PackageMeta, String> {
     let mut surfaces = Vec::new();
     for file in published.files {
         surfaces.extend(surfaces_of(file)?);
+    }
+    if let Some(built) = published.built {
+        surfaces.extend(built());
     }
     if !published.kinds.is_empty() {
         surfaces.retain(|surface| published.kinds.contains(&surface.kind.as_str()));
