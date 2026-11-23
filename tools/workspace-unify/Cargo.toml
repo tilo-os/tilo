@@ -218,7 +218,7 @@ doc = false
 "cookie-factory-0_3_3" = { package = "cookie-factory", version = "^0.3.3", default-features = false, features = ["std"] }
 "cordyceps-0_3_4" = { package = "cordyceps", version = "^0.3.4", default-features = false, features = ["default"] }
 "core_maths-0_1_1" = { package = "core_maths", version = "^0.1.1", default-features = false, features = [] }
-"cosmic-text-0_19_0" = { package = "cosmic-text", path = "../../vendor/cosmic-text", default-features = false, features = ["fontconfig", "peniko", "std", "swash", "sys-locale"] }
+"cosmic-text-0_19_0" = { package = "tilo-cosmic-text", path = "../../vendor/cosmic-text", default-features = false, features = ["fontconfig", "peniko", "std", "swash", "sys-locale"] }
 "cpubits-0_1_1" = { package = "cpubits", version = "^0.1.1", default-features = false, features = [] }
 "cpufeatures-0_2_17" = { package = "cpufeatures", version = "^0.2.17", default-features = false, features = [] }
 "cpufeatures-0_3_0" = { package = "cpufeatures", version = "^0.3.0", default-features = false, features = [] }
@@ -1087,7 +1087,7 @@ doc = false
 "syntect-5_3_0" = { package = "syntect", version = "^5.3.0", default-features = false, features = ["bincode", "dump-create", "dump-load", "fancy-regex", "flate2", "fnv", "parsing", "plist", "plist-load", "regex-fancy", "regex-syntax", "yaml-load", "yaml-rust"] }
 "sys-locale-0_3_2" = { package = "sys-locale", version = "^0.3.2", default-features = false, features = [] }
 "sysinfo-0_36_1" = { package = "sysinfo", version = "^0.36.1", default-features = false, features = ["component", "default", "disk", "network", "objc2-io-kit", "system", "user"] }
-"taffy-0_10_1" = { package = "taffy", path = "../../vendor/taffy", default-features = false, features = ["alloc", "block_layout", "calc", "content_size", "default", "detailed_layout_info", "flexbox", "float_layout", "grid", "std", "taffy_tree"] }
+"taffy-0_10_1" = { package = "tilo-taffy", path = "../../vendor/taffy", default-features = false, features = ["alloc", "block_layout", "calc", "content_size", "default", "detailed_layout_info", "flexbox", "float_layout", "grid", "std", "taffy_tree"] }
 "tagptr-0_2_0" = { package = "tagptr", version = "^0.2.0", default-features = false, features = [] }
 "tantivy-0_27_0" = { package = "tantivy", version = "^0.27.0", default-features = false, features = ["fs4", "memmap2", "mmap", "tempfile"] }
 "tantivy-bitpacker-0_27_0" = { package = "tantivy-bitpacker", version = "^0.27.0", default-features = false, features = [] }
@@ -2841,7 +2841,7 @@ doc = false
 "cookie-factory-0_3_3" = { package = "cookie-factory", version = "^0.3.3", default-features = false, features = ["std"] }
 "cordyceps-0_3_4" = { package = "cordyceps", version = "^0.3.4", default-features = false, features = ["default"] }
 "core_maths-0_1_1" = { package = "core_maths", version = "^0.1.1", default-features = false, features = [] }
-"cosmic-text-0_19_0" = { package = "cosmic-text", path = "../../vendor/cosmic-text", default-features = false, features = ["fontconfig", "peniko", "std", "swash", "sys-locale"] }
+"cosmic-text-0_19_0" = { package = "tilo-cosmic-text", path = "../../vendor/cosmic-text", default-features = false, features = ["fontconfig", "peniko", "std", "swash", "sys-locale"] }
 "cpubits-0_1_1" = { package = "cpubits", version = "^0.1.1", default-features = false, features = [] }
 "cpufeatures-0_2_17" = { package = "cpufeatures", version = "^0.2.17", default-features = false, features = [] }
 "cpufeatures-0_3_0" = { package = "cpufeatures", version = "^0.3.0", default-features = false, features = [] }
@@ -3707,7 +3707,7 @@ doc = false
 "syntect-5_3_0" = { package = "syntect", version = "^5.3.0", default-features = false, features = ["bincode", "dump-create", "dump-load", "fancy-regex", "flate2", "fnv", "parsing", "plist", "plist-load", "regex-fancy", "regex-syntax", "yaml-load", "yaml-rust"] }
 "sys-locale-0_3_2" = { package = "sys-locale", version = "^0.3.2", default-features = false, features = [] }
 "sysinfo-0_36_1" = { package = "sysinfo", version = "^0.36.1", default-features = false, features = ["component", "default", "disk", "network", "objc2-io-kit", "system", "user"] }
-"taffy-0_10_1" = { package = "taffy", path = "../../vendor/taffy", default-features = false, features = ["alloc", "block_layout", "calc", "content_size", "default", "detailed_layout_info", "flexbox", "float_layout", "grid", "std", "taffy_tree"] }
+"taffy-0_10_1" = { package = "tilo-taffy", path = "../../vendor/taffy", default-features = false, features = ["alloc", "block_layout", "calc", "content_size", "default", "detailed_layout_info", "flexbox", "float_layout", "grid", "std", "taffy_tree"] }
 "tagptr-0_2_0" = { package = "tagptr", version = "^0.2.0", default-features = false, features = [] }
 "tantivy-0_27_0" = { package = "tantivy", version = "^0.27.0", default-features = false, features = ["fs4", "memmap2", "mmap", "tempfile"] }
 "tantivy-bitpacker-0_27_0" = { package = "tantivy-bitpacker", version = "^0.27.0", default-features = false, features = [] }

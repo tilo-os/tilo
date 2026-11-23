@@ -714,7 +714,10 @@ tilo-app-id = { path = "crates/core/tilo-app-id", version = "0.1.0" }
 vello = { package = "tilo-vello", version = "0.9.0", path = "vendor/vello" }
 vello_encoding = { package = "tilo-vello-encoding", version = "0.9.0", path = "vendor/vello_encoding" }
 wgpu = "29"
-taffy = "0.10.1"
+# Tilo's taffy fork, published as tilo-taffy; the library keeps its name. It rounds layout onto
+# the display's device pixels at any scale, not only whole logical pixels, and measures a flex
+# item at the cross size it is laid out at. See vendor/taffy/TILO-PATCH.md.
+taffy = { package = "tilo-taffy", version = "0.10.1", path = "vendor/taffy" }
 # Tilo's winit fork, published as tilo-winit; the library keeps its name.
 # crates.io crates reach it through the `[patch]` facade below. The default
 # `wayland-csd-adwaita` draws titles through ab_glyph and owned_ttf_parser;
@@ -733,7 +736,10 @@ pollster = "0.4.0"
 rustc-hash = "2.1"
 # FNV-1a for stable, persisted identifiers: a fixed algorithm, unlike std's hashers.
 fnv = "1"
-cosmic-text = { version = "0.19.0", default-features = false }
+# Tilo's cosmic-text fork, published as tilo-cosmic-text; the library keeps its name. It shapes a
+# variable font at its `wdth` as well as its `wght`, so condensed text is measured and kerned at
+# the width it is drawn. See vendor/cosmic-text/TILO-PATCH.md.
+cosmic-text = { package = "tilo-cosmic-text", version = "0.19.0", path = "vendor/cosmic-text", default-features = false }
 
 # ---------------------------------------------------------------------------
 # Async runtime and networking
@@ -999,9 +1005,9 @@ opt-level = 3
 opt-level = 3
 [profile.test.package.wgpu-hal]
 opt-level = 3
-[profile.dev.package.taffy]
+[profile.dev.package.tilo-taffy]
 opt-level = 3
-[profile.test.package.taffy]
+[profile.test.package.tilo-taffy]
 opt-level = 3
 
 # The CPU raster path draws every frame of a window that has no GPU: the
@@ -1309,9 +1315,9 @@ opt-level = 3
 # Text shaping (cosmic-text, fontdb, slotmap and the unicode tables) dominates
 # large-document editor tests, and RSA key generation (crypto-bigint) dominates
 # the tilo-crypto tests, when built at opt-level 0.
-[profile.dev.package.cosmic-text]
+[profile.dev.package.tilo-cosmic-text]
 opt-level = 3
-[profile.test.package.cosmic-text]
+[profile.test.package.tilo-cosmic-text]
 opt-level = 3
 [profile.dev.package.slotmap]
 opt-level = 3
@@ -1648,14 +1654,6 @@ fcast-sender-sdk = { path = "vendor/fcast-sender-sdk" }
 # See the two vendor PROVENANCE.md files.
 librespot-core = { path = "vendor/librespot-core" }
 hyper-proxy2 = { path = "vendor/hyper-proxy2" }
-# Shapes a variable font at its `wdth` as well as its `wght`, so condensed
-# text is measured and kerned at the width it is drawn. See
-# vendor/cosmic-text/TILO-PATCH.md.
-cosmic-text = { path = "vendor/cosmic-text" }
-# Rounds layout onto the display's device pixels at any scale, not only whole
-# logical pixels, and measures a flex item at the cross size it is laid out
-# at. See vendor/taffy/TILO-PATCH.md.
-taffy = { path = "vendor/taffy" }
 # Erasing above the cursor clears the first line too. See
 # vendor/alacritty_terminal/PROVENANCE.md.
 alacritty_terminal = { path = "vendor/alacritty_terminal" }

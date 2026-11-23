@@ -1,6 +1,6 @@
 //! Typed builders for the toolkit's described components, generated from the catalogue.
 //!
-//! Each component of `crates/ui/ui-graph/components.json` becomes a builder: a function that
+//! Each component of the toolkit's catalogue (`tilo_ui_graph::component::SHIPPED`) becomes a builder: a function that
 //! takes its required props that no one may leave out as arguments, then a method per optional
 //! prop, then the node ([`crate::ui::build`]). Each method takes the Rust type the prop's
 //! declared kind maps to, so a view cannot name a prop the component does not declare, nor give
@@ -13,15 +13,12 @@
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
-
-const CATALOGUE: &str = "../../ui/ui-graph/components.json";
+use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("cargo::rerun-if-changed={CATALOGUE}");
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(CATALOGUE);
-    let raw = std::fs::read_to_string(path)?;
-    let catalogue: serde_json::Value = serde_json::from_str(&raw)?;
+    // The catalogue comes in as a build dependency's text, not a path into the toolkit's sources,
+    // so this crate builds from its published package alone.
+    let catalogue: serde_json::Value = serde_json::from_str(tilo_ui_graph::component::SHIPPED)?;
     let mut out = String::new();
     emit(&mut out, &catalogue)?;
     let output = std::env::var_os("OUT_DIR")

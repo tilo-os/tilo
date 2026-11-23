@@ -1477,6 +1477,10 @@ impl Registry {
                 )
                 .collect(),
             enums: self.sets.iter().flat_map(|set| (set.enums)()).collect(),
+            icons: crate::icons::Icon::ALL
+                .iter()
+                .map(|icon| icon.name().to_owned())
+                .collect(),
         }
     }
 }

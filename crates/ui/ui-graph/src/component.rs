@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The version of the description format: a change to the shape of [`Description`] bumps it.
-pub const FORMAT_VERSION: u32 = 9;
+pub const FORMAT_VERSION: u32 = 10;
 
 /// The prop a component carries when its block gives such a part: the row offers to open into its
 /// document, which comes once it is open.
@@ -32,6 +32,10 @@ pub struct Catalogue {
     /// The closed sets with fields a prop can name ([`Type::Cases`]): a drawing's shapes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enums: Vec<EnumDescription>,
+    /// The toolkit's icon set, by kebab-case name (`more-horizontal`): what a prop of an icon
+    /// may name, read by tilolang and the tools without linking the toolkit.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub icons: Vec<String>,
 }
 
 /// A closed set whose cases carry fields, as a tilolang `enum` with payloads reads it: the

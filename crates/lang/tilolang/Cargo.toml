@@ -2,8 +2,10 @@
 name = "tilolang"
 version = "0.1.0"
 edition = "2024"
-publish = false
-license.workspace = true
+publish = true
+# Anyone may compile tilolang into their own program, open source or not: the compiler is MIT
+# with the rest of what an app is built from (LICENSING.md).
+license = "MIT"
 description = "Compiler for tilolang, the Tilo app language: parser, canonical printer, ids lock, type and effect checker, wasm backend and package metadata."
 repository.workspace = true
 homepage.workspace = true

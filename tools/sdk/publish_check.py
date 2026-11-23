@@ -4,8 +4,8 @@
 The builder crates are every workspace crate in the dependency closure of
 ROOTS (the toolkit, the app SDK and tilolang: its compiler, runtime, lexer,
 command and browser build), including the forks they depend on under their
-own names (tilo-winit, tilo-accesskit-winit, tilo-vello*,
-tilo-automerge-fork). For each one this prints what publishing still needs:
+own names (tilo-winit, tilo-accesskit-winit, tilo-vello*, tilo-taffy,
+tilo-cosmic-text, tilo-automerge-fork). For each one this prints what publishing still needs:
 
 - `publish = false` (the workspace default);
 - a missing `description`, `license` or `repository`;
@@ -148,7 +148,15 @@ UPSTREAM_SUFFICES = {
     "atspi-common": "dependency trim; same API",
     "atspi-proxies": "dependency trim; same API",
     "genawaiter-proc-macro": "drops the unmaintained proc-macro-error; same macro output",
+    "hexane": "automerge's column store giving back the capacity a split slab no longer uses; "
+    "same API, an app on the release holds more memory after long edits",
+    "pulldown-cmark": "code size only: the HTML entity table without relocated pointers; same API",
+    "regex-syntax": "code size only: Unicode tables as string literals and offsets; same API",
+    "zbus": "one worker thread for the blocking API's runtime instead of one per CPU; same API, "
+    "an app on the release keeps more idle threads after a blocking D-Bus call",
     "libspa-sys": "Fedora 44 PipeWire header fix; only the optional `pipewire` feature builds it",
+    "serde_json": "code size only: generic `Value` code compiled once, in serde_json, for apps that "
+    "share one runtime library; same API and behaviour (vendor/serde_json/TILO-PATCH.md)",
     "rustls-native-certs": "Tilo OS's single trust bundle; the original's discovery is right elsewhere",
     "wayland-backend": "a compositor (server) fix; SDK apps are Wayland clients",
     "wgpu-hal": "Metal presentation observer (only the optional `presentation-feedback` "
@@ -170,6 +178,8 @@ FORKS = (
     "vendor/vello_encoding",
     "vendor/vello_shaders",
     "vendor/automerge",
+    "vendor/taffy",
+    "vendor/cosmic-text",
 )
 
 

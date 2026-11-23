@@ -278,14 +278,19 @@ pub fn prim_names() -> String {
     PRIMS.iter().map(|p| p.name).collect::<Vec<_>>().join(", ")
 }
 
-// The platform's icon set (`ui::icons`), in its kebab-case names, from the toolkit's icon sources
-// (`build.rs`). Source writes them as dot literals in snake case (`.more_horizontal`).
-include!(concat!(env!("OUT_DIR"), "/icons.rs"));
+/// The platform's icon set (`ui::icons`), in its kebab-case names, as the toolkit's catalogue
+/// lists them. Source writes them as dot literals in snake case (`.more_horizontal`).
+fn icons() -> impl Iterator<Item = &'static str> {
+    tilo_ui_graph::component::catalogue()
+        .icons
+        .iter()
+        .map(String::as_str)
+}
 
 /// The kebab-case icon a dot literal names (`more_horizontal` is `more-horizontal`).
 pub fn icon(snake: &str) -> Option<&'static str> {
     let kebab = snake.replace('_', "-");
-    ICONS.iter().find(|i| **i == kebab).copied()
+    icons().find(|i| *i == kebab)
 }
 
 pub fn unknown_icon(snake: &str) -> String {
@@ -300,8 +305,7 @@ pub fn unknown_icon(snake: &str) -> String {
 
 fn icon_suggestions(snake: &str) -> Vec<String> {
     let words: Vec<&str> = snake.split('_').filter(|w| w.len() > 2).collect();
-    let mut out: Vec<String> = ICONS
-        .iter()
+    let mut out: Vec<String> = icons()
         .filter(|i| {
             i.split('-').filter(|part| part.len() > 2).any(|part| {
                 words

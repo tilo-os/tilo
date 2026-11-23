@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 rust-version = "1.89"
-name = "cosmic-text"
+name = "tilo-cosmic-text"
 version = "0.19.0"
 authors = ["Jeremy Soller <jeremy@system76.com>"]
 build = false
@@ -21,11 +21,11 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Pure Rust multi-line text handling"
+description = "cosmic-text 0.19.0 (https://github.com/pop-os/cosmic-text) shaping variable fonts at their width as well as their weight. Tilo's fork; see TILO-PATCH.md."
 documentation = "https://docs.rs/cosmic-text/latest/cosmic_text/"
-readme = "README.md"
+readme = "TILO-PATCH.md"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/pop-os/cosmic-text"
+repository = "https://code.tilo.so/tilo/tilo"
 
 [package.metadata.docs.rs]
 features = ["vi"]

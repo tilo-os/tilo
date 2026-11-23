@@ -28,6 +28,7 @@ APPS = ROOT / "apps"
 PRIVATE_DEPENDENCIES = {
     "cosmic-text",
     "cosmic_text",
+    "tilo-cosmic-text",
     "fontdb",
     "fontique",
     "parley",

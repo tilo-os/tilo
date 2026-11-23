@@ -28,6 +28,7 @@ serde = { workspace = true, features = ["derive"] }
 
 [build-dependencies]
 serde_json = "1.0"
+tilo-ui-graph = { version = "0.1.0", path = "../../ui/ui-graph" }
 
 [lints]
 workspace = true

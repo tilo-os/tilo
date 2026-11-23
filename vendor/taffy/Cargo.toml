@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 rust-version = "1.71"
-name = "taffy"
+name = "tilo-taffy"
 version = "0.10.1"
 authors = [
     "Alice Cecile <alice.i.cecile@gmail.com>",
@@ -24,14 +24,17 @@ include = [
     "src/**/*",
     "Cargo.toml",
     "README.md",
+    "LICENSE.md",
+    "PROVENANCE.md",
+    "TILO-PATCH.md",
 ]
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "A flexible UI layout library "
-readme = "README.md"
+description = "taffy 0.10.1 (https://github.com/DioxusLabs/taffy) laid out on device pixels at any display scale, with flex items measured at the cross size they are laid out at. Tilo's fork; see TILO-PATCH.md."
+readme = "TILO-PATCH.md"
 keywords = [
     "cross-platform",
     "layout",
@@ -41,7 +44,7 @@ keywords = [
 ]
 categories = ["gui"]
 license = "MIT"
-repository = "https://github.com/DioxusLabs/taffy"
+repository = "https://code.tilo.so/tilo/tilo"
 
 [package.metadata.docs.rs]
 all-features = true
