@@ -27,6 +27,8 @@ import {
 } from "./transport.ts";
 import { Workspace } from "./workspace.ts";
 
+/** The account's keys, as a record: read through the record API, never listed by an action. */
+const KEYS_RECORD = "record:tilo.account:keys";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** How a client is made: where it calls, with which key, and how long it retries. */
@@ -474,9 +476,15 @@ export class Tilo {
     return this.accountAction("account/workspaces#delete", { workspace: id });
   }
 
-  /** @internal */
+  /** @internal The keys, read from the account's keys record as every record is read. */
   async keysList(): Promise<Key[]> {
-    const listed = await this.accountAction("account/keys#list");
+    const read = await this.account().answer("GET", routes.accountResource(KEYS_RECORD), {
+      idempotent: false,
+    });
+    const listed =
+      read.fields !== null && typeof read.fields === "object"
+        ? (read.fields as Record<string, unknown>)
+        : {};
     return Array.isArray(listed.keys)
       ? listed.keys
           .filter((key): key is Record<string, unknown> => key !== null && typeof key === "object")

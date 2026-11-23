@@ -362,6 +362,8 @@ pub struct Store {
     codes: Mutex<HashMap<String, Code>>,
     /// When the file was last written, in Unix milliseconds.
     saved_ms: AtomicU64,
+    /// Readers of the keys waiting for the next change: each woken once by it.
+    watching: Mutex<Vec<tilo_actions::remote::ResourceWake>>,
 }
 
 /// Why a token request was refused, as RFC 6749 names it.
@@ -380,6 +382,7 @@ impl Store {
             state: Mutex::default(),
             codes: Mutex::default(),
             saved_ms: AtomicU64::new(0),
+            watching: Mutex::default(),
         }
     }
 
@@ -399,6 +402,7 @@ impl Store {
             state: Mutex::new(state),
             codes: Mutex::default(),
             saved_ms: AtomicU64::new(0),
+            watching: Mutex::default(),
         })
     }
 
@@ -412,7 +416,26 @@ impl Store {
         // Held until the file is written: two changes writing their
         // snapshots unlocked could leave the older one on disk.
         drop(state);
+        let woken = std::mem::take(
+            &mut *self
+                .watching
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for wake in woken {
+            wake.wake();
+        }
         Ok(answer)
+    }
+
+    /// Wake `wake` once the next change lands: what a reader of the keys follows them by.
+    pub fn watch(&self, wake: &tilo_actions::remote::ResourceWake) {
+        let mut watching = self
+            .watching
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        watching.retain(tilo_actions::remote::ResourceWake::waiting);
+        watching.push(wake.clone());
     }
 
     /// Write `state` to the file, the caller holding its lock.

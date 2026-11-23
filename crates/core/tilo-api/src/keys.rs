@@ -17,9 +17,9 @@
 //! an expiry (`expires_in`, in seconds). One reaching a single workspace
 //! lasts at most [`crate::grant_key::GRANT_LIFETIME`], like an agent's grant.
 //! The token
-//! is answered once, and the grants page
-//! and `account/keys#list` show when each key was last used and which device
-//! of the person approved it.
+//! is answered once, and the grants page and the keys record
+//! (`record:tilo.account:keys`) show when each key was last used and which
+//! device of the person approved it.
 //!
 //! Where the person asks matters for where the key goes:
 //!

@@ -264,6 +264,9 @@ export class FakeApi {
     if (v1 !== "v1") {
       return this.json({ error: { code: "not_found", message: "the API has no such route" } }, 404);
     }
+    if (rest[0] === "resources" && rest[1] === "record:tilo.account:keys" && method === "GET") {
+      return this.json({ path: "record:tilo.account:keys", fields: { keys: this.keys } });
+    }
     if (rest[0] === "resources" && rest[1] === "account") {
       if (rest[2] === "usage" && method === "GET") {
         return this.json({
@@ -705,8 +708,6 @@ export class FakeApi {
         return this.branchWorkspace(String(asked.workspace), call);
       case "workspaces#delete":
         return this.deleteWorkspace(String(asked.workspace));
-      case "keys#list":
-        return ok({ keys: this.keys });
       case "keys#mint":
         return this.mintKey(call);
       default: {

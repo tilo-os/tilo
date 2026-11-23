@@ -248,6 +248,10 @@ class FakeApi:
         path = call["path"]
         if path == "/v1":
             return self.answer(200, {"api_version": "1", "server": "fake-api"})
+        if path == "/v1/resources/record:tilo.account:keys" and request.method == "GET":
+            return self.answer(
+                200, {"path": "record:tilo.account:keys", "fields": {"keys": self.keys}}
+            )
         if path == "/v1/resources/account/usage":
             return self.answer(
                 200,
@@ -343,8 +347,6 @@ class FakeApi:
             return self.branch_workspace(call, asked.get("workspace", ""))
         if (resource, action) == ("workspaces", "delete"):
             return self.delete_workspace(call, asked.get("workspace", ""))
-        if (resource, action) == ("keys", "list"):
-            return self.ok(call, {"keys": self.keys})
         if (resource, action) == ("keys", "mint"):
             return self.mint_key(call)
         if action == "revoke" and resource.startswith("keys/"):

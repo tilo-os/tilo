@@ -16,6 +16,9 @@ from ._models import Key, MintedKey, Usage, WorkspaceInfo, WorkspaceList
 from ._sync import LoopThread
 from ._transport import HttpTransport, Transport, native_transport
 
+#: The account's keys, as a record: read through the record API, never listed by an action.
+KEYS_RECORD = "record:tilo.account:keys"
+
 
 class Workspaces:
     """The person's workspaces: list them, make one, delete one."""
@@ -417,8 +420,11 @@ class AsyncTilo:
     # -- keys ------------------------------------------------------------
 
     async def _keys_list(self) -> list[Key]:
-        answer = await self._account("keys", "list")
-        keys = answer.get("keys")
+        # The keys are a record of the account, read as every record is read.
+        endpoint = self._endpoint()
+        read = await endpoint.json("GET", endpoint.path("resources", KEYS_RECORD))
+        fields = read.get("fields") if isinstance(read, Mapping) else None
+        keys = fields.get("keys") if isinstance(fields, Mapping) else None
         return [Key.of(key) for key in keys or [] if isinstance(key, Mapping)]
 
     async def _mint(

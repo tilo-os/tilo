@@ -53,7 +53,7 @@ and end:
 
 - the `tilo_sk_` prefix lets secret scanners recognise the token;
 - the token is shown exactly once (the API server keeps only its digest);
-- the keys list (`/grants`, `account/keys#list`, `tilo ls account/keys`) shows when
+- the keys list (`/grants`, the keys record `record:tilo.account:keys`, `tilo ls account/keys`) shows when
   each key was last used and which of the person's devices approved it;
 - revoking is one click on `/grants`, or `tilo do "account/keys/<key>#revoke"` (a key by its name or grant).
 
@@ -122,7 +122,7 @@ no `workspace` and whose path is under `account` is answered by the API server:
 | `account/workspaces#create {name, host?}` | the server's `workspace.create-own` as the grant, which then joins it; a person may have any number of workspaces of their own, sharing what the host keeps for them |
 | `account/workspaces#branch {workspace, name, labels?, id?}` | the server's `workspace.branch-own` as the grant, for one of the person's own: a new workspace of theirs holding the source's records with their history and the content they name, apart from it from then on ("Branching a workspace" in `workspace.md`). Answers `{workspace}` once the branch holds everything; `id` is the branch's, so a retry answers the same one. One not theirs is `not_found` |
 | `account/workspaces#delete {workspace}` | the server's `workspace.delete` as the grant, for one of the person's own: final. The server tells everyone in it it was deleted, lets nobody in again, removes its record, retained state, history and content, and releases its storage; the API server then revokes every key that reached only it. Answers `{deleted, revoked_keys}`; one not theirs, or gone already, is `not_found`. The call is the confirmation |
-| `account/keys#list` | this key and the keys it minted, each with `expires_at_ms` (`null` until revoked), `last_used_at_ms` and `created_by` |
+| `record:tilo.account:keys` (a record, read with `tilo_read`, followed with `after`) | this key and the keys it minted, each with `expires_at_ms` (`null` until revoked), `last_used_at_ms` and `created_by`; no action lists them |
 | `account/keys#create {name, workspace?, expires_in?}` | asks the person; the run is `pending` until they approve, and `tilo_status` then answers the key |
 | `account/keys#mint {workspace, name?, expires_in?}` | a minted grant: `{grant, token, mcp_url, expires_at_ms}` |
 | `account/keys/<key>#revoke` (a key by its name or grant) | this key or one it minted, and everything it minted |

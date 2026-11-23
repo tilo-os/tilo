@@ -177,7 +177,7 @@
     "/v1/resources/{path}": {
       "get": {
         "operationId": "readAccountResource",
-        "summary": "One resource of the key's account: `account/workspaces`, `account/keys`, `account/usage`",
+        "summary": "One resource of the key's account: `account/workspaces`, `account/usage`, or its keys' record, `record:tilo.account:keys`",
         "tags": [
           "Account"
         ],
@@ -209,7 +209,7 @@
         ],
         "responses": {
           "200": {
-            "description": "One resource of the key's account: `account/workspaces`, `account/keys`, `account/usage`",
+            "description": "One resource of the key's account: `account/workspaces`, `account/usage`, or its keys' record, `record:tilo.account:keys`",
             "content": {
               "application/json": {
                 "schema": {

@@ -177,7 +177,7 @@ describe("keys", () => {
     expect(keys.map((key) => key.grant)).toEqual(["g-root"]);
     expect(keys[0]?.scope).toBe("all");
     expect(keys[0]?.browserPages).toBe(true);
-    expect(api.last()?.path).toBe("/v1/resources/account/keys/actions/list");
+    expect(api.last()?.path).toBe("/v1/resources/record:tilo.account:keys");
   });
 
   it("mints a key for one workspace", async () => {

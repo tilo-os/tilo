@@ -1483,8 +1483,8 @@ impl Server {
 impl Server {
     /// Have `grant`, a key the person just approved, enter every workspace it reaches, in the
     /// background: each workspace keeps the keys it admitted, which every server holding it and
-    /// every API server reads, so the key is listed (`account/keys#list`, `tilo ls account/keys`) and
-    /// revocable wherever the person asks, before anything used it.
+    /// every API server reads, so the key is listed (`record:tilo.account:keys`,
+    /// `tilo ls account/keys`) and revocable wherever the person asks, before anything used it.
     pub(crate) fn admit_into_its_workspaces(self: &Arc<Self>, grant: &store::Grant) {
         let Some(key) = grant.key() else {
             return;

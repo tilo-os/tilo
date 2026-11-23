@@ -300,7 +300,7 @@ then `#export-content` as docx). It cannot list, read or act in any other worksp
 MCP URL answers its token `403`, every `/v1/workspaces/<other>/...` route answers `403 beyond_scope`, a
 tool call naming another workspace reaches nothing, and the account's paths (`account/...` apart from the
 keys its workspace admitted and its list of workspaces: usage, making, deleting, minting) are refused.
-`account/keys#list` lists the key and the keys it minted there, from the workspace's own governance. Listing workspaces
+The keys record (`record:tilo.account:keys`) holds the key and the keys it minted there, from the workspace's own governance. Listing workspaces
 with it names its own alone. Revoking the key ends its open MCP sessions at once: their next call is
 refused, and the token opens no new one (`401 key_revoked`). Every call that
 changed a resource answers that resource's `link`, and `tilo_link {path}` answers the link to anything a path

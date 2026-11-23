@@ -8,9 +8,11 @@
 //!   `#branch {workspace, name, labels?, id?}`, `#rename {workspace, name}`,
 //!   `#delete {workspace}`, `#unattended {workspace, on}`, and on a computer's own Tilo service
 //!   `#import {sealed_with?, groups?, workspaces?}`, which takes in once what its desktop kept;
-//! - `account/keys#list`, `#create {name, workspace?, expires_in?}`,
-//!   `#mint {workspace, name?, expires_in?}`, and one resource per listed key,
-//!   `account/keys/<grant>#revoke`;
+//! - `account/keys#create {name, workspace?, expires_in?}`,
+//!   `#mint {workspace, name?, expires_in?}`, and one resource per key,
+//!   `account/keys/<grant>#revoke`. The keys are a record, read through the record API
+//!   ([`KEYS_RECORD`], [`tilo_actions::remote::ResourceReads`]) and followed to their next change;
+//!   no action lists them;
 //! - `account/usage#read`;
 //! - `account/models#ask {workspace, request}`;
 //! - `account/webhooks#list {workspace?}`, `#create {workspace, url, events?, path?}`,
@@ -72,6 +74,11 @@ pub const PROVIDER: &str = "tilo.account";
 pub const WORKSPACES: &str = "account/workspaces";
 /// The keys to them.
 pub const KEYS: &str = "account/keys";
+/// The record the keys are read as: `{"keys": [...]}`, this key and the keys it minted (all the
+/// person's keys, for a key of their own reaching all their workspaces), as `tilo_read` takes it.
+pub const KEYS_RECORD: &str = "record:tilo.account:keys";
+/// The keys' id in [`PROVIDER`]'s records.
+const KEYS_RECORD_ID: &str = "keys";
 /// One of the keys, as a resource of its own: the key's name, revoked where it is listed.
 const KEY_KIND: &str = "account.keys.key";
 /// What the workspaces keep and ran.
@@ -157,7 +164,7 @@ const fn answers(verb: Verb, schema: fn() -> Value) -> Verb {
     }
 }
 
-const VERBS: [Verb; 18] = [
+const VERBS: [Verb; 17] = [
     verb(
         WORKSPACES,
         "list",
@@ -300,14 +307,6 @@ const VERBS: [Verb; 18] = [
                 ),
             ]
         },
-    ),
-    verb(
-        KEYS,
-        "list",
-        "This key and the keys it minted",
-        ActionKind::Read,
-        Op::ListKeys,
-        Vec::new,
     ),
     answers(
         verb(
@@ -618,6 +617,8 @@ struct Inner {
     /// Who the account's calls on a workspace's host are by: the key's person at the key.
     caller: Caller,
     running: Mutex<Running>,
+    /// Where a read of the keys, on a thread of its own, asks for them.
+    runtime: Option<tokio::runtime::Handle>,
 }
 
 /// The invocations the account answers after it admitted them.
@@ -768,6 +769,7 @@ impl Account {
             reach,
             caller,
             running: Mutex::default(),
+            runtime: tokio::runtime::Handle::try_current().ok(),
         }))
     }
 
@@ -838,9 +840,12 @@ impl Account {
         page
     }
 
-    /// Each key `account/keys#list` lists, as a resource under `account/keys`.
+    /// Each key the keys' record reads, as a resource under `account/keys`.
     async fn keys_rows(&self) -> Result<Vec<CatalogueRow>, String> {
-        match self.answer(Op::ListKeys, InvocationId::new(), &json!({})).await {
+        match self
+            .answer(Op::ListKeys, InvocationId::new(), &json!({}))
+            .await
+        {
             Outcome::Ok(value) => Ok(value
                 .get("keys")
                 .and_then(Value::as_array)
@@ -1406,7 +1411,7 @@ impl Account {
             return failed(
                 "invalid_arguments",
                 "`grant` is required",
-                "account/keys#list names them",
+                "tilo_read record:tilo.account:keys names them",
             );
         };
         let held_here = server
@@ -1430,7 +1435,7 @@ impl Account {
                 return failed(
                     "not_found",
                     "no such key of yours",
-                    "account/keys#list names them",
+                    "tilo_read record:tilo.account:keys names them",
                 );
             }
             if held_here.is_some()
@@ -1458,7 +1463,7 @@ impl Account {
             return failed(
                 "not_found",
                 "no such key of this key",
-                "account/keys#list names them",
+                "tilo_read record:tilo.account:keys names them",
             );
         }
         let workspace = match server
@@ -1769,6 +1774,97 @@ impl Joined {
     }
 }
 
+/// The record API of a tree the account is joined to: the keys' record
+/// ([`KEYS_RECORD`]) read and followed here, every other record where the tree reads it.
+struct AccountReads {
+    account: Account,
+    others: Option<Arc<dyn tilo_actions::remote::ResourceReads>>,
+}
+
+impl AccountReads {
+    fn keys(address: &tilo_actions::remote::ResourceAddress) -> bool {
+        address.app == PROVIDER && address.record == KEYS_RECORD_ID
+    }
+
+    fn others(&self) -> Result<&dyn tilo_actions::remote::ResourceReads, ActionCallError> {
+        self.others
+            .as_deref()
+            .ok_or_else(|| ActionCallError::Unavailable {
+                reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
+            })
+    }
+}
+
+impl tilo_actions::remote::ResourceReads for AccountReads {
+    fn read(
+        &self,
+        caller: &Caller,
+        address: &tilo_actions::remote::ResourceAddress,
+    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
+        if !Self::keys(address) {
+            return self.others()?.read(caller, address);
+        }
+        let unavailable = |reason: String| ActionCallError::Unavailable { reason };
+        let runtime = self
+            .account
+            .0
+            .runtime
+            .as_ref()
+            .ok_or_else(|| unavailable("the keys are read where the server runs".into()))?;
+        // A read runs on a thread of its own, which waits for the keys here.
+        let listed = runtime.block_on(self.account.answer(
+            Op::ListKeys,
+            InvocationId::new(),
+            &json!({}),
+        ));
+        match listed {
+            Outcome::Ok(keys) => Ok(tilo_actions::remote::ResourceCopy::reading(keys, None)),
+            Outcome::Failed { message, .. } => Err(ActionCallError::Refused { reason: message }),
+            _ => Err(unavailable("the keys were not read".into())),
+        }
+    }
+
+    fn answer_read(
+        self: Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> Pending<tilo_actions::remote::RemoteActionMessage> {
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+
+    /// The keys change with the server's grants: a key made, minted, revoked or used.
+    fn watch(
+        &self,
+        caller: &Caller,
+        address: &tilo_actions::remote::ResourceAddress,
+        wake: &tilo_actions::remote::ResourceWake,
+    ) -> Result<(), ActionCallError> {
+        if !Self::keys(address) {
+            return self.others()?.watch(caller, address, wake);
+        }
+        let server =
+            self.account
+                .0
+                .server
+                .upgrade()
+                .ok_or_else(|| ActionCallError::Unavailable {
+                    reason: "the server is stopping".into(),
+                })?;
+        server.store.watch(wake);
+        Ok(())
+    }
+
+    fn store_read(
+        &self,
+        caller: &Caller,
+        address: &tilo_actions::remote::ResourceAddress,
+        read: Value,
+    ) -> Result<Value, ActionCallError> {
+        self.others()?.store_read(caller, address, read)
+    }
+}
+
 impl ActionProvider for Joined {
     fn retire_execution(&self, caller: &Caller) {
         match &self.actions {
@@ -1886,7 +1982,13 @@ impl ActionProvider for Joined {
     }
 
     fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
-        self.actions.as_ref()?.resource_reads()
+        Some(Arc::new(AccountReads {
+            account: self.account.clone(),
+            others: self
+                .actions
+                .as_ref()
+                .and_then(|actions| actions.resource_reads()),
+        }))
     }
 
     fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
@@ -1960,7 +2062,7 @@ impl Server {
             return failed(
                 "invalid_arguments",
                 "`grant` is required",
-                "account/keys#list names them",
+                "tilo_read record:tilo.account:keys names them",
             );
         };
         let held_here = self
@@ -1987,7 +2089,7 @@ impl Server {
                 return failed(
                     "not_found",
                     "no such key of yours",
-                    "account/keys#list names them",
+                    "tilo_read record:tilo.account:keys names them",
                 );
             }
             if held_here.is_some()
@@ -2017,7 +2119,7 @@ impl Server {
             return failed(
                 "not_found",
                 "no such key of this key",
-                "account/keys#list names them",
+                "tilo_read record:tilo.account:keys names them",
             );
         }
         // Where the key is recorded: the workspace it reaches, or the
@@ -2353,7 +2455,7 @@ fn refused_key(error: &ActionCallError) -> Outcome {
         ActionCallError::UnknownAction => failed(
             "not_found",
             "the workspace holds no such key, or it is not this key's to revoke",
-            "account/keys#list names the keys this one holds and the keys it minted",
+            "tilo_read record:tilo.account:keys names the keys this one holds and the keys it minted",
         ),
         ActionCallError::NotPermitted => failed(
             "not_permitted",
