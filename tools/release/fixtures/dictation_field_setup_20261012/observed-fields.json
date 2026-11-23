@@ -6,7 +6,7 @@
       "fresh-owned-search-visual-result-20261012.json": "6da93d0e8cd9f643db2078beb0eb796066bea9bfcf12d80c6461316582839e82",
       "fresh-owned-search-field-result-r4-20261012.json": "981c08ce6b60f3c9bb33df8bf535d1d2acac5fe4a8167628a3b5a26fa8ab43bc"
     },
-    "normalization": "Control/source paths and distinct session names replaced with explicit labels; unrelated UI state/targets omitted. Original peer/field identity, public text, observed activation, command receipts and cleanup retained. Historical observations, not a live runtime/model authority.",
+    "normalization": "Control/source paths and distinct session names replaced with explicit labels; unrelated UI state/targets omitted. Original peer/field identity, public text, observed activation and cleanup retained. The cancel's receipt is re-encoded in the typed shape a receipt frame carries now (a Completed status, not the old receipt/update body) so the verifier reads the one shape. Historical observations, not a live runtime/model authority.",
     "speech_qualified": false
   },
   "receipt": {
@@ -131,7 +131,7 @@
             "dictation.cancel"
           ],
           "exit": 0,
-          "stdout": "{\"action\":{\"provider\":\"actions\",\"id\":\"dictation.cancel\",\"kind\":\"Actions\",\"title\":\"Cancel dictation\",\"params\":[],\"contract\":{\"availability\":{\"state\":\"available\"},\"kind\":\"undoable\",\"risk\":\"low\",\"confirmation\":{\"mode\":\"none\"},\"retry\":\"at_most_once\",\"reversible\":false,\"execution\":{\"mode\":\"immediate\"},\"result\":{\"type\":\"none\"}}},\"receipt\":{\"update\":{\"state\":\"succeeded\",\"invocation\":\"86f2925b-5ab5-414b-a4f8-42400089bb28\",\"output\":{}}}}\n"
+          "stdout": "{\"message\": {\"Receipt\": {\"status\": {\"Completed\": {\"output\": {}}}}}}"
         }
       }
     ]

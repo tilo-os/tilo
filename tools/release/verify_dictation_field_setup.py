@@ -59,7 +59,10 @@ def verify(record):
         stages[required[2]]["result"],
         ["actions", "invoke", "actions", "dictation.cancel"],
     )
-    require(json.loads(cancel_result)["receipt"]["update"]["state"] == "succeeded", "cancel request failed")
+    # The receipt frame's typed status: a string while it is Accepted, else the object naming
+    # how it ended, whose Completed means it ran. The old receipt/update body names no status.
+    cancel = json.loads(cancel_result).get("message", {}).get("Receipt", {}).get("status")
+    require(isinstance(cancel, dict) and "Completed" in cancel, "cancel request failed")
     require(before["palette"]["query"] == expected, "successful type did not insert exact public text")
     original = before["seat_focus"]["text_input"]
     require(original is not None, "no focused text-input surface")
