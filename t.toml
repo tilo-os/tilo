@@ -3367,7 +3367,7 @@ name = "package/arch"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "set -euo pipefail\n# The Arch userspace of dist/ci/package-targets.txt: dist/arch/build-arch.sh builds with makepkg and\n# dist/arch/test-package.sh installs and verifies the package there (dist/ci/run-package-job.sh).\nbash dist/ci/package-job.sh amd64 arch\nout=dist/ci-output/arch-amd64\n(cd \"$out\" && sha256sum ./*.pkg.tar.zst > SHA256SUMS)\nls -l \"$out\"\n"
 isolation = "vm"
-requires = ["arch=x86_64", "disk-100g"]
+requires = ["arch=x86_64"]
 git = true
 outputs = ["dist/ci-output/**"]
 timeout_secs = 14400
@@ -3381,7 +3381,7 @@ name = "package/nix"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "set -euo pipefail\n# The Nix userspace of dist/ci/package-targets.txt: nix build of the flake package, the\n# installed-result verification, the NixOS module evaluation, and the store closure as a portable\n# archive (dist/ci/run-package-job.sh).\nbash dist/ci/package-job.sh amd64 nix\nout=dist/ci-output/nix-amd64\n(cd \"$out\" && sha256sum ./*.nar.gz > SHA256SUMS)\nls -l \"$out\"\n"
 isolation = "vm"
-requires = ["arch=x86_64", "disk-100g"]
+requires = ["arch=x86_64"]
 git = true
 outputs = ["dist/ci-output/**"]
 timeout_secs = 14400
