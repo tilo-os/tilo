@@ -334,14 +334,38 @@ fn held_api_in(place: &Place) -> Result<Option<PathBuf>> {
     let key = match load_public(place)? {
         Some(device) => device.cert.device_public_key,
         // No login: the device key the daemon serves as, named by its certificate so the secret
-        // is not read here.
-        None => match read_device_cert(&place.keys().device_cert) {
-            Ok(cert) => cert.device_public_key,
-            Err(_) => return Ok(None),
+        // is not read here. A computer whose device certificate went (one in an encoding no
+        // build reads) has its key certified for its person beside it, and every one of those
+        // names the same key.
+        None => match served_device_key(place.keys()) {
+            Some(key) => key,
+            None => return Ok(None),
         },
     };
     let holders = holder_dir(place.dir()).map_err(|why| anyhow!(why))?;
     Ok(Some(holder_api_socket(&holders, &holder_name(&key))))
+}
+
+/// The device key a daemon with no login serves as, from a certificate of it in `keys`: the
+/// device's own, else the newest of those it holds for its persons.
+#[cfg(unix)]
+fn served_device_key(keys: &IdentityPaths) -> Option<[u8; 32]> {
+    if let Ok(cert) = read_device_cert(&keys.device_cert) {
+        return Some(cert.device_public_key);
+    }
+    let persons = keys.device_cert_for_user(&[0; 32]);
+    std::fs::read_dir(persons.parent()?)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let cert = read_device_cert(&entry.path()).ok()?;
+            Some((
+                entry.metadata().ok()?.modified().ok()?,
+                cert.device_public_key,
+            ))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, key)| key)
 }
 
 #[cfg(all(test, target_os = "linux"))]
