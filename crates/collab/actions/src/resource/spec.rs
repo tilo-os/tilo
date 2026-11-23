@@ -100,10 +100,10 @@ impl ResourceSpec {
     /// naming it offer it at, whatever alias the broker delivers it under.
     #[must_use]
     pub fn domain_name(&self) -> &str {
-        self.semantic_identity
-            .as_ref()
-            .filter(|identity| identity.is_valid())
-            .map_or(self.id.as_str(), |identity| identity.key.as_str())
+        match &self.semantic_identity {
+            Some(identity) if identity.is_valid() => identity.key.as_str(),
+            _ => self.id.as_str(),
+        }
     }
 
     #[must_use]

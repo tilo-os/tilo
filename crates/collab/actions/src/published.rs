@@ -191,10 +191,10 @@ impl PublishedAction {
     /// it under ([`ActionDescriptor::domain_resource`]).
     #[must_use]
     pub fn domain_resource(&self) -> &str {
-        self.semantic_identity
-            .as_ref()
-            .filter(|identity| identity.is_valid())
-            .map_or(self.resource.as_str(), |identity| identity.key.as_str())
+        match &self.semantic_identity {
+            Some(identity) if identity.is_valid() => identity.key.as_str(),
+            _ => self.resource.as_str(),
+        }
     }
 
     /// The typed descriptor this action publishes, run at `locus`: the wire

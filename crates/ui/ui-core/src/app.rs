@@ -1548,7 +1548,7 @@ impl App {
         // the resource's own, as the directory offers and resolves it.
         all.into_iter()
             .zip(found)
-            .filter_map(|(id, address)| Some((id.to_owned(), address?)))
+            .filter_map(|(id, address)| address.map(|address| (id.to_owned(), address)))
             .collect()
     }
 

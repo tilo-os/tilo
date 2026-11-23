@@ -857,7 +857,9 @@ impl BoundPublication {
                 .filter(|(owner, _)| live(owner))
                 .map(|(_, alias)| alias.clone())
         };
-        let resource = recorded.as_deref().unwrap_or(address.resource.as_str());
+        let resource = recorded
+            .as_deref()
+            .unwrap_or_else(|| address.resource.as_str());
         if !resource.starts_with(PUBLICATION_PREFIX) {
             return Ok(None);
         }
