@@ -206,6 +206,10 @@ impl Connectivity {
         Started::Later(answered)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per action the network offers"
+    )]
     fn network(&mut self, action: NetworkAction) -> Result<Started, ApiError> {
         let id = action.id();
         let network = &self.readings.network;
@@ -775,28 +779,31 @@ fn network_children(network: &Network) -> impl Iterator<Item = ResourceSpec> + '
     });
     let saved = network.saved.iter().filter_map(|profile| {
         let id = child_id("saved-network", &profile.id)?;
+        let profile_id: Value = profile.id.clone().into();
         let mut bindings = tilo_resource::RowBindings::new()
             .bind(
                 NetworkAction::SET_NETWORK_AUTOCONNECT,
                 [
-                    ("profile", profile.id.clone().into()),
+                    ("profile", profile_id.clone()),
                     ("on", (!profile.autoconnect).into()),
                 ],
             )
             .bind(
                 NetworkAction::FORGET_NETWORK,
-                [("profile", profile.id.clone().into())],
+                [("profile", profile_id.clone())],
+            )
+            .bind(NetworkAction::SET_NETWORK_IPV4, [("profile", profile_id.clone())])
+            .bind(NetworkAction::SET_NETWORK_IPV6, [("profile", profile_id.clone())])
+            .bind(NetworkAction::SET_NETWORK_DNS, [("profile", profile_id.clone())])
+            .bind(NetworkAction::SET_NETWORK_POLICY, [("profile", profile_id.clone())])
+            .bind(
+                NetworkAction::SET_ENTERPRISE_IDENTITY,
+                [("profile", profile_id.clone())],
+            )
+            .bind(
+                NetworkAction::SET_WIFI_PASSWORD,
+                [("profile", profile_id)],
             );
-        for action in [
-            NetworkAction::SET_NETWORK_IPV4,
-            NetworkAction::SET_NETWORK_IPV6,
-            NetworkAction::SET_NETWORK_DNS,
-            NetworkAction::SET_NETWORK_POLICY,
-            NetworkAction::SET_ENTERPRISE_IDENTITY,
-            NetworkAction::SET_WIFI_PASSWORD,
-        ] {
-            bindings = bindings.bind(action, [("profile", profile.id.clone().into())]);
-        }
         if profile.proxy.is_some() {
             bindings = bindings.bind(
                 NetworkAction::SET_NETWORK_PROXY,
@@ -1066,28 +1073,9 @@ fn metered_from_key(metered: &str) -> Result<model::Metered, ApiError> {
     }
 }
 
-/// The entries `text` lists: comma-separated, trimmed, none empty.
-fn list(text: Option<String>) -> Vec<String> {
-    text.map(|text| {
-        text.split(',')
-            .map(str::trim)
-            .filter(|item| !item.is_empty())
-            .map(str::to_owned)
-            .collect()
-    })
-    .unwrap_or_default()
-}
-
 /// The entry `field` demands, else a refusal naming it.
-fn named(value: Option<String>, field: &str) -> Result<String, ApiError> {
+fn demanded(value: Option<String>, field: &str) -> Result<String, ApiError> {
     given(value).ok_or_else(|| ApiError::InvalidArguments(format!("no {field} was given")))
-}
-
-/// The given entry as it is used: trimmed, and nothing when it is empty.
-fn given(value: Option<String>) -> Option<String> {
-    value
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
 }
 
 /// The network types `key` names (`5g-4g-3g`, optionally `-prefer-4g`) as
@@ -1103,7 +1091,7 @@ fn network_modes(key: &str) -> Result<os_actions::NetworkModes, String> {
     let (allowed, preferred) = key
         .trim()
         .split_once("-prefer-")
-        .map_or((key.trim(), None), |(allowed, preferred)| {
+        .map_or_else(|| (key.trim(), None), |(allowed, preferred)| {
             (allowed, Some(preferred))
         });
     let mut allowed_bits = 0_u32;
@@ -1145,20 +1133,20 @@ impl Connectivity {
                 return Ok(Started::Accepted);
             }
             ModemAction::UnlockSim { sim, pin } => {
-                let pin = named(pin, "PIN")?;
+                let pin = demanded(pin, "PIN")?;
                 let sim =
                     self.sim_path(sim.as_deref(), |modem| modem.lock == model::SimLock::Pin)?;
                 Change::ModemPin { sim, pin }
             }
             ModemAction::UnblockSim { sim, puk, pin } => {
-                let puk = named(puk, "PUK")?;
-                let new_pin = named(pin, "new PIN")?;
+                let puk = demanded(puk, "PUK")?;
+                let new_pin = demanded(pin, "new PIN")?;
                 let sim =
                     self.sim_path(sim.as_deref(), |modem| modem.lock == model::SimLock::Puk)?;
                 Change::ModemPuk { sim, puk, new_pin }
             }
             ModemAction::SetSimPinLock { sim, on, pin } => {
-                let pin = named(pin, "PIN")?;
+                let pin = demanded(pin, "PIN")?;
                 let sim = self.sim_path(sim.as_deref(), model::ModemUnit::usable)?;
                 Change::ModemPinLock { sim, pin, on }
             }
@@ -1167,8 +1155,8 @@ impl Connectivity {
                 old_pin,
                 new_pin,
             } => {
-                let old_pin = named(old_pin, "current PIN")?;
-                let new_pin = named(new_pin, "new PIN")?;
+                let old_pin = demanded(old_pin, "current PIN")?;
+                let new_pin = demanded(new_pin, "new PIN")?;
                 let sim = self.sim_path(sim.as_deref(), model::ModemUnit::usable)?;
                 Change::ModemChangePin {
                     sim,
@@ -1182,8 +1170,8 @@ impl Connectivity {
             }
             ModemAction::SetPreferredNetwork { modem, network } => {
                 let modes = network_modes(&network).map_err(ApiError::InvalidArguments)?;
-                let modem = self.modem_path(modem.as_deref(), &network)?;
-                Change::ModemModes { modem, modes }
+                let path = self.modem_path(modem.as_deref(), &network)?;
+                Change::ModemModes { modem: path, modes }
             }
         };
         Ok(self.start(Part::Modem, id, change))

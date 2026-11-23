@@ -54,14 +54,6 @@ pub enum Change {
         profile: String,
         server: Option<String>,
     },
-    /// Set how a saved network's addresses are taken.
-    Ipv4 {
-        profile: String,
-        automatic: bool,
-        addresses: Vec<String>,
-        gateway: Option<String>,
-        dns: Vec<String>,
-    },
     /// Type the mobile data profile's access point name, or choose it from
     /// the SIM's operator again.
     MobileApn {
@@ -372,7 +364,7 @@ impl Device for OsDevice {
             },
             modem: Modem {
                 available: radios.wwan_available,
-                modems: read_or_log("modems", os_actions::read_mobile())
+                modems: read_or_log("modems", os_actions::read_mobile().map_err(String::from))
                     .unwrap_or_default()
                     .modems
                     .iter()
@@ -392,6 +384,10 @@ impl Device for OsDevice {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per change the device makes"
+    )]
     fn change(&self, change: &Change) -> Result<(), String> {
         use os_actions::RadioChange;
         match change {
@@ -440,21 +436,6 @@ impl Device for OsDevice {
                     ..os_actions::ConnectionPolicyPatch::default()
                 },
             ),
-            Change::Ipv4 {
-                profile,
-                automatic,
-                addresses,
-                gateway,
-                dns,
-            } => os_actions::configure_ipv4(
-                profile,
-                &os_actions::IpConfiguration {
-                    automatic: *automatic,
-                    addresses: addresses.clone(),
-                    gateway: gateway.clone(),
-                    dns: dns.clone(),
-                },
-            ),
             Change::MobileApn { apn } => {
                 let profile = os_actions::modem::mobile_profile_uuid()?;
                 os_actions::set_mobile_apn(&profile, apn.as_deref())
@@ -473,7 +454,6 @@ impl Device for OsDevice {
                     },
                 )
             }
-            Change::Bluetooth(on) => RealDispatcher.set_bluetooth(*on),
             Change::Bluetooth(on) => os_actions::bluez::set_powered(*on),
             Change::Connect { address } => os_actions::bluez::connect_address(address),
             Change::Disconnect { address } => os_actions::bluez::disconnect_address(address),

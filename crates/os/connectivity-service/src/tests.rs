@@ -303,12 +303,13 @@ fn apply_vpn(vpn: &mut Vpn, change: &Change) {
                 id: format!("uuid-{name}"),
                 kind: kind.clone(),
                 connected: false,
+                ..VpnProfile::default()
             });
         }
         Change::ForgetVpn { profile } => {
             vpn.profiles.retain(|saved| saved.id != *profile);
         }
-        Change::VpnPatch { profile, patch } => {
+        Change::EditVpn { profile, patch } => {
             for saved in &mut vpn.profiles {
                 if saved.id != *profile {
                     continue;
@@ -347,35 +348,35 @@ fn apply_vpn(vpn: &mut Vpn, change: &Change) {
 fn apply_modem(modem: &mut Modem, change: &Change) {
     match change {
         Change::ModemPin { sim, .. } => {
-            for held in modem.modems.iter_mut() {
+            for held in &mut modem.modems {
                 if held.sims.iter().any(|held| held.path == *sim) {
                     held.lock = crate::model::SimLock::None;
                 }
             }
         }
         Change::ModemPuk { sim, .. } => {
-            for held in modem.modems.iter_mut() {
+            for held in &mut modem.modems {
                 if held.sims.iter().any(|held| held.path == *sim) {
                     held.lock = crate::model::SimLock::None;
                 }
             }
         }
         Change::ModemPinLock { sim, on, .. } => {
-            for held in modem.modems.iter_mut() {
+            for held in &mut modem.modems {
                 if held.sims.iter().any(|held| held.path == *sim) {
                     held.pin_enabled = Some(*on);
                 }
             }
         }
         Change::ModemModes { modem: path, modes } => {
-            for held in modem.modems.iter_mut() {
+            for held in &mut modem.modems {
                 if held.path == *path {
                     held.network_type = Some(modes.key());
                 }
             }
         }
         Change::ModemUseSlot { modem: path, slot } => {
-            for held in modem.modems.iter_mut() {
+            for held in &mut modem.modems {
                 if held.path == *path {
                     for sim in &mut held.sims {
                         sim.active = sim.slot == Some(*slot);
