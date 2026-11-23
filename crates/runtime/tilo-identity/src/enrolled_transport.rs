@@ -4,31 +4,45 @@
 //! member device seed, certificate and public projections from isolated future
 //! device identity store travel. A privileged installer imports system identity store before
 //! target-user activation; callers retain the staged device until handoff.
+#[cfg(unix)]
 use crate::device_fleet::DeviceFleet;
+#[cfg(unix)]
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
 use std::{
     io,
     path::{Path, PathBuf},
 };
+#[cfg(unix)]
 use tilo_seal::{Context, Label, PasswordParams, envelope};
+#[cfg(unix)]
 use tilo_user_identity::{
     DeviceCert, verify_device_cert, verify_device_cert_at, verify_revocation_entry,
 };
 
+#[cfg(unix)]
 use zeroize::{Zeroize, Zeroizing};
+mod types;
+pub use types::{CurrentDeviceDeclaration, TransportReceipt};
+#[cfg(unix)]
 mod current_device;
+#[cfg(unix)]
 mod fs;
 #[cfg(target_os = "linux")]
 pub use current_device::RootObservedCurrentDevice;
+#[cfg(unix)]
 pub use current_device::{
-    AuthenticatedCurrentDeviceReference, CurrentDeviceDeclaration, CurrentDeviceReference,
-    ResolvedCurrentIdentity,
+    AuthenticatedCurrentDeviceReference, CurrentDeviceReference, ResolvedCurrentIdentity,
 };
 #[cfg(test)]
+#[cfg(unix)]
 mod tests;
+#[cfg(unix)]
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
+#[cfg(unix)]
 const DOMAIN: &[u8] = b"tilo-prepared-enrolled-device/v1\0";
 
+#[cfg(unix)]
 mod seed_serde {
     use serde::{Deserializer, Serializer};
     use zeroize::Zeroizing;
@@ -68,12 +82,14 @@ mod seed_serde {
     }
 }
 
+#[cfg(unix)]
 fn invalid() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
         "enrolled device identity store is invalid",
     )
 }
+#[cfg(unix)]
 fn context(binding: &str) -> io::Result<Vec<u8>> {
     if binding.is_empty() || binding.len() > 256 || binding.chars().any(char::is_control) {
         return Err(invalid());
@@ -82,6 +98,7 @@ fn context(binding: &str) -> io::Result<Vec<u8>> {
     context.extend_from_slice(binding.as_bytes());
     Ok(context)
 }
+#[cfg(unix)]
 fn password_valid(password: &[u8]) -> io::Result<()> {
     if tilo_seal::migration_password(password) {
         Ok(())
@@ -89,6 +106,7 @@ fn password_valid(password: &[u8]) -> io::Result<()> {
         Err(invalid())
     }
 }
+#[cfg(unix)]
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Payload {
@@ -99,11 +117,13 @@ struct Payload {
     public_record: Vec<u8>,
     fleet: DeviceFleet,
 }
+#[cfg(unix)]
 impl Drop for Payload {
     fn drop(&mut self) {
         self.device_seed.zeroize();
     }
 }
+#[cfg(unix)]
 impl Payload {
     fn validate(&self, root: [u8; 32], device: [u8; 32], now: u64) -> io::Result<()> {
         let seed = Zeroizing::new(
@@ -127,6 +147,7 @@ impl Payload {
         Ok(())
     }
 }
+#[cfg(unix)]
 fn validate_record(bytes: &[u8], root: [u8; 32]) -> io::Result<()> {
     let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| invalid())?;
     let threshold = value
@@ -149,6 +170,7 @@ fn validate_record(bytes: &[u8], root: [u8; 32]) -> io::Result<()> {
     }
     Ok(())
 }
+#[cfg(unix)]
 fn validate_fleet(fleet: &DeviceFleet, cert: &DeviceCert) -> io::Result<()> {
     if fleet.schema_version != 1
         || fleet.identity_id != hex::encode(cert.user_public_key)
@@ -186,7 +208,9 @@ fn validate_fleet(fleet: &DeviceFleet, cert: &DeviceCert) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 struct BoundedPlain<'a>(&'a mut Vec<u8>);
+#[cfg(unix)]
 impl io::Write for BoundedPlain<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if self
@@ -205,15 +229,9 @@ impl io::Write for BoundedPlain<'_> {
     }
 }
 
-/// Non-secret proof identifying the one device carried by an authenticated artifact.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TransportReceipt {
-    pub user_public_key: [u8; 32],
-    pub device_public_key: [u8; 32],
-    pub sealed_bytes: u64,
-}
 /// Retained, immutable source material from a canonical personal-device approval.
 /// This object contains private seed identity store and intentionally has no serializer.
+#[cfg(unix)]
 pub struct EnrolledDevice {
     system: fs::Directory,
     system_directory: PathBuf,
@@ -225,6 +243,7 @@ pub struct EnrolledDevice {
 /// Canonical device identity store permits the certified service group's 0640 key;
 /// the source root is separately held private. Its reader rejects every symlink,
 /// foreign key owner, extra hard link and insecure mode without changing files.
+#[cfg(unix)]
 fn read_source_device_seed(
     directory: &fs::Directory,
     path: &Path,
@@ -241,6 +260,7 @@ fn read_source_device_seed(
     Ok(Zeroizing::new(seed.to_vec()))
 }
 
+#[cfg(unix)]
 impl EnrolledDevice {
     /// Review the exact already enrolled device in isolated owner-private source identity store.
     pub fn review(
@@ -430,9 +450,11 @@ impl EnrolledDevice {
 }
 
 /// Password-authenticated, exact root/device-bound identity store ready for privileged import.
+#[cfg(unix)]
 pub struct AuthenticatedEnrolledDevice {
     payload: Payload,
 }
+#[cfg(unix)]
 impl AuthenticatedEnrolledDevice {
     /// Public native authority from this already password-authenticated transport.
     /// This does not expose device seeds or permit caller-authored fleet claims.
@@ -505,18 +527,21 @@ impl AuthenticatedEnrolledDevice {
     }
 }
 
+#[cfg(unix)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportedEnrolledDevice {
     pub identity_record: PathBuf,
     pub user_public_key: [u8; 32],
     pub device_public_key: [u8; 32],
 }
+#[cfg(unix)]
 struct TargetFile {
     system: bool,
     directories: Vec<String>,
     name: String,
     bytes: Zeroizing<Vec<u8>>,
 }
+#[cfg(unix)]
 impl TargetFile {
     fn directory(
         &self,
@@ -580,6 +605,7 @@ impl TargetFile {
         Ok(())
     }
 }
+#[cfg(unix)]
 impl AuthenticatedEnrolledDevice {
     pub fn public_key(&self) -> [u8; 32] {
         self.payload.certificate.user_public_key
@@ -713,6 +739,7 @@ impl AuthenticatedEnrolledDevice {
         })
     }
 }
+#[cfg(unix)]
 fn normalize_public_projection(system: &fs::Directory, root: [u8; 32]) -> io::Result<()> {
     let user = system.child("user-identity", false)?;
     user.normalize_public_file("pubkey.bin")?;
@@ -726,6 +753,7 @@ fn normalize_public_projection(system: &fs::Directory, root: [u8; 32]) -> io::Re
     system.normalize_public_directory()
 }
 
+#[cfg(unix)]
 impl AuthenticatedEnrolledDevice {
     /// Privileged machine publication. No personal identity or human root key
     /// is imported. The existing OS firstboot permission service publishes the

@@ -2,8 +2,8 @@
 //! No device seed or personal signing share travels; activation only reviews
 //! the same existing canonical identity and never publishes system identity store.
 use super::{
-    DeviceCert, DeviceFleet, MAX_BYTES, TransportReceipt, fs, invalid, password_valid,
-    validate_fleet,
+    CurrentDeviceDeclaration, DeviceCert, DeviceFleet, MAX_BYTES, TransportReceipt, fs, invalid,
+    password_valid, validate_fleet,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -53,28 +53,7 @@ fn now() -> io::Result<u64> {
     tilo_clock::try_unix_now_ns().ok_or_else(invalid)
 }
 
-/// Public comparison facts; deserializing these never admits an identity.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CurrentDeviceDeclaration {
-    schema: u32,
-    user_public_key: [u8; 32],
-    device_public_key: [u8; 32],
-    record_name: String,
-    record_sha256: [u8; 32],
-    certificate_sha256: [u8; 32],
-    fleet_sha256: [u8; 32],
-}
 impl CurrentDeviceDeclaration {
-    pub fn public_key(&self) -> [u8; 32] {
-        self.user_public_key
-    }
-    pub fn device_public_key(&self) -> [u8; 32] {
-        self.device_public_key
-    }
-    pub fn record_name(&self) -> &str {
-        &self.record_name
-    }
     /// Resolve the current owner only if it matches these comparison facts.
     pub fn resolve_current(
         &self,
