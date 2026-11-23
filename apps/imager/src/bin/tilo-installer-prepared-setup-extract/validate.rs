@@ -558,7 +558,10 @@ mod tests {
             assert_eq!(expectation(&flat_home, "home").unwrap(), parsed_home);
             for (key, replacement) in [
                 ("schema", json!(true)),
+                ("sealed_bytes", json!(48.0)),
+                ("entries", json!(-1)),
                 ("runtime_sockets", json!(2)),
+                ("ciphertext_sha256", json!(vec![256; 32])),
                 ("setup_binding", json!("é".repeat(257))),
             ] {
                 let mut bad = flat_home.clone();

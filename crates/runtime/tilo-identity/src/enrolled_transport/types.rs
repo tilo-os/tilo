@@ -47,7 +47,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn device_declaration_and_transport_receipt_round_trip_and_refuse_unknown_fields() {
+    fn current_device_declaration_matches_literal_bytes_and_refuses_unknown_fields() {
         let declaration = CurrentDeviceDeclaration {
             schema: 1,
             user_public_key: [1; 32],
@@ -57,27 +57,27 @@ mod tests {
             certificate_sha256: [4; 32],
             fleet_sha256: [5; 32],
         };
+        let literal = concat!(
+            r#"{"schema":1,"#,
+            r#""user_public_key":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"#,
+            r#""device_public_key":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"#,
+            r#""record_name":"primary.json","#,
+            r#""record_sha256":[3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3],"#,
+            r#""certificate_sha256":[4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4],"#,
+            r#""fleet_sha256":[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]}"#
+        );
         let bytes = serde_json::to_vec(&declaration).expect("serialize declaration");
+        assert_eq!(bytes, literal.as_bytes());
         let parsed: CurrentDeviceDeclaration =
-            serde_json::from_slice(&bytes).expect("deserialize declaration");
+            serde_json::from_slice(literal.as_bytes()).expect("deserialize declaration");
         assert_eq!(parsed, declaration);
         assert_eq!(parsed.public_key(), [1; 32]);
         assert_eq!(parsed.device_public_key(), [2; 32]);
         assert_eq!(parsed.record_name(), "primary.json");
 
         let mut extra: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("declaration json value");
+            serde_json::from_slice(literal.as_bytes()).expect("declaration json value");
         extra["unexpected"] = serde_json::json!(true);
         assert!(serde_json::from_value::<CurrentDeviceDeclaration>(extra).is_err());
-
-        let receipt = TransportReceipt {
-            user_public_key: [6; 32],
-            device_public_key: [7; 32],
-            sealed_bytes: 4096,
-        };
-        assert_eq!(receipt.clone(), receipt);
-        assert_eq!(receipt.user_public_key, [6; 32]);
-        assert_eq!(receipt.device_public_key, [7; 32]);
-        assert_eq!(receipt.sealed_bytes, 4096);
     }
 }

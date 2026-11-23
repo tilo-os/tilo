@@ -115,40 +115,54 @@ fn expectation(kind: &str, data: &[u8]) -> TestResult<Value> {
     };
     Ok(value)
 }
-fn flat_expectation(kind: &str, data: &[u8]) -> TestResult<Value> {
-    let base = expectation(kind, data)?;
-    let field = |key| base.get(key).cloned().ok_or("missing expectation field");
+fn flat_expectation(kind: &str, data: &[u8]) -> Value {
     let purpose = match kind {
         "applications" => "flatpak_applications",
         "browser" => "browser_profiles",
         _ => "home",
     };
+    let op = "12345678-1234-4234-8234-123456789abc";
+    let mut v = json!({
+        "schema": 1,
+        "operation": op,
+        "purpose": purpose,
+        "filename": format!("{kind}-{op}.sealed"),
+        "setup_binding": "example setup",
+        "sealed_bytes": data.len(),
+        "plaintext_bytes": 10,
+        "entries": 1,
+        "ciphertext_sha256": Sha256::digest(data).to_vec(),
+        "limits": {"plaintext_bytes": 1024, "entries": 10, "metadata_bytes": 1024}
+    });
     let logical = match kind {
         "applications" => "manifest_sha256",
         "browser" => "plan_sha256",
         _ => "runtime_sockets",
     };
-    let mut flat = json!({
-        "schema": 1,
-        "operation": field("operation")?,
-        "purpose": purpose,
-        "filename": field("filename")?,
-        "setup_binding": field("setup_binding")?,
-        "sealed_bytes": field("sealed_bytes")?,
-        "plaintext_bytes": field("plaintext_bytes")?,
-        "entries": field("entries")?,
-        "ciphertext_sha256": field("ciphertext_sha256")?,
-        "limits": field("limits")?,
-    });
     let value = if kind == "home" {
         json!(0)
     } else {
         json!([3; 32].to_vec())
     };
-    flat.as_object_mut()
-        .ok_or("flat expectation must be an object")?
-        .insert(logical.into(), value);
-    Ok(flat)
+    if let Value::Object(ref mut fields) = v {
+        fields.insert(logical.into(), value);
+    }
+    v
+}
+fn expectation_shapes(kind: &str, data: &[u8]) -> TestResult<[(Value, Value); 2]> {
+    let nested = expectation(kind, data)?;
+    let mut flat_canonical = nested.clone();
+    if kind == "applications" {
+        flat_canonical
+            .get_mut("kind")
+            .and_then(Value::as_object_mut)
+            .ok_or("missing applications kind object")?
+            .insert("consumer_protocol".into(), json!(1));
+    }
+    Ok([
+        (flat_expectation(kind, data), flat_canonical),
+        (nested.clone(), nested),
+    ])
 }
 fn selected_payload_with(root: &Path, kind: &str, data: &[u8], expected: &Value) -> TestResult {
     let mut selection = json!({"schema":1,"prepared_setup":receipt(data)});
@@ -182,12 +196,6 @@ fn selected_payload_with(root: &Path, kind: &str, data: &[u8], expected: &Value)
         data,
     )?;
     Ok(())
-}
-fn selected_payload(root: &Path, kind: &str) -> TestResult<Value> {
-    let data = sealed();
-    let e = expectation(kind, &data)?;
-    selected_payload_with(root, kind, &data, &e)?;
-    Ok(e)
 }
 fn extract(root: &Path, out: &Path) -> TestResult<Output> {
     run(
@@ -267,77 +275,43 @@ fn native_extraction_preflight_retention_and_retry() {
 }
 #[test]
 fn native_payload_preflight_capacity_and_retention_all_kinds() {
+    let data = sealed();
     for kind in ["home", "applications", "browser"] {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("media");
-        let out = temp.path().join("out");
-        let target = temp.path().join("var");
-        private_directories(&[&root, &out, &target]).unwrap();
-        media(&root).unwrap();
-        let e = selected_payload(&root, kind).unwrap();
-        assert!(extract(&root, &out).unwrap().status.success(), "{kind}");
-        assert!(
-            run(
-                &["preflight-home", "--source-dir", out.to_str().unwrap()],
-                &[]
-            )
-            .unwrap()
-            .status
-            .success()
-        );
-        let bytes = run(
-            &["home-required-bytes", "--source-dir", out.to_str().unwrap()],
-            &[],
-        )
-        .unwrap();
-        assert!(bytes.status.success());
-        assert_eq!(
-            String::from_utf8(bytes.stdout)
-                .unwrap()
-                .trim()
-                .parse::<u64>()
-                .unwrap(),
-            80 + if kind == "applications" { 20 } else { 10 } + 1024 + 8192 + 16 * 1024 * 1024
-        );
-        assert!(
-            !run(
-                &[
-                    "check-home-capacity",
-                    "--source-dir",
-                    out.to_str().unwrap(),
-                    "--root-bytes",
-                    "1024"
-                ],
-                &[]
-            )
-            .unwrap()
-            .status
-            .success()
-        );
-        assert!(
-            run(
-                &[
-                    "check-home-capacity",
-                    "--source-dir",
-                    out.to_str().unwrap(),
-                    "--root-bytes",
-                    "68719476736"
-                ],
-                &[]
-            )
-            .unwrap()
-            .status
-            .success()
-        );
-        for _ in 0..2 {
+        for (input, canonical) in expectation_shapes(kind, &data).unwrap() {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("media");
+            let out = temp.path().join("out");
+            let target = temp.path().join("var");
+            let out_str = out.to_str().unwrap();
+            let target_str = target.to_str().unwrap();
+            private_directories(&[&root, &out, &target]).unwrap();
+            media(&root).unwrap();
+            selected_payload_with(&root, kind, &data, &input).unwrap();
+            assert!(extract(&root, &out).unwrap().status.success(), "{kind}");
             assert!(
-                run(
+                run(&["preflight-home", "--source-dir", out_str], &[])
+                    .unwrap()
+                    .status
+                    .success()
+            );
+            let bytes = run(&["home-required-bytes", "--source-dir", out_str], &[]).unwrap();
+            assert!(bytes.status.success());
+            assert_eq!(
+                String::from_utf8(bytes.stdout)
+                    .unwrap()
+                    .trim()
+                    .parse::<u64>()
+                    .unwrap(),
+                80 + if kind == "applications" { 20 } else { 10 } + 1024 + 8192 + 16 * 1024 * 1024
+            );
+            assert!(
+                !run(
                     &[
-                        "retain-home",
+                        "check-home-capacity",
                         "--source-dir",
-                        out.to_str().unwrap(),
-                        "--target-var",
-                        target.to_str().unwrap()
+                        out_str,
+                        "--root-bytes",
+                        "1024"
                     ],
                     &[]
                 )
@@ -345,26 +319,55 @@ fn native_payload_preflight_capacity_and_retention_all_kinds() {
                 .status
                 .success()
             );
-        }
-        let expected = target.join(format!("lib/tilo/prepared-{kind}/expectation.json"));
-        assert_eq!(
-            serde_json::from_slice::<Value>(&fs::read(expected).unwrap()).unwrap(),
-            e
-        );
-        write(
-            &root.join(e["filename"].as_str().unwrap()),
-            &[b"TILOMIG1".as_slice(), &[43; 72]].concat(),
-        )
-        .unwrap();
-        assert!(
-            !run(
-                &["preflight-home", "--source-dir", out.to_str().unwrap()],
-                &[]
+            assert!(
+                run(
+                    &[
+                        "check-home-capacity",
+                        "--source-dir",
+                        out_str,
+                        "--root-bytes",
+                        "68719476736"
+                    ],
+                    &[]
+                )
+                .unwrap()
+                .status
+                .success()
+            );
+            for _ in 0..2 {
+                assert!(
+                    run(
+                        &[
+                            "retain-home",
+                            "--source-dir",
+                            out_str,
+                            "--target-var",
+                            target_str
+                        ],
+                        &[]
+                    )
+                    .unwrap()
+                    .status
+                    .success()
+                );
+            }
+            let expected = target.join(format!("lib/tilo/prepared-{kind}/expectation.json"));
+            assert_eq!(
+                serde_json::from_slice::<Value>(&fs::read(expected).unwrap()).unwrap(),
+                canonical
+            );
+            write(
+                &root.join(input["filename"].as_str().unwrap()),
+                &[b"TILOMIG1".as_slice(), &[43; 72]].concat(),
             )
-            .unwrap()
-            .status
-            .success()
-        );
+            .unwrap();
+            assert!(
+                !run(&["preflight-home", "--source-dir", out_str], &[])
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        }
     }
 }
 tilo_test_env::scenario! {
@@ -420,14 +423,17 @@ tilo_test_env::scenario! {
     {
         for kind in ["home", "applications", "browser"] {
             let base = expectation(kind, &sealed()).unwrap();
+            let flat = flat_expectation(kind, &sealed());
             let mut mutations = vec![Value::Null, json!(true), json!([])];
-            for key in base.as_object().unwrap().keys() {
-                let mut v = base.clone();
-                v.as_object_mut().unwrap().remove(key);
-                mutations.push(v);
-                let mut v = base.clone();
-                v[key] = json!(true);
-                mutations.push(v);
+            for fixture in [&flat, &base] {
+                for key in fixture.as_object().unwrap().keys() {
+                    let mut v = fixture.clone();
+                    v.as_object_mut().unwrap().remove(key);
+                    mutations.push(v);
+                    let mut v = fixture.clone();
+                    v[key] = json!(true);
+                    mutations.push(v);
+                }
             }
             let mut extra = base.clone();
             extra["unreviewed_grant"] = json!("/etc");
@@ -435,7 +441,6 @@ tilo_test_env::scenario! {
             let mut nested_extra = base.clone();
             nested_extra["kind"]["unreviewed_grant"] = json!("/etc");
             mutations.push(nested_extra);
-            let flat = flat_expectation(kind, &sealed()).unwrap();
             let mut flat_extra = flat.clone();
             flat_extra["unreviewed_grant"] = json!("/etc");
             mutations.push(flat_extra);
@@ -595,80 +600,56 @@ tilo_test_env::scenario! {
 
     phase browser_padding_and_writable_profiles_are_closed;
     {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("media");
-        let out = temp.path().join("out");
-        private(&root).unwrap();
-        private(&out).unwrap();
-        media(&root).unwrap();
-        selected_payload(&root, "browser").unwrap();
-        let path = root.join(".tilo-installer/browser-selection.json");
-        let original = fs::read(&path).unwrap();
-        for prefix in *b" \t\n" {
-            let native = temp.path().join(format!("native-{prefix}"));
-            private(&native).unwrap();
-            write(&path, &[&[prefix], original.as_slice()].concat()).unwrap();
-            let n = extract(&root, &native).unwrap();
-            assert!(!n.status.success());
+        let data = sealed();
+        for (browser, _) in expectation_shapes("browser", &data).unwrap() {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("media");
+            let out = temp.path().join("out");
+            private(&root).unwrap();
+            private(&out).unwrap();
+            media(&root).unwrap();
+            selected_payload_with(&root, "browser", &data, &browser).unwrap();
+            let path = root.join(".tilo-installer/browser-selection.json");
+            let original = fs::read(&path).unwrap();
+            for prefix in *b" \t\n" {
+                let native = temp.path().join(format!("native-{prefix}"));
+                private(&native).unwrap();
+                write(&path, &[&[prefix], original.as_slice()].concat()).unwrap();
+                let n = extract(&root, &native).unwrap();
+                assert!(!n.status.success());
+            }
+            write(&path, &original).unwrap();
+            assert!(extract(&root, &out).unwrap().status.success());
+            let profile = out.join("profile.json");
+            write(&profile, b"{\"schema\":1}").unwrap();
+            fs::set_permissions(&profile, fs::Permissions::from_mode(0o622)).unwrap();
+            assert!(
+                !run(
+                    &["preflight-profile", "--source-dir", out.to_str().unwrap()],
+                    &[]
+                )
+                .unwrap()
+                .status
+                .success()
+            );
         }
-        write(&path, &original).unwrap();
-        assert!(extract(&root, &out).unwrap().status.success());
-        let profile = out.join("profile.json");
-        write(&profile, b"{\"schema\":1}").unwrap();
-        fs::set_permissions(&profile, fs::Permissions::from_mode(0o622)).unwrap();
-        assert!(
-            !run(
-                &["preflight-profile", "--source-dir", out.to_str().unwrap()],
-                &[]
-            )
-            .unwrap()
-            .status
-            .success()
-        );
     }
 
     phase authenticated_completed_selection_and_scope_mutations_are_refused;
     {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("media");
-        let out = temp.path().join("out");
-        private(&root).unwrap();
-        private(&out).unwrap();
-        media(&root).unwrap();
-        let home = selected_payload(&root, "home").unwrap();
-        assert!(extract(&root, &out).unwrap().status.success());
-        let base = json!({"schema":1,"setup_binding":"example setup","completed_home":home,"completed_setup":receipt(&sealed())});
-        let input = serde_json::to_vec(&base).unwrap();
-        let output = run(
-            &[
-                "preflight-authenticated",
-                "--source-dir",
-                out.to_str().unwrap(),
-            ],
-            &input,
-        )
-        .unwrap();
-        assert!(output.status.success());
-        assert_eq!(output.stdout, input);
-        let mut mutations = Vec::new();
-        for key in ["completed_home", "completed_setup", "setup_binding"] {
-            for bad in [
-                Value::Null,
-                json!(true),
-                json!({}),
-                json!("example-private-credential"),
-            ] {
-                let mut value = base.clone();
-                value[key] = bad;
-                mutations.push(value);
-            }
-        }
-        let mut scope = base;
-        scope["computer_apps_scope"] = json!({"schema":1});
-        mutations.push(scope);
-        for value in mutations {
-            let input = serde_json::to_vec(&value).unwrap();
-            let n = run(
+        let data = sealed();
+        for (home, _) in expectation_shapes("home", &data).unwrap() {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("media");
+            let out = temp.path().join("out");
+            private(&root).unwrap();
+            private(&out).unwrap();
+            media(&root).unwrap();
+            selected_payload_with(&root, "home", &data, &home).unwrap();
+            assert!(extract(&root, &out).unwrap().status.success());
+            let base = json!({"schema":1,"setup_binding":"example setup","completed_home":home,"completed_setup":receipt(&data)});
+            let input = serde_json::to_vec(&base).unwrap();
+            let output = run(
                 &[
                     "preflight-authenticated",
                     "--source-dir",
@@ -677,8 +658,38 @@ tilo_test_env::scenario! {
                 &input,
             )
             .unwrap();
-            assert!(!n.status.success(), "{value}");
-            assert!(n.stdout.is_empty());
+            assert!(output.status.success());
+            assert_eq!(output.stdout, input);
+            let mut mutations = Vec::new();
+            for key in ["completed_home", "completed_setup", "setup_binding"] {
+                for bad in [
+                    Value::Null,
+                    json!(true),
+                    json!({}),
+                    json!("example-private-credential"),
+                ] {
+                    let mut value = base.clone();
+                    value[key] = bad;
+                    mutations.push(value);
+                }
+            }
+            let mut scope = base;
+            scope["computer_apps_scope"] = json!({"schema":1});
+            mutations.push(scope);
+            for value in mutations {
+                let input = serde_json::to_vec(&value).unwrap();
+                let n = run(
+                    &[
+                        "preflight-authenticated",
+                        "--source-dir",
+                        out.to_str().unwrap(),
+                    ],
+                    &input,
+                )
+                .unwrap();
+                assert!(!n.status.success(), "{value}");
+                assert!(n.stdout.is_empty());
+            }
         }
     }
 
@@ -696,28 +707,31 @@ tilo_test_env::scenario! {
                 .status
                 .success()
         );
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("media");
-        let out = temp.path().join("out");
-        private(&root).unwrap();
-        private(&out).unwrap();
-        media(&root).unwrap();
-        selected_payload(&root, "home").unwrap();
-        assert!(extract(&root, &out).unwrap().status.success());
-        let path = out.join("portable-home.json");
-        let mut locator: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        locator["binding"] =
-            json!({"kind":"completed_generation","attempt":"12345678-1234-4234-8234-123456789abc"});
-        write(&path, &serde_json::to_vec(&locator).unwrap()).unwrap();
-        assert!(
-            !run(
-                &["preflight-home", "--source-dir", out.to_str().unwrap()],
-                &[]
-            )
-            .unwrap()
-            .status
-            .success()
-        );
+        let data = sealed();
+        for (home, _) in expectation_shapes("home", &data).unwrap() {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("media");
+            let out = temp.path().join("out");
+            private(&root).unwrap();
+            private(&out).unwrap();
+            media(&root).unwrap();
+            selected_payload_with(&root, "home", &data, &home).unwrap();
+            assert!(extract(&root, &out).unwrap().status.success());
+            let path = out.join("portable-home.json");
+            let mut locator: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            locator["binding"] =
+                json!({"kind":"completed_generation","attempt":"12345678-1234-4234-8234-123456789abc"});
+            write(&path, &serde_json::to_vec(&locator).unwrap()).unwrap();
+            assert!(
+                !run(
+                    &["preflight-home", "--source-dir", out.to_str().unwrap()],
+                    &[]
+                )
+                .unwrap()
+                .status
+                .success()
+            );
+        }
     }
 }
 
@@ -979,7 +993,7 @@ fn check_flat_payload_round_trip(kind: &str) -> TestResult {
     private_directories(&[&root, &out, &target])?;
     media(&root)?;
     let data = sealed();
-    let flat = flat_expectation(kind, &data)?;
+    let flat = flat_expectation(kind, &data);
     let mut canonical = expectation(kind, &data)?;
     if kind == "applications" {
         canonical
