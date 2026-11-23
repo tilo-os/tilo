@@ -9,7 +9,7 @@
 //! no message, no tool result, no model request, no log line and nowhere on the server's disk
 //! in the clear.
 use super::hosted_agent_turns::{SCOUT, conversation_part};
-use super::hosted_secret_use::{Hosted, does, files_holding, logged};
+use super::hosted_secret_use::{Hosted, does, files_holding, logged, resumed};
 use super::*;
 use test_http::{Reply as Answer, Responder};
 use tilo_actions::remote::person_vault;
@@ -21,7 +21,7 @@ const KEY: &str = "made-up-key-for-tests-0123456789abcdef";
 /// What stands in an answer where the key stood.
 const WITHHELD: &str = "[withheld]";
 /// What the agent is told when its person is asked first.
-const ASKED: &str = "Your person is asked in the conversation";
+const ASKED: &str = "asked:";
 
 /// A service that keeps a number behind the made-up key. It is a careless one: it repeats
 /// what it was shown in what it answers.
@@ -93,32 +93,42 @@ async fn the_assistant_calls_a_service_with_a_key_it_never_sees() {
         service.drain_requests().is_empty(),
         "nothing is sent unasked"
     );
-    let asked = hosted.questions(chat::question::ACTION).await;
+    let asked = hosted.page.asks().await;
     assert_eq!(asked.len(), 1, "one question about the call");
-    let (question, held) = &asked[0];
-    let asks = held.question.as_ref().unwrap();
-    assert_eq!(held.author, MemberId::agent(SCOUT));
-    assert_eq!(asks.person, MemberId::person(hosted.person()));
+    let question = &asked[0];
+    assert!(
+        matches!(
+            &question.by,
+            tilo_actions::remote::asked::AskedBy::Agent(who) if who.id == SCOUT
+        ),
+        "{question:?}"
+    );
     assert_eq!(
-        held.text, "To read this month's numbers.",
+        question.words, "To read this month's numbers.",
         "why, in the agent's words"
     );
-    let offered: Vec<&str> = asks
-        .answers
-        .iter()
-        .map(|answer| answer.id.as_str())
-        .collect();
+    assert!(
+        question
+            .facts
+            .contains(&tilo_actions::remote::asked::Fact::new("Item", "key")),
+        "{question:?}"
+    );
+    assert!(
+        question
+            .facts
+            .iter()
+            .any(|fact| fact.label == "Goes to" && fact.value.contains(&service.url())),
+        "where the key would go: {question:?}"
+    );
     assert_eq!(
-        offered,
-        [chat::question::ALLOW, chat::question::DENY],
+        question.offers,
+        [
+            tilo_actions::remote::asked::Offer::Approve,
+            tilo_actions::remote::asked::Offer::Decline
+        ],
         "no Always is offered for a call"
     );
-    let kept = asks.kept().expect("question detail");
-    assert_eq!(
-        kept.pointer("/use/item/belongsTo"),
-        Some(&serde_json::json!([service.url()]))
-    );
-    let shown = format!("{:?} {}", asks.draft(), asks.detail.0);
+    let shown = format!("{question:?}");
     assert!(
         shown.contains("/v1/balance"),
         "where the call goes: {shown}"
@@ -129,42 +139,16 @@ async fn the_assistant_calls_a_service_with_a_key_it_never_sees() {
         "the item's address is withheld: {shown}"
     );
 
-    // They allow it. The server says how that ended, and still sends nothing by itself.
-    hosted.answers(question, chat::question::ALLOW).await;
-    hosted.agents.look(&hosted.workspace).await.unwrap();
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let now = hosted.questions(chat::question::ACTION).await;
-        let outcome = now[0].1.question.as_ref().unwrap().outcome.clone();
-        if outcome
-            .as_ref()
-            .is_some_and(|outcome| outcome.outcome.0 == chat::question::DONE)
-        {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the server never took the answer: {outcome:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(
-        service.drain_requests().is_empty(),
-        "an allow sends nothing by itself"
-    );
-
-    // The assistant makes the same call again: it is sent once, and the answer is its tool
+    // Their approve re-admits the call, which is sent once: its answer is the resumed run's
     // result, with the key struck out of what the service repeated.
+    hosted.model.then(Reply::text("Your balance is 1234."));
+    let question = hosted.page.asks().await.remove(0);
     hosted
-        .turn(
-            "I allowed it.",
-            vec![
-                balance("call-2", &service, &reference),
-                Reply::text("Your balance is 1234."),
-            ],
-        )
-        .await;
-    let told = hosted.last_tool_result();
+        .page
+        .resolve(&question, "approve", None)
+        .await
+        .expect("the person allows it");
+    let told = resumed(&mut hosted, "1234").await;
     assert!(
         told.contains("1234") && !told.contains(ASKED),
         "the service's answer is the tool's result: {told}"
@@ -182,17 +166,16 @@ async fn the_assistant_calls_a_service_with_a_key_it_never_sees() {
         Some(format!("Bearer {KEY}").as_str()),
         "the service is shown the key the vault keeps"
     );
-    assert_eq!(
-        hosted.questions(chat::question::ACTION).await.len(),
-        1,
+    assert!(
+        hosted.page.asks().await.is_empty(),
         "no second question for the call that was allowed"
     );
 
     // The key reached the service and nothing else.
     let requests = hosted.model.asked();
     assert!(
-        requests.len() >= 4,
-        "two turns of two calls each: {}",
+        requests.len() >= 2,
+        "the call and its answer: {}",
         requests.len()
     );
     for call in &requests {

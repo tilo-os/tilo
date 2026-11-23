@@ -8,8 +8,7 @@
 //! not called: the person is asked in their conversation with the assistant, with the
 //! service, the command and its arguments as they will be sent; their own "Always" calls it
 //! once and lets that command of that connection go ahead unasked from then on; they read that
-//! permission and take it back, and the command asks again; and a question the assistant
-//! reworded after it asked calls nothing and lets nothing stand, whatever its person answers.
+//! permission and take it back, and the command asks again.
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 

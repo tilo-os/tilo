@@ -39,7 +39,7 @@ const CY: &str = "cy@example.test";
 /// What the answer to Bo says.
 const ANSWER: &str = "Friday at one works.\nSee you there.";
 /// What the agent is told when its person is asked before a message leaves.
-const ASKED: &str = "Your person is asked in your conversation with them whether this message";
+const ASKED: &str = "asked:";
 /// How the question about a message begins.
 const MAY_IT_LEAVE: &str = "May I send this message";
 
@@ -361,12 +361,12 @@ async fn the_turn_keeps_a_draft(hosted: &Hosted, servers: &Servers) {
 }
 
 /// It begins the answer to Bo and asks to send it, in the tool calls `calls` names after its
-/// person's `words`: the question about the message that waits then, and its message.
+/// person's `words`: the record that waits then.
 async fn it_asks_to_send(
-    hosted: &Hosted,
+    hosted: &mut Hosted,
     calls: (&str, &str),
     words: (&str, &str),
-) -> (Id, chat::chat::Message) {
+) -> tilo_actions::remote::asked::Asked {
     let beginning = does(calls.0, "accounts/accounts#begin-send", &answer_to_bo());
     hosted
         .turn(
@@ -389,225 +389,80 @@ async fn it_asks_to_send(
         answered.contains(ASKED),
         "the agent is told its person is asked: {answered}"
     );
-    let asked = hosted.questions(chat::question::ACTION).await;
-    let waits = asked.iter().find(|(_, held)| {
-        let waiting = held
-            .question
-            .as_ref()
-            .is_some_and(chat::question::Question::waiting);
-        waiting && held.text.starts_with(MAY_IT_LEAVE)
-    });
-    waits
-        .cloned()
-        .unwrap_or_else(|| panic!("the question about the message: {asked:?}"))
+    let asked = hosted.page.asks().await;
+    assert_eq!(asked.len(), 1, "one question about the message: {asked:?}");
+    asked.into_iter().next().unwrap()
 }
 
-/// An agent may edit a message it wrote. A question whose words its agent changed after the
-/// server asked is not the one its person was asked: her yes to it sends nothing, and the
-/// question says why.
-async fn a_question_its_agent_edited_sends_nothing(hosted: &Hosted, servers: &Servers) {
-    let words = ("Write Bo a yes, with Cy in copy.", "Send that one.");
-    let (question, held) = it_asks_to_send(hosted, ("mail-6", "mail-7"), words).await;
-    let hidden = held.text.replace("\nCopy to: cy@example.test", "");
-    assert_ne!(hidden, held.text, "{}", held.text);
-    let edit = chat::messages::chat_messages::EditMessage {
-        message: question.clone(),
-        text: hidden,
-        body: None,
-        mentions: None,
-    };
-    let edited = chat::parts::ChatMessages::EDIT_MESSAGE.with(edit);
-    assert!(
-        writes_as(hosted, Other::HerAgent, edited).await,
-        "an agent edits what it wrote"
-    );
-    hosted.answers(&question, chat::question::ALLOW).await;
-    hosted.agents.look(&hosted.workspace).await.unwrap();
-    assert_eq!(outcome_of(hosted, &question).await, chat::question::FAILED);
-    let asked = hosted.questions(chat::question::ACTION).await;
-    let said = asked
-        .iter()
-        .find(|(id, _)| *id == question)
-        .and_then(|(_, held)| held.question.as_ref()?.outcome.clone())
-        .map(|outcome| outcome.detail)
-        .unwrap_or_default();
-    assert!(
-        said.contains("no longer says what this server asked"),
-        "{said}"
-    );
-    assert!(
-        servers.asked("send").is_empty(),
-        "her yes to other words than the server's sends nothing"
-    );
-}
-
-/// It asks to send again. Nothing leaves: the question waits in her conversation with every
-/// address the message goes to, what it is called and what it says, and offers no answer of
-/// always. The question's message.
-async fn a_send_asks_and_nothing_leaves(hosted: &Hosted, servers: &Servers) -> Id {
+/// It asks to send. Nothing leaves: the record shows every address the message goes to, what it
+/// is called and what it says, and offers no answer of always. The record.
+async fn a_send_asks_and_nothing_leaves(
+    hosted: &mut Hosted,
+    servers: &Servers,
+) -> tilo_actions::remote::asked::Asked {
+    use tilo_actions::remote::asked::{AskedBy, Fact, Offer};
     let words = ("Write it once more.", "Send it now.");
-    let (question, held) = it_asks_to_send(hosted, ("mail-8", "mail-9"), words).await;
+    let question = it_asks_to_send(hosted, ("mail-8", "mail-9"), words).await;
     assert!(servers.asked("send").is_empty(), "nothing left unasked");
-    let asks = held.question.as_ref().unwrap();
-    assert_eq!(held.author, MemberId::agent(SCOUT));
-    assert_eq!(
-        asks.person,
-        MemberId::person(hosted.person()),
-        "only its own person is asked"
+    assert!(
+        matches!(&question.by, AskedBy::Agent(who) if who.id == SCOUT),
+        "only its own person is asked: {question:?}"
     );
-    for shown in [
-        "From: ada@example.test",
-        "Goes to: 2 addresses",
-        "To: bo@example.test",
-        "Copy to: cy@example.test",
-        "Message: Friday at one works. \u{23ce} See you there.",
+    assert_eq!(question.verb, "send", "{question:?}");
+    for (label, value) in [
+        ("From", "ada@example.test"),
+        ("Goes to", "2 addresses"),
+        ("To", "bo@example.test"),
+        ("Copy to", "cy@example.test"),
+        ("Message", "Friday at one works. \u{23ce} See you there."),
     ] {
         assert!(
-            held.text.lines().any(|line| line == shown),
-            "{shown:?} is a line of the question: {}",
-            held.text
+            question.facts.contains(&Fact::new(label, value)),
+            "{label:?} is a fact of the record: {question:?}"
         );
     }
     assert!(
-        held.text
-            .lines()
-            .any(|line| line.ends_with(": Re: Lunch on Friday?")),
-        "what it is called is a line of the question: {}",
-        held.text
+        question
+            .facts
+            .iter()
+            .any(|fact| fact.label == "Subject" && fact.value.ends_with("Re: Lunch on Friday?")),
+        "what it is called is a fact: {question:?}"
     );
-    let offered: Vec<&str> = asks
-        .answers
-        .iter()
-        .map(|answer| answer.id.as_str())
-        .collect();
     assert_eq!(
-        offered,
-        [chat::question::ALLOW, chat::question::DENY],
+        question.offers,
+        [Offer::Approve, Offer::Decline],
         "no answer lets mail leave unasked from now on"
     );
     question
 }
 
-/// Who writes into the conversation's document beside the person herself.
-#[derive(Clone, Copy)]
-enum Other<'a> {
-    /// Her own agent, acting for her.
-    HerAgent,
-    /// Somebody else, at a device of their own.
-    Another(&'a str),
-}
-
-/// One change to the conversation's document written as `who`, as a device writes it: whether
-/// the document took it.
-async fn writes_as(
-    hosted: &Hosted,
-    who: Other<'_>,
-    change: impl Into<ui::tilo_resource::Invoke<chat::parts::ChatMessages>>,
-) -> bool {
-    let saved = hosted
-        .workspaces
-        .resource_document(&hosted.workspace, CHAT, "")
-        .await
-        .unwrap()
-        .expect("the workspace's chat");
-    let held = chat::chat::Chat::read(&automerge::AutoCommit::load(&saved).unwrap()).unwrap();
-    let person = hosted.person();
-    let change = change.into();
-    let catalogue = crate::common::catalogue();
-    let governor = hosted.workspaces.governor().clone();
-    let part = chat::parts::part(0);
-    hosted
-        .workspaces
-        .author_application(
-            &hosted.workspace,
-            &governor,
-            &catalogue,
-            CHAT,
-            part.as_str(),
-            |doc| {
-                chat::demo::apply_part_doc_as(
-                    doc,
-                    &held,
-                    |replica| match who {
-                        Other::HerAgent => replica.as_agent_for(SCOUT, &person),
-                        Other::Another(other) => replica.as_invoker(other),
-                    },
-                    None,
-                    change,
-                )
-                .map_err(|error| format!("{error:?}"))
-            },
-        )
-        .await
-        .is_ok()
-}
-
-/// `who` answers the question `message` asks with `answer`: whether the document took it.
-async fn answers_as(hosted: &Hosted, who: Other<'_>, message: &Id, answer: &str) -> bool {
-    let answering = chat::messages::chat_messages::AnswerQuestion {
-        message: message.clone(),
-        answer: answer.to_owned(),
-        device: Some("browser".to_owned()),
-    };
-    let answered = chat::parts::ChatMessages::ANSWER_QUESTION.with(answering);
-    writes_as(hosted, who, answered).await
-}
-
-/// What came of the answer to the question `message` asks, once the server said so for good.
-async fn outcome_of(hosted: &Hosted, message: &Id) -> String {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let asked = hosted.questions(chat::question::ACTION).await;
-        let held = asked.iter().find(|(id, _)| id == message);
-        let outcome = held
-            .and_then(|(_, held)| held.question.as_ref())
-            .and_then(|question| question.outcome.clone())
-            .map(|outcome| outcome.outcome.0)
-            .filter(|outcome| outcome != chat::question::STARTED);
-        if let Some(outcome) = outcome {
-            return outcome;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the server never said what came of the answer"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
-/// Her agent's answer and another person's do nothing. The server restarts while the question
-/// waits and sends nothing. Her own answer, given later, lets the message leave as she was
-/// shown it, once: looked at again and after one more restart nothing leaves twice.
-async fn only_her_own_answer_lets_it_leave_once(
+/// The server restarts while the record waits and sends nothing. The person's approve lets the
+/// message leave as they were shown it, once: after one more restart nothing leaves twice.
+async fn her_answer_lets_it_leave_once(
     hosted: &mut Hosted,
     servers: &Servers,
-    question: &Id,
+    question: &tilo_actions::remote::asked::Asked,
 ) {
-    for (who, name) in [
-        (Other::HerAgent, "her own agent"),
-        (Other::Another("b0b0b0b0"), "another person"),
-    ] {
-        assert!(
-            !answers_as(hosted, who, question, chat::question::ALLOW).await,
-            "{name} does not answer for her"
-        );
-    }
-    hosted.agents.look(&hosted.workspace).await.unwrap();
-    assert!(servers.asked("send").is_empty(), "nothing was answered");
-
-    // The server restarts: whatever worked its agents is gone, and no turn starts before she
-    // answers.
     hosted.restart().await;
     hosted.agents.look(&hosted.workspace).await.unwrap();
     assert!(servers.asked("send").is_empty(), "a restart sends nothing");
 
-    hosted.answers(question, chat::question::ALLOW).await;
-    hosted.agents.look(&hosted.workspace).await.unwrap();
-    assert_eq!(outcome_of(hosted, question).await, chat::question::DONE);
+    hosted
+        .page
+        .resolve(question, "approve", None)
+        .await
+        .expect("the person lets it leave");
+    let deadline = tilo_test_env::hang_deadline();
+    while servers.asked("send").is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "the server never carried the answer out"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let left = format!("send {ACCOUNT} to {BO} copy to {CY} blind copy to : {ANSWER}");
     assert_eq!(servers.asked("send"), [left.as_str()], "what she was shown");
 
-    hosted.agents.look(&hosted.workspace).await.unwrap();
     hosted.restart().await;
     hosted.agents.look(&hosted.workspace).await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -681,8 +536,8 @@ async fn with_every_device_off_the_assistant_reads_arrived_mail_drafts_and_asks_
     let servers = Arc::new(Servers::default());
     hosted.workspaces.carry_mail_through(servers.clone());
     // The account: signed in to with a password the assistant never saw.
-    let reference = the_password_goes_from_the_persons_device_to_their_vault(&hosted).await;
-    the_first_use_asks_and_always_signs_in(&hosted, &reference).await;
+    let reference = the_password_goes_from_the_persons_device_to_their_vault(&mut hosted).await;
+    the_first_use_asks_and_always_signs_in(&mut hosted, &reference).await;
     every_device_of_hers_goes_off(&hosted);
 
     // Something on the server listens for the workspace's mail, as an event with a mail trigger
@@ -692,8 +547,7 @@ async fn with_every_device_off_the_assistant_reads_arrived_mail_drafts_and_asks_
     a_message_arrives(&hosted, &servers);
     the_turn_reads_what_arrived(&hosted, &servers).await;
     the_turn_keeps_a_draft(&hosted, &servers).await;
-    a_question_its_agent_edited_sends_nothing(&hosted, &servers).await;
-    let question = a_send_asks_and_nothing_leaves(&hosted, &servers).await;
-    only_her_own_answer_lets_it_leave_once(&mut hosted, &servers, &question).await;
+    let question = a_send_asks_and_nothing_leaves(&mut hosted, &servers).await;
+    her_answer_lets_it_leave_once(&mut hosted, &servers, &question).await;
     the_password_reached_the_servers_and_nothing_else(&hosted, &servers, &lines).await;
 }

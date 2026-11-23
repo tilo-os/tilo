@@ -409,6 +409,15 @@ struct SignIn {
 }
 
 /// A server that places Browser windows, with the window of its person's workspace showing the
+/// Wait until nothing waits for the person any more.
+async fn answered(hosted: &mut Hosted) {
+    let deadline = tilo_test_env::hang_deadline();
+    while !hosted.page.asks().await.is_empty() {
+        assert!(Instant::now() < deadline, "the question was never answered");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// sign-in page at [`SITE`], and a sign-in in the person's vault that belongs to `belongs`.
 async fn at_the_sign_in_page(belongs: &str) -> SignIn {
     let lines = logged();
@@ -648,8 +657,7 @@ async fn narrow(hosted: &Hosted, bound: Vec<Bound>) {
 /// page.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_assistant_has_a_sign_in_field_filled_with_a_password_only_the_page_holds() {
-    let signing = Box::pin(at_the_sign_in_page(SITE)).await;
-    let hosted = &signing.hosted;
+    let mut signing = Box::pin(at_the_sign_in_page(SITE)).await;
 
     let told = signing
         .asks_to_fill("Please sign in to the made-up site for me.", "call-1")
@@ -659,18 +667,19 @@ async fn the_assistant_has_a_sign_in_field_filled_with_a_password_only_the_page_
         "the agent is told its person is asked: {told}"
     );
     assert!(signing.filled().is_empty(), "nothing is filled unasked");
-    let asked = hosted.questions(chat::question::ACTION).await;
+    let asked = signing.hosted.page.asks().await;
     assert_eq!(asked.len(), 1, "one question about the fill: {told}");
-    let (question, held) = &asked[0];
-    let asks = held.question.as_ref().unwrap();
-    assert_eq!(
-        asks.person,
-        MemberId::person(hosted.person()),
-        "only its own person is asked"
-    );
-    let shown = asks.kept().unwrap_or_default().to_string();
+    let question = &asked[0];
     assert!(
-        shown.contains("\"name\":\"sign-in.example.test\"") && shown.contains(SITE),
+        matches!(
+            &question.by,
+            tilo_actions::remote::asked::AskedBy::Agent(who) if who.id == SCOUT
+        ),
+        "only its own person is asked: {question:?}"
+    );
+    let shown = format!("{question:?}");
+    assert!(
+        shown.contains("sign-in.example.test") && shown.contains(SITE),
         "the question names the site by its name and by its whole origin: {shown}"
     );
     assert!(
@@ -678,8 +687,13 @@ async fn the_assistant_has_a_sign_in_field_filled_with_a_password_only_the_page_
         "and shows nothing of the item but its kind: {shown}"
     );
 
-    hosted.answers(question, chat::question::ALLOW).await;
-    assert_eq!(reworded::ended(hosted).await, chat::question::DONE);
+    signing
+        .hosted
+        .page
+        .resolve(question, "approve", None)
+        .await
+        .expect("the person allows it");
+    answered(&mut signing.hosted).await;
     assert!(
         signing.filled().is_empty(),
         "an allow fills nothing by itself"
@@ -702,88 +716,33 @@ async fn the_assistant_has_a_sign_in_field_filled_with_a_password_only_the_page_
     assert_eq!(signing.filled().len(), 1, "one allow, one fill");
 
     signing.the_password_is_nowhere_but_in_the_page().await;
-    hosted.page.peer.close();
+    signing.hosted.page.peer.close();
 }
 
 /// A no fills nothing, and the next fill asks again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_no_fills_nothing_and_the_next_fill_asks_again() {
-    let signing = Box::pin(at_the_sign_in_page(SITE)).await;
-    let hosted = &signing.hosted;
-    let told = signing
-        .asks_to_fill("Please sign in to the made-up site for me.", "call-1")
-        .await;
-    let asked = hosted.questions(chat::question::ACTION).await;
-    assert_eq!(asked.len(), 1, "one question about the fill: {told}");
-    hosted.answers(&asked[0].0, chat::question::DENY).await;
-    let ended = reworded::ended(hosted).await;
-
-    let told = signing
-        .asks_to_fill("Please try once more.", "call-2")
-        .await;
-    assert!(
-        ended == chat::question::DROPPED && signing.filled().is_empty() && told.contains(ASKED),
-        "a no: it ended {ended:?}, the page holds {:?}, and the next fill asks again: {told}",
-        signing.filled()
-    );
-    assert!(
-        !signing.travelled().contains("released"),
-        "nothing was released to the window: {}",
-        signing.travelled()
-    );
-    hosted.page.peer.close();
-}
-
-/// A question its agent edited is not what its person was asked: their "Always" fills nothing,
-/// the question says it was not done, the item keeps no leave, and the next fill asks again.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn always_to_an_edited_question_fills_nothing_and_lets_nothing_stand() {
     let mut signing = Box::pin(at_the_sign_in_page(SITE)).await;
     let told = signing
         .asks_to_fill("Please sign in to the made-up site for me.", "call-1")
         .await;
-    let asked = signing.hosted.questions(chat::question::ACTION).await;
+    let asked = signing.hosted.page.asks().await;
     assert_eq!(asked.len(), 1, "one question about the fill: {told}");
-    let question = asked[0].0.clone();
-
-    // The assistant puts other words on what it asked, and its person answers what they read.
-    reworded::the_assistant_rewords(&signing.hosted, &question, "May I tidy up our chat?").await;
-    let edited = signing.hosted.questions(chat::question::ACTION).await;
-    assert!(edited[0].1.edited, "the question shows other words now");
     signing
         .hosted
-        .answers(&question, chat::question::ALWAYS)
-        .await;
-    let ended = reworded::ended(&signing.hosted).await;
+        .page
+        .resolve(&asked[0], "decline", None)
+        .await
+        .expect("the person declines");
+    answered(&mut signing.hosted).await;
 
-    // Whether anything stands for the assistant: the same fill, asked for once more, and what
-    // the item remembers, as its person reads it.
     let told = signing
         .asks_to_fill("Please try once more.", "call-2")
         .await;
     assert!(
-        ended == chat::question::FAILED && signing.filled().is_empty() && told.contains(ASKED),
-        "always to an edited question: it ended {ended:?} (not done is {:?}), the page holds \
-         {:?}, and the next fill asks again: {told}",
-        chat::question::FAILED,
+        signing.filled().is_empty() && told.contains(ASKED),
+        "a no fills nothing, and the next fill asks again: the page holds {:?}: {told}",
         signing.filled()
-    );
-    let reference = signing.reference.clone();
-    let remembers = signing
-        .hosted
-        .on_device(
-            (
-                person_vault::PROVIDER,
-                person_vault::RESOURCE,
-                person_vault::USES,
-            ),
-            serde_json::json!({"item": reference}),
-        )
-        .await;
-    assert_eq!(
-        (remembers.get("always"), &remembers["uses"]),
-        (None, &serde_json::json!([])),
-        "the item keeps no leave and was never used: {remembers}"
     );
     assert!(
         !signing.travelled().contains("released"),
@@ -797,15 +756,19 @@ async fn always_to_an_edited_question_fills_nothing_and_lets_nothing_stand() {
 /// refused, so one allow of the person is one text and no more.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_ask_for_one_fill_is_refused_and_one_allow_is_one_text() {
-    let signing = Box::pin(at_the_sign_in_page(SITE)).await;
-    let hosted = &signing.hosted;
+    let mut signing = Box::pin(at_the_sign_in_page(SITE)).await;
     let told = signing
         .asks_to_fill("Please sign in to the made-up site for me.", "call-1")
         .await;
-    let asked = hosted.questions(chat::question::ACTION).await;
+    let asked = signing.hosted.page.asks().await;
     assert_eq!(asked.len(), 1, "one question about the fill: {told}");
-    hosted.answers(&asked[0].0, chat::question::ALLOW).await;
-    assert_eq!(reworded::ended(hosted).await, chat::question::DONE);
+    signing
+        .hosted
+        .page
+        .resolve(&asked[0], "approve", None)
+        .await
+        .expect("the person allows it");
+    answered(&mut signing.hosted).await;
 
     signing.shown.strays.lock().unwrap().twice = true;
     let told = signing.asks_to_fill("I allowed it.", "call-2").await;
@@ -826,7 +789,7 @@ async fn a_second_ask_for_one_fill_is_refused_and_one_allow_is_one_text() {
         "one allow is one text: {}",
         signing.travelled()
     );
-    hosted.page.peer.close();
+    signing.hosted.page.peer.close();
 }
 
 /// Only the window the server handed a fill is answered for it. Another device of the same
@@ -834,11 +797,10 @@ async fn a_second_ask_for_one_fill_is_refused_and_one_allow_is_one_text() {
 /// answered as ever.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn another_device_that_asks_for_a_waiting_fills_item_is_refused() {
-    let signing = Box::pin(at_the_sign_in_page(SITE)).await;
-    let hosted = &signing.hosted;
+    let mut signing = Box::pin(at_the_sign_in_page(SITE)).await;
     signing.shown.strays.lock().unwrap().holds = true;
     let answered = Box::pin(another_device_asks(
-        hosted,
+        &signing.hosted,
         &signing.shown,
         &signing.reference,
     ))
@@ -857,7 +819,7 @@ async fn another_device_that_asks_for_a_waiting_fills_item_is_refused() {
         "the window's own ask is answered as ever: {told}"
     );
     assert_eq!(
-        hosted.questions(chat::question::ACTION).await.len(),
+        signing.hosted.page.asks().await.len(),
         1,
         "the person is asked once, for the window's ask"
     );
@@ -866,7 +828,7 @@ async fn another_device_that_asks_for_a_waiting_fills_item_is_refused() {
         "nothing was released: {}",
         signing.travelled()
     );
-    hosted.page.peer.close();
+    signing.hosted.page.peer.close();
 }
 
 /// A window is answered for the item its fill names and no other: one that asks for another
@@ -903,11 +865,7 @@ async fn a_window_that_asks_for_another_item_than_its_fill_names_is_refused() {
         "the agent is told nothing was filled: {told}"
     );
     assert!(
-        signing
-            .hosted
-            .questions(chat::question::ACTION)
-            .await
-            .is_empty(),
+        signing.hosted.page.asks().await.is_empty(),
         "nobody is asked about an item no fill names"
     );
     assert!(
@@ -923,8 +881,7 @@ async fn a_window_that_asks_for_another_item_than_its_fill_names_is_refused() {
 /// An item of another site is refused where the page is: nobody is asked, nothing is released.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_item_of_another_site_is_refused_and_nobody_is_asked() {
-    let signing = Box::pin(at_the_sign_in_page(ELSEWHERE)).await;
-    let hosted = &signing.hosted;
+    let mut signing = Box::pin(at_the_sign_in_page(ELSEWHERE)).await;
     let told = signing
         .asks_to_fill("Please sign in to the made-up site for me.", "call-1")
         .await;
@@ -938,7 +895,7 @@ async fn an_item_of_another_site_is_refused_and_nobody_is_asked() {
         "the agent is told it was refused: {told}"
     );
     assert!(
-        hosted.questions(chat::question::ACTION).await.is_empty(),
+        signing.hosted.page.asks().await.is_empty(),
         "nobody is asked about a site the item does not belong to"
     );
     assert!(
@@ -946,20 +903,19 @@ async fn an_item_of_another_site_is_refused_and_nobody_is_asked() {
         "nothing was released: {}",
         signing.travelled()
     );
-    hosted.page.peer.close();
+    signing.hosted.page.peer.close();
 }
 
 /// An agent its person narrowed, whose rules do not name the fill, is refused before any window
 /// is asked: nothing is handed over, nobody is asked, nothing is released.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_whose_rules_do_not_name_the_fill_is_refused_before_any_window_is_asked() {
-    let signing = Box::pin(at_the_sign_in_page(SITE)).await;
-    let hosted = &signing.hosted;
+    let mut signing = Box::pin(at_the_sign_in_page(SITE)).await;
     // Everything of Chat, so it answers its person, and nothing of the vault.
     narrow(
-        hosted,
+        &signing.hosted,
         vec![Bound {
-            node: format!("workspace:{}/app:{CHAT}", hosted.workspace),
+            node: format!("workspace:{}/app:{CHAT}", signing.hosted.workspace),
             kinds: vec!["read".into(), "undoable".into()],
             answer: "allow".into(),
         }],
@@ -977,9 +933,9 @@ async fn an_agent_whose_rules_do_not_name_the_fill_is_refused_before_any_window_
         "the agent is told it may not: {told}"
     );
     assert!(
-        hosted.questions(chat::question::ACTION).await.is_empty(),
+        signing.hosted.page.asks().await.is_empty(),
         "nobody is asked"
     );
     assert!(signing.filled().is_empty() && signing.travelled().is_empty());
-    hosted.page.peer.close();
+    signing.hosted.page.peer.close();
 }

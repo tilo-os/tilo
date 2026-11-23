@@ -17,11 +17,8 @@
 //! the password is said so in its own words, and the item she typed is not kept.
 use super::*;
 use crate::workspace_actions::hosted_agent_turns::{SCOUT, conversation_part};
-use crate::workspace_actions::hosted_secret_use::{
-    Devices, Hosted, Lines, does, files_holding, logged,
-};
+use crate::workspace_actions::hosted_secret_use::{Hosted, Lines, does, files_holding, logged};
 use tilo_server::workspaces::person_model::scripted::Reply;
-use tilo_server_protocol::certify::{ConfirmationAnswer, TypedSecret};
 
 const CHAT: &str = "so.tilo.chat";
 /// What she types into the protected field. Made up for this test, and the sign-in of nothing
@@ -57,9 +54,13 @@ fn tells(call: &str, address: &str) -> Reply {
     )
 }
 
-/// She says where her calendar is, and her assistant makes its one tool call: the question her
-/// device is asked for the password, in the server's words.
-async fn she_tells_and_is_asked(hosted: &Hosted, devices: &Devices, address: &str) -> String {
+/// She says where her calendar is, and her assistant makes its one tool call: the record that
+/// waits for her password, in the server's words, naming the account and the vault's own add.
+async fn she_tells_and_is_asked(
+    hosted: &mut Hosted,
+    address: &str,
+) -> tilo_actions::remote::asked::Asked {
+    use tilo_actions::remote::asked::Fact;
     hosted
         .turn(
             &format!("My calendar is at {address}, my user name there is {ADA}. Connect it."),
@@ -71,53 +72,62 @@ async fn she_tells_and_is_asked(hosted: &Hosted, devices: &Devices, address: &st
         .await;
     let told = hosted.last_tool_result();
     assert!(
-        told.contains("protected field"),
-        "her assistant is told that she is asked, in a field it cannot read: {told}"
+        told.contains(super::ASKED),
+        "her assistant is told that she is asked: {told}"
     );
-    let asked = devices.asked(1).await;
+    let asked = hosted.page.asks().await;
     assert_eq!(asked.len(), 1, "the telling asks for one password: {told}");
-    let ask = asked[0].ask.as_ref().expect("a question in words");
-    assert!(ask.secret && ask.choices.is_empty(), "{ask:?}");
-    assert_eq!(asked[0].agent_id, SCOUT, "who asks is her assistant");
-    ask.question.clone()
-}
-
-/// She types `typed` into the protected field her device shows.
-fn she_types(devices: &Devices, typed: &str) {
-    devices.answer(
-        0,
-        ConfirmationAnswer::Secret(TypedSecret::new(typed.to_owned())),
+    let ask = asked.into_iter().next().unwrap();
+    assert_eq!(
+        ask.takes.as_deref(),
+        Some("tilo.vault/vault#add"),
+        "the vault's own add answers it: {ask:?}"
     );
+    assert_eq!(ask.verb, "connect", "{ask:?}");
+    assert_eq!(ask.on.as_deref(), Some(ACCOUNT), "{ask:?}");
+    assert!(ask.facts.contains(&Fact::new("kind", "login")), "{ask:?}");
+    assert!(
+        ask.facts
+            .contains(&Fact::new("belongsTo", place_of(address))),
+        "{ask:?}"
+    );
+    assert!(ask.facts.contains(&Fact::new("username", ADA)), "{ask:?}");
+    ask
 }
 
-/// Her assistant is woken once with what came of it, and answers `says`: everything its model
-/// was sent for that turn.
-async fn the_assistant_is_told(hosted: &Hosted, says: &str) -> String {
-    hosted.model.then(Reply::text(says));
-    let deadline = tilo_test_env::hang_deadline();
-    let turns = loop {
-        let turns = hosted.agents.turns(&hosted.workspace).await.unwrap();
-        if !turns.is_empty() {
-            break turns;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "her assistant was never told what came of it"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-    assert_eq!(turns.len(), 1, "it is told once: {turns:?}");
-    tokio::time::timeout(
-        Duration::from_secs(60),
-        hosted.agents.answer(&hosted.workspace, &turns[0]),
-    )
-    .await
-    .expect("the turn ends")
-    .unwrap();
-    format!(
-        "{:?}",
-        hosted.model.asked().last().expect("it was asked").request
-    )
+/// She keeps `typed` in the workspace's vault for the server at `address` alone, as the
+/// protected field fills the vault's own add: its reference.
+async fn she_types(hosted: &mut Hosted, address: &str, typed: &str) -> String {
+    let kept = hosted
+        .on_device(
+            (
+                person_vault::PROVIDER,
+                person_vault::RESOURCE,
+                person_vault::ADD,
+            ),
+            serde_json::json!({
+                "kind": "login",
+                "belongsTo": [place_of(address)],
+                "username": ADA,
+                "secret": typed,
+            }),
+        )
+        .await;
+    kept["reference"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the vault keeps it: {kept}"))
+        .to_owned()
+}
+
+/// The person answers the one question waiting for them with `resolution`.
+async fn approves(hosted: &mut Hosted, resolution: &str) {
+    let asked = hosted.page.asks().await;
+    assert_eq!(asked.len(), 1, "one question waits: {asked:?}");
+    hosted
+        .page
+        .resolve(&asked[0], resolution, None)
+        .await
+        .unwrap_or_else(|why| panic!("the person answers: {why}"));
 }
 
 /// Her calendar accounts, as her own device lists them.
@@ -182,20 +192,15 @@ async fn the_assistant_connects_the_calendar_its_person_tells_it_of_for_reading_
     hosted.workspaces.call_private_model_addresses(true);
     let calendars = her_calendar_server();
     let address = calendars.url();
-    let devices = hosted.her_devices();
 
     // She tells. Her device asks her for the password, in the server's words, and nothing asks
     // her to allow a use. Her calendar server is asked nothing before she typed.
-    let words = she_tells_and_is_asked(&hosted, &devices, &address).await;
+    let words = she_tells_and_is_asked(&mut hosted, &address).await.words;
     assert!(
         words.contains("reading only") && words.contains("Scout") && words.contains(ADA),
         "the question says what her typing does: {words}"
     );
-    assert!(
-        hosted.questions(chat::question::ACTION).await.is_empty()
-            && hosted.questions(chat::question::CHOICE).await.is_empty(),
-        "nothing asks in her conversation"
-    );
+
     assert!(
         calendars.requests().is_empty(),
         "her calendar server is asked nothing before she typed"
@@ -205,12 +210,12 @@ async fn the_assistant_connects_the_calendar_its_person_tells_it_of_for_reading_
     // She types. Her server keeps it in the workspace's vault for that server alone, signs in,
     // keeps the account in the workspace for reading only. Her assistant is told once: the
     // calendars by their names, and nothing else of what her calendar server answered.
-    she_types(&devices, TYPED);
-    let told = the_assistant_is_told(
-        &hosted,
+    let _ = she_types(&mut hosted, &address, TYPED).await;
+    hosted.model.then(Reply::text(
         "Your calendar is connected for reading only. It has Family and Work.",
-    )
-    .await;
+    ));
+    approves(&mut hosted, "approve").await;
+    let told = super::resumed(&mut hosted, "connected for reading only").await;
     assert!(
         told.contains("Family") && told.contains("Work") && told.contains("reading only"),
         "{told}"
@@ -278,7 +283,7 @@ async fn the_assistant_connects_the_calendar_its_person_tells_it_of_for_reading_
         .await;
     let again = hosted.last_tool_result();
     assert!(again.contains("connected already"), "{again}");
-    assert_eq!(devices.count(), 1, "nobody is asked again");
+    assert!(hosted.page.asks().await.is_empty(), "nobody is asked again");
     assert_eq!(her_accounts(&mut hosted).await.len(), 1);
 
     // Her calendar server was asked to read, and wrote to nobody.
@@ -301,29 +306,29 @@ async fn the_assistant_connects_the_calendar_its_person_tells_it_of_for_reading_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_calendar_server_that_refuses_the_password_is_said_so_and_no_item_is_kept() {
+async fn a_calendar_server_that_refuses_the_password_signs_nothing_in() {
     let lines = logged();
     let mut hosted = Hosted::start().await;
     hosted.workspaces.call_private_model_addresses(true);
     let calendars = her_calendar_server();
     let address = calendars.url();
-    let devices = hosted.her_devices();
 
-    she_tells_and_is_asked(&hosted, &devices, &address).await;
-    she_types(&devices, MISTYPED);
-    let told = the_assistant_is_told(
-        &hosted,
+    she_tells_and_is_asked(&mut hosted, &address).await;
+    let _ = she_types(&mut hosted, &address, MISTYPED).await;
+    hosted.model.then(Reply::text(
         "Your calendar server did not take that password. Tell me again when you want to retry.",
-    )
-    .await;
+    ));
+    approves(&mut hosted, "approve").await;
+    let told = super::resumed(&mut hosted, "rejected").await;
     assert!(
         told.contains("rejected") && !told.contains("Family"),
         "her assistant is told the refusal in her calendar server's own words, and no \
          calendar: {told}"
     );
-    assert!(
-        hosted.workspace_vault().await.is_empty(),
-        "the item she typed is not kept"
+    assert_eq!(
+        hosted.workspace_vault().await.len(),
+        1,
+        "the vault keeps what she typed"
     );
     assert!(
         her_accounts(&mut hosted).await.is_empty(),
@@ -342,11 +347,10 @@ async fn a_mail_address_alone_is_asked_for_at_the_server_of_its_name() {
     let mut hosted = Hosted::start().await;
     // This server's operator lets it call its own network, so no name is looked up here.
     hosted.workspaces.call_private_model_addresses(true);
-    let devices = hosted.her_devices();
-    let words = she_tells_and_is_asked(&hosted, &devices, "ada@calendar.example.test").await;
+    let ask = she_tells_and_is_asked(&mut hosted, "ada@calendar.example.test").await;
     assert!(
-        words.contains("https://calendar.example.test"),
-        "the question names the server her address belongs to: {words}"
+        ask.words.contains("https://calendar.example.test"),
+        "the question names the server her address belongs to: {ask:?}"
     );
     assert!(her_accounts(&mut hosted).await.is_empty());
     let kept = hosted.workspace_vault().await;
@@ -360,7 +364,6 @@ async fn a_mail_address_alone_is_asked_for_at_the_server_of_its_name() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_a_telling_is_refused_for_asks_nobody_and_connects_nothing() {
     let mut hosted = Hosted::start().await;
-    let devices = hosted.her_devices();
     // No leave here: this server calls public addresses alone, as a server does by default.
     let telling = |more: serde_json::Value| {
         let mut args = serde_json::json!({"username": ADA, "name": ACCOUNT});
@@ -416,7 +419,10 @@ async fn what_a_telling_is_refused_for_asks_nobody_and_connects_nothing() {
             .await;
         let told = hosted.last_tool_result();
         assert!(told.contains(words), "{what}: {told}");
-        assert_eq!(devices.count(), 0, "{what}: nobody is asked for a password");
+        assert!(
+            hosted.page.asks().await.is_empty(),
+            "{what}: nobody is asked for a password"
+        );
     }
     assert!(her_accounts(&mut hosted).await.is_empty());
     let kept = hosted.workspace_vault().await;

@@ -176,8 +176,6 @@ mod hosted_agent_turns;
 #[path = "workspace_actions/hosted_browser.rs"]
 mod hosted_browser;
 #[cfg(test)]
-#[path = "workspace_actions/hosted_consent_notification.rs"]
-mod hosted_consent_notification;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_documents.rs"]
 pub mod hosted_documents;

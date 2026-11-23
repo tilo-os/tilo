@@ -967,10 +967,6 @@ async fn another_persons_item_is_refused_by_the_use_and_stays_unused() {
     hosted.page.peer.close();
 }
 
-/// What a person's "Always" to a question its agent reworded does: nothing.
-#[path = "hosted_reworded_question.rs"]
-mod reworded;
-
 /// Which device of its person a turn acts as beside the device the server placed for a window.
 #[path = "hosted_placed_window.rs"]
 mod placed_window;
