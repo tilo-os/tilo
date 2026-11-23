@@ -1356,15 +1356,16 @@ async fn with_no_page_open_a_file_is_written_from_text_and_from_content_and_take
 }
 
 /// Invoke `action` on `app.so.tilo.file-explorer` (or `resource`) addressed to `served` with
-/// `target.provider` set to `workspace:<named>`, returning either its JSON output value or the
-/// exact [`tilo_actions::remote::ActionCallError`] refusal.
-async fn invoke_on_workspace(
+/// `target.provider` set to `workspace:<named>` and optional `revision`, returning either its JSON
+/// output value or the exact [`tilo_actions::remote::ActionCallError`] refusal.
+async fn invoke_on_workspace_at_revision(
     actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
     served: tilo_server_protocol::WorkspaceId,
     caller: &Caller,
     named: &str,
     (resource, action): (&str, &str),
     arguments: Value,
+    revision: Option<&str>,
 ) -> Result<Value, tilo_actions::remote::ActionCallError> {
     let request = InvokeRequest {
         invocation: InvocationId::new(),
@@ -1375,7 +1376,7 @@ async fn invoke_on_workspace(
         argument: InvokeArgument::Json(arguments.as_object().cloned().unwrap_or_default()),
         context: None,
         confirmation: None,
-        revision: None,
+        revision: revision.map(str::to_owned),
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
@@ -1426,9 +1427,22 @@ async fn invoke_on_workspace(
     .unwrap()
 }
 
-/// Tree reads, tree changes and `files` puts whose target names another workspace are refused
-/// with `UnknownAction` (the same answer `open_asked` gives) and leave the served workspace's
-/// tree untouched; the same requests naming the served workspace succeed as before.
+/// [`invoke_on_workspace_at_revision`] with no `revision`.
+async fn invoke_on_workspace(
+    actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
+    served: tilo_server_protocol::WorkspaceId,
+    caller: &Caller,
+    named: &str,
+    target: (&str, &str),
+    arguments: Value,
+) -> Result<Value, tilo_actions::remote::ActionCallError> {
+    invoke_on_workspace_at_revision(actions, served, caller, named, target, arguments, None).await
+}
+
+/// App opens, tree reads, tree changes and `files` puts whose target names another workspace are
+/// refused with `UnknownAction` before workspace-action dispatch or stale-revision checks and
+/// leave the served workspace's tree untouched; the same requests naming the served workspace
+/// behave as expected.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn workspace_tree_requests_naming_another_workspace_are_refused() {
     use tilo_actions::remote::ActionCallError;
@@ -1461,8 +1475,9 @@ async fn workspace_tree_requests_naming_another_workspace_are_refused() {
     )
     .in_workspace(&served);
     let files_app = format!("app.{FILES_APP}");
+    let writer_app = "app.so.tilo.word-processor";
 
-    // Seed the served workspace with one text file and keep content blobs ready for puts.
+    // Seed the served workspace with one text file and keep distinct blobs for refused and served puts.
     let seed_bytes = b"Served workspace note.\n";
     let seed_content = uploaded(&actions, served_id, &person, seed_bytes).await;
     let seeded = invoke_on_workspace(
@@ -1482,26 +1497,49 @@ async fn workspace_tree_requests_naming_another_workspace_are_refused() {
     .await;
     let seed_hash = content_at(&seed_tree, "Notes", "seed.txt").unwrap();
 
+    let refused_batch_bytes = b"Refused batch put body.\n";
+    let refused_batch_content = uploaded(&actions, served_id, &person, refused_batch_bytes).await;
+    let refused_single_bytes = b"Refused single put body.\n";
+    let refused_single_content = uploaded(&actions, served_id, &person, refused_single_bytes).await;
     let batch_bytes = b"Batch put body.\n";
     let batch_content = uploaded(&actions, served_id, &person, batch_bytes).await;
     let single_bytes = b"Single put body.\n";
     let single_content = uploaded(&actions, served_id, &person, single_bytes).await;
 
-    // Baseline: an app open naming another workspace is refused with UnknownAction.
+    // Baseline: opening an app the catalogue holds is refused with UnknownAction when naming
+    // another workspace and succeeds when naming the served workspace.
     assert_eq!(
         invoke_on_workspace(
             &actions,
             served_id,
             &person,
             &other,
-            ("app.so.tilo.notes", "open"),
+            (writer_app, "open"),
             json!({}),
         )
         .await,
         Err(ActionCallError::UnknownAction)
     );
+    let opened_writer = invoke_on_workspace(
+        &actions,
+        served_id,
+        &person,
+        &served,
+        (writer_app, "open"),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    let writer_record = opened_writer["record"].as_str().unwrap();
+    assert!(!writer_record.is_empty(), "{opened_writer}");
+    assert_eq!(
+        opened_writer["provider"],
+        format!("record:so.tilo.word-processor:{writer_record}"),
+        "{opened_writer}"
+    );
 
-    // Tree reads naming another workspace are refused with UnknownAction.
+    // Tree reads naming another workspace are refused with UnknownAction, even with a stale
+    // revision (whereas the same stale revision naming the served workspace returns StaleRevision).
     assert_eq!(
         invoke_on_workspace(
             &actions,
@@ -1513,6 +1551,32 @@ async fn workspace_tree_requests_naming_another_workspace_are_refused() {
         )
         .await,
         Err(ActionCallError::UnknownAction)
+    );
+    assert_eq!(
+        invoke_on_workspace_at_revision(
+            &actions,
+            served_id,
+            &person,
+            &other,
+            (&files_app, "list"),
+            json!({"folder": "Notes"}),
+            Some("stale-revision"),
+        )
+        .await,
+        Err(ActionCallError::UnknownAction)
+    );
+    assert_eq!(
+        invoke_on_workspace_at_revision(
+            &actions,
+            served_id,
+            &person,
+            &served,
+            (&files_app, "list"),
+            json!({"folder": "Notes"}),
+            Some("stale-revision"),
+        )
+        .await,
+        Err(ActionCallError::StaleRevision)
     );
     assert_eq!(
         invoke_on_workspace(
@@ -1553,7 +1617,8 @@ async fn workspace_tree_requests_naming_another_workspace_are_refused() {
         Err(ActionCallError::UnknownAction)
     );
 
-    // Both `files` put and single-file Files open naming another workspace are refused.
+    // Both `files` put and single-file Files open naming another workspace are refused; each uses
+    // folder/file names and content blobs distinct from the served puts below.
     assert_eq!(
         invoke_on_workspace(
             &actions,
@@ -1561,7 +1626,7 @@ async fn workspace_tree_requests_naming_another_workspace_are_refused() {
             &person,
             &other,
             (&files_app, "open"),
-            json!({"files": [{"content": batch_content, "name": "batch.txt", "dir": "Dropped"}]}),
+            json!({"files": [{"content": refused_batch_content, "name": "intruder-batch.txt", "dir": "RefusedDropped"}]}),
         )
         .await,
         Err(ActionCallError::UnknownAction)
@@ -1573,24 +1638,11 @@ async fn workspace_tree_requests_naming_another_workspace_are_refused() {
             &person,
             &other,
             (&files_app, "open"),
-            json!({"content": single_content, "name": "single.txt", "dir": "Dropped"}),
+            json!({"content": refused_single_content, "name": "intruder-single.txt", "dir": "RefusedDropped"}),
         )
         .await,
         Err(ActionCallError::UnknownAction)
     );
-
-    // None of the refused requests changed the served workspace's tree, nor created the other's.
-    let unchanged = tree_kept(&workspaces, &served).await;
-    assert_eq!(
-        content_at(&unchanged, "Notes", "seed.txt"),
-        Some(seed_hash.clone())
-    );
-    assert!(!folder_at(&unchanged, "Notes", "Intruder"));
-    assert!(file_at(&unchanged, "Notes", "intruder.md").is_none());
-    assert!(!folder_at(&unchanged, "", "Dropped"));
-    assert!(file_at(&unchanged, "Dropped", "batch.txt").is_none());
-    assert!(file_at(&unchanged, "Dropped", "single.txt").is_none());
-    assert!(tree_if_kept(&workspaces, &other).await.is_none());
 
     // The same three kinds of requests naming the served workspace succeed with exact answers.
     let listed = invoke_on_workspace(
@@ -1711,6 +1763,12 @@ async fn workspace_tree_requests_naming_another_workspace_are_refused() {
         single_bytes,
     )
     .await;
+    // None of the refused writes landed in the served workspace's tree or created the other's.
+    assert!(!folder_at(&final_tree, "Notes", "Intruder"));
+    assert!(file_at(&final_tree, "Notes", "intruder.md").is_none());
+    assert!(!folder_at(&final_tree, "", "RefusedDropped"));
+    assert!(file_at(&final_tree, "RefusedDropped", "intruder-batch.txt").is_none());
+    assert!(file_at(&final_tree, "RefusedDropped", "intruder-single.txt").is_none());
     assert!(tree_if_kept(&workspaces, &other).await.is_none());
 }
 
