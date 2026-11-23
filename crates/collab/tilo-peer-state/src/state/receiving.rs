@@ -78,7 +78,7 @@ impl StatePeer {
         {
             return Ok(report);
         }
-        let (source, retained_replay) = self.resolve_origin(origin, &message, now)?;
+        let (source, retained_replay) = Self::resolve_origin(origin, &message, now)?;
         let written = written_route(&message);
         let mut candidate = self.clone();
         let received = candidate.receive_with_context(source, message, now, retained_replay, exact);
@@ -106,7 +106,7 @@ impl StatePeer {
         if !self.core.exact_selected {
             return Err(AdmissionError::WriterSelectionRequired);
         }
-        let (source, _) = self.resolve_origin(origin, message, now)?;
+        let (source, _) = Self::resolve_origin(origin, message, now)?;
         if self.core.workspace_doc.is_none() || !self.core.certificates.contains_key(&source) {
             return Ok(None);
         }
@@ -140,7 +140,7 @@ impl StatePeer {
         message: &NeighbourMsg,
         now: SystemTime,
     ) -> Result<Option<DocumentAdmission>, AdmissionError> {
-        let (source, _) = self.resolve_origin(origin, message, now)?;
+        let (source, _) = Self::resolve_origin(origin, message, now)?;
         let NeighbourMsg::AppDocument {
             peer,
             app_id,
@@ -358,7 +358,6 @@ impl StatePeer {
     /// The device a frame came from, and whether it came as part of what
     /// another device retains rather than as live traffic.
     pub(super) fn resolve_origin(
-        &self,
         origin: TransportOrigin,
         message: &NeighbourMsg,
         _now: SystemTime,

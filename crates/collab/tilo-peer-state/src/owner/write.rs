@@ -319,7 +319,7 @@ impl NativeWorkspaceOwner {
         let (changed, mut record) =
             candidate.change(|live, record| -> Result<bool, WriteRefusal> {
                 let mut changed = false;
-                for write in &writes {
+                for write in writes {
                     if write.envelope.author.as_bytes() != &device {
                         return Err(WriteRefusal::Refused(
                             "native local write signer differs from selected device".into(),

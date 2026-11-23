@@ -42,9 +42,10 @@ impl NativeWorkspaceOwner {
         })?;
         let mut compacted = 0;
         for (app, record) in due {
-            compacted += self
-                .compact_route(workspace, (&app, &record), keys.as_ref(), signer, now)
-                .await?;
+            compacted = compacted.saturating_add(
+                self.compact_route(workspace, (&app, &record), keys.as_ref(), signer, now)
+                    .await?,
+            );
         }
         Ok(compacted)
     }
@@ -94,9 +95,10 @@ impl NativeWorkspaceOwner {
             if neighbour_wire::KeyScope::has_named_readers(record) && named.is_none() {
                 return Ok(Vec::new());
             }
-            let ops = match drafted.take() {
-                Some(ops) => ops,
-                None => {
+            let ops = if let Some(ops) = drafted.take() {
+                ops
+            } else {
+                {
                     let group = collab_types::reader_group(
                         workspace,
                         named.as_deref().unwrap_or(collab_types::EVERY_MEMBER),

@@ -796,7 +796,7 @@ impl NativeWorkspaceOwner {
         let replica = candidate.replica.clone();
         let mut reports = Vec::with_capacity(inputs.len());
         for (origin, message) in inputs {
-            let report = self.admit_with_keys(&candidate, origin, message, now);
+            let report = Self::admit_with_keys(&candidate, origin, message, now);
             reports.push(report);
         }
         if reports.iter().all(Result::is_err) {
@@ -821,7 +821,7 @@ impl NativeWorkspaceOwner {
                 .generation
                 .checked_add(1)
                 .ok_or("native owner generation exhausted")?;
-            Self::snapshot(&live, &mut record)?
+            Self::snapshot(&live)
         };
         self.install_snapshot(workspace, &replica, record, snapshot, None)?;
         Ok(reports)
@@ -829,7 +829,6 @@ impl NativeWorkspaceOwner {
     /// [`Self::admit_input`], with a compaction the replica refuses decided once more with the
     /// keys this device holds ([`Self::receive_behind`]).
     fn admit_with_keys(
-        &self,
         candidate: &NativeCommittedView,
         origin: TransportOrigin,
         message: NeighbourMsg,
@@ -859,10 +858,9 @@ impl NativeWorkspaceOwner {
         let mut live = candidate.live();
         if matches!(&message, NeighbourMsg::AppDocument { .. })
             && !matches!(origin, TransportOrigin::RetainedNativePublication { .. })
+            && let Some(exact) = live.lookup_exact_document_report(origin, &message, now)?
         {
-            if let Some(exact) = live.lookup_exact_document_report(origin, &message, now)? {
-                return Ok(exact);
-            }
+            return Ok(exact);
         }
         let report = live.receive_from_report(origin, message, now)?;
         // A message let go for newer ones is no loss: its server retains it, and it is asked for
@@ -926,17 +924,14 @@ impl NativeWorkspaceOwner {
         let snapshot = {
             let live = replica.lock();
             record.peer = live.durable_layout()?.into();
-            Self::snapshot(&live, &mut record)?
+            Self::snapshot(&live)
         };
         self.install_snapshot(workspace, replica, record, snapshot, enrollment)
     }
 
     /// The replica as the record publishes it.
-    fn snapshot(
-        live: &StatePeer,
-        _record: &mut stored::StoredWorkspace,
-    ) -> Result<StatePeer, String> {
-        Ok(live.clone())
+    fn snapshot(live: &StatePeer) -> StatePeer {
+        live.clone()
     }
 
     /// Make `record` and the replica `snapshot` took durable and current.
