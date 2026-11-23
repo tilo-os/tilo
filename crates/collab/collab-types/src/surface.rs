@@ -32,10 +32,7 @@ pub const ANY_ITEM: &str = "*";
 /// written.
 #[must_use]
 pub fn canonical(value: &serde_json::Value) -> String {
-    tilo_failure::ignored!(
-        "a value read as JSON writes as JSON",
-        serde_json::to_string(&ordered(value)).unwrap_or_default()
-    )
+    tilo_canonical_json::to_string(value)
 }
 
 /// [`canonical`] of `json`, when it is JSON.
@@ -44,25 +41,6 @@ pub fn canonical_json(json: &str) -> Option<String> {
     serde_json::from_str(json)
         .ok()
         .map(|value| canonical(&value))
-}
-
-/// `value` with every object's keys in order.
-fn ordered(value: &serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(fields) => {
-            let mut keys: Vec<&String> = fields.keys().collect();
-            keys.sort_unstable();
-            serde_json::Value::Object(
-                keys.into_iter()
-                    .map(|key| (key.clone(), ordered(&fields[key])))
-                    .collect(),
-            )
-        }
-        serde_json::Value::Array(items) => {
-            serde_json::Value::Array(items.iter().map(ordered).collect())
-        }
-        other => other.clone(),
-    }
 }
 
 /// An app's surface file: every resource kind it publishes.
