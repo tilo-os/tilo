@@ -58,23 +58,15 @@ type Mark (title: excerpt) {
     on: Text = ""
     /// The book the mark is in: a page of it stands one step from the passage.
     book: Option<Book>
-    /// The ranges the passage covers, in reading order: one block's words, or several when it
-    /// crosses a block.
-    pieces: List<Piece>
+    /// The ranges the passage covers, in reading order, each `block, start, end` in threes: one
+    /// block's words, or several when it crosses a block.
+    pieces: List<Int>
 
     search {
         filter "Highlights" = kind == "highlight" (icon: .highlighter)
         filter "Notes" = kind == "note" or kind == "comment" (icon: .pencil)
         filter "Bookmarks" = kind == "bookmark" (icon: .bookmark)
     }
-}
-
-/// One range of a passage a person marked: a block, and its first and last character in that
-/// block's words. A passage that crosses blocks is one mark of several pieces.
-type Piece {
-    block: Int
-    start: Int
-    end: Int
 }
 
 /// Where one member is in a book.
@@ -112,6 +104,16 @@ type Found (title: title) {
     query: Text
 }
 
+/// A folder on a device the library watches: every EPUB in it, now or later, becomes a book.
+type Watched (title: path) {
+    path: Text
+    /// The watch this device keeps, so a change to the folder runs the library's scan.
+    token: Text = ""
+    /// The paths it already gave books for, so a scan reads only what is new.
+    given: List<Text>
+    added: Date
+}
+
 /// The workspace's library: the books on the shelf, the books an online search found, the page
 /// palettes, and how a page is set for the people reading here.
 type Library {
@@ -132,6 +134,10 @@ type Library {
     draft_scheme: Text = ""
     custom_page: Text = "#f5ead6"
     custom_ink: Text = "#33291d"
+    /// The folder the settings' field names: what "Watch it" watches.
+    draft_folder: Text = ""
+    /// The folders this device watches for books.
+    folders: Collection<Watched>
 }
 
 root library: Library
@@ -210,6 +216,58 @@ action drop_books(lib: Library, files: List<File>) uses time {
     for file in files {
         let is_book = file.media == "application/epub+zip" or file.name.ends_with(".epub")
         if is_book { open_book(lib, file) }
+    }
+}
+
+/// Watches the folder `path` for books: each EPUB it holds, and each that arrives, becomes a
+/// book, keeping the person's place as one they opened themselves does.
+action watch_folder(lib: Library, path: Text) uses files, time (
+    icon: .folder_open,
+    did: "watched a folder for books",
+) {
+    require path.trim() != "" "A folder is watched by its name"
+    let folder = path.trim()
+    if lib.folders.any(f -> f.path == folder) {
+        return
+    }
+    let watched = lib.folders.insert(Watched(path: folder, added: today))
+    match File.watch(folder, "foldered") {
+        .ok(token) => {
+            watched.token = token
+        }
+        .err(why) => {}
+    }
+    scan_folder(lib, folder)
+}
+
+/// Reads the folder `path`'s EPUBs, giving a book to each file the library does not hold yet.
+action scan_folder(lib: Library, path: Text) uses files, time {
+    match File.list(path) {
+        .ok(entries) => {
+            for entry in entries {
+                if not entry.folder and entry.name.lower().ends_with(".epub") {
+                    if let watched = lib.folders.find(f -> f.path == path) {
+                        if not watched.given.contains(entry.path) {
+                            watched.given = [[entry.path], watched.given].flat_map(x -> x)
+                            match File.read(entry.path) {
+                                .ok(bytes) => {
+                                    open_book(lib, File.of_bytes(entry.name, bytes))
+                                }
+                                .err(why) => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .err(why) => {}
+    }
+}
+
+/// Reads every watched folder again: what the platform runs when one of them changes.
+action foldered(lib: Library) uses files, time {
+    for folder in lib.folders {
+        scan_folder(lib, folder.path)
     }
 }
 
@@ -386,26 +444,43 @@ fn passage_of(b: Book, chapter: Int, block: Int, start: Int, end: Int) -> Text {
     line.slice(start, end)
 }
 
-/// The pieces a passage's flat ranges name: each `block, start, end` in threes, as a selection
-/// answers them.
-fn pieces_of(ranges: List<Int>) -> List<Piece> {
+/// The ranges a passage covers, each `block, start, end` in threes, as a selection answers them.
+fn pieces_of(ranges: List<Int>) -> List<Int> {
     pieces_from(ranges, 0)
 }
 
-/// [`pieces_of`] from the range at `at`.
-fn pieces_from(ranges: List<Int>, at: Int) -> List<Piece> {
+/// [`pieces_of`] from the range at `at`, keeping the threes a selection gives.
+fn pieces_from(ranges: List<Int>, at: Int) -> List<Int> {
     if let block = ranges.at(at), start = ranges.at(at + 1), end = ranges.at(at + 2) {
-        [[Piece(block: block, start: start, end: end)], pieces_from(ranges, at + 3)]
-            .flat_map(x -> x)
+        [[block, start, end], pieces_from(ranges, at + 3)].flat_map(x -> x)
+    } else { [] }
+}
+
+/// The bands a mark's ranges draw, each `block:start:end:colour`.
+fn bands_of(m: Mark) -> List<Text> {
+    bands_from(m.pieces, 0, m.color)
+}
+
+/// [`bands_of`] from the range at `at`.
+fn bands_from(pieces: List<Int>, at: Int, color: Text) -> List<Text> {
+    if let block = pieces.at(at), start = pieces.at(at + 1), end = pieces.at(at + 2) {
+        [["{block}:{start}:{end}:{color}"], bands_from(pieces, at + 3, color)].flat_map(x -> x)
     } else { [] }
 }
 
 /// The words a passage's ranges hold, each block's words in order, the blocks apart.
 fn passage_words(b: Book, chapter: Int, ranges: List<Int>) -> Text {
-    pieces_of(ranges)
-        .map(piece -> passage_of(b, chapter, piece.block, piece.start, piece.end))
-        .filter(said -> said != "")
-        .join(" … ")
+    words_from(b, chapter, ranges, 0).join(" … ")
+}
+
+/// [`passage_words`] from the range at `at`, keeping only the blocks that say something.
+fn words_from(b: Book, chapter: Int, ranges: List<Int>, at: Int) -> List<Text> {
+    if let block = ranges.at(at), start = ranges.at(at + 1), end = ranges.at(at + 2) {
+        let said = passage_of(b, chapter, block, start, end)
+        [[said], words_from(b, chapter, ranges, at + 3)]
+            .flat_map(x -> x)
+            .filter(words -> words != "")
+    } else { [] }
 }
 
 /// Highlights the passage of `b`'s open chapter: its ranges, each `block, start, end`.
@@ -413,14 +488,13 @@ action highlight(b: Book, chapter: Int, ranges: List<Int>, color: Text) uses tim
     did: "highlighted a passage",
 ) {
     let pieces = pieces_of(ranges)
-    let first = pieces.first()
     b.marks.insert(
         Mark(
             kind: "highlight",
             chapter: chapter,
-            block: first?.block ?? 0,
-            start: first?.start ?? 0,
-            end: first?.end ?? 0,
+            block: ranges.at(0) ?? 0,
+            start: ranges.at(1) ?? 0,
+            end: ranges.at(2) ?? 0,
             excerpt: passage_words(b, chapter, ranges),
             color: color,
             created: today,
@@ -435,14 +509,13 @@ action add_note(b: Book, chapter: Int, ranges: List<Int>, color: Text, text: Ric
     did: "wrote a note on a passage",
 ) {
     let pieces = pieces_of(ranges)
-    let first = pieces.first()
     b.marks.insert(
         Mark(
             kind: "note",
             chapter: chapter,
-            block: first?.block ?? 0,
-            start: first?.start ?? 0,
-            end: first?.end ?? 0,
+            block: ranges.at(0) ?? 0,
+            start: ranges.at(1) ?? 0,
+            end: ranges.at(2) ?? 0,
             excerpt: passage_words(b, chapter, ranges),
             color: color,
             text: text,
@@ -522,48 +595,86 @@ fn comments_on(b: Book, m: Mark) -> List<Mark> {
     b.marks.filter(x -> x.kind == "comment" and x.on == m.id)
 }
 
-/// One author of a book a search found.
-type FoundAuthor {
-    name: Text
-}
-
-/// A book Project Gutenberg's search answers with, as its answer says one.
-type FoundBook {
-    title: Text
-    authors: Option<List<FoundAuthor>>
-    languages: Option<List<Text>>
-    formats: Option<Map<Text>>
-}
-
-/// What Project Gutenberg's search answers: the books it found.
-type FoundAnswer {
-    results: List<FoundBook>
-}
-
-/// The address a found book's EPUB reads at, or none where its answer names no EPUB.
-fn epub_of(found: FoundBook) -> Text {
-    match found.formats {
-        .some(formats) => formats.get("application/epub+zip") ?? "",
-        .none => "",
-    }
-}
-
-/// The first name among a found book's authors.
-fn author_of_found(found: FoundBook) -> Text {
-    match found.authors {
-        .some(people) => match people.first() {
-            .some(person) => person.name,
-            .none => "",
+/// The text a field of a JSON object holds, or empty where it holds none.
+fn text_in(fields: Map<json.Value>, name: Text) -> Text {
+    match fields.get(name) {
+        .some(value) => match value {
+            .string(text) => text,
+            .object(inner) => "",
+            .array(items) => "",
+            .number(number) => "",
+            .bool(flag) => "",
+            .null => "",
         },
         .none => "",
     }
 }
 
-/// The language a found book is written in, `en` where its answer names none.
-fn language_of_found(found: FoundBook) -> Text {
-    match found.languages {
-        .some(languages) => languages.first() ?? "en",
-        .none => "en",
+/// The texts an array of a JSON object holds, or none.
+fn strings_in(fields: Map<json.Value>, name: Text) -> List<Text> {
+    match fields.get(name) {
+        .some(value) => match value {
+            .array(items) => items
+                .map(
+                    item -> match item {
+                        .string(text) => text,
+                        .object(inner) => "",
+                        .array(inside) => "",
+                        .number(number) => "",
+                        .bool(flag) => "",
+                        .null => "",
+                    },
+                )
+                .filter(text -> text != ""),
+            .object(inner) => [],
+            .string(text) => [],
+            .number(number) => [],
+            .bool(flag) => [],
+            .null => [],
+        },
+        .none => [],
+    }
+}
+
+/// The value a key holds inside each object of a JSON array's objects, as `name` reads an
+/// author's name.
+fn names_in(fields: Map<json.Value>, list: Text, key: Text) -> List<Text> {
+    match fields.get(list) {
+        .some(value) => match value {
+            .array(items) => items
+                .map(
+                    item -> match item {
+                        .object(one) => text_in(one, key),
+                        .string(text) => "",
+                        .array(inside) => "",
+                        .number(number) => "",
+                        .bool(flag) => "",
+                        .null => "",
+                    },
+                )
+                .filter(text -> text != ""),
+            .object(inner) => [],
+            .string(text) => [],
+            .number(number) => [],
+            .bool(flag) => [],
+            .null => [],
+        },
+        .none => [],
+    }
+}
+
+/// The address a found book's EPUB reads at, or none where its answer names no EPUB.
+fn epub_in(fields: Map<json.Value>) -> Text {
+    match fields.get("formats") {
+        .some(value) => match value {
+            .object(formats) => text_in(formats, "application/epub+zip"),
+            .string(text) => "",
+            .array(items) => "",
+            .number(number) => "",
+            .bool(flag) => "",
+            .null => "",
+        },
+        .none => "",
     }
 }
 
@@ -587,24 +698,54 @@ action find_books(lib: Library, query: Text) uses web (
     if not answer.ok {
         return
     }
-    match json.decode<FoundAnswer>(answer.text()) {
-        .ok(found) => {
-            for book in found.results {
-                let url = epub_of(book)
-                if url != "" {
-                    lib.found.insert(
-                        Found(
-                            title: book.title,
-                            author: author_of_found(book),
-                            url: url,
-                            language: language_of_found(book),
-                            query: words,
-                        ),
-                    )
-                }
-            }
-        }
-        .err(_) => {}
+    match json.parse(answer.text()) {
+        .ok(document) => match document {
+            .object(answer_fields) => match answer_fields.get("results") {
+                .some(results) => match results {
+                    .array(books) => {
+                        for book in books {
+                            match book {
+                                .object(fields) => {
+                                    let url = epub_in(fields)
+                                    if url != "" {
+                                        lib.found.insert(
+                                            Found(
+                                                title: text_in(fields, "title"),
+                                                author: names_in(fields, "authors", "name")
+                                                    .first(
+                                                    )
+                                                    ?? "",
+                                                url: url,
+                                                language: strings_in(fields, "languages").first()
+                                                    ?? "en",
+                                                query: words,
+                                            ),
+                                        )
+                                    }
+                                }
+                                .string(text) => {}
+                                .array(items) => {}
+                                .number(number) => {}
+                                .bool(flag) => {}
+                                .null => {}
+                            }
+                        }
+                    }
+                    .object(fields) => {}
+                    .string(text) => {}
+                    .number(number) => {}
+                    .bool(flag) => {}
+                    .null => {}
+                },
+                .none => {}
+            },
+            .array(items) => {}
+            .string(text) => {}
+            .number(number) => {}
+            .bool(flag) => {}
+            .null => {}
+        },
+        .err(why) => {}
     }
 }
 
@@ -731,6 +872,27 @@ view library_settings(lib: Library) {
                             placeholder: "The reader's serif",
                         )
                         ui.Toggle(bind: lib.justified, label: "Justified paragraphs")
+                    }
+                }
+                ui.Section("Watched folders") {
+                    stack(gap: .related) {
+                        for folder in lib.folders.sort_by(.path) {
+                            ui.ListRow(
+                                title: folder.path,
+                                secondary: "New EPUBs here become books",
+                                icon: .folder,
+                            )
+                        }
+                        row(gap: .related, align: .center) {
+                            ui.TextInput(
+                                bind: lib.draft_folder,
+                                placeholder: "A folder on this device",
+                                fill,
+                            )
+                            ui.Button("Watch it", icon: .folder_open) {
+                                on press: watch_folder(lib, lib.draft_folder)
+                            }
+                        }
                     }
                 }
                 ui.Section("Page palettes") {
@@ -930,9 +1092,7 @@ view book_page(b: Book) {
                             .filter(
                                 m -> m.kind == "highlight" or m.kind == "note",
                             )
-                            .flat_map(
-                                m -> m.pieces.map(p -> "{p.block}:{p.start}:{p.end}:{m.color}"),
-                            ),
+                            .flat_map(m -> bands_of(m)),
                         fill,
                     ) {
                         on turned(p: Int, top: Int): record_at(

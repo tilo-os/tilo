@@ -88,32 +88,13 @@ d-gjbrlgkj = Book
     .doc = The book the mark is in: a page of it stands one step from the passage.
 
 d-vpgm2esg = Pieces
-    .doc = The ranges the passage covers, in reading order: one block's words, or several when it crosses a block.
+    .doc = The ranges the passage covers, in reading order, each `block, start, end` in threes: one block's words, or several when it crosses a block.
 
 d-ujgcntpf-filter-highlights = Highlights
 
 d-ujgcntpf-filter-notes = Notes
 
 d-ujgcntpf-filter-bookmarks = Bookmarks
-
-d-qimhzbpa = Piece
-    .doc = One range of a passage a person marked: a block, and its first and last character in that block's words.
-    .noun = { $count ->
-        [one] piece
-       *[other] pieces
-    }
-
-d-el2sirvc = Block
-
-d-wjiavs4p = Start
-
-d-mk52mcqy = End
-
-d-qimhzbpa-filter-block = Block
-
-d-qimhzbpa-filter-start = Start
-
-d-qimhzbpa-filter-end = End
 
 d-kfdvrrjc = Progress
     .doc = Where one member is in a book.
@@ -188,6 +169,25 @@ d-rgyfsse6 = Language
 d-fhfwqqv3 = Query
     .doc = The words it was found for, so a new search takes the old answers away.
 
+d-in25mwb6 = Watched
+    .doc = A folder on a device the library watches: every EPUB in it, now or later, becomes a book.
+    .noun = { $count ->
+        [one] watched
+       *[other] watcheds
+    }
+
+d-zfzcnyj7 = Path
+
+d-l4rfzd5q = Token
+    .doc = The watch this device keeps, so a change to the folder runs the library's scan.
+
+d-vs5vpxpc = Given
+    .doc = The paths it already gave books for, so a scan reads only what is new.
+
+d-dafaqxgm = Added
+
+d-in25mwb6-filter-added = Added
+
 d-srrcatfl = Library
     .doc = The workspace's library: the books on the shelf, the books an online search found, the page palettes, and how a page is set for the people reading here.
     .noun = { $count ->
@@ -223,44 +223,17 @@ d-wc5z47pj = Custom page
 
 d-yiozk22e = Custom ink
 
+d-dww4lfs6 = Draft folder
+    .doc = The folder the settings' field names: what "Watch it" watches.
+
+d-trpwrvrr = Folders
+    .doc = The folders this device watches for books.
+
 d-srrcatfl-filter-text_size = Text size
 
 d-srrcatfl-filter-line_spacing = Line spacing
 
 d-srrcatfl-filter-justified = Justified
-
-d-65dclbnj = Found author
-    .doc = One author of a book a search found.
-    .noun = { $count ->
-        [one] found author
-       *[other] found authors
-    }
-
-d-j3ucstoe = Name
-
-d-kfrw7km4 = Found book
-    .doc = A book Project Gutenberg's search answers with, as its answer says one.
-    .noun = { $count ->
-        [one] found book
-       *[other] found books
-    }
-
-d-v7nyajgy = Title
-
-d-a4rek4qh = Authors
-
-d-7uazgom7 = Languages
-
-d-uw6rgipi = Formats
-
-d-icrdeppk = Found answer
-    .doc = What Project Gutenberg's search answers: the books it found.
-    .noun = { $count ->
-        [one] found answer
-       *[other] found answers
-    }
-
-d-ngjj6bkr = Results
 
 d-4xgt6ef3 = Fill
     .doc = What a new library starts with: the page palettes every reader knows, and the sepia page chosen.
@@ -275,6 +248,21 @@ d-umxlbp4p = Drop books
     .doc = Adds the EPUB files a person dropped on the shelf, each as `open_book` adds it.
 
 d-umxlbp4p-files = Files
+
+d-vmft5yuq = Watch folder
+    .doc = Watches the folder `path` for books: each EPUB it holds, and each that arrives, becomes a book, keeping the person's place as one they opened themselves does.
+    .did = watched a folder for books
+    .w-a-folder-is-watched-by-its = A folder is watched by its name
+
+d-vmft5yuq-path = Path
+
+d-ap57yp5t = Scan folder
+    .doc = Reads the folder `path`'s EPUBs, giving a book to each file the library does not hold yet.
+
+d-ap57yp5t-path = Path
+
+d-3gvqo77t = Foldered
+    .doc = Reads every watched folder again: what the platform runs when one of them changes.
 
 d-mjbtpsjr = Remove book
     .doc = Takes a book off the shelf, its chapters and marks with it.
@@ -461,6 +449,8 @@ d-ob6iyicm = Clear found
     .doc = Takes an online search's answers away.
     .did = cleared the books found online
 
+d-oxd7kaud = Watch folder~present
+
 d-w4cgekcm = Show passage~present
 
 d-vwfvgnvc = Add scheme~present
@@ -485,6 +475,9 @@ d-cmr5ibgv = Library settings
     .w-face = Face
     .w-the-reader-s-serif = The reader's serif
     .w-justified-paragraphs = Justified paragraphs
+    .w-watched-folders = Watched folders
+    .w-a-folder-on-this-device = A folder on this device
+    .w-watch-it = Watch it
     .w-page-palettes = Page palettes
     .w-palette-name = Palette name
     .w-paper = Paper

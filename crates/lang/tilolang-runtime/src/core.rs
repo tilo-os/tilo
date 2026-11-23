@@ -185,6 +185,9 @@ pub struct Core {
     /// The device's own folders, within the paths the app was granted
     /// (`Runtime::set_device_files`). Until the host sets one, it reads none.
     pub files: RefCell<Option<Box<dyn crate::files::FilesHost>>>,
+    /// The families text is set in on this device (`Runtime::set_fonts`): what a reading face's
+    /// picker offers. Until the host sets one, it offers none.
+    pub fonts: RefCell<Option<Box<dyn crate::fonts::FontHost>>>,
     /// The person's clipboard (`Runtime::set_clipboard`): what a copy offers and what a paste
     /// reads. Until the host sets one, nothing copies and nothing pastes.
     pub clipboard: RefCell<Option<Box<dyn crate::clipboard::ClipboardHost>>>,
@@ -382,6 +385,7 @@ impl Core {
             blobs: RefCell::new(None),
             fonts: RefCell::new(None),
             files: RefCell::new(None),
+            fonts: RefCell::new(None),
             clipboard: RefCell::new(None),
             names: RefCell::new(None),
             shown: RefCell::new(None),

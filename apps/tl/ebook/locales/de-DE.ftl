@@ -95,25 +95,6 @@ d-ujgcntpf-filter-notes = Notizen
 
 d-ujgcntpf-filter-bookmarks = Lesezeichen
 
-d-qimhzbpa = Abschnitt
-    .doc = Ein Bereich einer markierten Stelle: ein Block, und sein erstes und letztes Zeichen in den Wörtern des Blocks.
-    .noun = { $count ->
-        [one] Abschnitt
-       *[other] Abschnitte
-    }
-
-d-el2sirvc = Block
-
-d-wjiavs4p = Anfang
-
-d-mk52mcqy = Ende
-
-d-qimhzbpa-filter-block = Block
-
-d-qimhzbpa-filter-start = Anfang
-
-d-qimhzbpa-filter-end = Ende
-
 d-kfdvrrjc = Lesefortschritt
     .doc = Wo ein Mitglied in einem Buch ist.
     .noun = { $count ->
@@ -187,6 +168,25 @@ d-rgyfsse6 = Sprache
 d-fhfwqqv3 = Suchbegriff
     .doc = Die Wörter, für die es gefunden wurde, sodass eine neue Suche die alten Antworten wegnimmt.
 
+d-in25mwb6 = Überwacht
+    .doc = Ein Ordner auf einem Gerät, den die Bibliothek überwacht: jedes EPUB darin, jetzt oder später, wird ein Buch.
+    .noun = { $count ->
+        [one] überwachter Ordner
+       *[other] überwachte Ordner
+    }
+
+d-zfzcnyj7 = Pfad
+
+d-l4rfzd5q = Marke
+    .doc = Die Überwachung, die dieses Gerät hält, sodass eine Änderung am Ordner die Suche der Bibliothek startet.
+
+d-vs5vpxpc = Gegeben
+    .doc = Die Pfade, für die sie schon Bücher gab, sodass eine Suche nur das Neue liest.
+
+d-dafaqxgm = Hinzugefügt
+
+d-in25mwb6-filter-added = Hinzugefügt
+
 d-srrcatfl = Bibliothek
     .doc = Die Bibliothek des Arbeitsbereichs: die Bücher im Regal, die Bücher, die eine Online-Suche gefunden hat, die Seitenfarben und wie eine Seite für die hier Lesenden gesetzt ist.
     .noun = { $count ->
@@ -222,44 +222,17 @@ d-wc5z47pj = Eigene Seitenfarbe
 
 d-yiozk22e = Eigene Schriftfarbe
 
+d-dww4lfs6 = Ordnerentwurf
+    .doc = Der Ordner, den das Feld der Einstellungen nennt: was "Überwachen" überwacht.
+
+d-trpwrvrr = Ordner
+    .doc = Die Ordner, die dieses Gerät nach Büchern überwacht.
+
 d-srrcatfl-filter-text_size = Textgröße
 
 d-srrcatfl-filter-line_spacing = Zeilenabstand
 
 d-srrcatfl-filter-justified = Blocksatz
-
-d-65dclbnj = Gefundener Autor
-    .doc = Ein Autor eines Buchs, das eine Suche gefunden hat.
-    .noun = { $count ->
-        [one] gefundener Autor
-       *[other] gefundene Autoren
-    }
-
-d-j3ucstoe = Name
-
-d-kfrw7km4 = Gefundenes Buch
-    .doc = Ein Buch, das die Suche bei Project Gutenberg beantwortet, wie ihre Antwort eines sagt.
-    .noun = { $count ->
-        [one] gefundenes Buch
-       *[other] gefundene Bücher
-    }
-
-d-v7nyajgy = Titel
-
-d-a4rek4qh = Autoren
-
-d-7uazgom7 = Sprachen
-
-d-uw6rgipi = Formate
-
-d-icrdeppk = Gefundene Antwort
-    .doc = Was die Suche bei Project Gutenberg beantwortet: die Bücher, die sie fand.
-    .noun = { $count ->
-        [one] gefundene Antwort
-       *[other] gefundene Antworten
-    }
-
-d-ngjj6bkr = Treffer
 
 d-4xgt6ef3 = Füllen
     .doc = Womit eine neue Bibliothek beginnt: die Seitenfarben, die jeder Leser kennt, und die gewählte Sepiaseite.
@@ -274,6 +247,21 @@ d-umxlbp4p = Bücher ablegen
     .doc = Fügt die EPUB-Dateien hinzu, die eine Person auf dem Regal ablegt, jede wie `open_book` sie hinzufügt.
 
 d-umxlbp4p-files = Dateien
+
+d-vmft5yuq = Ordner überwachen
+    .doc = Überwacht den Ordner `path` nach Büchern: jedes EPUB darin, und jedes, das ankommt, wird ein Buch, und die Stelle der Person bleibt, wie bei einem selbst geöffneten.
+    .did = überwachte einen Ordner für Bücher
+    .w-a-folder-is-watched-by-its = Ein Ordner wird über seinen Namen überwacht
+
+d-vmft5yuq-path = Pfad
+
+d-ap57yp5t = Ordner lesen
+    .doc = Liest die EPUBs des Ordners `path` und gibt jedem Datei, die die Bibliothek noch nicht hält, ein Buch.
+
+d-ap57yp5t-path = Pfad
+
+d-3gvqo77t = Ordner geprüft
+    .doc = Liest jeden überwachten Ordner erneut: was die Plattform ausführt, wenn sich einer ändert.
 
 d-mjbtpsjr = Buch entfernen
     .doc = Nimmt ein Buch samt seinen Kapiteln und Markierungen aus dem Regal.
@@ -460,6 +448,8 @@ d-ob6iyicm = Gefundenes leeren
     .doc = Nimmt die Antworten einer Online-Suche weg.
     .did = leerte die online gefundenen Bücher
 
+d-oxd7kaud = Ordner überwachen~present
+
 d-w4cgekcm = Stelle zeigen~present
 
 d-vwfvgnvc = Farbschema anlegen~present
@@ -484,6 +474,9 @@ d-cmr5ibgv = Leseeinstellungen
     .w-face = Schriftart
     .w-the-reader-s-serif = Die Serifenschrift des Lesers
     .w-justified-paragraphs = Absätze im Blocksatz
+    .w-watched-folders = Überwachte Ordner
+    .w-a-folder-on-this-device = Ein Ordner auf diesem Gerät
+    .w-watch-it = Überwachen
     .w-page-palettes = Seitenfarben
     .w-palette-name = Name der Farben
     .w-paper = Papier

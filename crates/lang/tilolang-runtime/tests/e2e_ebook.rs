@@ -27,6 +27,17 @@ action open_window(resource: host.Resource) {
 }
 "#;
 
+    /// Another book a watched folder holds, as base64 text.
+    const SALTROAD_BASE64: &str = include_str!("fixtures/saltroad.epub.b64");
+
+    /// [`SALTROAD_BASE64`] as the EPUB bytes a device holds.
+    fn saltroad() -> Vec<u8> {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(SALTROAD_BASE64.trim())
+            .expect("the fixture is base64")
+    }
+
     /// [`TIDEGLASS_BASE64`] as the EPUB bytes a device holds.
     fn tideglass() -> Vec<u8> {
         use base64::Engine as _;
@@ -44,6 +55,10 @@ action open_window(resource: host.Resource) {
     struct Device {
         files: Rc<RefCell<std::collections::HashMap<String, Vec<u8>>>>,
         requests: Rc<RefCell<Vec<WebRequest>>>,
+        /// The device's disk: each path it holds, and whether it is a folder.
+        disk: Rc<RefCell<std::collections::BTreeMap<String, (bool, Vec<u8>)>>>,
+        /// The folders the app asked to watch, by path, with the action each runs.
+        watches: Rc<RefCell<Vec<(String, String)>>>,
     }
 
     impl Device {
@@ -62,6 +77,17 @@ action open_window(resource: host.Resource) {
                 i64::try_from(bytes.len()).unwrap_or(i64::MAX),
                 hash,
             )
+        }
+
+        /// Put the file `name` in the folder `folder`, keeping the folder itself.
+        fn put(&self, folder: &str, name: &str, bytes: &[u8]) {
+            let mut disk = self.disk.borrow_mut();
+            disk.insert(folder.to_owned(), (true, Vec::new()));
+            disk.insert(format!("{folder}/{name}"), (false, bytes.to_vec()));
+        }
+
+        fn watches(&self) -> Vec<(String, String)> {
+            self.watches.borrow().clone()
         }
 
         fn requests(&self) -> Vec<String> {
@@ -115,6 +141,61 @@ action open_window(resource: host.Resource) {
         }
     }
 
+    impl tilolang_runtime::files::FilesHost for Device {
+        fn list(&self, path: &str) -> Result<Vec<tilolang_runtime::files::Entry>, String> {
+            let disk = self.disk.borrow();
+            let Some((folder, _)) = disk.get(path) else {
+                return Err(format!("`{path}` is not a folder on this device"));
+            };
+            if !folder {
+                return Err(format!("`{path}` is not a folder"));
+            }
+            let prefix = format!("{path}/");
+            Ok(disk
+                .iter()
+                .filter_map(|(at, (is_folder, bytes))| {
+                    let name = at.strip_prefix(&prefix)?;
+                    if name.contains('/') {
+                        return None;
+                    }
+                    Some(tilolang_runtime::files::Entry {
+                        name: name.to_owned(),
+                        path: at.clone(),
+                        folder: *is_folder,
+                        size: i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+                        modified: 0,
+                        hidden: name.starts_with('.'),
+                    })
+                })
+                .collect())
+        }
+
+        fn stat(&self, path: &str) -> Result<Option<tilolang_runtime::files::Entry>, String> {
+            let entry = self
+                .list(path.rsplit_once('/').map_or("", |(folder, _)| folder))
+                .unwrap_or_default()
+                .into_iter()
+                .find(|entry| entry.path == path);
+            Ok(entry)
+        }
+
+        fn read(&self, path: &str) -> Result<Vec<u8>, String> {
+            let disk = self.disk.borrow();
+            match disk.get(path) {
+                Some((false, bytes)) => Ok(bytes.clone()),
+                Some((true, _)) => Err(format!("`{path}` is a folder")),
+                None => Err(format!("`{path}` is not on this device")),
+            }
+        }
+
+        fn watch(&self, path: &str, run: &str) -> Result<String, String> {
+            self.watches
+                .borrow_mut()
+                .push((path.to_owned(), run.to_owned()));
+            Ok(format!("watch:{path}"))
+        }
+    }
+
     impl tilolang_runtime::fonts::FontHost for Device {
         fn families(&self) -> Vec<String> {
             vec!["Our Serif".to_owned(), "Our Sans".to_owned()]
@@ -155,6 +236,7 @@ action open_window(resource: host.Resource) {
             rt.set_blobs(device.clone());
             rt.set_web(device.clone());
             rt.set_fonts(device.clone());
+            rt.set_device_files(device.clone());
             rt.set_clock(|| "2026-11-23T09:00:00Z".to_owned());
             let mut session = App::compile(SESSION_SOURCE, &[]);
             for action in &mut session.compiled.meta.actions {
@@ -398,6 +480,48 @@ action open_window(resource: host.Resource) {
             );
         }
 
+        phase a_watched_folder_gives_its_epubs_as_books;
+        {
+            let books = Books::new();
+            books.device.put("books", "The Salt Road.epub", &saltroad());
+            books.device.put("books", "notes.txt", b"salt on the road, and carts");
+            books.call(
+                "watch_folder",
+                books.args(
+                    "watch_folder",
+                    &[("lib", Value::resource(&books.lib)), ("path", Value::text("books"))],
+                ),
+            );
+            let shelf = books.rt.project(&books.rt.read(&books.lib, "books").unwrap());
+            assert_eq!(
+                shelf["count"],
+                serde_json::json!(1),
+                "the folder's EPUB becomes a book, and its text file is no book"
+            );
+            let folders = books.rt.project(&books.rt.read(&books.lib, "folders").unwrap());
+            assert_eq!(folders["count"], serde_json::json!(1));
+            let watches = books.device.watches();
+            assert!(!watches.is_empty(), "the platform keeps the watch");
+            assert!(
+                watches
+                    .iter()
+                    .all(|(path, run)| path == "books" && run == "foldered"),
+                "the watch names the folder and the library's scan: {watches:?}"
+            );
+            // A book arrives in the folder: the platform runs the watched action.
+            books.device.put("books", "The Tide Glass.epub", &tideglass());
+            books.call(
+                "foldered",
+                books.args("foldered", &[("lib", Value::resource(&books.lib))]),
+            );
+            let shelf = books.rt.project(&books.rt.read(&books.lib, "books").unwrap());
+            assert_eq!(
+                shelf["count"],
+                serde_json::json!(2),
+                "what arrived is a book too, and the one already read is not read again"
+            );
+        }
+
         phase a_chapter_is_opened_from_the_contents;
         {
             let books = Books::new();
@@ -460,6 +584,7 @@ action open_window(resource: host.Resource) {
                     "highlight",
                     &[
                         ("b", Value::resource(&book)),
+                        ("chapter", Value::Int(0)),
                         (
                             "ranges",
                             Value::List(vec![Value::Int(1), Value::Int(0), Value::Int(10)]),
@@ -499,6 +624,7 @@ action open_window(resource: host.Resource) {
                     "highlight",
                     &[
                         ("b", Value::resource(&book)),
+                        ("chapter", Value::Int(0)),
                         (
                             "ranges",
                             Value::List(vec![
@@ -544,6 +670,7 @@ action open_window(resource: host.Resource) {
                     "highlight",
                     &[
                         ("b", Value::resource(&book)),
+                        ("chapter", Value::Int(0)),
                         (
                             "ranges",
                             Value::List(vec![Value::Int(1), Value::Int(0), Value::Int(6)]),
