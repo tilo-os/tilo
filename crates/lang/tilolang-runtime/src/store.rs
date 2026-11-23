@@ -489,6 +489,11 @@ pub struct Version {
     /// back as one step. `None` for a change that is an act of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gesture: Option<String>,
+    /// The invocation the change was one of, when it was one: what makes a run's changes one
+    /// action, and what an undo takes back as one step
+    /// ([`crate::run::Journal::invocation`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation: Option<String>,
 }
 
 impl Version {
@@ -746,6 +751,7 @@ pub fn versions_in<'c>(
                 suggested_by: note.suggested_by.clone(),
                 count: note.count.max(1),
                 gesture: None,
+                invocation: note.invocation.clone(),
             }
         })
         .collect();

@@ -3419,7 +3419,8 @@ impl ResourceStore {
                 serde_json::from_str::<Actor>(&stamp.suggested_by).ok()
             ),
             count: 1,
-            gesture: Some(stamp.invocation),
+            gesture: Some(stamp.invocation.clone()),
+            invocation: Some(stamp.invocation),
         }
     }
 
