@@ -642,6 +642,12 @@ and screen share only, never documents, and stays as it is.
   the same way. A program that needs more extends this API; it gets no call
   of its own. The session's own engine (`EngineRecords`, `settings_sync`)
   goes, and settings are records read and written like any other.
+- **One way to ask**: whenever a person is asked for a yes, a choice or a
+  secret, the question is an asked invocation record answered through
+  `tilo.invocations#resolve`. An app, an agent, a web page in the Browser, an
+  automation, and an outside process through the portal (the session raising
+  it on its behalf) all ask this way. A secret answer goes only to the asker,
+  never into the record, its history, sync or logs.
 - **An invocation follows its origin's permissions**: an invocation record
   names the resource it runs for. Its caller, or anyone who may write that
   resource, may cancel or retry it; only the identity an ask names may answer
