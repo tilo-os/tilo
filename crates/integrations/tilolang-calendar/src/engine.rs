@@ -13,7 +13,6 @@ use calendar_model::model::{
     Attendee, Calendar, Event, Id, InviteStatus, OccurrenceOverride, Recurrence,
 };
 use jiff::civil::{Date, DateTime, Time};
-use jiff::{Timestamp, tz::TimeZone};
 use tilo_dav::{
     Credentials, DavClient, Depth, Limits, Options, Precondition, Redirects, Url, props,
 };
@@ -514,7 +513,7 @@ impl CalDavConnector for EngineConnector {
 const WHY: &str = "the calendar engine stopped";
 
 impl EngineConnector {
-    fn next_event(&mut self, out: &mut Vec<Reported>) -> Option<EngineEvent> {
+    fn next_event(&self, out: &mut Vec<Reported>) -> Option<EngineEvent> {
         match self.events.as_ref()?.try_recv() {
             Ok(event) => Some(event),
             Err(std::sync::mpsc::TryRecvError::Empty) => None,
@@ -652,6 +651,10 @@ impl Engine {
 
     /// What the account's server holds: its calendars, and what changed in each since the last
     /// pull.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one calendar server's whole answer, each calendar in turn"
+    )]
     fn sync(&mut self, signed: &CalendarAccount) -> Result<Sync, String> {
         let (client, server) = Self::client(signed)?;
         let discovered = tilo_dav::discovery::calendars(&client, &server)?;
@@ -678,14 +681,18 @@ impl Engine {
             ..Sync::default()
         };
         for index in 0..sync.calendars.len() {
-            let calendar = sync.calendars[index].clone();
+            let Some(calendar) = sync.calendars.get(index).cloned() else {
+                continue;
+            };
             let collection = Url::parse(&calendar.key)
                 .map_err(|_| "a calendar's address is not an address".to_owned())?;
             if collection.origin() != server.origin() {
                 continue;
             }
-            if let Some(color) = Self::calendar_color_of(&client, &collection) {
-                sync.calendars[index].color = color;
+            if let Some(color) = Self::calendar_color_of(&client, &collection)
+                && let Some(calendar) = sync.calendars.get_mut(index)
+            {
+                calendar.color = color;
             }
             let token = held.tokens.get(&calendar.key).cloned().flatten();
             let (listing, whole, tells) = Self::list(&client, &collection, token.as_deref())?;
@@ -1465,16 +1472,22 @@ fn entry_of(
         href: href.to_owned(),
         calendar: calendar.to_owned(),
         title: event.title.clone(),
-        start: instant_of(zone, event.start),
-        end: instant_of(zone, event.end),
+        start: wall_text(event.start),
+        end: wall_text(event.end),
         all_day: event.all_day,
-        timezone: if zone == "floating" {
-            String::new()
+        timezone: if zone.is_empty() {
+            "floating".to_owned()
         } else {
             zone.to_owned()
         },
         location: event.location.clone(),
         recurrence: recurrence_text(event),
+        recurrence_every: event.recurrence_interval.max(1),
+        recurrence_until: event
+            .recurrence_until
+            .map(|date| date.to_string())
+            .unwrap_or_default(),
+        recurrence_count: event.recurrence_count.unwrap_or(0),
         exdates: event
             .recurrence_exdates
             .iter()
@@ -1490,14 +1503,8 @@ fn entry_of(
                     .map(|time| time.to_string())
                     .unwrap_or_default(),
                 cancelled: edit.cancelled,
-                start: edit
-                    .start
-                    .map(|start| instant_of(zone, start))
-                    .unwrap_or_default(),
-                end: edit
-                    .end
-                    .map(|end| instant_of(zone, end))
-                    .unwrap_or_default(),
+                start: edit.start.map(wall_text).unwrap_or_default(),
+                end: edit.end.map(wall_text).unwrap_or_default(),
                 title: edit.title.clone().unwrap_or_default(),
                 location: edit.location.clone().unwrap_or_default(),
             })
@@ -1520,27 +1527,57 @@ fn entry_of(
         categories: event.categories.iter().cloned().collect(),
         color: color_of(text),
         notes: notes.to_owned(),
+        remind: event
+            .reminder_min
+            .and_then(|minutes| {
+                let at = instant_start(zone, event.start)?
+                    .checked_sub(jiff::SignedDuration::from_mins(minutes).as_secs())?;
+                Some(jiff::Timestamp::from_second(at).ok()?.to_string())
+            })
+            .unwrap_or_default(),
     }
 }
 
-/// The entry's repeat as its `RRULE`: `FREQ`, `INTERVAL`, `UNTIL` and `COUNT` as its fields say,
-/// empty for one occurrence.
-fn recurrence_text(event: &Event) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    let base = event.recurrence.to_rrule();
-    if !base.is_empty() {
-        parts.push(base);
-        if event.recurrence_interval > 1 {
-            parts.push(format!("INTERVAL={}", event.recurrence_interval));
-        }
-        if let Some(until) = event.recurrence_until {
-            parts.push(format!("UNTIL={}", compact_date(until)));
-        }
-        if let Some(count) = event.recurrence_count {
-            parts.push(format!("COUNT={count}"));
-        }
+/// The instant the wall time `wall` is in `zone`.
+fn instant_start(zone: &str, wall: DateTime) -> Option<i64> {
+    Some(match zone {
+        "" | "floating" => wall
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .ok()?
+            .timestamp()
+            .as_second(),
+        name => jiff::tz::TimeZone::get(name)
+            .ok()
+            .and_then(|timezone| wall.to_zoned(timezone).ok())
+            .map(|zoned| zoned.timestamp().as_second())?,
+    })
+}
+
+/// The minutes before its start the entry's reminder rings, where it rings.
+fn reminder_min(entry: &Entry) -> Option<i64> {
+    if entry.remind.is_empty() {
+        return None;
     }
-    parts.join(";")
+    let remind = entry.remind.parse::<jiff::Timestamp>().ok()?.as_second();
+    let start = instant_start(&entry.timezone, wall_of_text(&entry.start)?)?;
+    let minutes = start.checked_sub(remind)?.checked_div(60)?;
+    (minutes > 0).then_some(minutes)
+}
+
+/// The wall time `wall` is, as iCalendar writes one (`2026-11-19T19:00:00`).
+fn wall_text(wall: DateTime) -> String {
+    wall.strftime("%Y-%m-%dT%H:%M:%S").to_string()
+}
+
+/// The wall time `text` names, `2026-11-19T19:00:00`.
+fn wall_of_text(text: &str) -> Option<DateTime> {
+    DateTime::strptime("%Y-%m-%dT%H:%M:%S", text.trim()).ok()
+}
+
+/// The entry's repeat as its rule's frequency and days (`FREQ=WEEKLY;BYDAY=MO`), empty for one
+/// occurrence. Its interval, last day and count are fields of their own.
+fn recurrence_text(event: &Event) -> String {
+    event.recurrence.to_rrule()
 }
 
 /// The repeat an `RRULE` names: its frequency, interval, last day and count.
@@ -1588,10 +1625,6 @@ fn date_of(value: &str) -> Option<Date> {
     let month = digits.get(4..6)?.parse().ok()?;
     let day = digits.get(6..8)?.parse().ok()?;
     Date::new(year, month, day).ok()
-}
-
-fn compact_date(date: Date) -> String {
-    date.to_string().replace('-', "")
 }
 
 /// The colour the entry `text` says it is, its `COLOR`.
@@ -1650,42 +1683,12 @@ fn invite_status_of(status: &str) -> InviteStatus {
     }
 }
 
-/// The instant the wall time `wall` in `zone` is, as the record holds it.
-fn instant_of(zone: &str, wall: DateTime) -> String {
-    let utc = || {
-        wall.to_zoned(TimeZone::UTC)
-            .map_or(Timestamp::UNIX_EPOCH, |zoned| zoned.timestamp())
-    };
-    let timestamp = if zone.is_empty() || zone == "floating" {
-        utc()
-    } else {
-        calendar_model::timezone::wall_to_utc(zone, wall)
-            .map_or_else(utc, |(timestamp, _)| timestamp)
-    };
-    timestamp.to_string()
-}
-
-/// The wall time the instant `instant` is in `zone`.
-fn wall_of(zone: &str, instant: &str) -> DateTime {
-    let timestamp = instant
-        .parse::<Timestamp>()
-        .unwrap_or(Timestamp::UNIX_EPOCH);
-    if zone.is_empty() || zone == "floating" {
-        TimeZone::UTC.to_datetime(timestamp)
-    } else {
-        TimeZone::get(zone).map_or_else(
-            |_| TimeZone::UTC.to_datetime(timestamp),
-            |timezone| timezone.to_datetime(timestamp),
-        )
-    }
-}
-
 /// The iCalendar text the entry is written as.
 fn text_of(entry: &Entry) -> String {
     let zone = entry.timezone.as_str();
-    let start = wall_of(zone, &entry.start);
-    let end = wall_of(zone, &entry.end);
-    let (recurrence, interval, until, count) = recurrence_parts(&entry.recurrence);
+    let start = wall_of_text(&entry.start).unwrap_or_default();
+    let end = wall_of_text(&entry.end).unwrap_or_default();
+    let (recurrence, _, _, _) = recurrence_parts(&entry.recurrence);
     let mut event = Event {
         id: Id::new_v4(),
         title: entry.title.clone(),
@@ -1694,16 +1697,16 @@ fn text_of(entry: &Entry) -> String {
         all_day: entry.all_day,
         location: entry.location.clone(),
         recurrence,
-        recurrence_interval: interval,
-        recurrence_until: until,
-        recurrence_count: count,
-        timezone: if zone.is_empty() {
-            "floating".to_owned()
-        } else {
-            zone.to_owned()
+        recurrence_interval: entry.recurrence_every.max(1),
+        recurrence_until: entry.recurrence_until.parse::<Date>().ok(),
+        recurrence_count: (entry.recurrence_count > 0).then_some(entry.recurrence_count),
+        timezone: match zone {
+            "" => "floating".to_owned(),
+            zone => zone.to_owned(),
         },
         ..Event::default()
     };
+    event.reminder_min = reminder_min(entry);
     event.recurrence_exdates = entry
         .exdates
         .iter()
@@ -1718,8 +1721,12 @@ fn text_of(entry: &Entry) -> String {
                 original_date,
                 original_time: edit.time.parse::<Time>().ok(),
                 cancelled: edit.cancelled,
-                start: (!edit.start.is_empty()).then(|| wall_of(zone, &edit.start)),
-                end: (!edit.end.is_empty()).then(|| wall_of(zone, &edit.end)),
+                start: (!edit.start.is_empty())
+                    .then(|| wall_of_text(&edit.start))
+                    .flatten(),
+                end: (!edit.end.is_empty())
+                    .then(|| wall_of_text(&edit.end))
+                    .flatten(),
                 end_later_fold: false,
                 title: (!edit.title.is_empty()).then(|| edit.title.clone()),
                 location: (!edit.location.is_empty()).then(|| edit.location.clone()),

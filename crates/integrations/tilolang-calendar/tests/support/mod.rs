@@ -1,3 +1,10 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a test says what it needs in a sentence when what it needs is not there"
+)]
+
 //! The calendar origin's harness: a package's records over a real store, its origin over the
 //! calendar engine, and the calendar servers the tests keep on loopback.
 
@@ -103,8 +110,7 @@ impl Rig {
             .iter()
             .find(|declared| declared.name == ty)
             .and_then(|declared| declared.fields.iter().find(|known| known.name == field))
-            .map(|known| known.id.clone())
-            .unwrap_or_else(|| panic!("{ty} declares {field}"))
+            .map_or_else(|| panic!("{ty} declares {field}"), |known| known.id.clone())
     }
 
     /// The items of the root's collection `field`.
@@ -210,9 +216,7 @@ impl Rig {
             .iter()
             .map(|(name, value)| ((*name).to_owned(), value.clone()))
             .collect();
-        let resource = of
-            .map(ResourceRef::id_string)
-            .unwrap_or_else(|| self.root().id_string());
+        let resource = of.map_or_else(|| self.root().id_string(), ResourceRef::id_string);
         let request = PlanRequest {
             app: APP,
             kind: &kind,

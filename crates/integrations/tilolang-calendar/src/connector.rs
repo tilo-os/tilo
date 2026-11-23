@@ -74,17 +74,22 @@ pub struct Entry {
     /// The calendar's key.
     pub calendar: String,
     pub title: String,
-    /// When it starts, an instant (`2026-11-19T19:00:00Z`).
+    /// When it starts, as iCalendar writes the wall time (`2026-11-19T19:00:00`).
     pub start: String,
-    /// When it ends, an instant.
+    /// When it ends, as iCalendar writes the wall time.
     pub end: String,
     pub all_day: bool,
-    /// The time zone its wall time is read in: an IANA name, or empty for wall time nowhere in
-    /// particular (the reader's own).
+    /// The zone its wall time is written in: `floating`, `UTC`, or an IANA name.
     pub timezone: String,
     pub location: String,
-    /// How it repeats, as its `RRULE` (`FREQ=WEEKLY;INTERVAL=2`); empty for one occurrence.
+    /// How it repeats, as its `RRULE`'s frequency and days (`FREQ=WEEKLY;BYDAY=MO`); empty for
+    /// one occurrence.
     pub recurrence: String,
+    pub recurrence_every: u32,
+    /// The last day it repeats on, `YYYY-MM-DD`, empty for no end.
+    pub recurrence_until: String,
+    /// How many times it repeats, 0 for no count.
+    pub recurrence_count: u32,
     /// Dates it is left out on, `YYYY-MM-DD` each.
     pub exdates: Vec<String>,
     /// The occurrences that stand apart: moved, renamed or cancelled.
@@ -97,6 +102,8 @@ pub struct Entry {
     pub color: String,
     /// What it says: its `DESCRIPTION`.
     pub notes: String,
+    /// When its reminder rings, an instant, empty for none: its `VALARM`.
+    pub remind: String,
 }
 
 /// One entry a server no longer holds.

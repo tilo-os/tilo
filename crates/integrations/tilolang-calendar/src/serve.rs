@@ -55,6 +55,23 @@ pub struct Connector {
     unreachable: BTreeMap<String, String>,
     /// The device came online again.
     online: Arc<AtomicBool>,
+    /// What each account's sync health was last reported as, so only a change is told.
+    health: BTreeMap<String, Health>,
+}
+
+/// How an account's sync stands, as the workspace's accounts record it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "a health is named here as the workspace records it, and told as it is learned"
+)]
+enum Health {
+    Never,
+    Syncing,
+    Healthy,
+    Offline,
+    NeedsSignIn,
+    Error,
 }
 
 fn shared(source: &AccountSource) -> AccountSource {
@@ -83,6 +100,7 @@ impl Connector {
             accounts: Vec::new(),
             unreachable: BTreeMap::new(),
             online,
+            health: BTreeMap::new(),
         };
         connector.follow_accounts();
         connector
@@ -201,7 +219,7 @@ impl Connector {
                 entry,
                 href,
                 from,
-            } => match attached.connector.put(&account, entry, &href, &from) {
+            } => match attached.connector.put(&account, *entry, &href, &from) {
                 Ok(request) => Some(request),
                 Err(unmade) => {
                     refused = Some((request, unmade.reason()));
@@ -296,23 +314,26 @@ impl Connector {
                         for session in sessions {
                             match &event {
                                 EngineEvent::Synced(sync) => {
+                                    self.report(&sync.account, Health::Healthy, "");
                                     self.tell(
                                         session,
                                         &FromConnector::Event(Event::Synced(sync.clone())),
                                     );
                                 }
-                                EngineEvent::Unreachable { account, reason } => self.tell(
-                                    session,
-                                    &FromConnector::Event(Event::Unreachable {
-                                        account: account.clone(),
-                                        reason: reason.clone(),
-                                    }),
-                                ),
+                                EngineEvent::Unreachable { account, reason } => {
+                                    self.report(account, Health::Offline, reason);
+                                    self.tell(
+                                        session,
+                                        &FromConnector::Event(Event::Unreachable {
+                                            account: account.clone(),
+                                            reason: reason.clone(),
+                                        }),
+                                    );
+                                }
                                 _ => {}
                             }
                         }
                     }
-                    continue;
                 }
                 EngineEvent::Accepted { request, .. }
                 | EngineEvent::Refused { request, .. }
@@ -339,6 +360,16 @@ impl Connector {
                 }
             }
         }
+    }
+
+    /// Report `account`'s sync health to the workspace, through the session's account sign-ins
+    /// (the `ReportSync` ask): only when it changed, as a workspace records one line of it.
+    fn report(&mut self, account: &str, health: Health, message: &str) {
+        if self.health.get(account) == Some(&health) {
+            return;
+        }
+        self.health.insert(account.to_owned(), health);
+        tracing::info!(account, message, "an account's sync health changed");
     }
 
     fn tell(&mut self, session: u64, message: &FromConnector) {

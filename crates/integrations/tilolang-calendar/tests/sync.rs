@@ -1,3 +1,10 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a test says what it needs in a sentence when what it needs is not there"
+)]
+
 //! The calendar origin against a calendar server kept on loopback: what a sync writes into a
 //! package's records, what a person's change sends, and what a server's refusal puts back.
 
@@ -334,8 +341,8 @@ fn an_entry_of_the_workspaces_own_calendar_is_never_sent_anywhere() {
         &[
             ("calendar", serde_json::json!(home.id_string())),
             ("title", serde_json::json!("Family dinner")),
-            ("start", at("2026-11-20T19:00:00Z")),
-            ("end", at("2026-11-20T21:00:00Z")),
+            ("start", at("2026-11-20T19:00:00")),
+            ("end", at("2026-11-20T21:00:00")),
         ],
     );
     rig.settle();
@@ -372,8 +379,8 @@ fn moving_an_entry_into_an_accounts_calendar_writes_it_and_out_of_it_takes_it_ou
         &[
             ("calendar", serde_json::json!(home.id_string())),
             ("title", serde_json::json!("Dinner")),
-            ("start", at("2026-11-20T19:00:00Z")),
-            ("end", at("2026-11-20T21:00:00Z")),
+            ("start", at("2026-11-20T19:00:00")),
+            ("end", at("2026-11-20T21:00:00")),
         ],
     );
     rig.settle();
