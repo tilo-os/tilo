@@ -28,7 +28,6 @@ roots = ["Request", "Reply"]
 "Account.display_name" = "String optional"
 "Account.enabled" = "bool optional"
 "Account.id" = "AccountId"
-"Account.owner" = "Option<String> optional"
 "Account.tint" = "u8 optional"
 "Account.type_id" = "AccountTypeId"
 "AccountId" = "tuple(String) transparent"
