@@ -23589,6 +23589,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-broker-core",
+ "tilo-canonical-json",
  "tilo-clock",
  "tilo-content",
  "tilo-dav",

@@ -160,11 +160,13 @@ pub(crate) fn terminal_category(
 }
 
 fn admission_digest(receipt: &AdmissionReceipt) -> Result<[u8; 32], String> {
-    let mut bytes = b"tilo-semantic-admission-reference-v1\0".to_vec();
-    bytes.extend(canonical_bytes(
-        &serde_json::to_value(receipt).map_err(|_| "admission encoding failed")?,
-    )?);
-    Ok(*blake3::hash(&bytes).as_bytes())
+    let value = serde_json::to_value(receipt).map_err(|_| "admission encoding failed")?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"tilo-semantic-admission-reference-v1\0");
+    tilo_canonical_json::write_bytes(&value, |chunk| {
+        hash.update(chunk);
+    });
+    Ok(*hash.finalize().as_bytes())
 }
 
 fn terminal_bytes(digest: &[u8; 32], category: TerminalCategory) -> Result<Vec<u8>, String> {
@@ -413,53 +415,58 @@ impl IntentOpening {
     }
 }
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "preserves the existing private signature checked by pinning tests"
+)]
 fn signing_bytes(facts: &AdmissionFacts, commitment: &[u8; 32]) -> Result<Vec<u8>, String> {
     let mut bytes = SIGN_DOMAIN.to_vec();
-    bytes.extend(canonical_bytes(&serde_json::json!({
-        "facts": facts,
-        "intent_commitment": commitment,
-    }))?);
+    tilo_canonical_json::append_vec(
+        &mut bytes,
+        &serde_json::json!({
+            "facts": facts,
+            "intent_commitment": commitment,
+        }),
+    );
     Ok(bytes)
 }
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "preserves the existing private signature checked by pinning tests"
+)]
 fn retained_digest(intent: &Value) -> Result<[u8; 32], String> {
-    let mut retained = intent.clone();
-    if let Some(fields) = retained.as_object_mut() {
-        fields.remove("request");
-    }
     let mut hash = blake3::Hasher::new_derive_key("tilo semantic admission retained intent v1");
-    hash.update(&canonical_bytes(&retained)?);
+    if intent
+        .as_object()
+        .is_some_and(|fields| fields.contains_key("request"))
+    {
+        let mut retained = intent.clone();
+        if let Some(fields) = retained.as_object_mut() {
+            fields.remove("request");
+        }
+        tilo_canonical_json::write_bytes(&retained, |chunk| {
+            hash.update(chunk);
+        });
+    } else {
+        tilo_canonical_json::write_bytes(intent, |chunk| {
+            hash.update(chunk);
+        });
+    }
     Ok(*hash.finalize().as_bytes())
 }
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "preserves the existing private signature checked by pinning tests"
+)]
 fn intent_digest(intent: &Value) -> Result<[u8; 32], String> {
     let mut hash = blake3::Hasher::new();
     hash.update(INTENT_DOMAIN);
-    hash.update(&canonical_bytes(intent)?);
+    tilo_canonical_json::write_bytes(intent, |chunk| {
+        hash.update(chunk);
+    });
     Ok(*hash.finalize().as_bytes())
-}
-
-// Sort recursively even when serde_json's preserve_order feature is enabled by
-// another workspace member. Arrays retain order; absent and null stay distinct.
-// This is the v1 JSON-value encoding, not a claim of RFC 8785 conformance.
-fn canonical_bytes(value: &Value) -> Result<Vec<u8>, String> {
-    fn sorted(value: &Value) -> Value {
-        match value {
-            Value::Object(map) => {
-                let mut entries: Vec<_> = map.iter().collect();
-                entries.sort_unstable_by_key(|(key, _)| *key);
-                Value::Object(
-                    entries
-                        .into_iter()
-                        .map(|(k, v)| (k.clone(), sorted(v)))
-                        .collect(),
-                )
-            }
-            Value::Array(values) => Value::Array(values.iter().map(sorted).collect()),
-            other => other.clone(),
-        }
-    }
-    serde_json::to_vec(&sorted(value)).map_err(|_| "admission encoding failed".into())
 }
 
 #[cfg(test)]
