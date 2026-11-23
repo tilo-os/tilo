@@ -17,7 +17,13 @@ use tilo_server::servers;
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{Linked, TestUser, serve_on};
+use crate::common::{Hosted, Linked, TestUser, serve_on};
+
+/// The zone `person` reads on `hosted`, or none before it holds their own workspace.
+async fn zone_on(hosted: &Hosted, person: [u8; 32]) -> Option<String> {
+    let workspaces = hosted.host.workspaces();
+    workspaces.region(&person).await.and_then(|(_, zone)| zone)
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_zone_chosen_on_one_device_is_the_zone_another_device_of_theirs_reads() {
@@ -70,14 +76,12 @@ async fn a_zone_chosen_on_one_device_is_the_zone_another_device_of_theirs_reads(
         panic!("the choice is kept: {:?}", answer.status);
     };
     assert_eq!(output.value.unwrap()["chosenZone"], CHOSEN);
-    let zone_on = |hosted: &crate::common::Hosted| {
-        let workspaces = hosted.host.workspaces();
-        let person = alice.user_pk;
-        async move { workspaces.region(&person).await.and_then(|(_, zone)| zone) }
-    };
-    assert_eq!(zone_on(&on_laptop).await.as_deref(), Some(CHOSEN));
     assert_eq!(
-        zone_on(&on_desktop).await,
+        zone_on(&on_laptop, alice.user_pk).await.as_deref(),
+        Some(CHOSEN)
+    );
+    assert_eq!(
+        zone_on(&on_desktop, alice.user_pk).await,
         None,
         "the desktop reads nothing before it holds her own workspace"
     );
@@ -87,7 +91,7 @@ async fn a_zone_chosen_on_one_device_is_the_zone_another_device_of_theirs_reads(
     // she chose there.
     crate::common::join_person_workspace(&on_laptop, &desktop, &on_desktop).await;
     tilo_test_env::within("the desktop to read the zone chosen on the laptop", async {
-        while zone_on(&on_desktop).await.as_deref() != Some(CHOSEN) {
+        while zone_on(&on_desktop, alice.user_pk).await.as_deref() != Some(CHOSEN) {
             tokio::task::yield_now().await;
         }
     })
