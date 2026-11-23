@@ -17,6 +17,10 @@ impl<H: ActionProvider + ?Sized> ActionProvider for std::sync::Arc<H> {
         (**self).serves(provider)
     }
 
+    fn introduced(&self, caller: &Caller, client: &str) {
+        (**self).introduced(caller, client);
+    }
+
     fn query(
         &self,
         caller: &Caller,

@@ -1354,6 +1354,14 @@ pub trait ActionProvider {
         None
     }
 
+    /// The client of a connection this provider admits named itself `client` in its
+    /// `initialize` (its product's name, `Claude Code`): a host that keeps the workspace's agents
+    /// answers what that names from then on, and a host that names its own connections has
+    /// nothing to do here.
+    fn introduced(&self, caller: &Caller, client: &str) {
+        let _ = (caller, client);
+    }
+
     /// Who is in the workspace now, as this provider's collaboration knows it:
     /// its people and the agents its roster names. `None` for a provider that
     /// keeps no roster, which reports no presence rather than an empty one.

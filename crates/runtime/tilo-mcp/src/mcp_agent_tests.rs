@@ -1804,10 +1804,15 @@ tilo_test_env::scenario! {
             let server = agent(&host).agent_named("Claude Code");
             let (start, failed) = answer(&server, "tilo_watch", json!({"wait_ms": 50})).await;
             assert!(!failed, "{start}");
-            assert_eq!(
-                start["events"],
-                json!([]),
-                "a watch with no cursor starts now"
+            // A watch with no cursor starts now: the presence it says is who is here now, and
+            // nothing that happened yet is news.
+            assert!(
+                start["events"]
+                    .as_array()
+                    .unwrap_or(&Vec::new())
+                    .iter()
+                    .all(|event| event["kind"] == "presence"),
+                "a watch with no cursor starts now, saying who is here: {start}"
             );
             let cursor = start["cursor"].as_str().unwrap().to_owned();
 
