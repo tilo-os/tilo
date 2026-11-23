@@ -51,6 +51,8 @@ pub use names::PersonNames;
 mod web_ui;
 pub use web_ui::WebUi;
 mod surfaces;
+#[cfg(feature = "agents")]
+pub mod terminal;
 pub use content::{ContentKeeper, WholeDocuments, WorkspaceContent};
 pub(crate) mod device_actions;
 mod follow;

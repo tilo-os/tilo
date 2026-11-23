@@ -110,10 +110,18 @@ impl Providers {
         );
     }
 
-    /// The provider registered under `provider`.
+    /// The provider registered under `provider`, or under the app a record provider names
+    /// (`record:<app id>:<record id>`): a record is the app, live, served by the device holding it.
     #[must_use]
     pub fn get(&self, provider: &str) -> Option<Registered> {
-        self.0.provided.read_recover().get(provider).cloned()
+        let provided = self.0.provided.read_recover();
+        provided
+            .get(provider)
+            .or_else(|| {
+                let (app, _) = tilo_actions::remote::resource_parts(provider)?;
+                provided.get(app)
+            })
+            .cloned()
     }
 
     /// Every registered provider.

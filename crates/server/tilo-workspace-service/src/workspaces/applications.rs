@@ -11,6 +11,20 @@ use super::{CollaborationError, Workspaces, system_time};
 use tilo_agent_session::{AppCatalogue, ConfinedReplica, Seed};
 use tilo_user_identity::DeviceCert;
 
+/// One of an app's actions on one of its records, as the host runs it for a caller.
+pub(crate) struct RecordAction<'a> {
+    /// The app whose record it is, by its id.
+    pub app: &'a str,
+    /// The record, by its id.
+    pub record: &'a str,
+    /// The resource the action is published on.
+    pub resource: &'a str,
+    /// The action's id.
+    pub action: &'a str,
+    /// What it takes.
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+}
+
 /// The app's id, when it has a record `record`: the primary only
 /// for an app that keeps one, a named record for any app.
 fn app_id_for(
@@ -257,5 +271,72 @@ impl Workspaces {
         })?;
         self.settle(&mut governed).await?;
         Ok(true)
+    }
+
+    /// Run one of an app's actions on `record`, its native record, as `invoker`, and publish
+    /// what it changed as the governor's: a record this device holds without running the app is
+    /// still changed by the app's own action ([`ConfinedReplica`]), so its fields and their
+    /// schema stay the app's. Answers what the action answered.
+    ///
+    /// # Errors
+    ///
+    /// The record is not there, the app has no such action or refuses it, or the changes cannot
+    /// be published.
+    pub(crate) async fn apply_app_action(
+        &self,
+        workspace: &str,
+        governor: &DeviceCert,
+        catalogue: &AppCatalogue,
+        invoker: &tilo_actions::ActionInvoker,
+        asked: RecordAction<'_>,
+    ) -> Result<tilo_actions::ActionOutput, CollaborationError> {
+        use tilo_actions::api::ActionAddress;
+        let RecordAction {
+            app,
+            record,
+            resource,
+            action,
+            arguments,
+        } = asked;
+        let record_id = collab_types::document::DocumentId::parse(record)
+            .ok_or_else(|| CollaborationError::new("application record is not a record id"))?;
+        let bytes = self
+            .resource_document(workspace, app, record)
+            .await?
+            .ok_or_else(|| CollaborationError::new("native record is not prepared"))?;
+        let replica = ConfinedReplica::open(
+            catalogue,
+            app,
+            workspace,
+            &tilo_actions::MemberId::person(hex::encode(governor.user_public_key)),
+            &tilo_agent_session::ReplicaActor::Owner,
+            Seed::Existing {
+                record: record_id,
+                changes: vec![bytes],
+            },
+            false,
+        )
+        .map_err(|error| CollaborationError::new(error.to_string()))?;
+        let address = ActionAddress::new(resource, action);
+        let output = replica
+            .invoke_with(Some(invoker), None, &address, &arguments, true)
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+        let changes = match replica
+            .take_mutation()
+            .map_err(|error| CollaborationError::new(error.to_string()))?
+        {
+            Some(collab_types::DocumentMutation::Incremental(changes)) => changes,
+            Some(collab_types::DocumentMutation::Snapshot(_)) | None => {
+                return Err(CollaborationError::new(
+                    "the app recorded no change of the record",
+                ));
+            }
+        };
+        self.author_application(workspace, governor, catalogue, app, record, |document| {
+            tilo_automerge::ApplyIncoming::load_incoming(document, &changes)
+                .map_err(|error| error.to_string())
+        })
+        .await?;
+        Ok(output)
     }
 }
