@@ -1013,6 +1013,16 @@ impl super::Workspaces {
         self.inner.jobs.agents.read_recover().clone()
     }
 
+    /// A key of this device's own for `statement`: its device key signs a digest of the
+    /// statement, and the key is made from that signature, so the device makes the same key every
+    /// time and nothing secret is written down. The key never leaves the device; what it offers
+    /// of it is its public key.
+    pub(crate) fn derived_device_key(&self, statement: &[u8]) -> ed25519_dalek::SigningKey {
+        let digest = blake3::hash(statement);
+        let signature = ed25519_dalek::Signer::sign(&self.inner.host.key, digest.as_bytes());
+        ed25519_dalek::SigningKey::from_bytes(blake3::hash(&signature.to_bytes()).as_bytes())
+    }
+
     /// This device runs `engine` from now on.
     #[cfg(any(test, all(feature = "agents", not(target_arch = "wasm32"))))]
     pub(crate) fn run_agents(&self, engine: Arc<dyn crate::work::AgentEngine>) {

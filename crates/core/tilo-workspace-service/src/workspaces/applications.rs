@@ -162,6 +162,10 @@ impl Workspaces {
             Ok(collaboration)
         })?;
         self.settle(&mut governed).await?;
+        drop(governed);
+        // What this device wrote itself reaches whoever follows the record, as a member's write
+        // does.
+        self.wrote(workspace, app, record);
         Ok(result)
     }
 

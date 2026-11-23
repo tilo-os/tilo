@@ -89,6 +89,10 @@ impl Workspaces {
             return Ok(result);
         }
         self.settle(&mut governed).await?;
+        drop(governed);
+        // What this device wrote itself reaches whoever follows the record, as a member's write
+        // does: an agent the host adds is answered without a restart.
+        self.wrote(workspace, app, name);
         Ok(result)
     }
 }

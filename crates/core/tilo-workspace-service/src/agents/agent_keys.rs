@@ -15,6 +15,14 @@
 //! agent, and the key is made from that signature. A device holding the root makes the same key
 //! every time, so nothing secret is written down, and a device without the root runs no turn of
 //! the agent's: it cannot make the key, and it never signs in its place.
+//!
+//! A device that does not hold the person's root runs the agent only where the person let it: a
+//! server that keeps the workspace offers a key of its own for the agent, made from its own
+//! device key the same way ([`super::offered_keys`]), and writes the offer into the agent's entry
+//! of the workspace's agents record. The person approves it from a device that holds their root
+//! (`workspace/agents#approve`), which certifies that key for that one agent in that one
+//! workspace, with the same lifetime and renewal, and writes the certificate beside the offer.
+//! No key leaves the device that made it; only the certificate travels.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -22,11 +30,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use ed25519_dalek::SigningKey;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt, InvocationState, InvokeRequest, Pending,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    InvocationState, InvokeRequest, Pending,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{AgentScope, DeviceCert};
+use tilo_workspace_agent::Agent;
 
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_workspace::devices;
@@ -71,6 +81,45 @@ pub trait AgentKeys: Send + Sync {
     /// Keep `cert`, a key the person's root certified on this device for an agent, among their
     /// keys where [`Self::keep_in`] named a record, once it does. Nothing by default.
     fn keep_key(&self, _cert: &DeviceCert) {}
+
+    /// The public key `agent` signs with in `workspace`, as its entry in the workspace's agents
+    /// record stands: one made from its person's root here, or, where this device holds no such
+    /// root, the key this device offered for it once its person certified it.
+    ///
+    /// # Errors
+    /// As [`Self::grant`], and where the person has not let this device run the agent.
+    fn grant_for(&self, workspace: WorkspaceId, agent: &Agent) -> Result<[u8; 32], String> {
+        let root = tilo_action_policy::PersonId::parse(&agent.acts_for)
+            .ok()
+            .and_then(|person| person.root())
+            .ok_or("the agent belongs to no person")?;
+        self.grant(workspace, &agent.id.0, &agent.name, root)
+    }
+
+    /// Certify `key`, which another device offered to sign as `agent` (listed as `name`) in
+    /// `workspace` with, by the root of `person` this device holds: an agent's grant reaching
+    /// that workspace and that agent alone.
+    ///
+    /// # Errors
+    /// This device does not hold the root of `person`, the person revoked the key, or the root
+    /// did not certify it.
+    fn certify(
+        &self,
+        workspace: WorkspaceId,
+        agent: &str,
+        name: &str,
+        person: [u8; 32],
+        key: [u8; 32],
+    ) -> Result<DeviceCert, String> {
+        let _ = (workspace, agent, name, person, key);
+        Err("this device does not hold the agent's person's root".to_owned())
+    }
+
+    /// The key this device offers to sign as `agent` of `workspace` with, where it offers one.
+    fn offered(&self, workspace: WorkspaceId, agent: &str) -> Option<[u8; 32]> {
+        let _ = (workspace, agent);
+        None
+    }
 
     /// Sign `shortcut` as saved in `workspace` by `agent`, with the agent key `key`, a key
     /// [`Self::grant`] gave: what the agent saves acts as the agent.
@@ -129,8 +178,8 @@ impl crate::workspaces::Workspaces {
             })
             .ok_or("the workspace keeps no such agent")?;
         let person = tilo_action_policy::PersonId::parse(&kept.acts_for)
-            .ok()
-            .and_then(|person| person.root());
+            .map_err(|error| format!("the agent acts for no person ({error})"))?
+            .root();
         if !kept.is_active() || person != Some(*root) {
             return Err("the agent does not act for that person here".to_owned());
         }
@@ -146,9 +195,9 @@ impl crate::workspaces::Workspaces {
 const KEY_DOMAIN: &[u8] = b"tilo-agent-device-key-v1\0";
 
 /// How long a certified grant lasts before the device certifies it again.
-const LIFETIME_NS: u64 = 30 * DAY_NS;
+pub(crate) const LIFETIME_NS: u64 = 30 * DAY_NS;
 /// How much of a grant may be left when the device certifies it again.
-const RENEW_WITHIN_NS: u64 = 7 * DAY_NS;
+pub(crate) const RENEW_WITHIN_NS: u64 = 7 * DAY_NS;
 const DAY_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 
 /// The agents' keys a device makes from the roots its identity store holds, certified in the
@@ -323,6 +372,45 @@ impl AgentKeys for FleetAgentKeys {
 
     fn keep_key(&self, cert: &DeviceCert) {
         self.keep(cert);
+    }
+
+    fn certify(
+        &self,
+        workspace: WorkspaceId,
+        agent: &str,
+        name: &str,
+        person: [u8; 32],
+        key: [u8; 32],
+    ) -> Result<DeviceCert, String> {
+        let identity = hex::encode(person);
+        let fleet = self
+            .fleets
+            .load(&identity)
+            .map_err(|error| format!("the person's devices could not be read here: {error}"))?;
+        if fleet.is_revoked(&key) {
+            return Err("the agent's person revoked that key".to_owned());
+        }
+        let now = tilo_clock::unix_now_ns();
+        let cert = self
+            .fleets
+            .certify_agent_grant(
+                &identity,
+                key,
+                AgentScope::agent_in(*workspace.as_uuid().as_bytes(), agent),
+                name,
+                now,
+                now.saturating_add(LIFETIME_NS),
+            )
+            .map_err(|error| {
+                format!(
+                    "this device cannot certify the key with the person's root ({error}): approve \
+                     it on a device of theirs that holds the root"
+                )
+            })?;
+        // The key is one of the person's keys like every other: listed with them, and revoked
+        // as one is.
+        self.keep(&cert);
+        Ok(cert)
     }
 }
 
@@ -502,7 +590,6 @@ impl<P: ActionProvider> ActionProvider for Signed<P> {
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         self.provider.cancel(caller, id)
     }
-
 
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         self.provider.content_puts()

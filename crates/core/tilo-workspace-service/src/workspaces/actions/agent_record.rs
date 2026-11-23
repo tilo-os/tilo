@@ -4,7 +4,9 @@
 //! The record names who works in the workspace, who keeps each agent, and what each may spend: it
 //! is the agent's admission, so every writer reaches it one way, over the daemon's dispatch
 //! (`tilo-actions/1`) like any other call: make an agent ([`WORKSPACE_AGENT_CREATE`]), change one
-//! ([`WORKSPACE_AGENT_UPDATE`]), retire one ([`WORKSPACE_AGENT_DELETE`]). Each is the record's own
+//! ([`WORKSPACE_AGENT_UPDATE`]), retire one ([`WORKSPACE_AGENT_DELETE`]), and let a device
+//! besides its person's own run one, or stop it ([`WORKSPACE_AGENT_APPROVE`],
+//! [`WORKSPACE_AGENT_REVOKE`]). Each is the record's own
 //! action, admitted by the workspace's ordinary grants for whoever acts (a person, or an agent
 //! for its person) on the record's node, applied as them, and written as this device's member
 //! write, signed, sealed and published as any member's write is.
@@ -12,19 +14,20 @@
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{Acting, Answer, MemberAccess, TreePath};
 use tilo_actions::remote::{
-    ActionCallError, Caller, CatalogueRow, InvokeArgument, InvokeRequest, WORKSPACE_AGENT_CREATE,
-    WORKSPACE_AGENT_DELETE, WORKSPACE_AGENT_UPDATE, workspace_governance_operation,
+    ActionCallError, Caller, CatalogueRow, InvokeArgument, InvokeRequest, WORKSPACE_AGENT_APPROVE,
+    WORKSPACE_AGENT_CREATE, WORKSPACE_AGENT_DELETE, WORKSPACE_AGENT_REVOKE, WORKSPACE_AGENT_UPDATE,
+    workspace_governance_operation,
 };
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_resource::{ActionDecl, Invoke, Replica, Resource as _};
 use tilo_server_protocol::WorkspaceId;
-use tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents};
+use tilo_workspace_agent::{Agent, KIND, OWNER, RunsOn, WorkspaceAgents};
 
 use super::{Verb, Workspaces};
 
 /// The actions of a workspace's agents, in catalogue order. Each is decided by the record's own
 /// grants ([`Workspaces::admit_agents_action`]), never by a governance check.
-const VERBS: [Verb; 3] = [
+const VERBS: [Verb; 5] = [
     Verb {
         id: WORKSPACE_AGENT_CREATE,
         label: "Add an agent",
@@ -45,6 +48,20 @@ const VERBS: [Verb; 3] = [
         check: "",
         kind: ActionKind::Undoable,
         params: delete_params,
+    },
+    Verb {
+        id: WORKSPACE_AGENT_APPROVE,
+        label: "Let a device run an agent",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: device_params,
+    },
+    Verb {
+        id: WORKSPACE_AGENT_REVOKE,
+        label: "Stop a device running an agent",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: device_params,
     },
 ];
 
@@ -99,6 +116,17 @@ fn delete_params() -> Vec<ActionParam> {
     )]
 }
 
+fn device_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required("agent", ParamType::Text, "The agent, by its id."),
+        ActionParam::optional(
+            "device",
+            ParamType::Text,
+            "The device, by its public key in hex; the one device waiting when omitted.",
+        ),
+    ]
+}
+
 /// Whether `operation` is one of the agents' actions.
 pub(super) fn is_agents_operation(operation: &str) -> bool {
     VERBS.iter().any(|verb| verb.id == operation)
@@ -110,6 +138,8 @@ fn record_action(operation: &str) -> &'static str {
     match operation {
         WORKSPACE_AGENT_CREATE => WorkspaceAgents::CREATE_AGENT.id,
         WORKSPACE_AGENT_DELETE => WorkspaceAgents::RETIRE_AGENT.id,
+        WORKSPACE_AGENT_APPROVE => WorkspaceAgents::APPROVE_AGENT_DEVICE.id,
+        WORKSPACE_AGENT_REVOKE => WorkspaceAgents::REVOKE_AGENT_DEVICE.id,
         _ => WorkspaceAgents::RENAME_AGENT.id,
     }
 }
@@ -256,8 +286,16 @@ impl Workspaces {
                         reason: "a change of an agent names the record's action".to_owned(),
                     });
                 };
-                if action == WorkspaceAgents::CREATE_AGENT.id
-                    || action == WorkspaceAgents::RETIRE_AGENT.id
+                // Where an agent runs is offered by the device itself and let by its person through
+                // approve and revoke, each with what it needs: no change of an agent says it.
+                if [
+                    WorkspaceAgents::CREATE_AGENT.id,
+                    WorkspaceAgents::RETIRE_AGENT.id,
+                    WorkspaceAgents::OFFER_AGENT_KEY.id,
+                    WorkspaceAgents::APPROVE_AGENT_DEVICE.id,
+                    WorkspaceAgents::REVOKE_AGENT_DEVICE.id,
+                ]
+                .contains(&action.as_str())
                 {
                     return Err(ActionCallError::InvalidRequest {
                         reason: format!("{action} is not a change of an agent"),
@@ -298,8 +336,201 @@ impl Workspaces {
                 self.remove_agent_triggers(workspace, acting, &agent).await;
                 Ok(Value::Null)
             }
+            WORKSPACE_AGENT_APPROVE => {
+                self.approve_agent_device(workspace_id, acting, &arguments)
+                    .await
+            }
+            WORKSPACE_AGENT_REVOKE => {
+                let (agent, runs) = self
+                    .device_of(workspace, acting, &arguments, |_| true)
+                    .await?;
+                let invoke = declared(WorkspaceAgents::REVOKE_AGENT_DEVICE.id)?.with_arguments(
+                    Map::from_iter([
+                        ("agent".to_owned(), Value::String(agent.id.0.clone())),
+                        ("device".to_owned(), Value::String(runs.device.clone())),
+                    ]),
+                );
+                self.act_on_agents(workspace, acting, invoke).await?;
+                Ok(json!({ "agent": agent.id.0, "device": runs.device }))
+            }
             _ => Err(ActionCallError::UnknownAction),
         }
+    }
+
+    /// Let the device `arguments` name (or the one waiting) run the agent it names, as `acting`,
+    /// the agent's own person, asks in person: this device's engine certifies the key that
+    /// device offered with the person's root, for that one agent in `workspace_id`, and the
+    /// certificate is written beside the offer. Answers `{agent, device}`.
+    async fn approve_agent_device(
+        &self,
+        workspace_id: WorkspaceId,
+        acting: &Acting,
+        arguments: &Map<String, Value>,
+    ) -> Result<Value, ActionCallError> {
+        let workspace = workspace_id.to_string();
+        let (agent, runs) = self
+            .device_of(&workspace, acting, arguments, |runs| {
+                runs.certificate.is_none()
+            })
+            .await?;
+        let refused = |reason: String| ActionCallError::Refused { reason };
+        let root = tilo_action_policy::PersonId::parse(&agent.acts_for)
+            .ok()
+            .and_then(|person| person.root())
+            .ok_or_else(|| refused("the agent acts for no person".to_owned()))?;
+        let key = <[u8; 32] as hex::FromHex>::from_hex(&runs.key)
+            .map_err(|_| refused("the key the device offered is no key".to_owned()))?;
+        let engine = self
+            .agent_keys()
+            .ok_or_else(|| ActionCallError::Unavailable {
+                reason: "this device runs no agents, so it cannot certify a key for one".to_owned(),
+            })?;
+        let cert = engine
+            .certify(workspace_id, &agent.id.0, &agent.name, root, key)
+            .map_err(refused)?;
+        let certificate = hex::encode(postcard::to_stdvec(&cert).map_err(unavailable)?);
+        let invoke =
+            declared(WorkspaceAgents::APPROVE_AGENT_DEVICE.id)?.with_arguments(Map::from_iter([
+                ("agent".to_owned(), Value::String(agent.id.0.clone())),
+                ("device".to_owned(), Value::String(runs.device.clone())),
+                ("certificate".to_owned(), Value::String(certificate)),
+            ]));
+        self.act_on_agents(&workspace, acting, invoke).await?;
+        Ok(json!({ "agent": agent.id.0, "device": runs.device }))
+    }
+
+    /// The agent `arguments` name in `workspace`, and the device it names among those offered to
+    /// run it (or, where it names none, the one device `waiting` picks), once `acting` is the
+    /// agent's own person, in person: only they say where their agent runs.
+    async fn device_of(
+        &self,
+        workspace: &str,
+        acting: &Acting,
+        arguments: &Map<String, Value>,
+        waiting: impl Fn(&RunsOn) -> bool,
+    ) -> Result<(Agent, RunsOn), ActionCallError> {
+        let named = |name: &str| {
+            arguments
+                .get(name)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|named| !named.is_empty())
+        };
+        let refused = |reason: String| ActionCallError::Refused { reason };
+        let id = named("agent").ok_or_else(|| ActionCallError::InvalidRequest {
+            reason: "it names the agent".to_owned(),
+        })?;
+        let stored = self.agents_record(workspace).await?;
+        let record = match stored.as_deref() {
+            Some(bytes) => Replica::<WorkspaceAgents>::load(bytes)
+                .and_then(|record| record.state())
+                .map_err(unavailable)?,
+            None => WorkspaceAgents::default(),
+        };
+        let agent = record
+            .get(&tilo_resource::Id::from_raw(id.to_owned()))
+            .cloned()
+            .ok_or_else(|| refused(format!("there is no agent {id}")))?;
+        let person = |id: &str| {
+            tilo_failure::ignored!(
+                "an id that names no person is not the agent's own person",
+                tilo_action_policy::PersonId::parse(id)
+            )
+            .ok()
+            .and_then(|person| person.root())
+        };
+        let its_own = acting.is_person()
+            && acting.acted_for.is_empty()
+            && acting
+                .person_id()
+                .and_then(person)
+                .is_some_and(|by| Some(by) == person(&agent.acts_for));
+        if !its_own {
+            return Err(refused(format!(
+                "only the person {} acts for says, in person, where it runs",
+                agent.name
+            )));
+        }
+        let runs = match named("device") {
+            Some(device) => {
+                let device = device.to_ascii_lowercase();
+                agent
+                    .runs_on
+                    .iter()
+                    .find(|runs| runs.device == device)
+                    .cloned()
+                    .ok_or_else(|| {
+                        refused(format!("that device did not offer to run {}", agent.name))
+                    })?
+            }
+            None => {
+                let mut candidates = agent.runs_on.iter().filter(|runs| waiting(runs));
+                match (candidates.next(), candidates.next()) {
+                    (Some(runs), None) => runs.clone(),
+                    (None, _) => {
+                        return Err(refused(format!("no device waits for {} here", agent.name)));
+                    }
+                    (Some(_), Some(_)) => {
+                        return Err(ActionCallError::InvalidRequest {
+                            reason: format!(
+                                "several devices wait for {}: name one by its key (device=…)",
+                                agent.name
+                            ),
+                        });
+                    }
+                }
+            }
+        };
+        Ok((agent, runs))
+    }
+
+    /// Offer to run `agent` of `workspace` on this device, signing as it with `key`: this
+    /// device's own write, as its person, which the agent's person lets or not
+    /// ([`WORKSPACE_AGENT_APPROVE`]).
+    ///
+    /// # Errors
+    /// The workspace's grants do not let this device's person change its agents, or the record
+    /// did not take the offer.
+    #[cfg(feature = "agents")]
+    pub(crate) async fn offer_agent_key(
+        &self,
+        workspace: &str,
+        agent: &str,
+        key: [u8; 32],
+    ) -> Result<(), ActionCallError> {
+        let acting = Acting::person(hex::encode(self.signing_device().cert.user_public_key));
+        let device = self.serving_certificate().device_public_key;
+        let invoke =
+            declared(WorkspaceAgents::OFFER_AGENT_KEY.id)?.with_arguments(Map::from_iter([
+                ("agent".to_owned(), Value::String(agent.to_owned())),
+                ("device".to_owned(), Value::String(hex::encode(device))),
+                ("key".to_owned(), Value::String(hex::encode(key))),
+            ]));
+        self.act_on_agents(workspace, &acting, invoke).await
+    }
+
+    /// Certify again the key `device` offered for `agent` of `workspace`, as this device's own
+    /// person, whose agent it is: a certificate is renewed before it runs out, as a grant the
+    /// person's own device makes is.
+    ///
+    /// # Errors
+    /// As [`WORKSPACE_AGENT_APPROVE`].
+    #[cfg(feature = "agents")]
+    pub(crate) async fn renew_agent_device(
+        &self,
+        workspace: &str,
+        agent: &str,
+        device: &str,
+    ) -> Result<(), ActionCallError> {
+        let id = WorkspaceId::parse(workspace).ok_or(ActionCallError::UnknownAction)?;
+        let acting = Acting::person(hex::encode(self.signing_device().cert.user_public_key));
+        let arguments = Map::from_iter([
+            ("agent".to_owned(), Value::String(agent.to_owned())),
+            ("device".to_owned(), Value::String(device.to_owned())),
+        ]);
+        self.approve_agent_device(id, &acting, &arguments)
+            .await
+            .map(drop)
     }
 
     /// Make an agent in `workspace` as `acting` asks: the one place an agent comes into a

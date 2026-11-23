@@ -2196,6 +2196,10 @@ mod agent_turn_tests;
 #[path = "own_agent_tests.rs"]
 mod own_agent_tests;
 
+#[cfg(all(test, feature = "agents"))]
+#[path = "hosted_own_agent_tests.rs"]
+mod hosted_own_agent_tests;
+
 /// The workspaces at `paths` opened, a few at a time: each reads its own files, and one at
 /// a time made a start wait for every workspace's history in turn.
 ///

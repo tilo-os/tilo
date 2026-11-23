@@ -603,6 +603,7 @@ impl WorkspaceAgents {
             }),
             sub_depth: None,
             sub_at_once: None,
+            runs_on: Vec::new(),
         });
         Ok(())
     }

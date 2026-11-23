@@ -741,6 +741,24 @@ pub trait AgentEngine: Send + Sync {
         agent: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>>;
 
+    /// Certify `key`, which another device offered to sign as `agent` (listed as `name`) of
+    /// `workspace` with, by the root of `person` this device holds: what lets that device take
+    /// the agent's turns.
+    ///
+    /// # Errors
+    /// This device holds no such root, or the root did not certify the key.
+    fn certify(
+        &self,
+        workspace: tilo_server_protocol::WorkspaceId,
+        agent: &str,
+        name: &str,
+        person: [u8; 32],
+        key: [u8; 32],
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        let _ = (workspace, agent, name, person, key);
+        Err("this device's agent engine holds no root to certify a key with".to_owned())
+    }
+
     /// The agents whose answer this engine takes, by id with their names, in every workspace
     /// it runs agents of.
     fn answering(&self) -> Vec<(String, String)> {

@@ -41,24 +41,36 @@ use crate::service::local_caller;
 use crate::work::Order;
 
 /// Bea's agent.
-const SCOUT: &str = "scout";
+pub(super) const SCOUT: &str = "scout";
 /// What Bea's agent answers, as its model says it.
-const PLAN_READY: &str = "the plan is ready";
+pub(super) const PLAN_READY: &str = "the plan is ready";
 
-/// The firings Bea's device was asked to start.
+/// The firings a device was asked to start.
 #[derive(Default)]
-struct Started(Mutex<Vec<Firing>>);
+pub(super) struct Started(pub(super) Mutex<Vec<Firing>>);
 
 impl StartRun for Started {
-    fn start(&self, firing: &Firing) -> Result<u64, String> {
+    fn start(
+        &self,
+        firing: &Firing,
+        _: tilo_automation::AutomationInvocationId,
+    ) -> Result<u64, ActionCallError> {
         let mut started = self.0.lock().unwrap();
         started.push(firing.clone());
         Ok(u64::try_from(started.len()).unwrap())
     }
+
+    fn ended(
+        &self,
+        _: &Firing,
+        _: tilo_automation::AutomationInvocationId,
+    ) -> Option<tilo_automation::InvocationReport> {
+        None
+    }
 }
 
 /// A model that answers at once, in words.
-struct Answers;
+pub(super) struct Answers;
 
 impl PlanTurns for Answers {
     fn turn(
@@ -109,11 +121,15 @@ impl AgentKeys for Keys {
     ) -> Result<(), String> {
         Ok(())
     }
+
+    fn made(&self, _: &[u8; 32]) -> Option<(DeviceCert, SigningKey)> {
+        None
+    }
 }
 
 /// `operation` of `workspace`'s agents with `arguments`, asked by `device` over `workspaces`'
 /// dispatch, as every caller asks it.
-async fn ask_agents(
+pub(super) async fn ask_agents(
     workspaces: &Workspaces,
     workspace: &str,
     device: &DeviceCert,
@@ -146,7 +162,7 @@ async fn ask_agents(
 
 /// Chat's write of `id`, a `kind` in `parent`, as the app writes it for the invocation of `by`
 /// that the dispatch delivered to it, through `caller`'s device.
-async fn chat_writes(
+pub(super) async fn chat_writes(
     workspaces: &Workspaces,
     workspace: &str,
     caller: &Caller,
@@ -201,7 +217,7 @@ async fn chat_writes(
 }
 
 /// What a pending answer comes to, on this runtime.
-async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
+pub(super) async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     pending.then(move |value| {
         let _ = sender.send(value);
@@ -213,7 +229,7 @@ async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
 }
 
 /// Rich text whose words are `words`, mentioning `agent`.
-fn mentioning(words: &str, agent: &str) -> Json {
+pub(super) fn mentioning(words: &str, agent: &str) -> Json {
     let named = json!({ "agent": agent }).to_string();
     json!({"blocks": [{"text": words, "marks": [
         {"start": 0, "end": 5, "name": "mention", "value": {"Str": named}}
@@ -221,7 +237,7 @@ fn mentioning(words: &str, agent: &str) -> Json {
 }
 
 /// The text a JSON argument `name` of `request` holds.
-fn argument(request: &InvokeRequest, name: &str) -> Json {
+pub(super) fn argument(request: &InvokeRequest, name: &str) -> Json {
     match &request.argument {
         InvokeArgument::Json(arguments) => arguments.get(name).cloned().unwrap_or(Json::Null),
         other => panic!("the call carries JSON arguments: {other:?}"),
@@ -409,13 +425,19 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     let event = serde_json::from_value(firing.inputs[tilo_automation::EVENT_INPUT].clone())
         .expect("the firing carries the change");
     let taken = agents
-        .triggered(&workspace, SCOUT, event, firing.saver.clone())
+        .triggered(
+            &workspace,
+            SCOUT,
+            triggered::Where::of(&event).expect("the change is a message"),
+            event,
+            firing.saver.clone(),
+            (tilo_actions::InvocationId::new(), Arc::default()),
+        )
         .await
         .expect("the turn starts");
-    assert_eq!(
-        taken,
-        crate::work::Started::Taken,
-        "Bea's device takes her agent's turn"
+    assert!(
+        matches!(taken, crate::work::Started::Taken(_)),
+        "Bea's device takes her agent's turn: {taken:?}"
     );
 
     // The reply arrives through Chat's `send` in that conversation, to her message, as Scout

@@ -177,6 +177,28 @@ impl Bound {
     }
 }
 
+/// The most devices besides its person's own that one agent may be offered to run on.
+pub const MAX_RUNS_ON: usize = 16;
+
+/// The most a certificate of a device's key for an agent holds, in hex characters.
+const MAX_CERTIFICATE: usize = 4096;
+
+/// A device that is not one of its person's own and offered to run an agent: the key it would
+/// sign as the agent with, and, once the agent's person let it, the certificate their root
+/// issued for that key. Only the device makes the key, from its own device key; the person's
+/// root certifies it for this one agent in this one workspace, and nothing else signs as the
+/// agent there.
+#[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RunsOn {
+    /// The device, by its public key in hex.
+    pub device: String,
+    /// The key it offered for the agent, in hex.
+    pub key: String,
+    /// The certificate the agent's person's root issued for that key, in hex; `None` while
+    /// the person has not let the device run the agent.
+    pub certificate: Option<String>,
+}
+
 /// Whether an agent works here or was retired: retiring keeps its name and its
 /// conversations readable and takes it out of the roster.
 #[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -231,6 +253,9 @@ pub struct Agent {
     /// How many sub-agents under it may be at work at once. The workspace's to say; `None`
     /// follows [`sub::DEFAULT_AT_ONCE`].
     pub sub_at_once: Option<u32>,
+    /// The devices besides its person's own that offered to run it, each with the key it would
+    /// sign as the agent with and, once its person let it, that key's certificate.
+    pub runs_on: Vec<RunsOn>,
 }
 
 impl Identified for Agent {
@@ -414,7 +439,103 @@ impl WorkspaceAgents {
             sub: None,
             sub_depth: None,
             sub_at_once: None,
+            runs_on: Vec::new(),
         });
+        Ok(())
+    }
+
+    /// Offer to run an agent on a device besides its person's own: the key that device would
+    /// sign as the agent with, which the agent's person lets it use or not. Offered again under
+    /// the same key, nothing changes; a new key takes the old one's place, not yet let.
+    #[action(item = agents)]
+    pub fn offer_agent_key(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The agent")] agent: Id,
+        #[param("The device that offers, by its public key in hex")] device: String,
+        #[param("The key it would sign as the agent with, in hex")] key: String,
+    ) -> Result<(), Refusal> {
+        self.not_by_sub_agent(cx)?;
+        in_person(cx)?;
+        let (device, key) = (hex_key(&device)?, hex_key(&key)?);
+        let found = self
+            .agents
+            .find_mut(&agent)
+            .ok_or_else(|| no_such(&agent))?;
+        if found.is_retired() {
+            return Err(Refusal::new("that agent is retired"));
+        }
+        if found.is_sub() {
+            return Err(Refusal::new(
+                "a sub-agent runs where the agent that started it runs",
+            ));
+        }
+        let offered = found.runs_on.len();
+        match found.runs_on.iter_mut().find(|runs| runs.device == device) {
+            Some(runs) if runs.key == key => {}
+            Some(runs) => {
+                runs.key = key;
+                runs.certificate = None;
+            }
+            None if offered >= MAX_RUNS_ON => {
+                return Err(Refusal::new(format!(
+                    "an agent is offered to at most {MAX_RUNS_ON} devices"
+                )));
+            }
+            None => found.runs_on.push(RunsOn {
+                device,
+                key,
+                certificate: None,
+            }),
+        }
+        Ok(())
+    }
+
+    /// Let a device run an agent with the key it offered: `certificate` is the grant the agent's
+    /// person's root issued for that key. Only that person lets a device run their agent.
+    #[action(item = agents)]
+    pub fn approve_agent_device(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The agent")] agent: Id,
+        #[param("The device that offered, by its public key in hex")] device: String,
+        #[param("The certificate the agent's person's root issued for the key, in hex")]
+        certificate: String,
+    ) -> Result<(), Refusal> {
+        let found = self.its_persons_own(cx, &agent)?;
+        let device = hex_key(&device)?;
+        let certificate = certificate.trim().to_ascii_lowercase();
+        if certificate.is_empty()
+            || certificate.len() > MAX_CERTIFICATE
+            || !certificate.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(Refusal::new("a key's certificate is written in hex"));
+        }
+        let runs = found
+            .runs_on
+            .iter_mut()
+            .find(|runs| runs.device == device)
+            .ok_or_else(|| Refusal::new("that device did not offer to run the agent"))?;
+        runs.certificate = Some(certificate);
+        Ok(())
+    }
+
+    /// Stop a device running an agent: what it offered goes, and with it the certificate its
+    /// person issued. Only that person takes it back; the device may offer again.
+    #[action(item = agents)]
+    pub fn revoke_agent_device(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The agent")] agent: Id,
+        #[param("The device, by its public key in hex")] device: String,
+    ) -> Result<(), Refusal> {
+        let found = self.its_persons_own(cx, &agent)?;
+        let device = hex_key(&device)?;
+        let before = found.runs_on.len();
+        found.runs_on.retain(|runs| runs.device != device);
+        if found.runs_on.len() == before {
+            return Err(Refusal::new("that device does not run the agent"));
+        }
         Ok(())
     }
 
@@ -760,6 +881,20 @@ impl WorkspaceAgents {
 }
 
 impl WorkspaceAgents {
+    /// `agent`, changed by its own person in person: only they say where it runs.
+    fn its_persons_own(&mut self, cx: &ActionCx, agent: &Id) -> Result<&mut Agent, Refusal> {
+        self.not_by_sub_agent(cx)?;
+        in_person(cx)?;
+        let by = person(&author(cx)?)?;
+        let found = self.agents.find_mut(agent).ok_or_else(|| no_such(agent))?;
+        if person(&found.acts_for)? != by {
+            return Err(Refusal::new(
+                "only the person an agent acts for says where it runs",
+            ));
+        }
+        Ok(found)
+    }
+
     /// How many agents here people made: every agent that is no sub-agent, retired or not.
     fn count_made_by_people(&self) -> usize {
         self.agents
@@ -795,6 +930,22 @@ impl WorkspaceAgents {
             checked_limit(agent.spend_limit_micros)?;
             if let Some(spent) = &agent.spent {
                 checked_day(&spent.day)?;
+            }
+            if agent.runs_on.len() > MAX_RUNS_ON {
+                return Err(Refusal::new(format!(
+                    "an agent is offered to at most {MAX_RUNS_ON} devices"
+                )));
+            }
+            for runs in &agent.runs_on {
+                hex_key(&runs.device)?;
+                hex_key(&runs.key)?;
+                if runs
+                    .certificate
+                    .as_ref()
+                    .is_some_and(|certificate| certificate.len() > MAX_CERTIFICATE)
+                {
+                    return Err(Refusal::new("a key's certificate is too long"));
+                }
             }
             if agent.bound.len() > MAX_BOUND {
                 return Err(Refusal::new(format!(
@@ -928,6 +1079,15 @@ fn person(id: &str) -> Result<String, Refusal> {
     tilo_action_policy::PersonId::parse(id)
         .map(|id| id.as_str().to_owned())
         .map_err(|_| Refusal::new("an agent is kept by a member"))
+}
+
+/// `text` as a public key in lowercase hex: 32 bytes.
+fn hex_key(text: &str) -> Result<String, Refusal> {
+    let key = text.trim().to_ascii_lowercase();
+    if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(Refusal::new("a key is 32 bytes in hex"));
+    }
+    Ok(key)
 }
 
 fn clean_name(name: &NonBlank) -> Result<String, Refusal> {
