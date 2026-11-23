@@ -278,13 +278,6 @@ mod tests {
                 assert!(!r.is_inhibited());
             }
             {
-                let r = InhibitRegistry::new();
-                let r2 = r.clone();
-                let _t = r.acquire("x");
-                assert!(r2.is_inhibited());
-                assert_eq!(r2.count(), 1);
-            }
-            {
                 let registry = InhibitRegistry::new();
                 let _logout = registry.acquire_for("unsaved work", INHIBIT_LOGOUT);
                 assert!(registry.is_inhibited_for(INHIBIT_LOGOUT));

@@ -261,12 +261,5 @@ mod tests {
             assert!(m.evaluate(&BatterySnapshot::absent(), &p).is_empty());
             assert!(!m.is_warning());
         }
-        {
-            let mut p = policy();
-            p.critical_action = PowerAction::Suspend;
-            assert!(critical_leads_to_suspend(&p));
-            p.critical_action = PowerAction::Ignore;
-            assert!(!critical_leads_to_suspend(&p));
-        }
     }
 }

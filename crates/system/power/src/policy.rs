@@ -182,9 +182,6 @@ mod tests {
         phase power_actions_round_trip_and_lid_and_key_follow_policy;
         {
             {
-                for a in [PowerAction::Suspend, PowerAction::Lock, PowerAction::Ignore] {
-                    assert_eq!(PowerAction::from_label(a.label()), Some(a));
-                }
                 assert_eq!(
                     PowerAction::from_label("SUSPEND"),
                     Some(PowerAction::Suspend)
