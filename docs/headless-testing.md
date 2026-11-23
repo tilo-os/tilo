@@ -479,6 +479,8 @@ Dates are written relative to the day of the run (`${TODAY}`, `${TODAY+3}`, `${M
 
 Each situation runs the app once, headless, in a fresh profile (its own HOME, XDG directories and runtime directory, no display, no session bus), and takes four pictures: dark and light, wide (1280x800) and compact (420x800). An app without a plan is photographed as it opens.
 
+A tilolang package of the collection is photographed the same way, through the same plans and the same `--headless-drive` spec: its plan names one of the app's own scenarios (`scenario = "a week of notes"`), where a native app's plan reaches its situation through actions. `tools/screenshots/build.sh` compiles each package into the payload the one tilolang runtime binary reads, and the runner starts that binary with the payload named in `TILO_APP_MODULE`.
+
 Each app's directory (`<out>/<app>/`, pictures named `<situation>-<theme>-<size>.png`) holds `manifest.json` (its situations, titles and pictures) and `resources.json` (what its plan can invoke); `summary.json` at the top lists every situation that failed, with the end of its log, and `<situation>.log` beside the pictures has the whole log. With a build of the apps at hand (`tools/screenshots/build.sh DIR` makes one), the runner takes one app or all, on the software renderer; on a laptop take the GPU lock:
 
 ```bash

@@ -1,0 +1,23 @@
+# Tube: screens built from the client's own scenarios (tools/screenshots/run.py).
+# The channels, videos and playlists are the fixtures the client stages in place
+# of YouTube's answers, so no capture waits on the network.
+
+[[situation]]
+name = "subscriptions-feed"
+title = "The subscriptions feed: five channels and their newest videos"
+scenario = "a subscriptions feed"
+
+[[situation]]
+name = "search-results"
+title = "What a search for phone reviews answers with"
+scenario = "search results"
+
+[[situation]]
+name = "watch-history"
+title = "A video watched before, with where the person left off"
+scenario = "a watch history"
+
+[[situation]]
+name = "offline"
+title = "YouTube cannot be reached: the last feed under the notice"
+scenario = "YouTube cannot be reached"

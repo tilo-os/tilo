@@ -1,0 +1,25 @@
+# Notes: a notebook in use, built from the notebook's own scenarios
+# (tools/screenshots/run.py). The window shows the open note beside the tree,
+# and the open note's page is also taken maximised on a large display, where
+# its type grows.
+sizes = ["large"]
+
+[[situation]]
+name = "a-week-of-notes"
+title = "A week of notes: the plan pinned, its pages and the open note beside the tree"
+scenario = "a week of notes"
+
+[[situation]]
+name = "a-note-with-headings"
+title = "A note written in sections, open as its own page"
+scenario = "a note with headings"
+
+[[situation]]
+name = "the-outline"
+title = "The notebook's tree, and the open note's headings under it"
+scenario = "the notebook and a note's outline"
+
+[[situation]]
+name = "a-page-from-another-service"
+title = "A page brought over from another service, saying whose words it is"
+scenario = "a page from another service"
