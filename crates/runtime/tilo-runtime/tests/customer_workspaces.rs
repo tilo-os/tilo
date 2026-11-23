@@ -257,6 +257,36 @@ fn many_customer_workspaces_are_made_with_one_call_each() {
     });
 }
 
+/// A branch of a customer's workspace is a workspace of the person's own: made under its own
+/// id and labels, listed beside its source, and served at once.
+#[test]
+fn a_branch_of_a_customers_workspace_is_the_persons_own() {
+    host::run(|host| async move {
+        let key = host.key("Visa backend");
+        let source = made(&key, "Applicant 0", json!({"customer_id": "cus_0"})).await;
+        let (status, branched) = key
+            .post(
+                &account("workspaces", "branch"),
+                &json!({"workspace": source,
+                        "name": "Applicant 0: interview",
+                        "labels": {"customer_id": "cus_0-branch"}}),
+            )
+            .await;
+        assert_eq!(status, 200, "the account branches it: {branched}");
+        let branch = branched["result"]["workspace"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a branch answers the workspace it made: {branched}"))
+            .to_owned();
+        assert_ne!(branch, source);
+        assert_eq!(
+            listed(&key, json!({"customer_id": "cus_0-branch"})).await,
+            [branch.clone()]
+        );
+        let (status, read) = key.get(&format!("/v1/workspaces/{branch}/resources")).await;
+        assert_eq!(status, 200, "the branch is served at once: {read}");
+    });
+}
+
 /// A few files go in, each by the address of its own bytes, and read back through the
 /// workspace: the byte routes `tilo files put` sends a folder through.
 #[test]

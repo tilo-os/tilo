@@ -21,7 +21,9 @@ use super::workspaces::{MemberListGrants, Opening, ServiceWorkspaces, block_on_o
 use super::{host_runs, take_work};
 use crate::personal_devices::PersonalDevices;
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, host, profile};
+use collab_types::workspace_grant::WorkspaceGrant;
 use ed25519_dalek::SigningKey;
+use serde_json::{Map, Value, json};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -31,15 +33,24 @@ use std::{
 use tilo_actions::remote::invocation_record::Invocations;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeRequest, Pending, device_agent_id,
+    InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
+    RemoteActionTarget, device_agent_id,
 };
 use tilo_api::daemon::DaemonPlace;
+use tilo_api::grant_key::GrantKey;
+use tilo_api::server::ServerError;
+use tilo_api::session::AccountAnswer;
 use tilo_desktop_model::WorkspaceId;
 use tilo_device_identity::login::Device;
 use tilo_identity::broker::{IdentityBrokerHandle, WorkspaceMembership};
 use tilo_lock::MutexRecover as _;
+use tilo_server_protocol::workspaces::{
+    BRANCH_OWN_WORKSPACE, CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE, LIST_KEYS,
+    REVOKE_KEY, RUN_UNATTENDED, WorkspaceLabels, WorkspaceListing,
+};
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::agents::agent_keys::{AgentSigner, Signed, this_device};
+use tilo_workspace_service::app_serving::AppActionServer as _;
 use tilo_workspace_service::apps::{
     collab_broker::{AppActionBroker, BrokerHandle, FanoutState},
     collab_core::{BrokerChannels, BrokerSealChecks},
@@ -49,6 +60,7 @@ use tilo_workspace_service::apps::{
 };
 use tilo_workspace_service::service::ServiceConfig;
 use tilo_workspace_service::workspaces::Refusal;
+use uuid::Uuid;
 
 /// The name the person's devices list a local MCP client under: one agent, whichever client
 /// connects.
@@ -520,11 +532,24 @@ impl Daemon {
         let (kept, kept_protocols) = kept.map_or((None, Vec::new()), |(kept, protocols)| {
             (Some(kept), protocols)
         });
+        // This computer keeps the workspaces its person makes on it as their own, labelled for
+        // their programs and listed by the account's keys. A computer that logged in reaches
+        // those through the server that keeps them; one that founded its person here keeps them
+        // itself.
+        let own = identity.login.is_none();
+        if own {
+            workspaces.offer_workspaces_here(&identity.cert.device_label);
+        }
         if let Some(founded) = founded {
             tilo_rt::app()
                 .handle()
                 .block_on(workspaces.found(founded, FOUNDED_NAME))
                 .map_err(io::Error::other)?;
+        }
+        if own {
+            tilo_rt::app()
+                .handle()
+                .block_on(workspaces.claim_workspaces_here(&identity.cert.user_public_key));
         }
         // What the person granted apps in a workspace, as the service that holds its governance
         // answers: what every launch here hands the app it starts.
@@ -1200,7 +1225,13 @@ impl tilo_api::session::Here for Daemon {
             .workspaces
             .workspaces()
             .into_iter()
-            .map(|workspace| tilo_api::session::held(workspace.id().to_string(), workspace.name))
+            .map(|workspace| {
+                let id = workspace.id().to_string();
+                let mut workspace = tilo_api::session::held(id.clone(), workspace.name);
+                workspace.labels = self.workspaces.labels_of(&id);
+                workspace.unattended = self.workspaces.runs_unattended(&id);
+                workspace
+            })
             .collect();
         // The one this computer enters through first: what a command that names none acts in.
         kept.sort_by_key(|workspace| workspace.id != self.workspace);
@@ -1295,6 +1326,380 @@ impl tilo_api::session::Here for Daemon {
     fn invocations(&self) -> Option<Arc<Invocations>> {
         Some(Arc::clone(&self.invocations))
     }
+
+    fn account_here(&self) -> Option<&dyn tilo_api::session::AccountHere> {
+        // A computer that logged in reaches the account through the server that keeps its
+        // workspaces; one that founded its person here keeps them itself, and answers for them.
+        if self.login.is_some() {
+            return None;
+        }
+        Some(self as &dyn tilo_api::session::AccountHere)
+    }
+}
+
+/// What a device's own daemon answers of the person's account: the workspaces it keeps for them
+/// and the keys they make there, without a server.
+///
+/// Every call is the key's own: the key's certificate names its root and its reach, the device
+/// answers only for its own person's root, and a workspace it holds for another host is not the
+/// key's to change.
+impl tilo_api::session::AccountHere for Daemon {
+    fn workspaces(&self, key: &GrantKey) -> Vec<tilo_api::session::Workspace> {
+        if !self.knows(key) {
+            return Vec::new();
+        }
+        let scope = key.scope();
+        tilo_api::session::Here::workspaces(self)
+            .into_iter()
+            .filter(|workspace| scope.reaches(&workspace.id))
+            .collect()
+    }
+
+    fn create(
+        &self,
+        key: GrantKey,
+        name: String,
+        labels: WorkspaceLabels,
+        id: Option<Uuid>,
+    ) -> AccountAnswer<Result<tilo_api::session::Workspace, ServerError>> {
+        let workspaces = Arc::clone(&self.workspaces);
+        let device = self.cert.clone();
+        Box::pin(async move {
+            known(&device, &key)?;
+            let id = id.unwrap_or_else(Uuid::new_v4);
+            let mut arguments = Map::new();
+            arguments.insert("name".into(), json!(name));
+            arguments.insert("workspace".into(), json!(id.to_string()));
+            if !labels.is_empty() {
+                arguments.insert("labels".into(), json!(labels));
+            }
+            let created: CreatedWorkspace = answer(
+                workspaces
+                    .service()
+                    .ask_own(key.cert(), CREATE_OWN_WORKSPACE, arguments)
+                    .await,
+            )?;
+            enter_here(&workspaces, &created.workspace.workspace, &device).await?;
+            Ok(listed_workspace(created.workspace, &workspaces))
+        })
+    }
+
+    fn branch(
+        &self,
+        key: GrantKey,
+        source: String,
+        name: String,
+        labels: WorkspaceLabels,
+        id: Option<Uuid>,
+    ) -> AccountAnswer<Result<tilo_api::session::Workspace, ServerError>> {
+        let workspaces = Arc::clone(&self.workspaces);
+        let device = self.cert.clone();
+        Box::pin(async move {
+            known(&device, &key)?;
+            // A workspace this device keeps for its person is theirs, however it was made: a branch
+            // is only ever of one of theirs.
+            let _ = workspaces
+                .copies()
+                .claim_own(&device.user_public_key, &source)
+                .await;
+            let branch = id.unwrap_or_else(Uuid::new_v4).to_string();
+            let mut arguments = Map::new();
+            arguments.insert("workspace".into(), json!(source));
+            arguments.insert("name".into(), json!(name));
+            arguments.insert("branch".into(), json!(branch));
+            if !labels.is_empty() {
+                arguments.insert("labels".into(), json!(labels));
+            }
+            let made: CreatedWorkspace = answer(
+                workspaces
+                    .service()
+                    .ask_own(key.cert(), BRANCH_OWN_WORKSPACE, arguments)
+                    .await,
+            )?;
+            enter_here(&workspaces, &made.workspace.workspace, &device).await?;
+            Ok(listed_workspace(made.workspace, &workspaces))
+        })
+    }
+
+    fn rename(
+        &self,
+        key: GrantKey,
+        workspace: String,
+        name: String,
+    ) -> AccountAnswer<Result<tilo_api::session::Workspace, ServerError>> {
+        let workspaces = Arc::clone(&self.workspaces);
+        let device = self.cert.clone();
+        Box::pin(async move {
+            known(&device, &key)?;
+            let id = WorkspaceId::parse(&workspace).ok_or(ServerError::NotFound)?;
+            // Only a workspace this device keeps takes a name here; one another host keeps is named
+            // there.
+            if workspaces.copies().governed_copy(id).await.is_none() {
+                return Err(ServerError::Refused(
+                    "this device does not keep that workspace".into(),
+                ));
+            }
+            let summary = workspaces
+                .copies()
+                .rename(&workspace, &name)
+                .await
+                .map_err(unavailable)?;
+            Ok(described_workspace(
+                summary.workspace,
+                summary.name,
+                &workspaces,
+            ))
+        })
+    }
+
+    fn delete(&self, key: GrantKey, workspace: String) -> AccountAnswer<Result<(), ServerError>> {
+        let workspaces = Arc::clone(&self.workspaces);
+        let device = self.cert.clone();
+        Box::pin(async move {
+            known(&device, &key)?;
+            let _ = workspaces
+                .copies()
+                .claim_own(&device.user_public_key, &workspace)
+                .await;
+            // A workspace the device does not keep for its person is not the key's to delete, and one
+            // it deleted before is no such workspace either.
+            if !workspaces
+                .copies()
+                .owns(&device.user_public_key, &workspace)
+            {
+                return Err(ServerError::NotFound);
+            }
+            let mut arguments = Map::new();
+            arguments.insert("workspace".into(), json!(workspace));
+            workspaces
+                .service()
+                .ask_own(key.cert(), DELETE_WORKSPACE, arguments)
+                .await
+                .map(drop)
+                .map_err(unavailable)
+        })
+    }
+
+    fn unattended(
+        &self,
+        key: GrantKey,
+        workspace: String,
+        on: bool,
+    ) -> AccountAnswer<Result<bool, ServerError>> {
+        let workspaces = Arc::clone(&self.workspaces);
+        let device = self.cert.clone();
+        Box::pin(async move {
+            known(&device, &key)?;
+            let _ = workspaces
+                .copies()
+                .claim_own(&device.user_public_key, &workspace)
+                .await;
+            let mut arguments = Map::new();
+            arguments.insert("on".into(), json!(on));
+            let answered =
+                workspace_verb(&workspaces, &workspace, &key, RUN_UNATTENDED, arguments).await?;
+            Ok(answered
+                .get("unattended")
+                .and_then(Value::as_bool)
+                .unwrap_or(on))
+        })
+    }
+
+    fn keys(&self, key: GrantKey) -> AccountAnswer<Result<Vec<WorkspaceGrant>, ServerError>> {
+        let workspaces = Arc::clone(&self.workspaces);
+        let device = self.cert.clone();
+        Box::pin(async move {
+            known(&device, &key)?;
+            let mut grants = Vec::new();
+            for (workspace, _, _) in workspaces.held() {
+                let answered = workspace_verb(
+                    &workspaces,
+                    &workspace.to_string(),
+                    &key,
+                    LIST_KEYS,
+                    Map::new(),
+                )
+                .await;
+                match answered {
+                    Ok(answered) => {
+                        if let Ok(listed) = serde_json::from_value::<ListedGrants>(answered) {
+                            grants.extend(listed.grants);
+                        }
+                    }
+                    Err(error) => {
+                        tracing::info!(%error, workspace = %workspace, "a workspace's keys were not read");
+                    }
+                }
+            }
+            Ok(grants)
+        })
+    }
+
+    fn revoke_key(
+        &self,
+        key: GrantKey,
+        workspace: String,
+        grant: String,
+    ) -> AccountAnswer<Result<bool, ServerError>> {
+        let workspaces = Arc::clone(&self.workspaces);
+        let device = self.cert.clone();
+        Box::pin(async move {
+            known(&device, &key)?;
+            let mut arguments = Map::new();
+            arguments.insert("grant".into(), json!(grant));
+            match workspace_verb(&workspaces, &workspace, &key, REVOKE_KEY, arguments).await {
+                Ok(_) => Ok(true),
+                // A workspace that holds no such grant, or already refuses the key as revoked,
+                // has nothing left to record.
+                Err(ServerError::NotFound) => Ok(false),
+                Err(error) => Err(error),
+            }
+        })
+    }
+}
+
+/// Whether the device answers for `key`: only its own person's root certifies a key it serves.
+fn known(device: &DeviceCert, key: &GrantKey) -> Result<(), ServerError> {
+    if key.cert().user_public_key == device.user_public_key {
+        Ok(())
+    } else {
+        Err(ServerError::Refused(
+            "this device serves its own person's keys alone".into(),
+        ))
+    }
+}
+
+impl Daemon {
+    /// Whether `key` is one of the person's own: the same root as this device's.
+    fn knows(&self, key: &GrantKey) -> bool {
+        known(&self.cert, key).is_ok()
+    }
+}
+
+/// Enter `workspace` as this device's, as `device`: a workspace the device made for its person
+/// is one it keeps, so its views and calls reach it at once.
+async fn enter_here(
+    workspaces: &ServiceWorkspaces,
+    workspace: &str,
+    device: &DeviceCert,
+) -> Result<(), ServerError> {
+    workspaces
+        .copies()
+        .enter(workspace, device)
+        .await
+        .map(drop)
+        .map_err(unavailable)
+}
+
+/// A workspace the account created, as its caller reads it back.
+fn listed_workspace(
+    listing: WorkspaceListing,
+    workspaces: &ServiceWorkspaces,
+) -> tilo_api::session::Workspace {
+    let mut workspace = described_workspace(listing.workspace, listing.name, workspaces);
+    workspace.labels = listing.labels;
+    workspace.unattended = listing.unattended;
+    workspace
+}
+
+/// The workspace `id` called `name`, with what this device keeps of it.
+fn described_workspace(
+    id: String,
+    name: String,
+    workspaces: &ServiceWorkspaces,
+) -> tilo_api::session::Workspace {
+    let mut workspace = tilo_api::session::held(id.clone(), name);
+    workspace.labels = workspaces.labels_of(&id);
+    workspace.unattended = workspaces.runs_unattended(&id);
+    workspace
+}
+
+/// Run the workspace's own verb `action` with `arguments` as `key`, in process: its output.
+async fn workspace_verb(
+    workspaces: &ServiceWorkspaces,
+    workspace: &str,
+    key: &GrantKey,
+    action: &str,
+    arguments: Map<String, Value>,
+) -> Result<Value, ServerError> {
+    let id = WorkspaceId::parse(workspace).ok_or(ServerError::NotFound)?;
+    let caller = Caller::authenticated(key.cert().user_public_key, key.cert().device_public_key);
+    let request = InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget::workspace_governance(workspace, action),
+        argument: InvokeArgument::Json(arguments),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let pending = workspaces
+        .service()
+        .actions()
+        .serve_certified(
+            id,
+            &caller,
+            key.cert(),
+            RemoteActionMessage::Invoke(request),
+        )
+        .ok_or_else(|| ServerError::Refused("this device does not serve that workspace".into()))?;
+    match pending.await {
+        Some(RemoteActionMessage::Receipt(receipt)) => match receipt.status {
+            ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
+            ReceiptStatus::Rejected { error } => Err(refused(&error)),
+            ReceiptStatus::Failed { error } => Err(ServerError::Unavailable(error.message)),
+            ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => Err(
+                ServerError::Unavailable("the workspace did not finish its answer".into()),
+            ),
+        },
+        _ => Err(ServerError::Unavailable(
+            "the workspace service dropped the request".into(),
+        )),
+    }
+}
+
+/// What a workspace's own rules refused `key`, as the account answers it.
+fn refused(error: &ActionCallError) -> ServerError {
+    match error {
+        ActionCallError::UnknownAction => ServerError::NotFound,
+        ActionCallError::Refused { reason } => {
+            ServerError::Refused(refusal_reason(reason).unwrap_or_else(|| reason.clone()))
+        }
+        ActionCallError::NotPermitted => {
+            ServerError::Refused("the workspace does not let this key do that".into())
+        }
+        other => ServerError::Unavailable(other.to_string()),
+    }
+}
+
+/// The refusal `reason` names, in the words a person reads, when it carries one.
+fn refusal_reason(reason: &str) -> Option<String> {
+    tilo_server_protocol::workspaces::Refusal::from_reason(reason)
+        .map(|refusal| refusal.to_string())
+}
+
+/// Why the device answered nothing.
+fn unavailable(why: impl std::fmt::Display) -> ServerError {
+    ServerError::Unavailable(why.to_string())
+}
+
+/// The workspace service's answer, read as `T`.
+fn answer<T: serde::de::DeserializeOwned>(
+    answered: Result<Value, String>,
+) -> Result<T, ServerError> {
+    let value = answered.map_err(unavailable)?;
+    serde_json::from_value(value).map_err(|error| {
+        ServerError::Unavailable(format!("the host answered unexpectedly: {error}"))
+    })
+}
+
+/// The keys a workspace records.
+#[derive(serde::Deserialize)]
+struct ListedGrants {
+    grants: Vec<WorkspaceGrant>,
 }
 
 /// Why a workspace this daemon does not keep cannot be kept: no server says where it is.

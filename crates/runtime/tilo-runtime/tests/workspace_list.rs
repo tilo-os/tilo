@@ -1,6 +1,6 @@
 //! A person has one list of workspaces: a key of theirs for all their workspaces (over `/v1`)
-//! lists the one list the daemon keeps for the person and reads what it lists, and is told to
-//! make a workspace in Tilo itself, which the computer the daemon is answers for.
+//! lists the one list the daemon keeps for the person, reads what it lists, and makes one the
+//! computer it runs on answers for.
 
 use serde_json::{Value, json};
 
@@ -19,9 +19,9 @@ fn ids(listed: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The key lists what the computer lists, reads it, and makes no workspace beside it.
+/// The key lists what the computer lists, reads it, and makes one, which the computer holds.
 #[test]
-fn a_key_lists_and_reads_the_workspaces_its_computer_lists() {
+fn a_key_lists_reads_and_makes_the_workspaces_its_computer_holds() {
     host::run(|host| async move {
         let key = host.key("Visa backend");
         // The computer's own list, as `tilo` reads it on it.
@@ -48,16 +48,20 @@ fn a_key_lists_and_reads_the_workspaces_its_computer_lists() {
             "the key reads the computer's workspace: {read}"
         );
 
-        let (status, refused) = key
+        let (status, made) = key
             .post(CREATE, &json!({"name": "Made by the backend"}))
             .await;
-        assert_eq!(status, 403, "{refused}");
+        assert_eq!(status, 200, "the computer makes it: {made}");
+        let made = made["result"]["workspace"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a create answers the workspace it made: {made}"))
+            .to_owned();
         let (_, listed) = key.post(LIST, &json!({})).await;
-        assert_eq!(
-            ids(&listed["result"]),
-            listed_here,
-            "nothing was made: {listed}"
-        );
+        let listed = ids(&listed["result"]);
+        assert!(listed.contains(&made), "the list holds it: {listed:?}");
+        assert!(listed.contains(&listed_here[0]), "{listed:?}");
+        let (status, read) = key.get(&format!("/v1/workspaces/{made}/resources")).await;
+        assert_eq!(status, 200, "the computer serves it at once: {read}");
     });
 }
 

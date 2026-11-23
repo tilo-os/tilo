@@ -102,6 +102,71 @@ pub struct Reached {
     pub tasks: Option<Arc<dyn tilo_mcp::TaskHosts>>,
 }
 
+/// What a device's own daemon answers of the person's account, without a server: the
+/// workspaces the device keeps for them and the keys they make here.
+///
+/// A key's calls are served as that key: every method takes the key's own
+/// [`GrantKey`](crate::grant_key::GrantKey), and the device refuses a key its own person's root
+/// did not certify.
+pub trait AccountHere: Send + Sync {
+    /// The workspaces `key` reaches here, each with what its person labelled it and whether it
+    /// runs unattended.
+    fn workspaces(&self, key: &crate::grant_key::GrantKey) -> Vec<Workspace>;
+    /// Make a workspace called `name`, labelled `labels`, under `id` when the caller chose one.
+    fn create(
+        &self,
+        key: crate::grant_key::GrantKey,
+        name: String,
+        labels: tilo_server_protocol::workspaces::WorkspaceLabels,
+        id: Option<uuid::Uuid>,
+    ) -> AccountAnswer<Result<Workspace, ServerError>>;
+    /// Branch `source`, one of the key's person's own, as a new workspace called `name`.
+    fn branch(
+        &self,
+        key: crate::grant_key::GrantKey,
+        source: String,
+        name: String,
+        labels: tilo_server_protocol::workspaces::WorkspaceLabels,
+        id: Option<uuid::Uuid>,
+    ) -> AccountAnswer<Result<Workspace, ServerError>>;
+    /// Name `workspace` `name`.
+    fn rename(
+        &self,
+        key: crate::grant_key::GrantKey,
+        workspace: String,
+        name: String,
+    ) -> AccountAnswer<Result<Workspace, ServerError>>;
+    /// Delete `workspace`, with everything the device keeps of it.
+    fn delete(
+        &self,
+        key: crate::grant_key::GrantKey,
+        workspace: String,
+    ) -> AccountAnswer<Result<(), ServerError>>;
+    /// Turn running commands unattended on or off in `workspace`.
+    fn unattended(
+        &self,
+        key: crate::grant_key::GrantKey,
+        workspace: String,
+        on: bool,
+    ) -> AccountAnswer<Result<bool, ServerError>>;
+    /// The keys each workspace the device keeps recorded, as its governance holds them.
+    fn keys(
+        &self,
+        key: crate::grant_key::GrantKey,
+    ) -> AccountAnswer<Result<Vec<collab_types::workspace_grant::WorkspaceGrant>, ServerError>>;
+    /// Record `grant` revoked in `workspace`, when the workspace keeps it; whether it changed.
+    fn revoke_key(
+        &self,
+        key: crate::grant_key::GrantKey,
+        workspace: String,
+        grant: String,
+    ) -> AccountAnswer<Result<bool, ServerError>>;
+}
+
+/// What an [`AccountHere`] method answers, awaited where the account runs it.
+pub type AccountAnswer<T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'static>>;
+
 /// The Tilo desktop a server is part of, answering its person's workspaces itself: a desktop
 /// session serving the API to its own person's programs on this computer.
 pub trait Here: Send + Sync {
@@ -154,6 +219,12 @@ pub trait Here: Send + Sync {
     /// The device's record of every invocation it was asked for, shared with the account: `None`
     /// for a host that keeps none, whose account keeps its own.
     fn invocations(&self) -> Option<Arc<tilo_actions::remote::invocation_record::Invocations>> {
+        None
+    }
+
+    /// The person's account as this device serves it itself: `None` for a host that answers only
+    /// its workspaces, whose account is a server's.
+    fn account_here(&self) -> Option<&dyn AccountHere> {
         None
     }
 }
@@ -636,6 +707,18 @@ impl Session {
                 .map_or_else(Reply::accepted, Reply::one);
         };
         let workspace = self.workspace_id(&named).await.unwrap_or(named);
+        // A key for one workspace reaches it alone: a tool naming another is a call that failed,
+        // which the agent reads, not a protocol error.
+        if let Some(pinned) = self.pinned()
+            && pinned != workspace
+        {
+            return Reply::one(result(
+                id,
+                &json!({"content": [{"type": "text",
+                    "text": format!("this key reaches {pinned} alone")}],
+                    "isError": true}),
+            ));
+        }
         if let Some(arguments) = request
             .pointer_mut("/params/arguments")
             .and_then(Value::as_object_mut)

@@ -462,8 +462,55 @@ impl ServiceWorkspaces {
                     held.push((workspace, name, peer));
                 }
             }
+            // The workspaces this device keeps for its person, the one it founded and every one they
+            // made here: a workspace it keeps is this device's too, not only a member copy of
+            // another's.
+            let mut held_ids: std::collections::HashSet<WorkspaceId> =
+                held.iter().map(|(workspace, _, _)| *workspace).collect();
+            for summary in workspaces.list().await {
+                if !held_ids.insert(summary.workspace_id) {
+                    continue;
+                }
+                if let Some((name, peer)) = copy_of(&workspaces, summary.workspace_id).await {
+                    held.push((summary.workspace_id, name, peer));
+                }
+            }
             held
         })
+    }
+
+    /// Offer the workspaces this device's person makes here as their own, labelled and listed by
+    /// this host, and built on by the account's keys.
+    pub(crate) fn offer_workspaces_here(&self, host: &str) {
+        if let Err(error) = self.copies().offer_own_workspaces(
+            tilo_workspace_service::workspaces::OwnWorkspaceOffer::free(host),
+        ) {
+            tracing::warn!(%error, "this device keeps no workspaces of its person's own");
+        }
+    }
+
+    /// Record every workspace this device keeps as its person's own, so a workspace founded here
+    /// before the host kept an index of their workspaces is theirs to branch and delete.
+    pub(crate) async fn claim_workspaces_here(&self, person: &[u8; 32]) {
+        for summary in self.copies().list().await {
+            if !self.copies().claim_own(person, &summary.workspace).await {
+                tracing::warn!(workspace = %summary.workspace, "a workspace this device keeps is not recorded as its person's own");
+            }
+        }
+    }
+
+    /// What `workspace`'s owner labelled it with, as this device keeps it.
+    pub(crate) fn labels_of(
+        &self,
+        workspace: &str,
+    ) -> tilo_server_protocol::workspaces::WorkspaceLabels {
+        self.copies().labels_of(workspace)
+    }
+
+    /// Whether `workspace`'s owner let keys reaching it alone run commands in its machine
+    /// without asking them each time.
+    pub(crate) fn runs_unattended(&self, workspace: &str) -> bool {
+        self.copies().runs_unattended(workspace)
     }
 
     /// Every workspace this device holds, as its governance describes it.

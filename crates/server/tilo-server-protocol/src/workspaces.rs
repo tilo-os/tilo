@@ -805,6 +805,11 @@ pub const DELETE_WORKSPACE: &str = "workspace.delete";
 /// workspace that is not their own it is refused with [`AdminRefusal::NotYourOwn`].
 /// Answers `{"workspace": uuid, "unattended": bool}`.
 pub const RUN_UNATTENDED: &str = "commands.unattended";
+/// The workspace's governance verb listing the keys it admitted for the calling person: each
+/// grant its governance records, with what it reaches and until when.
+pub const LIST_KEYS: &str = "key.list";
+/// The workspace's governance verb recording a key revoked: the caller's own or one it minted.
+pub const REVOKE_KEY: &str = "key.revoke";
 /// Why the host refused one of its own workspace operations (asking for,
 /// branching or deleting a workspace, or turning a workspace's commands
 /// unattended on): what the refusal's words carry as JSON

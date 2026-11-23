@@ -59,8 +59,8 @@ use tilo_actions::{
 };
 use tilo_server_protocol::workspaces::{
     BRANCH_OWN_WORKSPACE, CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE,
-    HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_PERSONAL, PersonalList, RUN_UNATTENDED,
-    WorkspaceLabels,
+    HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_KEYS, LIST_PERSONAL, PersonalList,
+    REVOKE_KEY, RUN_UNATTENDED, WorkspaceLabels,
 };
 use tilo_session_actions::SessionActions;
 use tilo_user_identity::AgentScope;
@@ -84,10 +84,6 @@ const KEPT: usize = 256;
 /// How long turning a workspace's unattended runs on waits for the host before it is followed:
 /// off is answered at once, on once the person decided, which takes longer.
 const ANSWERING_MS: u32 = 1_000;
-/// The governance verb a workspace's host lists its keys by.
-const LIST_KEYS: &str = "key.list";
-/// The governance verb it revokes one by.
-const REVOKE_KEY: &str = "key.revoke";
 
 /// One of the account's actions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -881,6 +877,13 @@ impl Account {
                 };
             }
             Reach::Here(here, key) => {
+                // A device that serves the person's account itself answers their calls here, as
+                // the key they were made with.
+                if let Some(host) = here.account_here()
+                    && let Some(outcome) = self.answer_here(host, &grant, op, id, args).await
+                {
+                    return outcome;
+                }
                 return here_answers(here.as_ref(), key.cert(), &server, op, args).await;
             }
         };
@@ -922,6 +925,406 @@ impl Account {
                 "unavailable",
                 "a server takes in no desktop's workspaces",
                 "run this on the computer whose desktop kept them",
+            ),
+        }
+    }
+
+    /// What a device that serves its person's account itself answers `op` with `args`, as the
+    /// key `grant` was made with: `None` for what its desktop keeps, leaves, joins or takes in,
+    /// which [`here_answers`] answers.
+    async fn answer_here(
+        &self,
+        host: &dyn crate::session::AccountHere,
+        grant: &Grant,
+        op: Op,
+        _id: InvocationId,
+        args: &Value,
+    ) -> Option<Outcome> {
+        if matches!(
+            op,
+            Op::EnterWorkspace | Op::LeaveWorkspace | Op::JoinWorkspace | Op::ImportWorkspaces
+        ) {
+            return None;
+        }
+        let Some(key) = grant.key() else {
+            return Some(refused(&ServerError::NoAccountHere));
+        };
+        Some(self.serve_here(host, key, grant, op, args).await)
+    }
+
+    /// Admit `op` with `args` for `key`, a device's own account served by its daemon.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match over the account's actions, each a few lines of arguments and an answer"
+    )]
+    async fn serve_here(
+        &self,
+        host: &dyn crate::session::AccountHere,
+        key: GrantKey,
+        grant: &Grant,
+        op: Op,
+        args: &Value,
+    ) -> Outcome {
+        let Some(server) = self.0.server.upgrade() else {
+            return failed("unavailable", "the device is stopping", "try again shortly");
+        };
+        match op {
+            Op::EnterWorkspace | Op::LeaveWorkspace | Op::JoinWorkspace | Op::ImportWorkspaces => {
+                unreachable!("answer_here leaves these to the desktop's own answers")
+            }
+            Op::ListWorkspaces => self.here_workspaces(host, &key, grant, args),
+            Op::CreateWorkspace => {
+                let Some(name) = field(args, "name") else {
+                    return failed(
+                        "invalid_arguments",
+                        "`name` is required",
+                        "pass {name: \"Applicant: Jane Doe\"}",
+                    );
+                };
+                let (id, labels) = match (chosen_id(args), labels_of(args)) {
+                    (Ok(id), Ok(labels)) => (id, labels),
+                    (Err(refused), _) | (_, Err(refused)) => return refused,
+                };
+                match host.create(key, name.to_owned(), labels, id).await {
+                    Ok(workspace) => Outcome::Ok(json!({"workspace": workspace})),
+                    Err(error) => refused(&error),
+                }
+            }
+            Op::BranchWorkspace => {
+                let (Some(source), Some(name)) = (field(args, "workspace"), field(args, "name"))
+                else {
+                    return failed(
+                        "invalid_arguments",
+                        "`workspace` and `name` are required",
+                        "pass {workspace: \"<id>\", name}; account/workspaces#list names them",
+                    );
+                };
+                let (id, labels) = match (chosen_id(args), labels_of(args)) {
+                    (Ok(id), Ok(labels)) => (id, labels),
+                    (Err(refused), _) | (_, Err(refused)) => return refused,
+                };
+                match host
+                    .branch(key, source.to_owned(), name.to_owned(), labels, id)
+                    .await
+                {
+                    Ok(branch) => Outcome::Ok(json!({"workspace": branch})),
+                    Err(error) => not_branched(&error).unwrap_or_else(|| refused(&error)),
+                }
+            }
+            Op::RenameWorkspace => {
+                let (Some(workspace), Some(name)) = (field(args, "workspace"), field(args, "name"))
+                else {
+                    return failed(
+                        "invalid_arguments",
+                        "`workspace` and `name` are required",
+                        "pass {workspace: \"<id>\", name: \"Acme\"}; account/workspaces#list names them",
+                    );
+                };
+                match host
+                    .rename(key, workspace.to_owned(), name.to_owned())
+                    .await
+                {
+                    Ok(workspace) => Outcome::Ok(json!({"workspace": workspace})),
+                    Err(error) => refused(&error),
+                }
+            }
+            Op::DeleteWorkspace => {
+                let Some(workspace) = field(args, "workspace") else {
+                    return failed(
+                        "invalid_arguments",
+                        "`workspace` is required",
+                        "pass {workspace: \"<id>\"}; account/workspaces#list names them",
+                    );
+                };
+                match host.delete(key, workspace.to_owned()).await {
+                    Ok(()) => {
+                        // Every key that reached only that workspace goes with it.
+                        let revoked = server.revoke_keys_for(&grant.person, workspace).await;
+                        Outcome::Ok(json!({"deleted": workspace, "revoked_keys": revoked}))
+                    }
+                    Err(error) => refused(&error),
+                }
+            }
+            Op::Unattended => {
+                let (Some(workspace), Some(on)) = (
+                    field(args, "workspace"),
+                    args.get("on").and_then(Value::as_bool),
+                ) else {
+                    return failed(
+                        "invalid_arguments",
+                        "`workspace` and `on` are required",
+                        "pass {workspace, on: true} to ask the person, {workspace, on: false} to turn it off",
+                    );
+                };
+                match host.unattended(key, workspace.to_owned(), on).await {
+                    Ok(on) => Outcome::Ok(json!({"workspace": workspace, "unattended": on})),
+                    Err(error) => refused(&error),
+                }
+            }
+            Op::ListKeys => self.here_keys(host, &key, grant, &server).await,
+            Op::CreateKey => failed(
+                "unavailable",
+                "a key is asked for from the device that answers for the account",
+                "create the key with account/keys#mint, or make one in Tilo",
+            ),
+            Op::MintKey => self.here_mint(host, &key, grant, &server, args).await,
+            Op::RevokeKey => self.here_revoke(host, &key, grant, &server, args).await,
+            Op::Usage => failed(
+                "unavailable",
+                "a device keeps no plan or usage of its own to read",
+                "read the account on the server that keeps the workspaces",
+            ),
+            Op::AskModel => failed(
+                "unavailable",
+                "a model is asked on the device that keeps it",
+                "open Tilo on a device that keeps the workspace's model, then try again",
+            ),
+            Op::ListWebhooks | Op::CreateWebhook | Op::DeleteWebhook => failed(
+                "unavailable",
+                "a webhook is kept by the server itself",
+                "try again shortly",
+            ),
+        }
+    }
+
+    /// The workspaces `key` reaches here, ones labelled with every one of `labels` `args` names.
+    fn here_workspaces(
+        &self,
+        host: &dyn crate::session::AccountHere,
+        key: &GrantKey,
+        grant: &Grant,
+        args: &Value,
+    ) -> Outcome {
+        let labels = match labels_of(args) {
+            Ok(labels) => labels,
+            Err(refused) => return refused,
+        };
+        let mut workspaces = host.workspaces(key);
+        workspaces.retain(|workspace| labelled(workspace, &labels));
+        // A key for one workspace reaches that one, never its neighbours.
+        if let Scope::Workspace(own) = &grant.scope {
+            workspaces.retain(|workspace| &workspace.id == own);
+        }
+        Outcome::Ok(json!({"workspaces": workspaces, "hosts": []}))
+    }
+
+    /// The keys this key made and the keys it minted, as the device keeps them.
+    async fn here_keys(
+        &self,
+        host: &dyn crate::session::AccountHere,
+        key: &GrantKey,
+        grant: &Grant,
+        server: &Server,
+    ) -> Outcome {
+        let recorded = match host.keys(key.clone()).await {
+            Ok(recorded) => recorded,
+            Err(error) => return refused(&error),
+        };
+        let mut seen = std::collections::HashSet::from([grant.id.clone()]);
+        let mut keys = vec![grant_row(grant)];
+        let mine = grant.id.as_str();
+        match &grant.scope {
+            Scope::Workspace(_) => {
+                for held in &recorded {
+                    if fresh(&mut seen, held)
+                        && (held.id == mine || held.parent.as_deref() == Some(mine))
+                    {
+                        keys.push(workspace_grant_row(held));
+                    }
+                }
+            }
+            Scope::Account if persons_own(grant) => {
+                for held in server.store.grants_of(&grant.person) {
+                    if held.live() && seen.insert(held.id.clone()) {
+                        keys.push(grant_row(&held));
+                    }
+                }
+                for held in &recorded {
+                    if fresh(&mut seen, held) {
+                        keys.push(workspace_grant_row(held));
+                    }
+                }
+            }
+            Scope::Account => {
+                for minted in server.store.minted_by(&grant.id) {
+                    if minted.live() && seen.insert(minted.id.clone()) {
+                        keys.push(grant_row(&minted));
+                    }
+                }
+                for held in &recorded {
+                    if fresh(&mut seen, held) && held.parent.as_deref() == Some(mine) {
+                        keys.push(workspace_grant_row(held));
+                    }
+                }
+            }
+        }
+        Outcome::Ok(json!({"keys": keys}))
+    }
+
+    /// Mint a key reaching one workspace, for an agent to act there, from the key that asks.
+    async fn here_mint(
+        &self,
+        host: &dyn crate::session::AccountHere,
+        key: &GrantKey,
+        grant: &Grant,
+        server: &Server,
+        args: &Value,
+    ) -> Outcome {
+        let Some(workspace) = args.get("workspace").and_then(Value::as_str) else {
+            return failed(
+                "invalid_arguments",
+                "`workspace` is required",
+                "account/workspaces#list names them",
+            );
+        };
+        let Some(AgentScope::Workspace(id)) = AgentScope::parse(workspace) else {
+            return failed(
+                "invalid_arguments",
+                "`workspace` is a workspace's id",
+                "account/workspaces#list names them",
+            );
+        };
+        if !host
+            .workspaces(key)
+            .iter()
+            .any(|reached| reached.id == workspace)
+        {
+            return refused(&ServerError::NotFound);
+        }
+        let name = args
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map_or_else(
+                || format!("{}: {workspace}", grant.client_name),
+                str::to_owned,
+            );
+        let name: String = name
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(crate::keys::MAX_NAME_CHARS)
+            .collect();
+        let now = now_ms();
+        let minted = match mint_key(
+            key,
+            id,
+            &name,
+            args.get("expires_in").and_then(Value::as_u64),
+            now,
+        ) {
+            Ok(minted) => minted,
+            Err(outcome) => return outcome,
+        };
+        let kind = GrantKind::Minted {
+            parent: grant.id.clone(),
+        };
+        match server.store.resource_key(&minted, &name, kind, None, now) {
+            Ok((minted, token)) => Outcome::Ok(json!({
+                "grant": minted.id,
+                "name": minted.client_name,
+                "token": token,
+                "workspace": workspace,
+                "mcp_url": format!("{}/w/{workspace}/mcp", server.config.issuer),
+                "expires_at_ms": minted.expires_ms,
+            })),
+            Err(_) => failed(
+                "unavailable",
+                "the key could not be kept",
+                "try again shortly",
+            ),
+        }
+    }
+
+    /// Revoke the key `args` names, and have the workspaces that keep it record the revocation.
+    async fn here_revoke(
+        &self,
+        host: &dyn crate::session::AccountHere,
+        key: &GrantKey,
+        grant: &Grant,
+        server: &Server,
+        args: &Value,
+    ) -> Outcome {
+        let Some(id) = field(args, "grant") else {
+            return failed(
+                "invalid_arguments",
+                "`grant` is required",
+                "account/keys#list names them",
+            );
+        };
+        let held_here = server
+            .store
+            .grant(id)
+            .filter(|found| found.person == grant.person);
+        let minted = server
+            .store
+            .grant(id)
+            .is_some_and(|found| found.parent() == Some(grant.id.as_str()));
+        if grant.scope == Scope::Account && persons_own(grant) && id != grant.id && !minted {
+            let recorded: Vec<String> = match host.keys(key.clone()).await {
+                Ok(recorded) => recorded
+                    .into_iter()
+                    .filter(|held| held.id == id)
+                    .map(|held| held.id)
+                    .collect(),
+                Err(outcome) => return refused(&outcome),
+            };
+            if held_here.is_none() && recorded.is_empty() {
+                return failed(
+                    "not_found",
+                    "no such key of yours",
+                    "account/keys#list names them",
+                );
+            }
+            if held_here.is_some()
+                && let Err(error) = server.revoke_grant(&grant.person, id).await
+            {
+                tracing::warn!(%error, grant = id, "a key's revocation was not kept");
+                return failed(
+                    "unavailable",
+                    "revocation is unavailable",
+                    "try again shortly",
+                );
+            }
+            for workspace in host.workspaces(key) {
+                if let Err(error) = host
+                    .revoke_key(key.clone(), workspace.id, id.to_owned())
+                    .await
+                {
+                    tracing::warn!(%error, workspace = %workspace.id, "a workspace did not keep a key's revocation");
+                }
+            }
+            return Outcome::Ok(json!({"revoked": id}));
+        }
+        let own = id == grant.id || minted;
+        if !own {
+            return failed(
+                "not_found",
+                "no such key of this key",
+                "account/keys#list names them",
+            );
+        }
+        let workspace = match server
+            .store
+            .grant(id)
+            .map_or_else(|| grant.scope.clone(), |found| found.scope)
+        {
+            Scope::Workspace(workspace) => Some(workspace),
+            Scope::Account => None,
+        };
+        match server.revoke_grant(&grant.person, id).await {
+            Ok(_) => {
+                if let Some(workspace) = workspace
+                    && let Err(error) = host.revoke_key(key.clone(), workspace, id.to_owned()).await
+                {
+                    tracing::warn!(%error, "a workspace did not record a key's revocation");
+                }
+                Outcome::Ok(json!({"revoked": id}))
+            }
+            Err(_) => failed(
+                "unavailable",
+                "revocation is unavailable",
+                "try again shortly",
             ),
         }
     }
@@ -1084,6 +1487,22 @@ fn publisher(workspace: &str) -> CatalogueProvider {
 /// reaches all of the account; a key for one reaches its own keys, and its workspace's setting
 /// and model.
 fn answer_for(grant: &Grant, op: Op, args: &Value) -> Answer {
+    // A minted key is a workspace's agent, narrower than the key that made it: what only the
+    // person does, it never does.
+    if matches!(grant.kind, GrantKind::Minted { .. })
+        && matches!(
+            op,
+            Op::CreateWorkspace
+                | Op::BranchWorkspace
+                | Op::RenameWorkspace
+                | Op::DeleteWorkspace
+                | Op::Unattended
+                | Op::CreateKey
+                | Op::MintKey
+        )
+    {
+        return Answer::Deny;
+    }
     match &grant.scope {
         Scope::Account => Answer::Allow,
         Scope::Workspace(own) => match op {
@@ -1649,6 +2068,11 @@ impl Server {
         }
         Ok(recorded)
     }
+}
+
+/// Whether `held` is live and not listed yet, recording it as listed when it is.
+fn fresh(seen: &mut std::collections::HashSet<String>, held: &WorkspaceGrant) -> bool {
+    held.revoked_ms.is_none() && seen.insert(held.id.clone())
 }
 
 /// Whether `outcome` refuses the key as revoked.

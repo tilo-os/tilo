@@ -1450,6 +1450,31 @@ impl Workspaces {
         {
             return Err(refused(&AdminRefusal::NotYourOwn.to_reason()));
         }
+        // A backend that keeps a workspace per customer labels each with its own id for that
+        // customer: asking again with the same labels when a call is retried answers the
+        // workspace labelled so, not another one beside it.
+        if moving.is_none()
+            && name.is_some()
+            && let Some(labels) = labels.as_ref().filter(|labels| !labels.is_empty())
+            && let Some(existing) = own
+                .of(&person)
+                .into_iter()
+                .find(|workspace| own.labels_of(workspace) == *labels)
+        {
+            let summary = self
+                .summary(&existing)
+                .await
+                .map_err(|error| refused(&error))?;
+            return self
+                .invite_own_person(
+                    summary,
+                    person,
+                    Role::Editor,
+                    request_id,
+                    expiry(now, seconds),
+                )
+                .await;
+        }
         // What could be made twice at once waits for the first: a workspace
         // the ask names (a retried create answers the one the first made),
         // and a person's own workspace asked for by no name (two of their

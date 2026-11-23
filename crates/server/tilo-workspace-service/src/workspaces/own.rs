@@ -721,6 +721,43 @@ impl Workspaces {
         self.own().is_some()
     }
 
+    /// What `workspace`'s owner labelled it with, as this host keeps it: none for one they did
+    /// not label.
+    #[must_use]
+    pub fn labels_of(&self, workspace: &str) -> WorkspaceLabels {
+        self.own()
+            .map(|own| own.labels_of(workspace))
+            .unwrap_or_default()
+    }
+
+    /// Whether `workspace`'s owner let keys reaching it alone run commands in its machine
+    /// without asking them each time.
+    #[must_use]
+    pub fn runs_unattended(&self, workspace: &str) -> bool {
+        self.own().is_some_and(|own| own.runs_unattended(workspace))
+    }
+
+    /// Record `workspace`, which this host keeps for its own person, as one of `person`'s own: a
+    /// workspace founded here before the host kept an index of its person's workspaces. Whether it
+    /// is theirs afterwards; `false` when it belongs to another person or this host does not keep
+    /// it.
+    #[must_use]
+    pub async fn claim_own(&self, person: &[u8; 32], workspace: &str) -> bool {
+        let Some(own) = self.own() else {
+            return false;
+        };
+        if *person != self.inner.host.cert.user_public_key {
+            return false;
+        }
+        if own.is_of(person, workspace) {
+            return true;
+        }
+        if !self.inner.workspaces.lock().await.contains_key(workspace) {
+            return false;
+        }
+        own.record(person, workspace).is_ok()
+    }
+
     /// Whether `workspace` is one of `person`'s own here.
     #[must_use]
     pub fn owns(&self, person: &[u8; 32], workspace: &str) -> bool {
