@@ -448,7 +448,13 @@ impl Engine {
             workspaces.into_iter().collect(),
         )));
         let owner = open_file_with(&path, Arc::clone(&shown) as Arc<dyn FileHost>)?;
-        let mut engine = Self::holding(owner, shown, identity, Arc::new(Founders::default()));
+        let mut engine = Self::holding(
+            owner,
+            shown,
+            identity,
+            _ownership,
+            Arc::new(Founders::default()),
+        );
         engine.service_root = Some(state.join("tilo").join("workspace-service"));
         Ok(engine)
     }
