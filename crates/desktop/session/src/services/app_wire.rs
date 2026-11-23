@@ -181,14 +181,6 @@ fn app_wire_path(options: &Options) -> Result<Option<std::path::PathBuf>, Error>
     })
 }
 
-/// A request from another of the person's own devices is them using this machine: it holds suspend
-/// off for a lease, so nothing falls asleep mid-task however far the person is from it.
-fn attach_remote_use(actions: &crate::device_actions::DeviceActions, options: &Options) {
-    if let Some(power) = options.power.clone() {
-        actions.attach_power(power);
-    }
-}
-
 /// The device fabric this session acts on: the one its collaboration endpoint runs, or a stand-in a
 /// test handed its options.
 fn acting_fabric(
@@ -265,17 +257,18 @@ pub(crate) fn start_app_wire(
     // the app's channels show.
     let calls = crate::calls::Calls::new();
     let calls_service = calls_service(sync, &calls, options);
-    // An app's action on another of the person's own devices leaves through the app wire the
-    // collaboration endpoint runs.
-    let actions = sync.and_then(crate::sync::Client::device_actions);
-    let own_device = actions.clone().map(|actions| {
-        std::sync::Arc::new(actions)
+    // An app's action on another of the person's own devices is carried to the device's daemon
+    // over the shell link it started this session on, which forwards it from there.
+    let own_device = daemon.as_ref().ok().map(|link| {
+        std::sync::Arc::new(crate::daemon_actions::AnotherDevice::over(link))
             as std::sync::Arc<dyn tilo_broker_core::services::OwnDeviceActions>
     });
-    // An offloadable action runs where a device of its workspace would run it sooner: the round
-    // asks them over that same app wire, and what the device that wins produced is kept in the content
-    // this session keeps.
-    let action_offload = offload_route(actions.as_ref(), content.as_ref());
+    // An offloadable action is placed by the device's daemon over the same link: the daemon holds
+    // the endpoint that reaches the workspace's other devices, and the session does not.
+    let action_offload = daemon.as_ref().ok().map(|link| {
+        std::sync::Arc::new(crate::daemon_actions::Offload::over(link))
+            as std::sync::Arc<dyn tilo_actions::offload::ActionOffload>
+    });
     // Files' clipboard lives beside the broker, its copies reaching the compositor's loop alike.
     let file_clipboard = std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
         options.wake.handle(),
@@ -339,12 +332,7 @@ pub(crate) fn start_app_wire(
     if let Some(sync) = sync {
         sync.follow_person(tilo_rt::app().handle(), options.wake.handle());
     }
-    // What arrives on this device's app wire is answered by the broker that now serves: another
-    // of the person's devices runs nothing here the person in front of it could not.
-    if let (Some(actions), Some(broker)) = (actions, broker.app_action_broker()) {
-        actions.install(broker.device_host());
-        attach_remote_use(&actions, options);
-    }
+    let files_tree = serve_files_tree(service, content.as_deref(), options, services.folders)?;
     // This device runs its workspaces' agents in its own workspace service once that opens: the
     // one engine a workspace's host runs, in this process, each turn's calls decided by this
     // broker as the person's own calls are.
@@ -426,18 +414,6 @@ fn calls_service(
     );
     service.install_factory(std::sync::Arc::new(crate::calls::Factory::new(sources)));
     Some(service)
-}
-
-/// Where an app's offloadable action runs: the round this device's app wire asks the invoking
-/// workspace's other devices, keeping what the device that wins produced in `content` — the store
-/// the invoking app reads its output from. `None` when this session has no device action service or keeps no
-/// content to weigh the job by, so every offloadable action runs here.
-fn offload_route(
-    actions: Option<&crate::device_actions::DeviceActions>,
-    content: Option<&std::sync::Arc<crate::content::ContentService>>,
-) -> Option<std::sync::Arc<dyn tilo_actions::offload::ActionOffload>> {
-    let (actions, content) = (actions?, content?);
-    actions.offload_route(std::sync::Arc::clone(content))
 }
 
 /// The services, published on the app wire.

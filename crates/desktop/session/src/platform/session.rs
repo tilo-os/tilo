@@ -2479,17 +2479,6 @@ impl Session {
         self.read_resource(workspace, app, record).ok().flatten()
     }
 
-    /// This device's action service, which the person's other devices ask it through: a test
-    /// holds a workspace's roster of its own there ([`ActionService::hold`]). `None` on a
-    /// session that takes part as nobody.
-    ///
-    /// [`ActionService::hold`]: tilo_peer_state::actions::ActionService::hold
-    #[must_use]
-    pub fn device_actions(&self) -> Option<tilo_peer_state::actions::ActionService> {
-        let devices = self.shared.sync.as_ref()?.device_actions()?;
-        Some(devices.action_service())
-    }
-
     /// What the windows ask of the workspace's activity and follow, as this session serves it: the
     /// same API the shell's own pane reads through.
     #[must_use]

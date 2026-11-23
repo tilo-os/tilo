@@ -1878,6 +1878,14 @@ fn broker_services(
                     Arc::clone(&document_content),
                 )
             });
+    // Where an offloadable invocation of the session's broker runs: the session asks this
+    // daemon to place it over the shell link, as this daemon's own broker would.
+    parts.workspaces.copies().providers().provide(
+        tilo_actions::remote::offload_place::PROVIDER,
+        tilo_actions::remote::offload_place::PROVIDER,
+        tilo_workspace_service::workspaces::providers::Reach::ThisDevice,
+        Arc::new(super::offload_place::Placement::new(action_offload.clone())),
+    );
     // The turns this device takes for its workspaces' devices run here, over
     // the same content: whether a turn is this device's is decided live, each
     // time it is asked.
@@ -1973,6 +1981,12 @@ fn broker_services(
         // endpoints ask again when it says a channel changed.
         group_keys: Some(parts.keys.clone()),
         action_offload,
+        // An app's action on another of the person's own devices: carried there over the action
+        // service this device already serves, and followed until that device answers.
+        own_device: Some(
+            Arc::new(super::own_device::AnotherDevice::over(parts.workspaces))
+                as Arc<dyn tilo_broker_core::services::OwnDeviceActions>,
+        ),
         // The person's desktop session: their workspaces' documents, governance and standing,
         // reached through this device alone.
         #[cfg(unix)]

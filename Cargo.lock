@@ -20125,6 +20125,7 @@ dependencies = [
  "tilo-app-state",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-broker-core",
  "tilo-capture",
  "tilo-clock",
  "tilo-content",
@@ -20147,6 +20148,7 @@ dependencies = [
  "tilo-os-search",
  "tilo-paths",
  "tilo-peer-state",
+ "tilo-power-mgmt",
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-rt",
@@ -20175,6 +20177,7 @@ dependencies = [
  "uuid",
  "wire-frame",
  "workspace-hack",
+ "zbus",
  "zeroize",
 ]
 

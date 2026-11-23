@@ -124,6 +124,8 @@ tilo-peer-state = { path = "../tilo-peer-state" }
 neighbour-wire = { path = "../neighbour-wire" }
 # The workspace host every device runs, which the profile's own workspace is placed on.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["apps", "device-keys", "files"] }
+# The host services the broker is built with, the person's own devices among them.
+tilo-broker-core = { path = "../broker-core" }
 # An app's records are founded and written through a confined worker of this executable.
 tilo-agent-session = { path = "../agent-session" }
 # The person's saved chords, which a shortcut's keyboard trigger may not take.
@@ -212,6 +214,9 @@ fuser.workspace = true
 ush = { path = "../../vm/ush", features = ["quic"] }
 # The size of the machines a server pays for on its workspaces' devices that run Linux.
 linux-vm = { path = "../../vm/linux-vm", default-features = false }
+# A request from another of the person's devices holds suspend off while it runs.
+tilo-power-mgmt = { path = "../../os/power" }
+zbus = { workspace = true, features = ["tokio"] }
 
 # App Sandbox or Seatbelt: how every app launches on stock macOS.
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -16,7 +16,7 @@ use tilo_session_client::network::Event;
 
 use super::adopt::enter;
 use super::own_service::open as open_own_service;
-use super::{DesktopEvent, DeviceActions, Engine, Enrolled, HostCmd, KeyLink, endpoint_for};
+use super::{DesktopEvent, Engine, Enrolled, HostCmd, KeyLink, endpoint_for};
 use tilo_network_actor::WorkspaceId;
 
 /// What the peer actor heard, as the client's own vocabulary says it: the transport keeps the
@@ -132,7 +132,6 @@ impl Serving {
     pub(crate) fn new(
         bound: Bound,
         link: Option<Arc<KeyLink>>,
-        actions: Arc<std::sync::OnceLock<DeviceActions>>,
         protocols: tilo_network_actor::own_service::Protocols,
         documents: Option<super::PeerDocuments>,
         service: tilo_workspace_service::service::ServiceSlot,
@@ -141,7 +140,6 @@ impl Serving {
             bound,
             beside: Beside {
                 link,
-                actions,
                 protocols,
                 documents,
                 service,
@@ -155,7 +153,6 @@ impl Serving {
 /// an exit for the person's other devices.
 pub(crate) struct Beside {
     pub(crate) link: Option<Arc<KeyLink>>,
-    pub(crate) actions: Arc<std::sync::OnceLock<DeviceActions>>,
     /// The protocols the session answers besides its own, handed over before the endpoint binds: an
     /// endpoint's protocols are fixed once it is bound, so whatever answers on it is here from the
     /// first pass.
@@ -556,15 +553,9 @@ async fn own_service_opened(
     >,
     service: &OwnService,
     actor: &tokio::sync::mpsc::Sender<NetCmd>,
-    device: Option<&DeviceActions>,
 ) -> bool {
     match opening.await {
-        Ok(service) => {
-            // The session's action service answers the service's ALPN, so the governance of the
-            // workspaces the service holds is asked there.
-            if let Some(device) = device {
-                device.govern_with(service.workspaces().device_actions());
-            }
+        Ok(_service) => {
             let _ = actor.send(NetCmd::OwnServiceSettled).await;
             true
         }
@@ -577,24 +568,6 @@ async fn own_service_opened(
             false
         }
     }
-}
-
-/// Start this device's action service on `endpoint`, serve it there, and hand it to the session
-/// through `actions`: what the session installs answers, and an app's own-device actions and the
-/// asks of workspaces held elsewhere leave through it.
-fn serve_device_actions(
-    identity: &DeviceIdentity,
-    endpoint: &iroh::Endpoint,
-    engine: Option<&Arc<Engine>>,
-    served: &mut tilo_network_actor::own_service::Protocols,
-    actions: &std::sync::OnceLock<DeviceActions>,
-) {
-    let device = DeviceActions::start(identity, endpoint.clone(), engine.cloned());
-    served.push((
-        tilo_peer_state::actions::ACTIONS_ALPN.to_vec(),
-        Box::<dyn iroh::protocol::DynProtocolHandler>::from(device.action_service()),
-    ));
-    let _ = actions.set(device);
 }
 
 /// Bind this device's endpoint, serve the peer actor and its app wire on it, and say where the
@@ -612,7 +585,6 @@ async fn listening(
     ready: &std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
     Beside {
         link,
-        actions,
         protocols,
         documents,
         service,
@@ -662,12 +634,8 @@ async fn listening(
     // devices, when it offers one.
     served.extend(protocols);
     let _ = bound.endpoint.set(endpoint.clone());
-    if let Some(identity) = identity {
-        serve_device_actions(identity, &endpoint, engine, &mut served, &actions);
-    }
     // This device's own workspace service answers here: the workspaces it founds are held there,
-    // and their other devices and members join, sync and act with it on its own ALPNs. A device
-    // action service of the session's own, pushed above, answers that ALPN in its place.
+    // and their other devices and members join, sync and act with it on its own ALPNs.
     let (own_service, serving_own) = match identity
         .zip(engine)
         .map(|_| OwnService::deferred_in(service))
@@ -690,7 +658,7 @@ async fn listening(
     let mut opened = false;
     if let (Some(service), Some(identity), Some(engine)) = (&own_service, identity, engine) {
         let opening = open_own_service(service, identity, engine, (&endpoint, &reachability));
-        opened = own_service_opened(Box::pin(opening), service, &actor, actions.get()).await;
+        opened = own_service_opened(Box::pin(opening), service, &actor).await;
     }
     // Other devices' writes reach this device's apps from its workspace service, which holds a
     // member copy of every workspace this device takes part in.

@@ -568,7 +568,8 @@ pub struct Hosted {
     /// endpoint follows a route's keys.
     pub sealed: Sealed,
     /// How an app on this device runs one of its actions on another of the
-    /// person's devices: what the peer network reaches them through.
+    /// person's devices: carried to the device's daemon over its shell link
+    /// ([`crate::daemon_actions`]).
     pub own_device: Option<std::sync::Arc<dyn tilo_broker_core::services::OwnDeviceActions>>,
     /// This device's workspaces, whose owner is the canonical copy of what
     /// the apps record in them: an app's write in a workspace the owner
@@ -599,9 +600,8 @@ pub struct Hosted {
     /// what its record names, and the route an app asks the workspace's other
     /// devices for what it lacks.
     pub document_content: Option<std::sync::Arc<crate::content::ContentService>>,
-    /// Where an app's offloadable action runs: the round this session asks
-    /// the workspace's other devices, when it holds a workspace to ask them
-    /// in.
+    /// Where an app's offloadable action runs: the device's daemon places the turn on the
+    /// workspace's other devices, over the shell link it started this session on.
     pub action_offload: Option<std::sync::Arc<dyn tilo_actions::offload::ActionOffload>>,
     /// Where the broker keeps what it admits, under this session's state: a
     /// change is recorded before it runs, and answered from its record when it
@@ -1642,11 +1642,11 @@ fn broker_services(
         // reach its apps through them, and an endpoint follows their changes
         // here instead of asking again every second.
         group_keys: BrokerService::when(sealed.keys),
-        // An offloadable action runs where the workspace's devices would run
-        // it sooner.
+        // An offloadable action is placed by the device's daemon, which holds the endpoint and
+        // the workspaces' other devices; one it does not place runs here.
         action_offload: BrokerService::when(action_offload),
         // An app's action on another of the person's own devices is carried
-        // there by the peer network.
+        // to the daemon over its shell link.
         own_device: BrokerService::when(own_device),
         // A node of a workspace's tree, as an app asks about it: a share, its end, or what the
         // person may do there, decided by the workspace's own governance.

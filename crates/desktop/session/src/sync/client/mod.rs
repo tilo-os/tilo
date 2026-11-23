@@ -46,7 +46,6 @@ use super::Entering;
 #[cfg(target_os = "linux")]
 use crate::content;
 #[cfg(target_os = "linux")]
-use crate::device_actions::DeviceActions;
 #[cfg(target_os = "linux")]
 use crate::engine::Engine;
 #[cfg(target_os = "linux")]
@@ -363,9 +362,6 @@ pub(crate) struct Local {
     fabric: Option<Arc<SessionFabric>>,
     /// This session's Nearby Send, once the session made it.
     nearby: RefCell<Option<Arc<crate::nearby_transfer::NearbyTransfer>>>,
-    /// Where this device's actions are served, and how an app here reaches the person's other
-    /// devices: `None` until the endpoint has bound.
-    device_actions: Arc<std::sync::OnceLock<DeviceActions>>,
     /// The workspaces' live resources, told which devices this session reaches in each: a row
     /// live on a device that went away goes with it.
     live_rows: tilo_workspace_service::live::LiveRows,
@@ -559,15 +555,12 @@ impl Local {
                 _ => (ContentSources::default(), None),
             }
         };
-        // The devices of the workspace this session reaches are the ones an offer round asks: one
-        // that is away is not asked, and not waited for.
+        // The devices the workspace reaches are the ones live rows follow: a row live on a device
+        // that went away goes with it.
         if let Some((workspace, devices)) = connected {
             let devices: std::collections::BTreeSet<[u8; 32]> =
                 devices.iter().map(|device| *device.as_bytes()).collect();
             self.live_rows.reach(&workspace, devices.iter().copied());
-            if let Some(actions) = self.device_actions.get() {
-                actions.here(&workspace, devices);
-            }
         }
         content.sources_changed(ws, sources);
     }
@@ -863,15 +856,6 @@ impl Local {
             publisher,
         );
         self.content.replace(Some(content));
-    }
-
-    /// Where this device's actions are served, and how an app here runs its actions on the person's
-    /// other devices: `None` on a session that takes part as nobody, which has no key of its own to
-    /// ask with.
-    #[must_use]
-    #[cfg(target_os = "linux")]
-    pub(crate) fn device_actions(&self) -> Option<DeviceActions> {
-        self.device_actions.get().cloned()
     }
 
     /// The actions one of the person's devices sent this one since the last call, for the session's
@@ -1432,8 +1416,6 @@ impl Client {
         // The channels' side of the peer network is the engine's, opened before the peer network starts.
         let link = engine.as_ref().and_then(|engine| engine.link());
         let (network_link, enrolling) = (link.clone(), engine.clone());
-        let device_actions = Arc::new(std::sync::OnceLock::new());
-        let serving = Arc::clone(&device_actions);
         let endpoint_handle = Arc::new(std::sync::OnceLock::new());
         let binding = network::Bound::new(Arc::clone(&endpoint_handle), entry.relays, lan);
         let reached = binding.reached.clone();
@@ -1452,7 +1434,7 @@ impl Client {
                         ready,
                     },
                     wake,
-                    Serving::new(binding, network_link, serving, beside, documents, service),
+                    Serving::new(binding, network_link, beside, documents, service),
                 );
             })?;
         let (publisher, endpoint, reachability) = wait_for_bound(&bound)?;
@@ -1481,7 +1463,6 @@ impl Client {
             link,
             versions,
             fabric,
-            device_actions,
             live_rows,
             reachability,
             live,
@@ -1867,13 +1848,6 @@ impl Client {
         local.fabric_waiting.borrow_mut().extend(left);
     }
 
-    /// Where this device's actions are served.
-    #[must_use]
-    #[cfg(target_os = "linux")]
-    pub(crate) fn device_actions(&self) -> Option<DeviceActions> {
-        self.hosting.local.device_actions()
-    }
-
     /// The member's devices the peer network heard at another peer protocol version.
     #[cfg(target_os = "linux")]
     pub(crate) fn take_version_mismatches(&self) -> Vec<crate::network::VersionMismatch> {
@@ -1955,11 +1929,6 @@ impl Client {
     /// between the two carries their device fabric.
     #[cfg(target_os = "linux")]
     pub fn connect(&self, addr: EndpointAddr) {
-        // An action for this device is sent to where it was told to be,
-        // without waiting for the two sessions to meet first.
-        if let Some(actions) = self.hosting.local.device_actions.get() {
-            actions.learn(addr.clone());
-        }
         let _ = self.outgoing.send(Cmd::ConnectDevice(addr));
     }
 
@@ -2047,7 +2016,6 @@ struct Hosted {
     link: Option<Arc<KeyLink>>,
     versions: std::sync::mpsc::Receiver<crate::network::VersionMismatch>,
     fabric: Option<Arc<SessionFabric>>,
-    device_actions: Arc<std::sync::OnceLock<DeviceActions>>,
     live_rows: tilo_workspace_service::live::LiveRows,
     reachability: Reachability,
     live: Option<crate::live::Live>,
@@ -2064,7 +2032,6 @@ impl Local {
             link,
             versions,
             fabric,
-            device_actions,
             live_rows,
             reachability,
             live,
@@ -2089,7 +2056,6 @@ impl Local {
                 topologies: RefCell::new(std::collections::BTreeMap::new()),
                 fabric,
                 nearby: RefCell::new(None),
-                device_actions,
                 live_rows,
                 reachability: RefCell::new(reachability),
                 live: RefCell::new(live),
@@ -2125,7 +2091,6 @@ impl Local {
             topologies: RefCell::new(std::collections::BTreeMap::new()),
             fabric: None,
             nearby: RefCell::new(None),
-            device_actions: Arc::new(std::sync::OnceLock::new()),
             live_rows: tilo_workspace_service::live::LiveRows::default(),
             reachability: RefCell::new(Reachability::default()),
             live: RefCell::new(None),

@@ -48,6 +48,8 @@ mod keep;
 pub(crate) mod layout;
 pub(crate) mod local;
 pub(crate) mod migrate;
+mod offload_place;
+mod own_device;
 #[cfg(unix)]
 pub mod package_runs;
 #[cfg(unix)]
