@@ -1395,7 +1395,7 @@ pub enum BannerAction {
     /// Open the notification
     #[effect(kind = "outside")]
     #[effect(own_device, attended)]
-    Open {
+    OpenBanner {
         /// The banner to open; the newest when left out
         #[param("The banner to open; the newest when left out")]
         banner: Option<String>,
@@ -1682,7 +1682,7 @@ impl Served {
     fn run_banner(&self, action: &str, arguments: &Map<String, Value>) -> Result<(), ApiError> {
         let notifications = self.notifications.borrow();
         match decode::<BannerAction>(&self.resources(), BANNERS, action, arguments)? {
-            BannerAction::Open { banner } => {
+            BannerAction::OpenBanner { banner } => {
                 let id = live_id(&notifications, banner.as_deref())?;
                 notifications.ask(Ask::Banner(BannerAsk::Activate(id)));
             }
@@ -1814,7 +1814,7 @@ impl Service for Served {
                 .with_view(tilo_actions::ResourceViewSpec::new(
                     "banners",
                     t("session-banners"),
-                    "open",
+                    "open-banner",
                 )),
         );
         vec![resource, banners]

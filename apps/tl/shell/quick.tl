@@ -661,7 +661,10 @@ view devices_section() {
                     ui.ListRow(t.name, secondary: "It did not finish", icon: .triangle_alert) {
                         trailing: {
                             ui.Button("Try again", size: .small, role: .plain) {
-                                on press: device.retry(device.nearby_send, transfer: t.handle)
+                                on press: device.retry_transfer(
+                                    device.nearby_send,
+                                    transfer: t.handle,
+                                )
                             }
                         }
                     }

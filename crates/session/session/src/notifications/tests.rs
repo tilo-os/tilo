@@ -1663,7 +1663,7 @@ fn a_banner_dismisses_and_opens_through_its_published_actions() {
     let (rig, mut served, id) = banner_rig(&[("open", "Open")]);
     invoke_banner(
         &mut served,
-        "open",
+        "open-banner",
         serde_json::json!({ "banner": id.to_string() }),
     );
     rig.step();

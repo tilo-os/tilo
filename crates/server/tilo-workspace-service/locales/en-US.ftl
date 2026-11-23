@@ -66,7 +66,7 @@ so-tilo-device-nearby-send-send = Send files to a nearby device
 so-tilo-device-nearby-send-accept = Keep a file a nearby device offered
 so-tilo-device-nearby-send-decline = Turn down a file a nearby device offered
 so-tilo-device-nearby-send-cancel = Stop a transfer, sent or received
-so-tilo-device-nearby-send-retry = Offer again a transfer that failed
+so-tilo-device-nearby-send-retry-transfer = Offer again a transfer that failed
 so-tilo-device-nearby-send-share = Share a resource with people, opening the invitation sheet
 # What a turn says it is doing, as the person reads it on its reply: one line per step, what is
 # being done and what app it is about.

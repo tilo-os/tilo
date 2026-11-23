@@ -612,7 +612,7 @@ session-osd = Anzeige
 ## Banners
 
 session-banners = Hinweise
-so-tilo-session-banners-open = Die Benachrichtigung öffnen
+so-tilo-session-banners-open-banner = Die Benachrichtigung öffnen
 so-tilo-session-banners-dismiss = Die Benachrichtigung schließen
 so-tilo-session-banners-act = Auf der Benachrichtigung wählen
 so-tilo-session-banners-reply = Auf die Benachrichtigung antworten

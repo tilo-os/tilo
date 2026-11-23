@@ -1546,10 +1546,19 @@ impl Session {
                         options.person.clone(),
                         move || {
                             let mut active = String::new();
-                            let _ = tilo_broker_core::services::WorkspaceAuthority::with_tree(
-                                &*layout,
-                                &mut |tree| active = tree.active.to_string(),
-                            );
+                            // A workspace that cannot be read is no workspace: the engine
+                            // refuses a send with none, and the person is told why in the log.
+                            if let Err(error) =
+                                tilo_broker_core::services::WorkspaceAuthority::with_tree(
+                                    &*layout,
+                                    &mut |tree| active = tree.active.to_string(),
+                                )
+                            {
+                                tracing::warn!(
+                                    %error,
+                                    "nearby send cannot tell which workspace is in front"
+                                );
+                            }
                             active
                         },
                         move |resource| {

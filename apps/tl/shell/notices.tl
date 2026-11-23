@@ -273,7 +273,7 @@ view banner_row(n: device.Notice) {
                     } else if n.kind == "warning" { .warning } else { .info },
                 )
             }
-            on activate: device.open(device.banners, banner: "{n.number}")
+            on activate: device.open_banner(device.banners, banner: "{n.number}")
         }
         row(gap: .related, wrap: true) {
             // A call's answer and decline are their own actions, as a snooze is: each press is

@@ -162,5 +162,9 @@
   "so.tilo.tube tube.watch-history#progress": {
     "to": "so.tilo.tube tl.so.tilo.tube.Video#progress",
     "test": "crates/session/session/tests/youtube_client.rs:225"
+  },
+  "so.tilo.session notifications.banners#open": {
+    "to": "so.tilo.session notifications.banners#open-banner",
+    "test": "crates/session/session/src/notifications/tests.rs:1666"
   }
 }

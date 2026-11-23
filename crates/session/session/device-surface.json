@@ -2527,7 +2527,7 @@
       "version": 1,
       "verbs": [
         {
-          "id": "open",
+          "id": "open-banner",
           "label": "Open the notification",
           "description": "Open the notification",
           "kind": "outside",
@@ -3679,7 +3679,7 @@
           ]
         },
         {
-          "id": "retry",
+          "id": "retry-transfer",
           "label": "Offer again a transfer that failed",
           "description": "Offer again a transfer that failed",
           "kind": "outside",

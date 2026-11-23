@@ -217,7 +217,7 @@ pub enum NearbySendAction {
     /// Offer again a transfer that failed
     #[effect(kind = "outside")]
     #[effect(own_device)]
-    Retry {
+    RetryTransfer {
         /// The transfer, as the reading lists it.
         #[param("The transfer")]
         transfer: String,
@@ -453,7 +453,7 @@ impl NearbySend {
                 let handle = transfer_handle(&transfer)?;
                 self.answer(NearbyTransferCommand::Cancel { handle })
             }
-            NearbySendAction::Retry { transfer } => {
+            NearbySendAction::RetryTransfer { transfer } => {
                 let handle = transfer_handle(&transfer)?;
                 self.answer(NearbyTransferCommand::Retry { handle })
             }

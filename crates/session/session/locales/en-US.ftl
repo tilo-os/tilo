@@ -607,7 +607,7 @@ session-osd = Readout
 ## Banners
 
 session-banners = Banners
-so-tilo-session-banners-open = Open the notification
+so-tilo-session-banners-open-banner = Open the notification
 so-tilo-session-banners-dismiss = Dismiss the notification
 so-tilo-session-banners-act = Choose on the notification
 so-tilo-session-banners-reply = Reply to the notification

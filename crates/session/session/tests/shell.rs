@@ -3246,7 +3246,10 @@ fn the_quick_settings_devices_section_keeps_an_offer_and_tries_again() {
     );
     press_at(&mut session, "Try again", WIDTH, TALL);
     until_settled(&mut session, |_| {
-        calls.borrow().iter().any(|(action, _)| action == "retry")
+        calls
+            .borrow()
+            .iter()
+            .any(|(action, _)| action == "retry-transfer")
     });
     keep(&mut session, "shell-devices-nearby");
 }
