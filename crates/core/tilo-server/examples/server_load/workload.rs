@@ -17,10 +17,10 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, anyhow};
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::{PeerPresence, PeerPresencePayload};
-use neighbour_wire::NeighbourMsg;
 use ed25519_dalek::SigningKey;
 use iroh::EndpointAddr;
 use iroh::endpoint::{Endpoint, presets};
+use neighbour_wire::NeighbourMsg;
 use tokio::task::JoinHandle;
 
 use tilo_peer_state::direct::{DirectSync, Reader};
@@ -293,7 +293,12 @@ impl Fleet {
             ServerAddress::at(server.clone()),
             endpoint,
         ));
-        let link = Arc::new(dialer.link(Purpose::Records).await.map_err(|error| anyhow!("{error}"))?);
+        let link = Arc::new(
+            dialer
+                .link(Purpose::Records)
+                .await
+                .map_err(|error| anyhow!("{error}"))?,
+        );
         link.prove_member(&cert, &sk, &self.server.cert)
             .await
             .map_err(|error| anyhow!("{error}"))?;
@@ -580,8 +585,13 @@ impl Member {
         let message = self
             .sync
             .publish(|peer| {
-                peer.publication_mut()
-                    .publish_incremental(APP, RECORD, change, &self.sk, SystemTime::now())
+                peer.publication_mut().publish_incremental(
+                    APP,
+                    RECORD,
+                    change,
+                    &self.sk,
+                    SystemTime::now(),
+                )
             })
             .map_err(|error| anyhow!("publish an edit: {error}"))?;
         self.fleet.sent(&message, self.recipients);
