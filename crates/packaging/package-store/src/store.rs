@@ -1553,65 +1553,10 @@ mod eviction_plan_tests {
             );
         }
 
-        phase plan_eviction_counts_shared_blobs_once;
+        phase a_row_without_a_record_frees_its_whole_tree;
         {
-            // a and b each own 100 bytes and share a 300-byte library.
-            let index = UsageIndex::new(vec![
-                row("so.tilo.a", 1, false, &[(1, 100), (9, 300)]),
-                row("so.tilo.b", 2, false, &[(2, 100), (9, 300)]),
-            ]);
-            assert_eq!(
-                index.disk_usage().total_bytes,
-                500,
-                "the library counts once"
-            );
-            assert_eq!(index.disk_usage().tried_bytes, 800, "each row's own bytes");
-            // Evicting a frees only its own 100 bytes: b still holds the library.
-            assert_eq!(
-                plan_eviction(&index, 450, &BTreeSet::new(), none),
-                vec!["so.tilo.a"]
-            );
-            assert_eq!(
-                plan_eviction(&index, 400, &BTreeSet::new(), none),
-                vec!["so.tilo.a"]
-            );
-            // 400 left after a is still over 399, and b then frees 400.
-            assert_eq!(
-                plan_eviction(&index, 399, &BTreeSet::new(), none),
-                vec!["so.tilo.a", "so.tilo.b"]
-            );
-            assert!(
-                plan_eviction(&index, 500, &BTreeSet::new(), none).is_empty(),
-                "already under the cap"
-            );
-            assert!(
-                plan_eviction(&index, 500, &BTreeSet::new(), |id| panic!(
-                    "{id} was asked about"
-                ))
-                .is_empty(),
-                "under the cap no row is asked whether it runs"
-            );
-            assert!(
-                plan_eviction(&index, 0, &BTreeSet::new(), none).is_empty(),
-                "0 disables the sweep"
-            );
-        }
-
-        phase plan_eviction_never_picks_pinned;
-        {
-            let index = UsageIndex::new(vec![
-                row("so.tilo.kept", 0, true, &[(1, 1_000)]),
-                row("so.tilo.tried", 5, false, &[(2, 1_000)]),
-            ]);
-            assert_eq!(
-                plan_eviction(&index, 1, &BTreeSet::new(), none),
-                vec!["so.tilo.tried"],
-                "the oldest row is pinned, and the cap is never met, yet it stays"
-            );
-        }
-
-        phase plan_eviction_is_lru;
-        {
+            // The LRU order, shared-blob accounting and pinned protection are
+            // exercised through a real sweep in `tests/install.rs`.
             let mut loose = row("so.tilo.legacy", 20, false, &[]);
             loose.loose_bytes = 50;
             let index = UsageIndex::new(vec![
@@ -1620,10 +1565,6 @@ mod eviction_plan_tests {
                 loose,
             ]);
             assert_eq!(index.disk_usage().total_bytes, 250);
-            assert_eq!(
-                plan_eviction(&index, 150, &BTreeSet::new(), none),
-                vec!["so.tilo.oldest"]
-            );
             assert_eq!(
                 plan_eviction(&index, 100, &BTreeSet::new(), none),
                 vec!["so.tilo.oldest", "so.tilo.legacy"],
