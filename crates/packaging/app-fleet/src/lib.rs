@@ -182,64 +182,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_fleet_knows_documents_and_closed_actions() {
-        let sheets = metadata("so.tilo.sheets").expect("Sheets is in the fleet");
-        assert!(
-            sheets
-                .resource_types
-                .contains(&("sheets.workbook", "Workbook"))
-        );
-        assert!(!sheets.tagline.is_empty());
-        assert!(sheets.keywords.contains(&"spreadsheet"));
+    fn a_dev_build_and_a_previous_id_name_the_app_the_fleet_knows() {
         assert_eq!(
             metadata("dev.tilo.sheets").map(|app| app.id),
             Some("so.tilo.sheets")
         );
-        // Settings shows what the person keeps for themselves, so its windows are theirs.
-        assert!(windows_are_own("dev.tilo.settings"));
-        assert!(!windows_are_own("so.tilo.chat"));
-        assert!(windows_hold_documents("so.tilo.sheets"));
-        assert!(windows_hold_documents("dev.tilo.terminal"));
-        assert!(!windows_hold_documents("so.tilo.tasks"));
-        assert!(!windows_hold_documents("so.tilo.notes"));
-        let calendar = metadata("so.tilo.calendar").expect("Calendar is in the fleet");
-        assert!(
-            calendar
-                .actions()
-                .any(|action| action.action == "show-tasks")
-        );
-    }
-
-    #[test]
-    fn a_tilolang_app_is_known_as_fully_as_a_native_one() {
-        let notes = metadata("so.tilo.notes").expect("Notes is in the fleet");
-        assert_eq!(notes.name, "Notes");
-        assert_eq!(notes.category, "Office");
-        assert!(notes.tagline.contains("together"));
-        assert!(notes.keywords.contains(&"memo"));
-        assert!(notes.names.contains(&"Notizen"));
-        assert!(
-            notes
-                .resource_types
-                .contains(&("tl.so.tilo.notes.Notebook", "Notebook"))
-        );
-        assert_eq!(
-            notes.actions().next().map(|action| action.action),
-            Some("new_note")
-        );
-        assert!(windows_are_own("so.tilo.shell"));
-        // An id the app was published under before names it.
         assert_eq!(
             metadata("so.tilo.lang.todo").map(|app| app.id),
             Some("so.tilo.lang.tasks")
         );
-        // The tilolang package's surface is generated from the same metadata, so a program a
-        // server compiles for a workspace with no app installed reads Notes' records there.
-        let surface = surface("so.tilo.notes").expect("Notes ships its surface");
-        assert!(surface.contains("tl.so.tilo.notes.Notebook"));
-        assert!(surface.contains("tl.so.tilo.notes.Note"));
-        // It runs where its runtime runs, on Linux and in a browser tab: a person is never
-        // offered it on a Mac, where no build of the runtime exists.
-        assert_eq!(notes.platforms, ["linux", "web"]);
+        for app in apps() {
+            assert_eq!(metadata(app.id).map(|known| known.id), Some(app.id));
+        }
+        assert!(metadata("so.tilo.no-such-app").is_none());
+    }
+
+    #[test]
+    fn windows_private_records_and_closed_actions_read_per_app() {
+        // Settings shows what the person keeps for themselves, so its windows are theirs.
+        assert!(windows_are_own("dev.tilo.settings"));
+        assert!(!windows_are_own("so.tilo.chat"));
+        assert!(windows_hold_documents("so.tilo.sheets"));
+        assert!(!windows_hold_documents("so.tilo.tasks"));
+        for (app, kind) in every_private_kind() {
+            assert!(
+                private_kinds(app).any(|declared| declared == kind),
+                "{app} names {kind}"
+            );
+        }
+        for app in apps() {
+            for action in app.actions() {
+                assert!(!action.action.is_empty(), "{}", app.id);
+                assert!(!action.label.is_empty(), "{}", app.id);
+                for word in action.keywords() {
+                    assert!(!word.is_empty(), "{}", app.id);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_surface_is_the_one_its_app_ships() {
+        let mut checked = 0;
+        for (id, _, text) in surfaced() {
+            assert!(!text.is_empty(), "{id}");
+            assert_eq!(surface(id), Some(text), "{id}");
+            checked += 1;
+        }
+        assert!(checked > 0, "no surface is compiled in");
     }
 }

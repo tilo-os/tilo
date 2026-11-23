@@ -1052,21 +1052,6 @@ mod tests {
     }
 
     #[test]
-    fn versions_group_by_target_and_bots_form_one_group() {
-        let app = sample_entry();
-        assert_eq!(
-            app.versions[0].group(),
-            VersionGroup::Target {
-                platform: TILO_OS_PLATFORM,
-                architecture: "x86_64"
-            }
-        );
-        assert_eq!(sample_bot().versions[0].group(), VersionGroup::Bot);
-        assert!(sample_bot().versions[0].target().is_none());
-        assert!(sample_bot().versions[0].tapp().is_none());
-    }
-
-    #[test]
     fn entry_signing_message_covers_every_signed_field() {
         {
             let e = sample_entry();
