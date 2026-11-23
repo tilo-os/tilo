@@ -33,8 +33,6 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # The host's state file is replaced whole, never half-written.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-actions = { path = "../../collab/actions" }
-# A report's authenticated transport and the signed receipt an agent's
-# member answers for.
 # A bot's record events: the dispatcher's event shape and its reader of
 # recorded entries, shared with the shell.
 tilo-automation = { path = "../../collab/automation" }

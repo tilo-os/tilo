@@ -12,6 +12,7 @@ use tilolang_tilo::publish::{
 };
 
 const NOTES: &str = "so.tilo.notes";
+const CONTACTS: &str = "so.tilo.contacts";
 
 /// What the toolkit reads: a package's catalogues join the person's, so what it declares reads
 /// in their language.
@@ -84,6 +85,44 @@ fn notes(locale: &str) -> (Host, Package) {
         .expect("the notes package loads");
     let package = host.package(NOTES).expect("it is loaded");
     (host, package)
+}
+
+/// The contacts app as it ships, compiled with the platform packages it reads its workspace's
+/// directory through ([`CONTACTS`]), loaded into a host that reads in `locale`.
+fn contacts(locale: &str) -> (Host, Package) {
+    let metas = tilolang_tilo::platform_apps::platform_packages().expect("the platform packages");
+    let directory = metas
+        .iter()
+        .find(|meta| meta.app == tilolang_tilo::platform_apps::CONTACTS_APP)
+        .expect("the contact directory's package")
+        .clone();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/contacts");
+    let source = tilolang::PackageSource::read_dir(&dir).expect("the contacts package reads");
+    let ids = tilolang::IdsLock::parse(
+        &std::fs::read_to_string(dir.join("app.ids")).expect("the contacts package's ids"),
+    )
+    .expect("its ids parse");
+    let compiled = tilolang::compile_package_source(&source, &ids, &metas)
+        .expect("the contacts package compiles");
+    ui::i18n::I18nManager::install("en-US", locale, &[("en-US", "")]).expect("the source words");
+    let host = Host::new(
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .expect("a host");
+    host.set_words(Toolkit);
+    host.runtime()
+        .load_foreign(directory)
+        .expect("the directory is a package of the workspace");
+    host.load_compiled(&compiled)
+        .expect("the contacts package loads");
+    let package = host.package(CONTACTS).expect("it is loaded");
+    (host, package)
+}
+
+/// The contacts package's book, as it publishes it to the workspace's search.
+fn published_book(host: &Host, package: &Package) -> tilo_actions::ResourceSpec {
+    publish_resource(&types_of(host, package), "Book", "so.tilo.contacts/root", "Contacts")
 }
 
 fn types_of(host: &Host, package: &Package) -> ActionTypes {
@@ -426,6 +465,8 @@ fn the_palette_reads_native_and_tilolang_actions_in_german() {
 
     let (host, package) = notes("de-DE");
     let notebook = notebook(&host, &package);
+    let (contacts_host, contacts_package) = contacts("de-DE");
+    let book = published_book(&contacts_host, &contacts_package);
     let passwords = passwords::actions::PasswordsEffect::declarations()
         .iter()
         .map(EffectDecl::spec_of::<passwords::actions::PasswordsEffect>)
@@ -435,6 +476,7 @@ fn the_palette_reads_native_and_tilolang_actions_in_german() {
         );
     let palette = Published(vec![
         PublishedActions::of("so.tilo.passwords", "workspace", &[passwords]),
+        PublishedActions::of(CONTACTS, "workspace", &[book]),
         PublishedActions::of(NOTES, "workspace", &[notebook]),
     ]);
     let rows = |query: &str| -> Vec<String> {
@@ -448,6 +490,11 @@ fn the_palette_reads_native_and_tilolang_actions_in_german() {
     assert!(
         native.iter().any(|title| title == "App-Zugriffe anzeigen"),
         "the passwords app's action reads in German: {native:?}"
+    );
+    let groups = rows("Gruppe");
+    assert!(
+        groups.iter().any(|title| title == "Neue Gruppe"),
+        "the contacts app's action reads in German: {groups:?}"
     );
     let notes = rows("Notiz");
     assert!(

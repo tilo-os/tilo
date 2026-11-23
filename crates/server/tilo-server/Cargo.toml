@@ -191,7 +191,6 @@ tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 # The shared question sheet's words and pictures: a page draws an agent's
 # question in the same words a native session's sheet does.
 tilo-sheets = { path = "../../session/sheets", optional = true }
-# The persistent workspace's moderation agent and its model provider.
 # A persistent public workspace's chat opens with the operator's channels.
 discord = { path = "../../../apps/discord", optional = true }
 tilo-connector = { path = "../../integrations/connector", optional = true }

@@ -90,9 +90,6 @@ tilo-desktop-model = { path = "../../session/desktop-model" }
 tilo-fs = { package = "tilo-fs", path = "../../system/fs", features = ["tree-sync"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-identity = { path = "../tilo-identity" }
-# The person's root, as this computer's identity store keeps it: what `tilo device add` approves a
-# new computer's certificate with.
-tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 # The surface an app under development names (`app_surface`), and the
 # runtime's own words (consent prompt, device grants), from Fluent. The
 # broker links it on every platform already.
