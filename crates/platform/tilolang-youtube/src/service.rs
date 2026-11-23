@@ -122,6 +122,7 @@ impl Default for Live {
     }
 }
 
+#[cfg(feature = "live")]
 impl Service for Live {
     fn search(&self, query: &str) -> Result<SearchPage, ServiceError> {
         let client = crate::live::client()?;

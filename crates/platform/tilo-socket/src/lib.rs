@@ -135,8 +135,11 @@ fn too_long(path: &Path) -> io::Error {
     )
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
+    // The socket a test binds is a Unix one.
+    #![cfg(unix)]
+
     use super::*;
     use std::io::{Read as _, Write as _};
 
