@@ -13,6 +13,7 @@ pub mod session_api;
 pub mod task_hosts;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_hosts;
+pub mod tool;
 mod turn;
 
 pub use images::MediaReader;

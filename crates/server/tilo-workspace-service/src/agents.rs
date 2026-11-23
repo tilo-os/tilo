@@ -3014,8 +3014,8 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
         } else if call.name == shares::ANSWER_WITH_DOCUMENT {
             let at = self.at.lock().await;
             Box::pin(at.1.document(self.server, &call.input)).await
-        } else if web_search::owns(&call.name) {
-            self.web.tool(&call.name, &call.input).await
+        } else if let Some(web) = self.web.tool(&call.name, &call.input).await {
+            web
         } else {
             learned::call(self.keeping, &call.name, &call.input).await?
         };
