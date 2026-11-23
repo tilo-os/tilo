@@ -86,7 +86,8 @@ WGPU_ADAPTER_NAME = "llvmpipe"
 
 # Tests, one check per package: `test/<package>`. The driver runs nextest once over the whole
 # family, so a shared dependency compiles once for all of them, and t shards each test binary by
-# its measured per-test time.
+# its measured per-test time. The flows' tests are not here: the shared filters leave them out,
+# and the `flows` check runs each flow alone.
 [[cargo]]
 name = "test"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -142,7 +143,9 @@ starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
-# every family that declares it resolve them, so all of them build the same units of them.
+# every family that declares it resolve them, so all of them build the same units of them. The
+# flows' tests are not here either: the shared filters leave them out, and the `flows` check runs
+# each flow alone.
 [[cargo]]
 name = "test-{arch}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -228,6 +231,26 @@ packages = [
 env = { TILO_TEST_NTFS_FIXTURES = "0" }
 heavy = true
 on = ["dispatch"]
+
+# The flows of docs/architecture/flows.md, one check per flow so a flow still being built can stay
+# red without turning an ordinary package's test check red: a flow test is a test whose name
+# carries a `flow_<name>` module, and the shared filters (.config/nextest-filters.toml, `flows`)
+# leave those out of every run that names no filter of its own. Each entry runs exactly that flow's
+# tests, in the package whose tests they are and the way that package's family runs them: a default
+# check, so every change it reaches runs it.
+#
+# A flow whose tests another package holds adds a matrix entry with its own `-p` and filter. The
+# flows in crates/session/client/tests start the server's workspace service the way a deployment
+# does, which the ci profile's setup builds for them (.config/nextest.toml, `lounge-siblings`), so
+# their run names `-p tilo-session-client --test it`. The VM-only steps of flow 1 (a hosted
+# Browser and a command in a VM) are KVM and stay in os/containers/tilo-sh/check.sh.
+[[check]]
+name = "flows/{flow}"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=pass -p tilo-agent-session --test it -E 'test(workspace_actions::flow_customer_workspaces::)'\n"
+timeout_secs = 1800
+[check.matrix]
+flow = ["customer-workspaces"]
 
 # Clippy over the workspace: one driver, one unit per crate, shared with `test` and `check` (t's
 # compiler cache keys a unit by what it was given, whichever family asked for it). Its selection

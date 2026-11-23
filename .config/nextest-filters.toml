@@ -21,3 +21,12 @@ push_only = """
 (package(tilo-fs) and binary(it) and test(collab_release_matrix::)) or
 (package(tilo-rollback) and binary(mechanism))
 """
+
+# The flows of docs/architecture/flows.md. Each flow is a test whose name
+# carries a `flow_<name>` module, kept in the tests of the package that serves
+# it; the `flows` check in t.toml runs one flow's tests at a time, so a flow
+# still being built stays red without turning its package's own test check
+# red. Every run that names no filter of its own leaves them out.
+flows = """
+test(/^flow_[a-z0-9_]+::/) or test(/::flow_[a-z0-9_]+::/)
+"""

@@ -16,9 +16,9 @@
 # wrapper's environment every one of them would key each build script's and
 # proc macro's cache entry, so jobs testing different packages would share no
 # build. Without an -E of its
-# own, the run leaves out the visual goldens (they run alone, on their image),
-# as .config/nextest-filters.toml says. With one the filter is left as given,
-# but for the tests whose capability this machine lacks
+# own, the run leaves out the visual goldens (they run alone, on their image) and
+# the flows (their own check), as .config/nextest-filters.toml says. With one the
+# filter is left as given, but for the tests whose capability this machine lacks
 # (.config/nextest-capabilities.toml): those are left out of every run, the
 # probe of them taken here, where the tests run, so a workflow's run and a job
 # t shards leave them out alike.
@@ -153,7 +153,13 @@ for name, value in nextest_filters.filters().items():
     print(f"{name}={shlex.quote(value)}")
 PY
 )
-    arguments+=(-E "not (${GOLDEN_FILTER:-})")
+    left_out="not (${GOLDEN_FILTER:-})"
+    # The flows (docs/architecture/flows.md) are the `flows` check's to run, tests whose name
+    # carries a `flow_<name>` module: an ordinary run of their package leaves them out, so a flow
+    # still being built stays red without turning the package's own test check red. A tree whose
+    # shared filters know none (an older rev) leaves them in, as it did before they existed.
+    [[ -z ${FLOWS_FILTER:-} ]] || left_out+=" & not (${FLOWS_FILTER})"
+    arguments+=(-E "$left_out")
 fi
 # A test whose capability the ci profile's setup promises (tools/test-env-setup.sh sets every
 # mapped capability's TILO_REQUIRE_*) fails where this machine lacks it, so the run leaves that
