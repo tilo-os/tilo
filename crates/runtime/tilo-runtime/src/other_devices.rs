@@ -18,7 +18,6 @@ use tilo_actions::remote::{
     InvocationReceipt, InvocationState, InvokeRequest, Pending, RemoteActionFrame,
     RemoteActionMessage,
 };
-use tilo_peer_state::actions::ActionService;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::transport::{Envelope, REMOTE_ACTION_ENVELOPE_VERSION};
 use tilo_server_session::client::ServerClient;
@@ -44,6 +43,9 @@ pub trait Whereabouts: Send + Sync {
     fn addr(&self, id: EndpointId) -> EndpointAddr {
         EndpointAddr::new(id)
     }
+
+    /// The certificates `workspace`'s roster keeps here: its members as this device holds them.
+    fn devices(&self, workspace: &str) -> Vec<DeviceCert>;
 }
 
 /// The person's other devices, as this device asks them over the one action frame between
@@ -52,8 +54,6 @@ pub trait Whereabouts: Send + Sync {
 pub struct OtherDevices(Arc<Inner>);
 
 struct Inner {
-    /// The device's action service, read for the rosters the person's devices are listed from.
-    actions: ActionService,
     /// The endpoint this device asks from.
     endpoint: Endpoint,
     /// The runtime the connection to the other device opens on.
@@ -76,7 +76,6 @@ impl OtherDevices {
     /// whose certificate `cert` and key `signer` are, reaching devices where `places` says.
     #[must_use]
     pub fn new(
-        actions: ActionService,
         endpoint: Endpoint,
         runtime: tokio::runtime::Handle,
         (person, this): ([u8; 32], [u8; 32]),
@@ -86,7 +85,6 @@ impl OtherDevices {
         places: Arc<dyn Whereabouts>,
     ) -> Self {
         Self(Arc::new(Inner {
-            actions,
             endpoint,
             runtime,
             whose: (person, this),
@@ -104,7 +102,7 @@ impl OtherDevices {
     /// with why, where no device of the person's goes by that name. Blocks the calling thread,
     /// which must not be one of the runtime's.
     pub fn serve_forward(&self, mut stream: UnixStream, forward: &tilo_mcp::devices::Forward) {
-        let (device, workspace) = match self.0.runtime.block_on(self.target(forward)) {
+        let (device, workspace) = match self.target(forward) {
             Ok(target) => target,
             Err(reason) => {
                 tracing::info!(device = %forward.device, %reason, "MCP server: a client is not carried to another device");
@@ -246,10 +244,7 @@ impl OtherDevices {
     /// The device `forward` names and the workspace the agent works in there: the one it names,
     /// else the one of this device's workspaces that device is in. A device is named by its name
     /// or its key.
-    async fn target(
-        &self,
-        forward: &tilo_mcp::devices::Forward,
-    ) -> Result<([u8; 32], String), String> {
+    fn target(&self, forward: &tilo_mcp::devices::Forward) -> Result<([u8; 32], String), String> {
         let asked = forward.device.trim();
         let key = tilo_failure::ignored!(
             "a device named by its name is not a key",
@@ -266,7 +261,7 @@ impl OtherDevices {
         let mut found = Vec::new();
         let mut known = std::collections::BTreeSet::new();
         for workspace in workspaces {
-            for device in self.devices_in(&workspace, false).await {
+            for device in self.devices_in(&workspace, false) {
                 let name = tilo_mcp::devices::device_name(&device);
                 if key == Some(device.device_public_key) || name.eq_ignore_ascii_case(asked) {
                     found.push((device.device_public_key, workspace.clone()));
@@ -296,13 +291,11 @@ impl OtherDevices {
 
     /// The person's devices in `workspace`'s roster as this device holds it, this one among them
     /// when `with_this`.
-    async fn devices_in(&self, workspace: &str, with_this: bool) -> Vec<DeviceCert> {
+    fn devices_in(&self, workspace: &str, with_this: bool) -> Vec<DeviceCert> {
         let (person, this) = self.0.whose;
         self.0
-            .actions
-            .certificates(workspace)
-            .await
-            .unwrap_or_default()
+            .places
+            .devices(workspace)
             .into_iter()
             .filter(|device| {
                 device.user_public_key == person && (with_this || device.device_public_key != this)
@@ -320,7 +313,7 @@ impl tilo_mcp::devices::DeviceDirectory for OtherDevices {
             let this = self.0.whose.1;
             let mut reach: BTreeMap<[u8; 32], Reach> = BTreeMap::new();
             for workspace in self.0.places.workspaces() {
-                for device in self.devices_in(&workspace, true).await {
+                for device in self.devices_in(&workspace, true) {
                     let key = device.device_public_key;
                     let answer = if key == this || self.0.places.reachable(&workspace, key) {
                         Ok(())

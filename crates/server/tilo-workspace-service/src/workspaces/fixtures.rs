@@ -833,3 +833,57 @@ impl Workspaces {
         governed.lock().await.peer.lock().name_person_as_founder();
     }
 }
+
+/// Record `grants` in `workspace`'s governance as its host, then project the access the host
+/// decides its changes against: what a person's Settings writes there, without a client.
+///
+/// # Panics
+///
+/// The workspace is not governed here, or its governance did not take them.
+pub async fn record_grants(
+    workspaces: &Workspaces,
+    workspace: &str,
+    grants: &[tilo_action_policy::Grant],
+) {
+    let state = workspaces
+        .workspace(workspace)
+        .await
+        .expect("a governed workspace");
+    {
+        let governed = state.lock().await;
+        let key = workspaces.inner.host.key.clone();
+        governed
+            .peer()
+            .governance_mut()
+            .put_governed_grants(grants, &key, tilo_clock::wall())
+            .expect("the host records its workspace's grants");
+    }
+    project_access(workspaces, workspace).await;
+}
+
+/// Take the grants `ids` name back from `workspace`'s governance as its host, then project the
+/// access the host decides its changes against.
+///
+/// # Panics
+///
+/// The workspace is not governed here, or its governance did not take the change.
+pub async fn revoke_grants(
+    workspaces: &Workspaces,
+    workspace: &str,
+    ids: &[tilo_action_policy::GrantId],
+) {
+    let state = workspaces
+        .workspace(workspace)
+        .await
+        .expect("a governed workspace");
+    {
+        let governed = state.lock().await;
+        let key = workspaces.inner.host.key.clone();
+        governed
+            .peer()
+            .governance_mut()
+            .remove_governed_grants(ids, &key, tilo_clock::wall())
+            .expect("the host takes its workspace's grants back");
+    }
+    project_access(workspaces, workspace).await;
+}
