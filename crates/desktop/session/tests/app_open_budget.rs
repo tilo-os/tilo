@@ -156,6 +156,43 @@ fn declares_splash_budget(manifest: &str) -> bool {
     false
 }
 
+/// What the session and the app's host reported of a tilolang open, for whoever cuts the cost of
+/// an open: the window's own `APP-STARTUP` summary, what handing the instance to its host took
+/// (`handed_us`), the stages the host opened in (`stages_us`), and how long after the spawn the
+/// window mapped (`spawn_to_map_us`). Empty for an app that reported none of them.
+fn tl_open_report(log: &str, app: &str) -> String {
+    let mut found: Vec<String> = Vec::new();
+    for line in log.lines() {
+        if line.contains("APP-STARTUP app=") && line.contains(&format!("app={app} ")) {
+            if let Some(at) = line.find("APP-STARTUP") {
+                found.push(line[at..].trim().to_owned());
+            }
+        } else if line.contains("tilolang instance handed over")
+            && field(line, "package_id") == Some(app)
+        {
+            found.push(format!(
+                "handed_us={}",
+                field(line, "handed_us").unwrap_or("?")
+            ));
+        } else if line.contains("tilolang instance opened")
+            && field(line, "app").map(|value| value.trim_matches('"')) == Some(app)
+        {
+            found.push(format!(
+                "stages_us={}",
+                field(line, "stages_us").unwrap_or("?")
+            ));
+        } else if line.contains("application toplevel mapped")
+            && field(line, "package_id") == Some(app)
+        {
+            found.push(format!(
+                "spawn_to_map_us={}",
+                field(line, "spawn_to_map_us").unwrap_or("?")
+            ));
+        }
+    }
+    found.join("; ")
+}
+
 /// The manifest path the registry holds for the entry `app`, as an install wrote it: the rows are
 /// `[[entry]]` blocks, each naming its `id` before its `manifest_path`.
 fn registered_manifest(registry: &str, app: &str) -> Option<PathBuf> {
@@ -687,7 +724,8 @@ fn every_installed_app_opens_within_the_budget_its_manifest_declares() {
         .zip(idle_opens.iter().zip(&loaded_opens))
     {
         // A drift upward toward a budget shows in a passing run's log as it does in a failing
-        // one's: the budget and the work each open took.
+        // one's: the budget and the work each open took, and for a tilolang app what its window
+        // and its host reported of the open, which its owner cuts the cost by.
         println!(
             "{app}: budget {budget} ms of work; idle {:.0} ms of work, {:.0} ms wall; loaded \
              {:.0} ms of work, {:.0} ms wall",
@@ -696,10 +734,19 @@ fn every_installed_app_opens_within_the_budget_its_manifest_declares() {
             loaded_open.work_ms(),
             loaded_open.total_ms,
         );
+        let tl = if TL_APPS.contains(app) {
+            let idle_report = tl_open_report(&idle.log(), app);
+            let loaded_report = tl_open_report(&loaded.log(), app);
+            println!("{app}: tl idle {idle_report}");
+            println!("{app}: tl loaded {loaded_report}");
+            format!("\n  tl idle   {idle_report}\n  tl loaded {loaded_report}")
+        } else {
+            String::new()
+        };
         if idle_open.work_ms() > f64::from(*budget) || loaded_open.work_ms() > f64::from(*budget) {
             let pad = " ".repeat(9);
             over.push(format!(
-                "{app}: budget {budget} ms of work\n  idle   {}\n{pad}{}\n  loaded {}\n{pad}{}",
+                "{app}: budget {budget} ms of work\n  idle   {}\n{pad}{}\n  loaded {}\n{pad}{}{tl}",
                 idle_open.summary(),
                 idle_open.phases(),
                 loaded_open.summary(),
