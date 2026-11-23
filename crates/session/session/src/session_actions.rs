@@ -763,10 +763,7 @@ mod tests {
         )
         .expect("this device governs the workspace it hosts");
         let host = governor.device().device_public_key;
-        let frames: Vec<Vec<u8>> = governor
-            .outgoing()
-            .map(|(bytes, _)| bytes.to_vec())
-            .collect();
+        let frames: Vec<Vec<u8>> = governor.outgoing().map(|(bytes, _)| bytes).collect();
         for frame in frames {
             owner
                 .receive(

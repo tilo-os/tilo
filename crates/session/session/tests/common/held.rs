@@ -120,10 +120,7 @@ pub fn workspace_held_here(state: &Path, workspace: &str, cert: &DeviceCert, key
     // The governor's checkpoint now names this device: the host admits it as the publication a
     // host's own workspace makes.
     let host = governor.device().device_public_key;
-    let frames: Vec<Vec<u8>> = governor
-        .outgoing()
-        .map(|(bytes, _)| bytes.to_vec())
-        .collect();
+    let frames: Vec<Vec<u8>> = governor.outgoing().map(|(bytes, _)| bytes).collect();
     let id = WorkspaceId::parse(workspace).expect("a workspace id");
     for frame in frames {
         owner
