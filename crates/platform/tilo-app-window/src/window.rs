@@ -339,7 +339,7 @@ pub struct AppWindow {
     notices: Vec<(wire::NoticeKind, String)>,
     /// The actions the app offers the person at this window, as their command palette lists them
     /// ([`ToUi::Actions`]).
-    actions: Vec<tilo_actions::ActionDescriptor>,
+    pub(crate) offered: crate::catalogue::Offered,
     /// How many rows the frame's list showed before the search typed anything: what the search's
     /// counter counts them of.
     search_total: Option<usize>,
@@ -456,7 +456,7 @@ impl AppWindow {
             compose_at: None,
             shape: Shape::Window,
             notices: Vec::new(),
-            actions: Vec::new(),
+            offered: crate::catalogue::Offered::default(),
             search_total: None,
             save: ui::SaveStatusSurface::new(),
             heard: Vec::new(),
@@ -473,7 +473,7 @@ impl AppWindow {
     /// the way it offers its own.
     #[must_use]
     pub fn actions(&self) -> &[tilo_actions::ActionDescriptor] {
-        &self.actions
+        self.offered.actions()
     }
 
     /// The person chose `address` from the window's command palette with `argument`, or pressed a
@@ -665,7 +665,7 @@ impl AppWindow {
                 ToUi::Notice { words, kind, undo } => self.notice(&words, kind, undo),
                 ToUi::Ask(ask) => self.rebuild_ask(ask.as_ref()),
                 ToUi::Form(form) => self.show_form(form.as_deref()),
-                ToUi::Actions(catalogue) => self.take_actions(catalogue)?,
+                ToUi::Actions(catalogue) => self.take_actions(&catalogue)?,
                 ToUi::Took { fired } => {
                     self.took = self.took.max(fired);
                     // What was typed after the presses it ran goes to what they opened, before what
@@ -750,10 +750,10 @@ impl AppWindow {
     }
 
     /// What the app offers the person at the window now ([`crate::catalogue::take`]).
-    fn take_actions(&mut self, catalogue: wire::ActionCatalogue) -> Result<(), String> {
-        crate::catalogue::take(&mut self.actions, catalogue)?;
+    fn take_actions(&mut self, catalogue: &[u8]) -> Result<(), String> {
+        self.offered.take(catalogue)?;
         // The window publishes each action as the resource its controls are on.
-        let published = self.catalogue();
+        let published = self.catalogue().to_vec();
         self.bind_published(&published);
         Ok(())
     }

@@ -740,7 +740,7 @@ fn refs_in(value: &RuntimeValue) -> Vec<RuntimeRef> {
 mod tests {
     use super::*;
     use std::path::Path;
-    use tilo_render_protocol::patch::{ActionCatalogue, ToUi};
+    use tilo_render_protocol::patch::ToUi;
 
     /// The packages of the app `name` of the apps the
     /// platform ships (`apps/tl/<name>`) and what it
@@ -772,10 +772,11 @@ mod tests {
             .map(|tree| (*tree).clone())
             .collect();
         let descriptors = tilo_actions::api::survey(&resources);
-        let encoded = serde_json::to_vec(&descriptors).expect("the action directory encodes");
         staged
             .instance
-            .say(ToUi::Actions(ActionCatalogue::All(encoded)));
+            .say(ToUi::Actions(tilo_app_window::catalogue::whole(
+                &descriptors,
+            )));
         staged.instance.flush();
         staged.exchange();
         staged.harness.relayout();

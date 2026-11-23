@@ -41,7 +41,7 @@ use tilo_actions::{
     ResourceSpec,
 };
 use tilo_render_protocol::WireError;
-use tilo_render_protocol::patch::{ActionCatalogue, ToUi, Transport};
+use tilo_render_protocol::patch::{ToUi, Transport};
 use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
@@ -2437,12 +2437,15 @@ impl Hosted {
             self.directory.withdraw();
             self.directory_behind = false;
             self.directory_from = None;
-            if !self
-                .published
-                .as_ref()
-                .is_some_and(|(held, _)| held.is_empty())
-            {
-                say_catalogue(&mut self.instance, &[], |_| true, false);
+            if self.published.is_none() {
+                // The window may hold a surface the broker did not take: it holds none now.
+                say_surface(
+                    &mut self.instance,
+                    &SurfaceDelta {
+                        reset: true,
+                        ..SurfaceDelta::default()
+                    },
+                );
             }
             if self
                 .published
@@ -2480,7 +2483,6 @@ impl Hosted {
             .as_ref()
             .map(|(held, state)| (state, held.as_slice()));
         let (delta, state) = SurfacePublication::next(prior, &descriptors);
-        self.offer(&delta, &descriptors);
         if delta.is_empty() || self.send_surface(delta) {
             self.published = Some((descriptors, state));
             self.published_from = Some((surface, inputs));
@@ -2490,31 +2492,6 @@ impl Hosted {
             self.published = None;
             self.published_from = None;
         }
-    }
-
-    /// Offer the window the person's command palette `descriptors`, the actions the instance
-    /// publishes on its connection: the window offers them the way it offers its own, with the
-    /// labels, keys and icons the app gives them. The window holds what the broker holds, so it
-    /// is sent what `delta` changes of that; all of it when the broker starts over.
-    fn offer(&mut self, delta: &SurfaceDelta, descriptors: &[ActionDescriptor]) {
-        if delta.reset {
-            say_catalogue(&mut self.instance, descriptors, |_| true, false);
-            return;
-        }
-        if delta.is_empty() {
-            return;
-        }
-        let changed: HashSet<&str> = delta
-            .resources
-            .iter()
-            .map(|resource| resource.resource.as_str())
-            .collect();
-        say_catalogue(
-            &mut self.instance,
-            descriptors,
-            |resource| changed.contains(resource),
-            true,
-        );
     }
 
     /// Run the next action the person chose at the window as their own step: the same api an
@@ -2620,13 +2597,6 @@ impl Hosted {
         let Some(delta) = state.relabel(descriptors, &changed) else {
             return false;
         };
-        // The window's palette shows the labels the person types into, which are what moved.
-        say_catalogue(
-            &mut self.instance,
-            descriptors,
-            |resource| changed.contains(&resource),
-            true,
-        );
         if !delta.is_empty() && !self.send_surface(delta) {
             // What the broker holds is no longer what was patched: a later turn sends the
             // surface whole, as a reset.
@@ -2638,9 +2608,12 @@ impl Hosted {
         true
     }
 
-    /// Hand the broker `delta` of the instance's surface. Whether it took it: a document on this
-    /// device alone has no broker, and its window's catalogue is all there is to publish to.
-    fn send_surface(&self, delta: SurfaceDelta) -> bool {
+    /// Hand the window and the broker `delta` of the instance's surface. Whether the broker took
+    /// it: a document on this device alone has no broker, and its window's catalogue is all there
+    /// is to publish to. The window takes it whether or not the broker does: a surface the broker
+    /// did not take is sent again whole, which the window takes as well.
+    fn send_surface(&mut self, delta: SurfaceDelta) -> bool {
+        say_surface(&mut self.instance, &delta);
         self.connection.is_local()
             || self
                 .connection
@@ -2856,38 +2829,17 @@ fn returned(host: &tilolang_tilo::host::Host, action: &DynAction) -> tilo_action
     }
 }
 
-/// Tell the window of `instance` the actions `descriptors` offers: all of them, or, `changed`
-/// only, the actions of the resources `changed` names with every resource offered, in order
-/// ([`ActionCatalogue::Changed`]).
-fn say_catalogue(
-    instance: &mut Instance,
-    descriptors: &[ActionDescriptor],
-    names: impl Fn(&str) -> bool,
-    changed: bool,
-) {
-    let mut resources: Vec<String> = Vec::new();
-    let mut actions: Vec<&ActionDescriptor> = Vec::with_capacity(descriptors.len());
-    for descriptor in descriptors {
-        let resource = descriptor.address.resource.as_str();
-        if changed && !resources.iter().rev().any(|held| held == resource) {
-            resources.push(resource.to_owned());
-        }
-        if names(resource) {
-            actions.push(descriptor);
-        }
-    }
-    let actions = match serde_json::to_vec(&actions) {
-        Ok(actions) => actions,
+/// Tell the window of `instance` the change `delta` of the surface the instance publishes, as
+/// the broker takes it: the actions the person's command palette offers there.
+fn say_surface(instance: &mut Instance, delta: &SurfaceDelta) {
+    let bytes = match serde_json::to_vec(delta) {
+        Ok(bytes) => bytes,
         Err(error) => {
-            tracing::error!(%error, "an action catalogue did not encode");
+            tracing::error!(%error, "an action surface did not encode");
             return;
         }
     };
-    instance.say(ToUi::Actions(if changed {
-        ActionCatalogue::Changed { actions, resources }
-    } else {
-        ActionCatalogue::All(actions)
-    }));
+    instance.say(ToUi::Actions(bytes));
     // The window takes it now, not on the frame after.
     instance.flush();
 }

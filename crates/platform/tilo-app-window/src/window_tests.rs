@@ -509,11 +509,15 @@ fn a_batch_that_breaks_the_protocol_shows_the_error_state_and_nothing_else() {
 }
 
 fn catalogue_of(label: &str, shortcut: Option<&str>) -> Vec<u8> {
-    catalogue_on("tasks:1", label, shortcut)
+    crate::catalogue::whole(&actions_on("tasks:1", label, shortcut))
 }
 
-/// [`catalogue_of`], on the resource `resource`.
-fn catalogue_on(resource: &str, label: &str, shortcut: Option<&str>) -> Vec<u8> {
+/// The one action `label` with `shortcut` of the resource `resource`, as the app surveys it.
+fn actions_on(
+    resource: &str,
+    label: &str,
+    shortcut: Option<&str>,
+) -> Vec<tilo_actions::ActionDescriptor> {
     use tilo_actions::{ActionSpec, OperationKind, ResourceSpec};
     let mut spec = ActionSpec::operation(
         "new",
@@ -525,13 +529,13 @@ fn catalogue_on(resource: &str, label: &str, shortcut: Option<&str>) -> Vec<u8> 
     .unwrap();
     spec.type_mut().state.shortcut = shortcut.map(str::to_owned);
     let resource = ResourceSpec::new(resource, "test.tasks", "Tasks").with_action(spec);
-    serde_json::to_vec(&tilo_actions::api::survey(&[resource])).expect("encodes")
+    tilo_actions::api::survey(&[resource])
 }
 
-/// The window offers the actions its app publishes. A change replaces the actions of the
-/// resources it names, with the key the app gives them now, adds those of a resource that
-/// joined, drops those of one the app no longer offers, and holds them in the app's order; a
-/// relabeling from an app of an earlier build replaces an action where it sits.
+/// The window offers the actions its app publishes, as each change of its surface leaves
+/// them: a change replaces the actions of the resources it names, with the key the app gives
+/// them now, adds those of a resource that joined after the rest, and drops those of one the
+/// app no longer offers.
 #[test]
 fn a_published_catalogue_is_what_the_windows_palette_offers() {
     let (mut app, mut window) = window();
@@ -551,21 +555,29 @@ fn a_published_catalogue_is_what_the_windows_palette_offers() {
     let one = |resource: &str, label: &str, key: &str| {
         (resource.to_owned(), label.to_owned(), Some(key.to_owned()))
     };
-    let resources = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect();
-    send(
-        &mut app,
-        &[ToUi::Actions(wire::ActionCatalogue::All(catalogue_of(
-            "New task",
-            Some("Ctrl+n"),
-        )))],
-    );
+    // The app's surface, as the broker and the window hold it, changed one step at a time.
+    let mut held: Option<(
+        Vec<tilo_actions::ActionDescriptor>,
+        ui::collaboration::SurfacePublication,
+    )> = None;
+    let mut publish = |app: &mut local::End, offers: Vec<tilo_actions::ActionDescriptor>| {
+        let (delta, state) = ui::collaboration::SurfacePublication::next(
+            held.as_ref()
+                .map(|(descriptors, state)| (state, descriptors.as_slice())),
+            &offers,
+        );
+        held = Some((offers, state));
+        send(
+            app,
+            &[ToUi::Actions(serde_json::to_vec(&delta).expect("encodes"))],
+        );
+    };
+    publish(&mut app, actions_on("tasks:1", "New task", Some("Ctrl+n")));
     window.receive();
     assert_eq!(offered(&window), [one("tasks:1", "New task", "Ctrl+n")]);
-    send(
+    publish(
         &mut app,
-        &[ToUi::Actions(wire::ActionCatalogue::Relabeled(
-            catalogue_of("Create task", Some("Ctrl+enter")),
-        ))],
+        actions_on("tasks:1", "Create task", Some("Ctrl+enter")),
     );
     window.receive();
     assert_eq!(
@@ -573,29 +585,24 @@ fn a_published_catalogue_is_what_the_windows_palette_offers() {
         [one("tasks:1", "Create task", "Ctrl+enter")],
         "one action, relabeled in place"
     );
-    send(
+    publish(
         &mut app,
-        &[ToUi::Actions(wire::ActionCatalogue::Changed {
-            actions: catalogue_on("tasks:2", "Add", Some("Ctrl+a")),
-            resources: resources(&["tasks:2", "tasks:1"]),
-        })],
+        [
+            actions_on("tasks:2", "Add", Some("Ctrl+a")),
+            actions_on("tasks:1", "Create task", Some("Ctrl+enter")),
+        ]
+        .concat(),
     );
     window.receive();
     assert_eq!(
         offered(&window),
         [
-            one("tasks:2", "Add", "Ctrl+a"),
             one("tasks:1", "Create task", "Ctrl+enter"),
+            one("tasks:2", "Add", "Ctrl+a"),
         ],
-        "a resource that joined is offered where the app offers it"
+        "a resource that joined is offered after those offered before it"
     );
-    send(
-        &mut app,
-        &[ToUi::Actions(wire::ActionCatalogue::Changed {
-            actions: catalogue_of("New task", Some("Ctrl+n")),
-            resources: resources(&["tasks:1"]),
-        })],
-    );
+    publish(&mut app, actions_on("tasks:1", "New task", Some("Ctrl+n")));
     window.receive();
     assert_eq!(
         offered(&window),
@@ -628,13 +635,10 @@ fn the_windows_catalogue_keeps_what_an_action_takes_and_whether_it_can_run() {
     )
     .unavailable("nothing_selected", "Choose a task first");
     let resource = ResourceSpec::new("tasks:1", "test.tasks", "Tasks").with_action(spec);
-    let published = serde_json::to_vec(&tilo_actions::api::survey(&[resource])).expect("encodes");
+    let published = crate::catalogue::whole(&tilo_actions::api::survey(&[resource]));
 
     let (mut app, mut window) = window();
-    send(
-        &mut app,
-        &[ToUi::Actions(wire::ActionCatalogue::All(published))],
-    );
+    send(&mut app, &[ToUi::Actions(published)]);
     window.receive();
     let catalogue = window.catalogue();
     let action = &catalogue
@@ -672,13 +676,10 @@ fn the_windows_catalogue_keeps_what_an_action_needs() {
     let resource = ResourceSpec::new("mail:1", "test.mail.Thread", "Thread")
         .with_action(declared("reply", ActionKind::Undoable))
         .with_action(declared("send", ActionKind::Outside));
-    let published = serde_json::to_vec(&tilo_actions::api::survey(&[resource])).expect("encodes");
+    let published = crate::catalogue::whole(&tilo_actions::api::survey(&[resource]));
 
     let (mut app, mut window) = window();
-    send(
-        &mut app,
-        &[ToUi::Actions(wire::ActionCatalogue::All(published))],
-    );
+    send(&mut app, &[ToUi::Actions(published)]);
     window.receive();
     let catalogue = window.catalogue();
     let need = |id: &str| {
@@ -852,10 +853,7 @@ fn the_primary_action_puts_the_keyboard_in_the_entry_that_declares_its_key() {
     if let Some(ToUi::Open { tree, .. }) = page.first_mut() {
         tree.children.insert(0, button);
     }
-    page.push(ToUi::Actions(wire::ActionCatalogue::All(catalogue_of(
-        "New task",
-        Some("Ctrl+n"),
-    ))));
+    page.push(ToUi::Actions(catalogue_of("New task", Some("Ctrl+n"))));
     let (mut app, mut harness) = drawn(&page);
     let made = |app: &mut _| -> Vec<ToApp> {
         told(app)
@@ -933,10 +931,7 @@ fn the_primary_actions_key_in_the_entry_commits_what_was_typed() {
         button.events.insert("press".to_owned(), Event::default());
         tree.children.insert(0, button);
     }
-    page.push(ToUi::Actions(wire::ActionCatalogue::All(catalogue_of(
-        "New task",
-        Some("Ctrl+n"),
-    ))));
+    page.push(ToUi::Actions(catalogue_of("New task", Some("Ctrl+n"))));
     let (mut app, mut harness) = drawn(&page);
     drawn_window(&mut harness)
         .invoke_action(tilo_actions::ActionAddress::new("tasks:1", "new"), None);
@@ -1528,7 +1523,7 @@ fn chooser_page(content: Vec<UiNode>) -> Vec<ToUi> {
             tree: chooser_shell(content),
             front: None,
         },
-        ToUi::Actions(wire::ActionCatalogue::All(catalogue_of("New note", None))),
+        ToUi::Actions(catalogue_of("New note", None)),
     ]
 }
 
@@ -2449,7 +2444,7 @@ fn action_shell(listing: bool) -> Vec<ToUi> {
             tree: shell,
             front: None,
         },
-        ToUi::Actions(wire::ActionCatalogue::All(catalogue_of("New note", None))),
+        ToUi::Actions(catalogue_of("New note", None)),
     ]
 }
 
@@ -2705,9 +2700,9 @@ fn action_shell_declaring(kind: tilo_actions::ActionKind) -> Vec<ToUi> {
     .unwrap();
     spec.type_mut().contract.kind = kind;
     let resource = ResourceSpec::new("tasks:1", "test.tasks", "Tasks").with_action(spec);
-    let published = serde_json::to_vec(&tilo_actions::api::survey(&[resource])).expect("encodes");
+    let published = crate::catalogue::whole(&tilo_actions::api::survey(&[resource]));
     page.retain(|message| !matches!(message, ToUi::Actions(_)));
-    page.push(ToUi::Actions(wire::ActionCatalogue::All(published)));
+    page.push(ToUi::Actions(published));
     page
 }
 

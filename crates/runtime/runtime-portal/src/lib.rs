@@ -52,7 +52,6 @@ pub mod process_binding;
 pub mod process_link;
 #[cfg(unix)]
 pub mod request_rendezvous;
-pub mod retained_role;
 pub mod service_socket;
 /// The actions connection a session hands a surface app.
 pub mod surface_actions;

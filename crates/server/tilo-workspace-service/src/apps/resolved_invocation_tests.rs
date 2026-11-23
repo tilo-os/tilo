@@ -413,6 +413,7 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
                         ..base.resource_fields()
                     },
                     template,
+                    unavailable: Vec::new(),
                 };
             let surface = || {
                 workspace

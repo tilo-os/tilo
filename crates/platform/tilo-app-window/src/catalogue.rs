@@ -6,18 +6,19 @@
 //! action API it publishes. So a window offers the same palette whichever way its app runs, and neither
 //! side knows how the other works.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use tilo_actions::{
     ActionAddress, ActionArgs, ActionDescriptor, ActionOutput, ActionParam, ActionSpec,
-    EncodedAction, InputSpec, OperationKind, ParamType, ResourceSpec,
+    EncodedAction, ExecutionLocus, InputSpec, OperationKind, ParamType, ResourceSpec,
 };
 use ui::automerge::AutoCommit;
+use ui::collaboration::{SurfaceDelta, SurfacePublication, SurfaceTable};
 use ui::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use ui::resources::PublishesResources;
 
 use crate::window::AppWindow;
-use tilo_render_protocol::patch as wire;
 
 /// The operation of the window's declaration of the actions its app published: choosing one hands
 /// the action's address to the app, which runs it as the person's step.
@@ -45,88 +46,114 @@ impl Chosen {
     }
 }
 
-/// The actions the app sent the window, as [`ToUi::Actions`] carries them: its directory's
-/// descriptor JSON.
-fn read(bytes: &[u8]) -> Result<Vec<ActionDescriptor>, String> {
-    serde_json::from_slice(bytes)
-        .map_err(|error| format!("the app's action catalogue did not read back: {error}"))
+/// What the app offers at its window: the surface it publishes there, as the broker holds it,
+/// with every action of every resource and the declaration the window's palette offers of each
+/// resource.
+#[derive(Default)]
+pub(crate) struct Offered {
+    surface: SurfaceTable,
+    /// Each resource's actions together, in the order the resources were first published.
+    actions: Vec<ActionDescriptor>,
+    /// Each resource's declaration, in that same order.
+    specs: Vec<ResourceSpec>,
 }
 
-/// Take what the app offers the window now into `held`, the actions it holds: every action;
-/// the actions of the resources whose labels moved, from an app of an earlier build; or what
-/// changed ([`wire::ActionCatalogue::Changed`]).
-pub(crate) fn take(
-    held: &mut Vec<ActionDescriptor>,
-    catalogue: wire::ActionCatalogue,
-) -> Result<(), String> {
-    match catalogue {
-        wire::ActionCatalogue::All(actions) => *held = read(&actions)?,
-        wire::ActionCatalogue::Relabeled(actions) => replace(held, read(&actions)?),
-        wire::ActionCatalogue::Changed { actions, resources } => {
-            replace(held, read(&actions)?);
-            let order: std::collections::HashMap<&str, usize> = resources
+impl Offered {
+    pub(crate) fn actions(&self) -> &[ActionDescriptor] {
+        &self.actions
+    }
+
+    pub(crate) fn specs(&self) -> &[ResourceSpec] {
+        &self.specs
+    }
+
+    /// Take the change `bytes` of the surface the app publishes at the window
+    /// ([`ToUi::Actions`](tilo_render_protocol::patch::ToUi::Actions), a [`SurfaceDelta`]): the
+    /// resources it names are read again, and the rest stay as they are, so a change of one row
+    /// costs that row with ten thousand on the screen.
+    pub(crate) fn take(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let delta: SurfaceDelta = serde_json::from_slice(bytes)
+            .map_err(|error| format!("the app's action catalogue did not read back: {error}"))?;
+        self.surface.apply(&delta)?;
+        let surface = &self.surface;
+        let read = |resource: &str| -> Vec<ActionDescriptor> {
+            surface
+                .actions_of(resource)
                 .iter()
-                .enumerate()
-                .map(|(at, resource)| (resource.as_str(), at))
+                .map(|action| action.descriptor(ExecutionLocus::default()))
+                .collect()
+        };
+        let mut actions = Vec::with_capacity(self.actions.len());
+        let mut specs = Vec::with_capacity(self.specs.len());
+        let mut push = |mine: Vec<ActionDescriptor>, spec: Option<ResourceSpec>| {
+            if let Some(spec) = spec.or_else(|| declared(&mine)) {
+                specs.push(spec);
+                actions.extend(mine);
+            }
+        };
+        let changed: HashSet<&str> = (delta.resources.iter())
+            .map(|resource| resource.resource.as_str())
+            .collect();
+        let mut seen: HashSet<String> = HashSet::new();
+        if !delta.reset {
+            let removed: HashSet<&str> = delta.removed.iter().map(String::as_str).collect();
+            let mut held = std::mem::take(&mut self.actions).into_iter().peekable();
+            for spec in std::mem::take(&mut self.specs) {
+                let mine: Vec<ActionDescriptor> = std::iter::from_fn(|| {
+                    held.next_if(|action| action.address.resource == spec.id.as_str())
+                })
                 .collect();
-            held.retain(|action| order.contains_key(action.address.resource.as_str()));
-            held.sort_by_key(|action| order.get(action.address.resource.as_str()).copied());
+                let name = spec.id.as_str();
+                seen.insert(name.to_owned());
+                if removed.contains(name) {
+                    continue;
+                }
+                if changed.contains(name) {
+                    push(read(name), None);
+                } else {
+                    push(mine, Some(spec));
+                }
+            }
         }
+        for resource in &delta.resources {
+            if seen.insert(resource.resource.clone()) {
+                push(read(&resource.resource), None);
+            }
+        }
+        self.actions = actions;
+        self.specs = specs;
+        Ok(())
     }
-    Ok(())
 }
 
-/// Every action of each resource `incoming` names, in place of what `held` holds of that
-/// resource: where it sits, or after the rest for a resource it did not hold.
-fn replace(held: &mut Vec<ActionDescriptor>, incoming: Vec<ActionDescriptor>) {
-    // Each resource's incoming actions, in the order the resources first come.
-    let mut order: Vec<String> = Vec::new();
-    let mut theirs: std::collections::HashMap<String, Vec<ActionDescriptor>> =
-        std::collections::HashMap::new();
-    for action in incoming {
-        let resource = action.address.resource.clone();
-        if !theirs.contains_key(&resource) {
-            order.push(resource.clone());
-        }
-        theirs.entry(resource).or_default().push(action);
+/// The declaration the window's palette offers of the resource whose actions are `actions`.
+fn declared(actions: &[ActionDescriptor]) -> Option<ResourceSpec> {
+    let first = actions.first()?;
+    let mut spec = ResourceSpec::new(
+        first.address.resource.clone(),
+        first.resource_kind.clone(),
+        first.resource_label.clone(),
+    );
+    for action in actions {
+        spec = spec.with_action(offered(action));
     }
-    let mut out = Vec::with_capacity(held.len());
-    for action in std::mem::take(held) {
-        match theirs.remove(&action.address.resource) {
-            Some(replaced) => out.extend(replaced),
-            None if order.contains(&action.address.resource) => {}
-            None => out.push(action),
-        }
-    }
-    for resource in order {
-        out.extend(theirs.remove(&resource).unwrap_or_default());
-    }
-    *held = out;
+    Some(spec)
+}
+
+/// What the app publishes at its window when it offers `descriptors`, as one change from
+/// nothing: what [`Offered::take`] reads.
+#[must_use]
+pub fn whole(descriptors: &[ActionDescriptor]) -> Vec<u8> {
+    let (delta, _) = SurfacePublication::next(None, descriptors);
+    serde_json::to_vec(&delta).unwrap_or_default()
 }
 
 impl AppWindow {
     /// The actions the app published for this window, as the resources its palette, action
     /// directory and agents offer: one per published action, in the order the app offered them.
     #[must_use]
-    pub fn catalogue(&self) -> Vec<ResourceSpec> {
-        let mut resources: Vec<ResourceSpec> = Vec::new();
-        for descriptor in self.actions() {
-            match resources
-                .iter_mut()
-                .find(|resource| resource.id.as_str() == descriptor.address.resource)
-            {
-                Some(resource) => resource.actions.push(offered(descriptor)),
-                None => resources.push(
-                    ResourceSpec::new(
-                        descriptor.address.resource.clone(),
-                        descriptor.resource_kind.clone(),
-                        descriptor.resource_label.clone(),
-                    )
-                    .with_action(offered(descriptor)),
-                ),
-            }
-        }
-        resources
+    pub fn catalogue(&self) -> &[ResourceSpec] {
+        self.offered.specs()
     }
 }
 
@@ -215,7 +242,7 @@ fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
 impl PublishesResources for AppWindow {
     fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
         let mut all = ui::resources::resources(ui::widget::Decorator::inner(self), doc);
-        all.extend(self.catalogue());
+        all.extend(self.catalogue().iter().cloned());
         all
     }
 }

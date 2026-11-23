@@ -303,7 +303,8 @@ impl PublishedAction {
     /// The catalogue entry of this action, which every resource of its kind
     /// shares: everything but its resource's own fields, which a
     /// [`ResourceFields`] carries, with the resource's label in its words
-    /// marked, and without its live state, which a catalogue does not keep.
+    /// marked. Its state stays: keys and toggles are its type's, and a badge
+    /// is shown on the row, so rows with the same badge share the entry.
     /// [`Self::on_resource`] gives the action back.
     #[must_use]
     pub fn shape(&self) -> Self {
@@ -312,7 +313,6 @@ impl PublishedAction {
             semantic_identity: None,
             resource_kind: String::new(),
             resource_label: String::new(),
-            state: crate::ActionState::default(),
             ..self.clone()
         };
         shape.map_words(|text| mark_label(text, &self.resource_label));
