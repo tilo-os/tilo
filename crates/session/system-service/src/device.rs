@@ -4,6 +4,7 @@
 
 use settings_store::day_schedule::Location;
 use tilo_system_resources::drives::Drives;
+use tilo_system_resources::storage::Storage;
 use tilo_system_resources::printers::{
     DiscoveredPrinter, JobState as PrintJobState, PrintJob as PrintJobReading, PrinterQueue,
     PrinterSupply, Printers, QueueState as PrintQueueState,
@@ -42,6 +43,14 @@ pub enum DriveChange {
     Unmount { drive: String },
     Forget { grant: String },
     SetMode { grant: String, safely: bool },
+}
+
+/// A change to make on the storage: what a person, an agent or a script asked of the `storage`
+/// resource.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StorageChange {
+    /// Remove the apps' caches.
+    ClearCache,
 }
 
 /// A change to make on the accounts: what a person, an agent or a script asked of the `users`
@@ -193,6 +202,24 @@ pub trait System: Send + Sync {
     /// Why it did not happen.
     fn change_drive(&self, _change: &DriveChange) -> Result<(), String> {
         Err("this machine has no drive service".to_owned())
+    }
+
+    /// What this computer's disk holds, as the last scan read it.
+    fn storage(&self) -> Storage {
+        Storage::default()
+    }
+
+    /// Read what this computer's disk holds now.
+    fn scan_storage(&self) -> Storage {
+        Storage::default()
+    }
+
+    /// Make `change` on the storage.
+    ///
+    /// # Errors
+    /// Why it did not happen.
+    fn change_storage(&self, _change: &StorageChange) -> Result<(), String> {
+        Err("this machine cannot scan its storage".to_owned())
     }
 }
 
@@ -418,6 +445,16 @@ impl System for OsSystem {
 
     fn change_drive(&self, change: &DriveChange) -> Result<(), String> {
         crate::drives::change(change)
+    }
+
+    fn scan_storage(&self) -> Storage {
+        crate::storage::scan()
+    }
+
+    fn change_storage(&self, change: &StorageChange) -> Result<(), String> {
+        match change {
+            StorageChange::ClearCache => crate::storage::clear_cache(),
+        }
     }
 }
 

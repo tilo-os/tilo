@@ -8,6 +8,8 @@ license.workspace = true
 
 [dependencies]
 bounded-command = { path = "../../platform/bounded-command" }
+# What the disk holds: the same roots the storage policy scans.
+desktop-policy = { path = "../../system/desktop-policy" }
 os-actions = { path = "../../system/os-actions" }
 # The protocol the drive service speaks; the service itself is not the session's.
 ntfs-mount = { path = "../../os/ntfs-mount", default-features = false }

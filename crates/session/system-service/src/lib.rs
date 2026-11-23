@@ -26,6 +26,7 @@
 
 pub mod device;
 pub mod drives;
+pub mod storage;
 pub use tilo_system_resources::effects;
 tilo_resource::declared_names!();
 
@@ -44,14 +45,17 @@ use tilo_actions::{ApiError, ResourceSpec};
 use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading, unavailable};
 
-use device::{Change, DriveChange, PowerProfiles, PrintChange, System, UserChange, follow_once};
+use device::{
+    Change, DriveChange, PowerProfiles, PrintChange, StorageChange, System, UserChange,
+    follow_once,
+};
 use effects::{KeyboardLightAction, PowerAction, TimeAction, UpdateAction};
 use model::{KeyboardLight, Power, PowerMode, Time};
 use update::Update;
 
 /// The resources' ids.
 pub use tilo_system_resources::{
-    DRIVES, KEYBOARD_BACKLIGHT, POWER, PRINTERS, SYSTEM_UPDATE, TIME_ZONE, USERS,
+    DRIVES, KEYBOARD_BACKLIGHT, POWER, PRINTERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE, USERS,
 };
 
 /// How often a device whose zone follows it looks where it is again: often
@@ -68,6 +72,7 @@ enum Part {
     Printers,
     Users,
     Drives,
+    Storage,
 }
 
 /// What the machine reads now.
@@ -80,6 +85,7 @@ pub struct Readings {
     pub printers: tilo_system_resources::printers::Printers,
     pub users: tilo_system_resources::users::Users,
     pub drives: tilo_system_resources::drives::Drives,
+    pub storage: tilo_system_resources::storage::Storage,
 }
 
 fn read(system: &dyn System, live_profiles: bool) -> Readings {
@@ -99,6 +105,7 @@ fn read(system: &dyn System, live_profiles: bool) -> Readings {
         printers: system.printers(),
         users: system.users(),
         drives: system.drives(),
+        storage: system.storage(),
     }
 }
 
@@ -216,6 +223,9 @@ impl SystemService {
         };
         refresh(&service.worker.jobs(), Arc::clone(&live_active));
         service.follow_printers(system, wake, live_active);
+        // The first scan runs where the worker does, so the machine's start waits for no disk
+        // scan; the reading arrives when it answers.
+        service.start_storage("scan", None);
         Ok(service)
     }
 
@@ -337,6 +347,10 @@ impl SystemService {
             ),
             Part::Users => (&mut readings.users.pending, &mut readings.users.problem),
             Part::Drives => (&mut readings.drives.pending, &mut readings.drives.problem),
+            Part::Storage => (
+                &mut readings.storage.pending,
+                &mut readings.storage.problem,
+            ),
         }
     }
 
@@ -360,6 +374,18 @@ impl SystemService {
         readings.users.problem = old.users.problem.take();
         readings.drives.pending = std::mem::take(&mut old.drives.pending);
         readings.drives.problem = old.drives.problem.take();
+        // A scan's reading replaces the last one; any other read keeps it, and lands only the
+        // action's own state.
+        readings.storage.pending = std::mem::take(&mut old.storage.pending);
+        readings.storage.problem = old.storage.problem.take();
+        if !readings.storage.scanned {
+            readings.storage.disk = old.storage.disk.take();
+            readings.storage.categories = std::mem::take(&mut old.storage.categories);
+            readings.storage.largest = std::mem::take(&mut old.storage.largest);
+            readings.storage.cache_bytes = old.storage.cache_bytes;
+            readings.storage.read_error = old.storage.read_error.take();
+            readings.storage.scanned = old.storage.scanned;
+        }
         // What a find turned up stays until the next one: a plain read of the queues and
         // jobs replaces neither.
         if readings.printers.nearby.is_empty() {
@@ -481,6 +507,30 @@ impl SystemService {
             result: Ok(()),
             readings: Box::new(read(system, is_live(live_active.as_ref()))),
             live_power_mode: None,
+        });
+        Started::Accepted
+    }
+
+    /// Read the storage again, or make `change` on it, landing the machine's answer and the scan
+    /// that follows.
+    fn start_storage(&mut self, action: &str, change: Option<StorageChange>) -> Started {
+        self.readings.storage.pending.push(action.to_owned());
+        let action = action.to_owned();
+        let live_active = self.live_active_flag();
+        self.worker.run(move |system| {
+            let result = match change {
+                Some(change) => system.change_storage(&change),
+                None => Ok(()),
+            };
+            let mut readings = read(system, is_live(live_active.as_ref()));
+            readings.storage = system.scan_storage();
+            Landed::Changed {
+                part: Part::Storage,
+                action,
+                result,
+                readings: Box::new(readings),
+                live_power_mode: None,
+            }
         });
         Started::Accepted
     }
@@ -696,6 +746,15 @@ pub fn printers_surface() -> tilo_resource::surface::Surface {
     >(PRINTERS, "Printers")
 }
 
+/// The `storage` resource's surface, as a shell reads it over `so.tilo.device`.
+#[must_use]
+pub fn storage_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<
+        tilo_system_resources::storage::Storage,
+        tilo_system_resources::storage::StorageAction,
+    >(STORAGE, "Storage")
+}
+
 /// The `drives` resource's surface, as a shell reads it over `so.tilo.device`.
 #[must_use]
 pub fn drives_surface() -> tilo_resource::surface::Surface {
@@ -869,6 +928,7 @@ impl Service for SystemService {
             printers::resource(&self.readings.printers),
             users::resource(&self.readings.users),
             drives::resource(&self.readings.drives),
+            storage::resource(&self.readings.storage),
         ]
     }
 
@@ -881,6 +941,7 @@ impl Service for SystemService {
             PRINTERS => Some(reading(&self.readings.printers)),
             USERS => Some(reading(&self.readings.users)),
             DRIVES => Some(reading(&self.readings.drives)),
+            STORAGE => Some(reading(&self.readings.storage)),
             _ => None,
         }
     }
@@ -1085,6 +1146,20 @@ impl Service for SystemService {
                     tilo_system_resources::drives::DrivesAction::SetMode { grant, safely } => Ok(
                         self.start_drive(id, DriveChange::SetMode { grant, safely }),
                     ),
+                }
+            }
+            STORAGE => {
+                let action = decode::<tilo_system_resources::storage::StorageAction>(
+                    &published, resource, action, arguments,
+                )?;
+                let id = action.id();
+                match action {
+                    tilo_system_resources::storage::StorageAction::Scan => {
+                        Ok(self.start_storage(id, None))
+                    }
+                    tilo_system_resources::storage::StorageAction::ClearCache => {
+                        Ok(self.start_storage(id, Some(StorageChange::ClearCache)))
+                    }
                 }
             }
             _ => Err(ApiError::Unknown(tilo_actions::ActionAddress::new(

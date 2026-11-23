@@ -12,14 +12,18 @@ use tilo_system_resources::printers::{
 use tilo_system_resources::drives::{
     Drive, DriveMode, Drives, Placement, RememberOffer, RememberedDrive,
 };
+use tilo_system_resources::storage::{CategoryUsage, DiskUsage, Storage, StoredItem};
 use tilo_system_resources::update::Deployment;
 use tilo_system_resources::users::{LocalAccount, Users};
 
-use crate::device::{Change, DriveChange, PowerProfiles, PrintChange, System, UserChange};
+use crate::device::{
+    Change, DriveChange, PowerProfiles, PrintChange, StorageChange, System, UserChange,
+};
 use crate::model::{KeyboardLight, Power, PowerMode, Time};
 use crate::update::Update;
 use crate::{
-    DRIVES, KEYBOARD_BACKLIGHT, POWER, PRINTERS, SYSTEM_UPDATE, SystemService, TIME_ZONE, USERS,
+    DRIVES, KEYBOARD_BACKLIGHT, POWER, PRINTERS, STORAGE, SYSTEM_UPDATE, SystemService, TIME_ZONE,
+    USERS,
 };
 
 /// A machine in memory, in Amsterdam unless told it is elsewhere.
@@ -44,6 +48,9 @@ struct Fake {
     drives: Mutex<Drives>,
     drive_changes: Mutex<Vec<DriveChange>>,
     drive_refusal: Mutex<Option<String>>,
+    storage: Mutex<Storage>,
+    storage_changes: Mutex<Vec<StorageChange>>,
+    storage_refusal: Mutex<Option<String>>,
 }
 
 impl Fake {
@@ -117,6 +124,9 @@ impl Fake {
             drives: Mutex::new(Drives::default()),
             drive_changes: Mutex::new(Vec::new()),
             drive_refusal: Mutex::new(None),
+            storage: Mutex::new(Storage::default()),
+            storage_changes: Mutex::new(Vec::new()),
+            storage_refusal: Mutex::new(None),
         })
     }
 
@@ -134,6 +144,10 @@ impl Fake {
 
     fn drive_changes(&self) -> Vec<DriveChange> {
         self.drive_changes.lock().unwrap().clone()
+    }
+
+    fn storage_changes(&self) -> Vec<StorageChange> {
+        self.storage_changes.lock().unwrap().clone()
     }
 
     fn power_reads(&self) -> usize {
@@ -349,6 +363,25 @@ impl System for Fake {
                     };
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn storage(&self) -> Storage {
+        self.storage.lock().unwrap().clone()
+    }
+
+    fn scan_storage(&self) -> Storage {
+        self.storage.lock().unwrap().clone()
+    }
+
+    fn change_storage(&self, change: &StorageChange) -> Result<(), String> {
+        self.storage_changes.lock().unwrap().push(*change);
+        if let Some(reason) = self.storage_refusal.lock().unwrap().clone() {
+            return Err(reason);
+        }
+        match change {
+            StorageChange::ClearCache => self.storage.lock().unwrap().cache_bytes = 0,
         }
         Ok(())
     }
@@ -1552,4 +1585,105 @@ fn a_machine_with_no_drive_service_offers_no_drive_actions() {
         service.invoke(DRIVES, "mount", &Map::new()),
         Err(ApiError::Unavailable { .. })
     ));
+}
+
+fn a_storage_scan() -> Storage {
+    Storage {
+        disk: Some(DiskUsage {
+            total_bytes: 512 * 1024 * 1024 * 1024,
+            free_bytes: 256 * 1024 * 1024 * 1024,
+        }),
+        categories: vec![
+            CategoryUsage {
+                category: "Cache".into(),
+                bytes: 7_300_000,
+                files: 40,
+                reclaimable: true,
+            },
+            CategoryUsage {
+                category: "App data".into(),
+                bytes: 300_000_000,
+                files: 900,
+                reclaimable: false,
+            },
+        ],
+        largest: vec![StoredItem {
+            category: "App data".into(),
+            owner: "notes".into(),
+            bytes: 300_000_000,
+            files: 900,
+            reclaimable: false,
+        }],
+        cache_bytes: 7_300_000,
+        scanned: true,
+        ..Storage::default()
+    }
+}
+
+#[test]
+fn the_storage_resource_reads_the_disk_and_clears_the_cache() {
+    let fake = Fake::new();
+    *fake.storage.lock().unwrap() = a_storage_scan();
+    let mut service = service(&fake);
+    let storage = service.read(STORAGE).unwrap();
+    assert_eq!(storage["scanned"], json!(true));
+    assert_eq!(storage["disk"]["total_bytes"], json!(512_u64 * 1024 * 1024 * 1024));
+    assert_eq!(storage["categories"][0]["category"], json!("Cache"));
+    assert_eq!(storage["largest"][0]["owner"], json!("notes"));
+    assert_eq!(storage["cache_bytes"], json!(7_300_000));
+
+    let published = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == STORAGE)
+        .expect("the storage resource is published");
+    let actions: Vec<&str> = published
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    assert!(actions.contains(&"scan"), "{actions:?}");
+    assert!(actions.contains(&"clear-cache"), "{actions:?}");
+
+    assert_eq!(
+        service.invoke(STORAGE, "clear-cache", &Map::new()),
+        Ok(Started::Accepted)
+    );
+    assert_eq!(
+        service.read(STORAGE).unwrap()["pending"],
+        json!(["clear-cache"])
+    );
+    service.settle();
+    assert_eq!(fake.storage_changes(), [StorageChange::ClearCache]);
+    let storage = service.read(STORAGE).unwrap();
+    assert_eq!(storage["pending"], json!([]));
+    assert_eq!(storage["cache_bytes"], json!(0));
+
+    // A cache an item changed under is refused, and the reading says why.
+    *fake.storage_refusal.lock().unwrap() =
+        Some("cleanup target changed after preview".into());
+    service.invoke(STORAGE, "clear-cache", &Map::new()).unwrap();
+    service.settle();
+    let storage = service.read(STORAGE).unwrap();
+    assert_eq!(
+        storage["problem"],
+        json!("cleanup target changed after preview")
+    );
+    assert_eq!(storage["pending"], json!([]));
+}
+
+#[test]
+fn scanning_the_storage_again_lands_the_new_reading() {
+    let fake = Fake::new();
+    *fake.storage.lock().unwrap() = a_storage_scan();
+    let mut service = service(&fake);
+    fake.storage.lock().unwrap().largest[0].owner = "calendar".into();
+    assert_eq!(
+        service.invoke(STORAGE, "scan", &Map::new()),
+        Ok(Started::Accepted)
+    );
+    service.settle();
+    let storage = service.read(STORAGE).unwrap();
+    assert_eq!(storage["largest"][0]["owner"], json!("calendar"));
+    assert_eq!(storage["pending"], json!([]));
 }
