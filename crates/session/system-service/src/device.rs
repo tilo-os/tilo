@@ -33,6 +33,11 @@ pub enum Change {
 /// Live power-profile readings from the session's power service, which follows
 /// `power-profiles-daemon` over D-Bus.
 pub trait PowerProfiles: Send + Sync {
+    /// Whether the live power service is attached to the system bus and has
+    /// already received a reading from `power-profiles-daemon`. Until this is
+    /// `true`, [`crate::SystemService`] polls [`System::power`].
+    fn is_ready(&self) -> bool;
+
     /// The modes the daemon currently advertises and the mode in force, if any.
     fn snapshot(&self) -> (Vec<PowerMode>, Option<PowerMode>);
 
@@ -46,6 +51,13 @@ pub trait PowerProfiles: Send + Sync {
 /// The machine: reads and changes. Called on the service's worker.
 pub trait System: Send + Sync {
     fn power(&self) -> Power;
+
+    /// The active power mode read once directly from the daemon. Called on the
+    /// live path right after [`Change::PowerMode`] lands so the first reading
+    /// where `pending` clears already carries the new mode.
+    fn power_mode(&self) -> Option<PowerMode> {
+        self.power().mode
+    }
 
     /// Whether another person may sign in beside this session. Used instead of
     /// [`Self::power`] when power profiles arrive from a live [`PowerProfiles`]
@@ -93,6 +105,12 @@ impl System for OsSystem {
             user_switching: os_actions::user_switching_supported(),
             ..Power::default()
         }
+    }
+
+    fn power_mode(&self) -> Option<PowerMode> {
+        os_actions::get_power_profile()
+            .ok()
+            .map(crate::model::power_mode)
     }
 
     fn user_switching(&self) -> bool {

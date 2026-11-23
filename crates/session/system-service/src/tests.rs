@@ -64,6 +64,10 @@ impl System for Fake {
         self.power.lock().unwrap().clone()
     }
 
+    fn power_mode(&self) -> Option<PowerMode> {
+        self.power.lock().unwrap().mode
+    }
+
     fn user_switching(&self) -> bool {
         self.power.lock().unwrap().user_switching
     }
@@ -512,6 +516,7 @@ fn the_reading_follows_the_live_update_as_it_writes_its_state() {
 
 struct FakeProfiles {
     state: Mutex<(Vec<PowerMode>, Option<PowerMode>)>,
+    ready: std::sync::atomic::AtomicBool,
     revision: AtomicU64,
     wakes: Mutex<Vec<Wake>>,
 }
@@ -520,9 +525,26 @@ impl FakeProfiles {
     fn new(modes: Vec<PowerMode>, mode: Option<PowerMode>) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new((modes, mode)),
+            ready: std::sync::atomic::AtomicBool::new(true),
+            revision: AtomicU64::new(1),
+            wakes: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn unready() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new((Vec::new(), None)),
+            ready: std::sync::atomic::AtomicBool::new(false),
             revision: AtomicU64::new(0),
             wakes: Mutex::new(Vec::new()),
         })
+    }
+
+    fn feed(&self, modes: Vec<PowerMode>, mode: Option<PowerMode>) {
+        *self.state.lock().unwrap() = (modes, mode);
+        self.ready.store(true, Ordering::Release);
+        self.revision.fetch_add(1, Ordering::Release);
+        self.notify();
     }
 
     fn set_mode(&self, mode: Option<PowerMode>) {
@@ -546,6 +568,10 @@ impl FakeProfiles {
 }
 
 impl PowerProfiles for FakeProfiles {
+    fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+    }
+
     fn snapshot(&self) -> (Vec<PowerMode>, Option<PowerMode>) {
         self.state.lock().unwrap().clone()
     }
@@ -698,4 +724,91 @@ fn without_live_power_profiles_system_service_polls_and_runs_set_power_mode() {
     service.settle();
     assert_eq!(service.read(POWER).unwrap()["mode"], json!("saver"));
     assert_eq!(fake.changes(), [Change::PowerMode(PowerMode::Saver)]);
+}
+
+#[test]
+fn unready_live_source_polls_until_fed_then_hands_off_without_gap_or_double_publish() {
+    let fake = Fake::new();
+    let live = FakeProfiles::unready();
+    let system: Arc<dyn System> = Arc::clone(&fake) as Arc<dyn System>;
+    let mut service = SystemService::with_power_profiles(
+        system,
+        None,
+        Arc::clone(&live) as Arc<dyn PowerProfiles>,
+    )
+    .unwrap();
+    service.settle();
+
+    // While unready, SystemService polls System::power().
+    assert_eq!(fake.power_reads(), 1);
+    assert_eq!(
+        service.read(POWER).unwrap()["modes"],
+        json!(["saver", "balanced"])
+    );
+    assert_eq!(service.read(POWER).unwrap()["mode"], json!("balanced"));
+
+    // Feeding the exact same modes/mode hands off cleanly with no double publish and no gap.
+    live.feed(
+        vec![PowerMode::Saver, PowerMode::Balanced],
+        Some(PowerMode::Balanced),
+    );
+    assert!(
+        !service.poll(),
+        "identical live state after polling produces no double publish"
+    );
+    assert_eq!(service.read(POWER).unwrap()["mode"], json!("balanced"));
+
+    // Further refreshes no longer poll System::power().
+    service.refresh();
+    service.settle();
+    assert_eq!(fake.power_reads(), 1);
+
+    // Subsequent live changes still arrive directly.
+    live.set_mode(Some(PowerMode::Saver));
+    assert!(service.poll());
+    assert_eq!(service.read(POWER).unwrap()["mode"], json!("saver"));
+    assert_eq!(fake.power_reads(), 1);
+}
+
+#[test]
+fn live_set_power_mode_carries_new_mode_in_first_reading_when_pending_clears() {
+    let fake = Fake::new();
+    let live = FakeProfiles::new(
+        vec![PowerMode::Saver, PowerMode::Balanced],
+        Some(PowerMode::Balanced),
+    );
+    let system: Arc<dyn System> = Arc::clone(&fake) as Arc<dyn System>;
+    let mut service = SystemService::with_power_profiles(
+        system,
+        None,
+        Arc::clone(&live) as Arc<dyn PowerProfiles>,
+    )
+    .unwrap();
+    service.settle();
+
+    assert_eq!(
+        service.invoke(
+            POWER,
+            "set-power-mode",
+            &arguments(json!({"mode": "saver"}))
+        ),
+        Ok(Started::Accepted)
+    );
+    assert_eq!(
+        service.read(POWER).unwrap()["pending"],
+        json!(["set-power-mode"])
+    );
+    // Settle WITHOUT pushing any D-Bus signal to `live`.
+    service.settle();
+    let power = service.read(POWER).unwrap();
+    assert_eq!(power["pending"], json!([]));
+    assert_eq!(power["mode"], json!("saver"));
+    assert_eq!(fake.power_reads(), 0);
+
+    // When the delayed D-Bus signal later arrives with the same mode, poll reports no second publish.
+    live.set_mode(Some(PowerMode::Saver));
+    assert!(
+        !service.poll(),
+        "delayed signal matching the landed mode does not publish twice"
+    );
 }

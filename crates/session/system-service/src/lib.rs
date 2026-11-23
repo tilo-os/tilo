@@ -98,13 +98,28 @@ enum Landed {
         action: String,
         result: Result<(), String>,
         readings: Box<Readings>,
+        /// On the live path, the active power mode read once directly from the
+        /// daemon right after `Change::PowerMode` landed, paired with the live
+        /// source's revision before that read so a newer daemon signal still wins.
+        live_power_mode: Option<(u64, PowerMode)>,
     },
 }
 
 /// Live power-profile readings followed beside the service's worker.
 struct LiveProfiles {
     source: Arc<dyn PowerProfiles>,
+    /// Local mirror of `active_shared` so the live poll path needs only one
+    /// atomic load (`source.revision()`).
+    active: bool,
+    /// Monotonic (`false -> true`) flag shared with worker closures so
+    /// `refresh`, `follow_location` and `start` stop calling `System::power`
+    /// once the live source takes over.
+    active_shared: Arc<AtomicBool>,
     seen: u64,
+}
+
+fn is_live(flag: Option<&Arc<AtomicBool>>) -> bool {
+    flag.is_some_and(|active| active.load(Ordering::Acquire))
 }
 
 /// The system service.
@@ -152,15 +167,28 @@ impl SystemService {
             if let Some(wake) = &wake {
                 source.on_change(Arc::clone(wake));
             }
-            // Capture the revision before reading the snapshot so a concurrent
-            // update between the two is still picked up on the next poll.
-            let seen = source.revision();
-            let (modes, mode) = source.snapshot();
-            readings.power.modes = modes;
-            readings.power.mode = mode;
-            LiveProfiles { source, seen }
+            let active = source.is_ready();
+            let seen = if active {
+                // Capture the revision before reading the snapshot so a concurrent
+                // update between the two is still picked up on the next poll.
+                let seen = source.revision();
+                let (modes, mode) = source.snapshot();
+                readings.power.modes = modes;
+                readings.power.mode = mode;
+                seen
+            } else {
+                0
+            };
+            LiveProfiles {
+                source,
+                active,
+                active_shared: Arc::new(AtomicBool::new(active)),
+                seen,
+            }
         });
-        let live = live_profiles.is_some();
+        let live_active = live_profiles
+            .as_ref()
+            .map(|live| Arc::clone(&live.active_shared));
         let service = Self {
             readings,
             worker: Worker::spawn("tilo-system", system, wake)?,
@@ -169,8 +197,14 @@ impl SystemService {
             update_watch: None,
             live_profiles,
         };
-        refresh(&service.worker.jobs(), live);
+        refresh(&service.worker.jobs(), live_active);
         Ok(service)
+    }
+
+    fn live_active_flag(&self) -> Option<Arc<AtomicBool>> {
+        self.live_profiles
+            .as_ref()
+            .map(|live| Arc::clone(&live.active_shared))
     }
 
     /// Let the time zone follow the device while the person chose so:
@@ -181,12 +215,12 @@ impl SystemService {
     pub fn follow_location(&mut self) -> std::io::Result<()> {
         let jobs = self.worker.jobs();
         let stopped = Arc::clone(&self.stopped);
-        let live_profiles = self.live_profiles.is_some();
+        let live_profiles = self.live_active_flag();
         let follower = std::thread::Builder::new()
             .name("tilo-time-zone".into())
             .spawn(move || {
                 while !stopped.load(Ordering::Acquire) {
-                    look(&jobs, live_profiles);
+                    look(&jobs, live_profiles.clone());
                     std::thread::park_timeout(LOOK_AGAIN);
                 }
             })?;
@@ -213,7 +247,7 @@ impl SystemService {
 
     /// Read the machine again.
     pub fn refresh(&self) {
-        refresh(&self.worker.jobs(), self.live_profiles.is_some());
+        refresh(&self.worker.jobs(), self.live_active_flag());
     }
 
     /// What the machine reads now.
@@ -227,8 +261,17 @@ impl SystemService {
         let Some(live) = &mut self.live_profiles else {
             return false;
         };
+        let just_activated = if live.active {
+            false
+        } else if live.source.is_ready() {
+            live.active = true;
+            live.active_shared.store(true, Ordering::Release);
+            true
+        } else {
+            return false;
+        };
         let revision = live.source.revision();
-        if revision == live.seen {
+        if !just_activated && revision == live.seen {
             return false;
         }
         live.seen = revision;
@@ -254,7 +297,7 @@ impl SystemService {
 
     fn take(&mut self, mut readings: Readings) {
         let old = &mut self.readings;
-        if self.live_profiles.is_some() {
+        if self.live_profiles.as_ref().is_some_and(|live| live.active) {
             readings.power.modes = std::mem::take(&mut old.power.modes);
             readings.power.mode = old.power.mode.take();
         }
@@ -290,6 +333,7 @@ impl SystemService {
                 action,
                 result,
                 readings,
+                live_power_mode,
             } => {
                 {
                     let (pending, problem) = self.status(part);
@@ -299,6 +343,15 @@ impl SystemService {
                     *problem = result.err();
                 }
                 self.take(*readings);
+                if let Some((rev_before, mode)) = live_power_mode {
+                    let superseded = self
+                        .live_profiles
+                        .as_ref()
+                        .is_some_and(|live| live.seen > rev_before);
+                    if !superseded {
+                        self.readings.power.mode = Some(mode);
+                    }
+                }
             }
         }
     }
@@ -310,20 +363,34 @@ impl SystemService {
         }
         let action = action.to_owned();
         let follow = matches!(change, Change::AutomaticZone(true));
-        let live_profiles = self.live_profiles.is_some();
+        let live_active = self.live_active_flag();
+        let live_source = self
+            .live_profiles
+            .as_ref()
+            .map(|live| Arc::clone(&live.source));
+        let look_active = live_active.clone();
         self.worker.run(move |system| {
             let result = system.change(&change);
+            let live_now = is_live(live_active.as_ref());
+            let live_power_mode =
+                if live_now && result.is_ok() && matches!(change, Change::PowerMode(_)) {
+                    let rev_before = live_source.as_ref().map_or(0, |source| source.revision());
+                    system.power_mode().map(|mode| (rev_before, mode))
+                } else {
+                    None
+                };
             Landed::Changed {
                 part,
                 action,
                 result,
-                readings: Box::new(read(system, live_profiles)),
+                readings: Box::new(read(system, live_now)),
+                live_power_mode,
             }
         });
         if follow {
             match &self.follower {
                 Some(follower) => follower.unpark(),
-                None => look(&self.worker.jobs(), live_profiles),
+                None => look(&self.worker.jobs(), look_active),
             }
         }
         Started::Accepted
@@ -339,8 +406,8 @@ impl Drop for SystemService {
     }
 }
 
-fn refresh(jobs: &Jobs<dyn System, Landed>, live_profiles: bool) {
-    jobs.run(move |system| Landed::Read(Box::new(read(system, live_profiles))));
+fn refresh(jobs: &Jobs<dyn System, Landed>, live_profiles: Option<Arc<AtomicBool>>) {
+    jobs.run(move |system| Landed::Read(Box::new(read(system, is_live(live_profiles.as_ref())))));
 }
 
 fn reread_update(jobs: &Jobs<dyn System, Landed>) {
@@ -447,7 +514,7 @@ impl StateWatch {
 }
 
 /// Set the zone where the device is, when it follows the device.
-fn look(jobs: &Jobs<dyn System, Landed>, live_profiles: bool) {
+fn look(jobs: &Jobs<dyn System, Landed>, live_profiles: Option<Arc<AtomicBool>>) {
     jobs.run(move |system| {
         if system.time().automatic {
             match follow_once(system) {
@@ -456,7 +523,7 @@ fn look(jobs: &Jobs<dyn System, Landed>, live_profiles: bool) {
                 Err(error) => tracing::info!(%error, "the time zone stays: no location"),
             }
         }
-        Landed::Read(Box::new(read(system, live_profiles)))
+        Landed::Read(Box::new(read(system, is_live(live_profiles.as_ref()))))
     });
 }
 

@@ -92,17 +92,21 @@ struct SleepLock {
 }
 
 /// Live power-profile readings bridged from the session's power service
-/// ([`tilo_power_mgmt::PowerBridge`]) into [`tilo_system_service::SystemService`].
-struct LivePowerProfiles(tilo_power_mgmt::PowerBridge);
+/// ([`PowerLink`]) into [`tilo_system_service::SystemService`].
+struct LivePowerProfiles(PowerLink);
 
 impl tilo_system_service::device::PowerProfiles for LivePowerProfiles {
+    fn is_ready(&self) -> bool {
+        self.0.is_attached() && self.0.bridge().profiles_moved() > 0
+    }
+
     fn snapshot(
         &self,
     ) -> (
         Vec<tilo_system_service::model::PowerMode>,
         Option<tilo_system_service::model::PowerMode>,
     ) {
-        let (profiles, active) = self.0.profiles_snapshot();
+        let (profiles, active) = self.0.bridge().profiles_snapshot();
         let mut modes = Vec::new();
         for name in profiles {
             if let Some(mode) = os_actions::PowerProfile::from_cli(&name)
@@ -120,17 +124,17 @@ impl tilo_system_service::device::PowerProfiles for LivePowerProfiles {
     }
 
     fn revision(&self) -> u64 {
-        self.0.profiles_moved()
+        self.0.bridge().profiles_moved()
     }
 
     fn on_change(&self, wake: tilo_service::Wake) {
-        self.0.on_profiles_change(wake);
+        self.0.bridge().on_profiles_change(wake);
     }
 }
 
 /// Build the session's system service, following `power`'s live daemon bridge
-/// when this session has one, or polling the machine's daemons directly when it
-/// does not (as in a headless session).
+/// once it attaches and receives a daemon answer, or polling the machine's
+/// daemons directly until then (and whenever a session runs without `power`).
 ///
 /// # Errors
 /// The system service's worker thread did not start.
@@ -143,7 +147,7 @@ pub fn system_service(
         Some(link) => tilo_system_service::SystemService::with_power_profiles(
             system,
             wake,
-            Arc::new(LivePowerProfiles(link.bridge().clone())),
+            Arc::new(LivePowerProfiles(link.clone())),
         ),
         None => tilo_system_service::SystemService::new(system, wake),
     }

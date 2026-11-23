@@ -787,6 +787,7 @@ const PROFILES_PATH: &str = "/net/hadess/PowerProfiles";
 struct FakePowerProfiles {
     active: String,
     profiles: Vec<String>,
+    set_calls: Arc<Mutex<Vec<String>>>,
 }
 
 #[zbus::interface(name = "net.hadess.PowerProfiles")]
@@ -794,6 +795,19 @@ impl FakePowerProfiles {
     #[zbus(property)]
     fn active_profile(&self) -> String {
         self.active.clone()
+    }
+
+    #[zbus(property)]
+    fn set_active_profile(&mut self, profile: String) -> zbus::fdo::Result<()> {
+        if !self.profiles.contains(&profile) {
+            return Err(zbus::fdo::Error::InvalidArgs(profile));
+        }
+        self.set_calls
+            .lock()
+            .expect("set_calls")
+            .push(profile.clone());
+        self.active = profile;
+        Ok(())
     }
 
     #[zbus(property)]
@@ -824,6 +838,7 @@ impl FakePowerProfiles {
 
 struct CountingSystem {
     power_reads: std::sync::atomic::AtomicUsize,
+    mode: Mutex<Option<tilo_system_service::model::PowerMode>>,
     changes: Mutex<Vec<tilo_system_service::device::Change>>,
 }
 
@@ -832,6 +847,10 @@ impl tilo_system_service::device::System for CountingSystem {
         self.power_reads
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         tilo_system_service::model::Power::default()
+    }
+
+    fn power_mode(&self) -> Option<tilo_system_service::model::PowerMode> {
+        *self.mode.lock().expect("mode")
     }
 
     fn user_switching(&self) -> bool {
@@ -851,6 +870,9 @@ impl tilo_system_service::device::System for CountingSystem {
     }
 
     fn change(&self, change: &tilo_system_service::device::Change) -> Result<(), String> {
+        if let tilo_system_service::device::Change::PowerMode(mode) = change {
+            *self.mode.lock().expect("mode") = Some(*mode);
+        }
         self.changes.lock().expect("changes").push(change.clone());
         Ok(())
     }
@@ -889,7 +911,14 @@ fn start_bus_with_profiles(
             .expect("upower")
             .serve_at(DISPLAY_PATH, FakeDisplayDevice { percentage: 80.0 })
             .expect("display device")
-            .serve_at(PROFILES_PATH, FakePowerProfiles { active, profiles })
+            .serve_at(
+                PROFILES_PATH,
+                FakePowerProfiles {
+                    active,
+                    profiles,
+                    set_calls: Arc::new(Mutex::new(Vec::new())),
+                },
+            )
             .expect("power profiles")
             .build();
         let client = Builder::unix_stream(client).p2p().build();
@@ -958,6 +987,7 @@ fn a_dbus_profile_change_reaches_the_sessions_power_reading_live() {
     let wake = tilo_service::LoopWake::default();
     let fake_system = Arc::new(CountingSystem {
         power_reads: AtomicUsize::new(0),
+        mode: Mutex::new(None),
         changes: Mutex::new(Vec::new()),
     });
     let system_service = tilo_session::system_service(
@@ -984,6 +1014,9 @@ fn a_dbus_profile_change_reaches_the_sessions_power_reading_live() {
                     && power["modes"] == serde_json::json!(["balanced", "saver"])
             })
     });
+    // At most the single startup refresh may have run before PowerService primed the bridge.
+    let reads_once_live = fake_system.power_reads.load(Ordering::SeqCst);
+    assert!(reads_once_live <= 1, "at most one startup read before live");
     let sleep = session.read(SLEEP).expect("sleep reading");
     assert_eq!(sleep.get("profile"), None, "{sleep}");
     assert_eq!(sleep.get("profiles"), None, "{sleep}");
@@ -1023,5 +1056,358 @@ fn a_dbus_profile_change_reaches_the_sessions_power_reading_live() {
             "this device offers no power mode saver".to_owned()
         ))
     );
-    assert_eq!(fake_system.power_reads.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        fake_system.power_reads.load(Ordering::SeqCst),
+        reads_once_live,
+        "once the live bridge takes over, System::power() is never polled again"
+    );
+}
+
+/// A private `dbus-daemon` bus for testing well-known name owner changes, stopped on drop.
+struct PrivateBus {
+    daemon: std::process::Child,
+    address: String,
+    _directory: tempfile::TempDir,
+}
+
+impl PrivateBus {
+    fn start() -> Self {
+        use std::io::BufRead as _;
+        use tilo_test_env::SpawnUnderEnvLock as _;
+
+        let directory = tempfile::tempdir().expect("bus tempdir");
+        let mut daemon = std::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address=1"])
+            .arg(format!(
+                "--address=unix:path={}",
+                directory.path().join("bus").display()
+            ))
+            .stdout(std::process::Stdio::piped())
+            .spawn_locked()
+            .expect("dbus-daemon must be installed in the test environment");
+        let mut address = String::new();
+        std::io::BufReader::new(daemon.stdout.take().expect("stdout"))
+            .read_line(&mut address)
+            .expect("bus address");
+        Self {
+            daemon,
+            address: address.trim().to_owned(),
+            _directory: directory,
+        }
+    }
+}
+
+impl Drop for PrivateBus {
+    fn drop(&mut self) {
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
+    }
+}
+
+struct BusPowerSystem {
+    handle: tokio::runtime::Handle,
+    bus: Connection,
+    power_reads: std::sync::atomic::AtomicUsize,
+}
+
+impl tilo_system_service::device::System for BusPowerSystem {
+    fn power(&self) -> tilo_system_service::model::Power {
+        self.power_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        tilo_system_service::model::Power::default()
+    }
+
+    fn power_mode(&self) -> Option<tilo_system_service::model::PowerMode> {
+        let bus = self.bus.clone();
+        let active = self.handle.block_on(async move {
+            let monitor = tilo_power_mgmt::PowerProfilesMonitor::with_connection(&bus)
+                .await
+                .ok()?;
+            monitor.active_profile().await.ok()
+        })?;
+        os_actions::PowerProfile::from_cli(&active).map(tilo_system_service::model::power_mode)
+    }
+
+    fn user_switching(&self) -> bool {
+        false
+    }
+
+    fn update(&self) -> tilo_system_service::update::Update {
+        tilo_system_service::update::Update::default()
+    }
+
+    fn time(&self) -> tilo_system_service::model::Time {
+        tilo_system_service::model::Time::default()
+    }
+
+    fn keyboard_light(&self) -> tilo_system_service::model::KeyboardLight {
+        tilo_system_service::model::KeyboardLight::default()
+    }
+
+    fn change(&self, change: &tilo_system_service::device::Change) -> Result<(), String> {
+        let tilo_system_service::device::Change::PowerMode(mode) = change else {
+            return Ok(());
+        };
+        let cli = match mode {
+            tilo_system_service::model::PowerMode::Saver => "power-saver",
+            tilo_system_service::model::PowerMode::Balanced => "balanced",
+            tilo_system_service::model::PowerMode::Performance => "performance",
+        };
+        let bus = self.bus.clone();
+        self.handle.block_on(async move {
+            let monitor = tilo_power_mgmt::PowerProfilesMonitor::with_connection(&bus)
+                .await
+                .map_err(|e| e.to_string())?;
+            monitor
+                .set_active_profile(cli)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    fn locate(&self) -> Result<settings_store::day_schedule::Location, String> {
+        Err("no fix".into())
+    }
+
+    fn nearest_zone(&self, _location: settings_store::day_schedule::Location) -> Option<String> {
+        None
+    }
+}
+
+fn spawn_base_daemons_on_bus(runtime: &tokio::runtime::Runtime, address: &str) -> Connection {
+    let address = address.to_owned();
+    runtime.block_on(async move {
+        Builder::address(address.as_str())
+            .expect("bus address")
+            .serve_at(
+                LOGIND_PATH,
+                FakeLogind {
+                    calls: Shared::default(),
+                    verdict: "yes".into(),
+                },
+            )
+            .expect("logind")
+            .serve_at(UPOWER_PATH, FakeUPower { lid_closed: false })
+            .expect("upower")
+            .serve_at(DISPLAY_PATH, FakeDisplayDevice { percentage: 80.0 })
+            .expect("display")
+            .name("org.freedesktop.login1")
+            .expect("login1 name")
+            .name("org.freedesktop.UPower")
+            .expect("upower name")
+            .build()
+            .await
+            .expect("base daemons")
+    })
+}
+
+fn spawn_profiles_daemon(
+    runtime: &tokio::runtime::Runtime,
+    address: &str,
+    active: &str,
+    profiles: &[&str],
+) -> (Connection, Arc<Mutex<Vec<String>>>) {
+    let address = address.to_owned();
+    let active = active.to_owned();
+    let profiles: Vec<String> = profiles.iter().map(|&name| name.to_owned()).collect();
+    let set_calls = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::clone(&set_calls);
+    let conn = runtime.block_on(async move {
+        Builder::address(address.as_str())
+            .expect("bus address")
+            .serve_at(
+                PROFILES_PATH,
+                FakePowerProfiles {
+                    active,
+                    profiles,
+                    set_calls: calls,
+                },
+            )
+            .expect("serve profiles")
+            .name("net.hadess.PowerProfiles")
+            .expect("profiles bus name")
+            .build()
+            .await
+            .expect("profiles daemon conn")
+    });
+    (conn, set_calls)
+}
+
+fn wait_power_within(
+    session: &mut Session,
+    timeout: Duration,
+    label: &str,
+    pred: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let deadline = Instant::now().checked_add(timeout).expect("deadline");
+    while Instant::now() < deadline {
+        session.step(Duration::from_millis(1)).expect("a frame");
+        if let Some(power) = session.read(tilo_system_service::POWER)
+            && pred(&power)
+        {
+            return power;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!(
+        "timed out waiting for {label}; last reading: {:?}",
+        session.read(tilo_system_service::POWER)
+    );
+}
+
+fn session_on_bus(
+    runtime: &tokio::runtime::Runtime,
+    address: &str,
+) -> (Arc<BusPowerSystem>, Session) {
+    use std::sync::atomic::AtomicUsize;
+    use tilo_system_service::device::System;
+
+    let address = address.to_owned();
+    let (power_conn, sys_conn) = runtime.block_on(async move {
+        let a = Builder::address(address.as_str())
+            .expect("addr")
+            .build()
+            .await
+            .expect("power client");
+        let b = Builder::address(address.as_str())
+            .expect("addr")
+            .build()
+            .await
+            .expect("sys client");
+        (a, b)
+    });
+    let link = PowerLink::new(quiet());
+    let power_service =
+        SessionPower::with_connection(power_conn, link.clone()).expect("power service");
+    let wake = tilo_service::LoopWake::default();
+    let fake_system = Arc::new(BusPowerSystem {
+        handle: runtime.handle().clone(),
+        bus: sys_conn,
+        power_reads: AtomicUsize::new(0),
+    });
+    let system_service = tilo_session::system_service(
+        Arc::clone(&fake_system) as Arc<dyn System>,
+        Some(wake.handle()),
+        Some(&link),
+    )
+    .expect("system service");
+    let session = crate::common::headless(Options {
+        services: vec![Box::new(power_service), Box::new(system_service)],
+        wake,
+        power: Some(link),
+        user: "ada".to_owned(),
+        verifier: Arc::new(Sesame),
+        ..Options::default()
+    });
+    (fake_system, session)
+}
+
+/// Removing `net.hadess.PowerProfiles` from the bus clears the session's `power` reading,
+/// and a new daemon claiming the name is read directly without waiting for a signal —
+/// including when the person then chooses a mode and the daemon emits no signal.
+#[test]
+fn a_power_profiles_daemon_leaving_and_returning_resets_and_re_reads_power() {
+    use std::sync::atomic::Ordering;
+
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let bus = PrivateBus::start();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_name("tilo-ppd-owner-test")
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    let _base_daemons = spawn_base_daemons_on_bus(&runtime, &bus.address);
+    let (daemon1, _) = spawn_profiles_daemon(
+        &runtime,
+        &bus.address,
+        "power-saver",
+        &["balanced", "power-saver"],
+    );
+    let (fake_system, mut session) = session_on_bus(&runtime, &bus.address);
+
+    wait_power_within(
+        &mut session,
+        Duration::from_secs(5),
+        "initial saver reading",
+        |power| {
+            power["mode"] == serde_json::json!("saver")
+                && power["modes"] == serde_json::json!(["balanced", "saver"])
+        },
+    );
+    let reads_once_live = fake_system.power_reads.load(Ordering::SeqCst);
+    assert!(reads_once_live <= 1, "at most one startup read before live");
+
+    // Daemon leaves the bus: both modes and active mode clear.
+    runtime
+        .block_on(daemon1.close())
+        .expect("close first daemon");
+    wait_power_within(
+        &mut session,
+        Duration::from_secs(3),
+        "cleared reading after daemon exit",
+        |power| power["mode"].is_null() && power["modes"] == serde_json::json!([]),
+    );
+
+    // A replacement daemon claims the name at `balanced`, sending no PropertiesChanged signal.
+    let (_daemon2, daemon2_calls) = spawn_profiles_daemon(
+        &runtime,
+        &bus.address,
+        "balanced",
+        &["performance", "balanced", "power-saver"],
+    );
+    wait_power_within(
+        &mut session,
+        Duration::from_secs(3),
+        "returned balanced reading",
+        |power| {
+            power["mode"] == serde_json::json!("balanced")
+                && power["modes"] == serde_json::json!(["performance", "balanced", "saver"])
+        },
+    );
+
+    // Choosing `balanced` succeeds and stays `balanced` even though the daemon emits no signal.
+    let mut balanced = serde_json::Map::new();
+    balanced.insert("mode".to_owned(), serde_json::json!("balanced"));
+    assert!(
+        session
+            .invoke(tilo_system_service::POWER, "set-power-mode", &balanced)
+            .is_ok()
+    );
+    let reading = wait_power_within(
+        &mut session,
+        Duration::from_secs(3),
+        "settled balanced",
+        |power| power["pending"] == serde_json::json!([]),
+    );
+    assert_eq!(reading["mode"], serde_json::json!("balanced"));
+    assert_eq!(reading["problem"], serde_json::Value::Null);
+
+    // Choosing `performance` (daemon emits no signal) already carries `performance` in the
+    // first reading where `pending` clears.
+    let mut perf = serde_json::Map::new();
+    perf.insert("mode".to_owned(), serde_json::json!("performance"));
+    assert!(
+        session
+            .invoke(tilo_system_service::POWER, "set-power-mode", &perf)
+            .is_ok()
+    );
+    let reading = wait_power_within(
+        &mut session,
+        Duration::from_secs(3),
+        "settled performance",
+        |power| power["pending"] == serde_json::json!([]),
+    );
+    assert_eq!(reading["mode"], serde_json::json!("performance"));
+    assert_eq!(reading["problem"], serde_json::Value::Null);
+    assert_eq!(
+        *daemon2_calls.lock().expect("calls"),
+        vec!["balanced", "performance"]
+    );
+    assert_eq!(
+        fake_system.power_reads.load(Ordering::SeqCst),
+        reads_once_live,
+        "once the live bridge takes over, System::power() is never polled again"
+    );
 }

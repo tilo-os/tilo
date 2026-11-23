@@ -291,6 +291,10 @@ mod tests {
             self.power.lock().expect("power lock").clone()
         }
 
+        fn power_mode(&self) -> Option<tilo_system_service::model::PowerMode> {
+            self.power.lock().expect("power lock").mode
+        }
+
         fn user_switching(&self) -> bool {
             self.power.lock().expect("power lock").user_switching
         }
@@ -744,6 +748,7 @@ mod tests {
         active: &str,
     ) -> (tilo_session_power::PowerLink, crate::Session) {
         let power_link = tilo_session_power::PowerLink::default();
+        power_link.attached();
         power_link.bridge().note_profiles(profiles);
         power_link.bridge().note_active_profile(active);
         let power_service =
@@ -919,6 +924,107 @@ mod tests {
                 reason: "This device offers no power modes".to_owned(),
             })
         );
+    }
+
+    /// When the session has a `PowerLink` whose power service never attached or fed a
+    /// daemon reading, `power` still polls `System::power()` and `set-power-mode` works.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_unattached_power_service_falls_back_to_polling_and_runs_set_power_mode() {
+        use tilo_system_service::device::Change;
+        use tilo_system_service::model::PowerMode;
+
+        const WORKSPACE: &str = "5b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b61";
+
+        let _settled = ui::motion::testing::settled();
+        let state = tempfile::tempdir().expect("a state directory");
+        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let app_wire = tempfile::tempdir().expect("a directory to serve unattached power actions");
+
+        let power_link = tilo_session_power::PowerLink::default();
+        let power_service =
+            tilo_session_power::SessionPower::without_daemons(power_link.clone()).expect("power");
+        let fake_system = FakeSystem::new();
+        let mut system_service = crate::power::system_service(
+            std::sync::Arc::clone(&fake_system)
+                as std::sync::Arc<dyn tilo_system_service::device::System>,
+            None,
+            Some(&power_link),
+        )
+        .expect("system");
+        tilo_service::Service::settle(&mut system_service);
+        let mut session = power_session(
+            state.path(),
+            app_wire.path(),
+            &person_id,
+            WORKSPACE,
+            vec![Box::new(power_service), Box::new(system_service)],
+        );
+
+        let reading = session
+            .read(tilo_system_service::POWER)
+            .expect("power reading");
+        assert_eq!(reading["modes"], serde_json::json!(["saver", "balanced"]));
+        assert_eq!(reading["mode"], serde_json::json!("balanced"));
+        assert!(
+            fake_system.power_reads() >= 1,
+            "an unattached power service falls back to polling System::power()"
+        );
+
+        let person = Caller::local_person(person_id).in_workspace(WORKSPACE);
+        invoke_session_step(
+            &mut session,
+            &person,
+            tilo_system_service::POWER,
+            "set-power-mode",
+            single_arg("mode", "saver"),
+        )
+        .expect("set-power-mode works while falling back to polling");
+        let power = settled_power(&mut session);
+        assert_eq!(power["mode"], serde_json::json!("saver"));
+        assert_eq!(
+            fake_system.changes(),
+            vec![Change::PowerMode(PowerMode::Saver)]
+        );
+    }
+
+    /// On the live path, the first `power` reading in which `pending` clears after
+    /// `set-power-mode` lands already carries the new `mode` without waiting for a D-Bus signal.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn on_the_live_path_the_first_reading_after_set_power_mode_lands_carries_the_new_mode() {
+        const WORKSPACE: &str = "6b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b62";
+
+        let _settled = ui::motion::testing::settled();
+        let state = tempfile::tempdir().expect("a state directory");
+        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let app_wire = tempfile::tempdir().expect("a directory to serve live mode actions");
+        let fake_system = FakeSystem::new();
+        let (_power_link, mut session) = live_power_session(
+            state.path(),
+            app_wire.path(),
+            &person_id,
+            WORKSPACE,
+            &fake_system,
+            vec!["balanced".into(), "power-saver".into()],
+            "balanced",
+        );
+
+        assert!(
+            session
+                .invoke(
+                    tilo_system_service::POWER,
+                    "set-power-mode",
+                    &single_arg("mode", "saver"),
+                )
+                .is_ok()
+        );
+        // Do NOT push a D-Bus signal onto `power_link.bridge()`; the very first reading
+        // where `pending` clears must already carry `"saver"`.
+        let reading = settled_power(&mut session);
+        assert_eq!(reading["pending"], serde_json::json!([]));
+        assert_eq!(reading["mode"], serde_json::json!("saver"));
+        assert_eq!(fake_system.power_reads(), 0);
     }
 
     /// Every resource the session's own API publishes, by its id.
