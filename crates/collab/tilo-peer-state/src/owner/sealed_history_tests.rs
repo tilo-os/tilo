@@ -48,14 +48,14 @@ fn open(keys: &ContentKeys, write: &collab_types::SignedOp) -> Result<Vec<u8>, S
 }
 
 /// Someone typing into the chat record: one change per key, each after the
-/// last, made by `person`, the workspace's own.
-struct Typist(AutoCommit, [u8; 32]);
+/// last, made by `invoker`, the person the writing device acts as.
+struct Typist(AutoCommit, tilo_actions::ActionInvoker);
 
 impl Typist {
-    fn over(base: &[u8], actor: u8, person: [u8; 32]) -> Self {
+    fn over(base: &[u8], actor: u8, invoker: tilo_actions::ActionInvoker) -> Self {
         let mut document = AutoCommit::load(base).unwrap();
         document.set_actor(ActorId::from([actor; 16]));
-        Self(document, person)
+        Self(document, invoker)
     }
 
     fn change(&mut self, key: &str) -> Vec<u8> {
@@ -65,11 +65,7 @@ impl Typist {
     fn put(&mut self, key: &str, value: &str) -> Vec<u8> {
         let before: Vec<ChangeHash> = self.0.get_heads();
         self.0.put(ROOT, key, value).unwrap();
-        self.0.commit_edit_as(
-            "fixture",
-            "topic",
-            tilo_actions::ActionInvoker::person(hex::encode(self.1)),
-        );
+        self.0.commit_edit_as("fixture", "topic", self.1.clone());
         self.0.save_after(&before)
     }
 }
@@ -146,10 +142,15 @@ async fn a_device_alone_takes_every_change_to_one_sealed_record_past_its_bound()
     let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
     let (_, keys) = rotated_channel();
     owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
-    let person = owner
-        .with_current(workspace, |view| Ok(view.owner()))
+    let invoker = owner
+        .with_current(workspace, |view| {
+            Ok(crate::owner::testing::invoker_of(
+                view.peer(),
+                member_key().verifying_key().to_bytes(),
+            ))
+        })
         .unwrap();
-    let mut typist = Typist::over(&base(owner, workspace), 1, person);
+    let mut typist = Typist::over(&base(owner, workspace), 1, invoker);
     for key in keys_typed('k', ALONE) {
         let changes = typist.change(&key);
         write(owner, workspace, &keys, changes, now)
@@ -204,10 +205,15 @@ async fn without_compaction_keys_a_full_sealed_history_waits() {
     let joined = enrolled();
     let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
     let (_, keys) = rotated_channel();
-    let person = owner
-        .with_current(workspace, |view| Ok(view.owner()))
+    let invoker = owner
+        .with_current(workspace, |view| {
+            Ok(crate::owner::testing::invoker_of(
+                view.peer(),
+                member_key().verifying_key().to_bytes(),
+            ))
+        })
         .unwrap();
-    let mut typist = Typist::over(&base(owner, workspace), 1, person);
+    let mut typist = Typist::over(&base(owner, workspace), 1, invoker);
     let mut refused = None;
     for key in keys_typed('k', 300) {
         match write(owner, workspace, &keys, typist.change(&key), now).await {
@@ -232,10 +238,15 @@ async fn a_write_is_kept_as_the_frame_a_link_carries() {
     let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
     let (_, keys) = rotated_channel();
     owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
-    let person = owner
-        .with_current(workspace, |view| Ok(view.owner()))
+    let invoker = owner
+        .with_current(workspace, |view| {
+            Ok(crate::owner::testing::invoker_of(
+                view.peer(),
+                member_key().verifying_key().to_bytes(),
+            ))
+        })
         .unwrap();
-    let mut typist = Typist::over(&base(owner, workspace), 1, person);
+    let mut typist = Typist::over(&base(owner, workspace), 1, invoker);
     let changes = typist.change("k0");
     write(owner, workspace, &keys, changes.clone(), now)
         .await
