@@ -27,7 +27,8 @@ The tilolang runtime every tilolang app runs on is a registry runtime package
 (`so.tilo.runtime.tilolang`), packed as Linux packs it
 (`tools/apps/pack-runtime-package.sh ... macos`): a universal `tilolang-app`
 and `tilolang-process`, and under `lib/gstreamer/` the reviewed GStreamer
-closure the arm64 `tilolang-app` decodes video with, relocated from the
+closure the arm64 `tilolang-app` decodes video with (decoders only, none under
+the GPL: VideoToolbox and AudioToolbox through applemedia, and dav1d), relocated from the
 building Mac's Homebrew (`collection_local_runtime.py tilolang`, which refuses
 a closure that differs from the reviewed lists in
 `collection_media_runtime.py`). The daemon installs the package Tilo.app

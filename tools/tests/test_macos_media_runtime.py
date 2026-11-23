@@ -144,5 +144,18 @@ class MediaDataTests(unittest.TestCase):
             media.additional_assets(self.plan, self.profile)
 
 
+
+class TilolangClosureTests(unittest.TestCase):
+    def test_the_tilolang_runtime_decodes_only_and_carries_nothing_under_the_gpl(self):
+        # Encoders and libav (and the GPL encoders it brings) stay out of a player: the system
+        # decodes H.264, HEVC and AAC, dav1d AV1.
+        refused = ('libgstlibav', 'libgstx264', 'libgstx265', 'libgstrav1e', 'libgstaom',
+                   'libgstvpx', 'libav', 'libsw', 'libx264', 'libx265', 'libSvtAv1Enc',
+                   'libmp3lame', 'libaom', 'librav1e', 'libvpx', 'libssl', 'libcrypto')
+        carried = media.TILOLANG_PLUGINS | media.TILOLANG_LIBRARIES
+        self.assertEqual(sorted(name for name in carried if name.startswith(refused)), [])
+        self.assertLessEqual({'libgstapplemedia.dylib', 'libgstdav1d.dylib'}, media.TILOLANG_PLUGINS)
+
+
 if __name__ == '__main__':
     unittest.main()

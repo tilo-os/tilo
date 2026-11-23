@@ -32,29 +32,26 @@ LIBRARY_ADDITIONS = {
                      'libgstsdp-1.0.0.dylib', 'libgstrtsp-1.0.0.dylib'},
 }
 PACKAGE_ADDITIONS = {'video-editor': {'flac', 'libogg'}}
-# The tilolang runtime's closure (collection_local_runtime.py `tilolang`): the reviewed
-# decoders and the playback set, and every library and Homebrew package they and the runtime
-# load, by name. A closure with anything more or less is refused.
-TILOLANG_PLUGINS = runtime.PLUGINS | {f'libgst{name}.dylib' for name in PLUGINS}
+# The tilolang runtime's closure (collection_local_runtime.py `tilolang`): a player, so decoders
+# only, and none under the GPL. H.264, HEVC, AAC and MP3 decode through the system's VideoToolbox
+# and AudioToolbox (applemedia's vtdec and atdec), AV1 through dav1d; every library and Homebrew
+# package they and the runtime load is named. A closure with anything more or less is refused.
+TILOLANG_PLUGINS = {f'libgst{name}.dylib' for name in PLUGINS} | {'libgstapplemedia.dylib',
+                                                                'libgstdav1d.dylib'}
 TILOLANG_LIBRARIES = {
-    'libSvtAv1Enc.4.3.0.dylib', 'libX11.6.dylib', 'libXau.6.dylib', 'libXdmcp.6.dylib',
-    'libXext.6.dylib', 'libXrender.1.dylib', 'libaom.3.15.3.dylib', 'libass.9.dylib',
-    'libavcodec.63.1.102.dylib', 'libavfilter.12.1.102.dylib', 'libavformat.63.1.102.dylib',
-    'libavutil.61.1.102.dylib', 'libbrotlicommon.1.2.1.dylib', 'libbrotlidec.1.2.1.dylib',
-    'libcairo.2.dylib', 'libcrypto.4.dylib', 'libdatrie.1.dylib', 'libdav1d.7.dylib',
+    'libX11.6.dylib', 'libXau.6.dylib', 'libXdmcp.6.dylib', 'libXext.6.dylib',
+    'libXrender.1.dylib', 'libass.9.dylib', 'libbrotlicommon.1.2.1.dylib',
+    'libbrotlidec.1.2.1.dylib', 'libcairo.2.dylib', 'libdatrie.1.dylib', 'libdav1d.7.dylib',
     'libfontconfig.1.dylib', 'libfreetype.6.dylib', 'libfribidi.0.dylib', 'libgio-2.0.0.dylib',
     'libglib-2.0.0.dylib', 'libgmodule-2.0.0.dylib', 'libgobject-2.0.0.dylib',
     'libgraphite2.3.3.1.dylib', 'libgstallocators-1.0.0.dylib', 'libgstapp-1.0.0.dylib',
     'libgstaudio-1.0.0.dylib', 'libgstbase-1.0.0.dylib', 'libgstcodecparsers-1.0.0.dylib',
     'libgstpbutils-1.0.0.dylib', 'libgstreamer-1.0.0.dylib', 'libgstriff-1.0.0.dylib',
     'libgstrtp-1.0.0.dylib', 'libgsttag-1.0.0.dylib', 'libgstvideo-1.0.0.dylib',
-    'libharfbuzz.0.dylib', 'libintl.8.dylib', 'liblzma.5.dylib', 'libmp3lame.0.dylib',
-    'libmpg123.0.dylib', 'libopus.0.dylib', 'liborc-0.4.0.dylib', 'libpango-1.0.0.dylib',
+    'libharfbuzz.0.dylib', 'libintl.8.dylib', 'liborc-0.4.0.dylib', 'libpango-1.0.0.dylib',
     'libpangocairo-1.0.0.dylib', 'libpangoft2-1.0.0.dylib', 'libpcre2-8.0.dylib',
-    'libpixman-1.0.dylib', 'libpng16.16.dylib', 'libssl.4.dylib', 'libswresample.7.1.102.dylib',
-    'libswscale.10.1.102.dylib', 'libthai.0.dylib', 'libunibreak.8.dylib', 'libvmaf.3.dylib',
-    'libvpx.12.dylib', 'libx264.165.dylib', 'libx265.217.dylib', 'libxcb-render.0.0.0.dylib',
-    'libxcb-shm.0.0.0.dylib', 'libxcb.1.1.0.dylib',
+    'libpixman-1.0.dylib', 'libpng16.16.dylib', 'libthai.0.dylib', 'libunibreak.8.dylib',
+    'libxcb-render.0.0.0.dylib', 'libxcb-shm.0.0.0.dylib', 'libxcb.1.1.0.dylib',
 }
 TILOLANG_PACKAGES = set()
 

@@ -102,9 +102,10 @@ tilolang-calendar = { path = "../../crates/integrations/tilolang-calendar" }
 # carries beside this binary (dist/macos/build-app.sh).
 tilo-media = { path = "../../crates/platform/tilo-media", features = ["decode"] }
 
-[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
-# A video plays in the app's window on an Apple silicon Mac, decoded by the GStreamer Tilo.app
-# carries beside this binary (dist/macos/build-app.sh).
+[target.'cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
+# A video a view declares plays in the app's window: on Linux decoded by the system's GStreamer,
+# on an Apple silicon Mac by the decoders the tilolang runtime package carries beside this binary
+# (dist/macos/build-app.sh). An Intel Mac's slice and Windows build without one.
 tilo-media = { path = "../../crates/engines/tilo-media", features = ["decode"] }
 
 [target.'cfg(windows)'.dependencies]
