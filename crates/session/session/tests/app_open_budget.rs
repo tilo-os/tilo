@@ -513,12 +513,22 @@ fn descends(pid: u32, session: u32, under: &mut HashMap<u32, bool>) -> bool {
 
 /// The session in a directory with the launcher it starts apps through beside it, where an
 /// installed session finds its launcher. The session is the optimised build the run made for this
-/// test (`t.toml` `starts`), whose passes are what the budget counts; a run that made none, as a
-/// plain `cargo test` does not, opens with the tests' own build. The directory is made beside that
-/// build, so the programs are linked into it rather than copied where the file system allows.
+/// test (`t.toml` `starts`), whose passes are what the budget counts: the tests' own debug build
+/// spends several times the work on the same pass, so a run that made no optimised one has nothing
+/// to judge and says so. The directory is made beside that build, so the programs are linked into
+/// it rather than copied where the file system allows.
 fn session_beside_launcher() -> (tempfile::TempDir, PathBuf) {
     let session = tilo_test_env::started_variant("tilo-session", "fast", "dev-overrides")
-        .unwrap_or_else(|| tilo_test_env::package_binary!("tilo-session"));
+        .unwrap_or_else(|| {
+            panic!(
+                "no optimised session to time: the budget is about the `fast` build of \
+                 tilo-session with `dev-overrides`, which `t test` builds from t.toml's starts \
+                 (`tilo-session:tilo-session@fast=dev-overrides`) and hands over as \
+                 T_STARTED_BIN_tilo-session_fast_dev-overrides. Run it with `t test \
+                 test/tilo-session --test app_open_budget::`, or set that variable to a session \
+                 built with `--profile fast --features dev-overrides`"
+            )
+        });
     let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
     let directory = session
         .parent()
