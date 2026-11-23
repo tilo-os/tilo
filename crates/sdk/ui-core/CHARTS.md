@@ -16,15 +16,29 @@ use ui::charts::{CartesianPlot, PlotDatum, PlotSeries, SeriesKind};
 | Trend or relationship on numeric axes | `CartesianPlot` |
 | Tiny inline trend | `Sparkline` |
 | Categories side-by-side, stacked or cumulative | `CategoryChart` |
+| Distribution from raw observations | `Histogram` or `DistributionChart` |
 | Part-to-whole | `PieChart` |
+| Seasonal or cyclical magnitude | `PolarAreaChart` |
 | Hierarchical part-to-whole | `SunburstChart` or `Treemap` |
 | Matrix intensity | `Heatmap` |
+| Several metrics with different scales | `RadarChart` |
+| Open/high/low/close data | `CandlestickChart` |
 | Movement between stages | `SankeyChart` |
+| Dense weighted relationships | `ChordChart` |
+| Schedule, interval, reservation, or milestone | `RangeChart` |
+| Sequential conversion | `FunnelChart` |
 | Compact progress, a countdown or a threshold value | `ProgressRing` / `BarGauge` |
 
 `CartesianPlot` series may be mixed. It supports line, smooth line, step,
 straight/smooth/stepped area, scatter, bubble, bar and lollipop marks. `CategoryChart` supports grouped,
-stacked, normalized-percent and waterfall layouts.
+stacked, normalized-percent and waterfall layouts. `DistributionChart` supports
+box, violin and combined plots. `FunnelChart` also renders pyramids.
+`RangeChart` covers timelines, Gantt plans, numeric intervals and milestones,
+with an optional per-range progress fill and caller-defined value formatter.
+`PolarAreaChart` (rose/radial bars) keeps equal angular categories while radius
+encodes magnitude; its `radius_exponent` supports perceptual area scaling.
+`ChordChart` automatically allocates weighted node arcs and connection ribbons;
+both are independently hoverable, clickable, and accessible.
 
 ## One plot widget
 
@@ -274,9 +288,36 @@ Use `SunburstChart` when the data has more than one hierarchy level. Its node
 values may be explicit or `<= 0`, in which case they are derived recursively
 from children. Use `Treemap` when label density matters more than radial form.
 
+## Raw distributions
+
+Callers do not need to calculate bins, quartiles, outliers or density curves:
+
+```rust
+# use tilo_ui as ui;
+# use ui::charts::*;
+# use tilo_ui::vello::peniko::Color;
+# let accent = Color::from_rgb8(0x3B, 0x82, 0xF6);
+# let blue = Color::from_rgb8(0x3B, 0x82, 0xF6);
+# let green = Color::from_rgb8(0x3B, 0x82, 0xF6);
+# let samples = vec![1.0, 2.0, 2.5, 3.0];
+# let before = samples.clone();
+# let after = vec![0.5, 1.5, 2.0];
+let histogram = Histogram::new(samples.clone(), accent)
+    .bins(24)
+    .normalize(HistogramNormalization::Density)
+    .titled("Response distribution")
+    .build();
+
+let comparison = DistributionChart::new(vec![
+    DistributionSeries::new("before", "Before", blue, before),
+    DistributionSeries::new("after", "After", green, after),
+])
+.kind(DistributionKind::BoxAndViolin);
+```
+
 ## Updating live data
 
-Use `set_series`, `set_data`, `set_cells`, `set_items`, or the
+Use `set_series`, `set_data`, `set_cells`, `set_items`, `set_stages`, or the
 type-specific setter. These preserve the retained widget and avoid rebuilding
 the surrounding tree. Stable item IDs preserve semantic identity. Charts do no
 work while idle and request no animation frames by themselves.
@@ -329,7 +370,8 @@ when color has domain meaning; never copy surface or text colors out of a
 particular light/dark theme.
 
 Every chart takes its style through `.with_style(style)`. Most fixed-canvas
-charts expose `.with_height(...)`.
+charts expose `.with_height(...)`; `RangeChart` intentionally derives its height from row count and `RangeStyle::row_height`, keeping Gantt
+rows readable as data changes.
 
 Tooltips, focus outlines, dim text, grids and surfaces always resolve from the
 current `Theme` during drawing. This keeps the same chart intentional in light,

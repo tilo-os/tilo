@@ -789,6 +789,7 @@ mod margin_tests {
     use crate::widget::category_chart::{Category, CategoryChart, CategorySeries};
     use crate::widget::chart_data::ChartItem;
     use crate::widget::chart_navigation::title_band;
+    use crate::widget::radar_chart::{RadarAxis, RadarChart, RadarSeries};
     use crate::widget::treemap::Treemap;
     use vello::peniko::Color;
 
@@ -824,9 +825,18 @@ mod margin_tests {
                 .titled("Title"),
                 &theme,
             );
+            let web = placed(
+                RadarChart::new(
+                    vec![RadarAxis::new("a", "Speed", 1.0), RadarAxis::new("b", "Cost", 1.0)],
+                    vec![RadarSeries::new("s", "Sales", red, vec![0.5, 0.5])],
+                )
+                .titled("Title"),
+                &theme,
+            );
             for (kind, entry) in [
                 ("bars", bars.marks.toggles().and_then(|t| t.entry("s"))),
                 ("lines", lines.marks.toggles().and_then(|t| t.entry("s"))),
+                ("radar", web.marks.toggles().and_then(|t| t.entry("s"))),
             ] {
                 let entry = entry.expect("the legend names its series");
                 assert!(
