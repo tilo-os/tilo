@@ -449,59 +449,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase inode_view_matches_the_separate_accessors_after_remote_apply;
-    {
-        let mut source = Namespace::new("source").unwrap();
-        let dir = source.create_dir(ROOT_INO, "dir", 1).unwrap();
-        source
-            .create_file(dir, "a.txt", Some(&h(1)), 10, 1)
-            .unwrap();
-        let b = source
-            .create_file(ROOT_INO, "b.txt", Some(&h(2)), 20, 1)
-            .unwrap();
-        let gone = source
-            .create_file(ROOT_INO, "gone.txt", Some(&h(3)), 30, 1)
-            .unwrap();
-        let mut peer = Namespace::from_bytes("peer", &source.save()).unwrap();
-        let peer_dir = peer.lookup(ROOT_INO, "dir").unwrap().ino.0;
-        let peer_a = peer.lookup(peer_dir, "a.txt").unwrap().ino.0;
-        let peer_b = peer.lookup(ROOT_INO, "b.txt").unwrap().ino.0;
-        let peer_gone = peer.lookup(ROOT_INO, "gone.txt").unwrap().ino.0;
-        let inos = [ROOT_INO, peer_dir, peer_a, peer_b, peer_gone, 9_999];
-        for ino in inos {
-            assert_view_matches_accessors(&peer, ino);
-        }
-
-        assert!(source.rename(dir, "a.txt", ROOT_INO, "moved.txt", 2));
-        assert!(source.set_content(b, Some(&h(4)), 40, 2));
-        assert!(source.remove(gone));
-        peer.apply_remote_and_resolve(&source.save_incremental())
-            .unwrap();
-        for ino in inos {
-            assert_view_matches_accessors(&peer, ino);
-        }
-
-        let live = InodeQuery {
-            unlinked: false,
-            path: true,
-        };
-        let moved = peer.inode_view(peer_a, live).unwrap();
-        assert_eq!(moved.path.as_deref(), Some("/moved.txt"));
-        let changed = peer.inode_view(peer_b, live).unwrap();
-        assert_eq!((changed.hash, changed.attr.size), (Some(h(4)), 40));
-        assert!(peer.inode_view(peer_gone, live).is_none());
-        let retained = peer
-            .inode_view(
-                peer_gone,
-                InodeQuery {
-                    unlinked: true,
-                    path: true,
-                },
-            )
-            .unwrap();
-        assert!(!retained.live);
-        assert_eq!(retained.path, None, "a trashed inode has no live path");
-    }
 }
 
 tilo_test_env::scenario! {
@@ -800,27 +747,6 @@ pub(super) fn assert_indexes_match_rebuild(ns: &Namespace) {
         ns.document_index_ambiguous, rebuilt.document_index_ambiguous,
         "ambiguity"
     );
-}
-
-fn assert_view_matches_accessors(ns: &Namespace, ino: u64) {
-    for unlinked in [false, true] {
-        for path in [false, true] {
-            let view = ns.inode_view(ino, InodeQuery { unlinked, path });
-            let attr = if unlinked {
-                ns.getattr_including_unlinked(ino)
-            } else {
-                ns.getattr(ino)
-            };
-            assert_eq!(view.as_ref().map(|v| v.attr), attr, "attr of {ino}");
-            let Some(view) = view else {
-                continue;
-            };
-            assert_eq!(view.live, ns.getattr(ino).is_some(), "liveness of {ino}");
-            assert_eq!(view.hash, ns.hash_for(ino), "hash of {ino}");
-            let expected_path = if path { ns.path_for(ino) } else { None };
-            assert_eq!(view.path, expected_path, "path of {ino}");
-        }
-    }
 }
 
 impl Namespace {

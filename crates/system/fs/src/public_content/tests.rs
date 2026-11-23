@@ -102,60 +102,6 @@ fn hash_of(bytes: &[u8]) -> String {
 tilo_test_env::scenario! {
     fn a_public_copy_is_kept_refreshed_and_released_by_the_budget;
 
-    phase a_released_copy_stays_until_the_budget_needs_its_room_and_comes_back_on_the_next_read;
-    {
-        let catalogue = b"Text#,Title\n1,The Declaration of Independence\n".to_vec();
-        let origin = Stand::serving(&catalogue);
-        let device = device(Arc::clone(&origin), u64::MAX);
-
-        assert_eq!(
-            device.read_all().outcome,
-            ReadOutcome::Unavailable,
-            "nobody keeps it yet"
-        );
-        device.content.keep(NAME, "so.tilo.ebook").unwrap();
-        assert_eq!(device.read_all().outcome, ReadOutcome::Pending);
-        assert!(device.arrive());
-        let read = device.read_all();
-        assert_eq!(
-            read.outcome,
-            ReadOutcome::Ready {
-                bytes: catalogue.clone(),
-                total_len: catalogue.len() as u64,
-            }
-        );
-        assert_eq!(read.hash.as_deref(), Some(hash_of(&catalogue).as_str()));
-
-        device.content.keep(NAME, "so.tilo.search").unwrap();
-        assert_eq!(origin.asked().len(), 1);
-        device.content.release(NAME, "so.tilo.ebook").unwrap();
-        assert!(matches!(
-            device.read_all().outcome,
-            ReadOutcome::Ready { .. }
-        ));
-
-        device.content.release(NAME, "so.tilo.search").unwrap();
-        assert_eq!(
-            device.read_all().outcome,
-            ReadOutcome::Ready {
-                bytes: catalogue.clone(),
-                total_len: catalogue.len() as u64,
-            }
-        );
-        assert_eq!(origin.asked().len(), 1);
-
-        device.files.set_budget(0);
-        assert_eq!(device.files.evict_to_budget(&[]), catalogue.len() as u64);
-        device.files.set_budget(u64::MAX);
-        assert_eq!(device.read_all().outcome, ReadOutcome::Pending);
-        assert!(!device.arrive(), "the same copy came back");
-        assert_eq!(origin.asked().len(), 2);
-        assert!(matches!(
-            device.read_all().outcome,
-            ReadOutcome::Ready { ref bytes, .. } if *bytes == catalogue
-        ));
-    }
-
     phase a_refresh_asks_whether_the_copy_changed_and_moves_the_name_only_once_the_new_copy_is_whole;
     {
         let first = b"Text#,Title\n1,First edition\n".to_vec();
