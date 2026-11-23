@@ -334,6 +334,19 @@ pub fn invitation_admission(
     admission_of(policy, workspace, signed, joiner, at_ns, true)
 }
 
+/// [`invitation_admits`] for `joiner` as the workspace's owner, whose device comes in on its
+/// certificate: the invitation must be one an inviter of the workspace signed, however long
+/// ago it expired.
+pub(crate) fn owner_invitation_admits(
+    policy: &tilo_action_policy::WorkspacePolicy,
+    workspace: &str,
+    signed: &[u8],
+    joiner: [u8; 32],
+    at_ns: u64,
+) -> Result<crate::join::InviteGrant, MembershipRefusal> {
+    admission_of(policy, workspace, signed, joiner, at_ns, false).map(|admitted| admitted.grant)
+}
+
 /// [`invitation_admission`], its invitation's expiry enforced only when `expires` says so.
 fn admission_of(
     policy: &tilo_action_policy::WorkspacePolicy,

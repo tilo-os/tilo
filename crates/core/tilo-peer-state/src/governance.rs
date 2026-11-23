@@ -81,7 +81,14 @@ pub(crate) fn admit_invited_member(
         .ok_or("governed workspace id is missing")?;
     // Read once per governance state, not once per admission.
     let policy = held.workspace_policy(&declared_workspace);
-    let grant = crate::workspace::membership::invitation_admits(
+    // The owner's device comes in on its certificate, as every receiver judges it
+    // ([`crate::workspace::membership`]): the invitation's expiry does not bind it.
+    let admits = if policy.is_owner(&hex::encode(cert.user_public_key)) {
+        crate::workspace::membership::owner_invitation_admits
+    } else {
+        crate::workspace::membership::invitation_admits
+    };
+    let grant = admits(
         policy,
         &declared_workspace,
         redemption.join().signed_invitation(),
