@@ -45,6 +45,8 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 # `watch`: a development device follows reinstalls of the apps its tilolang hosts run.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+# The API socket the daemon serves on its tokio runtime.
+tilo-socket = { path = "../../platform/tilo-socket", features = ["tokio"] }
 anyhow.workspace = true
 automerge.workspace = true
 # Seals and opens the channel state this device keeps for its encrypted routes.

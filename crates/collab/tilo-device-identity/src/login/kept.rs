@@ -292,45 +292,38 @@ pub fn entered_workspace(keys: IdentityPaths) -> Result<Option<(String, String)>
 /// Where this account's device holders listen: the session's runtime
 /// directory when it has one, else one of this account's in the temporary
 /// directory, made so that only this account enters it. One someone else
-/// made, or others may enter, is refused: whoever reaches a holder acts as
-/// the person. Short, since a socket's path is (about a hundred bytes), and a
-/// home's state directory need not be.
+/// made is refused: whoever reaches a holder acts as the person. Short, since
+/// a Unix socket's path is (about a hundred bytes), and a home's state
+/// directory need not be; a Windows pipe is named by a hash of its path.
 ///
 /// # Errors
-/// `login_dir` could not be made or is not readable, or the directory is not this account's own.
-#[cfg(unix)]
+/// `login_dir` could not be made, or a directory is not this account's own.
 pub fn holder_dir(login_dir: &Path) -> Result<PathBuf, String> {
-    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+    let private = |dir: &Path| {
+        tilo_files::native::private::directory(dir).map_err(|error| {
+            format!(
+                "{} is not this account's own private directory: {error}",
+                dir.display()
+            )
+        })
+    };
     // A computer that made its own identity and never logged in keeps no login yet, so the
-    // directory one goes in is made here, this account's alone, to read whose it is.
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(login_dir)
-        .map_err(|error| format!("{} could not be made: {error}", login_dir.display()))?;
-    let owner = std::fs::metadata(login_dir)
-        .map_err(|error| format!("{} is not readable: {error}", login_dir.display()))?
-        .uid();
+    // directory one goes in is made here, this account's alone.
+    private(login_dir)?;
+    // The temporary directory is shared on Unix, so this account's is named by its uid; on
+    // Windows it is the account's own already.
+    #[cfg(unix)]
+    let temporary = format!("tilo-{}", rustix::process::geteuid().as_raw());
+    #[cfg(not(unix))]
+    let temporary = "tilo".to_owned();
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .filter(|runtime| runtime.is_absolute() && runtime.is_dir())
         .map_or_else(
-            || std::env::temp_dir().join(format!("tilo-{owner}")),
+            || std::env::temp_dir().join(temporary),
             |runtime| runtime.join("tilo"),
         );
-    if let Err(error) = std::fs::DirBuilder::new().mode(0o700).create(&dir)
-        && error.kind() != std::io::ErrorKind::AlreadyExists
-    {
-        return Err(format!("{} could not be made: {error}", dir.display()));
-    }
-    let made = std::fs::symlink_metadata(&dir)
-        .map_err(|error| format!("{} is not readable: {error}", dir.display()))?;
-    if !made.is_dir() || made.uid() != owner || made.mode() & 0o077 != 0 {
-        return Err(format!(
-            "{} is not this account's own private directory",
-            dir.display()
-        ));
-    }
+    private(&dir)?;
     Ok(dir)
 }
 
@@ -359,13 +352,11 @@ pub fn holder_api_socket(dir: &Path, name: &str) -> PathBuf {
 ///
 /// # Errors
 /// The login is damaged, or the holders' directory is not this account's.
-#[cfg(unix)]
 pub fn held_api(keys: IdentityPaths) -> Result<Option<PathBuf>> {
     held_api_in(&Place::here(keys)?)
 }
 
 /// [`held_api`] for the login `place` keeps.
-#[cfg(unix)]
 fn held_api_in(place: &Place) -> Result<Option<PathBuf>> {
     let key = match load_public(place)? {
         Some(device) => device.cert.device_public_key,
@@ -384,7 +375,6 @@ fn held_api_in(place: &Place) -> Result<Option<PathBuf>> {
 
 /// The device key a daemon with no login serves as, from a certificate of it in `keys`: the
 /// device's own, else the newest of those it holds for its persons.
-#[cfg(unix)]
 fn served_device_key(keys: &IdentityPaths) -> Option<[u8; 32]> {
     if let Ok(cert) = read_device_cert(&keys.device_cert) {
         return Some(cert.device_public_key);

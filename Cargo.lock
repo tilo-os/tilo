@@ -17587,6 +17587,7 @@ dependencies = [
  "tilo-server-session",
  "tilo-session-actions",
  "tilo-session-client",
+ "tilo-socket",
  "tilo-test-env",
  "tilo-user-identity",
  "tokio",
@@ -21526,6 +21527,7 @@ dependencies = [
  "tilo-server-protocol",
  "tilo-server-session",
  "tilo-session-client",
+ "tilo-socket",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",
@@ -22434,6 +22436,8 @@ version = "0.1.0"
 dependencies = [
  "tempfile",
  "tilo-test-env",
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

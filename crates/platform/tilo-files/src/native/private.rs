@@ -300,10 +300,17 @@ fn publish(path: &Path, bytes: &[u8], replace: bool) -> io::Result<bool> {
     }
 }
 
-/// Binds a Unix socket at `path` that only its owner can connect to (mode `0600`), replacing a socket
-/// left there by a previous run.
+/// As the Unix [`bind_socket`] below: a named pipe is already this account's alone.
+#[cfg(windows)]
+pub fn bind_socket(path: &Path) -> io::Result<super::socket::Listener> {
+    super::socket::bind(path)
+}
+
+/// Binds a local socket at `path` that only its owner can connect to, replacing a socket left there
+/// by a previous run: on Unix a socket file of mode `0600`; on Windows a named pipe, whose DACL and
+/// peer check keep it to this account and which leaves nothing behind to replace.
 #[cfg(unix)]
-pub fn bind_socket(path: &Path) -> io::Result<std::os::unix::net::UnixListener> {
+pub fn bind_socket(path: &Path) -> io::Result<super::socket::Listener> {
     use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
 
     match std::fs::symlink_metadata(path) {

@@ -10,7 +10,6 @@
 pub mod enter;
 pub mod folders;
 
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -151,7 +150,7 @@ impl DaemonPlace {
 
     /// A connection to the device's daemon when one listens, starting none.
     #[must_use]
-    pub fn connect(&self) -> Option<UnixStream> {
+    pub fn connect(&self) -> Option<tilo_files::native::socket::Stream> {
         tilo_files::native::socket::connect(&self.socket).ok()
     }
 
@@ -160,7 +159,7 @@ impl DaemonPlace {
     /// daemon that is busy with a step over a workspace's folder.
     #[must_use]
     pub fn listening(&self) -> bool {
-        self.socket.exists()
+        tilo_files::native::socket::is_bound(&self.socket)
     }
 
     /// Whether a live process holds this device's lock. The kernel drops the lock with its
@@ -191,19 +190,27 @@ impl DaemonPlace {
     /// # Errors
     /// The program is not there, or it did not start.
     pub fn start(&self) -> std::io::Result<std::process::Child> {
-        use std::os::unix::process::CommandExt as _;
         // Added to, never emptied: a daemon started while another holds the device ends at once,
         // and emptying the log the one holding writes to would lose what it said.
         let log = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.log)?;
-        std::process::Command::new(runtime_program()?)
+        let mut command = std::process::Command::new(runtime_program()?);
+        command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(log)
-            .process_group(0)
-            .spawn()
+            .stderr(log);
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        // A process group of its own, with no console: closing the command's window does not
+        // end it (CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS).
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(
+            &mut command,
+            0x0000_0200 | 0x0000_0008,
+        );
+        command.spawn()
     }
 
     /// Wait until this device's daemon serves Tilo's API at [`Self::api`], starting one with
@@ -318,9 +325,14 @@ impl Program {
     };
 
     fn from(metadata: &std::fs::Metadata) -> Self {
-        use std::os::unix::fs::MetadataExt as _;
+        // Windows' standard metadata names no file index: there the write time alone tells a
+        // new build from the one running.
+        #[cfg(unix)]
+        let file = std::os::unix::fs::MetadataExt::ino(metadata);
+        #[cfg(not(unix))]
+        let file = 0;
         Self {
-            file: metadata.ino(),
+            file,
             modified_ns: metadata
                 .modified()
                 .ok()

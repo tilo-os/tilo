@@ -8,11 +8,11 @@
 
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use tilo_files::native::socket::Stream;
 
 /// Connect to the control socket at `path`.
-pub fn connect(path: &Path) -> io::Result<UnixStream> {
+pub fn connect(path: &Path) -> io::Result<Stream> {
     tilo_files::native::socket::connect(path)
 }
 
@@ -20,7 +20,7 @@ pub fn connect(path: &Path) -> io::Result<UnixStream> {
 ///
 /// # Errors
 /// The connection broke, or the answer was not JSON.
-pub fn round_trip(stream: &mut UnixStream, request: &str) -> io::Result<serde_json::Value> {
+pub fn round_trip(stream: &mut Stream, request: &str) -> io::Result<serde_json::Value> {
     let mut line = request.to_string();
     line.push('\n');
     stream.write_all(line.as_bytes())?;
@@ -117,7 +117,7 @@ pub enum Unreachable {
 /// serves this process.
 pub struct Desktop {
     socket: ControlSocket,
-    stream: UnixStream,
+    stream: Stream,
     /// Control sockets after `socket`, tried when it turns this process away.
     rest: Vec<ControlSocket>,
     /// Whether `socket` has answered a request; only a first answer can be a

@@ -24,9 +24,7 @@ tilo-paths.workspace = true
 # The action model's frames, which `tilo do` and `tilo open` send, and the
 # published tree's own picking of an action by name.
 tilo-actions = { path = "../../collab/actions" }
-
-[target.'cfg(unix)'.dependencies]
-# The console control socket is reached by path.
+# The console control socket is reached by path: a Unix socket, or a named pipe on Windows.
 tilo-files = { path = "../../platform/tilo-files" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

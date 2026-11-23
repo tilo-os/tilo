@@ -7,15 +7,24 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "Local Unix-domain sockets named by a path of any length: bind and connect where the kernel's fixed path buffer would refuse a deep profile or state root."
+description = "Local sockets named by a path of any length: Unix-domain sockets where the kernel's fixed path buffer would refuse a deep profile or state root, and named pipes kept to one account on Windows."
 
 [lib]
 name = "tilo_socket"
 path = "src/lib.rs"
 
-# A std-only leaf: `tilo_files::native::socket` re-exports it, and tools that stay
-# dependency-free (the `cargo desktop` launcher) bind and connect through it too.
+# A std-only leaf on Unix: `tilo_files::native::socket` re-exports it, and tools that
+# stay dependency-free (the `cargo desktop` launcher) bind and connect through it too.
 [dependencies]
+tokio = { workspace = true, optional = true, features = ["net", "rt"] }
+
+[features]
+# The same sockets for a tokio caller (`tilo_socket::tokio`).
+tokio = ["dep:tokio"]
+
+# Named pipes, their DACL and the account a peer's token names.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile.workspace = true

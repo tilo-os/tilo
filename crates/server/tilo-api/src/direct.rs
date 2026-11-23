@@ -164,33 +164,22 @@ impl KeyFile {
 /// the socket, and nobody else. While `current` has none (the process holding
 /// it is not in the workspace), each call answers why, as `not_in_workspace`.
 ///
-/// The kernel's account of the connection's peer is the whole of the
-/// admission: its account must be this process's, and it must live in this
-/// login's own user and mount namespaces, as a session's other sockets require
-/// ([`shares_security_namespaces`]). A program a sandbox put in a namespace of
-/// its own is the same account and is refused all the same.
-pub async fn serve_current<F, Fut>(listener: tokio::net::UnixListener, current: F)
-where
+/// The peer's account is the whole of the admission: a program of this
+/// login, and not one a sandbox confined
+/// ([`tilo_files::native::socket::tokio::peer_is_this_login`]).
+pub async fn serve_current<F, Fut>(
+    listener: tilo_files::native::socket::tokio::Listener,
+    current: F,
+) where
     F: Fn() -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<Arc<Direct>, String>> + Send + 'static,
 {
-    use std::os::unix::fs::MetadataExt as _;
-    // Only this process's own account is served.
-    let owner = std::fs::metadata("/proc/self")
-        .ok()
-        .map(|metadata| metadata.uid());
     let current = Arc::new(current);
     loop {
         let Ok((stream, _)) = listener.accept().await else {
             return;
         };
-        let admitted = stream
-            .peer_cred()
-            .ok()
-            .filter(|credentials| Some(credentials.uid()) == owner)
-            .and_then(|credentials| credentials.pid())
-            .and_then(|pid| u32::try_from(pid).ok())
-            .is_some_and(shares_security_namespaces);
+        let admitted = tilo_files::native::socket::tokio::peer_is_this_login(&stream);
         if !admitted {
             tracing::warn!("API: a connection from another account or a sandbox is refused");
             continue;
@@ -206,7 +195,7 @@ where
 }
 
 /// Answer every call on `stream` with why no key serves it now.
-async fn refuse_connection(stream: tokio::net::UnixStream, why: &str) {
+async fn refuse_connection(stream: tilo_files::native::socket::tokio::Stream, why: &str) {
     let refusal = serde_json::json!({"error": {"code": "not_in_workspace", "message": why}});
     let service = hyper::service::service_fn(move |_| {
         let refusal = refusal.clone();
@@ -223,26 +212,6 @@ async fn refuse_connection(stream: tokio::net::UnixStream, why: &str) {
     {
         tracing::debug!(%error, "API connection ended");
     }
-}
-
-/// Whether `pid` lives in this process's user and mount namespaces: what tells
-/// a program of this login from one a sandbox put in a namespace of its own.
-///
-/// A session's other sockets admit a connection by exactly this
-/// (`tilo_session::mcp_server`), so a program admitted there is admitted here
-/// and a sandboxed one is not.
-fn shares_security_namespaces(pid: u32) -> bool {
-    use std::os::unix::fs::MetadataExt as _;
-    let same = |kind: &str| {
-        let ours = std::fs::metadata(format!("/proc/self/ns/{kind}"));
-        let theirs = std::fs::metadata(format!("/proc/{pid}/ns/{kind}"));
-        match (ours, theirs) {
-            (Ok(ours), Ok(theirs)) => ours.dev() == theirs.dev() && ours.ino() == theirs.ino(),
-            // A process that cannot be read is not one this desktop knows.
-            _ => false,
-        }
-    };
-    same("user") && same("mnt")
 }
 
 /// Tilo's API in process, as one key.
@@ -370,13 +339,13 @@ impl Direct {
     /// Serve the API on `listener` until it closes, every request as this
     /// key: to programs of the account that owns the socket, and nobody else
     /// ([`serve_current`]).
-    pub async fn serve(self, listener: tokio::net::UnixListener) {
+    pub async fn serve(self, listener: tilo_files::native::socket::tokio::Listener) {
         let this = Arc::new(self);
         serve_current(listener, move || std::future::ready(Ok(Arc::clone(&this)))).await;
     }
 
     /// Serve one admitted connection as this key.
-    async fn serve_one(&self, stream: tokio::net::UnixStream) {
+    async fn serve_one(&self, stream: tilo_files::native::socket::tokio::Stream) {
         let Ok(authorization) = hyper::header::HeaderValue::from_str(&self.authorization) else {
             return;
         };

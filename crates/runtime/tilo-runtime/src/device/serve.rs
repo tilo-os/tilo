@@ -677,10 +677,7 @@ impl Drop for Watching {
 /// answers why.
 fn serve_api<E: Enter>(place: &DaemonPlace, shared: &Arc<Shared<E>>) -> Result<()> {
     let listener = tilo_files::native::private::bind_socket(place.api())
-        .and_then(|listener| {
-            listener.set_nonblocking(true)?;
-            tokio::net::UnixListener::from_std(listener)
-        })
+        .and_then(tilo_files::native::socket::tokio::listener)
         .with_context(|| format!("listen at {}", place.api().display()))?;
     let shared = Arc::clone(shared);
     tokio::spawn(tilo_api::direct::serve_current(listener, move || {
